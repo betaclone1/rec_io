@@ -360,7 +360,13 @@ def get_trade_history_preferences_postgresql():
         )
         with conn.cursor() as cursor:
             cursor.execute("""
-                SELECT date_filter, custom_date_start, custom_date_end, win_filter, loss_filter,
+                SELECT date_filter, start_date, end_date, win_filter, loss_filter,
+                       contract_9am, contract_10am, contract_11am, contract_12am,
+                       contract_1pm, contract_2pm, contract_3pm, contract_4pm,
+                       contract_5pm, contract_6pm, contract_7pm, contract_8pm,
+                       contract_9pm, contract_10pm, contract_11pm,
+                       symbol_btc, symbol_eth, symbol_spy, symbol_ndx, symbol_usd_eur,
+                       strategy_hourly_htc, strategy_momentum_scalp, strategy_test,
                        sort_key, sort_asc, page_size, last_search_timestamp
                 FROM users.trade_history_preferences_0001 WHERE id = 1
             """)
@@ -370,22 +376,68 @@ def get_trade_history_preferences_postgresql():
             if result:
                 return {
                     "date_filter": result[0],
-                    "custom_date_start": result[1].isoformat() if result[1] else None,
-                    "custom_date_end": result[2].isoformat() if result[2] else None,
+                    "start_date": result[1],
+                    "end_date": result[2],
                     "win_filter": result[3],
                     "loss_filter": result[4],
-                    "sort_key": result[5],
-                    "sort_asc": result[6],
-                    "page_size": result[7],
-                    "last_search_timestamp": result[8]
+                    "contract_9am": result[5],
+                    "contract_10am": result[6],
+                    "contract_11am": result[7],
+                    "contract_12am": result[8],
+                    "contract_1pm": result[9],
+                    "contract_2pm": result[10],
+                    "contract_3pm": result[11],
+                    "contract_4pm": result[12],
+                    "contract_5pm": result[13],
+                    "contract_6pm": result[14],
+                    "contract_7pm": result[15],
+                    "contract_8pm": result[16],
+                    "contract_9pm": result[17],
+                    "contract_10pm": result[18],
+                    "contract_11pm": result[19],
+                    "symbol_btc": result[20],
+                    "symbol_eth": result[21],
+                    "symbol_spy": result[22],
+                    "symbol_ndx": result[23],
+                    "symbol_usd_eur": result[24],
+                    "strategy_hourly_htc": result[25],
+                    "strategy_momentum_scalp": result[26],
+                    "strategy_test": result[27],
+                    "sort_key": result[28],
+                    "sort_asc": result[29],
+                    "page_size": result[30],
+                    "last_search_timestamp": result[31]
                 }
             else:
                 return {
                     "date_filter": "TODAY",
-                    "custom_date_start": None,
-                    "custom_date_end": None,
+                    "start_date": None,
+                    "end_date": None,
                     "win_filter": True,
                     "loss_filter": True,
+                    "contract_9am": True,
+                    "contract_10am": True,
+                    "contract_11am": True,
+                    "contract_12am": True,
+                    "contract_1pm": True,
+                    "contract_2pm": True,
+                    "contract_3pm": True,
+                    "contract_4pm": True,
+                    "contract_5pm": True,
+                    "contract_6pm": True,
+                    "contract_7pm": True,
+                    "contract_8pm": True,
+                    "contract_9pm": True,
+                    "contract_10pm": True,
+                    "contract_11pm": True,
+                    "symbol_btc": True,
+                    "symbol_eth": True,
+                    "symbol_spy": True,
+                    "symbol_ndx": True,
+                    "symbol_usd_eur": True,
+                    "strategy_hourly_htc": True,
+                    "strategy_momentum_scalp": True,
+                    "strategy_test": True,
                     "sort_key": None,
                     "sort_asc": True,
                     "page_size": 50,
@@ -395,10 +447,33 @@ def get_trade_history_preferences_postgresql():
         print(f"[PostgreSQL Error] Failed to get trade history preferences: {e}")
         return {
             "date_filter": "TODAY",
-            "custom_date_start": None,
-            "custom_date_end": None,
+            "start_date": None,
+            "end_date": None,
             "win_filter": True,
             "loss_filter": True,
+            "contract_9am": True,
+            "contract_10am": True,
+            "contract_11am": True,
+            "contract_12am": True,
+            "contract_1pm": True,
+            "contract_2pm": True,
+            "contract_3pm": True,
+            "contract_4pm": True,
+            "contract_5pm": True,
+            "contract_6pm": True,
+            "contract_7pm": True,
+            "contract_8pm": True,
+            "contract_9pm": True,
+            "contract_10pm": True,
+            "contract_11pm": True,
+            "symbol_btc": True,
+            "symbol_eth": True,
+            "symbol_spy": True,
+            "symbol_ndx": True,
+            "symbol_usd_eur": True,
+            "strategy_hourly_htc": True,
+            "strategy_momentum_scalp": True,
+            "strategy_test": True,
             "sort_key": None,
             "sort_asc": True,
             "page_size": 50,
@@ -2454,10 +2529,33 @@ def load_trade_history_preferences():
         print(f"[Trade History Preferences Load Error] {e}")
         return {
             "date_filter": "TODAY",
-            "custom_date_start": None,
-            "custom_date_end": None,
+            "start_date": None,
+            "end_date": None,
             "win_filter": True,
             "loss_filter": True,
+            "contract_9am": True,
+            "contract_10am": True,
+            "contract_11am": True,
+            "contract_12am": True,
+            "contract_1pm": True,
+            "contract_2pm": True,
+            "contract_3pm": True,
+            "contract_4pm": True,
+            "contract_5pm": True,
+            "contract_6pm": True,
+            "contract_7pm": True,
+            "contract_8pm": True,
+            "contract_9pm": True,
+            "contract_10pm": True,
+            "contract_11pm": True,
+            "symbol_btc": True,
+            "symbol_eth": True,
+            "symbol_spy": True,
+            "symbol_ndx": True,
+            "symbol_usd_eur": True,
+            "strategy_hourly_htc": True,
+            "strategy_momentum_scalp": True,
+            "strategy_test": True,
             "sort_key": None,
             "sort_asc": True,
             "page_size": 50,
@@ -2471,14 +2569,38 @@ def save_trade_history_preferences(preferences):
         update_data = {}
         if "date_filter" in preferences:
             update_data["date_filter"] = str(preferences["date_filter"])
-        if "custom_date_start" in preferences:
-            update_data["custom_date_start"] = preferences["custom_date_start"]
-        if "custom_date_end" in preferences:
-            update_data["custom_date_end"] = preferences["custom_date_end"]
+        if "start_date" in preferences:
+            update_data["start_date"] = preferences["start_date"]
+        if "end_date" in preferences:
+            update_data["end_date"] = preferences["end_date"]
         if "win_filter" in preferences:
             update_data["win_filter"] = bool(preferences["win_filter"])
         if "loss_filter" in preferences:
             update_data["loss_filter"] = bool(preferences["loss_filter"])
+        
+        # Contract filters
+        contract_fields = [
+            "contract_9am", "contract_10am", "contract_11am", "contract_12am",
+            "contract_1pm", "contract_2pm", "contract_3pm", "contract_4pm",
+            "contract_5pm", "contract_6pm", "contract_7pm", "contract_8pm",
+            "contract_9pm", "contract_10pm", "contract_11pm"
+        ]
+        for field in contract_fields:
+            if field in preferences:
+                update_data[field] = bool(preferences[field])
+        
+        # Symbol filters
+        symbol_fields = ["symbol_btc", "symbol_eth", "symbol_spy", "symbol_ndx", "symbol_usd_eur"]
+        for field in symbol_fields:
+            if field in preferences:
+                update_data[field] = bool(preferences[field])
+        
+        # Strategy filters
+        strategy_fields = ["strategy_hourly_htc", "strategy_momentum_scalp", "strategy_test"]
+        for field in strategy_fields:
+            if field in preferences:
+                update_data[field] = bool(preferences[field])
+        
         if "sort_key" in preferences:
             update_data["sort_key"] = preferences["sort_key"]
         if "sort_asc" in preferences:

@@ -35,8 +35,6 @@ This guide walks you through setting up your own REC.IO trading system using a s
 
 Contact the REC.IO team and provide:
 - **Your Digital Ocean email address** (for snapshot transfer)
-- **Your preferred user ID** (format: `first_last`, e.g., `john_doe, jdoe`)
-- **Your full name and contact information**
 
 The team will:
 1. Create a snapshot of the production system

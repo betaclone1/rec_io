@@ -77,33 +77,33 @@
       <div style="margin-top: 10px; display: flex; gap: 20px; align-items: flex-start;">
         <div>
           <div style="display: flex; gap: 15px; align-items: center;">
-            <select id="date-filter-picker" class="dropdown-picker" style="width: 100px;">
-              <option value="ALL">All</option>
-              <option value="TODAY">Today</option>
-              <option value="THIS_WEEK">This Week</option>
-              <option value="SUNDAY">- Sunday</option>
-              <option value="MONDAY">- Monday</option>
-              <option value="TUESDAY">- Tuesday</option>
-              <option value="WEDNESDAY">- Wednesday</option>
-              <option value="THURSDAY">- Thursday</option>
-              <option value="FRIDAY">- Friday</option>
-              <option value="SATURDAY">- Saturday</option>
-              <option value="LAST_WEEK">Last Week</option>
-              <option value="MONTH">This Month</option>
-              <option value="PREV_30">Prev 30</option>
-              <option value="YTD">YTD</option>
-              <option value="PREV_YEAR">Prev Year</option>
-              <option value="CUSTOM">Custom</option>
-            </select>
-            <div style="display: flex; gap: 15px;">
+            <select id="date-filter-picker" class="dropdown-picker" style="width: 110px;">
+            <option value="ALL">All</option>
+            <option value="TODAY">Today</option>
+            <option value="THIS_WEEK">This Week</option>
+            <option value="SUNDAY">- Sunday</option>
+            <option value="MONDAY">- Monday</option>
+            <option value="TUESDAY">- Tuesday</option>
+            <option value="WEDNESDAY">- Wednesday</option>
+            <option value="THURSDAY">- Thursday</option>
+            <option value="FRIDAY">- Friday</option>
+            <option value="SATURDAY">- Saturday</option>
+            <option value="LAST_WEEK">Last Week</option>
+            <option value="MONTH">This Month</option>
+            <option value="PREV_30">Prev 30</option>
+            <option value="YTD">YTD</option>
+            <option value="PREV_YEAR">Prev Year</option>
+            <option value="CUSTOM">Custom</option>
+          </select>
+          <div style="display: flex; gap: 15px;">
               <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
-                <input type="checkbox" id="filter-win" checked style="width: 14px; height: 14px;">
-                Win
-              </label>
-              <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
-                <input type="checkbox" id="filter-loss" checked style="width: 14px; height: 14px;">
-                Loss
-              </label>
+              <input type="checkbox" id="filter-win" checked style="width: 14px; height: 14px;">
+              Win
+            </label>
+            <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
+              <input type="checkbox" id="filter-loss" checked style="width: 14px; height: 14px;">
+              Loss
+            </label>
             </div>
           </div>
           <div style="margin-top: 10px; display: flex; gap: 10px; align-items: center;">
@@ -247,7 +247,7 @@
                 <input type="checkbox" id="strategy-test" checked style="width: 14px; height: 14px;">
                 *** TEST ***
               </label>
-            </div>
+        </div>
           </div>
         </div>
 
@@ -289,9 +289,29 @@
     </div>
   </div>
 
-  <div class="panel-container" style="height: calc(100vh - 140px); display: flex; flex-direction: column;">
-    <div class="panel-header">Results</div>
-    <div style="flex: 1; overflow-y: auto;">
+  <!-- Analysis Panel -->
+  <div class="panel-container" style="width: 100%; margin-bottom: 10px;">
+    <div class="panel-header" style="cursor: pointer; display: flex; align-items: center; padding-bottom: 0px;" onclick="toggleAnalysisPanel()">
+      <span>Analysis</span>
+      <span id="analysis-expand-icon" style="font-size: 8px; transition: transform 0.3s ease; margin-left: 8px;">▼</span>
+    </div>
+    <div id="analysis-content" style="height: 0; overflow: hidden; transition: height 0.3s ease;">
+      <div style="height: 10px; background-color: #323c4e;"></div>
+      <div style="background-color: #1f2530; padding: 20px; height: 240px;">
+        <!-- Analysis content will go here -->
+        <div style="color: #ccc; text-align: center; margin-top: 100px;">Analysis content coming soon...</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel-container" style="display: flex; flex-direction: column;">
+    <div class="panel-header" style="cursor: pointer; display: flex; align-items: center; padding-bottom: 0px;" onclick="toggleResultsPanel()">
+      <span>Results</span>
+      <span id="results-expand-icon" style="font-size: 8px; transition: transform 0.1s ease; margin-left: 8px;">▼</span>
+    </div>
+    <div id="results-content" style="height: 0; overflow: hidden; transition: height 0.1s ease;">
+      <div style="height: 10px; background-color: #323c4e;"></div>
+      <div style="background-color: #1f2530; max-height: calc(100vh - 200px); overflow-y: auto;">
       <table id="trade-log-table" aria-label="Trade Log Table" style="position: relative;">
         <thead>
           <tr class="th">
@@ -931,17 +951,17 @@
             }
           } else {
             // Fallback to API call if no trades loaded yet
-            try {
-              const response = await fetch(window.location.origin + '/api/earliest_trade_date');
-              if (response.ok) {
-                const data = await response.json();
-                if (data.earliest_date) {
+          try {
+            const response = await fetch(window.location.origin + '/api/earliest_trade_date');
+            if (response.ok) {
+              const data = await response.json();
+              if (data.earliest_date) {
                   startDate = data.earliest_date;
                   endDate = formatDate(now);
                 }
-              }
-            } catch (error) {
-              console.error('Error fetching earliest trade date:', error);
+            }
+          } catch (error) {
+            console.error('Error fetching earliest trade date:', error);
             }
           }
           break;
@@ -1579,6 +1599,17 @@
       const contract10am = document.getElementById('contract-10am');
       const contract11am = document.getElementById('contract-11am');
       const contract12am = document.getElementById('contract-12am');
+      const contract1pm = document.getElementById('contract-1pm');
+      const contract2pm = document.getElementById('contract-2pm');
+      const contract3pm = document.getElementById('contract-3pm');
+      const contract4pm = document.getElementById('contract-4pm');
+      const contract5pm = document.getElementById('contract-5pm');
+      const contract6pm = document.getElementById('contract-6pm');
+      const contract7pm = document.getElementById('contract-7pm');
+      const contract8pm = document.getElementById('contract-8pm');
+      const contract9pm = document.getElementById('contract-9pm');
+      const contract10pm = document.getElementById('contract-10pm');
+      const contract11pm = document.getElementById('contract-11pm');
       const symbolBtc = document.getElementById('symbol-btc');
       const symbolEth = document.getElementById('symbol-eth');
       const symbolSpy = document.getElementById('symbol-spy');
@@ -1623,6 +1654,8 @@
         last_search_timestamp: Date.now()
       };
       
+      console.log('Saving preferences:', preferences);
+      
       fetch(window.location.origin + '/api/set_trade_history_preferences', {
         method: 'POST',
         headers: {
@@ -1632,15 +1665,71 @@
       })
       .then(response => {
         if (response.ok) {
-          console.log('Preferences saved');
+          console.log('Preferences saved successfully');
         } else {
-          console.error('Failed to save preferences');
+          console.error('Failed to save preferences, status:', response.status);
         }
       })
       .catch(error => {
         console.error('Error saving preferences:', error);
       });
     }
+
+    // Analysis Panel Toggle Function
+    function toggleAnalysisPanel() {
+      const content = document.getElementById('analysis-content');
+      const icon = document.getElementById('analysis-expand-icon');
+      const resultsContent = document.getElementById('results-content');
+      
+      if (content.style.height === '0px' || content.style.height === '') {
+        // Expand the panel
+        content.style.height = '250px';
+        icon.style.transform = 'rotate(180deg)';
+        // Adjust Results panel height after Analysis panel animation
+        setTimeout(() => {
+          if (resultsContent && resultsContent.style.height !== '0px' && resultsContent.style.height !== '') {
+            resultsContent.style.height = 'calc(100vh - 470px)'; // 220 + 250
+          }
+        }, 150); // Half the Analysis panel transition time
+      } else {
+        // Collapse the panel
+        content.style.height = '0px';
+        icon.style.transform = 'rotate(0deg)';
+        // Adjust Results panel height after Analysis panel animation
+        setTimeout(() => {
+          if (resultsContent && resultsContent.style.height !== '0px' && resultsContent.style.height !== '') {
+            resultsContent.style.height = 'calc(100vh - 220px)'; // Back to original
+          }
+        }, 150); // Half the Analysis panel transition time
+      }
+    }
+
+    // Results Panel Toggle Function
+    function toggleResultsPanel() {
+      const content = document.getElementById('results-content');
+      const icon = document.getElementById('results-expand-icon');
+      
+      if (content.style.height === '0px' || content.style.height === '') {
+        // Expand the panel
+        content.style.height = 'calc(100vh - 220px)';
+        icon.style.transform = 'rotate(180deg)';
+      } else {
+        // Collapse the panel
+        content.style.height = '0px';
+        icon.style.transform = 'rotate(0deg)';
+      }
+    }
+
+    // Initialize Results panel as expanded on page load
+    document.addEventListener('DOMContentLoaded', function() {
+      const resultsContent = document.getElementById('results-content');
+      const resultsIcon = document.getElementById('results-expand-icon');
+      
+      if (resultsContent && resultsIcon) {
+        resultsContent.style.height = 'calc(100vh - 220px)';
+        resultsIcon.style.transform = 'rotate(180deg)';
+      }
+    });
   </script>
 </body>
 </html>

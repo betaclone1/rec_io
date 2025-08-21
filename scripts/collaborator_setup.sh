@@ -40,6 +40,19 @@ SQL_EOF
 
 echo "Database sanitization completed"
 
+# Clear old Kalshi credentials
+echo "Clearing old Kalshi credential files..."
+rm -f backend/data/users/user_0001/credentials/kalshi-credentials/prod/.env
+rm -f backend/data/users/user_0001/credentials/kalshi-credentials/prod/kalshi-auth.txt
+rm -f backend/data/users/user_0001/credentials/kalshi-credentials/prod/kalshi.pem
+rm -f backend/api/kalshi-api/kalshi-credentials/prod/.env
+rm -f backend/api/kalshi-api/kalshi-credentials/prod/kalshi-auth.txt
+rm -f backend/api/kalshi-api/kalshi-credentials/prod/kalshi.pem
+rm -f backend/api/kalshi-api/kalshi-credentials/demo/.env
+rm -f backend/api/kalshi-api/kalshi-credentials/demo/kalshi-auth.txt
+rm -f backend/api/kalshi-api/kalshi-credentials/demo/kalshi.pem
+echo "Old Kalshi credentials cleared"
+
 # Disable maintenance
 systemctl disable apt-daily-upgrade.service 2>/dev/null || true
 systemctl disable apt-daily-upgrade.timer 2>/dev/null || true
@@ -151,7 +164,24 @@ echo "$KALSHI_API_SECRET" > backend/data/users/user_0001/credentials/kalshi-cred
 chmod 600 backend/data/users/user_0001/credentials/kalshi-credentials/prod/kalshi-auth.txt
 chmod 600 backend/data/users/user_0001/credentials/kalshi-credentials/prod/kalshi.pem
 
-echo "Kalshi files written"
+# Create .env file for environment variables
+cat > backend/data/users/user_0001/credentials/kalshi-credentials/prod/.env << EOF
+KALSHI_API_KEY_ID=$KALSHI_API_KEY
+KALSHI_PRIVATE_KEY_PATH=kalshi.pem
+KALSHI_EMAIL=$KALSHI_EMAIL
+EOF
+
+# Create system-expected directory structure and copy credentials
+mkdir -p backend/api/kalshi-api/kalshi-credentials/prod
+mkdir -p backend/api/kalshi-api/kalshi-credentials/demo
+
+# Copy credentials to system-expected locations
+cp backend/data/users/user_0001/credentials/kalshi-credentials/prod/* backend/api/kalshi-api/kalshi-credentials/prod/
+cp backend/api/kalshi-api/kalshi-credentials/prod/* backend/api/kalshi-api/kalshi-credentials/demo/
+
+echo "Kalshi files written and copied to system locations"
+
+
 
 # Step 6: VERIFY ALL FILES ARE WRITTEN
 echo "Verifying all credential files and database updates..."
@@ -159,6 +189,8 @@ echo "Database user info updated: ✓"
 echo "Database auto-trade settings created: ✓"
 echo "Kalshi auth file created: ✓"
 echo "Kalshi PEM file created: ✓"
+echo "Kalshi .env file created: ✓"
+echo "System credential locations created: ✓"
 echo "All credential files and database updates complete"
 
 # Step 7: RUN MASTER RESTART
