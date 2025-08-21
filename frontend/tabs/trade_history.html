@@ -840,7 +840,7 @@
           <td>${trade.contract !== null ? trade.contract : ''}</td>
           <td>${trade.strike !== null ? trade.strike : ''}</td>
           <td>${trade.side === 'Yes' || trade.side === 'Y' ? 'Y' : trade.side === 'No' || trade.side === 'N' ? 'N' : ''}</td>
-          <td>${trade.prob !== null && trade.prob !== undefined && trade.prob !== '' ? (Number(trade.prob) / 100).toFixed(2) : ''}</td>
+          <td>${trade.prob !== null && trade.prob !== undefined && trade.prob !== '' ? Number(trade.prob).toFixed(1) : ''}</td>
           <td>${plusSign(trade.diff)}</td>
           <td>${trade.buy_price !== null ? Number(trade.buy_price).toFixed(2) : ''}</td>
           <td>${trade.sell_price !== null ? Number(trade.sell_price).toFixed(2) : ''}</td>
@@ -1287,12 +1287,22 @@
       const endDateInput = document.getElementById('end-date');
       if (startDateInput) {
         startDateInput.addEventListener('change', () => {
+          // Switch to Custom when user manually enters a date
+          const dateFilterPicker = document.getElementById('date-filter-picker');
+          if (dateFilterPicker && dateFilterPicker.value !== 'CUSTOM') {
+            dateFilterPicker.value = 'CUSTOM';
+          }
           applyFilters();
           savePreferences();
         });
       }
       if (endDateInput) {
         endDateInput.addEventListener('change', () => {
+          // Switch to Custom when user manually enters a date
+          const dateFilterPicker = document.getElementById('date-filter-picker');
+          if (dateFilterPicker && dateFilterPicker.value !== 'CUSTOM') {
+            dateFilterPicker.value = 'CUSTOM';
+          }
           applyFilters();
           savePreferences();
         });

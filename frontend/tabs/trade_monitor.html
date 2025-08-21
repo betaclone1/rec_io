@@ -238,37 +238,47 @@
 </style>
 <style>
 #autoStopToggle {
-  accent-color: red;
-  background-color: transparent;
+  width: 32px;
+  height: 17px;
+  background-color: #444;
+  border-radius: 9px;
+  position: relative;
+  cursor: pointer;
+  transition: background-color 0.2s;
   border: none;
   outline: none;
   -webkit-appearance: none;
   -moz-appearance: none;
   appearance: none;
-  width: 16px;
-  height: 16px;
-  position: relative;
-  cursor: pointer;
-  border-radius: 3px;
-  box-shadow: inset 0 0 0 1px white;
-  transition: outline 0.2s ease;
 }
 
-#autoStopToggle:checked {
+#autoStopToggle.active {
   background-color: #007bff;
-  box-shadow: none;
 }
 
-#autoStopToggle:checked::after {
-  content: "";
+#autoStopToggle::after {
+  content: '';
   position: absolute;
-  left: 4px;
-  top: 1px;
-  width: 5px;
-  height: 9px;
-  border: solid white;
-  border-width: 0 2px 2px 0;
-  transform: rotate(45deg);
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  background-color: white;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+#autoStopToggle.active::after {
+  transform: translateX(15px);
+}
+
+#autoStopToggle.loading {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+#autoStopToggle.loading::after {
+  background-color: #ccc;
 }
 
 #autoStopToggle:focus-visible {
@@ -277,122 +287,116 @@
 }
 
 #autoStopSupervisorToggle {
-  accent-color: r#007bff;
-  background-color: transparent;
+  width: 32px;
+  height: 17px;
+  background-color: #444;
+  border-radius: 9px;
+  position: relative;
+  cursor: pointer;
+  transition: background-color 0.2s;
   border: none;
   outline: none;
   -webkit-appearance: none;
   -moz-appearance: none;
   appearance: none;
-  width: 16px;
-  height: 16px;
-  position: relative;
-  cursor: pointer;
-  border-radius: 3px;
-  box-shadow: inset 0 0 0 1px white;
-  transition: outline 0.2s ease;
 }
 
-#autoStopSupervisorToggle:checked {
+#autoStopSupervisorToggle.active {
   background-color: #007bff;
-  box-shadow: none;
 }
 
-#autoStopSupervisorToggle:checked::after {
-  content: "";
+#autoStopSupervisorToggle::after {
+  content: '';
   position: absolute;
-  left: 4px;
-  top: 1px;
-  width: 5px;
-  height: 9px;
-  border: solid white;
-  border-width: 0 2px 2px 0;
-  transform: rotate(45deg);
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  background-color: white;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+#autoStopSupervisorToggle.active::after {
+  transform: translateX(15px);
+}
+
+#autoStopSupervisorToggle.loading {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+#autoStopSupervisorToggle.loading::after {
+  background-color: #ccc;
 }
 
 #autoStopSupervisorToggle:focus-visible {
-  outline: 2px solid #f00;
+  outline: 2px solid #007bff;
   outline-offset: 2px;
 }
 </style>
 <style>
 #autoEntryToggle {
-  accent-color: #007bff;
-  background-color: transparent;
+  width: 32px;
+  height: 17px;
+  background-color: #444;
+  border-radius: 9px;
+  position: relative;
+  cursor: pointer;
+  transition: background-color 0.2s;
   border: none;
   outline: none;
   -webkit-appearance: none;
   -moz-appearance: none;
   appearance: none;
-  width: 16px;
-  height: 16px;
-  position: relative;
-  cursor: pointer;
-  border-radius: 3px;
-  box-shadow: inset 0 0 0 1px white;
-  transition: outline 0.2s ease;
 }
 
-#autoEntryToggle:checked {
+#autoEntryToggle.active {
   background-color: #007bff;
-  box-shadow: none;
 }
 
-#autoEntryToggle:checked::after {
-  content: "";
+#autoEntryToggle::after {
+  content: '';
   position: absolute;
-  left: 4px;
-  top: 1px;
-  width: 5px;
-  height: 9px;
-  border: solid white;
-  border-width: 0 2px 2px 0;
-  transform: rotate(45deg);
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  background-color: white;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+#autoEntryToggle.active::after {
+  transform: translateX(15px);
+}
+
+#autoEntryToggle.loading {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+#autoEntryToggle.loading::after {
+  background-color: #ccc;
 }
 
 #autoEntryToggle:focus-visible {
-  outline: 2px solid #00ff00;
+  outline: 2px solid #007bff;
   outline-offset: 2px;
 }
 </style>
 <style>
-#plusMinusToggle {
-  accent-color: #007bff;
-  background-color: transparent;
-  border: none;
-  outline: none;
-  -webkit-appearance: none;
-  -moz-appearance: none;
-  appearance: none;
-  width: 16px;
-  height: 16px;
-  position: relative;
+#diffModeToggle {
   cursor: pointer;
-  border-radius: 3px;
-  box-shadow: inset 0 0 0 1px white;
-  transition: outline 0.2s ease;
+  transition: opacity 0.2s;
 }
 
-#plusMinusToggle:checked {
-  background-color: #007bff;
-  box-shadow: none;
+#diffModeToggle:hover {
+  opacity: 0.9;
 }
 
-#plusMinusToggle:checked::after {
-  content: "";
-  position: absolute;
-  left: 4px;
-  top: 1px;
-  width: 5px;
-  height: 9px;
-  border: solid white;
-  border-width: 0 2px 2px 0;
-  transform: rotate(45deg);
-}
-
-#plusMinusToggle:focus-visible {
-  outline: 2px solid #00ff00;
-  outline-offset: 2px;
+#diffText, #priceText {
+  transition: opacity 0.2s;
 }
 </style>
 <style>
@@ -567,10 +571,10 @@
       <div class="panel-container" style="min-height: 450px; " id="strikePanelContainer">
         <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
           <span>Market</span>
-          <label style="font-size: 12px; user-select: none; color: white; display: flex; align-items: center; gap: 6px; margin: 0;">
-            + / -
-            <input type="checkbox" id="plusMinusToggle" style="opacity: 100%;"/>
-          </label>
+          <div style="font-size: 12px; user-select: none; color: white; display: flex; align-items: center; gap: 6px; margin: 0; cursor: pointer;" id="diffModeToggle">
+            <span id="diffText" style="opacity: 1; transition: opacity 0.2s;">DIFF</span>
+            <span id="priceText" style="opacity: 0.2; transition: opacity 0.2s;">PRICE</span>
+          </div>
         </div>
         <table id="strikePanelTable" style="width: 100%; height: 100%; ">
           <tbody>
@@ -690,7 +694,7 @@ function hideAutoEntrySettingsModal() {
             />
             <label style="font-size: 12px; user-select: none; color: white; display: flex; align-items: center; gap: 6px; margin: 0;">
               AUTO ENTRY
-              <input type="checkbox" id="autoEntryToggle" />
+              <div id="autoEntryToggle"></div>
             </label>
           </div>
         </div>
@@ -888,7 +892,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const positionInput = document.getElementById('position-size');
   const multiplierButtons = document.querySelectorAll('.multiplier-btn');
   const autoEntryToggle = document.getElementById('autoEntryToggle');
-  const plusMinusToggle = document.getElementById('plusMinusToggle');
+  const diffModeToggle = document.getElementById('diffModeToggle');
   
 
   
@@ -914,14 +918,26 @@ document.addEventListener('DOMContentLoaded', () => {
     .then(res => res.json())
     .then(data => {
       if (autoStopToggle && data.auto_stop !== undefined) {
-        autoStopToggle.checked = data.auto_stop;
+        if (data.auto_stop) {
+          autoStopToggle.classList.add('active');
+        } else {
+          autoStopToggle.classList.remove('active');
+        }
         window.autoStopEnabled = data.auto_stop;
       }
       if (autoStopSupervisorToggle && data.auto_stop !== undefined) {
-        autoStopSupervisorToggle.checked = data.auto_stop;
+        if (data.auto_stop) {
+          autoStopSupervisorToggle.classList.add('active');
+        } else {
+          autoStopSupervisorToggle.classList.remove('active');
+        }
       }
       if (autoEntryToggle && data.auto_entry !== undefined) {
-        autoEntryToggle.checked = data.auto_entry;
+        if (data.auto_entry) {
+          autoEntryToggle.classList.add('active');
+        } else {
+          autoEntryToggle.classList.remove('active');
+        }
         window.recoEnabled = data.auto_entry;
         
         // If AUTO ENTRY is enabled on initial load, apply filtering
@@ -942,9 +958,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
       // Diff mode defaults to ON and is local only
-      if (plusMinusToggle) {
-        plusMinusToggle.checked = true;
+      if (diffModeToggle) {
         window.diffMode = true;
+        updateDiffModeDisplay(true);
       }
       if (positionInput && data.position_size !== undefined) {
         positionInput.value = data.position_size;
@@ -1031,20 +1047,32 @@ document.addEventListener('DOMContentLoaded', () => {
       // Update auto stop toggles
       if (autoStopToggle && data.auto_stop !== undefined) {
         window.ignoreWsUpdates = true;
-        autoStopToggle.checked = data.auto_stop;
+        if (data.auto_stop) {
+          autoStopToggle.classList.add('active');
+        } else {
+          autoStopToggle.classList.remove('active');
+        }
         window.autoStopEnabled = data.auto_stop;
         window.ignoreWsUpdates = false;
       }
       if (autoStopSupervisorToggle && data.auto_stop !== undefined) {
         window.ignoreWsUpdates = true;
-        autoStopSupervisorToggle.checked = data.auto_stop;
+        if (data.auto_stop) {
+          autoStopSupervisorToggle.classList.add('active');
+        } else {
+          autoStopSupervisorToggle.classList.remove('active');
+        }
         window.ignoreWsUpdates = false;
       }
 
       if (autoEntryToggle && data.auto_entry !== undefined) {
         window.ignoreWsUpdates = true;
 
-        autoEntryToggle.checked = data.auto_entry;
+        if (data.auto_entry) {
+          autoEntryToggle.classList.add('active');
+        } else {
+          autoEntryToggle.classList.remove('active');
+        }
         
         // Use clean API to update strike table auto entry mode
         if (window.StrikeTable && window.StrikeTable.setAutoEntry) {
@@ -1092,108 +1120,211 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Save handlers, ignoring changes triggered by WebSocket updates
   if (autoStopToggle) {
-
-    autoStopToggle.addEventListener('change', () => {
-      
+    autoStopToggle.addEventListener('click', async () => {
       if (window.ignoreWsUpdates) {
-        
         return;
       }
-      const value = autoStopToggle.checked;
       
-      window.autoStopEnabled = value;
+      const enabled = !autoStopToggle.classList.contains('active');
       
-      fetch(window.location.origin + '/api/set_auto_stop', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: value })
-      }).then(response => {
+      // Prevent multiple clicks during request
+      if (autoStopToggle.classList.contains('loading')) return;
+      
+      // Add loading state
+      autoStopToggle.classList.add('loading');
+      
+      // Immediate visual feedback
+      if (enabled) {
+        autoStopToggle.classList.add('active');
+      } else {
+        autoStopToggle.classList.remove('active');
+      }
+      
+      window.autoStopEnabled = enabled;
+      
+      try {
+        const response = await fetch(window.location.origin + '/api/set_auto_stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled })
+        });
+        
         if (!response.ok) {
+          // Revert if failed
+          if (enabled) {
+            autoStopToggle.classList.remove('active');
+          } else {
+            autoStopToggle.classList.add('active');
+          }
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
-        return response.json();
-      }).then(data => {
+        
+        const data = await response.json();
         console.log('Auto stop updated successfully:', data);
-      }).catch(error => {
+      } catch (error) {
+        // Revert if failed
+        if (enabled) {
+          autoStopToggle.classList.remove('active');
+        } else {
+          autoStopToggle.classList.add('active');
+        }
         console.error('Auto stop backend error:', error);
-        // Show user-friendly error message
         alert(`Failed to update auto stop setting: ${error.message}`);
-      });
+      } finally {
+        // Remove loading state
+        autoStopToggle.classList.remove('loading');
+      }
     });
   }
 
   // Supervisor toggle - connected to same auto_stop preference
   if (autoStopSupervisorToggle) {
-    // Removed console.log
-    autoStopSupervisorToggle.addEventListener('change', () => {
-      // Removed console.log
+    autoStopSupervisorToggle.addEventListener('click', async () => {
       if (window.ignoreWsUpdates) {
-        // Removed console.log
         return;
       }
-      const value = autoStopSupervisorToggle.checked;
-      // Removed console.log
-      window.autoStopEnabled = value;
-      // Removed console.log
-      fetch(window.location.origin + '/api/set_auto_stop', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: value })
-      }).then(response => {
-        // Removed console.log
-        return response.json();
-      }).then(data => {
-        // Removed console.log
-      }).catch(error => {
+      
+      const enabled = !autoStopSupervisorToggle.classList.contains('active');
+      
+      // Prevent multiple clicks during request
+      if (autoStopSupervisorToggle.classList.contains('loading')) return;
+      
+      // Add loading state
+      autoStopSupervisorToggle.classList.add('loading');
+      
+      // Immediate visual feedback
+      if (enabled) {
+        autoStopSupervisorToggle.classList.add('active');
+      } else {
+        autoStopSupervisorToggle.classList.remove('active');
+      }
+      
+      window.autoStopEnabled = enabled;
+      
+      try {
+        const response = await fetch(window.location.origin + '/api/set_auto_stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled })
+        });
+        
+        if (!response.ok) {
+          // Revert if failed
+          if (enabled) {
+            autoStopSupervisorToggle.classList.remove('active');
+          } else {
+            autoStopSupervisorToggle.classList.add('active');
+          }
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        console.log('Auto stop supervisor updated successfully:', data);
+      } catch (error) {
+        // Revert if failed
+        if (enabled) {
+          autoStopSupervisorToggle.classList.remove('active');
+        } else {
+          autoStopSupervisorToggle.classList.add('active');
+        }
         console.error('Auto stop supervisor backend error:', error);
-      });
+      } finally {
+        // Remove loading state
+        autoStopSupervisorToggle.classList.remove('loading');
+      }
     });
   }
 
   if (autoEntryToggle) {
-    // Removed console.log
-    autoEntryToggle.addEventListener('change', () => {
-      // Removed console.log
+    autoEntryToggle.addEventListener('click', async () => {
       if (window.ignoreWsUpdates) {
-        // Removed console.log
         return;
       }
-      const value = autoEntryToggle.checked;
-      // Removed console.log
+      
+      const enabled = !autoEntryToggle.classList.contains('active');
+      
+      // Prevent multiple clicks during request
+      if (autoEntryToggle.classList.contains('loading')) return;
+      
+      // Add loading state
+      autoEntryToggle.classList.add('loading');
+      
+      // Immediate visual feedback
+      if (enabled) {
+        autoEntryToggle.classList.add('active');
+      } else {
+        autoEntryToggle.classList.remove('active');
+      }
       
       // Use clean API to update strike table auto entry mode
       if (window.StrikeTable && window.StrikeTable.setAutoEntry) {
-        window.StrikeTable.setAutoEntry(value);
+        window.StrikeTable.setAutoEntry(enabled);
       }
       
-      // Removed console.log
-      fetch(window.location.origin + '/api/set_auto_entry', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: value })
-      }).then(response => {
+      try {
+        const response = await fetch(window.location.origin + '/api/set_auto_entry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled })
+        });
+        
         if (!response.ok) {
+          // Revert if failed
+          if (enabled) {
+            autoEntryToggle.classList.remove('active');
+          } else {
+            autoEntryToggle.classList.add('active');
+          }
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
-        return response.json();
-      }).then(data => {
+        
+        const data = await response.json();
         console.log('Auto entry updated successfully:', data);
-      }).catch(error => {
+      } catch (error) {
+        // Revert if failed
+        if (enabled) {
+          autoEntryToggle.classList.remove('active');
+        } else {
+          autoEntryToggle.classList.add('active');
+        }
         console.error('AUTO ENTRY backend error:', error);
         alert(`Failed to update auto entry setting: ${error.message}`);
-      });
+      } finally {
+        // Remove loading state
+        autoEntryToggle.classList.remove('loading');
+      }
     });
   }
 
-  if (plusMinusToggle) {
-    plusMinusToggle.addEventListener('change', () => {
-      const value = plusMinusToggle.checked;
+  if (diffModeToggle) {
+    diffModeToggle.addEventListener('click', () => {
+      const newValue = !window.diffMode;
+      window.diffMode = newValue;
+      
+      // Update display
+      updateDiffModeDisplay(newValue);
       
       // Update strike table immediately (local only)
       if (window.StrikeTable && window.StrikeTable.setDiffMode) {
-        window.StrikeTable.setDiffMode(value);
+        window.StrikeTable.setDiffMode(newValue);
       }
     });
+  }
+
+  // Function to update the diff mode display
+  function updateDiffModeDisplay(isDiffMode) {
+    const diffText = document.getElementById('diffText');
+    const priceText = document.getElementById('priceText');
+    
+    if (diffText && priceText) {
+      if (isDiffMode) {
+        diffText.style.opacity = '1';
+        priceText.style.opacity = '0.2';
+      } else {
+        diffText.style.opacity = '0.2';
+        priceText.style.opacity = '1';
+      }
+    }
   }
 
   // Trade Strategy Picker
@@ -1307,7 +1438,7 @@ document.addEventListener('DOMContentLoaded', () => {
             />
             <label style="font-size: 12px; user-select: none; color: white; display: flex; align-items: center; gap: 6px; margin: 0;">
               AUTO STOP
-              <input type="checkbox" id="autoStopSupervisorToggle" />
+              <div id="autoStopSupervisorToggle"></div>
             </label>
           </div>
         </div>
