@@ -17,13 +17,7 @@ struct WebView: UIViewRepresentable {
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         
         let webView = WKWebView(frame: .zero, configuration: configuration)
-        let dataStore = WKWebsiteDataStore.default()
-        let types = WKWebsiteDataStore.allWebsiteDataTypes()
-        dataStore.fetchDataRecords(ofTypes: types) { records in
-            dataStore.removeData(ofTypes: types, for: records) {
-                print("✅ Cleared web cache")
-            }
-        }
+        // REMOVED: Cache clearing code that was wiping authentication cookies
         webView.navigationDelegate = context.coordinator
         webView.scrollView.bounces = false
         webView.scrollView.isScrollEnabled = false
@@ -35,7 +29,8 @@ struct WebView: UIViewRepresentable {
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
         var request = URLRequest(url: url)
-        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        // CHANGED: Allow caching to preserve authentication cookies
+        request.cachePolicy = .useProtocolCachePolicy
         uiView.load(request)
     }
 
