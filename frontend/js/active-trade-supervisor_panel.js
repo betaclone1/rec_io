@@ -44,9 +44,9 @@ async function waitForPortConfig() {
     while (attempts < maxAttempts) {
         try {
             // Check if port configuration is loaded
-            if (typeof getActiveTradeSupervisorUrl === 'function') {
+            if (typeof getMainAppUrl === 'function') {
                 // Test if the function works
-                getActiveTradeSupervisorUrl('/test');
+                getMainAppUrl('/test');
                 return true;
             }
         } catch (error) {
@@ -81,15 +81,8 @@ function initializeActiveTradeSupervisorTable() {
 async function fetchAndRenderActiveTradeSupervisorTrades() {
   try {
     
-    // Get the active trades from the main app (which proxies to the active trade supervisor)
-    let activeTradeSupervisorUrl;
-    try {
-      activeTradeSupervisorUrl = getMainAppUrl('/api/active_trades');
-    } catch (error) {
-      console.error('[ACTIVE TRADE SUPERVISOR] Port configuration error:', error);
-      // Fallback to main app URL
-      activeTradeSupervisorUrl = `http://${window.location.hostname}:3000/api/active_trades`;
-    }
+    // Get the active trades using direct API call like other working panels
+    const activeTradeSupervisorUrl = window.location.origin + '/api/active_trades';
     
     // Fetch active trades from the supervisor service
     const response = await fetch(activeTradeSupervisorUrl, { cache: 'no-store' });
@@ -472,27 +465,30 @@ function startActiveTradeSupervisorRefresh() {
 // === INITIALIZATION ===
 
 // Initialize when DOM is ready
-document.addEventListener('DOMContentLoaded', async () => {
-  
-      // Wait for port configuration to load
-    const portConfigReady = await waitForPortConfig();
+document.addEventListener('DOMContentLoaded', function() {
+  setTimeout(() => {
+    console.log('[ACTIVE TRADE SUPERVISOR] DOM ready, initializing...');
     
+    // Check if the table exists
+    const table = document.querySelector('#activeTradeSupervisorTable');
+    if (!table) {
+      console.error('[ACTIVE TRADE SUPERVISOR] Table not found');
+      return;
+    }
+    
+    // Initialize the table
     initializeActiveTradeSupervisorTable();
+    
+    // Start the refresh loop
     startActiveTradeSupervisorRefresh();
+    
+    console.log('[ACTIVE TRADE SUPERVISOR] Initialization complete');
+  }, 500);
 });
 
-// Also try immediate initialization if DOM is already ready
-if (document.readyState === 'loading') {
-  // DOM still loading, waiting for DOMContentLoaded...
-} else {
-  // DOM already ready, initializing immediately...
-  
-  // Wait for port configuration to load
-  waitForPortConfig().then(() => {
-    initializeActiveTradeSupervisorTable();
-    startActiveTradeSupervisorRefresh();
-  });
-}
+// Export functions for global access
+window.fetchAndRenderActiveTradeSupervisorTrades = fetchAndRenderActiveTradeSupervisorTrades;
+window.closeActiveTrade = closeActiveTrade;
 
 // === Spanner Row Helper for Active Trade Supervisor ===
 function createActiveTradeSupervisorSpannerRow(currentPrice) {
@@ -527,8 +523,4 @@ function createActiveTradeSupervisorSpannerRow(currentPrice) {
   spannerTd.innerHTML = `<span style=\"margin:0 12px;display:inline-block;\">${arrowBlock}</span>Current Price: $${Math.round(currentPrice).toLocaleString()}<span style=\"margin:0 12px;display:inline-block;\">${arrowBlock}</span>`;
   spannerRow.appendChild(spannerTd);
   return spannerRow;
-}
-
-// Export functions for global access
-window.fetchAndRenderActiveTradeSupervisorTrades = fetchAndRenderActiveTradeSupervisorTrades;
-window.closeActiveTrade = closeActiveTrade; 
+} 

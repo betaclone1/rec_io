@@ -9,8 +9,8 @@ async function loadPortConfig() {
         const response = await fetch(window.location.origin + '/api/ports');
         if (response.ok) {
             const config = await response.json();
-            // Always use the browser's hostname to ensure domain access works correctly
-            const host = window.location.hostname;
+            // Use the server hostname from the config, not the browser hostname
+            const host = config.host || window.location.hostname;
             serviceConfig = {
                 mainApp: { port: config.ports.main_app, host: host },
                 tradeManager: { port: config.ports.trade_manager, host: host },
@@ -39,26 +39,26 @@ function getMainAppUrl(endpoint = '') {
     if (!serviceConfig.mainApp) {
         throw new Error('Port configuration not loaded - system cannot function');
     }
-    return `http://${serviceConfig.mainApp.host}:${serviceConfig.mainApp.port}${endpoint}`;
+    return `${window.location.protocol}//${serviceConfig.mainApp.host}:${serviceConfig.mainApp.port}${endpoint}`;
 }
 
 function getTradeManagerUrl(endpoint = '') {
     if (!serviceConfig.tradeManager) {
         throw new Error('Port configuration not loaded - system cannot function');
     }
-    return `http://${serviceConfig.tradeManager.host}:${serviceConfig.tradeManager.port}${endpoint}`;
+    return `${window.location.protocol}//${serviceConfig.tradeManager.host}:${serviceConfig.tradeManager.port}${endpoint}`;
 }
 
 function getTradeExecutorUrl(endpoint = '') {
     if (!serviceConfig.tradeExecutor) {
         throw new Error('Port configuration not loaded - system cannot function');
     }
-    return `http://${serviceConfig.tradeExecutor.host}:${serviceConfig.tradeExecutor.port}${endpoint}`;
+    return `${window.location.protocol}//${serviceConfig.tradeExecutor.host}:${serviceConfig.tradeExecutor.port}${endpoint}`;
 }
 
 function getActiveTradeSupervisorUrl(endpoint = '') {
     if (!serviceConfig.activeTradeSupervisor) {
         throw new Error('Port configuration not loaded - system cannot function');
     }
-    return `http://${serviceConfig.activeTradeSupervisor.host}:${serviceConfig.activeTradeSupervisor.port}${endpoint}`;
+    return `${window.location.protocol}//${serviceConfig.activeTradeSupervisor.host}:${serviceConfig.activeTradeSupervisor.port}${endpoint}`;
 }

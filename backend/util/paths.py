@@ -99,11 +99,7 @@ def ensure_data_dirs():
         get_price_history_dir(),
         get_btc_price_history_dir(),
         get_logs_dir(),
-        # User-specific directories
-        get_accounts_data_dir(),
-        get_trade_history_dir(),
-        get_active_trades_dir(),
-        # User credentials directories
+        # User credentials directories (only these are still needed)
         os.path.join(get_data_dir(), "users", "user_0001", "credentials", "kalshi-credentials", "prod"),
         os.path.join(get_data_dir(), "users", "user_0001", "credentials", "kalshi-credentials", "demo"),
     ]

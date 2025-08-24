@@ -306,14 +306,7 @@
       z-index: 1;
     }
     
-    /* Rotate the arrow icon when sidebar is collapsed */
-    .sidebar.collapsed .sidebar-toggle .nav-icon svg {
-      transform: rotate(180deg);
-      transition: transform 0.3s;
-    }
-    .sidebar-toggle .nav-icon svg {
-      transition: transform 0.3s;
-    }
+
     
     /* Prevent sound icon from rotating and center it */
     #soundToggle .nav-icon img {
@@ -331,24 +324,29 @@
       min-height: 0;
     }
     
-    /* System Health Tooltip */
+    /* System Health Tooltip - Updated to match sidebar tooltips */
     .system-health-tooltip {
       position: absolute;
       left: 100%;
       top: 50%;
       transform: translateY(-50%);
-      margin-left: 10px;
-      background: #323c4e;
-      border: 1px solid #4d586f;
-      border-radius: 6px;
-      padding: 8px 12px;
-      min-width: 120px;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+      margin-left: 8px;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 4px;
+      padding: 6px 10px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
       opacity: 0;
       visibility: hidden;
-      transition: opacity 0.2s ease;
+      transition: opacity 0.15s ease;
       z-index: 1000;
       pointer-events: none;
+      white-space: nowrap;
+      font-size: 13px;
+      color: #fff;
+      font-weight: 500;
+      min-width: auto;
+      width: fit-content;
     }
     
     #systemMenuItem:hover .system-health-tooltip {
@@ -356,33 +354,82 @@
       visibility: visible;
     }
     
-    .tooltip-content {
-      font-size: 11px;
-      text-align: center;
+    /* Collapsed Sidebar Hover Labels - Kraken Style */
+    .sidebar-tooltip {
+      position: absolute;
+      left: 100%;
+      top: 50%;
+      transform: translateY(-50%);
+      margin-left: 8px;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 4px;
+      padding: 6px 10px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.15s ease;
+      z-index: 1000;
+      pointer-events: none;
+      white-space: nowrap;
+      font-size: 13px;
+      color: #fff;
+      font-weight: 500;
+      min-width: auto;
+      width: fit-content;
     }
     
+    .sidebar.collapsed .nav-item,
+    .sidebar.collapsed .sidebar-toggle,
+    .sidebar.collapsed .sidebar-header {
+      position: relative;
+    }
+    
+
+    
     .health-status {
-      font-weight: 600;
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-size: 10px;
-      text-transform: uppercase;
+      font-weight: 500;
+      font-size: 13px;
       letter-spacing: 0.5px;
     }
     
     .health-status.healthy {
-      background: rgba(34, 197, 94, 0.2);
+      color: #22c55e;
+    }
+    
+    .sidebar.collapsed .health-status.healthy {
+      color: #fff !important;
+    }
+    
+    .sidebar.collapsed .health-status.healthy::after {
+      content: ' Live';
       color: #22c55e;
     }
     
     .health-status.unhealthy {
-      background: rgba(239, 68, 68, 0.2);
+      color: #ef4444;
+    }
+    
+    .sidebar.collapsed .health-status.unhealthy {
+      color: #fff !important;
+    }
+    
+    .sidebar.collapsed .health-status.unhealthy::after {
+      content: ' Unhealthy';
       color: #ef4444;
     }
     
     .health-status.offline {
-      background: #dc2626;
-      color: white;
+      color: #dc2626;
+    }
+    
+    .sidebar.collapsed .health-status.offline {
+      color: #fff !important;
+    }
+    
+    .sidebar.collapsed .health-status.offline::after {
+      content: ' Offline';
+      color: #dc2626;
     }
     
 
@@ -425,13 +472,19 @@
     <!-- Sidebar -->
     <nav class="sidebar collapsed" id="sidebar">
       <!-- Logo Header -->
-      <div class="sidebar-header">
+      <div class="sidebar-header" data-tooltip="rec.io">
         <img src="/images/rec_logo_1.png" alt="REC.IO" class="sidebar-logo">
         <span class="nav-label" style="font-size: 24px; font-weight: normal; font-family: 'Tektur', sans-serif; letter-spacing: 0.05em; padding-left: 7px;">rec.io</span>
       </div>
       
       <!-- Navigation Menu -->
       <div class="sidebar-nav">
+        <a class="nav-item" data-page="dashboard" data-tooltip="Dashboard">
+          <span class="nav-icon">
+            <img src="/images/icons/dashboard_icon.png" alt="Dashboard" style="width: 25px; height: 25px; object-fit: contain;">
+          </span>
+          <span class="nav-label">Dashboard</span>
+        </a>
         <a class="nav-item active" data-page="trade-monitor" data-tooltip="Trade Monitor">
           <span class="nav-icon">
             <img src="/images/icons/trade_monitor_icon.png" alt="Trade Monitor" style="width: 25px; height: 25px; object-fit: contain;">
@@ -440,15 +493,27 @@
         </a>
         <a class="nav-item" data-page="history" data-tooltip="History">
           <span class="nav-icon">
-            <img src="/images/icons/trade_history.png" alt="History" style="width: 30px; height: 30px; object-fit: contain;">
+            <img src="/images/icons/trade_history.png" alt="History" style="width: 25px; height: 25px; object-fit: contain;">
           </span>
           <span class="nav-label">History</span>
         </a>
         <a class="nav-item" data-page="account" data-tooltip="Account">
           <span class="nav-icon">
-            <img src="/images/icons/account_manager_icon.png" alt="Account" style="width: 30px; height: 30px; object-fit: contain;">
+            <img src="/images/icons/account_manager_icon.png" alt="Account" style="width: 25px; height: 25px; object-fit: contain;">
           </span>
           <span class="nav-label">Account</span>
+        </a>
+        <a class="nav-item" data-page="backtester" data-tooltip="Backtester">
+          <span class="nav-icon">
+            <img src="/images/icons/backtester_icon.png" alt="Backtester" style="width: 25px; height: 25px; object-fit: contain;">
+          </span>
+          <span class="nav-label">Backtester</span>
+        </a>
+        <a class="nav-item" data-page="strategy-lab" data-tooltip="Strategy Lab">
+          <span class="nav-icon">
+            <img src="/images/icons/strategy_lab.png" alt="Strategy Lab" style="width: 25px; height: 25px; object-fit: contain;">
+          </span>
+          <span class="nav-label">Strategy Lab</span>
         </a>
       </div>
       
@@ -460,35 +525,39 @@
           </span>
           <span class="nav-label" id="userDisplay">User ID</span>
         </a>
-        <a class="nav-item" data-page="system" data-tooltip="System" id="systemMenuItem">
+        <a class="nav-item" data-page="system" id="systemMenuItem">
           <span class="nav-icon">
             <img src="/images/icons/system_icon_HEALTHY.png" alt="System" style="width: 25px; height: 25px; object-fit: contain;">
           </span>
           <span class="nav-label">System</span>
           <div class="system-health-tooltip" id="systemHealthTooltip">
-            <div class="tooltip-content">
-              <div class="health-status">Loading...</div>
-            </div>
+            <div class="health-status">Loading...</div>
           </div>
         </a>
       </div>
       
       <!-- Sound Toggle -->
-      <button class="sidebar-toggle" id="soundToggle" data-tooltip="Sound">
+      <button class="sidebar-toggle" id="soundToggle" data-tooltip="Sound ON">
         <span class="nav-icon" aria-hidden="true">
-          <img id="soundIcon" src="/images/icons/sound_on_icon.png" alt="Sound" style="width: 20px; height: 20px; object-fit: contain;">
+          <img id="soundIcon" src="/images/icons/sound_on_icon.png" alt="Sound" style="width: 25px; height: 25px; object-fit: contain;">
         </span>
         <span class="toggle-label">Sound ON</span>
       </button>
       
+      <!-- Help Button -->
+      <a class="nav-item" data-page="help" data-tooltip="Help">
+        <span class="nav-icon">
+          <img src="/images/icons/help.png" alt="Help" style="width: 25px; height: 25px; object-fit: contain;">
+        </span>
+        <span class="nav-label">Help</span>
+      </a>
+      
       <!-- Collapse/Expand Button -->
       <button class="sidebar-toggle" id="sidebarToggle" data-tooltip="Expand">
         <span class="nav-icon" aria-hidden="true">
-          <svg width="32" height="32" viewBox="0 0 32 32" fill="white" xmlns="http://www.w3.org/2000/svg">
-            <polygon points="20,8 12,16 20,24" />
-          </svg>
+          <img id="sidebarToggleIcon" src="/images/icons/sidebar_expand.png" alt="Expand" style="width: 25px; height: 25px; object-fit: contain;">
         </span>
-        <span class="toggle-label">Collapse</span>
+        <span class="toggle-label">Expand</span>
       </button>
       
     </nav>
@@ -498,9 +567,13 @@
     <!-- Main Content Area -->
     <div class="main-content">
       <!-- Preloaded iframes for each tab -->
+      <iframe id="dashboardFrame" class="content-frame" src="/tabs/dashboard.html"></iframe>
       <iframe id="tradeMonitorFrame" class="content-frame active" src="/tabs/trade_monitor.html"></iframe>
       <iframe id="tradeHistoryFrame" class="content-frame" src="/tabs/trade_history.html"></iframe>
       <iframe id="accountManagerFrame" class="content-frame" src="/tabs/account_manager.html"></iframe>
+      <iframe id="backtesterFrame" class="content-frame" src="/tabs/backtester.html"></iframe>
+      <iframe id="strategyLabFrame" class="content-frame" src="/tabs/strategy_lab.html"></iframe>
+      <iframe id="helpFrame" class="content-frame" src="/tabs/help.html"></iframe>
       <iframe id="settingsFrame" class="content-frame" src="/tabs/settings.html"></iframe>
       <iframe id="userSettingsFrame" class="content-frame" src="/tabs/user_settings.html"></iframe>
       <iframe id="systemFrame" class="content-frame" src="/tabs/system.html"></iframe>
@@ -530,9 +603,11 @@
       if (soundEnabled) {
         soundLabel.textContent = 'Sound ON';
         soundIcon.src = '/images/icons/sound_on_icon.png';
+        soundToggle.setAttribute('data-tooltip', 'Sound ON');
       } else {
         soundLabel.textContent = 'Sound OFF';
         soundIcon.src = '/images/icons/sound_off_icon.png';
+        soundToggle.setAttribute('data-tooltip', 'Sound OFF');
       }
     }
     
@@ -557,9 +632,13 @@
     
     // Tab configuration
     const tabConfig = {
+      'dashboard': 'dashboardFrame',
       'trade-monitor': 'tradeMonitorFrame',
       'history': 'tradeHistoryFrame', 
       'account': 'accountManagerFrame',
+      'backtester': 'backtesterFrame',
+      'strategy-lab': 'strategyLabFrame',
+      'help': 'helpFrame',
       'settings': 'settingsFrame',
       'user-settings': 'userSettingsFrame',
       'system': 'systemFrame'
@@ -567,7 +646,26 @@
     
     // Toggle sidebar collapse/expand
     sidebarToggle.addEventListener('click', () => {
-      sidebar.classList.toggle('collapsed');
+      const isCollapsed = sidebar.classList.contains('collapsed');
+      const toggleIcon = document.getElementById('sidebarToggleIcon');
+      const toggleLabel = sidebarToggle.querySelector('.toggle-label');
+      
+      if (isCollapsed) {
+        // Expanding - show collapse icon
+        sidebar.classList.remove('collapsed');
+        toggleIcon.src = '/images/icons/sidebar_collapse.png';
+        toggleLabel.textContent = 'Collapse';
+        sidebarToggle.setAttribute('data-tooltip', 'Collapse');
+      } else {
+        // Collapsing - show expand icon
+        sidebar.classList.add('collapsed');
+        toggleIcon.src = '/images/icons/sidebar_expand.png';
+        toggleLabel.textContent = 'Expand';
+        sidebarToggle.setAttribute('data-tooltip', 'Expand');
+      }
+      
+      // Update system tooltip text based on new sidebar state
+      updateSystemTooltipForSidebarState();
     });
     
     // Navigation functionality
@@ -622,6 +720,9 @@
 
       // Initialize sound toggle
       initializeSoundToggle();
+      
+      // Initialize collapsed sidebar tooltips
+      initializeCollapsedSidebarTooltips();
     });
     
     // Load user information and display in sidebar
@@ -705,25 +806,31 @@
       if (!tooltip) return;
       
       const statusElement = tooltip.querySelector('.health-status');
+      const sidebar = document.getElementById('sidebar');
+      const isCollapsed = sidebar.classList.contains('collapsed');
       
       if (data.error) {
-        statusElement.textContent = 'Offline';
+        const statusText = isCollapsed ? 'System:' : 'Offline';
+        statusElement.textContent = statusText;
         statusElement.className = 'health-status offline';
         return;
       }
       
       // Determine status
       let status = 'offline';
+      let statusText = '';
+      
       if (data.overall_status === 'healthy') {
         status = 'healthy';
-        statusElement.textContent = 'LIVE';
+        statusText = isCollapsed ? 'System:' : 'Live';
       } else if (data.overall_status === 'degraded' || data.overall_status === 'unhealthy') {
         status = 'unhealthy';
-        statusElement.textContent = 'Unhealthy';
+        statusText = isCollapsed ? 'System:' : 'Unhealthy';
       } else {
-        statusElement.textContent = 'Offline';
+        statusText = isCollapsed ? 'System:' : 'Offline';
       }
       
+      statusElement.textContent = statusText;
       statusElement.className = `health-status ${status}`;
     }
     
@@ -781,6 +888,99 @@
         }
         systemIcon.src = iconPath;
       }
+    }
+    
+    // Update system tooltip text when sidebar state changes
+    function updateSystemTooltipForSidebarState() {
+      const tooltip = document.getElementById('systemHealthTooltip');
+      if (!tooltip) return;
+      
+      const statusElement = tooltip.querySelector('.health-status');
+      if (!statusElement) return;
+      
+      const sidebar = document.getElementById('sidebar');
+      const isCollapsed = sidebar.classList.contains('collapsed');
+      
+      // Get current status from the element's class
+      let currentStatus = 'offline';
+      if (statusElement.classList.contains('healthy')) {
+        currentStatus = 'healthy';
+      } else if (statusElement.classList.contains('unhealthy')) {
+        currentStatus = 'unhealthy';
+      }
+      
+      // Update text based on current status and sidebar state
+      let statusText = '';
+      switch (currentStatus) {
+        case 'healthy':
+          statusText = isCollapsed ? 'System:' : 'Live';
+          break;
+        case 'unhealthy':
+          statusText = isCollapsed ? 'System:' : 'Unhealthy';
+          break;
+        case 'offline':
+        default:
+          statusText = isCollapsed ? 'System:' : 'Offline';
+          break;
+      }
+      
+      statusElement.textContent = statusText;
+    }
+    
+    // Collapsed Sidebar Tooltip Functions
+    function initializeCollapsedSidebarTooltips() {
+      const sidebar = document.getElementById('sidebar');
+      const tooltipElements = sidebar.querySelectorAll('[data-tooltip]');
+      
+      tooltipElements.forEach(element => {
+        element.addEventListener('mouseenter', showTooltip);
+        element.addEventListener('mouseleave', hideTooltip);
+      });
+    }
+    
+    function showTooltip(event) {
+      const sidebar = document.getElementById('sidebar');
+      if (!sidebar.classList.contains('collapsed')) return;
+      
+      const tooltipText = event.target.getAttribute('data-tooltip');
+      if (!tooltipText) return;
+      
+      // Remove any existing tooltip
+      hideTooltip();
+      
+      // Create tooltip element
+      const tooltip = document.createElement('div');
+      tooltip.className = 'sidebar-tooltip';
+      tooltip.textContent = tooltipText;
+      
+      // Position tooltip
+      const rect = event.target.getBoundingClientRect();
+      tooltip.style.left = rect.right + 8 + 'px';
+      tooltip.style.top = rect.top + rect.height / 2 + 'px';
+      tooltip.style.transform = 'translateY(-50%)';
+      
+      // Add to body and show
+      document.body.appendChild(tooltip);
+      setTimeout(() => {
+        tooltip.style.opacity = '1';
+        tooltip.style.visibility = 'visible';
+      }, 10);
+      
+      // Store reference for cleanup
+      event.target._tooltip = tooltip;
+    }
+    
+    function hideTooltip(event) {
+      const tooltips = document.querySelectorAll('.sidebar-tooltip');
+      tooltips.forEach(tooltip => {
+        tooltip.style.opacity = '0';
+        tooltip.style.visibility = 'hidden';
+        setTimeout(() => {
+          if (tooltip.parentNode) {
+            tooltip.parentNode.removeChild(tooltip);
+          }
+        }, 150);
+      });
     }
     
 

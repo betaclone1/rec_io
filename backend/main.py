@@ -367,7 +367,7 @@ def get_trade_history_preferences_postgresql():
                        contract_9pm, contract_10pm, contract_11pm,
                        symbol_btc, symbol_eth, symbol_spy, symbol_ndx, symbol_usd_eur,
                        strategy_hourly_htc, strategy_momentum_scalp, strategy_test,
-                       sort_key, sort_asc, page_size, last_search_timestamp
+                       analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp
                 FROM users.trade_history_preferences_0001 WHERE id = 1
             """)
             result = cursor.fetchone()
@@ -403,10 +403,11 @@ def get_trade_history_preferences_postgresql():
                     "strategy_hourly_htc": result[25],
                     "strategy_momentum_scalp": result[26],
                     "strategy_test": result[27],
-                    "sort_key": result[28],
-                    "sort_asc": result[29],
-                    "page_size": result[30],
-                    "last_search_timestamp": result[31]
+                    "analysis_interval": result[28],
+                    "sort_key": result[29],
+                    "sort_asc": result[30],
+                    "page_size": result[31],
+                    "last_search_timestamp": result[32]
                 }
             else:
                 return {
@@ -438,6 +439,7 @@ def get_trade_history_preferences_postgresql():
                     "strategy_hourly_htc": True,
                     "strategy_momentum_scalp": True,
                     "strategy_test": True,
+                    "analysis_interval": "daily",
                     "sort_key": None,
                     "sort_asc": True,
                     "page_size": 50,
@@ -474,6 +476,7 @@ def get_trade_history_preferences_postgresql():
             "strategy_hourly_htc": True,
             "strategy_momentum_scalp": True,
             "strategy_test": True,
+            "analysis_interval": "daily",
             "sort_key": None,
             "sort_asc": True,
             "page_size": 50,
@@ -855,9 +858,19 @@ async def health_check():
 
 # Port information endpoint
 @app.get("/api/ports")
-async def get_ports():
+async def get_ports(request: Request):
     """Get all port assignments from centralized system."""
-    return get_port_info()
+    port_info = get_port_info()
+    
+    # Get the current request's protocol
+    protocol = request.headers.get("x-forwarded-proto", "http")
+    if protocol == "https":
+        # Update service URLs to use HTTPS
+        host = port_info["host"]
+        ports = port_info["ports"]
+        port_info["service_urls"] = {name: f"https://{host}:{port}" for name, port in ports.items()}
+    
+    return port_info
 
 # Test endpoint
 @app.get("/api/test-health")
@@ -2556,6 +2569,7 @@ def load_trade_history_preferences():
             "strategy_hourly_htc": True,
             "strategy_momentum_scalp": True,
             "strategy_test": True,
+            "analysis_interval": "daily",
             "sort_key": None,
             "sort_asc": True,
             "page_size": 50,
@@ -2600,6 +2614,10 @@ def save_trade_history_preferences(preferences):
         for field in strategy_fields:
             if field in preferences:
                 update_data[field] = bool(preferences[field])
+        
+        # Analysis interval
+        if "analysis_interval" in preferences:
+            update_data["analysis_interval"] = str(preferences["analysis_interval"])
         
         if "sort_key" in preferences:
             update_data["sort_key"] = preferences["sort_key"]
@@ -3999,11 +4017,14 @@ async def execute_command(request: dict):
                 return {"success": False, "error": "Invalid supervisorctl command"}
         else:
             # Execute other commands normally
+            # Use longer timeout for backup operations
+            timeout = 300 if 'package_user_data.sh' in command else 30
+            
             result = subprocess.run(
                 command.split(),
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=timeout,
                 env=env,
                 cwd=project_dir
             )
@@ -4014,7 +4035,7 @@ async def execute_command(request: dict):
             return {"success": False, "error": f"Command failed with return code {result.returncode}", "output": result.stderr}
             
     except subprocess.TimeoutExpired:
-        return {"success": False, "error": "Command timed out after 30 seconds"}
+        return {"success": False, "error": "Command timed out after 5 minutes"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -4121,6 +4142,136 @@ async def get_log_stream(request: dict):
         media_type="text/plain",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
     )
+
+@app.post("/api/admin/create-backup")
+async def create_backup():
+    """Create a database backup using the package_user_data.sh script."""
+    try:
+        import subprocess
+        import os
+        from backend.util.paths import get_dynamic_project_root
+        
+        # Get project directory
+        project_dir = get_dynamic_project_root()
+        
+        # Set up environment with proper PATH
+        env = os.environ.copy()
+        env['PATH'] = '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin'
+        
+        # Execute the backup script
+        result = subprocess.run(
+            ['bash', 'scripts/package_user_data.sh'],
+            capture_output=True,
+            text=True,
+            timeout=120,  # 2 minutes timeout for backup
+            env=env,
+            cwd=project_dir
+        )
+        
+        if result.returncode == 0:
+            # Parse the output to find the backup file
+            output = result.stdout
+            backup_match = output.find('user_data_package_')
+            if backup_match != -1:
+                # Extract the backup filename from the output
+                lines = output.split('\n')
+                for line in lines:
+                    if 'user_data_package_' in line and '.tar.gz' in line:
+                        backup_file = line.strip()
+                        if backup_file.endswith('.tar.gz'):
+                            backup_path = os.path.join(project_dir, 'backup', backup_file)
+                            if os.path.exists(backup_path):
+                                return {
+                                    "success": True, 
+                                    "output": output,
+                                    "backup_file": backup_file,
+                                    "backup_path": backup_path
+                                }
+            
+            return {"success": True, "output": output}
+        else:
+            return {
+                "success": False, 
+                "error": f"Backup script failed with return code {result.returncode}",
+                "output": result.stderr
+            }
+            
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "Backup timed out after 2 minutes"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/admin/download-file")
+async def download_file(request: dict):
+    """Download a file from the server."""
+    try:
+        import os
+        from fastapi.responses import FileResponse
+        from pathlib import Path
+        
+        file_path = request.get("file_path", "")
+        if not file_path:
+            return {"success": False, "error": "No file path provided"}
+        
+        # Security check: ensure the file is within the project directory
+        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        file_path = os.path.abspath(file_path)
+        
+        if not file_path.startswith(project_dir):
+            return {"success": False, "error": "Access denied: File path outside project directory"}
+        
+        if not os.path.exists(file_path):
+            return {"success": False, "error": "File not found"}
+        
+        if not os.path.isfile(file_path):
+            return {"success": False, "error": "Path is not a file"}
+        
+        # Return the file for download
+        return FileResponse(
+            path=file_path,
+            filename=os.path.basename(file_path),
+            media_type='application/octet-stream'
+        )
+        
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/admin/download-file")
+async def download_file_get(file: str):
+    """Download a file from the server via GET request."""
+    try:
+        import os
+        from fastapi.responses import FileResponse
+        from pathlib import Path
+        
+        if not file:
+            return {"success": False, "error": "No file name provided"}
+        
+        # Security check: ensure the file is within the backup directory
+        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        backup_dir = os.path.join(project_dir, 'backup')
+        file_path = os.path.join(backup_dir, file)
+        file_path = os.path.abspath(file_path)
+        
+        # Ensure the file is within the backup directory
+        if not file_path.startswith(backup_dir):
+            return {"success": False, "error": "Access denied: File path outside backup directory"}
+        
+        if not os.path.exists(file_path):
+            return {"success": False, "error": "File not found"}
+        
+        if not os.path.isfile(file_path):
+            return {"success": False, "error": "Path is not a file"}
+        
+        # Return the file for download
+        return FileResponse(
+            path=file_path,
+            filename=file,
+            media_type='application/octet-stream'
+        )
+        
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 # Main entry point
 if __name__ == "__main__":

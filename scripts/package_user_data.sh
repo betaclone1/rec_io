@@ -59,7 +59,7 @@ create_package_dir() {
 # Backup database
 backup_database() {
     local package_dir="$1"
-    print_status "Creating database backup..."
+    print_status "Creating database backup (type: $BACKUP_TYPE)..."
     
     # Load environment variables
     if [ -f "$PROJECT_ROOT/.env" ]; then
@@ -72,63 +72,63 @@ backup_database() {
     export POSTGRES_DB=${POSTGRES_DB:-rec_io_db}
     export POSTGRES_USER=${POSTGRES_USER:-rec_io_user}
     export POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-}
+    export PGPASSWORD="rec_io_password"
     
     if [ -n "$POSTGRES_PASSWORD" ]; then
         export PGPASSWORD="$POSTGRES_PASSWORD"
     fi
     
-    # Create database backup
+    # Create database backup based on type
     DB_BACKUP_FILE="$package_dir/database_backup.sql"
-    if pg_dump -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --create --verbose > "$DB_BACKUP_FILE"; then
-        print_success "Database backup created: $DB_BACKUP_FILE"
+    
+    if [[ "$BACKUP_TYPE" == "user" ]]; then
+        # User data only - backup only the users schema
+        if pg_dump -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --create --schema=users > "$DB_BACKUP_FILE"; then
+            print_success "User schema backup created: $DB_BACKUP_FILE"
+        else
+            print_error "User schema backup failed"
+            return 1
+        fi
     else
-        print_error "Database backup failed"
-        return 1
+        # Full backup - entire database
+        if pg_dump -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --create > "$DB_BACKUP_FILE"; then
+            print_success "Full database backup created: $DB_BACKUP_FILE"
+        else
+            print_error "Full database backup failed"
+            return 1
+        fi
     fi
 }
 
-# Backup user data and credentials
+# Backup user credentials only
 backup_user_data() {
     local package_dir="$1"
-    print_status "Backing up user data and credentials..."
+    print_status "Backing up user credentials..."
     
     # Create user data directory
     USER_DATA_DIR="$package_dir/user_data"
     mkdir -p "$USER_DATA_DIR"
     
-    # Copy user data structure (excluding credentials and personal info)
+    # Copy only credentials (no other user data needed)
     if [ -d "$PROJECT_ROOT/backend/data/users" ]; then
-        # Create user data directory structure without sensitive files
+        # Create user data directory structure
         mkdir -p "$USER_DATA_DIR/users"
         
-        # Copy only non-sensitive user data (trade history, accounts, etc.)
+        # Copy only credentials for each user
         for user_dir in "$PROJECT_ROOT/backend/data/users"/*; do
             if [ -d "$user_dir" ]; then
                 user_name=$(basename "$user_dir")
                 mkdir -p "$USER_DATA_DIR/users/$user_name"
                 
-                # Copy trade history (if exists)
-                if [ -d "$user_dir/trade_history" ]; then
-                    cp -r "$user_dir/trade_history" "$USER_DATA_DIR/users/$user_name/"
+                # Copy only credentials directory (if exists)
+                if [ -d "$user_dir/credentials" ]; then
+                    cp -r "$user_dir/credentials" "$USER_DATA_DIR/users/$user_name/"
+                    print_success "Credentials backed up for $user_name"
+                else
+                    print_warning "No credentials found for $user_name"
                 fi
                 
-                # Copy accounts data (if exists, excluding credentials)
-                if [ -d "$user_dir/accounts" ]; then
-                    cp -r "$user_dir/accounts" "$USER_DATA_DIR/users/$user_name/"
-                fi
-                
-                # Copy active trades (if exists)
-                if [ -d "$user_dir/active_trades" ]; then
-                    cp -r "$user_dir/active_trades" "$USER_DATA_DIR/users/$user_name/"
-                fi
-                
-                # Copy monitors (if exists)
-                if [ -d "$user_dir/monitors" ]; then
-                    cp -r "$user_dir/monitors" "$USER_DATA_DIR/users/$user_name/"
-                fi
-                
-                # DO NOT copy credentials, auth_tokens, device_tokens, or user_info.json
-                print_success "User data backed up (excluding credentials and personal info)"
+                # DO NOT copy: trade_history, accounts, active_trades, monitors, auth_tokens, device_tokens, or user_info.json
             fi
         done
     else
@@ -156,11 +156,11 @@ This package contains your user data for deployment to a new machine.
 
 ## Contents
 - `database_backup.sql` - Complete database with all your data
-- `user_data/` - Your trade history and account data (credentials excluded for security)
+- `user_data/` - Your credentials only (all other data is in the database)
 - `.env` - Environment configuration
 
-## Important Security Note
-**Credentials are NOT included in this package for security reasons.** You must manually add your credentials after deployment.
+## Important Note
+**Only credentials are included in user_data.** All trade history, accounts, and other data is stored in the database and will be restored automatically.
 
 ## Deployment Instructions
 
@@ -189,6 +189,40 @@ EOF
     print_success "Deployment instructions created"
 }
 
+# Clean up old backup files (keep only 2 most recent)
+cleanup_old_backups() {
+    print_status "Cleaning up old backup files..."
+    
+    cd "$PROJECT_ROOT/backup"
+    
+    # Find all .tar.gz backup files, sort by modification time (newest first), keep only 2 most recent
+    if ls user_data_package_*.tar.gz 1> /dev/null 2>&1; then
+        # Get list of backup files sorted by modification time (newest first)
+        BACKUP_FILES=$(ls -t user_data_package_*.tar.gz 2>/dev/null | head -n 2)
+        ALL_BACKUP_FILES=$(ls user_data_package_*.tar.gz 2>/dev/null)
+        
+        # Count files to delete
+        TOTAL_FILES=$(echo "$ALL_BACKUP_FILES" | wc -l)
+        KEEP_FILES=$(echo "$BACKUP_FILES" | wc -l)
+        DELETE_COUNT=$((TOTAL_FILES - KEEP_FILES))
+        
+        if [ $DELETE_COUNT -gt 0 ]; then
+            # Delete files not in the keep list
+            for file in $ALL_BACKUP_FILES; do
+                if ! echo "$BACKUP_FILES" | grep -q "$file"; then
+                    rm -f "$file"
+                    print_status "Deleted old backup: $file"
+                fi
+            done
+            print_success "Kept $KEEP_FILES most recent backup files, deleted $DELETE_COUNT old files"
+        else
+            print_status "No old backup files to delete"
+        fi
+    else
+        print_status "No existing backup files found"
+    fi
+}
+
 # Create compressed package
 create_compressed_package() {
     local package_dir="$1"
@@ -199,7 +233,11 @@ create_compressed_package() {
     
     if tar -czf "${PACKAGE_NAME}.tar.gz" "$PACKAGE_NAME"; then
         print_success "Compressed package created: ${PACKAGE_NAME}.tar.gz"
+        rm -rf "$PACKAGE_NAME"
         print_status "File size: $(du -h "${PACKAGE_NAME}.tar.gz" | cut -f1)"
+        
+        # Clean up old backups after creating new one
+        cleanup_old_backups
     else
         print_error "Failed to create compressed package"
         return 1
@@ -238,22 +276,33 @@ show_help() {
     echo "Package user data for deployment to a new machine."
     echo ""
     echo "This script will create:"
-    echo "  - Database backup with all data"
-    echo "  - User data and credentials backup"
+    echo "  - Database backup (user schema or full database)"
+    echo "  - User credentials backup"
     echo "  - Environment configuration"
     echo "  - Deployment instructions"
     echo "  - Compressed package"
     echo ""
     echo "Options:"
-    echo "  --help, -h     Show this help message"
+    echo "  --type TYPE     Backup type: 'user' (users schema only) or 'full' (entire database)"
+    echo "  --help, -h      Show this help message"
 }
 
 # Parse command line arguments
+BACKUP_TYPE="full"  # Default to full backup
+
 while [[ $# -gt 0 ]]; do
     case $1 in
         --help|-h)
             show_help
             exit 0
+            ;;
+        --type)
+            if [[ $# -lt 2 ]]; then
+                print_error "Missing value for --type option"
+                exit 1
+            fi
+            BACKUP_TYPE="$2"
+            shift 2
             ;;
         *)
             print_error "Unknown option: $1"
@@ -262,6 +311,12 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Validate backup type
+if [[ "$BACKUP_TYPE" != "user" && "$BACKUP_TYPE" != "full" ]]; then
+    print_error "Invalid backup type: $BACKUP_TYPE. Must be 'user' or 'full'"
+    exit 1
+fi
 
 # Main execution
 package_user_data

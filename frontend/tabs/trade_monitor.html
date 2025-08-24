@@ -568,12 +568,12 @@
           <div id="strikePanelTTC" style="font-size: 27px; font-weight: bold; text-align: right;">&nbsp;</div>
         </div>
       </div>
-      <div class="panel-container" style="min-height: 450px; " id="strikePanelContainer">
+      <div class="panel-container" style="height: 666px; " id="strikePanelContainer">
         <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
           <span>Market</span>
           <div style="font-size: 12px; user-select: none; color: white; display: flex; align-items: center; gap: 6px; margin: 0; cursor: pointer;" id="diffModeToggle">
-            <span id="diffText" style="opacity: 1; transition: opacity 0.2s;">DIFF</span>
             <span id="priceText" style="opacity: 0.2; transition: opacity 0.2s;">PRICE</span>
+            <span id="diffText" style="opacity: 1; transition: opacity 0.2s;">DIFF</span>
           </div>
         </div>
         <table id="strikePanelTable" style="width: 100%; height: 100%; ">
@@ -593,25 +593,173 @@
 <!-- === STRIKE TABLES JS (inserted as per instructions) === -->
 <script>
 // Global modal functions - defined at top level for inline onclick handlers
-function showAutoStopSettingsModal() {
+async function loadAutoStopSettings(retryCount = 0) {
+  // Use pre-loaded settings if available
+  if (preloadedAutoTradeSettings && preloadedAutoTradeSettings.auto_stop_settings) {
+    console.log('Using pre-loaded auto stop settings');
+    populateAutoStopFormFields(preloadedAutoTradeSettings);
+    return;
+  }
+  
+  // Fallback to API call if pre-loaded data not available
+  try {
+    console.log('Loading auto stop settings from database... (attempt ' + (retryCount + 1) + ')');
+    const response = await fetch(window.location.origin + '/api/auto_trade_settings');
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    const data = await response.json();
+    console.log('Auto stop settings loaded:', data);
+    
+    // Update pre-loaded settings for future use
+    preloadedAutoTradeSettings = data;
+    
+    // Update form fields with actual database values
+    populateAutoStopFormFields(data);
+    
+  } catch (error) {
+    console.error('Error loading auto stop settings:', error);
+    
+    // Retry logic - try up to 3 times with increasing delays
+    if (retryCount < 2) {
+      console.log('Retrying auto stop settings load in ' + ((retryCount + 1) * 1000) + 'ms...');
+      setTimeout(() => {
+        loadAutoStopSettings(retryCount + 1);
+      }, (retryCount + 1) * 1000);
+      return;
+    }
+    
+    // If all retries failed, show error message but don't block the modal
+    console.error('Failed to load auto stop settings after 3 attempts');
+    // Don't show alert - just log the error and let user continue
+  }
+}
+
+async function loadAutoEntrySettings(retryCount = 0) {
+  // Use pre-loaded settings if available
+  if (preloadedAutoTradeSettings && preloadedAutoTradeSettings.auto_entry_settings) {
+    console.log('Using pre-loaded auto entry settings');
+    populateAutoEntryFormFields(preloadedAutoTradeSettings);
+    return;
+  }
+  
+  // Fallback to API call if pre-loaded data not available
+  try {
+    console.log('Loading auto entry settings from database... (attempt ' + (retryCount + 1) + ')');
+    const response = await fetch(window.location.origin + '/api/auto_trade_settings');
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    const data = await response.json();
+    console.log('Auto entry settings loaded:', data);
+    
+    // Update pre-loaded settings for future use
+    preloadedAutoTradeSettings = data;
+    
+    // Update form fields with actual database values
+    populateAutoEntryFormFields(data);
+    
+  } catch (error) {
+    console.error('Error loading auto entry settings:', error);
+    
+    // Retry logic - try up to 3 times with increasing delays
+    if (retryCount < 2) {
+      console.log('Retrying auto entry settings load in ' + ((retryCount + 1) * 1000) + 'ms...');
+      setTimeout(() => {
+        loadAutoEntrySettings(retryCount + 1);
+      }, (retryCount + 1) * 1000);
+      return;
+    }
+    
+    // If all retries failed, show error message but don't block the modal
+    console.error('Failed to load auto entry settings after 3 attempts');
+    // Don't show alert - just log the error and let user continue
+  }
+}
+
+async function showAutoStopSettingsModal() {
   console.log('showAutoStopSettingsModal called');
   const modal = document.getElementById('autoStopSettingsModal');
   if (modal) {
     console.log('Showing auto stop settings modal');
     modal.style.display = 'block';
     document.body.style.overflow = 'hidden';
+    // Load settings from database when modal opens
+    await loadAutoStopSettings();
+    
+    // Add keyboard event listeners for ENTER and ESC
+    const handleKeyDown = (event) => {
+      // Only handle keyboard events if the modal is visible
+      if (modal.style.display !== 'block') return;
+      
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        console.log('ENTER pressed - triggering save');
+        // Trigger save button click
+        const saveButton = document.getElementById('autoStopSettingsSave');
+        if (saveButton) {
+          saveButton.click();
+        }
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        console.log('ESC pressed - triggering cancel');
+        // Trigger cancel button click
+        const cancelButton = document.getElementById('autoStopSettingsCancel');
+        if (cancelButton) {
+          cancelButton.click();
+        }
+      }
+    };
+    
+    // Add event listener to document for global keyboard handling
+    document.addEventListener('keydown', handleKeyDown);
+    
+    // Store the handler reference for cleanup
+    modal._keydownHandler = handleKeyDown;
   } else {
     console.log('autoStopSettingsModal not found');
   }
 }
 
-function showAutoEntrySettingsModal() {
+async function showAutoEntrySettingsModal() {
   console.log('showAutoEntrySettingsModal called');
   const modal = document.getElementById('autoEntrySettingsModal');
   if (modal) {
     console.log('Showing auto entry settings modal');
     modal.style.display = 'block';
     document.body.style.overflow = 'hidden';
+    // Load settings from database when modal opens
+    await loadAutoEntrySettings();
+    
+    // Add keyboard event listeners for ENTER and ESC
+    const handleKeyDown = (event) => {
+      // Only handle keyboard events if the modal is visible
+      if (modal.style.display !== 'block') return;
+      
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        console.log('ENTER pressed - triggering save');
+        // Trigger save button click
+        const saveButton = document.getElementById('autoEntrySettingsSave');
+        if (saveButton) {
+          saveButton.click();
+        }
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        console.log('ESC pressed - triggering cancel');
+        // Trigger cancel button click
+        const cancelButton = document.getElementById('autoEntrySettingsCancel');
+        if (cancelButton) {
+          cancelButton.click();
+        }
+      }
+    };
+    
+    // Add event listener to document for global keyboard handling
+    document.addEventListener('keydown', handleKeyDown);
+    
+    // Store the handler reference for cleanup
+    modal._keydownHandler = handleKeyDown;
   } else {
     console.log('autoEntrySettingsModal not found');
   }
@@ -623,7 +771,13 @@ function hideAutoStopSettingsModal() {
   if (modal) {
     console.log('Hiding auto stop settings modal');
     modal.style.display = 'none';
-    document.body.style.overflow = '';
+    document.body.style.overflow = 'auto';
+    
+    // Clean up keyboard event listener
+    if (modal._keydownHandler) {
+      modal.removeEventListener('keydown', modal._keydownHandler);
+      delete modal._keydownHandler;
+    }
   } else {
     console.log('autoStopSettingsModal not found');
   }
@@ -635,7 +789,13 @@ function hideAutoEntrySettingsModal() {
   if (modal) {
     console.log('Hiding auto entry settings modal');
     modal.style.display = 'none';
-    document.body.style.overflow = '';
+    document.body.style.overflow = 'auto';
+    
+    // Clean up keyboard event listener
+    if (modal._keydownHandler) {
+      modal.removeEventListener('keydown', modal._keydownHandler);
+      delete modal._keydownHandler;
+    }
   } else {
     console.log('autoEntrySettingsModal not found');
   }
@@ -1465,18 +1625,18 @@ document.addEventListener('DOMContentLoaded', () => {
           <div style="flex:1 1 auto; display:flex; flex-direction:column; justify-content:center; align-items:stretch;">
             <label for="autoStopProbabilitySlider" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Current Win Probability:</label>
             <div style="position:relative; margin-bottom:24px; width:100%;">
-              <input type="range" id="autoStopProbabilitySlider" min="0" max="100" value="25" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
-              <div id="sliderValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">25%</div>
+              <input type="range" id="autoStopProbabilitySlider" min="0" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+              <div id="sliderValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
             </div>
             <!-- New TTC field -->
             <label for="autoStopMinTTCInput" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Minimum Time to Close:</label>
             <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 24px;">
               <div style="display: flex; align-items: center; border: 1px solid #ddd; border-radius: 4px; background: white;">
                 <button id="autoStopMinTTCDown" style="padding: 8px 12px; border: none; background: #f8f9fa; cursor: pointer; border-right: 1px solid #ddd; border-radius: 4px 0 0 4px; font-size:12px;" onmouseover="this.style.background='#e9ecef'" onmouseout="this.style.background='#f8f9fa'">▼</button>
-                <span id="autoStopMinTTCDisplay" style="padding: 8px 16px; font-size: 13px; color: #333; min-width: 60px; text-align: center; font-weight:500;">01:00</span>
+                <span id="autoStopMinTTCDisplay" style="padding: 8px 16px; font-size: 13px; color: #333; min-width: 60px; text-align: center; font-weight:500;">Loading...</span>
                 <button id="autoStopMinTTCUp" style="padding: 8px 12px; border: none; background: #f8f9fa; cursor: pointer; border-left: 1px solid #ddd; border-radius: 0 4px 4px 0; font-size:12px;" onmouseover="this.style.background='#e9ecef'" onmouseout="this.style.background='#f8f9fa'">▲</button>
               </div>
-              <input type="hidden" id="autoStopMinTTCInput" value="60" />
+              <input type="hidden" id="autoStopMinTTCInput" value="0" />
             </div>
             
             <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0;">
@@ -1489,8 +1649,8 @@ document.addEventListener('DOMContentLoaded', () => {
             
             <label for="momentumSpikeThresholdSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Spike Threshold (±):</label>
             <div style="position:relative; margin-bottom:8px; width:100%;">
-              <input type="range" id="momentumSpikeThresholdSlider" min="10" max="100" value="35" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
-              <div id="momentumSpikeThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">±35</div>
+              <input type="range" id="momentumSpikeThresholdSlider" min="10" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+              <div id="momentumSpikeThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
             </div>
             
             <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0;">
@@ -1503,8 +1663,8 @@ document.addEventListener('DOMContentLoaded', () => {
             
             <label for="verificationPeriodSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Verification Duration (seconds):</label>
             <div style="position:relative; margin-bottom:8px; width:100%;">
-              <input type="range" id="verificationPeriodSlider" min="5" max="60" value="15" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
-              <div id="verificationPeriodValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">15s</div>
+              <input type="range" id="verificationPeriodSlider" min="5" max="60" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+              <div id="verificationPeriodValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
             </div>
           </div>
           <div style="display:flex; gap:12px; justify-content:flex-end; align-items:center; margin-top:20px;">
@@ -1530,23 +1690,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 <!-- Selected Range -->
                 <div id="timeWindowRange" style="position:absolute; top:0; height:6px; background:#007bff; border-radius:3px; z-index:5;"></div>
                 <!-- Min Time Display -->
-                <div id="timeWindowMinDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">00:00</div>
+                <div id="timeWindowMinDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
                 <!-- Max Time Display -->
-                <div id="timeWindowMaxDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">60:00</div>
+                <div id="timeWindowMaxDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
               </div>
              
             </div>
             
             <label for="autoEntryProbabilitySlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Win Probability:</label>
             <div style="position:relative; margin-bottom:24px; width:100%;">
-              <input type="range" id="autoEntryProbabilitySlider" min="0" max="100" value="25" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
-              <div id="autoEntrySliderValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">25%</div>
+              <input type="range" id="autoEntryProbabilitySlider" min="0" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+              <div id="autoEntrySliderValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
             </div>
             
             <label for="autoEntryDifferentialSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Differential:</label>
             <div style="position:relative; margin-bottom:8px; width:100%;">
               <input type="range" id="autoEntryDifferentialSlider" min="-10" max="10" step="0.25" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
-              <div id="autoEntryDifferentialValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0</div>
+              <div id="autoEntryDifferentialValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
             </div>
             
             <label for="autoEntryAllowReEntry" style="font-size:14px; color:#333;margin-top:12px; margin-bottom:12px; font-weight:500;">Allow Re-Entry:</label>
@@ -1568,20 +1728,20 @@ document.addEventListener('DOMContentLoaded', () => {
               
               <label for="spikeAlertMomentumSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Spike Level (±):</label>
               <div style="position:relative; margin-bottom:24px; width:100%;">
-                <input type="range" id="spikeAlertMomentumSlider" min="0" max="100" value="40" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
-                <div id="spikeAlertMomentumValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">±40</div>
+                <input type="range" id="spikeAlertMomentumSlider" min="0" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+                <div id="spikeAlertMomentumValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
               </div>
               
               <label for="spikeAlertCooldownSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Level (±):</label>
               <div style="position:relative; margin-bottom:24px; width:100%;">
-                <input type="range" id="spikeAlertCooldownSlider" min="0" max="50" value="30" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
-                <div id="spikeAlertCooldownValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">±30</div>
+                <input type="range" id="spikeAlertCooldownSlider" min="0" max="50" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+                <div id="spikeAlertCooldownValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
               </div>
               
               <label for="spikeAlertTimeSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Time (minutes):</label>
               <div style="position:relative; margin-bottom:8px; width:100%;">
-                <input type="range" id="spikeAlertTimeSlider" min="0" max="180" value="15" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
-                <div id="spikeAlertTimeValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">15 min</div>
+                <input type="range" id="spikeAlertTimeSlider" min="0" max="180" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+                <div id="spikeAlertTimeValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
               </div>
             
           </div>
@@ -3371,7 +3531,13 @@ document.addEventListener('DOMContentLoaded', function() {
   function hideAutoStopSettingsModal() {
     if (autoStopSettingsModal) {
       autoStopSettingsModal.style.display = 'none';
-      document.body.style.overflow = '';
+      document.body.style.overflow = 'auto';
+      
+      // Clean up keyboard event listener
+      if (autoStopSettingsModal._keydownHandler) {
+        document.removeEventListener('keydown', autoStopSettingsModal._keydownHandler);
+        delete autoStopSettingsModal._keydownHandler;
+      }
     }
   }
 
@@ -3748,7 +3914,13 @@ document.addEventListener('DOMContentLoaded', function() {
   function hideAutoEntrySettingsModal() {
     if (autoEntrySettingsModal) {
       autoEntrySettingsModal.style.display = 'none';
-      document.body.style.overflow = '';
+      document.body.style.overflow = 'auto';
+      
+      // Clean up keyboard event listener
+      if (autoEntrySettingsModal._keydownHandler) {
+        document.removeEventListener('keydown', autoEntrySettingsModal._keydownHandler);
+        delete autoEntrySettingsModal._keydownHandler;
+      }
     }
   }
 
@@ -4299,6 +4471,34 @@ if (typeof window.liveData !== 'undefined') {
         
         // Set up auto-refresh every 2 seconds
         setInterval(updateWatchlist, 2000);
+        
+        // Initialize Active Trade Supervisor
+        function initializeActiveTradeSupervisor() {
+          console.log('[ACTIVE TRADE SUPERVISOR] Initializing...');
+          
+          // Check if the table exists
+          const table = document.querySelector('#activeTradeSupervisorTable');
+          if (!table) {
+            console.error('[ACTIVE TRADE SUPERVISOR] Table not found');
+            return;
+          }
+          
+          // Check if the JavaScript functions are available
+          if (typeof fetchAndRenderActiveTradeSupervisorTrades === 'function') {
+            console.log('[ACTIVE TRADE SUPERVISOR] Starting fetch and render...');
+            fetchAndRenderActiveTradeSupervisorTrades();
+            
+            // Set up periodic refresh
+            setInterval(() => {
+              fetchAndRenderActiveTradeSupervisorTrades();
+            }, 2000);
+          } else {
+            console.error('[ACTIVE TRADE SUPERVISOR] fetchAndRenderActiveTradeSupervisorTrades function not found');
+          }
+        }
+        
+        // Start Active Trade Supervisor after a delay
+        setTimeout(initializeActiveTradeSupervisor, 2000);
       }, 100);
     });
   </script>
@@ -4314,8 +4514,8 @@ if (typeof window.liveData !== 'undefined') {
       
       tbody.innerHTML = '';
       
-      // Sort strikes by probability (highest to lowest)
-      const sortedStrikes = strikes.sort((a, b) => b.probability - a.probability);
+      // Sort strikes by probability (highest to lowest) and take only top 5
+      const sortedStrikes = strikes.sort((a, b) => b.probability - a.probability).slice(0, 5);
       
       sortedStrikes.forEach(strikeData => {
         const row = document.createElement('tr');
@@ -4432,8 +4632,213 @@ if (typeof window.liveData !== 'undefined') {
   </script>
   
   <script>
+    // Global loading state
+    let pageFullyLoaded = false;
+    
+    // Show loading screen
+    function showLoadingScreen() {
+      const loadingDiv = document.createElement('div');
+      loadingDiv.id = 'loadingScreen';
+      loadingDiv.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        background: rgba(0, 0, 0, 0.8);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 99999;
+        color: white;
+        font-size: 18px;
+        font-weight: 500;
+      `;
+      loadingDiv.innerHTML = 'Loading trading interface...';
+      document.body.appendChild(loadingDiv);
+    }
+    
+    // Hide loading screen
+    function hideLoadingScreen() {
+      const loadingDiv = document.getElementById('loadingScreen');
+      if (loadingDiv) {
+        loadingDiv.remove();
+      }
+      pageFullyLoaded = true;
+    }
+    
+    // Global variable to store pre-loaded settings
+    let preloadedAutoTradeSettings = null;
+    
+    // Pre-load auto trade settings immediately
+    async function preloadAutoTradeSettings() {
+      try {
+        console.log('Pre-loading auto trade settings...');
+        const response = await fetch(window.location.origin + '/api/auto_trade_settings');
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+        preloadedAutoTradeSettings = data;
+        console.log('Auto trade settings pre-loaded successfully:', data);
+        
+        // Pre-populate all form fields with the loaded data
+        populateAutoStopFormFields(data);
+        populateAutoEntryFormFields(data);
+        
+      } catch (error) {
+        console.error('Error pre-loading auto trade settings:', error);
+        // Don't show alert - just log the error
+      }
+    }
+    
+    // Function to populate auto stop form fields with pre-loaded data
+    function populateAutoStopFormFields(data) {
+      if (!data.auto_stop_settings) return;
+      
+      const settings = data.auto_stop_settings;
+      
+      // Update probability slider
+      const probSlider = document.getElementById('autoStopProbabilitySlider');
+      const probDisplay = document.getElementById('sliderValueDisplay');
+      if (probSlider && probDisplay) {
+        probSlider.value = settings.win_probability || 0;
+        probDisplay.textContent = (settings.win_probability || 0) + '%';
+      }
+      
+      // Update TTC field
+      const ttcDisplay = document.getElementById('autoStopMinTTCDisplay');
+      const ttcInput = document.getElementById('autoStopMinTTCInput');
+      if (ttcDisplay && ttcInput) {
+        const ttcMinutes = settings.min_time_to_close || 0;
+        ttcInput.value = ttcMinutes;
+        const hours = Math.floor(ttcMinutes / 60);
+        const minutes = ttcMinutes % 60;
+        ttcDisplay.textContent = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+      }
+      
+      // Update momentum spike settings
+      const momentumEnabled = document.getElementById('momentumSpikeEnabled');
+      const momentumSlider = document.getElementById('momentumSpikeThresholdSlider');
+      const momentumDisplay = document.getElementById('momentumSpikeThresholdValueDisplay');
+      if (momentumEnabled && momentumSlider && momentumDisplay) {
+        momentumEnabled.checked = settings.momentum_spike_enabled || false;
+        momentumSlider.value = settings.momentum_spike_threshold || 0;
+        momentumDisplay.textContent = '±' + (settings.momentum_spike_threshold || 0);
+      }
+      
+      // Update verification period settings
+      const verificationEnabled = document.getElementById('verificationPeriodEnabled');
+      const verificationSlider = document.getElementById('verificationPeriodSlider');
+      const verificationDisplay = document.getElementById('verificationPeriodValueDisplay');
+      if (verificationEnabled && verificationSlider && verificationDisplay) {
+        verificationEnabled.checked = settings.verification_period_enabled || false;
+        verificationSlider.value = settings.verification_period_duration || 0;
+        verificationDisplay.textContent = (settings.verification_period_duration || 0) + 's';
+      }
+    }
+    
+    // Function to populate auto entry form fields with pre-loaded data
+    function populateAutoEntryFormFields(data) {
+      if (!data.auto_entry_settings) return;
+      
+      const settings = data.auto_entry_settings;
+      
+      // Update time window
+      const minTimeDisplay = document.getElementById('timeWindowMinDisplay');
+      const maxTimeDisplay = document.getElementById('timeWindowMaxDisplay');
+      if (minTimeDisplay && maxTimeDisplay) {
+        const minMinutes = settings.time_window_min || 0;
+        const maxMinutes = settings.time_window_max || 0;
+        const minHours = Math.floor(minMinutes / 60);
+        const minMins = minMinutes % 60;
+        const maxHours = Math.floor(maxMinutes / 60);
+        const maxMins = maxMinutes % 60;
+        minTimeDisplay.textContent = `${minHours.toString().padStart(2, '0')}:${minMins.toString().padStart(2, '0')}`;
+        maxTimeDisplay.textContent = `${maxHours.toString().padStart(2, '0')}:${maxMins.toString().padStart(2, '0')}`;
+      }
+      
+      // Update probability slider
+      const probSlider = document.getElementById('autoEntryProbabilitySlider');
+      const probDisplay = document.getElementById('autoEntrySliderValueDisplay');
+      if (probSlider && probDisplay) {
+        probSlider.value = settings.min_win_probability || 0;
+        probDisplay.textContent = (settings.min_win_probability || 0) + '%';
+      }
+      
+      // Update differential slider
+      const diffSlider = document.getElementById('autoEntryDifferentialSlider');
+      const diffDisplay = document.getElementById('autoEntryDifferentialValueDisplay');
+      if (diffSlider && diffDisplay) {
+        diffSlider.value = settings.min_differential || 0;
+        diffDisplay.textContent = settings.min_differential || 0;
+      }
+      
+      // Update re-entry checkbox
+      const reEntryCheckbox = document.getElementById('autoEntryAllowReEntry');
+      if (reEntryCheckbox) {
+        reEntryCheckbox.checked = settings.allow_re_entry || false;
+      }
+      
+      // Update spike alert settings
+      const spikeEnabled = document.getElementById('spikeAlertEnabled');
+      const spikeMomentumSlider = document.getElementById('spikeAlertMomentumSlider');
+      const spikeMomentumDisplay = document.getElementById('spikeAlertMomentumValueDisplay');
+      const spikeCooldownSlider = document.getElementById('spikeAlertCooldownSlider');
+      const spikeCooldownDisplay = document.getElementById('spikeAlertCooldownValueDisplay');
+      const spikeTimeSlider = document.getElementById('spikeAlertTimeSlider');
+      const spikeTimeDisplay = document.getElementById('spikeAlertTimeValueDisplay');
+      
+      if (spikeEnabled && spikeMomentumSlider && spikeMomentumDisplay) {
+        spikeEnabled.checked = settings.spike_alert_enabled || false;
+        spikeMomentumSlider.value = settings.spike_alert_momentum_level || 0;
+        spikeMomentumDisplay.textContent = '±' + (settings.spike_alert_momentum_level || 0);
+      }
+      
+      if (spikeCooldownSlider && spikeCooldownDisplay) {
+        spikeCooldownSlider.value = settings.spike_alert_cooldown_level || 0;
+        spikeCooldownDisplay.textContent = '±' + (settings.spike_alert_cooldown_level || 0);
+      }
+      
+      if (spikeTimeSlider && spikeTimeDisplay) {
+        spikeTimeSlider.value = settings.spike_alert_cooldown_time || 0;
+        spikeTimeDisplay.textContent = (settings.spike_alert_cooldown_time || 0) + ' min';
+      }
+    }
+    
     // Auto-refresh trade history table every 10 seconds
     document.addEventListener('DOMContentLoaded', function() {
+      // Show loading screen immediately
+      showLoadingScreen();
+      
+      // Start pre-loading auto trade settings immediately
+      preloadAutoTradeSettings();
+      
+      // Load all critical data before showing the page
+      Promise.all([
+        // Wait for auto trade settings to load (with timeout)
+        Promise.race([
+          new Promise(resolve => {
+            const checkSettings = () => {
+              if (preloadedAutoTradeSettings !== null) {
+                resolve();
+              } else {
+                setTimeout(checkSettings, 100);
+              }
+            };
+            checkSettings();
+          }),
+          new Promise(resolve => setTimeout(resolve, 3000)) // 3 second timeout
+        ]),
+        // Load other critical data as needed
+        new Promise(resolve => setTimeout(resolve, 1000)) // Minimum loading time
+      ]).then(() => {
+        // Hide loading screen after everything is loaded
+        hideLoadingScreen();
+      }).catch(error => {
+        console.error('Error during page load:', error);
+        hideLoadingScreen(); // Still hide loading screen even if there's an error
+      });
   
       
       // Set up the auto-refresh interval
