@@ -1797,10 +1797,13 @@
     function toggleResultsPanel() {
       const content = document.getElementById('results-content');
       const icon = document.getElementById('results-expand-icon');
+      const analysisContent = document.getElementById('analysis-content');
       
       if (content.style.height === '0px' || content.style.height === '') {
-        // Expand the panel
-        content.style.height = 'calc(100vh - 220px)';
+        // Expand the panel - check if Analysis panel is expanded
+        const analysisExpanded = analysisContent && analysisContent.style.height !== '0px' && analysisContent.style.height !== '';
+        const baseHeight = analysisExpanded ? 'calc(100vh - 470px)' : 'calc(100vh - 220px)';
+        content.style.height = baseHeight;
         icon.style.transform = 'rotate(180deg)';
       } else {
         // Collapse the panel
@@ -1815,7 +1818,9 @@
       const resultsIcon = document.getElementById('results-expand-icon');
       
       if (resultsContent && resultsIcon) {
-        resultsContent.style.height = 'calc(100vh - 220px)';
+        // Since Analysis panel starts expanded, use the same height as when Analysis panel is expanded
+        // This matches the value used in toggleAnalysisPanel when Analysis panel is expanded
+        resultsContent.style.height = 'calc(100vh - 470px)';
         resultsIcon.style.transform = 'rotate(180deg)';
       }
     });

@@ -62,6 +62,44 @@ previous_indicator_state = None
 
 # State tracking for logging reduction
 previous_watchlist_settings = None
+
+def get_auto_entry_state_path():
+    """Get the path to the monitor-specific auto entry state file"""
+    return os.path.join(get_data_dir(), "users", "user_0001", "monitors", "auto_entry_state.json")
+
+def load_auto_entry_state():
+    """Load monitor-specific auto entry state from JSON file"""
+    try:
+        state_path = get_auto_entry_state_path()
+        if os.path.exists(state_path):
+            with open(state_path, "r") as f:
+                state = json.load(f)
+                log(f"[AUTO ENTRY STATE] Loaded state from {state_path}")
+                return state
+        else:
+            log(f"[AUTO ENTRY STATE] State file not found at {state_path}, using defaults")
+            return None
+    except Exception as e:
+        log(f"[AUTO ENTRY STATE] Error loading state: {e}")
+        return None
+
+def save_auto_entry_state(state):
+    """Save monitor-specific auto entry state to JSON file"""
+    try:
+        state_path = get_auto_entry_state_path()
+        os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        
+        # Ensure timestamp is updated
+        state["last_updated"] = datetime.now(ZoneInfo("America/New_York")).isoformat()
+        
+        with open(state_path, "w") as f:
+            json.dump(state, f, indent=2)
+        
+        log(f"[AUTO ENTRY STATE] Saved state to {state_path}")
+        return True
+    except Exception as e:
+        log(f"[AUTO ENTRY STATE] Error saving state: {e}")
+        return False
 previous_auto_entry_status = None
 
 # SPIKE ALERT constants - NO DEFAULTS, must get from settings
@@ -133,22 +171,25 @@ def check_spike_alert_conditions():
         # Update current momentum in state
         auto_entry_indicator_state["current_momentum"] = current_momentum
         
-        # Initialize state (no longer using legacy JSON file)
-        state = {
-            "user_id": "user_0001",
-            "monitor_id": "default",
-            "enabled": False,
-            "scanning_active": False,
-            "spike_alert_active": False,
-            "spike_alert_start_time": None,
-            "spike_alert_momentum_value": None,
-            "spike_alert_recovery_countdown": None,
-            "current_momentum": current_momentum,
-            "current_ttc": 0,
-            "min_time": 0,
-            "max_time": 3600,
-            "last_updated": None
-        }
+        # Load current state from file
+        state = load_auto_entry_state()
+        if state is None:
+            # Initialize state if file not found (should ideally not happen if load_auto_entry_state handles defaults)
+            state = {
+                "user_id": "user_0001",
+                "monitor_id": "default",
+                "enabled": False,
+                "scanning_active": False,
+                "spike_alert_active": False,
+                "spike_alert_start_time": None,
+                "spike_alert_momentum_value": None,
+                "spike_alert_recovery_countdown": None,
+                "current_momentum": current_momentum,
+                "current_ttc": 0,
+                "min_time": 0,
+                "max_time": 3600,
+                "last_updated": None
+            }
         
         # Get spike alert settings from auto entry settings - NO DEFAULTS
         settings = get_auto_entry_settings()
@@ -262,6 +303,9 @@ def check_spike_alert_conditions():
                 
                 log(f"[SPIKE ALERT] ⚠️ Still in spike conditions: {current_momentum:.2f} - resetting timer to {cooldown_minutes} minutes")
         
+        # Update current momentum in loaded state
+        state["current_momentum"] = current_momentum
+        
         # Update global state for frontend
         auto_entry_indicator_state.update({
             "spike_alert_active": state["spike_alert_active"],
@@ -271,7 +315,8 @@ def check_spike_alert_conditions():
             "current_momentum": state["current_momentum"]
         })
         
-        # State updated in memory (no longer saving to legacy JSON file)
+        # Save updated state to file
+        save_auto_entry_state(state)
         
     except Exception as e:
         log(f"[SPIKE ALERT] Error checking spike conditions: {e}")
