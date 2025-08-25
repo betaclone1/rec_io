@@ -360,7 +360,9 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                 row = cursor_pos.fetchone()
             
             if row and row[0] == 0:
-                log_event(ticket_id, f"MANAGER: POSITION ZEROED OUT for {expected_ticker}")
+                import time
+                zero_time = time.time()
+                log_event(ticket_id, f"MANAGER: [{zero_time}] POSITION ZEROED OUT for {expected_ticker}")
                 log(f"POSITION ZEROED OUT: {expected_ticker}")
                 
                 now_est = datetime.now(ZoneInfo("America/New_York"))
@@ -371,14 +373,20 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                 pg_conn_orders = get_postgresql_connection()
                 if pg_conn_orders:
                     with pg_conn_orders.cursor() as cursor_orders:
+                        import time
+                        current_time = time.time()
+                        log_event(ticket_id, f"MANAGER: [{current_time}] Querying orders table for ticker: {expected_ticker}")
                         cursor_orders.execute("""
                             SELECT SUM(taker_fees) as total_fees
                             FROM users.orders_0001 
                             WHERE ticker = %s
                         """, (expected_ticker,))
                         fees_row = cursor_orders.fetchone()
+                        log_event(ticket_id, f"MANAGER: [{current_time}] Raw fees_row from cursor: {fees_row}")
                         # Convert cents to dollars for PnL calculation
-                        total_fees_paid = float(fees_row[0]) / 100.0 if fees_row and fees_row[0] is not None else None
+                        raw_fees_cents = fees_row[0] if fees_row and fees_row[0] is not None else None
+                        total_fees_paid = float(raw_fees_cents) / 100.0 if raw_fees_cents is not None else None
+                        log_event(ticket_id, f"MANAGER: Raw fees from SQL (cents): {raw_fees_cents}, converted to dollars: {total_fees_paid}")
                     pg_conn_orders.close()
                 
                 log_event(ticket_id, f"MANAGER: Calculated total fees from orders: {total_fees_paid}")
@@ -476,6 +484,7 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                     
                     try:
                         # Update the fees in the trades table to match the calculated total
+                        log_event(ticket_id, f"MANAGER: About to write fees to database: {total_fees_paid}")
                         pg_conn_fees = get_postgresql_connection()
                         if pg_conn_fees:
                             with pg_conn_fees.cursor() as cursor_fees:
@@ -485,13 +494,47 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                                     WHERE id = %s
                                 """, (total_fees_paid, id))
                                 pg_conn_fees.commit()
+                                log_event(ticket_id, f"MANAGER: Fees written to database successfully")
                             pg_conn_fees.close()
                         
-                        update_trade_status(id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method)
+                        update_trade_status(id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, total_fees_paid)
                         
-
+                        # Add 5-second pause after trade is marked as closed, before final fee calculation
+                        import time
+                        pause_start = time.time()
+                        log_event(ticket_id, f"MANAGER: [{pause_start}] Trade marked as closed, adding 5-second pause before final fee calculation")
+                        time.sleep(5)
+                        pause_end = time.time()
+                        log_event(ticket_id, f"MANAGER: [{pause_end}] 5-second pause completed")
                         
-                        log_event(ticket_id, f"MANAGER: CLOSE TRADE CONFIRMED - PnL: {pnl}, W/L: {win_loss}, Fees: {total_fees_paid}")
+                        # Recalculate fees after pause to ensure we have the latest data
+                        pg_conn_final = get_postgresql_connection()
+                        if pg_conn_final:
+                            with pg_conn_final.cursor() as cursor_final:
+                                import time
+                                final_time = time.time()
+                                log_event(ticket_id, f"MANAGER: [{final_time}] Final query for ticker: {expected_ticker}")
+                                cursor_final.execute("""
+                                    SELECT SUM(taker_fees) as total_fees
+                                    FROM users.orders_0001 
+                                    WHERE ticker = %s
+                                """, (expected_ticker,))
+                                final_fees_row = cursor_final.fetchone()
+                                final_raw_fees_cents = final_fees_row[0] if final_fees_row and final_fees_row[0] is not None else None
+                                final_total_fees_paid = float(final_raw_fees_cents) / 100.0 if final_raw_fees_cents is not None else None
+                                log_event(ticket_id, f"MANAGER: [{final_time}] Final fee calculation after pause (cents): {final_raw_fees_cents}, converted to dollars: {final_total_fees_paid}")
+                                
+                                # Update fees with final calculation
+                                cursor_final.execute("""
+                                    UPDATE users.trades_0001 
+                                    SET fees = %s 
+                                    WHERE id = %s
+                                """, (final_total_fees_paid, id))
+                                pg_conn_final.commit()
+                                log_event(ticket_id, f"MANAGER: [{final_time}] Final fees written to database: {final_total_fees_paid}")
+                            pg_conn_final.close()
+                        
+                        log_event(ticket_id, f"MANAGER: CLOSE TRADE CONFIRMED - PnL: {pnl}, W/L: {win_loss}, Fees: {final_total_fees_paid}")
                         log(f"CLOSE TRADE CONFIRMED: {expected_ticker}, PnL={pnl}, W/L={win_loss}")
                         
                         # Try to notify active trade supervisor, but don't fail if it doesn't work
@@ -777,7 +820,7 @@ init_trades_db()
 
 
 
-def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbol_close=None, win_loss=None, pnl=None, close_method=None):
+def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbol_close=None, win_loss=None, pnl=None, close_method=None, fees=None):
     """Update trade status in PostgreSQL database only."""
     if status == 'closed':
         if closed_at is None:
@@ -791,15 +834,15 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
             pg_conn = get_postgresql_connection()
             if pg_conn:
                 with pg_conn.cursor() as cursor_pg:
-                    cursor_pg.execute("SELECT buy_price, position, fees FROM users.trades_0001 WHERE id = %s", (trade_id,))
+                    cursor_pg.execute("SELECT buy_price, position FROM users.trades_0001 WHERE id = %s", (trade_id,))
                     row = cursor_pg.fetchone()
                     buy_price = row[0] if row else None
                     position = row[1] if row else None
-                    fees_paid = row[2] if row else 0.0
+                    fees_paid = fees if fees is not None else 0.0
             else:
                 buy_price = None
                 position = None
-                fees_paid = 0.0
+                fees_paid = fees if fees is not None else 0.0
 
             if buy_price is not None and sell_price is not None:
                 win_loss = 'W' if sell_price > buy_price else 'L'
@@ -1482,3 +1525,5 @@ if __name__ == "__main__":
 
     port = get_port("trade_manager")
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+

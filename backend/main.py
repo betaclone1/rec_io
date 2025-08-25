@@ -162,20 +162,10 @@ def get_auto_trade_settings_postgresql():
                     "momentum_spike_threshold": result[14]
                 }
             else:
-                return {
-                    "auto_entry": False, "auto_stop": False,
-                    "min_probability": 95, "min_differential": 0.25, "min_time": 120, "max_time": 900, "allow_re_entry": False,
-                    "spike_alert_enabled": True, "spike_alert_momentum_threshold": 36, "spike_alert_cooldown_threshold": 30, "spike_alert_cooldown_minutes": 15,
-                    "current_probability": 40, "min_ttc_seconds": 60, "momentum_spike_enabled": True, "momentum_spike_threshold": 36
-                }
+                return None
     except Exception as e:
         print(f"[PostgreSQL Error] Failed to get auto trade settings: {e}")
-        return {
-            "auto_entry": False, "auto_stop": False,
-            "min_probability": 95, "min_differential": 0.25, "min_time": 120, "max_time": 900, "allow_re_entry": False,
-            "spike_alert_enabled": True, "spike_alert_momentum_threshold": 36, "spike_alert_cooldown_threshold": 30, "spike_alert_cooldown_minutes": 15,
-            "current_probability": 40, "min_ttc_seconds": 60, "momentum_spike_enabled": True, "momentum_spike_threshold": 36
-        }
+        return None
 
 def get_auto_stop_settings_postgresql():
     """Get auto stop settings from PostgreSQL"""
@@ -2670,6 +2660,8 @@ async def get_auto_stop():
 async def get_auto_trade_settings():
     """Get auto trade settings from PostgreSQL"""
     settings = get_auto_trade_settings_postgresql()
+    if settings is None:
+        return {"status": "error", "message": "Failed to retrieve auto trade settings"}
     return settings
 
 @app.get("/api/get_auto_entry_status")
@@ -2857,6 +2849,8 @@ async def set_auto_entry_settings(request: Request):
     
     # Return updated settings from PostgreSQL
     updated_settings = get_auto_trade_settings_postgresql()
+    if updated_settings is None:
+        return {"status": "error", "message": "Failed to retrieve auto trade settings"}
     return {"status": "ok", **updated_settings}
 
 @app.post("/api/trigger_open_trade")
