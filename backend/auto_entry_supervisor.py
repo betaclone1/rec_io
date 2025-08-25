@@ -63,43 +63,80 @@ previous_indicator_state = None
 # State tracking for logging reduction
 previous_watchlist_settings = None
 
-def get_auto_entry_state_path():
-    """Get the path to the monitor-specific auto entry state file"""
-    return os.path.join(get_data_dir(), "users", "user_0001", "monitors", "auto_entry_state.json")
 
-def load_auto_entry_state():
-    """Load monitor-specific auto entry state from JSON file"""
+
+# Database-based state management functions (PRIMARY SYSTEM)
+def load_auto_entry_state_from_db():
+    """Load auto entry state from production database (timestamp-based cooldown)"""
     try:
-        state_path = get_auto_entry_state_path()
-        if os.path.exists(state_path):
-            with open(state_path, "r") as f:
-                state = json.load(f)
-                log(f"[AUTO ENTRY STATE] Loaded state from {state_path}")
+        import psycopg2
+        conn = psycopg2.connect(
+            host='137.184.224.94',  # PRODUCTION SERVER
+            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+        )
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT cooldown_start_time, cooldown_timer, spike_alert_cooldown_minutes, auto_entry_status, updated_at 
+                FROM users.auto_trade_settings_0001 WHERE id = 1
+            """)
+            result = cursor.fetchone()
+            if result:
+                cooldown_start_time, cooldown_timer, cooldown_minutes, auto_entry_status, updated_at = result
+                
+                # Calculate remaining time based on timestamp
+                spike_alert_active = False
+                remaining_minutes = None
+                
+                if cooldown_start_time:
+                    now = datetime.now(ZoneInfo("America/New_York"))
+                    time_elapsed = (now - cooldown_start_time).total_seconds()
+                    total_cooldown_seconds = cooldown_minutes * 60
+                    remaining_seconds = max(0, total_cooldown_seconds - time_elapsed)
+                    
+                    if remaining_seconds > 0:
+                        spike_alert_active = True
+                        remaining_minutes = remaining_seconds / 60
+                        
+                        # Update cooldown_timer with calculated remaining seconds (every time for frontend)
+                        cursor.execute(
+                            "UPDATE users.auto_trade_settings_0001 SET cooldown_timer = %s WHERE id = 1",
+                            (int(remaining_seconds),)
+                        )
+                        conn.commit()
+                    else:
+                        # Cooldown has expired, clear the start time
+                        cursor.execute(
+                            "UPDATE users.auto_trade_settings_0001 SET cooldown_start_time = NULL, cooldown_timer = 0 WHERE id = 1",
+                            ()
+                        )
+                        conn.commit()
+                
+                state = {
+                    "user_id": "user_0001",
+                    "monitor_id": "default",
+                    "enabled": False,
+                    "scanning_active": False,
+                    "spike_alert_active": spike_alert_active,
+                    "spike_alert_start_time": cooldown_start_time.isoformat() if spike_alert_active and cooldown_start_time else None,
+                    "spike_alert_momentum_value": None,  # Not stored in DB
+                    "spike_alert_recovery_countdown": remaining_minutes,
+                    "current_momentum": None,
+                    "current_ttc": 0,
+                    "min_time": 0,
+                    "max_time": 3600,
+                    "last_updated": updated_at.isoformat() if updated_at else None
+                }
+
                 return state
-        else:
-            log(f"[AUTO ENTRY STATE] State file not found at {state_path}, using defaults")
-            return None
+        conn.close()
     except Exception as e:
-        log(f"[AUTO ENTRY STATE] Error loading state: {e}")
-        return None
+        log(f"[AUTO ENTRY STATE DB] Error loading state from production database: {e}")
+    
+    return None
 
-def save_auto_entry_state(state):
-    """Save monitor-specific auto entry state to JSON file"""
-    try:
-        state_path = get_auto_entry_state_path()
-        os.makedirs(os.path.dirname(state_path), exist_ok=True)
-        
-        # Ensure timestamp is updated
-        state["last_updated"] = datetime.now(ZoneInfo("America/New_York")).isoformat()
-        
-        with open(state_path, "w") as f:
-            json.dump(state, f, indent=2)
-        
-        log(f"[AUTO ENTRY STATE] Saved state to {state_path}")
-        return True
-    except Exception as e:
-        log(f"[AUTO ENTRY STATE] Error saving state: {e}")
-        return False
+
 previous_auto_entry_status = None
 
 # SPIKE ALERT constants - NO DEFAULTS, must get from settings
@@ -171,8 +208,8 @@ def check_spike_alert_conditions():
         # Update current momentum in state
         auto_entry_indicator_state["current_momentum"] = current_momentum
         
-        # Load current state from file
-        state = load_auto_entry_state()
+        # Load current state from database (PHASE 2: Replaced JSON with DB)
+        state = load_auto_entry_state_from_db()
         if state is None:
             # Initialize state if file not found (should ideally not happen if load_auto_entry_state handles defaults)
             state = {
@@ -232,8 +269,8 @@ def check_spike_alert_conditions():
                 "current_momentum": state["current_momentum"]
             })
             
-            # Save updated state
-            save_auto_entry_state(state)
+            # Save updated state to database (PHASE 2: Replaced JSON with DB)
+            save_auto_entry_state_to_db(state)
             return
         
         # Check for spike detection using settings
@@ -253,12 +290,11 @@ def check_spike_alert_conditions():
             state["spike_alert_momentum_value"] = current_momentum
             state["spike_alert_recovery_countdown"] = cooldown_minutes
             
-            # Set initial cooldown timer in seconds
-            cooldown_seconds = cooldown_minutes * 60
-            update_cooldown_timer_in_db(cooldown_seconds)
+            # Start cooldown period in database (timestamp-based)
+            start_cooldown_period_in_db()
             
             log(f"[SPIKE ALERT] 🚨 SPIKE DETECTED! Momentum: {current_momentum:.2f} (threshold: ±{spike_threshold})")
-            log(f"[SPIKE ALERT] Auto entry PAUSED for {cooldown_minutes} minutes ({cooldown_seconds} seconds)")
+            log(f"[SPIKE ALERT] Auto entry PAUSED for {cooldown_minutes} minutes")
             
         elif state["spike_alert_active"]:
             if recovery_conditions_met:
@@ -274,21 +310,17 @@ def check_spike_alert_conditions():
                         state["spike_alert_momentum_value"] = None
                         state["spike_alert_recovery_countdown"] = None
                         
-                        # Reset cooldown timer to 0
-                        update_cooldown_timer_in_db(0)
+                        # Reset cooldown period in database
+                        reset_cooldown_period_in_db()
                         
                         log(f"[SPIKE ALERT] ✅ RECOVERY COMPLETE! Auto entry RESUMED")
                         log(f"[SPIKE ALERT] Recovery time: {time_in_recovery:.1f} minutes")
                     else:
-                        # Still in recovery period - update countdown in seconds
+                        # Still in recovery period - calculate remaining time
                         remaining_minutes = cooldown_minutes - time_in_recovery
-                        remaining_seconds = max(0, int(remaining_minutes * 60))
                         state["spike_alert_recovery_countdown"] = remaining_minutes
                         
-                        # Update cooldown timer in database
-                        update_cooldown_timer_in_db(remaining_seconds)
-                        
-                        log(f"[SPIKE ALERT] ⏳ Recovery in progress: {remaining_minutes:.1f} minutes ({remaining_seconds} seconds) remaining")
+                        log(f"[SPIKE ALERT] ⏳ Recovery in progress: {remaining_minutes:.1f} minutes remaining")
                 else:
                     # Reset recovery countdown if start time is missing
                     state["spike_alert_recovery_countdown"] = cooldown_minutes
@@ -297,9 +329,8 @@ def check_spike_alert_conditions():
                 state["spike_alert_start_time"] = now.isoformat()
                 state["spike_alert_recovery_countdown"] = cooldown_minutes
                 
-                # Reset cooldown timer to full duration
-                cooldown_seconds = cooldown_minutes * 60
-                update_cooldown_timer_in_db(cooldown_seconds)
+                # Reset cooldown period in database
+                start_cooldown_period_in_db()
                 
                 log(f"[SPIKE ALERT] ⚠️ Still in spike conditions: {current_momentum:.2f} - resetting timer to {cooldown_minutes} minutes")
         
@@ -315,18 +346,59 @@ def check_spike_alert_conditions():
             "current_momentum": state["current_momentum"]
         })
         
-        # Save updated state to file
-        save_auto_entry_state(state)
+        # Save updated state to database (PHASE 2: Replaced JSON with DB)
+        save_auto_entry_state_to_db(state)
         
     except Exception as e:
         log(f"[SPIKE ALERT] Error checking spike conditions: {e}")
 
-def update_cooldown_timer_in_db(seconds):
-    """Update cooldown_timer in the database"""
+def start_cooldown_period_in_db():
+    """Start a new cooldown period in the database (uses existing spike_alert_cooldown_minutes setting)"""
     try:
         import psycopg2
         conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
+            host='137.184.224.94',  # PRODUCTION SERVER
+            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+        )
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE users.auto_trade_settings_0001 SET cooldown_start_time = NOW() WHERE id = 1"
+            )
+            conn.commit()
+        conn.close()
+        log(f"[AUTO ENTRY] ✅ Started cooldown period in production database")
+    except Exception as e:
+        log(f"[AUTO ENTRY] ❌ Error starting cooldown period: {e}")
+
+def reset_cooldown_period_in_db():
+    """Reset/clear the cooldown period in the database"""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host='137.184.224.94',  # PRODUCTION SERVER
+            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+        )
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE users.auto_trade_settings_0001 SET cooldown_start_time = NULL, cooldown_timer = 0 WHERE id = 1"
+            )
+            conn.commit()
+        conn.close()
+        log(f"[AUTO ENTRY] ✅ Reset cooldown period in production database")
+    except Exception as e:
+        log(f"[AUTO ENTRY] ❌ Error resetting cooldown period: {e}")
+
+# Legacy function for backward compatibility (will be removed)
+def update_cooldown_timer_in_db(seconds):
+    """Update cooldown_timer in the database (LEGACY - will be removed)"""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host='137.184.224.94',  # PRODUCTION SERVER
             database=os.getenv('POSTGRES_DB', 'rec_io_db'),
             user=os.getenv('POSTGRES_USER', 'rec_io_user'),
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
@@ -338,7 +410,7 @@ def update_cooldown_timer_in_db(seconds):
             )
             conn.commit()
         conn.close()
-        log(f"[AUTO ENTRY] ✅ Updated cooldown_timer to {seconds} seconds in database")
+        log(f"[AUTO ENTRY] ✅ Updated cooldown_timer to {seconds} seconds in production database (LEGACY)")
     except Exception as e:
         log(f"[AUTO ENTRY] ❌ Error updating cooldown_timer: {e}")
 
@@ -1101,6 +1173,8 @@ def check_auto_entry_conditions():
         # Check spike alert conditions first
         check_spike_alert_conditions()
         
+
+        
         # Check if AUTO ENTRY is enabled
         auto_entry_enabled = is_auto_entry_enabled()
         
@@ -1540,6 +1614,8 @@ def start_event_driven_supervisor():
         log("🛑 Auto entry supervisor stopped by user")
     except Exception as e:
         log(f"❌ Error in supervisor: {e}")
+
+
 
 if __name__ == "__main__":
     # Start the event-driven supervisor
