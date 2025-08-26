@@ -292,6 +292,14 @@ def handle_trade_manager_notification():
             else:
                 log(f"❌ Failed to remove closed trade: {trade_id}")
                 
+        elif status == 'close_failed':
+            # Close order failed - revert to active and immediately retry close
+            success = handle_close_failed_trade(trade_id, ticket_id)
+            if success:
+                log(f"✅ Successfully handled close_failed trade: {trade_id}")
+            else:
+                log(f"❌ Failed to handle close_failed trade: {trade_id}")
+                
         elif status == 'deleted':
             # Remove deleted trade from active_trades.db (same as failed trade)
             success = remove_failed_trade(trade_id, ticket_id)
@@ -1693,6 +1701,74 @@ def trigger_auto_stop_close(trade):
             log(f"[AUTO STOP] Failed to trigger close for trade {trade['trade_id']}: {resp.status_code} {resp.text}")
     except Exception as e:
         log(f"[AUTO STOP] Exception posting close for trade {trade['trade_id']}: {e}")
+
+def handle_close_failed_trade(trade_id: int, ticket_id: str) -> bool:
+    """
+    Handle a trade that failed to close (e.g., due to insufficient volume).
+    Reverts the trade to 'active' status and immediately retries the close order.
+    """
+    try:
+        # Get the trade data from active_trades.db
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT trade_id, ticker, strike, side, position, buy_price, current_close_price, current_symbol_price, current_probability, current_pnl
+            FROM users.active_trades_0001 
+            WHERE trade_id = %s
+        """, (trade_id,))
+        trade_data = cursor.fetchone()
+        conn.close()
+
+        if not trade_data:
+            log(f"⚠️ Trade with ID {trade_id} not found in active_trades.db.")
+            return False
+
+        trade_id_db, ticker, strike, side, position, buy_price, current_close_price, current_symbol_price, current_probability, current_pnl = trade_data
+
+        # Revert to active status
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE users.active_trades_0001
+            SET status = 'active',
+                current_close_price = NULL,
+                current_pnl = NULL,
+                last_updated = CURRENT_TIMESTAMP
+            WHERE trade_id = %s
+        """, (trade_id,))
+        conn.commit()
+        conn.close()
+
+        log(f"🔄 CLOSE FAILED - REVERTING TO ACTIVE STATUS")
+        log(f"   Trade ID: {trade_id}")
+        log(f"   Ticker: {ticker}")
+        log(f"   ========================================")
+        
+        invalidate_active_trades_cache()
+        broadcast_active_trades_change()
+
+        # Construct trade dictionary for trigger_auto_stop_close
+        trade_dict = {
+            'trade_id': trade_id,
+            'ticker': ticker,
+            'strike': strike,
+            'side': side,
+            'position': position,
+            'buy_price': buy_price,
+            'current_close_price': current_close_price,
+            'current_symbol_price': current_symbol_price,
+            'current_probability': current_probability,
+            'current_pnl': current_pnl
+        }
+
+        # Immediately retry the close order
+        log(f"🚀 IMMEDIATELY RETRYING CLOSE ORDER FOR TRADE {trade_id}")
+        trigger_auto_stop_close(trade_dict)
+        return True
+
+    except Exception as e:
+        log(f"❌ Error handling close_failed trade {trade_id}: {e}")
+        return False
 
 # Auto stop settings now read from PostgreSQL users.auto_trade_settings_0001 table
 

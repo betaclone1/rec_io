@@ -540,7 +540,10 @@
         </table>
       </div>
       <div class="panel-container" style="min-height: 00px;" id="momentumPanelContainer">
-        <div class="panel-header">Momentum</div>
+        <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+          <span>Momentum</span>
+          <div id="momentum-percentile-display" style="color: #ccc; font-size: 12px; font-weight: normal;">—</div>
+        </div>
         <div class="panel-content" id="momentumPanelContent">
           <div style="display: flex; gap: 10px;">
             <div style="width: 30%; height: 180px; background-color: #1e2733; display: flex; align-items: center; justify-content: center;">
@@ -831,9 +834,15 @@ function hideAutoEntrySettingsModal() {
             <option value="demo" id="demo-option">Loading...</option>
           </select>
         </div>
-        <div style="display: flex; flex-direction: column; align-items: flex-end;">
-          <span style="font-size: 11px; color: #ccc; font-weight: normal; margin-bottom: 0px;">Balance</span>
-          <span id="account-balance" style="font-weight: bold; color: white; font-size: 14px;">Loading...</span>
+        <div style="display: flex; align-items: flex-end; gap: 25px;">
+          <div style="display: flex; flex-direction: column; align-items: flex-end;">
+            <span style="font-size: 11px; color: #ccc; font-weight: normal; margin-bottom: 0px;">Positions</span>
+            <span id="positions-balance" style="font-weight: bold; color: white; font-size: 14px;">$0.00</span>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: flex-end;">
+            <span style="font-size: 11px; color: #ccc; font-weight: normal; margin-left: 10px; margin-bottom: 0px;">Portfolio</span>
+            <span id="account-balance" style="font-weight: bold; color: white; font-size: 14px;">Loading...</span>
+          </div>
         </div>
       </div>
               <div class="panel-container" id="watchlistPanel" style="min-height: 346px; max-height: 346px;">
@@ -1017,17 +1026,37 @@ function hideAutoEntrySettingsModal() {
       try {
         const response = await fetch(`${window.location.origin}/api/account/balance?mode=${mode}`);
         const data = await response.json();
+        
+        // Update positions balance
+        const positionsEl = document.getElementById("positions-balance");
+        const positionsContainer = positionsEl ? positionsEl.parentElement : null;
+        if (positionsEl && positionsContainer) {
+          const positions = data.positions || 0;
+          if (positions !== 0) {
+            const positionsInDollars = positions / 100; // Convert cents to dollars
+            positionsEl.textContent = `$${Number(positionsInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+            positionsContainer.style.display = "flex";
+          } else {
+            positionsContainer.style.display = "none";
+          }
+        }
+        
+        // Update portfolio balance
         const balanceEl = document.getElementById("account-balance");
         if (balanceEl) {
-          const balance = data.balance || 0;
-          const balanceInDollars = balance / 100; // Convert cents to dollars
-          balanceEl.textContent = `$${Number(balanceInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+          const portfolio = data.portfolio || 0;
+          const portfolioInDollars = portfolio / 100; // Convert cents to dollars
+          balanceEl.textContent = `$${Number(portfolioInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
         }
       } catch (error) {
         console.error('Error fetching account balance:', error);
         const balanceEl = document.getElementById("account-balance");
         if (balanceEl) {
           balanceEl.textContent = "Error";
+        }
+        const positionsEl = document.getElementById("positions-balance");
+        if (positionsEl) {
+          positionsEl.textContent = "Error";
         }
       }
     }
@@ -1926,10 +1955,10 @@ document.addEventListener('DOMContentLoaded', () => {
     window.momentum_delta = 0;
 
     function updateMomentumPanel() {
-      const { deltas, weightedScore } = window.momentumData;
+      const { deltas, weightedScore, momentumPercentile } = window.momentumData;
 
       // Debug logging
-      console.log('updateMomentumPanel called with:', { deltas, weightedScore });
+      console.log('updateMomentumPanel called with:', { deltas, weightedScore, momentumPercentile });
 
       // Ensure rollingScores array exists
       if (!window.momentumData.rollingScores) {
@@ -1939,6 +1968,16 @@ document.addEventListener('DOMContentLoaded', () => {
       const momentumScoreEl = document.getElementById('momentum-score-display');
       if (momentumScoreEl) {
         momentumScoreEl.textContent = formatNumber(weightedScore, false);
+      }
+
+      // Update momentum percentile display
+      const momentumPercentileEl = document.getElementById('momentum-percentile-display');
+      if (momentumPercentileEl) {
+        if (momentumPercentile !== null && momentumPercentile !== undefined && !isNaN(momentumPercentile)) {
+          momentumPercentileEl.textContent = `${momentumPercentile.toFixed(1)}%`;
+        } else {
+          momentumPercentileEl.textContent = '—';
+        }
       }
 
       // After updating the display, append weightedScore to rollingScores and trim to 40
@@ -3129,9 +3168,9 @@ async function fetchAndRenderPositions() {
       .map(p => `
         <tr>
           <td>${p.ticker}</td>
-          <td>${p.market_exposure && p.position !== 0 ? (p.market_exposure / p.position / 10000).toFixed(2) : "0.00"}</td>
+          <td>${p.market_exposure && p.position !== 0 ? (p.market_exposure / p.position / 100).toFixed(2) : "0.00"}</td>
           <td>${p.position}</td>
-                         <td>${(p.fees_paid / 10000).toFixed(2)}</td>
+          <td>${p.fees_paid.toFixed(2)}</td>
           <td>${new Date(p.last_updated_ts).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td>
         </tr>
       `).join("");

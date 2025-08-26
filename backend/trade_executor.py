@@ -214,10 +214,11 @@ def trigger_trade():
             log_event(ticket_id, f"❌ TRADE REJECTED - Status: {response.status_code}, Response: {response.text}")
             # Use the trade ID if provided, otherwise use ticket_id
             trade_id = data.get("id")
+            intent = data.get("intent", "open")  # Get the original intent
             if trade_id:
-                status_payload = {"id": trade_id, "status": "error", "error_message": response.text}
+                status_payload = {"id": trade_id, "status": "error", "error_message": response.text, "intent": intent}
             else:
-                status_payload = {"ticket_id": ticket_id, "status": "error", "error_message": response.text}
+                status_payload = {"ticket_id": ticket_id, "status": "error", "error_message": response.text, "intent": intent}
             manager_port = get_manager_port()
             status_url = f"http://{get_host()}:{manager_port}/api/update_trade_status"
             def notify_error():

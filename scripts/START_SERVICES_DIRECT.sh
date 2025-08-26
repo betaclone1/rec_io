@@ -64,7 +64,7 @@ echo "Unified production coordinator started with PID: $UPC_PID"
 
 # Start Kalshi services
 echo "Starting Kalshi services..."
-nohup python3 backend/api/kalshi-api/kalshi_account_sync_ws.py > logs/kalshi_account_sync.log 2>&1 &
+nohup python3 backend/kalshi_account_sync_ws.py > logs/kalshi_account_sync.log 2>&1 &
 KALSHI_SYNC_PID=$!
 echo "Kalshi account sync started with PID: $KALSHI_SYNC_PID"
 

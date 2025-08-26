@@ -524,18 +524,22 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                                 final_total_fees_paid = float(final_raw_fees_cents) / 100.0 if final_raw_fees_cents is not None else None
                                 log_event(ticket_id, f"MANAGER: [{final_time}] Final fee calculation after pause (cents): {final_raw_fees_cents}, converted to dollars: {final_total_fees_paid}")
                                 
-                                # Update fees with final calculation
+                                # Recalculate PnL with final fees
+                                final_pnl = (sell_price - buy_price) * position - final_total_fees_paid
+                                log_event(ticket_id, f"MANAGER: [{final_time}] Final PnL calculation with final fees: {final_pnl}")
+                                
+                                # Update fees and PnL with final calculation
                                 cursor_final.execute("""
                                     UPDATE users.trades_0001 
-                                    SET fees = %s 
+                                    SET fees = %s, pnl = %s
                                     WHERE id = %s
-                                """, (final_total_fees_paid, id))
+                                """, (final_total_fees_paid, final_pnl, id))
                                 pg_conn_final.commit()
-                                log_event(ticket_id, f"MANAGER: [{final_time}] Final fees written to database: {final_total_fees_paid}")
+                                log_event(ticket_id, f"MANAGER: [{final_time}] Final fees and PnL written to database: fees={final_total_fees_paid}, pnl={final_pnl}")
                             pg_conn_final.close()
                         
-                        log_event(ticket_id, f"MANAGER: CLOSE TRADE CONFIRMED - PnL: {pnl}, W/L: {win_loss}, Fees: {final_total_fees_paid}")
-                        log(f"CLOSE TRADE CONFIRMED: {expected_ticker}, PnL={pnl}, W/L={win_loss}")
+                        log_event(ticket_id, f"MANAGER: CLOSE TRADE CONFIRMED - PnL: {final_pnl}, W/L: {win_loss}, Fees: {final_total_fees_paid}")
+                        log(f"CLOSE TRADE CONFIRMED: {expected_ticker}, PnL={final_pnl}, W/L={win_loss}")
                         
                         # Try to notify active trade supervisor, but don't fail if it doesn't work
                         try:
@@ -1163,9 +1167,24 @@ async def update_trade_status_api(request: Request):
 
     elif new_status == "error":
         error_message = data.get("error_message", "")
+        intent = data.get("intent", "open")  # Get the original intent
         
-        # Check if it's an insufficient volume or insufficient balance error
-        if "insufficient_resting_volume" in error_message.lower() or "insufficient balance" in error_message.lower():
+        # Check if it's a close order failure
+        if intent == "close":
+            log(f"CLOSE ORDER FAILED - Marking as close_failed")
+            if ticket_id:
+                log_event(ticket_id, f"MANAGER: CLOSE ORDER FAILED - Marking as close_failed")
+            
+            # Mark as close_failed instead of error
+            update_trade_status(id, "close_failed")
+            
+            # Notify active trade supervisor about close failure
+            notify_active_trade_supervisor_direct(id, ticket_id, "close_failed")
+            
+            return {"message": "Close order failed - marked as close_failed", "id": id}
+        
+        # Check if it's an insufficient volume or insufficient balance error for OPEN orders
+        elif "insufficient_resting_volume" in error_message.lower() or "insufficient balance" in error_message.lower():
             error_type = "INSUFFICIENT VOLUME" if "insufficient_resting_volume" in error_message.lower() else "INSUFFICIENT BALANCE"
             log(f"{error_type} ERROR - DELETING PENDING TRADE")
             if ticket_id:

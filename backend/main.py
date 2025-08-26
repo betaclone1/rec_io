@@ -1560,7 +1560,7 @@ async def get_core_data():
             )
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m
+                SELECT momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile
                 FROM live_data.live_price_log_1s_btc 
                 ORDER BY timestamp DESC 
                 LIMIT 1
@@ -1569,7 +1569,7 @@ async def get_core_data():
             conn.close()
             
             if result:
-                momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m = result
+                momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile = result
                 momentum_data = {
                     'weighted_momentum_score': float(momentum) if momentum is not None else 0.0,
                     'delta_1m': float(delta_1m) if delta_1m is not None else None,
@@ -1577,7 +1577,8 @@ async def get_core_data():
                     'delta_3m': float(delta_3m) if delta_3m is not None else None,
                     'delta_4m': float(delta_4m) if delta_4m is not None else None,
                     'delta_15m': float(delta_15m) if delta_15m is not None else None,
-                    'delta_30m': float(delta_30m) if delta_30m is not None else None
+                    'delta_30m': float(delta_30m) if delta_30m is not None else None,
+                    'momentum_percentile': float(momentum_percentile) if momentum_percentile is not None else None
                 }
                 print(f"[MAIN] Momentum analysis: {momentum_data.get('weighted_momentum_score', 'N/A'):.4f}%")
             else:
@@ -1946,24 +1947,31 @@ async def get_account_balance(mode: str = "prod"):
         )
         
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            # Get the latest account balance
             cursor.execute("""
-                SELECT balance, timestamp 
+                SELECT portfolio, positions, timestamp 
                 FROM users.account_balance_0001 
                 ORDER BY timestamp DESC 
                 LIMIT 1
             """)
-            result = cursor.fetchone()
+            balance_result = cursor.fetchone()
+            
             
             conn.close()
             
-            if result:
-                return {"balance": result['balance']}
+            if balance_result:
+                portfolio_value = balance_result['portfolio']
+                positions_value = balance_result['positions'] if balance_result else 0
+                return {
+                    "portfolio": portfolio_value,
+                    "positions": positions_value
+                }
             else:
-                return {"balance": 0}
+                return {"portfolio": 0, "positions": 0}
             
     except Exception as e:
         print(f"Error getting account balance from PostgreSQL: {e}")
-        return {"balance": 0}
+        return {"portfolio": 0, "positions": 0}
 
 @app.get("/api/db/fills")
 def get_fills():

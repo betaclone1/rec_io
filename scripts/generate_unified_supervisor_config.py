@@ -172,7 +172,7 @@ class SupervisorConfigGenerator:
             },
             {
                 "name": "kalshi_account_sync",
-                "script": "api/kalshi-api/kalshi_account_sync_ws.py",
+                "script": "kalshi_account_sync_ws.py",
                 "port": ports.get("kalshi_account_sync", 8004)
             },
             {

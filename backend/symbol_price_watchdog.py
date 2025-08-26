@@ -55,6 +55,82 @@ POSTGRES_CONFIG = {
     'password': os.getenv('POSTGRES_PASSWORD', '')
 }
 
+# Global momentum profile cache
+MOMENTUM_PROFILES = {}
+
+def load_momentum_profile(symbol: str) -> Dict[float, float]:
+    """Load momentum profile from database and cache it in memory"""
+    if symbol in MOMENTUM_PROFILES:
+        return MOMENTUM_PROFILES[symbol]
+    
+    try:
+        conn = get_postgres_connection()
+        cursor = conn.cursor()
+        
+        profile_table = f"analytics.{symbol.lower()}_momentum_profile"
+        cursor.execute(f"SELECT percentile, momentum_value FROM {profile_table} ORDER BY percentile")
+        
+        profile = {}
+        for row in cursor.fetchall():
+            profile[float(row[0])] = float(row[1])
+        
+        conn.close()
+        MOMENTUM_PROFILES[symbol] = profile
+        print(f"✅ Loaded momentum profile for {symbol}: {len(profile)} percentiles")
+        return profile
+        
+    except Exception as e:
+        print(f"❌ Error loading momentum profile for {symbol}: {e}")
+        return {}
+
+def calculate_momentum_percentile(symbol: str, momentum_value: float) -> Optional[float]:
+    """Calculate interpolated percentile for a given momentum value using the cached profile"""
+    if momentum_value is None:
+        return None
+    
+    profile = MOMENTUM_PROFILES.get(symbol)
+    if not profile:
+        profile = load_momentum_profile(symbol)
+        if not profile:
+            return None
+    
+    # Convert profile to sorted lists for interpolation
+    percentiles = sorted(profile.keys())
+    momentum_values = [profile[p] for p in percentiles]
+    
+    # Handle edge cases
+    if momentum_value <= momentum_values[0]:
+        return percentiles[0]  # Return minimum percentile
+    if momentum_value >= momentum_values[-1]:
+        return percentiles[-1]  # Return maximum percentile
+    
+    # Find the two percentiles to interpolate between
+    for i in range(len(momentum_values) - 1):
+        if momentum_values[i] <= momentum_value <= momentum_values[i + 1]:
+            # Linear interpolation between these two points
+            p1, p2 = percentiles[i], percentiles[i + 1]
+            m1, m2 = momentum_values[i], momentum_values[i + 1]
+            
+            # Calculate interpolated percentile
+            if m2 == m1:  # Avoid division by zero
+                return p1
+            
+            # Linear interpolation formula: p = p1 + (p2-p1) * (m-m1)/(m2-m1)
+            interpolated_percentile = p1 + (p2 - p1) * (momentum_value - m1) / (m2 - m1)
+            return round(interpolated_percentile, 1)
+    
+    # Fallback: return closest percentile if interpolation fails
+    closest_percentile = None
+    min_distance = float('inf')
+    
+    for percentile, profile_momentum in profile.items():
+        distance = abs(profile_momentum - momentum_value)
+        if distance < min_distance:
+            min_distance = distance
+            closest_percentile = percentile
+    
+    return closest_percentile
+
 def get_postgres_connection():
     """Get a PostgreSQL connection"""
     return psycopg2.connect(**POSTGRES_CONFIG)
@@ -294,13 +370,21 @@ def insert_tick(symbol: str, timestamp: str, price: float):
                 'delta_30m': None
             }
         
+        # Calculate momentum percentile
+        momentum_percentile = None
+        if momentum_data.get('momentum') is not None:
+            try:
+                momentum_percentile = calculate_momentum_percentile(symbol, momentum_data['momentum'])
+            except Exception as e:
+                print(f"⚠️ Momentum percentile calculation failed: {e}")
+        
         table_name = SYMBOL_CONFIG[symbol]['table_name']
         
-        # Insert the data with all columns
+        # Insert the data with all columns including momentum_percentile
         cursor.execute(f'''
             INSERT INTO live_data.{table_name} 
-            (timestamp, price, one_minute_avg, momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m) 
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (timestamp, price, one_minute_avg, momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (timestamp) DO UPDATE SET
                 price = EXCLUDED.price,
                 one_minute_avg = EXCLUDED.one_minute_avg,
@@ -310,7 +394,8 @@ def insert_tick(symbol: str, timestamp: str, price: float):
                 delta_3m = EXCLUDED.delta_3m,
                 delta_4m = EXCLUDED.delta_4m,
                 delta_15m = EXCLUDED.delta_15m,
-                delta_30m = EXCLUDED.delta_30m
+                delta_30m = EXCLUDED.delta_30m,
+                momentum_percentile = EXCLUDED.momentum_percentile
         ''', (
             timestamp, 
             price, 
@@ -321,7 +406,8 @@ def insert_tick(symbol: str, timestamp: str, price: float):
             momentum_data.get('delta_3m'),
             momentum_data.get('delta_4m'),
             momentum_data.get('delta_15m'),
-            momentum_data.get('delta_30m')
+            momentum_data.get('delta_30m'),
+            momentum_percentile
         ))
         
         # ROLLING WINDOW: Clean up data older than 30 days
@@ -348,6 +434,10 @@ async def log_symbol_price(symbol: str):
     
     last_logged_second = None
     symbol_config = SYMBOL_CONFIG[symbol]
+    
+    # Pre-load momentum profile for this symbol
+    print(f"🔄 Pre-loading momentum profile for {symbol}...")
+    load_momentum_profile(symbol)
     
     while True:
         try:

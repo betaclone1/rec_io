@@ -7,6 +7,7 @@
 window.momentumData = {
   weightedScore: null,
   deltas: {}, // New: to store individual minute deltas
+  momentumPercentile: null, // New: to store momentum percentile
 };
 
 // === UTILITY FUNCTIONS ===
@@ -57,6 +58,9 @@ function fetchCore() {
       if (data.delta_4m !== undefined) window.momentumData.deltas['4m'] = data.delta_4m;
       if (data.delta_15m !== undefined) window.momentumData.deltas['15m'] = data.delta_15m;
       if (data.delta_30m !== undefined) window.momentumData.deltas['30m'] = data.delta_30m;
+
+      // Update momentum percentile
+      if (data.momentum_percentile !== undefined) window.momentumData.momentumPercentile = data.momentum_percentile;
 
       // Trigger momentum panel update if function exists
       if (typeof updateMomentumPanel === 'function') {
