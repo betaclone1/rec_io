@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/styles/global.css">
+    <style>
+        body {
+            padding: 10px;
+        }
+        .column {
+            padding: 0;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .panel-container {
+            width: 100%;
+            box-sizing: border-box;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="column">
+        <!-- Portfolio Panel -->
+        <div class="panel-container">
+            <div class="panel-header">Portfolio</div>
+            <div style="padding: 10px;">
+                <div style="font-size: 35px; font-weight: bold; color: #ffffff;">
+                    <span id="portfolio-value">Loading...</span>
+                </div>
+                <div style="margin-top: 20px; height: 200px; background-color: #1f2530; border-radius: 5px; position: relative; overflow: hidden;">
+                    <canvas id="portfolio-chart" width="800" height="200"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Monitors Panel -->
+        <div class="panel-container">
+            <div class="panel-header">Monitors</div>
+            <!-- Panel content will be added later -->
+        </div>
+    </div>
+
+    <script>
+        let GLOBAL_ACCOUNT_MODE = "prod";
+
+        // Load account mode and portfolio data
+        async function loadDashboardData() {
+            try {
+                // Get account mode
+                const modeRes = await fetch(window.location.origin + '/api/get_account_mode');
+                const modeData = await modeRes.json();
+                GLOBAL_ACCOUNT_MODE = modeData.mode;
+
+                // Get portfolio balance
+                const balanceRes = await fetch(`${window.location.origin}/api/account/balance?mode=${GLOBAL_ACCOUNT_MODE}`);
+                const balanceData = await balanceRes.json();
+
+                // Get historical portfolio data
+                const historyRes = await fetch(`${window.location.origin}/api/account/balance/history?mode=${GLOBAL_ACCOUNT_MODE}&limit=1000`);
+                const historyData = await historyRes.json();
+
+                // Update portfolio value display
+                const portfolioEl = document.getElementById("portfolio-value");
+                if (portfolioEl) {
+                    const portfolioVal = balanceData.portfolio ?? 0;
+                    const portfolioInDollars = portfolioVal / 100; // Convert cents to dollars
+                    portfolioEl.textContent = `$${Number(portfolioInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                }
+
+                // Render portfolio chart
+                if (historyData.history && historyData.history.length > 0) {
+                    renderPortfolioChart(historyData.history);
+                }
+            } catch (error) {
+                console.error('Error loading dashboard data:', error);
+                const portfolioEl = document.getElementById("portfolio-value");
+                if (portfolioEl) {
+                    portfolioEl.textContent = "Error loading data";
+                }
+            }
+        }
+
+        // Custom portfolio chart renderer
+        function renderPortfolioChart(historyData) {
+            const canvas = document.getElementById('portfolio-chart');
+            if (!canvas) return;
+
+            const ctx = canvas.getContext('2d');
+            const width = canvas.width;
+            const height = canvas.height;
+
+            // Clear canvas
+            ctx.clearRect(0, 0, width, height);
+
+            if (historyData.length < 2) {
+                // Not enough data to plot
+                ctx.fillStyle = '#ccc';
+                ctx.font = '14px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('No data available', width / 2, height / 2);
+                return;
+            }
+
+            // Convert portfolio values from cents to dollars
+            const portfolioValues = historyData.map(item => (item.portfolio || 0) / 100);
+            
+            // Find min and max values for scaling
+            const minValue = Math.min(...portfolioValues);
+            const maxValue = Math.max(...portfolioValues);
+            const valueRange = maxValue - minValue;
+
+            // Set margins
+            const margin = { top: 20, right: 20, bottom: 30, left: 50 };
+            const chartWidth = width - margin.left - margin.right;
+            const chartHeight = height - margin.top - margin.bottom;
+
+            // Draw background
+            ctx.fillStyle = '#1f2530';
+            ctx.fillRect(0, 0, width, height);
+
+            // Draw grid lines
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+            ctx.lineWidth = 1;
+            
+            // Horizontal grid lines
+            const gridLines = 5;
+            for (let i = 0; i <= gridLines; i++) {
+                const y = margin.top + (i * chartHeight) / gridLines;
+                ctx.beginPath();
+                ctx.moveTo(margin.left, y);
+                ctx.lineTo(width - margin.right, y);
+                ctx.stroke();
+            }
+
+            // Y-axis labels
+            ctx.fillStyle = '#ccc';
+            ctx.font = '11px Arial';
+            ctx.textAlign = 'right';
+            for (let i = 0; i <= gridLines; i++) {
+                const y = margin.top + (i * chartHeight) / gridLines;
+                const value = maxValue - (i * valueRange) / gridLines;
+                ctx.fillText(`$${value.toFixed(0)}`, margin.left - 5, y + 4);
+            }
+
+            // Draw the line
+            ctx.strokeStyle = '#4CAF50';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+
+            for (let i = 0; i < portfolioValues.length; i++) {
+                const x = margin.left + (i * chartWidth) / (portfolioValues.length - 1);
+                const y = margin.top + ((maxValue - portfolioValues[i]) / valueRange) * chartHeight;
+                
+                if (i === 0) {
+                    ctx.moveTo(x, y);
+                } else {
+                    ctx.lineTo(x, y);
+                }
+            }
+            ctx.stroke();
+
+            // Draw data points
+            ctx.fillStyle = '#4CAF50';
+            for (let i = 0; i < portfolioValues.length; i++) {
+                const x = margin.left + (i * chartWidth) / (portfolioValues.length - 1);
+                const y = margin.top + ((maxValue - portfolioValues[i]) / valueRange) * chartHeight;
+                
+                ctx.beginPath();
+                ctx.arc(x, y, 3, 0, 2 * Math.PI);
+                ctx.fill();
+            }
+
+            // Add "Portfolio" label
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 12px Arial';
+            ctx.textAlign = 'left';
+            ctx.fillText('Portfolio', margin.left, 15);
+        }
+
+        // Load data when page loads
+        document.addEventListener('DOMContentLoaded', loadDashboardData);
+
+        // Set up WebSocket connection for real-time updates
+        function setupDatabaseChangeListener() {
+            const ws = new WebSocket(`ws://${window.location.host}/ws/db_changes`);
+            
+            ws.onopen = function() {
+                console.log('🔗 Connected to database change notifications (dashboard)');
+            };
+            
+            ws.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    console.log('📡 Received database change notification (dashboard):', data);
+                    
+                    // Refresh portfolio data when account balance changes
+                    if (data.database === 'account_balance') {
+                        console.log('🔄 Refreshing portfolio data due to account balance change (dashboard)');
+                        loadDashboardData();
+                    }
+                } catch (error) {
+                    console.error('❌ Error parsing database change notification (dashboard):', error);
+                }
+            };
+            
+            ws.onerror = function(error) {
+                console.error('❌ WebSocket error (dashboard):', error);
+            };
+            
+            ws.onclose = function() {
+                console.log('🔌 Database change WebSocket connection closed (dashboard)');
+                // Attempt to reconnect after a delay
+                setTimeout(() => {
+                    console.log('🔄 Attempting to reconnect to database change notifications (dashboard)...');
+                    setupDatabaseChangeListener();
+                }, 5000);
+            };
+        }
+        
+        // Set up WebSocket connection for real-time updates
+        setupDatabaseChangeListener();
+    </script>
+</body>
+</html>

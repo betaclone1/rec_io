@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Backtester</title>
+  <link rel="stylesheet" href="/styles/global.css" />
+  <script src="/js/globals.js"></script>
+  <style>
+    .coming-soon-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      text-align: center;
+      padding: 20px;
+    }
+    
+    .coming-soon-icon {
+      width: 120px;
+      height: 120px;
+      margin-bottom: 30px;
+      opacity: 0.7;
+    }
+    
+    .coming-soon-title {
+      font-size: 2.5rem;
+      font-weight: bold;
+      margin-bottom: 20px;
+      color: var(--text-primary);
+    }
+    
+    .coming-soon-subtitle {
+      font-size: 1.2rem;
+      color: var(--text-secondary);
+      margin-bottom: 30px;
+      max-width: 600px;
+      line-height: 1.6;
+    }
+    
+    .feature-list {
+      text-align: left;
+      max-width: 500px;
+      margin: 0 auto;
+    }
+    
+    .feature-list h3 {
+      color: var(--text-primary);
+      margin-bottom: 15px;
+    }
+    
+    .feature-list ul {
+      list-style: none;
+      padding: 0;
+    }
+    
+    .feature-list li {
+      padding: 8px 0;
+      color: var(--text-secondary);
+      position: relative;
+      padding-left: 25px;
+    }
+    
+    .feature-list li::before {
+      content: "→";
+      position: absolute;
+      left: 0;
+      color: var(--accent-color);
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <div class="coming-soon-container">
+    <img src="/images/icons/backtester_icon.png" alt="Backtester" class="coming-soon-icon">
+    <h1 class="coming-soon-title">Backtester</h1>
+    <p class="coming-soon-subtitle">
+      Advanced backtesting engine for strategy validation and performance analysis. 
+      Test your trading strategies against historical data with comprehensive analytics.
+    </p>
+    
+    <div class="feature-list">
+      <h3>Coming Features:</h3>
+      <ul>
+        <li>Historical data backtesting</li>
+        <li>Strategy performance metrics</li>
+        <li>Risk analysis and drawdown tracking</li>
+        <li>Parameter optimization</li>
+        <li>Real-time strategy comparison</li>
+        <li>Custom indicator testing</li>
+        <li>Portfolio backtesting</li>
+        <li>Export and reporting tools</li>
+      </ul>
+    </div>
+  </div>
+</body>
+</html>

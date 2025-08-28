@@ -36,9 +36,22 @@
         <div class="panel">
       <div class="panel-header">Account Information</div>
       
-      <div class="panel-body">
-        <div style="font-weight: bold; margin-bottom: 4px;">Balance</div>
-        <span id="account-balance">Loading...</span>
+      <div class="panel-body" style="padding-left: 30px;">
+        <div style="margin-top: 5px; margin-bottom: 15px; font-size: 14px; display: flex; align-items: center; gap: 15px;">
+          <span id="brokerage-info">Loading...</span>
+          <a href="https://kalshi.com/account/profile" target="_blank" style="color: #4a9eff; text-decoration: none; font-size: 12px;">Account</a>
+          <a href="https://kalshi.com/portfolio" target="_blank" style="color: #4a9eff; text-decoration: none; font-size: 12px;">Portfolio</a>
+        </div>
+        <div style="display: flex; font-size: 12px; align-items: center; margin-bottom: 4px;">
+          <div style="font-weight: bold; width: 320px;">Portfolio</div>
+          <div style="font-weight: bold; width: 320px;">Cash</div>
+          <div style="font-weight: bold; width: 320px;">Positions</div>
+        </div>
+        <div style="display: flex; align-items: center;">
+          <span id="portfolio-value" style="width: 320px;">Loading...</span>
+          <span id="cash-value" style="width: 320px;">Loading...</span>
+          <span id="positions-value" style="width: 320px;">Loading...</span>
+        </div>
       </div>
     </div>
   </div>
@@ -47,7 +60,7 @@
   <div class="panel-container" style="width: 750px;">
     <div class="panel">
       <div class="panel-header">Open Positions</div>
-      <div class="panel-body" style="height: 200px; overflow-y: auto;">
+      <div class="panel-body">
         <table class="data-table" style="width: 100%; text-align: center;">
           <thead>
             <tr>
@@ -148,20 +161,29 @@
       .catch(console.error);
 
     async function loadAccountData() {
-      const [balanceRes, settlementsRes, fillsRes, positionsRes] = await Promise.all([
+      const [balanceRes, settlementsRes, fillsRes, positionsRes, emailRes] = await Promise.all([
         fetch(`${window.location.origin}/api/account/balance?mode=${GLOBAL_ACCOUNT_MODE}`),
         fetch(window.location.origin + "/api/db/settlements"),
         fetch(window.location.origin + "/api/db/fills"),
         fetch(window.location.origin + "/api/db/positions"),
+        fetch(window.location.origin + "/api/get_kalshi_email"),
       ]);
 
       const settlementsJson = await settlementsRes.json();
       const fillsJson = await fillsRes.json();
       const positionsJson = await positionsRes.json();
+      const emailJson = await emailRes.json();
 
       const settlements = settlementsJson.settlements;
       const fills = fillsJson.fills;
       const positions = positionsJson.positions || [];
+      
+      // Update brokerage info with email
+      const brokerageInfoEl = document.getElementById("brokerage-info");
+      if (brokerageInfoEl) {
+        const email = emailJson.email || "No email found";
+        brokerageInfoEl.textContent = `${email}`;
+      }
 
       window.fills = fills;
 
@@ -174,11 +196,29 @@
       const demoBalJson = await demoBalRes.json();
 
       const activeBal = GLOBAL_ACCOUNT_MODE === "prod" ? prodBalJson : demoBalJson;
-      const balanceVal = activeBal.portfolio ?? activeBal.balance ?? activeBal.total_balance ?? activeBal.available_balance ?? 0;
-      const balanceInDollars = balanceVal / 100; // Convert cents to dollars
-      const balanceEl = document.getElementById("account-balance");
-      if (balanceEl) {
-        balanceEl.textContent = `$${Number(balanceInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+      
+      // Update Portfolio value
+      const portfolioVal = activeBal.portfolio ?? 0;
+      const portfolioInDollars = portfolioVal / 100; // Convert cents to dollars
+      const portfolioEl = document.getElementById("portfolio-value");
+      if (portfolioEl) {
+        portfolioEl.textContent = `$${Number(portfolioInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+      }
+      
+      // Update Positions value
+      const positionsVal = activeBal.positions ?? 0;
+      const positionsInDollars = positionsVal / 100; // Convert cents to dollars
+      const positionsEl = document.getElementById("positions-value");
+      if (positionsEl) {
+        positionsEl.textContent = `$${Number(positionsInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+      }
+      
+      // Calculate Cash as difference between portfolio and positions
+      const cashVal = portfolioVal - positionsVal;
+      const cashInDollars = cashVal / 100; // Convert cents to dollars
+      const cashEl = document.getElementById("cash-value");
+      if (cashEl) {
+        cashEl.textContent = `$${Number(cashInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
       }
 
             const settlementsBody = document.getElementById("settlements-body");

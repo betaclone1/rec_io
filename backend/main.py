@@ -1973,6 +1973,48 @@ async def get_account_balance(mode: str = "prod"):
         print(f"Error getting account balance from PostgreSQL: {e}")
         return {"portfolio": 0, "positions": 0}
 
+@app.get("/api/account/balance/history")
+async def get_account_balance_history(mode: str = "prod", limit: int = 1000):
+    """Get historical account balance data from PostgreSQL database."""
+    try:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+        
+        # Connect to PostgreSQL
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            # Get historical account balance data
+            cursor.execute("""
+                SELECT portfolio, positions, timestamp 
+                FROM users.account_balance_0001 
+                ORDER BY timestamp ASC
+                LIMIT %s
+            """, (limit,))
+            balance_results = cursor.fetchall()
+            
+            conn.close()
+            
+            # Convert to list of dictionaries
+            history_data = []
+            for result in balance_results:
+                history_data.append({
+                    "portfolio": result['portfolio'],
+                    "positions": result['positions'],
+                    "timestamp": result['timestamp'].isoformat() if result['timestamp'] else None
+                })
+            
+            return {"history": history_data}
+            
+    except Exception as e:
+        print(f"Error getting account balance history from PostgreSQL: {e}")
+        return {"history": []}
+
 @app.get("/api/db/fills")
 def get_fills():
     """Get fills data from PostgreSQL database."""
@@ -4274,6 +4316,163 @@ async def download_file_get(file: str):
         
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+@app.get("/api/portfolio/current")
+async def get_current_portfolio():
+    """Get the current portfolio value from PostgreSQL"""
+    try:
+        import psycopg2
+        
+        # Connect to PostgreSQL
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT portfolio
+                FROM users.account_balance_0001 
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """)
+            
+            result = cursor.fetchone()
+            
+        conn.close()
+        
+        if result:
+            portfolio_value = float(result[0]) / 100  # Convert cents to dollars
+            return {
+                "status": "ok",
+                "portfolio": portfolio_value
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "No portfolio data found"
+            }
+        
+    except Exception as e:
+        print(f"Error getting current portfolio: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/portfolio/history")
+async def get_portfolio_history(period: str = "1m"):
+    """Get historical portfolio data from PostgreSQL for charting"""
+    try:
+        import psycopg2
+        from datetime import datetime, timedelta
+        
+        # Connect to PostgreSQL
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        
+        # Calculate time range based on period
+        now = datetime.now()
+        if period == "1d":
+            # For 1D, start at 05:00 on current day
+            today_5am = now.replace(hour=5, minute=0, second=0, microsecond=0)
+            
+            # Get the last value before 05:00 today to use as starting point
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT timestamp, portfolio
+                    FROM users.account_balance_0001 
+                    WHERE timestamp < %s
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                """, (today_5am.strftime('%Y-%m-%d %H:%M:%S'),))
+                
+                last_before_5am = cursor.fetchone()
+            
+            # Get all data from 05:00 today onwards
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT timestamp, portfolio
+                    FROM users.account_balance_0001 
+                    WHERE timestamp >= %s
+                    ORDER BY timestamp ASC
+                """, (today_5am.strftime('%Y-%m-%d %H:%M:%S'),))
+                
+                results = cursor.fetchall()
+            
+            # If we have a last value before 5am, prepend it to the results
+            if last_before_5am:
+                results = [last_before_5am] + list(results)
+                
+        elif period == "1w":
+            start_time = now - timedelta(weeks=1)
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT timestamp, portfolio
+                    FROM users.account_balance_0001 
+                    WHERE timestamp >= %s
+                    ORDER BY timestamp ASC
+                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
+                
+                results = cursor.fetchall()
+        elif period == "1m":
+            start_time = now - timedelta(days=30)
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT timestamp, portfolio
+                    FROM users.account_balance_0001 
+                    WHERE timestamp >= %s
+                    ORDER BY timestamp ASC
+                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
+                
+                results = cursor.fetchall()
+        elif period == "1y":
+            start_time = now - timedelta(days=365)
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT timestamp, portfolio
+                    FROM users.account_balance_0001 
+                    WHERE timestamp >= %s
+                    ORDER BY timestamp ASC
+                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
+                
+                results = cursor.fetchall()
+        else:  # "All"
+            start_time = datetime(2020, 1, 1)  # Default start date
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT timestamp, portfolio
+                    FROM users.account_balance_0001 
+                    WHERE timestamp >= %s
+                    ORDER BY timestamp ASC
+                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
+                
+                results = cursor.fetchall()
+            
+        conn.close()
+        
+        # Format results for charting
+        data = []
+        for row in results:
+            timestamp, portfolio = row
+            data.append({
+                "timestamp": timestamp if timestamp else None,
+                "portfolio": float(portfolio) / 100 if portfolio else 0  # Convert cents to dollars
+            })
+        
+        return {
+            "status": "ok",
+            "period": period,
+            "count": len(data),
+            "data": data
+        }
+        
+    except Exception as e:
+        print(f"Error getting portfolio history: {e}")
+        return {"status": "error", "message": str(e)}
 
 # Main entry point
 if __name__ == "__main__":
