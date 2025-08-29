@@ -1,228 +1,1927 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Dashboard</title>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/styles/global.css">
-    <style>
-        body {
-            padding: 10px;
-        }
-        .column {
-            padding: 0;
-            width: 100%;
-            box-sizing: border-box;
-        }
-        .panel-container {
-            width: 100%;
-            box-sizing: border-box;
-            margin-bottom: 10px;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles/global.css">
+  
+  <!-- Preload critical images -->
+  <link rel="preload" href="/images/icons/list_view_icon.png" as="image" type="image/png">
+  <link rel="preload" href="/images/icons/tile_view_icon.png" as="image" type="image/png">
+  
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+  <style>
+    /* Dashboard Container */
+    .dashboard-container {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      gap: 10px;
+    }
+
+    /* Portfolio Panel */
+    .portfolio-panel {
+      min-height: 300px;
+      width: 75%;
+    }
+
+    /* New Panel */
+    .new-panel {
+      min-height: 300px;
+      width: 25%;
+      padding: 8px;
+    }
+
+    /* Markets List */
+    .markets-list {
+      padding: 0;
+    }
+
+    .market-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      padding: 8px 0;
+      margin-bottom: 8px;
+      border-bottom: none;
+    }
+
+    .market-item:hover {
+      background-color: #4a5568;
+    }
+
+    .market-item:last-child {
+      border-bottom: none;
+    }
+
+    .market-info {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .market-symbol {
+      font-weight: 600;
+      font-size: 16px;
+      color: #ffffff;
+      margin-bottom: 4px;
+    }
+
+    .market-name {
+      font-size: 12px;
+      color: #a0aec0;
+    }
+
+    .market-data {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      text-align: right;
+      min-width: 0;
+    }
+
+    .market-price {
+      font-weight: 600;
+      font-size: 16px;
+      color: #ffffff;
+      margin-bottom: 4px;
+    }
+
+    .market-changes {
+      font-size: 11px;
+      color: #a0aec0;
+      line-height: 1.4;
+    }
+
+    .market-changes span {
+      color: #28a745;
+      background-color: rgba(40, 167, 69, 0.1);
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-weight: 500;
+    }
+
+    .market-changes span.negative {
+      color: #dc3545;
+      background-color: rgba(220, 53, 69, 0.1);
+    }
+
+    /* Monitors Panel */
+    .monitors-panel {
+      min-height: 400px;
+    }
+
+    .monitors-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 10px 0;
+    }
+
+    .monitors-grid.list-view {
+      display: flex;
+      flex-direction: column;
+      flex-wrap: nowrap;
+      gap: 4px;
+      padding: 10px 0;
+    }
+
+    /* Monitor Tile Base */
+    .monitor-tile {
+      background-color: #273442;
+      border-radius: 8px;
+      padding: 16px;
+      cursor: grab;
+      border: 1px solid #34495e;
+      user-select: none;
+      min-width: 280px;
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      position: relative;
+    }
+
+    .monitor-tile:hover {
+      background: #293745;
+    }
+
+    /* Monitor Name */
+    .monitor-name {
+      font-size: 11px;
+      color: #a0aec0;
+      font-weight: 500;
+      letter-spacing: 0.5px;
+    }
+
+    .list-view .monitor-name {
+      display: block;
+      margin-left: 16px;
+      min-width: 120px;
+      text-align: left;
+    }
+
+    .tile-view .monitor-name {
+      position: absolute;
+      bottom: 16px;
+      right: 16px;
+      font-size: 9px;
+    }
+
+    /* Monitor Controls */
+    .monitor-controls {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .list-view .monitor-controls {
+      position: static;
+      margin-left: auto;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .tile-view .monitor-controls {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      flex-direction: row;
+      align-items: center;
+      gap: 4px;
+    }
+
+    /* Monitor Symbol */
+    .monitor-symbol {
+      font-size: 18px;
+      font-weight: 600;
+      color: #ffffff;
+    }
+
+    .list-view .monitor-symbol {
+      font-size: 14px;
+      margin-bottom: 2px;
+    }
+
+    .tile-view .monitor-symbol {
+      font-size: 18px;
+    }
+
+    /* Monitor Strategy */
+    .monitor-strategy {
+      font-size: 12px;
+      color: #a0aec0;
+    }
+
+    .list-view .monitor-strategy {
+      font-size: 11px;
+    }
+
+    .tile-view .monitor-strategy {
+      font-size: 12px;
+      margin-bottom: 10px;
+    }
+
+    /* Monitor Status */
+    .monitor-status {
+      font-size: 12px;
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 4px;
+      text-align: center;
+      width: fit-content;
+      letter-spacing: 0.5px;
+    }
+
+    .list-view .monitor-status {
+      min-width: 70px;
+      margin-right: 16px;
+      transform: translateY(0px);
+    }
+
+    .tile-view .monitor-status {
+      transform: translateY(25px);
+    }
+
+    .monitor-status.active {
+      background-color: #48bb78;
+      color: #ffffff;
+    }
+
+    .monitor-status.inactive {
+      background-color: #dcb610;
+      color: #ffffff;
+    }
+
+    .monitor-status.off {
+      background-color: #404144;
+      color: #ffffff;
+    }
+
+    .monitor-status.paused {
+      background-color: #e53e3e;
+      color: #ffffff;
+    }
+
+    /* Monitor Stats */
+    .monitor-stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .list-view .monitor-stats {
+      display: flex;
+      gap: 12px;
+      margin: 0;
+      margin-right: 16px;
+    }
+
+    .tile-view .monitor-stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    /* Stat Value */
+    .stat-value {
+      font-size: 14px;
+      font-weight: 600;
+      color: #ffffff;
+      margin-bottom: 2px;
+    }
+
+    .list-view .stat-value {
+      font-size: 13px;
+      margin: 0;
+    }
+
+    .tile-view .stat-value {
+      font-size: 14px;
+      margin-bottom: 2px;
+    }
+
+    /* Stat Label */
+    .stat-label {
+      font-size: 10px;
+      color: #a0aec0;
+      font-weight: 500;
+      letter-spacing: 0.5px;
+    }
+
+    .list-view .stat-label {
+      font-size: 9px;
+    }
+
+    .tile-view .stat-label {
+      font-size: 10px;
+    }
+
+    /* Monitor Uptime */
+    .monitor-uptime {
+      font-size: 10px;
+      color: #a0aec0;
+    }
+
+    .list-view .monitor-uptime {
+      min-width: 80px;
+      text-align: center;
+      margin-right: 16px;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .tile-view .monitor-uptime {
+      text-align: left;
+      margin-top: 10px;
+    }
+
+    /* Auto Trade Label */
+    .auto-trade-label {
+      font-size: 10px;
+      color: #a0aec0;
+      font-weight: 500;
+      letter-spacing: 0.5px;
+    }
+
+    .list-view .auto-trade-label {
+      margin-right: 8px;
+    }
+
+    .tile-view .auto-trade-label {
+      margin-right: 0px;
+    }
+
+    /* Auto Trade Toggle */
+    .auto-trade-toggle {
+      width: 32px;
+      height: 17px;
+      background-color: #444;
+      border-radius: 9px;
+      position: relative;
+      cursor: pointer;
+      transition: background-color 0.2s;
+      border: none;
+      outline: none;
+    }
+
+    .list-view .auto-trade-toggle {
+      margin-bottom: 4px;
+    }
+
+    .tile-view .auto-trade-toggle {
+      margin-bottom: 0;
+    }
+
+    .auto-trade-toggle.active {
+      background-color: #007bff;
+    }
+
+    .auto-trade-toggle::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 13px;
+      height: 13px;
+      background-color: white;
+      border-radius: 50%;
+      transition: transform 0.2s;
+    }
+
+    .auto-trade-toggle.active::after {
+      transform: translateX(15px);
+    }
+
+    /* Monitor Settings Icon */
+    .list-view .monitor-settings-icon {
+      width: 14px;
+      height: 14px;
+      opacity: 0.3;
+      transition: opacity 0.2s;
+      cursor: pointer;
+      margin-right: 6px;
+    }
+
+    .list-view .monitor-settings-icon:hover {
+      opacity: 1;
+    }
+
+    .tile-view .monitor-settings-icon {
+      width: 14px;
+      height: 14px;
+      opacity: 0.3;
+      transition: opacity 0.2s;
+      cursor: pointer;
+      margin-right: 6px;
+    }
+
+    .tile-view .monitor-settings-icon:hover {
+      opacity: 1;
+    }
+
+    /* List View Tile Layout */
+    .list-view .monitor-tile {
+      width: 80%;
+      height: 40px;
+      flex-direction: row;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 16px;
+      margin-bottom: 8px;
+    }
+
+    /* New Monitor Tile */
+    .list-view .monitor-tile.new-monitor {
+      border: 2px dashed #4a5568;
+      background: transparent;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      user-select: none;
+      width: 80%;
+      height: 40px;
+    }
+
+    .tile-view .monitor-tile.new-monitor {
+      border: 2px dashed #4a5568;
+      background: transparent;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      user-select: none;
+    }
+
+    .list-view .monitor-tile.new-monitor:hover {
+      border-color: #007bff;
+      background: rgba(0, 123, 255, 0.1);
+    }
+
+    .tile-view .monitor-tile.new-monitor:hover {
+      border-color: #007bff;
+      background: rgba(0, 123, 255, 0.1);
+    }
+
+    .list-view .monitor-tile.new-monitor:active {
+      cursor: pointer;
+    }
+
+    .tile-view .monitor-tile.new-monitor:active {
+      cursor: pointer;
+    }
+
+    .sortable-ghost ~ .monitor-tile.new-monitor:hover,
+    .sortable-chosen ~ .monitor-tile.new-monitor:hover {
+      border-color: #4a5568;
+      background: transparent;
+    }
+
+    .list-view .new-monitor .monitor-symbol {
+      font-size: 24px;
+      color: #4a5568;
+      font-weight: 600;
+      margin-right: 8px;
+    }
+
+    .tile-view .new-monitor .monitor-symbol {
+      font-size: 32px;
+      color: #4a5568;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    .list-view .new-monitor .monitor-strategy {
+      font-size: 11px;
+      color: #4a5568;
+      font-weight: 500;
+      letter-spacing: 0.5px;
+    }
+
+    .tile-view .new-monitor .monitor-strategy {
+      font-size: 12px;
+      color: #4a5568;
+      font-weight: 500;
+      letter-spacing: 0.5px;
+    }
+
+    /* Tooltip */
+    .monitor-tooltip {
+      position: absolute;
+      background: #2a3a4a;
+      color: white;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      white-space: nowrap;
+      z-index: 1000;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      opacity: 0;
+      transition: opacity 0.2s ease;
+      pointer-events: none;
+    }
+
+    .monitor-tooltip.show {
+      opacity: 1;
+    }
+
+    /* Sortable Styles */
+    .sortable-ghost {
+      opacity: 0.3;
+    }
+
+    .sortable-chosen {
+      background-color: #293745;
+    }
+
+    .sortable-drag {
+      opacity: 0.8;
+    }
+
+    .sortable-fallback {
+      opacity: 0.8;
+    }
+
+    /* Portfolio Chart */
+    .portfolio-chart-container {
+      height: 200px;
+      margin-top: 0px;
+      position: relative;
+      background-color: #1f2530;
+      border-radius: 5px;
+      overflow: hidden;
+      padding: 10px;
+    }
+
+    .portfolio-controls {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      margin-top: 12px;
+      margin-bottom: 0px;
+    }
+
+    .portfolio-info {
+      display: flex;
+      align-items: center;
+      gap: 15px;
+    }
+
+    .portfolio-value {
+      font-size: 35px;
+      font-weight: bold;
+      color: #ffffff;
+      line-height: 1;
+    }
+
+    .portfolio-change-container {
+      display: flex;
+      flex-direction: row;
+      align-items: flex-end;
+    }
+
+    .change-element {
+      font-size: 18px;
+      font-weight: bold;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      color: #ffffff;
+      line-height: 1;
+    }
+
+    .change-element::before {
+      content: '';
+      width: 0;
+      height: 0;
+      border-left: 6px solid transparent;
+      border-right: 6px solid transparent;
+    }
+
+    .change-element.positive::before {
+      border-bottom: 8px solid #4caf50;
+    }
+
+    .change-element.negative::before {
+      border-top: 8px solid #f44336;
+    }
+
+    .view-buttons {
+      display: flex;
+      gap: 5px;
+    }
+
+    .view-btn {
+      background-color: #323c4e;
+      border: 0px solid #4a9eff;
+      color: #c4c4c4;
+      padding: 4px 8px;
+      border-radius: 3px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .view-btn.active {
+      background-color: #4a9eff;
+      color: #ffffff;
+    }
+
+    /* Panels Row */
+    .panels-row {
+      display: flex;
+      gap: 10px;
+    }
+
+    .panels-row .panel-container {
+      margin-bottom: 0;
+    }
+
+    /* Stat Panel */
+    .stat-panel {
+      background-color: #34495e;
+      border-radius: 4px;
+      padding: 8px;
+      text-align: center;
+    }
+
+    .stat-value.positive {
+      color: #48bb78;
+    }
+
+    .stat-value.negative {
+      color: #f56565;
+    }
+
+    .stat-value.neutral {
+      color: #a0aec0;
+    }
+
+    /* Symbol Status Row */
+    .symbol-status-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+  </style>
 </head>
 <body>
-    <div class="column">
-        <!-- Portfolio Panel -->
-        <div class="panel-container">
-            <div class="panel-header">Portfolio</div>
-            <div style="padding: 10px;">
-                <div style="font-size: 35px; font-weight: bold; color: #ffffff;">
-                    <span id="portfolio-value">Loading...</span>
-                </div>
-                <div style="margin-top: 20px; height: 200px; background-color: #1f2530; border-radius: 5px; position: relative; overflow: hidden;">
-                    <canvas id="portfolio-chart" width="800" height="200"></canvas>
-                </div>
+  <div class="dashboard-container">
+    <!-- Portfolio and New Panel Row -->
+    <div class="panels-row">
+      <!-- Portfolio Panel -->
+      <div class="panel-container portfolio-panel">
+        <div class="panel-header">
+          Portfolio
+          <div class="portfolio-controls">
+            <div class="portfolio-info">
+              <span class="portfolio-value" id="portfolio-value" style="padding-left: 20px; margin-right: 15px;"">Loading...</span>
+              <div class="portfolio-change-container">
+                <div class="change-element" id="portfolio-change"></div>
+              </div>
             </div>
+            <div class="view-buttons">
+              <button onclick="setChartView('1d')" class="view-btn active">1d</button>
+              <button onclick="setChartView('1w')" class="view-btn">1w</button>
+              <button onclick="setChartView('1m')" class="view-btn">1m</button>
+              <button onclick="setChartView('1y')" class="view-btn">1y</button>
+              <button onclick="setChartView('all')" class="view-btn">All</button>
+            </div>
+          </div>
         </div>
+        <div class="portfolio-chart-container">
+          <canvas id="portfolio-chart"></canvas>
+        </div>
+      </div>
 
-        <!-- Monitors Panel -->
-        <div class="panel-container">
-            <div class="panel-header">Monitors</div>
-            <!-- Panel content will be added later -->
+      <!-- New Panel -->
+      <div class="panel-container new-panel">
+        <div class="markets-list">
+          <div class="market-item" data-symbol="BTC">
+            <div class="market-info">
+              <div class="market-symbol">BTC</div>
+              <div class="market-name">Bitcoin</div>
+            </div>
+            <div class="market-data">
+              <div class="market-price" id="btc-price">$0.00</div>
+              <div class="market-changes">
+                1h <span id="btc-change-1h">—</span> &nbsp;&nbsp; 1d <span id="btc-change-1d">—</span>
+              </div>
+            </div>
+          </div>
+          
+          <div class="market-item" data-symbol="ETH">
+            <div class="market-info">
+              <div class="market-symbol">ETH</div>
+              <div class="market-name">Ethereum</div>
+            </div>
+            <div class="market-data">
+              <div class="market-price" id="eth-price">$0.00</div>
+              <div class="market-changes">
+                1h <span id="eth-change-1h">—</span> &nbsp;&nbsp; 1d <span id="eth-change-1d">—</span>
+              </div>
+            </div>
+          </div>
+          
+          <div class="market-item" data-symbol="SPY">
+            <div class="market-info">
+              <div class="market-symbol">SPY</div>
+              <div class="market-name">S&P 500</div>
+            </div>
+            <div class="market-data">
+              <div class="market-price" id="spy-price">$458.25</div>
+              <div class="market-changes">
+                1h <span id="spy-change-1h">+0.45% ▲</span> &nbsp;&nbsp; 1d <span id="spy-change-1d">+1.84% ▲</span>
+              </div>
+            </div>
+          </div>
+          
+          <div class="market-item" data-symbol="QQQ">
+            <div class="market-info">
+              <div class="market-symbol">QQQ</div>
+              <div class="market-name">Nasdaq ETF</div>
+            </div>
+            <div class="market-data">
+              <div class="market-price" id="qqq-price">$395.50</div>
+              <div class="market-changes">
+                1h <span id="qqq-change-1h">+0.32% ▲</span> &nbsp;&nbsp; 1d <span id="qqq-change-1d">+1.41% ▲</span>
+              </div>
+            </div>
+          </div>
         </div>
+      </div>
     </div>
 
-    <script>
-        let GLOBAL_ACCOUNT_MODE = "prod";
+    <!-- Monitors Panel -->
+    <div class="panel-container monitors-panel">
+              <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+          <span>Monitors</span>
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="font-size: 12px; color: #a0aec0;">Sort by</span>
+              <select id="sortPicker" class="dropdown-picker" onchange="sortMonitors(this.value)" style="font-size: 11px; padding: 2px 6px;">
+                <option value="name">Name</option>
+                <option value="symbol">Symbol</option>
+                <option value="strategy">Strategy</option>
+                <option value="trades">Trades</option>
+                <option value="winRate">W/L</option>
+                <option value="return">Ret</option>
+                <option value="pnl">PnL</option>
+                <option value="uptime">Uptime</option>
+                <option value="custom" style="display: none;">Custom</option>
+              </select>
+            </div>
+            <div style="font-size: 12px; user-select: none; color: white; display: flex; align-items: center; gap: 6px; margin: 0; cursor: pointer;" id="viewModeToggle" onclick="toggleViewMode()">
+              <img 
+                id="listViewIcon"
+                src="/images/icons/list_view_icon.png" 
+                alt="List View" 
+                title="List View" 
+                style="width: 16px; height: 16px; opacity: 0.2; transition: opacity 0.2s;"
+              />
+              <img 
+                id="tileViewIcon"
+                src="/images/icons/tile_view_icon.png" 
+                alt="Tile View" 
+                title="Tile View" 
+                style="width: 16px; height: 16px; opacity: 1; transition: opacity 0.2s;"
+              />
+            </div>
+          </div>
+        </div>
+              <div class="monitors-grid" id="monitors-grid">
+              <!-- Monitor tiles will be dynamically generated here -->
+            </div>
+    </div>
+  </div>
 
-        // Load account mode and portfolio data
-        async function loadDashboardData() {
-            try {
-                // Get account mode
-                const modeRes = await fetch(window.location.origin + '/api/get_account_mode');
-                const modeData = await modeRes.json();
-                GLOBAL_ACCOUNT_MODE = modeData.mode;
+  <script>
+    // SortableJS for drag and drop
 
-                // Get portfolio balance
-                const balanceRes = await fetch(`${window.location.origin}/api/account/balance?mode=${GLOBAL_ACCOUNT_MODE}`);
-                const balanceData = await balanceRes.json();
+    // Load account mode and fetch portfolio data
+    let GLOBAL_ACCOUNT_MODE = 'prod'; // Default to production mode
+    let portfolioChart = null;
+    let allHistoryData = []; // Store all data
+    let currentView = 'all'; // Current view
+    let currentViewMode = 'tile'; // Current view mode (tile/list)
+    let currentSortBy = 'name'; // Current sort criteria
 
-                // Get historical portfolio data
-                const historyRes = await fetch(`${window.location.origin}/api/account/balance/history?mode=${GLOBAL_ACCOUNT_MODE}&limit=1000`);
-                const historyData = await historyRes.json();
+    // Load account mode from localStorage or default to prod
+    document.addEventListener('DOMContentLoaded', function() {
+      const savedMode = localStorage.getItem('rec_account_mode');
+      if (savedMode) {
+        GLOBAL_ACCOUNT_MODE = savedMode;
+      }
+      
+      // Load dashboard preferences first, then portfolio data and monitors
+      loadDashboardPreferences().then(() => {
+        loadPortfolioData();
+        loadPortfolioHistory();
+        
+        // Load monitors from API, then initialize
+        loadMonitors().then(() => {
+          initializeMonitors();
+          initializeSortable();
+          initializeTooltips();
+        });
+      });
+    });
 
-                // Update portfolio value display
-                const portfolioEl = document.getElementById("portfolio-value");
-                if (portfolioEl) {
-                    const portfolioVal = balanceData.portfolio ?? 0;
-                    const portfolioInDollars = portfolioVal / 100; // Convert cents to dollars
-                    portfolioEl.textContent = `$${Number(portfolioInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
-                }
+    // Monitors data - will be loaded from API
+    let monitors = [];
 
-                // Render portfolio chart
-                if (historyData.history && historyData.history.length > 0) {
-                    renderPortfolioChart(historyData.history);
-                }
-            } catch (error) {
-                console.error('Error loading dashboard data:', error);
-                const portfolioEl = document.getElementById("portfolio-value");
-                if (portfolioEl) {
-                    portfolioEl.textContent = "Error loading data";
-                }
-            }
+    // Create monitor tile HTML
+    function createMonitorTile(monitor, index) {
+      const isListView = currentViewMode === 'list';
+      
+      if (monitor.id === 'NEW_MONITOR') {
+        // Special layout for new monitor tile
+        return `
+          <div class="monitor-tile new-monitor" data-index="${index}">
+            <div class="monitor-symbol">${monitor.symbol}</div>
+            <div class="monitor-strategy">${monitor.strategy}</div>
+          </div>
+        `;
+      }
+      
+      if (isListView) {
+        // List view layout - horizontal data arrangement
+        return `
+          <div class="monitor-tile list-view" data-monitor-id="${monitor.id}" data-index="${index}">
+            <div style="display: flex; flex-direction: column; min-width: 100px; margin-right: 16px;">
+              <div class="monitor-symbol">${monitor.symbol}</div>
+              <div class="monitor-strategy">${monitor.strategy}</div>
+            </div>
+            <div class="monitor-status ${monitor.status === 'active' ? 'active' : monitor.status === 'inactive' ? 'inactive' : monitor.status === 'off' ? 'off' : 'paused'}">${monitor.status === 'active' ? 'ACTIVE' : monitor.status === 'inactive' ? 'INACTIVE' : monitor.status === 'off' ? 'OFF' : 'PAUSED'}</div>
+            <div class="monitor-stats">
+              <div style="text-align: center; min-width: 45px;">
+                <div class="stat-value">${monitor.trades}</div>
+                <div class="stat-label">Trades</div>
+              </div>
+              <div style="text-align: center; min-width: 45px;">
+                <div class="stat-value">${monitor.winRate}</div>
+                <div class="stat-label">W/L</div>
+              </div>
+              <div style="text-align: center; min-width: 60px;">
+                <div class="stat-value ${monitor.return.startsWith('+') ? 'positive' : monitor.return.startsWith('-') ? 'negative' : 'neutral'}">${monitor.return}</div>
+                <div class="stat-label">Ret%</div>
+              </div>
+              <div style="text-align: center; min-width: 70px;">
+                <div class="stat-value ${monitor.pnl.startsWith('+') ? 'positive' : monitor.pnl.startsWith('-') ? 'negative' : 'neutral'}">${monitor.pnl}</div>
+                <div class="stat-label">PnL</div>
+              </div>
+            </div>
+            <div class="monitor-uptime">${monitor.uptime}</div>
+            <div class="monitor-name">${monitor.name}</div>
+            <div class="monitor-controls">
+              <div style="display: flex; align-items: center;">
+                <img 
+                  class="monitor-settings-icon"
+                  src="/images/icons/panel_settings.png" 
+                  alt="Monitor Settings" 
+                  title="Monitor Settings" 
+                  onclick="console.log('Monitor Settings icon clicked for ${monitor.id}');"
+                />
+                <div class="auto-trade-label">AUTO TRADE</div>
+                <div class="auto-trade-toggle ${monitor.autoTrade ? 'active' : ''}" onclick="toggleAutoTrade('${monitor.id}')"></div>
+              </div>
+            </div>
+          </div>
+        `;
+      } else {
+        // Tile view layout - original vertical arrangement
+        return `
+          <div class="monitor-tile tile-view" data-index="${index}">
+            <div class="monitor-name">${monitor.name}</div>
+            <div class="monitor-controls">
+              <img 
+                class="monitor-settings-icon"
+                src="/images/icons/panel_settings.png" 
+                alt="Monitor Settings" 
+                title="Monitor Settings" 
+                onclick="console.log('Monitor Settings icon clicked for ${monitor.id}');"
+              />
+              <span class="auto-trade-label">AUTO TRADE</span>
+              <div class="auto-trade-toggle ${monitor.autoTrade ? 'active' : ''}" onclick="toggleAutoTrade('${monitor.id}')"></div>
+            </div>
+            <div class="symbol-status-row">
+              <div class="monitor-symbol">${monitor.symbol}</div>
+              <div class="monitor-status ${monitor.auto_trade_status === 'active' ? 'active' : monitor.auto_trade_status === 'inactive' ? 'inactive' : monitor.auto_trade_status === 'off' ? 'off' : 'paused'}">${monitor.auto_trade_status === 'active' ? 'ACTIVE' : monitor.auto_trade_status === 'inactive' ? 'INACTIVE' : monitor.auto_trade_status === 'off' ? 'OFF' : 'PAUSED'}</div>
+            </div>
+            <div class="monitor-strategy">${monitor.strategy}</div>
+            <div class="monitor-stats">
+              <div class="stat-panel">
+                <div class="stat-value">${monitor.trades}</div>
+                <div class="stat-label">Trades</div>
+              </div>
+              <div class="stat-panel">
+                <div class="stat-value">${monitor.winRate}</div>
+                <div class="stat-label">W/L</div>
+              </div>
+              <div class="stat-panel">
+                <div class="stat-value ${monitor.return.startsWith('+') ? 'positive' : monitor.return.startsWith('-') ? 'negative' : 'neutral'}">${monitor.return}</div>
+                <div class="stat-label">Ret%</div>
+              </div>
+              <div class="stat-panel">
+                <div class="stat-value ${monitor.pnl.startsWith('+') ? 'positive' : monitor.pnl.startsWith('-') ? 'negative' : 'neutral'}">${monitor.pnl}</div>
+                <div class="stat-label">PnL</div>
+              </div>
+            </div>
+            <div class="monitor-uptime">${monitor.uptime}</div>
+          </div>
+        `;
+      }
+    }
+
+    // Load monitors from API
+    async function loadMonitors() {
+      try {
+        const response = await fetch('/api/monitors?user_id=user_0001');
+        const data = await response.json();
+        
+        if (data.status === 'ok') {
+          monitors = data.monitors;
+          console.log(`Loaded ${data.count} monitors from API`);
+        } else {
+          console.error('Failed to load monitors:', data.message);
+          // Fallback to empty array with NEW_MONITOR
+          monitors = [{
+            "id": "NEW_MONITOR",
+            "symbol": "+",
+            "strategy": "NEW MONITOR",
+            "status": "new",
+            "autoTrade": false,
+            "trades": "",
+            "winRate": "",
+            "return": "",
+            "pnl": "",
+            "uptime": "",
+            "name": "NEW_MONITOR",
+            "bankroll_allotment": 0,
+            "auto_trade_status": "inactive"
+          }];
         }
+      } catch (error) {
+        console.error('Error loading monitors:', error);
+        // Fallback to empty array with NEW_MONITOR
+        monitors = [{
+          "id": "NEW_MONITOR",
+          "symbol": "+",
+          "strategy": "NEW MONITOR",
+          "status": "new",
+          "autoTrade": false,
+          "trades": "",
+          "winRate": "",
+          "return": "",
+          "pnl": "",
+          "uptime": "",
+          "name": "NEW_MONITOR",
+          "bankroll_allotment": 0,
+          "auto_trade_status": "inactive"
+        }];
+      }
+    }
 
-        // Custom portfolio chart renderer
-        function renderPortfolioChart(historyData) {
-            const canvas = document.getElementById('portfolio-chart');
-            if (!canvas) return;
+    // Initialize monitors
+    function initializeMonitors() {
+      const grid = document.getElementById('monitors-grid');
+      if (grid) {
+        grid.innerHTML = monitors.map((monitor, index) => createMonitorTile(monitor, index)).join('');
+      }
+    }
 
-            const ctx = canvas.getContext('2d');
-            const width = canvas.width;
-            const height = canvas.height;
+    // Tooltip functionality
+    function initializeTooltips() {
+      const tooltip = document.createElement('div');
+      tooltip.className = 'monitor-tooltip';
+      document.body.appendChild(tooltip);
 
-            // Clear canvas
-            ctx.clearRect(0, 0, width, height);
+      let tooltipTimeout;
 
-            if (historyData.length < 2) {
-                // Not enough data to plot
-                ctx.fillStyle = '#ccc';
-                ctx.font = '14px Arial';
-                ctx.textAlign = 'center';
-                ctx.fillText('No data available', width / 2, height / 2);
-                return;
-            }
-
-            // Convert portfolio values from cents to dollars
-            const portfolioValues = historyData.map(item => (item.portfolio || 0) / 100);
-            
-            // Find min and max values for scaling
-            const minValue = Math.min(...portfolioValues);
-            const maxValue = Math.max(...portfolioValues);
-            const valueRange = maxValue - minValue;
-
-            // Set margins
-            const margin = { top: 20, right: 20, bottom: 30, left: 50 };
-            const chartWidth = width - margin.left - margin.right;
-            const chartHeight = height - margin.top - margin.bottom;
-
-            // Draw background
-            ctx.fillStyle = '#1f2530';
-            ctx.fillRect(0, 0, width, height);
-
-            // Draw grid lines
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
-            ctx.lineWidth = 1;
-            
-            // Horizontal grid lines
-            const gridLines = 5;
-            for (let i = 0; i <= gridLines; i++) {
-                const y = margin.top + (i * chartHeight) / gridLines;
-                ctx.beginPath();
-                ctx.moveTo(margin.left, y);
-                ctx.lineTo(width - margin.right, y);
-                ctx.stroke();
-            }
-
-            // Y-axis labels
-            ctx.fillStyle = '#ccc';
-            ctx.font = '11px Arial';
-            ctx.textAlign = 'right';
-            for (let i = 0; i <= gridLines; i++) {
-                const y = margin.top + (i * chartHeight) / gridLines;
-                const value = maxValue - (i * valueRange) / gridLines;
-                ctx.fillText(`$${value.toFixed(0)}`, margin.left - 5, y + 4);
-            }
-
-            // Draw the line
-            ctx.strokeStyle = '#4CAF50';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-
-            for (let i = 0; i < portfolioValues.length; i++) {
-                const x = margin.left + (i * chartWidth) / (portfolioValues.length - 1);
-                const y = margin.top + ((maxValue - portfolioValues[i]) / valueRange) * chartHeight;
-                
-                if (i === 0) {
-                    ctx.moveTo(x, y);
-                } else {
-                    ctx.lineTo(x, y);
-                }
-            }
-            ctx.stroke();
-
-            // Draw data points
-            ctx.fillStyle = '#4CAF50';
-            for (let i = 0; i < portfolioValues.length; i++) {
-                const x = margin.left + (i * chartWidth) / (portfolioValues.length - 1);
-                const y = margin.top + ((maxValue - portfolioValues[i]) / valueRange) * chartHeight;
-                
-                ctx.beginPath();
-                ctx.arc(x, y, 3, 0, 2 * Math.PI);
-                ctx.fill();
-            }
-
-            // Add "Portfolio" label
-            ctx.fillStyle = '#ffffff';
-            ctx.font = 'bold 12px Arial';
-            ctx.textAlign = 'left';
-            ctx.fillText('Portfolio', margin.left, 15);
+      document.addEventListener('mouseover', function(e) {
+        const monitorTile = e.target.closest('.monitor-tile');
+        if (monitorTile && monitorTile.classList.contains('list-view')) {
+          const monitorId = monitorTile.getAttribute('data-monitor-id');
+          if (monitorId) {
+            tooltipTimeout = setTimeout(() => {
+              const rect = monitorTile.getBoundingClientRect();
+              tooltip.textContent = monitorId;
+              tooltip.style.left = (rect.right + 10) + 'px';
+              tooltip.style.top = (rect.top + rect.height / 2 - tooltip.offsetHeight / 2) + 'px';
+              tooltip.classList.add('show');
+            }, 500);
+          }
         }
+      });
 
-        // Load data when page loads
-        document.addEventListener('DOMContentLoaded', loadDashboardData);
+      document.addEventListener('mouseout', function(e) {
+        const monitorTile = e.target.closest('.monitor-tile');
+        if (monitorTile) {
+          clearTimeout(tooltipTimeout);
+          tooltip.classList.remove('show');
+        }
+      });
+    }
 
-        // Set up WebSocket connection for real-time updates
-        function setupDatabaseChangeListener() {
-            const ws = new WebSocket(`ws://${window.location.host}/ws/db_changes`);
+    // Initialize Sortable for monitor tiles
+    function initializeSortable() {
+      const grid = document.getElementById('monitors-grid');
+      if (grid) {
+        new Sortable(grid, {
+          animation: 150,
+          ghostClass: 'sortable-ghost',
+          chosenClass: 'sortable-chosen',
+          dragClass: 'sortable-drag',
+          fallbackClass: 'sortable-fallback',
+          forceFallback: true,
+          filter: '.new-monitor', // Prevent new monitor tile from being dragged
+          onMove: function(evt) {
+            // Prevent dropping any tile after the new monitor tile
+            const newMonitorIndex = monitors.findIndex(m => m.id === 'NEW_MONITOR');
+            const draggedIndex = evt.dragged.dataset.index;
+            const newIndex = evt.dragged.parentNode.children.length - 1; // Last position is reserved for new monitor
             
-            ws.onopen = function() {
-                console.log('🔗 Connected to database change notifications (dashboard)');
-            };
+            if (evt.related && evt.related.classList.contains('new-monitor')) {
+              return false; // Prevent dropping on new monitor tile
+            }
             
-            ws.onmessage = function(event) {
-                try {
-                    const data = JSON.parse(event.data);
-                    console.log('📡 Received database change notification (dashboard):', data);
-                    
-                    // Refresh portfolio data when account balance changes
-                    if (data.database === 'account_balance') {
-                        console.log('🔄 Refreshing portfolio data due to account balance change (dashboard)');
-                        loadDashboardData();
-                    }
-                } catch (error) {
-                    console.error('❌ Error parsing database change notification (dashboard):', error);
-                }
-            };
+            // Prevent dropping after the new monitor tile
+            if (evt.newIndex >= newMonitorIndex) {
+              return false;
+            }
             
-            ws.onerror = function(error) {
-                console.error('❌ WebSocket error (dashboard):', error);
-            };
-            
-            ws.onclose = function() {
-                console.log('🔌 Database change WebSocket connection closed (dashboard)');
-                // Attempt to reconnect after a delay
-                setTimeout(() => {
-                    console.log('🔄 Attempting to reconnect to database change notifications (dashboard)...');
-                    setupDatabaseChangeListener();
-                }, 5000);
-            };
+            return true;
+          },
+          onEnd: function(evt) {
+            // When tiles are manually reordered, show "Custom" in the sort picker
+            const sortPicker = document.getElementById('sortPicker');
+            const customOption = sortPicker.querySelector('option[value="custom"]');
+            if (customOption) {
+              sortPicker.value = 'custom';
+            }
+          }
+        });
+      }
+    }
+
+    // Sort monitors by the selected criteria
+    function sortMonitors(criteria) {
+      if (criteria === 'custom') return; // Don't sort if custom is selected
+      
+      currentSortBy = criteria;
+      
+      // Separate the new monitor from regular monitors
+      const newMonitor = monitors.find(m => m.id === 'NEW_MONITOR');
+      const regularMonitors = monitors.filter(m => m.id !== 'NEW_MONITOR');
+      
+      const sortedMonitors = [...regularMonitors].sort((a, b) => {
+        switch (criteria) {
+          case 'name':
+            return a.id.localeCompare(b.id);
+          case 'symbol':
+            return a.symbol.localeCompare(b.symbol);
+          case 'strategy':
+            return a.strategy.localeCompare(b.strategy);
+          case 'trades':
+            return b.trades - a.trades; // Descending order
+          case 'winRate':
+            return parseFloat(b.winRate) - parseFloat(a.winRate); // Descending order
+          case 'return':
+            return parseFloat(b.return.replace(/[+%]/g, '')) - parseFloat(a.return.replace(/[+%]/g, '')); // Descending order
+          case 'pnl':
+            return parseFloat(b.pnl.replace(/[+$,-]/g, '')) - parseFloat(a.pnl.replace(/[+$,-]/g, '')); // Descending order
+          case 'uptime':
+            // Convert uptime to minutes for comparison
+            const aMinutes = convertUptimeToMinutes(a.uptime);
+            const bMinutes = convertUptimeToMinutes(b.uptime);
+            return bMinutes - aMinutes; // Descending order
+          default:
+            return 0;
+        }
+      });
+      
+      // Update the monitors array - new monitor always at the end
+      monitors.length = 0;
+      monitors.push(...sortedMonitors);
+      if (newMonitor) {
+        monitors.push(newMonitor);
+      }
+      
+      // Re-render the monitors
+      initializeMonitors();
+      
+      // Save preferences
+      saveDashboardPreferences();
+    }
+
+    // Helper function to convert uptime string to minutes
+    function convertUptimeToMinutes(uptime) {
+      const match = uptime.match(/(\d+)d\s*(\d+)h\s*(\d+)m/);
+      if (match) {
+        const days = parseInt(match[1]) || 0;
+        const hours = parseInt(match[2]) || 0;
+        const minutes = parseInt(match[3]) || 0;
+        return days * 24 * 60 + hours * 60 + minutes;
+      }
+      return 0;
+    }
+
+    // Update monitor view mode based on current preference
+    function updateMonitorViewMode() {
+      const listViewIcon = document.getElementById('listViewIcon');
+      const tileViewIcon = document.getElementById('tileViewIcon');
+      const grid = document.getElementById('monitors-grid');
+      
+      if (listViewIcon && tileViewIcon && grid) {
+        if (currentViewMode === 'list') {
+          listViewIcon.style.opacity = '1';
+          tileViewIcon.style.opacity = '0.2';
+          grid.classList.remove('tile-view');
+          grid.classList.add('list-view');
+        } else {
+          listViewIcon.style.opacity = '0.2';
+          tileViewIcon.style.opacity = '1';
+          grid.classList.remove('list-view');
+          grid.classList.add('tile-view');
         }
         
-        // Set up WebSocket connection for real-time updates
-        setupDatabaseChangeListener();
-    </script>
+        // Re-render monitors to update layout
+        initializeMonitors();
+      }
+    }
+
+    // Toggle between List and Tile view
+    function toggleViewMode() {
+      const listViewIcon = document.getElementById('listViewIcon');
+      const tileViewIcon = document.getElementById('tileViewIcon');
+      const grid = document.getElementById('monitors-grid');
+      
+      if (listViewIcon && tileViewIcon) {
+        // Toggle opacity values
+        if (listViewIcon.style.opacity === '1') {
+          // Switch to Tile view
+          listViewIcon.style.opacity = '0.2';
+          tileViewIcon.style.opacity = '1';
+          grid.classList.remove('list-view');
+          grid.classList.add('tile-view');
+          currentViewMode = 'tile';
+        } else {
+          // Switch to List view
+          listViewIcon.style.opacity = '1';
+          tileViewIcon.style.opacity = '0.2';
+          grid.classList.remove('tile-view');
+          grid.classList.add('list-view');
+          currentViewMode = 'list';
+        }
+        
+        // Re-render monitors to update layout
+        initializeMonitors();
+        
+        // Save preferences
+        saveDashboardPreferences();
+      }
+    }
+
+    // Toggle auto trade for a specific monitor
+    function toggleAutoTrade(monitorId) {
+      console.log('Toggle clicked for monitor:', monitorId);
+      
+      // Find the monitor in the data
+      const monitor = monitors.find(m => m.id === monitorId);
+      if (monitor) {
+        console.log('Current autoTrade value:', monitor.autoTrade);
+        
+        // Toggle the auto trade state
+        monitor.autoTrade = !monitor.autoTrade;
+        
+        // Update the visual state
+        const toggleElement = event.target;
+        if (monitor.autoTrade) {
+          toggleElement.classList.add('active');
+        } else {
+          toggleElement.classList.remove('active');
+        }
+        
+        console.log(`Auto trade ${monitor.autoTrade ? 'enabled' : 'disabled'} for ${monitorId}`);
+        
+        // Send update to backend
+        fetch('/api/monitor/toggle-auto-trade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            monitor_id: monitorId, 
+            auto_trade: monitor.autoTrade 
+          })
+        })
+        .then(response => response.json())
+        .then(data => {
+          if (data.status === 'ok') {
+            console.log('Successfully updated auto trade in database');
+          } else {
+            console.error('Failed to update auto trade:', data.message);
+          }
+        })
+        .catch(error => {
+          console.error('Error updating auto trade:', error);
+        });
+      }
+    }
+
+    async function loadDashboardPreferences() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/dashboard/preferences?mode=${GLOBAL_ACCOUNT_MODE}`);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        if (data.status === 'ok') {
+          currentView = data.portfolio_chart_view || 'all';
+          currentViewMode = data.monitor_view_mode || 'tile';
+          currentSortBy = data.monitor_sort_by || 'name';
+          
+          // Update portfolio chart button states
+          document.querySelectorAll('.view-btn').forEach(btn => {
+            btn.classList.remove('active');
+          });
+          
+          const activeButton = document.querySelector(`.view-btn[onclick*="${currentView}"]`);
+          if (activeButton) {
+            activeButton.classList.add('active');
+          }
+          
+          // Update monitor view mode
+          updateMonitorViewMode();
+          
+          // Update sort picker
+          const sortPicker = document.getElementById('sortPicker');
+          if (sortPicker) {
+            sortPicker.value = currentSortBy;
+          }
+        }
+        
+      } catch (error) {
+        console.error('Error loading dashboard preferences:', error);
+        // Keep default view if loading fails
+      }
+    }
+
+    async function saveDashboardPreferences() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/dashboard/preferences?mode=${GLOBAL_ACCOUNT_MODE}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            portfolio_chart_view: currentView,
+            monitor_view_mode: currentViewMode,
+            monitor_sort_by: currentSortBy
+          })
+        });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        if (data.status !== 'ok') {
+          console.error('Error saving preferences:', data.message);
+        }
+        
+      } catch (error) {
+        console.error('Error saving dashboard preferences:', error);
+      }
+    }
+
+    function updatePortfolioChange() {
+      if (allHistoryData.length < 2) {
+        document.getElementById('portfolio-change').textContent = '';
+        return;
+      }
+
+      const filteredData = filterDataByView(allHistoryData, currentView);
+      if (filteredData.length < 2) {
+        document.getElementById('portfolio-change').textContent = '';
+        return;
+      }
+
+      // Get first and last values in the filtered data
+      const firstValue = (filteredData[0].portfolio || 0) / 100; // Convert to dollars
+      const lastValue = (filteredData[filteredData.length - 1].portfolio || 0) / 100; // Convert to dollars
+      
+      const change = lastValue - firstValue;
+      const percentChange = firstValue !== 0 ? (change / firstValue) * 100 : 0;
+      
+      // Format the consolidated change display
+      const changeElement = document.getElementById('portfolio-change');
+      const isPositive = change >= 0;
+      
+      const changeText = `$${Math.abs(change).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${percentChange.toFixed(2)}%)`;
+      
+      changeElement.textContent = changeText;
+      changeElement.className = `change-element ${isPositive ? 'positive' : 'negative'}`;
+    }
+
+    function setChartView(view) {
+      currentView = view;
+      
+      // Update button styles
+      document.querySelectorAll('.view-btn').forEach(btn => {
+        btn.classList.remove('active');
+      });
+      event.target.classList.add('active');
+      
+      // Save preferences to database
+      saveDashboardPreferences();
+      
+      // Re-render chart with new view
+      renderPortfolioChart(allHistoryData);
+      
+      // Update the change indicator
+      updatePortfolioChange();
+    }
+
+    async function loadPortfolioData() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/account/balance?mode=${GLOBAL_ACCOUNT_MODE}`);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        const portfolioValue = data.portfolio || 0;
+        
+        // Convert cents to dollars and format
+        const portfolioInDollars = portfolioValue / 100;
+        const formattedValue = new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: 'USD',
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
+        }).format(portfolioInDollars);
+        
+        // Update the display
+        const portfolioElement = document.getElementById('portfolio-value');
+        if (portfolioElement) {
+          portfolioElement.textContent = formattedValue;
+        }
+        
+      } catch (error) {
+        console.error('Error loading portfolio data:', error);
+        const portfolioElement = document.getElementById('portfolio-value');
+        if (portfolioElement) {
+          portfolioElement.textContent = 'Error loading data';
+          portfolioElement.style.color = '#ff6b6b';
+        }
+      }
+    }
+
+    async function loadPortfolioHistory() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/account/balance/history?mode=${GLOBAL_ACCOUNT_MODE}&limit=10000`);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        const history = data.history || [];
+        
+        if (history.length > 0) {
+          allHistoryData = history; // Store all history data
+          renderPortfolioChart(history);
+          updatePortfolioChange(); // Update the change indicator
+        } else {
+          console.log('No historical data available');
+        }
+        
+      } catch (error) {
+        console.error('Error loading portfolio history:', error);
+      }
+    }
+
+    // Function to apply a simple moving average
+    function applyMovingAverage(data, windowSize) {
+      if (windowSize <= 1) {
+        return data; // No smoothing needed
+      }
+
+      const smoothedData = [];
+      for (let i = 0; i < data.length; i++) {
+        const start = Math.max(0, i - windowSize + 1);
+        const window = data.slice(start, i + 1);
+        const sum = window.reduce((a, b) => a + b, 0);
+        smoothedData.push(sum / window.length);
+      }
+      return smoothedData;
+    }
+
+    function renderPortfolioChart(history) {
+      const ctx = document.getElementById('portfolio-chart');
+      
+      // Destroy existing chart if it exists
+      if (portfolioChart) {
+        portfolioChart.destroy();
+      }
+      
+      // Filter data based on current view
+      const filteredData = filterDataByView(history, currentView);
+      
+      // Prepare data for chart with appropriate labels
+      const labels = filteredData.map(item => {
+        const date = new Date(item.timestamp);
+        return formatLabel(date, currentView);
+      });
+      
+      const portfolioData = filteredData.map(item => (item.portfolio || 0) / 100); // Convert to dollars
+      
+      // Apply moving average for smoothing
+      const smoothingWindow = currentView === '1d' ? 4 : 60; // Less smoothing for 1d view
+      const smoothedPortfolioData = applyMovingAverage(portfolioData, smoothingWindow);
+      
+      // Custom plugin to add X-axis label at the rightmost point
+      const customPlugin = {
+        id: 'customXAxisLabel',
+        afterDraw: function(chart) {
+          // Don't add extra label for 1d view since we have hourly labels
+          if (currentView === '1d') return;
+          
+          const ctx = chart.ctx;
+          const chartArea = chart.chartArea;
+          
+          // Get the last data point
+          const lastLabel = labels[labels.length - 1];
+          
+          // Position at the right edge of the chart with more padding
+          const x = chartArea.right - 30;
+          const y = chartArea.bottom + 20;
+          
+          ctx.save();
+          ctx.font = '10px Arial';
+          ctx.fillStyle = '#ccc';
+          ctx.textAlign = 'right';
+          ctx.fillText(lastLabel, x, y);
+          ctx.restore();
+        }
+      };
+
+      // Custom plugin to add crosshair on hover with fade effect
+      const crosshairPlugin = {
+        id: 'crosshair',
+        afterDraw: function(chart) {
+          // Check if tooltip is active (this is how Chart.js tracks hover state)
+          if (chart.tooltip && chart.tooltip.opacity > 0) {
+            const ctx = chart.ctx;
+            const chartArea = chart.chartArea;
+            const dataset = chart.getDatasetMeta(0);
+            
+            // Get the active data point from tooltip
+            if (chart.tooltip.dataPoints && chart.tooltip.dataPoints.length > 0) {
+              const dataPoint = dataset.data[chart.tooltip.dataPoints[0].dataIndex];
+              
+              if (dataPoint) {
+                // Use tooltip opacity for fade effect
+                const opacity = chart.tooltip.opacity;
+                
+                // Draw vertical line with fade
+                ctx.save();
+                ctx.globalAlpha = opacity;
+                ctx.strokeStyle = '#4a9eff';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([5, 5]); // Dashed line
+                ctx.beginPath();
+                ctx.moveTo(dataPoint.x, chartArea.top);
+                ctx.lineTo(dataPoint.x, chartArea.bottom);
+                ctx.stroke();
+                ctx.restore();
+                
+                // Draw horizontal line with fade
+                ctx.save();
+                ctx.globalAlpha = opacity;
+                ctx.strokeStyle = '#4a9eff';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([5, 5]); // Dashed line
+                ctx.beginPath();
+                ctx.moveTo(chartArea.left, dataPoint.y);
+                ctx.lineTo(chartArea.right, dataPoint.y);
+                ctx.stroke();
+                ctx.restore();
+                
+                // Draw intersection dot with fade
+                ctx.save();
+                ctx.globalAlpha = opacity;
+                ctx.fillStyle = '#4a9eff';
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(dataPoint.x, dataPoint.y, 4, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.stroke();
+                ctx.restore();
+              }
+            }
+          }
+        }
+      };
+
+      // Plugin for custom Y-axis labels inside chart area
+      const yAxisLabelsPlugin = {
+        id: 'customYAxisLabels',
+        afterDraw: function(chart) {
+          const ctx = chart.ctx;
+          const chartArea = chart.chartArea;
+          
+          // Get Y-axis scale
+          const yScale = chart.scales.y;
+          if (!yScale) return;
+          
+          // Define which ticks to show (every 2nd tick)
+          const ticks = yScale.ticks;
+          const visibleTicks = ticks.filter((tick, index) => index % 2 === 0);
+          
+          ctx.save();
+          ctx.font = '10px Arial';
+          ctx.fillStyle = '#ccc';
+          ctx.textAlign = 'left';
+          
+          visibleTicks.forEach(tick => {
+            const y = yScale.getPixelForValue(tick.value);
+            
+            // Only draw if the tick is within the chart area
+            if (y >= chartArea.top && y <= chartArea.bottom) {
+              const label = '$' + Math.round(tick.value).toLocaleString();
+              ctx.fillText(label, chartArea.left + 5, y + 3);
+            }
+          });
+          
+          ctx.restore();
+        }
+      };
+      
+      // Create chart configuration
+      const config = {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Portfolio Value ($)',
+            data: smoothedPortfolioData, // Use smoothed data here
+            borderColor: '#4a9eff',
+            backgroundColor: 'rgba(74, 158, 255, 0.1)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.1,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            pointHoverBackgroundColor: '#4a9eff'
+          }]
+        },
+        plugins: [customPlugin, crosshairPlugin, yAxisLabelsPlugin],
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: {
+            mode: 'index',
+            intersect: false
+          },
+          onHover: function(event, elements) {
+            const canvas = event.native.target;
+            if (elements.length > 0) {
+              canvas.style.cursor = 'crosshair';
+            } else {
+              canvas.style.cursor = 'default';
+            }
+          },
+          plugins: {
+            legend: {
+              display: false
+            },
+            tooltip: {
+              callbacks: {
+                title: function(context) {
+                  const dataIndex = context[0].dataIndex;
+                  const originalTimestamp = filteredData[dataIndex].timestamp;
+                  const date = new Date(originalTimestamp);
+                  return formatTooltipTitle(date, currentView);
+                },
+                label: function(context) {
+                  return `Portfolio: $${context.parsed.y.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                }
+              }
+            }
+          },
+          scales: {
+            y: {
+              display: true,
+              grid: {
+                display: true,
+                color: 'rgba(255, 255, 255, 0.10)',
+                lineWidth: 1
+              },
+              ticks: {
+                display: false
+              },
+              border: {
+                display: false
+              },
+              beginAtZero: false,
+              grace: '10%'
+            },
+            x: {
+              grid: {
+                display: false
+              },
+              ticks: {
+                color: '#ccc',
+                font: {
+                  size: 10
+                },
+                maxRotation: 45,
+                minRotation: 0,
+                maxTicksLimit: 8
+              }
+            }
+          }
+        }
+      };
+      
+      // Create the chart
+      portfolioChart = new Chart(ctx, config);
+    }
+
+    function filterDataByView(data, view) {
+      const now = new Date();
+      let startDate;
+      
+      switch (view) {
+        case '1d':
+          // Current day starting at 06:00
+          startDate = new Date(now);
+          startDate.setHours(6, 0, 0, 0);
+          
+          // For 1d view, create 15-minute data points from 06:00 to current time
+          if (data.length > 0) {
+            const quarterHourlyData = [];
+            const currentHour = now.getHours();
+            const currentMinute = now.getMinutes();
+            
+            for (let hour = 6; hour <= currentHour; hour++) {
+              for (let minute = 0; minute < 60; minute += 15) {
+                // Skip if this time is in the future
+                if (hour === currentHour && minute > currentMinute) break;
+                
+                const timeDate = new Date(now);
+                timeDate.setHours(hour, minute, 0, 0);
+                
+                // Find the latest data point before or at this time
+                const latestData = data.filter(item => {
+                  const itemDate = new Date(item.timestamp);
+                  return itemDate <= timeDate;
+                }).pop();
+                
+                if (latestData) {
+                  quarterHourlyData.push({
+                    ...latestData,
+                    timestamp: timeDate.toISOString()
+                  });
+                }
+              }
+            }
+            return quarterHourlyData;
+          }
+          break;
+        case '1w':
+          // Previous 7 days
+          startDate = new Date(now);
+          startDate.setDate(startDate.getDate() - 7);
+          break;
+        case '1m':
+          // Previous 30 days
+          startDate = new Date(now);
+          startDate.setDate(startDate.getDate() - 30);
+          break;
+        case '1y':
+          // Previous 365 days
+          startDate = new Date(now);
+          startDate.setDate(startDate.getDate() - 365);
+          break;
+        case 'all':
+        default:
+          return data; // Return all data
+      }
+      
+      return data.filter(item => {
+        const itemDate = new Date(item.timestamp);
+        return itemDate >= startDate;
+      });
+    }
+
+    function formatLabel(date, view) {
+      switch (view) {
+        case '1d':
+          const hour = date.getHours();
+          const minute = date.getMinutes();
+          // Show labels at 15-minute intervals
+          if (minute % 15 === 0) {
+            return hour.toString().padStart(2, '0') + ':' + minute.toString().padStart(2, '0');
+          }
+          return ''; // Don't show labels for non-15-minute marks
+        case '1w':
+          const month = date.getMonth() + 1;
+          const day = date.getDate();
+          return `${month}/${day}`;
+        case '1m':
+          const month1 = date.getMonth() + 1;
+          const day1 = date.getDate();
+          return `${month1}/${day1}`;
+        case '1y':
+          const month2 = date.getMonth() + 1;
+          const day2 = date.getDate();
+          return `${month2}/${day2}`;
+        case 'all':
+        default:
+          const month3 = date.getMonth() + 1;
+          const day3 = date.getDate();
+          return `${month3}/${day3}`;
+      }
+    }
+
+    function formatTooltipTitle(date, view) {
+      switch (view) {
+        case '1d':
+          return date.toLocaleDateString('en-US', { 
+            weekday: 'long', 
+            year: 'numeric', 
+            month: 'long', 
+            day: 'numeric' 
+          }) + ' ' + date.toLocaleTimeString('en-US', { 
+            hour: '2-digit', 
+            minute: '2-digit' 
+          });
+        case '1w':
+          return date.toLocaleDateString('en-US', { 
+            month: 'short', 
+            day: 'numeric' 
+          }) + ' ' + date.toLocaleTimeString('en-US', { 
+            hour: '2-digit', 
+            minute: '2-digit' 
+          });
+        case '1m':
+          return date.toLocaleDateString('en-US', { 
+            month: 'short', 
+            day: 'numeric' 
+          }) + ' ' + date.toLocaleTimeString('en-US', { 
+            hour: '2-digit', 
+            minute: '2-digit' 
+          });
+        case '1y':
+          return date.toLocaleDateString('en-US', { 
+            weekday: 'long', 
+            year: 'numeric', 
+            month: 'long', 
+            day: 'numeric' 
+          });
+        case 'all':
+        default:
+          return date.toLocaleDateString('en-US', { 
+            weekday: 'long', 
+            year: 'numeric', 
+            month: 'long', 
+            day: 'numeric' 
+          });
+      }
+    }
+
+    // Refresh portfolio data every 30 seconds
+    setInterval(loadPortfolioData, 30000);
+    
+    // Refresh portfolio history every 5 minutes
+    setInterval(loadPortfolioHistory, 300000);
+
+    // Market data functions
+    function formatUSD(val) {
+      if (typeof val !== "number" || isNaN(val)) return "$0.00";
+      return "$" + val.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    }
+
+    function decorateChange(el, val) {
+      const num = parseFloat(val);
+      if (isNaN(num)) {
+        el.textContent = "—";
+        el.className = "";
+        return;
+      }
+      const triangle = num >= 0 ? " ▲" : " ▼";
+      el.textContent = `${Math.abs(num).toFixed(2)}%${triangle}`;
+      el.className = num >= 0 ? "" : "negative";
+    }
+
+    // Fetch BTC price changes from backend API and update markets panel
+    async function fetchBTCPriceChanges() {
+      try {
+        const res = await fetch(window.location.origin + '/btc_price_changes');
+        if (!res.ok) throw new Error('Failed to fetch BTC price changes');
+        const data = await res.json();
+        
+        // Update 1h, 1d change numbers in the markets panel
+        if ('change1h' in data) {
+          const el = document.getElementById('btc-change-1h');
+          if (el) decorateChange(el, data.change1h);
+        }
+        if ('change1d' in data) {
+          const el = document.getElementById('btc-change-1d');
+          if (el) decorateChange(el, data.change1d);
+        }
+      } catch (error) {
+        console.error('Error fetching BTC price changes:', error);
+      }
+    }
+
+    // Fetch ETH price changes from backend API and update markets panel
+    async function fetchETHPriceChanges() {
+      try {
+        const res = await fetch(window.location.origin + '/eth_price_changes');
+        if (!res.ok) throw new Error('Failed to fetch ETH price changes');
+        const data = await res.json();
+        
+        // Update 1h, 1d change numbers in the markets panel
+        if ('change1h' in data) {
+          const el = document.getElementById('eth-change-1h');
+          if (el) decorateChange(el, data.change1h);
+        }
+        if ('change1d' in data) {
+          const el = document.getElementById('eth-change-1d');
+          if (el) decorateChange(el, data.change1d);
+        }
+      } catch (error) {
+        console.error('Error fetching ETH price changes:', error);
+      }
+    }
+
+    // Fetch current BTC price from backend API
+    async function fetchBTCCurrentPrice() {
+      try {
+        const res = await fetch(window.location.origin + '/api/btc_price');
+        if (!res.ok) throw new Error('Failed to fetch BTC current price');
+        const data = await res.json();
+        
+        if (data.price) {
+          const el = document.getElementById('btc-price');
+          if (el) el.textContent = formatUSD(data.price);
+        }
+      } catch (error) {
+        console.error('Error fetching BTC current price:', error);
+      }
+    }
+
+    // Fetch current ETH price from backend API
+    async function fetchETHCurrentPrice() {
+      try {
+        const res = await fetch(window.location.origin + '/api/eth_price');
+        if (!res.ok) throw new Error('Failed to fetch ETH current price');
+        const data = await res.json();
+        
+        if (data.price) {
+          const el = document.getElementById('eth-price');
+          if (el) el.textContent = formatUSD(data.price);
+        }
+      } catch (error) {
+        console.error('Error fetching ETH current price:', error);
+      }
+    }
+
+    // Initialize market data on page load
+    document.addEventListener('DOMContentLoaded', function() {
+      // Fetch initial data
+      fetchBTCCurrentPrice();
+      fetchETHCurrentPrice();
+      fetchBTCPriceChanges();
+      fetchETHPriceChanges();
+      
+      // Update data every 30 seconds
+      setInterval(() => {
+        fetchBTCCurrentPrice();
+        fetchETHCurrentPrice();
+        fetchBTCPriceChanges();
+        fetchETHPriceChanges();
+      }, 30000);
+    });
+  </script>
 </body>
 </html>

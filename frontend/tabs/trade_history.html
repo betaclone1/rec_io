@@ -2053,17 +2053,11 @@
       
       const data = periodData.map(data => data.pnl);
       
-      // Custom plugin to add "PnL" label and hover effects
+      // Custom plugin for hover effects
       const customPlugin = {
-        id: 'customPnLLabel',
+        id: 'customHoverEffects',
         afterDraw: function(chart) {
-          const ctx = chart.ctx;
-          ctx.save();
-          ctx.font = 'bold 12px Arial';
-          ctx.fillStyle = '#ffffff';
-          ctx.textAlign = 'left';
-          ctx.fillText('PnL', 10, 20);
-          ctx.restore();
+          // This plugin is now just a placeholder for any future hover effects
         }
       };
 
@@ -2089,6 +2083,40 @@
         }
       };
 
+      // Plugin for custom Y-axis labels inside chart area
+      const yAxisLabelsPlugin = {
+        id: 'customYAxisLabels',
+        afterDraw: function(chart) {
+          const ctx = chart.ctx;
+          const chartArea = chart.chartArea;
+          
+          // Get Y-axis scale
+          const yScale = chart.scales.y;
+          if (!yScale) return;
+          
+          // Define which ticks to show (every 2nd tick)
+          const ticks = yScale.ticks;
+          const visibleTicks = ticks.filter((tick, index) => index % 2 === 0);
+          
+          ctx.save();
+          ctx.font = '10px Arial';
+          ctx.fillStyle = '#ccc';
+          ctx.textAlign = 'left';
+          
+          visibleTicks.forEach(tick => {
+            const y = yScale.getPixelForValue(tick.value);
+            
+            // Only draw if the tick is within the chart area
+            if (y >= chartArea.top && y <= chartArea.bottom) {
+              const label = '$' + Math.round(tick.value);
+              ctx.fillText(label, chartArea.left + 5, y + 3);
+            }
+          });
+          
+          ctx.restore();
+        }
+      };
+
       // Create Chart.js configuration
       const config = {
         type: 'bar',
@@ -2106,7 +2134,7 @@
             hoverBorderWidth: 2
                     }]
         },
-        plugins: [customPlugin, hoverPlugin],
+        plugins: [customPlugin, hoverPlugin, yAxisLabelsPlugin],
         options: {
           responsive: true,
           maintainAspectRatio: false,
@@ -2196,7 +2224,9 @@
               },
               border: {
                 display: false
-              }
+              },
+              beginAtZero: false,
+              grace: '10%'
             },
             x: {
               grid: {

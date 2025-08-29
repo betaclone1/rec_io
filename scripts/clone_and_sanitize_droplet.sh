@@ -443,6 +443,30 @@ EMPTY_PEM_EOF
             CREATE TABLE IF NOT EXISTS users.auto_trade_settings_'${NEW_USER_ID#user_}' (
                 LIKE users.auto_trade_settings_0001 INCLUDING ALL
             );
+            
+            -- Create monitors_list table for new user
+            CREATE SEQUENCE IF NOT EXISTS users.monitors_list_${NEW_USER_ID#user_}_id_seq
+            START WITH 10001
+            INCREMENT BY 1
+            MINVALUE 10001
+            MAXVALUE 99999
+            CYCLE;
+            
+            CREATE TABLE IF NOT EXISTS users.monitors_list_'${NEW_USER_ID#user_}' (
+                id INTEGER PRIMARY KEY DEFAULT nextval('users.monitors_list_${NEW_USER_ID#user_}_id_seq'),
+                name VARCHAR(255) NOT NULL,
+                symbol VARCHAR(20) NOT NULL,
+                strategy VARCHAR(100),
+                auto_trade BOOLEAN DEFAULT FALSE,
+                auto_trade_status VARCHAR(20) DEFAULT 'inactive',
+                trades INTEGER DEFAULT 0,
+                win_loss DECIMAL(5,1) DEFAULT 0.0,
+                ret_pct DECIMAL(5,1) DEFAULT 0.0,
+                pnl DECIMAL(10,2) DEFAULT 0.00,
+                bankroll_allotment DECIMAL(5,1) DEFAULT 0.0,
+                status VARCHAR(20) DEFAULT 'active',
+                created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
 DB_UPDATE_EOF
         
         echo "New user configuration completed"

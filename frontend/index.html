@@ -72,6 +72,30 @@
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Tektur:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles/global.css">
+  
+  <!-- Preload ALL critical images -->
+  <link rel="preload" href="/images/rec_logo_1.png" as="image" type="image/png">
+  <link rel="preload" href="/images/rec_logo_browser_tab.png" as="image" type="image/png">
+  <link rel="preload" href="/images/rec_logo_trns.png" as="image" type="image/png">
+  <link rel="preload" href="/images/splash_page_bg.jpg" as="image" type="image/jpeg">
+  <link rel="preload" href="/images/icons/dashboard_icon.png" as="image" type="image/png">
+  <link rel="preload" href="/images/icons/trade_monitor_icon.png" as="image" type="image/png">
+  <link rel="preload" href="/images/icons/trade_history.png" as="image" type="image/png">
+  <link rel="preload" href="/images/icons/account_manager_icon.png" as="image" type="image/png">
+  <link rel="preload" href="/images/icons/backtester_icon.png" as="image" type="image/png">
+  <link rel="preload" href="/images/icons/strategy_lab.png" as="image" type="image/png">
+  <link rel="preload" href="/images/icons/user_icon.png" as="image" type="image/png">
+  <link rel="preload" href="/images/icons/system_icon_HEALTHY.png" as="image" type="image/png">
+  <link rel="preload" href="/images/icons/system_icon_UNHEALTHY.png" as="image" type="image/png">
+  <link rel="preload" href="/images/icons/system_icon_OFFLINE.png" as="image" type="image/png">
+  <link rel="preload" href="/images/icons/sound_on_icon.png" as="image" type="image/png">
+  <link rel="preload" href="/images/icons/sound_off_icon.png" as="image" type="image/png">
+  <link rel="preload" href="/images/icons/help.png" as="image" type="image/png">
+  <link rel="preload" href="/images/icons/sidebar_expand.png" as="image" type="image/png">
+  <link rel="preload" href="/images/icons/sidebar_collapse.png" as="image" type="image/png">
+  <link rel="preload" href="/images/icons/panel_settings.png" as="image" type="image/png">
+  <link rel="preload" href="/images/icons/list_view_icon.png" as="image" type="image/png">
+  <link rel="preload" href="/images/icons/tile_view_icon.png" as="image" type="image/png">
   <style>
     /* Minimal layout CSS - no custom colors, only structure */
     body {
@@ -472,7 +496,7 @@
     <!-- Sidebar -->
     <nav class="sidebar collapsed" id="sidebar">
       <!-- Logo Header -->
-      <div class="sidebar-header" data-tooltip="rec.io">
+      <div class="sidebar-header">
         <img src="/images/rec_logo_1.png" alt="REC.IO" class="sidebar-logo">
         <span class="nav-label" style="font-size: 24px; font-weight: normal; font-family: 'Tektur', sans-serif; letter-spacing: 0.05em; padding-left: 7px;">rec.io</span>
       </div>
@@ -519,7 +543,7 @@
       
       <!-- User Section -->
       <div class="user-section">
-        <a class="nav-item" data-page="user-settings" data-tooltip="User Settings">
+        <a class="nav-item" data-page="user-settings" id="userSettingsItem">
           <span class="nav-icon">
             <img src="/images/icons/user_icon.png" alt="User Settings" style="width: 20px; height: 20px; object-fit: contain;">
           </span>
@@ -666,6 +690,12 @@
       
       // Update system tooltip text based on new sidebar state
       updateSystemTooltipForSidebarState();
+      
+      // Update user settings tooltip based on new sidebar state
+      const userDisplay = document.getElementById('userDisplay');
+      if (userDisplay) {
+        updateUserSettingsTooltip(userDisplay.textContent);
+      }
     });
     
     // Navigation functionality
@@ -735,7 +765,10 @@
           const userDisplay = document.getElementById('userDisplay');
           if (userDisplay) {
             // Use the full name (first + last) from the database, fallback to user_id
-            userDisplay.textContent = userInfo.name || userInfo.user_id || 'ewais';
+            const userName = userInfo.name || userInfo.user_id || 'ewais';
+            userDisplay.textContent = userName;
+            // Update the tooltip for the user settings item
+            updateUserSettingsTooltip(userName);
           }
           return;
         }
@@ -766,13 +799,31 @@
               const userDisplay = document.getElementById('userDisplay');
               if (userDisplay) {
                 // Use the full name (first + last) from the database, fallback to user_id
-                userDisplay.textContent = userInfo.name || userInfo.user_id || data.username || 'ewais';
+                const userName = userInfo.name || userInfo.user_id || data.username || 'ewais';
+                userDisplay.textContent = userName;
+                // Update the tooltip for the user settings item
+                updateUserSettingsTooltip(userName);
               }
             }
           }
         }
       } catch (error) {
         console.error('Error loading user display:', error);
+      }
+    }
+    
+    // Update user settings tooltip based on sidebar state
+    function updateUserSettingsTooltip(userName) {
+      const userSettingsItem = document.getElementById('userSettingsItem');
+      const sidebar = document.getElementById('sidebar');
+      const isCollapsed = sidebar.classList.contains('collapsed');
+      
+      if (userSettingsItem) {
+        if (isCollapsed) {
+          userSettingsItem.setAttribute('data-tooltip', userName);
+        } else {
+          userSettingsItem.setAttribute('data-tooltip', 'User Settings');
+        }
       }
     }
     

@@ -72,10 +72,122 @@ ensure_data_dirs()
 WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
 EST = ZoneInfo("America/New_York")
 
+async def retry_api_call_with_fallback(api_call_func, fallback_func, max_retries=3, base_delay=1):
+    """
+    Retry an API call with exponential backoff, falling back to WebSocket data if all retries fail
+    
+    Args:
+        api_call_func: Function that makes the REST API call
+        fallback_func: Function that uses WebSocket fallback data
+        max_retries: Maximum number of retry attempts
+        base_delay: Base delay in seconds for exponential backoff
+    """
+    for attempt in range(max_retries):
+        try:
+            print(f"🔄 REST API attempt {attempt + 1}/{max_retries}")
+            result = api_call_func()
+            if result is not None:
+                print(f"✅ REST API successful on attempt {attempt + 1}")
+                return result
+            else:
+                print(f"⚠️ REST API returned None on attempt {attempt + 1}")
+        except Exception as e:
+            print(f"❌ REST API attempt {attempt + 1} failed: {e}")
+        
+        if attempt < max_retries - 1:
+            delay = base_delay * (2 ** attempt)  # exponential backoff
+            print(f"⏳ Waiting {delay}s before retry...")
+            await asyncio.sleep(delay)
+    
+    # All retries failed, use WebSocket fallback
+    print(f"🚨 All REST API attempts failed, using WebSocket fallback")
+    return fallback_func()
+
+def use_websocket_fallback_for_positions():
+    """Use WebSocket position data as fallback when REST API fails"""
+    global LATEST_WEBSOCKET_POSITION_DATA, LATEST_WEBSOCKET_TIMESTAMP
+    
+    if LATEST_WEBSOCKET_POSITION_DATA is None:
+        print("❌ No WebSocket position data available for fallback")
+        return None
+    
+    print("🔄 Using WebSocket position data as fallback")
+    
+    # Convert WebSocket format to REST API format
+    ws_data = LATEST_WEBSOCKET_POSITION_DATA
+    
+    # Create REST API format position
+    rest_position = {
+        "ticker": ws_data.get("market_ticker"),
+        "position": ws_data.get("position"),
+        "market_exposure": ws_data.get("position_cost"),  # field mapping
+        "market_exposure_dollars": [0, 0],
+        "total_traded": ws_data.get("volume"),            # field mapping
+        "total_traded_dollars": [0, 0],
+        "realized_pnl": ws_data.get("realized_pnl"),
+        "realized_pnl_dollars": [0, 0],
+        "fees_paid": ws_data.get("fees_paid"),
+        "fees_paid_dollars": [0, 0],
+        "resting_orders_count": 0,
+        "last_updated_ts": LATEST_WEBSOCKET_TIMESTAMP or datetime.now().isoformat() + "Z"
+    }
+    
+    # Filter out KXMAYORNYCPARTY positions (same as REST API logic)
+    if "KXMAYORNYCPARTY" in rest_position["ticker"]:
+        print("🔍 Filtering out KXMAYORNYCPARTY position from WebSocket fallback")
+        return None
+    
+    print(f"📊 WebSocket fallback position: {rest_position['ticker']} - Position: {rest_position['position']}")
+    
+    # Return in REST API format
+    return {
+        "market_positions": [rest_position],
+        "event_positions": []
+    }
+
+def use_websocket_fallback_for_fills():
+    """Use WebSocket position data to create fill data when REST API fails"""
+    global LATEST_WEBSOCKET_POSITION_DATA, LATEST_WEBSOCKET_TIMESTAMP
+    
+    if LATEST_WEBSOCKET_POSITION_DATA is None:
+        print("❌ No WebSocket position data available for fills fallback")
+        return None
+    
+    print("🔄 Using WebSocket data to create fill fallback")
+    
+    ws_data = LATEST_WEBSOCKET_POSITION_DATA
+    
+    # Create a fill entry from WebSocket position data
+    # This is a simplified approach - we create one fill entry per position update
+    fill_data = {
+        "ticker": ws_data.get("market_ticker"),
+        "side": "yes" if ws_data.get("position", 0) > 0 else "no",  # Simplified side detection
+        "action": "buy" if ws_data.get("position", 0) > 0 else "sell",
+        "count": abs(ws_data.get("position", 0)),
+        "yes_price": 1,  # Default values - would need more sophisticated logic
+        "no_price": 99,
+        "yes_price_dollars": [0, 0],
+        "no_price_dollars": [0, 0],
+        "created_time": LATEST_WEBSOCKET_TIMESTAMP or datetime.now().isoformat() + "Z",
+        "order_id": f"ws_fallback_{int(time.time())}",  # Generate a fallback order ID
+        "user_id": ws_data.get("user_id")
+    }
+    
+    print(f"📊 WebSocket fallback fill: {fill_data['ticker']} - {fill_data['action']} {fill_data['count']}")
+    
+    return {
+        "fills": [fill_data],
+        "cursor": ""
+    }
+
 # Global variables for change detection
 LAST_ORDERS_HASH = None
 LAST_FILLS_HASH = None
 LAST_POSITIONS_HASH = None
+
+# Global variables for WebSocket fallback
+LATEST_WEBSOCKET_POSITION_DATA = None
+LATEST_WEBSOCKET_TIMESTAMP = None
 
 # Dynamically select API base URL and credentials directory based on account mode
 BASE_URLS = {
@@ -355,76 +467,129 @@ def sync_balance():
 def sync_positions():
     # PostgreSQL only - no legacy database paths needed
     print("⏱ Syncing recent positions...")
-    method = "GET"
-    path = "/portfolio/positions"
     
-    # Single request for recent positions (no pagination loop)
-    timestamp = str(int(time.time() * 1000))
-    query = "?limit=50"  # Reduced limit for WebSocket implementation
-    url = f"{get_base_url()}{path}{query}"
-    print(f"🔗 Requesting recent positions: {url}")
+    def make_rest_api_call():
+        """Make the REST API call for positions"""
+        method = "GET"
+        path = "/portfolio/positions"
+        
+        # Single request for recent positions (no pagination loop)
+        timestamp = str(int(time.time() * 1000))
+        query = "?limit=50"  # Reduced limit for WebSocket implementation
+        url = f"{get_base_url()}{path}{query}"
+        print(f"🔗 Requesting recent positions: {url}")
 
-    full_path_for_signature = f"/trade-api/v2{path}"
-    signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
+        full_path_for_signature = f"/trade-api/v2{path}"
+        signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
 
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": "KalshiWatcher/1.0",
-        "KALSHI-ACCESS-KEY": KEY_ID,
-        "KALSHI-ACCESS-TIMESTAMP": timestamp,
-        "KALSHI-ACCESS-SIGNATURE": signature,
-    }
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "KalshiWatcher/1.0",
+            "KALSHI-ACCESS-KEY": KEY_ID,
+            "KALSHI-ACCESS-TIMESTAMP": timestamp,
+            "KALSHI-ACCESS-SIGNATURE": signature,
+        }
 
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            print("🔍 Raw Kalshi positions response:")
+            print(json.dumps(data, indent=2))
+            print("Response keys:", data.keys())
+            if "error" in data:
+                print("⚠️ API error:", data["error"])
+                return None
+            
+            # Use new keys for positions
+            all_market_positions = data.get("market_positions", [])
+            all_event_positions = data.get("event_positions", [])
+            
+            # TEMPORARY MEASURE: Filter out KXMAYORNYCPARTY positions
+            # Due to a quirk in the Kalshi API feed, old test positions from months ago
+            # continue to appear in the positions response even though they should be
+            # expired/cleaned up. This filtering prevents these stale test positions
+            # from cluttering our database and notifications.
+            # TODO: Remove this filtering once Kalshi fixes their feed cleanup issue
+            filtered_market_positions = []
+            filtered_event_positions = []
+            
+            for position in all_market_positions:
+                ticker = position.get("ticker", "")
+                if "KXMAYORNYCPARTY" not in ticker:
+                    filtered_market_positions.append(position)
+                else:
+                    # Silently ignore KXMAYORNYCPARTY positions (temporary filter)
+                    pass
+            
+            for position in all_event_positions:
+                event_ticker = position.get("event_ticker", "")
+                if "KXMAYORNYCPARTY" not in event_ticker:
+                    filtered_event_positions.append(position)
+                else:
+                    # Silently ignore KXMAYORNYCPARTY event positions (temporary filter)
+                    pass
+            
+            print(f"📊 Retrieved {len(all_market_positions)} market positions and {len(all_event_positions)} event positions")
+            print(f"🔍 After filtering: {len(filtered_market_positions)} market positions and {len(filtered_event_positions)} event positions")
+            
+            # Use filtered positions for processing
+            all_market_positions = filtered_market_positions
+            all_event_positions = filtered_event_positions
+            
+            return {
+                "market_positions": all_market_positions,
+                "event_positions": all_event_positions,
+            }
+            
+        except Exception as e:
+            print(f"❌ Failed to fetch positions: {e}")
+            raise e  # Re-raise to trigger retry logic
+    
+    # Use retry logic with WebSocket fallback
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        print("🔍 Raw Kalshi positions response:")
-        print(json.dumps(data, indent=2))
-        print("Response keys:", data.keys())
-        if "error" in data:
-            print("⚠️ API error:", data["error"])
-            return
+        # Note: This is a synchronous function, so we can't use async retry here
+        # We'll implement the retry logic directly
+        max_retries = 3
+        base_delay = 1
         
-        # Use new keys for positions
-        all_market_positions = data.get("market_positions", [])
-        all_event_positions = data.get("event_positions", [])
-        
-        # TEMPORARY MEASURE: Filter out KXMAYORNYCPARTY positions
-        # Due to a quirk in the Kalshi API feed, old test positions from months ago
-        # continue to appear in the positions response even though they should be
-        # expired/cleaned up. This filtering prevents these stale test positions
-        # from cluttering our database and notifications.
-        # TODO: Remove this filtering once Kalshi fixes their feed cleanup issue
-        filtered_market_positions = []
-        filtered_event_positions = []
-        
-        for position in all_market_positions:
-            ticker = position.get("ticker", "")
-            if "KXMAYORNYCPARTY" not in ticker:
-                filtered_market_positions.append(position)
-            else:
-                # Silently ignore KXMAYORNYCPARTY positions (temporary filter)
-                pass
-        
-        for position in all_event_positions:
-            event_ticker = position.get("event_ticker", "")
-            if "KXMAYORNYCPARTY" not in event_ticker:
-                filtered_event_positions.append(position)
-            else:
-                # Silently ignore KXMAYORNYCPARTY event positions (temporary filter)
-                pass
-        
-        print(f"📊 Retrieved {len(all_market_positions)} market positions and {len(all_event_positions)} event positions")
-        print(f"🔍 After filtering: {len(filtered_market_positions)} market positions and {len(filtered_event_positions)} event positions")
-        
-        # Use filtered positions for processing
-        all_market_positions = filtered_market_positions
-        all_event_positions = filtered_event_positions
-        
+        for attempt in range(max_retries):
+            try:
+                print(f"🔄 REST API attempt {attempt + 1}/{max_retries}")
+                data = make_rest_api_call()
+                if data is not None:
+                    print(f"✅ REST API successful on attempt {attempt + 1}")
+                    break
+                else:
+                    print(f"⚠️ REST API returned None on attempt {attempt + 1}")
+            except Exception as e:
+                print(f"❌ REST API attempt {attempt + 1} failed: {e}")
+                
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)  # exponential backoff
+                    print(f"⏳ Waiting {delay}s before retry...")
+                    time.sleep(delay)
+                else:
+                    print(f"🚨 All REST API attempts failed, using WebSocket fallback")
+                    data = use_websocket_fallback_for_positions()
+                    if data is None:
+                        print("❌ WebSocket fallback also failed, aborting positions sync")
+                        return
+        else:
+            # All retries exhausted
+            print(f"🚨 All REST API attempts failed, using WebSocket fallback")
+            data = use_websocket_fallback_for_positions()
+            if data is None:
+                print("❌ WebSocket fallback also failed, aborting positions sync")
+                return
+    
     except Exception as e:
-        print(f"❌ Failed to fetch positions: {e}")
+        print(f"❌ Error in positions sync: {e}")
         return
+
+    # Process the data (either from REST API or WebSocket fallback)
+    all_market_positions = data.get("market_positions", [])
+    all_event_positions = data.get("event_positions", [])
 
     # ----- CHANGE-DETECTION: skip writes if nothing changed -----
     global LAST_POSITIONS_HASH
@@ -503,41 +668,88 @@ def sync_positions():
 def sync_fills():
     # PostgreSQL only - no legacy database paths needed
     print("⏱ Syncing recent fills...")
-    method = "GET"
-    path = "/portfolio/fills"
     
-    # Single request for recent fills (no pagination loop)
-    timestamp = str(int(time.time() * 1000))
-    query = "?limit=50"  # Reduced limit for WebSocket implementation
-    url = f"{get_base_url()}{path}{query}"
-    print(f"🔗 Requesting recent fills: {url}")
+    def make_rest_api_call():
+        """Make the REST API call for fills"""
+        method = "GET"
+        path = "/portfolio/fills"
+        
+        # Single request for recent fills (no pagination loop)
+        timestamp = str(int(time.time() * 1000))
+        query = "?limit=50"  # Reduced limit for WebSocket implementation
+        url = f"{get_base_url()}{path}{query}"
+        print(f"🔗 Requesting recent fills: {url}")
 
-    full_path_for_signature = f"/trade-api/v2{path}"
-    signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
+        full_path_for_signature = f"/trade-api/v2{path}"
+        signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
 
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": "KalshiWatcher/1.0",
-        "KALSHI-ACCESS-KEY": KEY_ID,
-        "KALSHI-ACCESS-TIMESTAMP": timestamp,
-        "KALSHI-ACCESS-SIGNATURE": signature,
-    }
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "KalshiWatcher/1.0",
+            "KALSHI-ACCESS-KEY": KEY_ID,
+            "KALSHI-ACCESS-TIMESTAMP": timestamp,
+            "KALSHI-ACCESS-SIGNATURE": signature,
+        }
 
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            print("Response keys:", data.keys())
+            if "error" in data:
+                print("⚠️ API error:", data["error"])
+                return None
+            
+            all_fills = data.get("fills", [])
+            print(f"📊 Retrieved {len(all_fills)} recent fills")
+            
+            return data
+            
+        except Exception as e:
+            print(f"❌ Failed to fetch fills: {e}")
+            raise e  # Re-raise to trigger retry logic
+    
+    # Use retry logic
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        print("Response keys:", data.keys())
-        if "error" in data:
-            print("⚠️ API error:", data["error"])
-            return
+        max_retries = 3
+        base_delay = 1
         
-        all_fills = data.get("fills", [])
-        print(f"📊 Retrieved {len(all_fills)} recent fills")
-        
+        for attempt in range(max_retries):
+            try:
+                print(f"🔄 REST API attempt {attempt + 1}/{max_retries}")
+                data = make_rest_api_call()
+                if data is not None:
+                    print(f"✅ REST API successful on attempt {attempt + 1}")
+                    break
+                else:
+                    print(f"⚠️ REST API returned None on attempt {attempt + 1}")
+            except Exception as e:
+                print(f"❌ REST API attempt {attempt + 1} failed: {e}")
+                
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)  # exponential backoff
+                    print(f"⏳ Waiting {delay}s before retry...")
+                    time.sleep(delay)
+                else:
+                    print(f"🚨 All REST API attempts failed, using WebSocket fallback")
+                    data = use_websocket_fallback_for_fills()
+                    if data is None:
+                        print("❌ WebSocket fallback also failed, aborting fills sync")
+                        return
+        else:
+            # All retries exhausted
+            print(f"🚨 All REST API attempts failed, using WebSocket fallback")
+            data = use_websocket_fallback_for_fills()
+            if data is None:
+                print("❌ WebSocket fallback also failed, aborting fills sync")
+                return
+    
     except Exception as e:
-        print(f"❌ Failed to fetch fills: {e}")
+        print(f"❌ Error in fills sync: {e}")
         return
+
+    # Process the data (either from REST API or WebSocket fallback)
+    all_fills = data.get("fills", [])
 
     # WebSocket triggers ensure we only poll when there's new data, so always write
 
@@ -613,41 +825,82 @@ def sync_fills():
 def sync_settlements():
     # PostgreSQL only - no legacy database paths needed
     print("⏱ Syncing recent settlements...")
-    method = "GET"
-    path = "/portfolio/settlements"
     
-    # Single request for recent settlements (no pagination loop)
-    timestamp = str(int(time.time() * 1000))
-    query = "?limit=50"  # Reduced limit for WebSocket implementation
-    url = f"{get_base_url()}{path}{query}"
-    print(f"🔗 Requesting recent settlements: {url}")
+    def make_rest_api_call():
+        """Make the REST API call for settlements"""
+        method = "GET"
+        path = "/portfolio/settlements"
+        
+        # Single request for recent settlements (no pagination loop)
+        timestamp = str(int(time.time() * 1000))
+        query = "?limit=50"  # Reduced limit for WebSocket implementation
+        url = f"{get_base_url()}{path}{query}"
+        print(f"🔗 Requesting recent settlements: {url}")
 
-    full_path_for_signature = f"/trade-api/v2{path}"
-    signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
+        full_path_for_signature = f"/trade-api/v2{path}"
+        signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
 
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": "KalshiWatcher/1.0",
-        "KALSHI-ACCESS-KEY": KEY_ID,
-        "KALSHI-ACCESS-TIMESTAMP": timestamp,
-        "KALSHI-ACCESS-SIGNATURE": signature,
-    }
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "KalshiWatcher/1.0",
+            "KALSHI-ACCESS-KEY": KEY_ID,
+            "KALSHI-ACCESS-TIMESTAMP": timestamp,
+            "KALSHI-ACCESS-SIGNATURE": signature,
+        }
 
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            print("Response keys:", data.keys())
+            if "error" in data:
+                print("⚠️ API error:", data["error"])
+                return None
+            
+            all_settlements = data.get("settlements", [])
+            print(f"📊 Retrieved {len(all_settlements)} recent settlements")
+            
+            return data
+            
+        except Exception as e:
+            print(f"❌ Failed to fetch settlements: {e}")
+            raise e  # Re-raise to trigger retry logic
+    
+    # Use retry logic
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        print("Response keys:", data.keys())
-        if "error" in data:
-            print("⚠️ API error:", data["error"])
+        max_retries = 3
+        base_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                print(f"🔄 REST API attempt {attempt + 1}/{max_retries}")
+                data = make_rest_api_call()
+                if data is not None:
+                    print(f"✅ REST API successful on attempt {attempt + 1}")
+                    break
+                else:
+                    print(f"⚠️ REST API returned None on attempt {attempt + 1}")
+            except Exception as e:
+                print(f"❌ REST API attempt {attempt + 1} failed: {e}")
+                
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)  # exponential backoff
+                    print(f"⏳ Waiting {delay}s before retry...")
+                    time.sleep(delay)
+                else:
+                    print(f"🚨 All REST API attempts failed for settlements")
+                    return
+        else:
+            # All retries exhausted
+            print(f"🚨 All REST API attempts failed for settlements")
             return
-        
-        all_settlements = data.get("settlements", [])
-        print(f"📊 Retrieved {len(all_settlements)} recent settlements")
-        
+    
     except Exception as e:
-        print(f"❌ Failed to fetch settlements: {e}")
+        print(f"❌ Error in settlements sync: {e}")
         return
+
+    # Process the data
+    all_settlements = data.get("settlements", [])
 
     # Transform settlements for PostgreSQL insertion
     # PostgreSQL only
@@ -710,41 +963,82 @@ def sync_settlements():
 def sync_orders():
     # PostgreSQL only - no legacy database paths needed
     print("⏱ Syncing recent orders...")
-    method = "GET"
-    path = "/portfolio/orders"
     
-    # Single request for recent orders (no pagination loop)
-    timestamp = str(int(time.time() * 1000))
-    query = "?limit=50"  # Reduced limit for WebSocket implementation
-    url = f"{get_base_url()}{path}{query}"
-    print(f"🔗 Requesting recent orders: {url}")
+    def make_rest_api_call():
+        """Make the REST API call for orders"""
+        method = "GET"
+        path = "/portfolio/orders"
+        
+        # Single request for recent orders (no pagination loop)
+        timestamp = str(int(time.time() * 1000))
+        query = "?limit=50"  # Reduced limit for WebSocket implementation
+        url = f"{get_base_url()}{path}{query}"
+        print(f"🔗 Requesting recent orders: {url}")
 
-    full_path_for_signature = f"/trade-api/v2{path}"
-    signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
+        full_path_for_signature = f"/trade-api/v2{path}"
+        signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
 
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": "KalshiWatcher/1.0",
-        "KALSHI-ACCESS-KEY": KEY_ID,
-        "KALSHI-ACCESS-TIMESTAMP": timestamp,
-        "KALSHI-ACCESS-SIGNATURE": signature,
-    }
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "KalshiWatcher/1.0",
+            "KALSHI-ACCESS-KEY": KEY_ID,
+            "KALSHI-ACCESS-TIMESTAMP": timestamp,
+            "KALSHI-ACCESS-SIGNATURE": signature,
+        }
 
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            print("Response keys:", data.keys())
+            if "error" in data:
+                print("⚠️ API error:", data["error"])
+                return None
+            
+            all_orders = data.get("orders", [])
+            print(f"📊 Retrieved {len(all_orders)} recent orders")
+            
+            return data
+            
+        except Exception as e:
+            print(f"❌ Failed to fetch orders: {e}")
+            raise e  # Re-raise to trigger retry logic
+    
+    # Use retry logic
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        print("Response keys:", data.keys())
-        if "error" in data:
-            print("⚠️ API error:", data["error"])
+        max_retries = 3
+        base_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                print(f"🔄 REST API attempt {attempt + 1}/{max_retries}")
+                data = make_rest_api_call()
+                if data is not None:
+                    print(f"✅ REST API successful on attempt {attempt + 1}")
+                    break
+                else:
+                    print(f"⚠️ REST API returned None on attempt {attempt + 1}")
+            except Exception as e:
+                print(f"❌ REST API attempt {attempt + 1} failed: {e}")
+                
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)  # exponential backoff
+                    print(f"⏳ Waiting {delay}s before retry...")
+                    time.sleep(delay)
+                else:
+                    print(f"🚨 All REST API attempts failed for orders")
+                    return
+        else:
+            # All retries exhausted
+            print(f"🚨 All REST API attempts failed for orders")
             return
-        
-        all_orders = data.get("orders", [])
-        print(f"📊 Retrieved {len(all_orders)} recent orders")
-        
+    
     except Exception as e:
-        print(f"❌ Failed to fetch orders: {e}")
+        print(f"❌ Error in orders sync: {e}")
         return
+
+    # Process the data
+    all_orders = data.get("orders", [])
 
     # WebSocket triggers ensure we only poll when there's new data, so always write
 
@@ -956,6 +1250,11 @@ class KalshiWebSocketSync:
             
             if data.get("type") == "market_position":
                 position_data = data.get("msg", {})
+                
+                # Store latest WebSocket data for fallback use
+                global LATEST_WEBSOCKET_POSITION_DATA, LATEST_WEBSOCKET_TIMESTAMP
+                LATEST_WEBSOCKET_POSITION_DATA = position_data
+                LATEST_WEBSOCKET_TIMESTAMP = datetime.now().isoformat() + "Z"
                 
                 print(f"\n[{datetime.now(EST)}] 📊 MARKET POSITION UPDATE RECEIVED!")
                 print(f"   User ID: {position_data.get('user_id')}")

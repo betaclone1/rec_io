@@ -1873,6 +1873,49 @@ async def get_btc_changes():
         print(f"[btc_price_changes API] Error reading from PostgreSQL: {e}")
         return {"change1h": None, "change3h": None, "change1d": None, "timestamp": None}
 
+@app.get("/eth_price_changes")
+async def get_eth_changes():
+    """Get ETH price changes from PostgreSQL live_data.price_change_eth."""
+    try:
+        import psycopg2
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        cursor = conn.cursor()
+        
+        # Get latest price changes from the database
+        cursor.execute("""
+            SELECT change1h, change3h, change1d, timestamp 
+            FROM live_data.price_change_eth 
+            ORDER BY timestamp DESC 
+            LIMIT 1
+        """)
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            changes = {
+                "change1h": float(result[0]) if result[0] is not None else None,
+                "change3h": float(result[1]) if result[1] is not None else None,
+                "change1d": float(result[2]) if result[2] is not None else None,
+                "timestamp": result[3].isoformat() if result[3] else datetime.now(ZoneInfo("America/New_York")).isoformat()
+            }
+        else:
+            changes = {"change1h": None, "change3h": None, "change1d": None, "timestamp": datetime.now(ZoneInfo("America/New_York")).isoformat()}
+        
+        return changes
+        
+    except Exception as e:
+        print(f"[eth_price_changes API] Error reading from PostgreSQL: {e}")
+        return {"change1h": None, "change3h": None, "change1d": None, "timestamp": None}
+
 @app.get("/kalshi_market_snapshot")
 async def get_kalshi_snapshot():
     """Get Kalshi market snapshot from PostgreSQL."""
@@ -1949,7 +1992,7 @@ async def get_account_balance(mode: str = "prod"):
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             # Get the latest account balance
             cursor.execute("""
-                SELECT portfolio, positions, timestamp 
+                SELECT portfolio, positions, bankroll_current, timestamp 
                 FROM users.account_balance_0001 
                 ORDER BY timestamp DESC 
                 LIMIT 1
@@ -1962,12 +2005,14 @@ async def get_account_balance(mode: str = "prod"):
             if balance_result:
                 portfolio_value = balance_result['portfolio']
                 positions_value = balance_result['positions'] if balance_result else 0
+                bankroll_current = balance_result['bankroll_current'] if balance_result else 0
                 return {
                     "portfolio": portfolio_value,
-                    "positions": positions_value
+                    "positions": positions_value,
+                    "bankroll_current": bankroll_current
                 }
             else:
-                return {"portfolio": 0, "positions": 0}
+                return {"portfolio": 0, "positions": 0, "bankroll_current": 0}
             
     except Exception as e:
         print(f"Error getting account balance from PostgreSQL: {e}")
@@ -1991,9 +2036,9 @@ async def get_account_balance_history(mode: str = "prod", limit: int = 1000):
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             # Get historical account balance data
             cursor.execute("""
-                SELECT portfolio, positions, timestamp 
+                SELECT portfolio, positions, updated_at 
                 FROM users.account_balance_0001 
-                ORDER BY timestamp ASC
+                ORDER BY updated_at ASC
                 LIMIT %s
             """, (limit,))
             balance_results = cursor.fetchall()
@@ -2006,7 +2051,7 @@ async def get_account_balance_history(mode: str = "prod", limit: int = 1000):
                 history_data.append({
                     "portfolio": result['portfolio'],
                     "positions": result['positions'],
-                    "timestamp": result['timestamp'].isoformat() if result['timestamp'] else None
+                    "timestamp": result['updated_at'].isoformat() if result['updated_at'] else None
                 })
             
             return {"history": history_data}
@@ -2326,6 +2371,33 @@ async def get_btc_price():
             
     except Exception as e:
         print(f"Error getting BTC price from PostgreSQL: {e}")
+        return {"price": None, "error": str(e)}
+
+@app.get("/api/eth_price")
+async def get_eth_price():
+    """Get current ETH price directly from PostgreSQL live_data.live_price_log_1s_eth."""
+    try:
+        import psycopg2
+        
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        cursor = conn.cursor()
+        cursor.execute("SELECT price FROM live_data.live_price_log_1s_eth ORDER BY timestamp DESC LIMIT 1")
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            price = float(result[0])
+            return {"price": price, "source": "postgresql_live_data"}
+        else:
+            return {"price": None, "error": "No price data available"}
+            
+    except Exception as e:
+        print(f"Error getting ETH price from PostgreSQL: {e}")
         return {"price": None, "error": str(e)}
 
 @app.get("/api/momentum_score")
@@ -4472,6 +4544,225 @@ async def get_portfolio_history(period: str = "1m"):
         
     except Exception as e:
         print(f"Error getting portfolio history: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/dashboard/preferences")
+async def get_dashboard_preferences(mode: str = "prod"):
+    """Get dashboard preferences for the current user"""
+    try:
+        from backend.core.config.database import get_postgresql_connection
+        conn = get_postgresql_connection()
+        
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT portfolio_chart_view, monitor_view_mode, monitor_sort_by
+                FROM users.dashboard_preferences_0001 
+                WHERE user_id = 1
+            """)
+            result = cursor.fetchone()
+            
+        conn.close()
+        
+        if result:
+            return {
+                "status": "ok",
+                "portfolio_chart_view": result[0],
+                "monitor_view_mode": result[1] if result[1] else "tile",
+                "monitor_sort_by": result[2] if result[2] else "name"
+            }
+        else:
+            return {
+                "status": "ok",
+                "portfolio_chart_view": "all",  # Default value
+                "monitor_view_mode": "tile",    # Default value
+                "monitor_sort_by": "name"       # Default value
+            }
+            
+    except Exception as e:
+        print(f"Error getting dashboard preferences: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/dashboard/preferences")
+async def save_dashboard_preferences(request: Request):
+    """Save dashboard preferences for the current user"""
+    try:
+        from backend.core.config.database import get_postgresql_connection
+        conn = get_postgresql_connection()
+        
+        data = await request.json()
+        portfolio_chart_view = data.get("portfolio_chart_view", "all")
+        monitor_view_mode = data.get("monitor_view_mode", "tile")
+        monitor_sort_by = data.get("monitor_sort_by", "name")
+        
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO users.dashboard_preferences_0001 (user_id, portfolio_chart_view, monitor_view_mode, monitor_sort_by, updated_at)
+                VALUES (1, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id) 
+                DO UPDATE SET 
+                    portfolio_chart_view = EXCLUDED.portfolio_chart_view,
+                    monitor_view_mode = EXCLUDED.monitor_view_mode,
+                    monitor_sort_by = EXCLUDED.monitor_sort_by,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (portfolio_chart_view, monitor_view_mode, monitor_sort_by))
+            
+        conn.commit()
+        conn.close()
+        
+        return {
+            "status": "ok",
+            "message": "Preferences saved successfully"
+        }
+            
+    except Exception as e:
+        print(f"Error saving dashboard preferences: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/monitors")
+async def get_monitors(user_id: str = "user_0001"):
+    """Get monitors list for the specified user"""
+    try:
+        from backend.core.config.database import get_postgresql_connection
+        conn = get_postgresql_connection()
+        
+        # Extract user number from user_id (e.g., user_0001 -> 0001)
+        user_number = user_id.replace("user_", "")
+        
+        with conn.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT 
+                    id,
+                    name,
+                    symbol,
+                    strategy,
+                    auto_trade,
+                    auto_trade_status,
+                    trades,
+                    win_loss,
+                    ret_pct,
+                    pnl,
+                    bankroll_allotment,
+                    status,
+                    created
+                FROM users.monitors_list_{user_number}
+                ORDER BY id
+            """)
+            
+            results = cursor.fetchall()
+            
+        conn.close()
+        
+        # Transform database results to frontend format
+        monitors = []
+        for row in results:
+            monitor_id, name, symbol, strategy, auto_trade, auto_trade_status, trades, win_loss, ret_pct, pnl, bankroll_allotment, status, created = row
+            
+            # Calculate uptime from created timestamp
+            from datetime import datetime
+            uptime_str = "0d 0h 0m"
+            if created:
+                now = datetime.now()
+                if isinstance(created, str):
+                    created_dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
+                else:
+                    created_dt = created
+                
+                # Handle timezone if needed
+                if created_dt.tzinfo is None:
+                    created_dt = created_dt.replace(tzinfo=datetime.now().tzinfo)
+                
+                diff = now - created_dt.replace(tzinfo=None)
+                days = diff.days
+                hours = diff.seconds // 3600
+                minutes = (diff.seconds % 3600) // 60
+                uptime_str = f"{days}d {hours}h {minutes}m"
+            
+            # Format data for frontend - use exact database values
+            formatted_monitor = {
+                "id": f"MON_{user_number}.{monitor_id}",
+                "symbol": symbol,
+                "strategy": strategy,  # Use exact database value
+                "status": status,
+                "autoTrade": auto_trade,
+                "trades": trades,
+                "winRate": f"{win_loss}%" if win_loss is not None else "0%",
+                "return": f"{'+' if ret_pct >= 0 else ''}{ret_pct}%" if ret_pct is not None else "0%",
+                "pnl": f"{'+' if pnl >= 0 else ''}${abs(pnl):,.0f}" if pnl is not None else "$0",
+                "uptime": uptime_str,
+                "name": name,  # Use exact database value
+                "bankroll_allotment": bankroll_allotment,
+                "auto_trade_status": auto_trade_status
+            }
+            monitors.append(formatted_monitor)
+        
+        # Add the NEW_MONITOR entry
+        monitors.append({
+            "id": "NEW_MONITOR",
+            "symbol": "+",
+            "strategy": "NEW MONITOR",
+            "status": "new",
+            "autoTrade": False,
+            "trades": "",
+            "winRate": "",
+            "return": "",
+            "pnl": "",
+            "uptime": "",
+            "name": "NEW_MONITOR",
+            "bankroll_allotment": 0,
+            "auto_trade_status": "inactive"
+        })
+        
+        return {
+            "status": "ok",
+            "user_id": user_id,
+            "count": len(monitors) - 1,  # Exclude NEW_MONITOR from count
+            "monitors": monitors
+        }
+        
+    except Exception as e:
+        print(f"Error getting monitors: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/monitor/toggle-auto-trade")
+async def toggle_auto_trade(request: dict):
+    """Toggle auto_trade boolean value for a specific monitor"""
+    try:
+        from backend.core.config.database import get_postgresql_connection
+        
+        # Extract parameters from request body
+        monitor_id = request.get("monitor_id")
+        auto_trade = request.get("auto_trade")
+        user_id = request.get("user_id", "user_0001")
+        
+        if not monitor_id or auto_trade is None:
+            return {"status": "error", "message": "Missing monitor_id or auto_trade parameter"}
+        
+        # Extract user number and monitor ID from monitor_id (e.g., MON_0001.10001 -> user_0001, 10001)
+        parts = monitor_id.split('.')
+        if len(parts) != 2:
+            return {"status": "error", "message": "Invalid monitor ID format"}
+        
+        user_number = parts[0].replace("MON_", "")
+        db_monitor_id = parts[1]
+        
+        conn = get_postgresql_connection()
+        with conn.cursor() as cursor:
+            cursor.execute(f"""
+                UPDATE users.monitors_list_{user_number}
+                SET auto_trade = %s
+                WHERE id = %s
+            """, (auto_trade, db_monitor_id))
+            
+            if cursor.rowcount == 0:
+                return {"status": "error", "message": "Monitor not found"}
+            
+        conn.commit()
+        conn.close()
+        
+        return {"status": "ok", "message": f"Auto trade {'enabled' if auto_trade else 'disabled'} for monitor {monitor_id}"}
+        
+    except Exception as e:
+        print(f"Error toggling auto trade: {e}")
         return {"status": "error", "message": str(e)}
 
 # Main entry point

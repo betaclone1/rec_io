@@ -196,6 +196,30 @@ setup_database_tables() {
             LIKE users.auto_trade_settings_0001 INCLUDING ALL
         );
         
+        -- Create monitors_list table for new user
+        CREATE SEQUENCE IF NOT EXISTS users.monitors_list_${USER_NUMBER}_id_seq
+        START WITH 10001
+        INCREMENT BY 1
+        MINVALUE 10001
+        MAXVALUE 99999
+        CYCLE;
+        
+        CREATE TABLE IF NOT EXISTS users.monitors_list_$USER_NUMBER (
+            id INTEGER PRIMARY KEY DEFAULT nextval('users.monitors_list_${USER_NUMBER}_id_seq'),
+            name VARCHAR(255) NOT NULL,
+            symbol VARCHAR(20) NOT NULL,
+            strategy VARCHAR(100),
+            auto_trade BOOLEAN DEFAULT FALSE,
+            auto_trade_status VARCHAR(20) DEFAULT 'inactive',
+            trades INTEGER DEFAULT 0,
+            win_loss DECIMAL(5,1) DEFAULT 0.0,
+            ret_pct DECIMAL(5,1) DEFAULT 0.0,
+            pnl DECIMAL(10,2) DEFAULT 0.00,
+            bankroll_allotment DECIMAL(5,1) DEFAULT 0.0,
+            status VARCHAR(20) DEFAULT 'active',
+            created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        
         -- Insert default auto trade settings (SAFE defaults)
         INSERT INTO users.auto_trade_settings_$USER_NUMBER (
             id, auto_entry, auto_stop, min_probability, min_differential, min_time, max_time, 
