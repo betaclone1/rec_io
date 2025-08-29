@@ -1116,11 +1116,24 @@ def scheduled_balance_check():
     except Exception as e:
         print(f"[{datetime.now(EST)}] ❌ Error in scheduled balance check: {e}")
 
+def hourly_balance_check():
+    """Scheduled task to run balance check every hour on the hour"""
+    print(f"[{datetime.now(EST)}] 🕐 Hourly balance check triggered")
+    try:
+        sync_balance()
+        print(f"[{datetime.now(EST)}] ✅ Hourly balance check completed successfully")
+    except Exception as e:
+        print(f"[{datetime.now(EST)}] ❌ Error in hourly balance check: {e}")
+
 def run_scheduler():
     """Run the scheduler in a separate thread"""
     # Schedule for 1AM Eastern Time
     schedule.every().day.at("01:00").do(scheduled_balance_check)
     print(f"[{datetime.now(EST)}] 📅 Scheduled daily balance check at 1AM EST")
+    
+    # Schedule hourly balance checks (every hour on the hour)
+    schedule.every().hour.do(hourly_balance_check)
+    print(f"[{datetime.now(EST)}] 📅 Scheduled hourly balance checks every hour on the hour")
     
     while True:
         schedule.run_pending()
@@ -1143,6 +1156,7 @@ def main():
     print("🚀 Starting hybrid mode: WebSocket triggers → Polling updates all DBs!")
     print("💡 No more interval polling - only poll when position changes detected!")
     print("📅 Daily balance check scheduled for 1AM EST")
+    print("📅 Hourly balance checks scheduled every hour on the hour")
     
     # Start scheduler in a separate thread
     scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
