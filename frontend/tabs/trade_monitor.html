@@ -887,10 +887,14 @@ function hideAutoEntrySettingsModal() {
             <div style="font-weight: bold; margin-bottom: 6px; font-size: 0.9rem;">Position Size: <span id="position-display" style="margin-left: 10px; updateupdatefont-weight: normal; color: #ccc;">100 contracts</span></div>
             <div id="positionSizeSelector" style="display: flex; align-items: center; gap: 10px;">
               <input type="number" id="position-size" min="1" style="width: 60px; padding: 4px 6px; text-align: right; font-size: 1rem; border-radius: 4px; border: 1px solid #ccc; height: 28px; box-sizing: border-box;" />
+              <div style="display: flex; flex-direction: column; gap: 2px;">
+                <button id="toggle-percent" style="height: 15px; padding: 2px 6px; box-sizing: border-box; font-size: 9px; background-color: #007bff; border: 1px solid #0056b3; color: white; border-radius: 4px; cursor: pointer;" onclick="togglePositionType('percent')">%</button>
+                <button id="toggle-contracts" style="height: 15px; padding: 2px 6px; box-sizing: border-box; font-size: 9px; background-color: transparent; border: 1px solid #ccc; color: white; border-radius: 4px; cursor: pointer;" onclick="togglePositionType('contracts')">C</button>
+              </div>
               <div>
-                <button class="multiplier-btn" data-multiplier="1" style="height: 28px; padding: 4px 8px; box-sizing: border-box;">1x</button>
-                <button class="multiplier-btn" data-multiplier="2" style="height: 28px; padding: 4px 8px; box-sizing: border-box;">2x</button>
-                <button class="multiplier-btn" data-multiplier="3" style="height: 28px; padding: 4px 8px; box-sizing: border-box;">3x</button>
+                <button class="multiplier-btn" data-multiplier="0.5" style="height: 28px; padding: 4px 8px; box-sizing: border-box; width: 32px;">½</button>
+                <button class="multiplier-btn" data-multiplier="1" style="height: 28px; padding: 4px 8px; box-sizing: border-box; width: 32px;">1</button>
+                <button class="multiplier-btn" data-multiplier="2" style="height: 28px; padding: 4px 8px; box-sizing: border-box; width: 32px;">2</button>
               </div>
             </div>
           </div>
@@ -1044,6 +1048,27 @@ function hideAutoEntrySettingsModal() {
           const bankroll = data.bankroll_current || 0;
           const bankrollInDollars = bankroll / 100; // Convert cents to dollars
           bankrollEl.textContent = `$${Number(bankrollInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+          
+          // Update total_position in database when bankroll changes
+          fetch(window.location.origin + '/api/update_total_position', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+          }).then(response => {
+            if (!response.ok) {
+              throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            return response.json();
+          }).then(data => {
+            console.log('Total position updated due to bankroll change:', data);
+            // Update display with the new total_position from database
+            const positionDisplay = document.getElementById('position-display');
+            if (positionDisplay && data.total_position !== undefined) {
+              positionDisplay.textContent = `${data.total_position} contracts`;
+            }
+          }).catch(error => {
+            console.error('Error updating total position due to bankroll change:', error);
+          });
         }
       } catch (error) {
         console.error('Error fetching account balance:', error);
@@ -1091,13 +1116,43 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function updatePositionDisplay() {
-    const baseValue = parseInt(positionInput.value, 10) || 0;
-    const total = baseValue * (currentMultiplier || 1);
+    // Calculate the expected total_position based on current UI state
+    const positionInput = document.getElementById('position-size');
     const positionDisplay = document.getElementById('position-display');
-    if (positionDisplay) {
-      positionDisplay.textContent = `${total} contracts`;
+    
+    if (!positionInput || !positionDisplay) return;
+    
+    const baseValue = parseInt(positionInput.value, 10) || 0;
+    const isPercentMode = document.getElementById('toggle-percent')?.style.backgroundColor === 'rgb(0, 123, 255)';
+    
+    let totalContracts = 0;
+    
+    if (isPercentMode) {
+      // Get bankroll value from the display
+      const bankrollEl = document.getElementById('bankroll-balance');
+      let bankrollValue = 0;
+      if (bankrollEl && bankrollEl.textContent) {
+        // Extract number from "$2,218.72" format
+        const bankrollText = bankrollEl.textContent.replace(/[$,]/g, '');
+        bankrollValue = parseFloat(bankrollText) || 0;
+      }
+      
+      // Calculate contracts: (percentage * bankroll) / 100, then apply multiplier
+      const percentageOfBankroll = (baseValue * bankrollValue) / 100;
+      totalContracts = Math.round(percentageOfBankroll * (currentMultiplier || 1));
+    } else {
+      // Contracts mode - direct calculation
+      totalContracts = baseValue * (currentMultiplier || 1);
     }
+    
+    positionDisplay.textContent = `${totalContracts} contracts`;
   }
+  
+  // Make updatePositionDisplay globally accessible
+  window.updatePositionDisplay = updatePositionDisplay;
+  
+  // Debounce timer for position size updates
+  let positionSizeUpdateTimer = null;
 
   // Initial preferences fetch and UI setup
   fetch(window.location.origin + '/api/get_preferences')
@@ -1164,7 +1219,31 @@ document.addEventListener('DOMContentLoaded', () => {
       if (tradeStrategyPicker && data.trade_strategy !== undefined) {
         tradeStrategyPicker.value = data.trade_strategy;
       }
-      updatePositionDisplay();
+      
+      // Set position type toggle buttons based on data from database
+      if (data.position_type !== undefined) {
+        if (data.position_type === 'percent') {
+          document.getElementById('toggle-percent').style.backgroundColor = '#007bff';
+          document.getElementById('toggle-percent').style.borderColor = '#0056b3';
+          document.getElementById('toggle-contracts').style.backgroundColor = 'transparent';
+          document.getElementById('toggle-contracts').style.borderColor = '#ccc';
+        } else {
+          document.getElementById('toggle-contracts').style.backgroundColor = '#007bff';
+          document.getElementById('toggle-contracts').style.borderColor = '#0056b3';
+          document.getElementById('toggle-percent').style.backgroundColor = 'transparent';
+          document.getElementById('toggle-percent').style.borderColor = '#ccc';
+        }
+      }
+      
+      // Use total_position from database if available, otherwise calculate
+      if (data.total_position !== undefined) {
+        const positionDisplay = document.getElementById('position-display');
+        if (positionDisplay) {
+          positionDisplay.textContent = `${data.total_position} contracts`;
+        }
+      } else {
+        updatePositionDisplay();
+      }
     });
 
   // WebSocket setup - use secure WebSocket for HTTPS
@@ -1547,25 +1626,51 @@ document.addEventListener('DOMContentLoaded', () => {
         // Removed console.log
         return;
       }
-      const value = parseInt(positionInput.value, 10) || 100;
-      // Removed console.log
-      // Removed console.log
-      fetch(window.location.origin + '/api/set_position_size', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ position_size: value })
-      }).then(response => {
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        return response.json();
-      }).then(data => {
-        console.log('Position size updated successfully:', data);
-      }).catch(error => {
-        console.error('Position size backend error:', error);
-        alert(`Failed to update position size: ${error.message}`);
-      });
-      updatePositionDisplay();
+      
+      let value = parseInt(positionInput.value, 10) || 100;
+      
+      // Validate based on current mode
+      const isPercentMode = document.getElementById('toggle-percent')?.style.backgroundColor === 'rgb(0, 123, 255)';
+      
+      if (isPercentMode) {
+        // Percent mode: restrict to 1-100
+        if (value < 1) value = 1;
+        if (value > 100) value = 100;
+        positionInput.value = value;
+      } else {
+        // Contracts mode: minimum 1, no upper limit
+        if (value < 1) value = 1;
+        positionInput.value = value;
+      }
+      
+      // Clear any existing timer
+      if (positionSizeUpdateTimer) {
+        clearTimeout(positionSizeUpdateTimer);
+      }
+      
+      // Set a new timer to update the database after 300ms of no changes
+      positionSizeUpdateTimer = setTimeout(() => {
+        fetch(window.location.origin + '/api/set_position_size', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ position_size: value })
+        }).then(response => {
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+          return response.json();
+        }).then(data => {
+          console.log('Position size updated successfully:', data);
+          // Update display with the total_position from the response
+          const positionDisplay = document.getElementById('position-display');
+          if (positionDisplay && data.total_position !== undefined) {
+            positionDisplay.textContent = `${data.total_position} contracts`;
+          }
+        }).catch(error => {
+          console.error('Position size backend error:', error);
+          alert(`Failed to update position size: ${error.message}`);
+        });
+      }, 300);
     });
   }
 
@@ -1577,11 +1682,11 @@ document.addEventListener('DOMContentLoaded', () => {
         // Removed console.log
         return;
       }
+      
       multiplierButtons.forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      currentMultiplier = parseInt(btn.dataset.multiplier, 10);
+      currentMultiplier = parseFloat(btn.dataset.multiplier);
       // Removed console.log
-      updatePositionDisplay();
       // Removed console.log
       fetch(window.location.origin + '/api/set_multiplier', {
         method: 'POST',
@@ -1594,6 +1699,11 @@ document.addEventListener('DOMContentLoaded', () => {
         return response.json();
       }).then(data => {
         console.log('Multiplier updated successfully:', data);
+        // Update display with the total_position from the response
+        const positionDisplay = document.getElementById('position-display');
+        if (positionDisplay && data.total_position !== undefined) {
+          positionDisplay.textContent = `${data.total_position} contracts`;
+        }
       }).catch(error => {
         console.error('Multiplier backend error:', error);
         alert(`Failed to update multiplier: ${error.message}`);
@@ -1930,6 +2040,96 @@ document.addEventListener('DOMContentLoaded', () => {
   </script>
 
   <script>
+    function togglePositionType(type) {
+      const percentBtn = document.getElementById('toggle-percent');
+      const contractsBtn = document.getElementById('toggle-contracts');
+      const positionInput = document.getElementById('position-size');
+      
+      // Update UI buttons
+      if (type === 'percent') {
+        percentBtn.style.backgroundColor = '#007bff';
+        percentBtn.style.borderColor = '#0056b3';
+        contractsBtn.style.backgroundColor = 'transparent';
+        contractsBtn.style.borderColor = '#ccc';
+        
+        // Set input restrictions for percent mode
+        positionInput.min = 1;
+        positionInput.max = 100;
+      } else {
+        contractsBtn.style.backgroundColor = '#007bff';
+        contractsBtn.style.borderColor = '#0056b3';
+        percentBtn.style.backgroundColor = 'transparent';
+        percentBtn.style.borderColor = '#ccc';
+        
+        // Remove restrictions for contracts mode
+        positionInput.min = 1;
+        positionInput.max = '';
+      }
+      
+      // Update position_type and position_size if switching to percent mode
+      if (type === 'percent') {
+        // First update position_size to 10, then update position_type
+        fetch(window.location.origin + '/api/set_position_size', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ position_size: 10 })
+        }).then(response => {
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+          return response.json();
+        }).then(data => {
+          console.log('Position size updated to 10:', data);
+          // Update the input field to show 10
+          positionInput.value = 10;
+          
+          // Now update position_type
+          return fetch(window.location.origin + '/api/set_position_type', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ position_type: type })
+          });
+        }).then(response => {
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+          return response.json();
+        }).then(data => {
+          console.log('Position type updated successfully:', data);
+          // Update display with the total_position from the response
+          const positionDisplay = document.getElementById('position-display');
+          if (positionDisplay && data.total_position !== undefined) {
+            positionDisplay.textContent = `${data.total_position} contracts`;
+          }
+        }).catch(error => {
+          console.error('Position type backend error:', error);
+          alert(`Failed to update position type: ${error.message}`);
+        });
+      } else {
+        // For contracts mode, just update position_type
+        fetch(window.location.origin + '/api/set_position_type', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ position_type: type })
+        }).then(response => {
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+          return response.json();
+        }).then(data => {
+          console.log('Position type updated successfully:', data);
+          // Update display with the total_position from the response
+          const positionDisplay = document.getElementById('position-display');
+          if (positionDisplay && data.total_position !== undefined) {
+            positionDisplay.textContent = `${data.total_position} contracts`;
+          }
+        }).catch(error => {
+          console.error('Position type backend error:', error);
+          alert(`Failed to update position type: ${error.message}`);
+        });
+      }
+    }
+    
     window.momentumData = {
       deltas: {
         '1m': null,

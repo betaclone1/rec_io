@@ -249,10 +249,83 @@ def update_trade_preferences_postgresql(**kwargs):
             cursor.execute(query, values)
             conn.commit()
             print(f"[PostgreSQL] Updated trade preferences: {kwargs}")
+            print(f"[DEBUG] Multiplier value being stored: {kwargs.get('multiplier')} (type: {type(kwargs.get('multiplier'))})")
         
         conn.close()
     except Exception as e:
         print(f"[PostgreSQL Error] Failed to update trade preferences: {e}")
+
+def calculate_total_position(position_size, position_type, multiplier, bankroll_value=0):
+    """Calculate total position based on position_size, position_type, multiplier, and bankroll"""
+    try:
+        # Convert multiplier to float to handle decimal.Decimal from database
+        multiplier = float(multiplier)
+        
+        if position_type == "percent":
+            # Calculate percentage of bankroll, then apply multiplier
+            percentage_of_bankroll = (position_size * bankroll_value) / 100
+            total = round(percentage_of_bankroll * multiplier)
+        else:
+            # Direct calculation for contracts mode
+            total = round(position_size * multiplier)
+        
+        return max(1, total)  # Ensure minimum of 1 contract
+    except Exception as e:
+        print(f"[Calculate Total Position Error] {e}")
+        return 1
+
+def update_total_position():
+    """Update total_position in database based on current settings"""
+    try:
+        # Get current preferences
+        prefs = get_trade_preferences_postgresql()
+        position_size = prefs.get("position_size", 1)
+        position_type = prefs.get("position_type", "contracts")
+        multiplier = prefs.get("multiplier", 1.0)
+        
+        # Get current bankroll value from account balance
+        bankroll_value = 0
+        try:
+            import psycopg2
+            from psycopg2.extras import RealDictCursor
+            
+            conn = psycopg2.connect(
+                host="localhost",
+                database="rec_io_db",
+                user="rec_io_user",
+                password="rec_io_password"
+            )
+            
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute("""
+                    SELECT bankroll_current 
+                    FROM users.account_balance_0001 
+                    ORDER BY timestamp DESC 
+                    LIMIT 1
+                """)
+                result = cursor.fetchone()
+                conn.close()
+                
+                if result and result['bankroll_current']:
+                    # bankroll_current is in cents, convert to dollars
+                    bankroll_value = float(result['bankroll_current']) / 100
+                    print(f"[Update Total Position] Bankroll value: ${bankroll_value}")
+                else:
+                    print(f"[Update Total Position] No bankroll value found, using 0")
+        except Exception as e:
+            print(f"[Update Total Position] Error getting bankroll: {e}")
+        
+        # Calculate total position
+        total_position = calculate_total_position(position_size, position_type, multiplier, bankroll_value)
+        print(f"[Update Total Position] Calculated total_position: {total_position}")
+        
+        # Update database
+        update_trade_preferences_postgresql(total_position=total_position)
+        
+        return total_position
+    except Exception as e:
+        print(f"[Update Total Position Error] {e}")
+        return 1
 
 def get_trade_preferences_postgresql():
     """Get trade preferences from PostgreSQL"""
@@ -266,7 +339,7 @@ def get_trade_preferences_postgresql():
         )
         with conn.cursor() as cursor:
             cursor.execute("""
-                SELECT trade_strategy, position_size, multiplier
+                SELECT trade_strategy, position_size, multiplier, position_type, total_position
                 FROM users.trade_preferences_0001 WHERE id = 1
             """)
             result = cursor.fetchone()
@@ -276,13 +349,17 @@ def get_trade_preferences_postgresql():
                 return {
                     "trade_strategy": result[0],
                     "position_size": result[1],
-                    "multiplier": result[2]
+                    "multiplier": result[2],
+                    "position_type": result[3],
+                    "total_position": result[4]
                 }
             else:
                 return {
                     "trade_strategy": "Hourly HTC",
                     "position_size": 1,
-                    "multiplier": 1
+                    "multiplier": 1,
+                    "position_type": "contracts",
+                    "total_position": 1
                 }
     except Exception as e:
         print(f"[PostgreSQL Error] Failed to get trade preferences: {e}")
@@ -312,7 +389,7 @@ def get_all_preferences_postgresql():
             
             # Get trade preferences
             cursor.execute("""
-                SELECT trade_strategy, position_size, multiplier
+                SELECT trade_strategy, position_size, multiplier, position_type, total_position
                 FROM users.trade_preferences_0001 WHERE id = 1
             """)
             trade_prefs = cursor.fetchone()
@@ -324,7 +401,9 @@ def get_all_preferences_postgresql():
                 "auto_stop": auto_settings[1] if auto_settings else True,  # auto_stop is second column
                 "auto_entry": auto_settings[0] if auto_settings else False,  # auto_entry is first column
                 "position_size": trade_prefs[1] if trade_prefs else 1,
-                "multiplier": trade_prefs[2] if trade_prefs else 1
+                "multiplier": trade_prefs[2] if trade_prefs else 1,
+                "position_type": trade_prefs[3] if trade_prefs else "contracts",
+                "total_position": trade_prefs[4] if trade_prefs else 1
             }
             
             return preferences
@@ -335,7 +414,9 @@ def get_all_preferences_postgresql():
             "auto_entry": False,
             "diff_mode": False,
             "position_size": 1,
-            "multiplier": 1
+            "multiplier": 1,
+            "position_type": "contracts",
+            "total_position": 1
         }
 
 def get_trade_history_preferences_postgresql():
@@ -670,10 +751,16 @@ def load_preferences():
     try:
         prefs = get_all_preferences_postgresql()
         
+        # Update total_position to ensure it's current
+        update_total_position()
+        
+        # Get updated preferences after calculation
+        updated_prefs = get_all_preferences_postgresql()
+        
         # Update cache
-        _preferences_cache = prefs
+        _preferences_cache = updated_prefs
         _cache_timestamp = current_time
-        return prefs
+        return updated_prefs
     except Exception as e:
         print(f"[Preferences Load Error] {e}")
         # Default preferences
@@ -2562,6 +2649,13 @@ async def set_position_size(request: Request):
     # Update PostgreSQL
     update_trade_preferences_postgresql(position_size=position_size)
     
+    # Update total position calculation
+    update_total_position()
+    
+    # Get the updated total_position value
+    updated_prefs = get_trade_preferences_postgresql()
+    total_position = updated_prefs.get('total_position', 1)
+    
     # Also update legacy JSON for compatibility during migration
     prefs = load_preferences()
     try:
@@ -2570,15 +2664,24 @@ async def set_position_size(request: Request):
         await broadcast_preferences_update()
     except Exception as e:
         print(f"[Set Position Size Error] {e}")
-    return {"status": "ok"}
+    return {"status": "ok", "total_position": total_position}
 
 @app.post("/api/set_multiplier")
 async def set_multiplier(request: Request):
     data = await request.json()
-    multiplier = int(data.get("multiplier", 1))
+    print(f"[DEBUG] Received multiplier data: {data}")
+    multiplier = float(data.get("multiplier", 1))
+    print(f"[DEBUG] Converted multiplier to float: {multiplier}")
     
     # Update PostgreSQL
     update_trade_preferences_postgresql(multiplier=multiplier)
+    
+    # Update total position calculation
+    update_total_position()
+    
+    # Get the updated total_position value
+    updated_prefs = get_trade_preferences_postgresql()
+    total_position = updated_prefs.get('total_position', 1)
     
     # Also update legacy JSON for compatibility during migration
     prefs = load_preferences()
@@ -2588,7 +2691,52 @@ async def set_multiplier(request: Request):
         await broadcast_preferences_update()
     except Exception as e:
         print(f"[Set Multiplier Error] {e}")
-    return {"status": "ok"}
+    return {"status": "ok", "total_position": total_position}
+
+@app.post("/api/update_total_position")
+async def update_total_position_endpoint(request: Request):
+    """Update total_position in database based on current settings and bankroll"""
+    try:
+        # Update total position calculation
+        update_total_position()
+        
+        # Get the updated total_position value
+        updated_prefs = get_trade_preferences_postgresql()
+        total_position = updated_prefs.get('total_position', 1)
+        
+        return {"status": "ok", "total_position": total_position}
+    except Exception as e:
+        print(f"[Update Total Position Error] {e}")
+        return {"error": str(e)}
+
+@app.post("/api/set_position_type")
+async def set_position_type(request: Request):
+    data = await request.json()
+    position_type = data.get("position_type", "contracts")
+    
+    # Validate position_type
+    if position_type not in ["percent", "contracts"]:
+        return {"error": "Invalid position_type. Must be 'percent' or 'contracts'"}
+    
+    # Update PostgreSQL
+    update_trade_preferences_postgresql(position_type=position_type)
+    
+    # Update total position calculation
+    update_total_position()
+    
+    # Get the updated total_position value
+    updated_prefs = get_trade_preferences_postgresql()
+    total_position = updated_prefs.get('total_position', 1)
+    
+    # Also update legacy JSON for compatibility during migration
+    prefs = load_preferences()
+    try:
+        prefs["position_type"] = position_type
+        await save_preferences(prefs)
+        await broadcast_preferences_update()
+    except Exception as e:
+        print(f"[Set Position Type Error] {e}")
+    return {"status": "ok", "total_position": total_position}
 
 @app.post("/api/update_preferences")
 async def update_preferences(request: Request):
@@ -2605,7 +2753,7 @@ async def update_preferences(request: Request):
 
     if "multiplier" in data:
         try:
-            prefs["multiplier"] = int(data["multiplier"])
+            prefs["multiplier"] = float(data["multiplier"])
             updated = True
         except Exception as e:
             print(f"[Invalid Multiplier] {e}")

@@ -916,7 +916,7 @@ def get_watchlist_data():
         return None
 
 def get_position_size():
-    """Get position size from PostgreSQL trade preferences including multiplier"""
+    """Get total position size from PostgreSQL trade preferences"""
     try:
         import psycopg2
         conn = psycopg2.connect(
@@ -926,19 +926,17 @@ def get_position_size():
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
         )
         with conn.cursor() as cursor:
-            cursor.execute("SELECT position_size, multiplier FROM users.trade_preferences_0001 WHERE id = 1")
+            cursor.execute("SELECT total_position FROM users.trade_preferences_0001 WHERE id = 1")
             result = cursor.fetchone()
             if result:
-                position_size = result[0]
-                multiplier = result[1]
-                total_position = position_size * multiplier
-                # Position size loaded from PostgreSQL: {position_size} * {multiplier} = {total_position}
+                total_position = result[0]
+                log(f"[AUTO ENTRY] Total position loaded from PostgreSQL: {total_position}")
                 return total_position
             else:
                 log(f"[AUTO ENTRY] No trade preferences found in PostgreSQL")
                 return None
     except Exception as e:
-        log(f"[AUTO ENTRY] Error loading position size from PostgreSQL: {e}")
+        log(f"[AUTO ENTRY] Error loading total position from PostgreSQL: {e}")
         return None
     finally:
         if conn:

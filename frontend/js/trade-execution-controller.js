@@ -165,14 +165,21 @@ window.prepareTradeData = async function(target) {
     buy_price = parseFloat(askPrice) / 100;
   }
 
-  const posInput = document.getElementById('position-size');
-  const rawBasePos = posInput ? parseInt(posInput.value, 10) : NaN;
-  const validBase = Number.isFinite(rawBasePos) && rawBasePos > 0 ? rawBasePos : null;
-
-  const multiplierBtn = document.querySelector('.multiplier-btn.active');
-  const multiplier = multiplierBtn ? parseInt(multiplierBtn.dataset.multiplier, 10) : 1;
-
-  const position = validBase !== null ? validBase * multiplier : null;
+  // Get total_position from database instead of manual calculation
+  let position = null;
+  try {
+    const response = await fetch(window.location.origin + '/api/get_preferences');
+    if (response.ok) {
+      const data = await response.json();
+      position = data.total_position || 1;
+    } else {
+      console.error('Failed to get total_position from database');
+      position = 1; // Fallback
+    }
+  } catch (error) {
+    console.error('Error fetching total_position:', error);
+    position = 1; // Fallback
+  }
 
   const contract = typeof getTruncatedMarketTitle === 'function' ? getTruncatedMarketTitle() : 'BTC Market';
 
