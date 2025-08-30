@@ -107,6 +107,7 @@ class SupervisorConfigGenerator:
                 "kalshi_account_sync": 8004,
                 "kalshi_market_watchdog": 8005,
                 "system_monitor": 8006,
+                "monitor_manager": 8012,
                 "cascading_failure_detector": 8007,
                 "strike_table_generator": 8010
             }
@@ -184,6 +185,11 @@ class SupervisorConfigGenerator:
                 "name": "system_monitor",
                 "script": "system_monitor.py",
                 "port": ports.get("system_monitor", 8006)
+            },
+            {
+                "name": "monitor_manager",
+                "script": "monitor_manager.py",
+                "port": ports.get("monitor_manager", 8012)
             },
             {
                 "name": "cascading_failure_detector",

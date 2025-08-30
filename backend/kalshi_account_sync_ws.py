@@ -303,6 +303,28 @@ def notify_frontend_db_change(db_name: str, change_data: dict = None):
     except Exception as e:
         print(f"❌ Error notifying frontend: {e}")
 
+def notify_monitor_manager():
+    """Notify monitor_manager that bankroll has been updated."""
+    try:
+        import requests
+        from backend.core.port_config import get_port
+        
+        monitor_port = get_port("monitor_manager")
+        response = requests.post(
+            f"http://localhost:{monitor_port}/api/bankroll_updated",
+            json={},
+            timeout=5
+        )
+        
+        if response.ok:
+            result = response.json()
+            print(f"📡 Monitor manager notified: {result}")
+        else:
+            print(f"⚠️ Failed to notify monitor manager: {response.status_code}")
+            
+    except Exception as e:
+        print(f"❌ Error notifying monitor manager: {e}")
+
 
 def get_current_event_ticker():
     global last_failed_ticker
@@ -449,6 +471,9 @@ def sync_balance():
                         "positions": positions_value,
                         "portfolio": portfolio_value
                     })
+                    
+                    # Notify monitor_manager of bankroll update
+                    notify_monitor_manager()
                 pg_conn.close()
             else:
                 print(f"⚠️ Skipping PostgreSQL write - no connection available")

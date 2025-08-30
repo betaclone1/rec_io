@@ -904,7 +904,7 @@
       } else {
         // Tile view layout - original vertical arrangement
         return `
-          <div class="monitor-tile tile-view" data-index="${index}">
+          <div class="monitor-tile tile-view" data-monitor-id="${monitor.id}" data-index="${index}">
             <div class="monitor-name">${monitor.name}</div>
             <div class="monitor-controls">
               <img 
@@ -1072,6 +1072,9 @@
             if (customOption) {
               sortPicker.value = 'custom';
             }
+            
+            // Save the new order to the database
+            saveMonitorOrder();
           }
         });
       }
@@ -1192,6 +1195,47 @@
         
         // Save preferences
         saveDashboardPreferences();
+      }
+    }
+
+    // Save monitor order to database
+    async function saveMonitorOrder() {
+      try {
+        const grid = document.getElementById('monitors-grid');
+        const monitorTiles = grid.querySelectorAll('.monitor-tile:not(.new-monitor)');
+        
+        const monitorOrders = [];
+        monitorTiles.forEach((tile, index) => {
+          const monitorId = tile.getAttribute('data-monitor-id');
+          if (monitorId) {
+            monitorOrders.push({
+              monitor_id: monitorId,
+              order: index + 1
+            });
+          }
+        });
+        
+        if (monitorOrders.length > 0) {
+          const response = await fetch('/api/monitors/update-order', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              user_id: 'user_0001',
+              monitor_orders: monitorOrders
+            })
+          });
+          
+          const data = await response.json();
+          if (data.status === 'ok') {
+            console.log('Monitor order saved successfully');
+          } else {
+            console.error('Failed to save monitor order:', data.message);
+          }
+        }
+      } catch (error) {
+        console.error('Error saving monitor order:', error);
       }
     }
 

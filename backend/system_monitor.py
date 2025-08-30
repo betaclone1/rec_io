@@ -58,6 +58,7 @@ class SystemMonitor:
             "strike_table_generator": get_port("strike_table_generator"),
             "kalshi_account_sync": get_port("kalshi_account_sync"),
             "kalshi_market_watchdog": get_port("kalshi_market_watchdog"),
+            "monitor_manager": get_port("monitor_manager"),
             "cascading_failure_detector": get_port("cascading_failure_detector"),
             "system_monitor": get_port("system_monitor")
         }
@@ -67,7 +68,8 @@ class SystemMonitor:
             "auto_entry_supervisor",
             "trade_manager", 
             "trade_executor",
-            "active_trade_supervisor"
+            "active_trade_supervisor",
+            "monitor_manager"
         ]
     
     def check_service_health(self, service_name: str, port: int) -> Dict[str, Any]:
@@ -666,6 +668,7 @@ class SystemMonitor:
                     "Core Trading": ["main_app", "trade_manager", "trade_executor", "auto_entry_supervisor", "active_trade_supervisor"],
                     "Data Services": ["symbol_price_watchdog_btc", "symbol_price_watchdog_eth", "strike_table_generator"],
                     "Kalshi API": ["kalshi_account_sync", "kalshi_market_watchdog"],
+        "Monitor Management": ["monitor_manager"],
                     "System Management": ["cascading_failure_detector", "system_monitor"]
                 }
                 

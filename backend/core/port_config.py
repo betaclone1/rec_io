@@ -75,6 +75,11 @@ def ensure_port_config_exists():
                     "port": 8005,
                     "description": "Kalshi market data monitoring",
                     "status": "RUNNING"
+                },
+                "monitor_manager": {
+                    "port": 8012,
+                    "description": "Core monitor management system",
+                    "status": "RUNNING"
                 }
             },
             "port_ranges": {

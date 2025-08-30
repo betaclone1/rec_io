@@ -4791,9 +4791,10 @@ async def get_monitors(user_id: str = "user_0001"):
                     pnl,
                     bankroll_allotment,
                     status,
+                    dashboard_order,
                     created
                 FROM users.monitors_list_{user_number}
-                ORDER BY id
+                ORDER BY dashboard_order, id
             """)
             
             results = cursor.fetchall()
@@ -4803,7 +4804,7 @@ async def get_monitors(user_id: str = "user_0001"):
         # Transform database results to frontend format
         monitors = []
         for row in results:
-            monitor_id, name, symbol, strategy, auto_trade, auto_trade_status, trades, win_loss, ret_pct, pnl, bankroll_allotment, status, created = row
+            monitor_id, name, symbol, strategy, auto_trade, auto_trade_status, trades, win_loss, ret_pct, pnl, bankroll_allotment, status, dashboard_order, created = row
             
             # Calculate uptime from created timestamp
             from datetime import datetime
@@ -4839,7 +4840,8 @@ async def get_monitors(user_id: str = "user_0001"):
                 "uptime": uptime_str,
                 "name": name,  # Use exact database value
                 "bankroll_allotment": bankroll_allotment,
-                "auto_trade_status": auto_trade_status
+                "auto_trade_status": auto_trade_status,
+                "dashboard_order": dashboard_order or 0
             }
             monitors.append(formatted_monitor)
         
@@ -4866,9 +4868,57 @@ async def get_monitors(user_id: str = "user_0001"):
             "count": len(monitors) - 1,  # Exclude NEW_MONITOR from count
             "monitors": monitors
         }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+@app.post("/api/monitors/update-order")
+async def update_monitors_order(request: dict):
+    """Update the dashboard order of monitors"""
+    try:
+        from backend.core.config.database import get_postgresql_connection
+        
+        user_id = request.get("user_id", "user_0001")
+        monitor_orders = request.get("monitor_orders", [])
+        
+        if not monitor_orders:
+            return {"status": "error", "message": "No monitor orders provided"}
+        
+        # Extract user number from user_id (e.g., user_0001 -> 0001)
+        user_number = user_id.replace("user_", "")
+        
+        conn = get_postgresql_connection()
+        if not conn:
+            return {"status": "error", "message": "Database connection failed"}
+        
+        cursor = conn.cursor()
+        
+        # Update each monitor's dashboard_order
+        for order_data in monitor_orders:
+            monitor_id = order_data.get("monitor_id")
+            new_order = order_data.get("order")
+            
+            if monitor_id and new_order is not None:
+                # Extract the numeric ID from the monitor_id (e.g., MON_0001.10001 -> 10001)
+                if "." in monitor_id:
+                    numeric_id = monitor_id.split(".")[1]
+                else:
+                    numeric_id = monitor_id
+                
+                cursor.execute(f"""
+                    UPDATE users.monitors_list_{user_number}
+                    SET dashboard_order = %s
+                    WHERE id = %s
+                """, (new_order, numeric_id))
+        
+        conn.commit()
+        conn.close()
+        
+        return {"status": "ok", "message": "Monitor order updated successfully"}
         
     except Exception as e:
-        print(f"Error getting monitors: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/monitor/toggle-auto-trade")

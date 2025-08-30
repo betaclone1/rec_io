@@ -47,6 +47,11 @@
       "port": 8011,
       "description": "Strike table generation service",
       "status": "RUNNING"
+    },
+    "monitor_manager": {
+      "port": 8012,
+      "description": "Core monitor management system",
+      "status": "RUNNING"
     }
   },
   

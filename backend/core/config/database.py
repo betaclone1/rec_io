@@ -117,6 +117,7 @@ def init_database():
                 pnl DECIMAL(10,2) DEFAULT 0.00,
                 bankroll_allotment DECIMAL(5,1) DEFAULT 0.0,
                 status VARCHAR(20) DEFAULT 'active',
+                dashboard_order INTEGER DEFAULT 0,
                 created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)

@@ -543,9 +543,8 @@
         <!-- Control Toggles -->
         <div class="mobile-panel">
             <div class="mobile-panel-header">
-                <div style="display: flex; align-items: center; justify-content: space-between; flex: 1;">
+                <div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
                     <div style="display: flex; align-items: center; gap: 12px;">
-
                         <div class="toggle-group" style="margin: 0;">
                             <div class="mobile-toggle" id="autoEntryToggle"></div>
                             <span class="toggle-label" style="font-size: 10px;">Auto<br>Entry</span>
@@ -554,27 +553,29 @@
                             <div class="mobile-toggle" id="autoStopToggle"></div>
                             <span class="toggle-label" style="font-size: 10px;">Auto<br>Stop</span>
                         </div>
-                        <div style="display: flex; align-items: center; gap: 4px; margin-left: 8px;">
-                            <input type="number" id="position-size" min="1" style="width: 50px; padding: 3px; text-align: right; font-size: 11px; border-radius: 3px; border: 1px solid #ccc; background-color: #323c4e; color: white;" />
-                            <div style="display: flex; gap: 2px;">
-                                <button class="multiplier-btn" data-multiplier="1" style="font-size: 9px; padding: 3px 6px;">1x</button>
-                                <button class="multiplier-btn" data-multiplier="2" style="font-size: 9px; padding: 3px 6px;">2x</button>
-                                <button class="multiplier-btn" data-multiplier="3" style="font-size: 9px; padding: 3px 6px;">3x</button>
-                            </div>
-                                                         <div id="position-display" style="font-size: 6px; color: #ccc; margin-left: 4px;"><span style="font-size: 10px;">20</span> contracts</div>
-                        </div>
                     </div>
-                </div>
-                <div style="display: flex; align-items: center;">
-                    <img 
-                        id="mobileSettingsIcon"
-                        src="../images/icons/panel_settings.png" 
-                        alt="Trading Settings" 
-                        title="Trading Settings" 
-                        style="width: 20px; height: 20px; opacity: 0.7; transition: opacity 0.2s; cursor: pointer; align-self: center;"
-                        onmouseover="this.style.opacity='1'" 
-                        onmouseout="this.style.opacity='0.7'"
-                    />
+                    
+                    <div style="display: flex; align-items: center; gap: 20px;">
+                        <div style="display: flex; flex-direction: column; align-items: flex-end;">
+                            <div style="font-size: 11px; color: #ccc;">Bankroll:</div>
+                            <div id="bankroll-value" style="font-size: 13px; color: #fff; font-weight: 600;">$0.00</div>
+                        </div>
+                        
+                        <div style="display: flex; flex-direction: column; align-items: flex-end;">
+                            <div id="total-position-value" style="font-size: 13px; color: #fff; font-weight: 600;">0</div>
+                            <div style="font-size: 11px; color: #ccc;">contracts</div>
+                        </div>
+                        
+                        <img 
+                            id="mobileSettingsIcon"
+                            src="../images/icons/panel_settings.png" 
+                            alt="Trading Settings" 
+                            title="Trading Settings" 
+                            style="width: 20px; height: 20px; opacity: 0.7; transition: opacity 0.2s; cursor: pointer;"
+                            onmouseover="this.style.opacity='1'" 
+                            onmouseout="this.style.opacity='0.7'"
+                        />
+                    </div>
                 </div>
             </div>
         </div>
@@ -757,6 +758,49 @@
                     <div style="position:relative; width:100%;">
                         <input type="range" id="mobileVerificationPeriodSlider" min="5" max="60" value="15" style="width:100%; height:8px; background:#e0e0e0; border-radius:4px; outline:none;" />
                         <div id="mobileVerificationPeriodValueDisplay" style="position:absolute; top:-40px; left:0; font-size:12px; color:#222; background:white; padding:6px 10px; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0; font-weight:500;">15s</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Position Sizing Settings Section -->
+            <div style="margin-bottom:24px;">
+                <div style="font-size:16px; font-weight:600; color:#333; margin-bottom:16px; border-bottom:1px solid #eee; padding-bottom:8px;">Position Sizing</div>
+                
+                <!-- Position Type Toggle -->
+                <div style="margin-bottom:16px;">
+                    <label style="font-size:14px; color:#333; margin-bottom:8px; display:block; font-weight:500;">Position Type:</label>
+                    <div style="display:flex; align-items:center; gap:8px; background:#f8f9fa; border-radius:6px; padding:8px;">
+                        <button id="mobilePositionTypePercent" class="mobile-position-type-btn active" data-type="percent" style="flex:1; padding:8px 12px; border:1px solid #ddd; background:white; border-radius:4px; font-size:13px; cursor:pointer; font-weight:500;">Percentage</button>
+                        <button id="mobilePositionTypeContracts" class="mobile-position-type-btn" data-type="contracts" style="flex:1; padding:8px 12px; border:1px solid #ddd; background:#f8f9fa; border-radius:4px; font-size:13px; cursor:pointer; font-weight:500;">Contracts</button>
+                    </div>
+                </div>
+                
+                <!-- Position Size Input -->
+                <div style="margin-bottom:16px;">
+                    <label style="font-size:14px; color:#333; margin-bottom:8px; display:block; font-weight:500;">Position Size:</label>
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <input type="number" id="mobilePositionSize" min="1" max="100" value="20" style="flex:1; padding:10px 12px; border:1px solid #ddd; border-radius:6px; font-size:14px; background:white;" />
+                        <span id="mobilePositionSizeLabel" style="font-size:14px; color:#666; font-weight:500; min-width:60px;">%</span>
+                    </div>
+                </div>
+                
+                <!-- Multiplier Buttons -->
+                <div style="margin-bottom:16px;">
+                    <label style="font-size:14px; color:#333; margin-bottom:8px; display:block; font-weight:500;">Multiplier:</label>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                        <button class="mobile-multiplier-btn active" data-multiplier="1" style="padding:8px 12px; border:1px solid #007bff; background:#007bff; color:white; border-radius:4px; font-size:13px; cursor:pointer; font-weight:500;">1x</button>
+                        <button class="mobile-multiplier-btn" data-multiplier="2" style="padding:8px 12px; border:1px solid #ddd; background:white; color:#333; border-radius:4px; font-size:13px; cursor:pointer; font-weight:500;">2x</button>
+                        <button class="mobile-multiplier-btn" data-multiplier="3" style="padding:8px 12px; border:1px solid #ddd; background:white; color:#333; border-radius:4px; font-size:13px; cursor:pointer; font-weight:500;">3x</button>
+                        <button class="mobile-multiplier-btn" data-multiplier="4" style="padding:8px 12px; border:1px solid #ddd; background:white; color:#333; border-radius:4px; font-size:13px; cursor:pointer; font-weight:500;">4x</button>
+                        <button class="mobile-multiplier-btn" data-multiplier="5" style="padding:8px 12px; border:1px solid #ddd; background:white; color:#333; border-radius:4px; font-size:13px; cursor:pointer; font-weight:500;">5x</button>
+                    </div>
+                </div>
+                
+                <!-- Total Position Display -->
+                <div style="margin-bottom:16px;">
+                    <label style="font-size:14px; color:#333; margin-bottom:8px; display:block; font-weight:500;">Total Position:</label>
+                    <div style="background:#f8f9fa; border:1px solid #ddd; border-radius:6px; padding:12px; text-align:center;">
+                        <div id="mobileTotalPositionDisplay" style="font-size:16px; font-weight:600; color:#333;">0 contracts</div>
                     </div>
                 </div>
             </div>
@@ -1122,23 +1166,36 @@
                     });
                 }
                 
-                updatePositionDisplay();
+                await updatePositionDisplay();
             } catch (error) {
                 console.error('Error loading toggle states:', error);
             }
         }
 
-        function updatePositionDisplay() {
-            const positionInput = document.getElementById('position-size');
-            const multiplierButtons = document.querySelectorAll('.multiplier-btn');
-            const positionDisplay = document.getElementById('position-display');
-            
-            if (positionInput && positionDisplay) {
-                const baseValue = parseInt(positionInput.value, 10) || 0;
-                const activeMultiplier = Array.from(multiplierButtons).find(btn => btn.classList.contains('active'));
-                const multiplier = activeMultiplier ? parseInt(activeMultiplier.dataset.multiplier, 10) : 1;
-                const total = baseValue * multiplier;
-                positionDisplay.innerHTML = `<span style="font-size: 10px;">${total}</span> contracts`;
+        async function updatePositionDisplay() {
+            try {
+                const [preferencesResponse, bankrollResponse] = await Promise.all([
+                    fetch(window.location.origin + '/api/get_preferences'),
+                    fetch(window.location.origin + '/api/account/balance')
+                ]);
+                
+                const preferences = await preferencesResponse.json();
+                const bankrollData = await bankrollResponse.json();
+                
+                const bankrollValue = document.getElementById('bankroll-value');
+                if (bankrollValue && bankrollData.bankroll_current !== undefined) {
+                    const bankrollInDollars = bankrollData.bankroll_current / 100;
+                    bankrollValue.textContent = '$' + Number(bankrollInDollars).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                }
+                
+                const totalPositionValue = document.getElementById('total-position-value');
+                if (totalPositionValue) {
+                    const totalPosition = preferences.total_position || 0;
+                    totalPositionValue.textContent = totalPosition;
+                }
+                
+            } catch (error) {
+                console.error('Error updating position display:', error);
             }
         }
 
@@ -2815,6 +2872,9 @@
                 setTimeout(() => {
                     initMobileTimeWindowSlider();
                 }, 100);
+                
+                // Initialize position sizing controls
+                initializeMobilePositionControls();
             }
         }
 
@@ -3063,6 +3123,42 @@
                         mobileLastSavedSpikeAlertMomentum = newSpikeAlertMomentum;
                         mobileLastSavedSpikeAlertCooldown = newSpikeAlertCooldown;
                         mobileLastSavedSpikeAlertTime = newSpikeAlertTime;
+                        
+                        // Save Position Sizing Settings
+                        const positionSizeInput = document.getElementById('mobilePositionSize');
+                        const percentBtn = document.getElementById('mobilePositionTypePercent');
+                        const multiplierButtons = document.querySelectorAll('.mobile-multiplier-btn');
+                        
+                        if (positionSizeInput && percentBtn && multiplierButtons.length > 0) {
+                            const positionSize = parseInt(positionSizeInput.value, 10) || 20;
+                            const positionType = percentBtn.classList.contains('active') ? 'percent' : 'contracts';
+                            const activeMultiplier = Array.from(multiplierButtons).find(btn => btn.classList.contains('active'));
+                            const multiplier = activeMultiplier ? parseInt(activeMultiplier.dataset.multiplier, 10) : 1;
+                            
+                            // Save position type
+                            await fetch(window.location.origin + '/api/set_position_type', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ position_type: positionType })
+                            });
+                            
+                            // Save position size
+                            await fetch(window.location.origin + '/api/set_position_size', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ position_size: positionSize })
+                            });
+                            
+                            // Save multiplier
+                            await fetch(window.location.origin + '/api/set_multiplier', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ multiplier: multiplier })
+                            });
+                        }
+                        
+                        // Update the main display
+                        await updatePositionDisplay();
                         
                         hideMobileSettingsModal();
                     } else {
@@ -3351,6 +3447,154 @@
                 // Hide chart
                 chartContainer.style.display = 'none';
                 chartToggle.innerHTML = 'CHART ▶';
+            }
+        }
+
+        // Initialize Mobile Position Controls
+        async function initializeMobilePositionControls() {
+            try {
+                // Load current preferences
+                const response = await fetch(window.location.origin + '/api/get_preferences');
+                const preferences = await response.json();
+                
+                // Set position type
+                const positionType = preferences.position_type || 'percent';
+                const percentBtn = document.getElementById('mobilePositionTypePercent');
+                const contractsBtn = document.getElementById('mobilePositionTypeContracts');
+                
+                if (percentBtn && contractsBtn) {
+                    percentBtn.classList.toggle('active', positionType === 'percent');
+                    contractsBtn.classList.toggle('active', positionType === 'contracts');
+                    percentBtn.style.background = positionType === 'percent' ? '#007bff' : 'white';
+                    percentBtn.style.color = positionType === 'percent' ? 'white' : '#333';
+                    contractsBtn.style.background = positionType === 'contracts' ? '#007bff' : 'white';
+                    contractsBtn.style.color = positionType === 'contracts' ? 'white' : '#333';
+                }
+                
+                // Set position size
+                const positionSize = preferences.position_size || 20;
+                const positionSizeInput = document.getElementById('mobilePositionSize');
+                const positionSizeLabel = document.getElementById('mobilePositionSizeLabel');
+                
+                if (positionSizeInput) {
+                    positionSizeInput.value = positionSize;
+                }
+                
+                if (positionSizeLabel) {
+                    positionSizeLabel.textContent = positionType === 'percent' ? '%' : 'C';
+                }
+                
+                // Set multiplier
+                const multiplier = preferences.multiplier || 1;
+                const multiplierButtons = document.querySelectorAll('.mobile-multiplier-btn');
+                
+                multiplierButtons.forEach(btn => {
+                    const btnMultiplier = parseInt(btn.dataset.multiplier, 10);
+                    const isActive = btnMultiplier === multiplier;
+                    btn.classList.toggle('active', isActive);
+                    btn.style.background = isActive ? '#007bff' : 'white';
+                    btn.style.color = isActive ? 'white' : '#333';
+                    btn.style.borderColor = isActive ? '#007bff' : '#ddd';
+                });
+                
+                // Update total position display
+                updateMobileTotalPositionDisplay();
+                
+                // Add event listeners
+                addMobilePositionEventListeners();
+                
+            } catch (error) {
+                console.error('Error initializing mobile position controls:', error);
+            }
+        }
+
+        // Add Mobile Position Event Listeners
+        function addMobilePositionEventListeners() {
+            // Position type toggle
+            const percentBtn = document.getElementById('mobilePositionTypePercent');
+            const contractsBtn = document.getElementById('mobilePositionTypeContracts');
+            
+            if (percentBtn) {
+                percentBtn.addEventListener('click', function() {
+                    setMobilePositionType('percent');
+                });
+            }
+            
+            if (contractsBtn) {
+                contractsBtn.addEventListener('click', function() {
+                    setMobilePositionType('contracts');
+                });
+            }
+            
+            // Position size input
+            const positionSizeInput = document.getElementById('mobilePositionSize');
+            if (positionSizeInput) {
+                positionSizeInput.addEventListener('input', updateMobileTotalPositionDisplay);
+            }
+            
+            // Multiplier buttons
+            const multiplierButtons = document.querySelectorAll('.mobile-multiplier-btn');
+            multiplierButtons.forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const multiplier = parseInt(this.dataset.multiplier, 10);
+                    setMobileMultiplier(multiplier);
+                });
+            });
+        }
+
+        // Set Mobile Position Type
+        function setMobilePositionType(type) {
+            const percentBtn = document.getElementById('mobilePositionTypePercent');
+            const contractsBtn = document.getElementById('mobilePositionTypeContracts');
+            const positionSizeLabel = document.getElementById('mobilePositionSizeLabel');
+            
+            if (percentBtn && contractsBtn) {
+                percentBtn.classList.toggle('active', type === 'percent');
+                contractsBtn.classList.toggle('active', type === 'contracts');
+                percentBtn.style.background = type === 'percent' ? '#007bff' : 'white';
+                percentBtn.style.color = type === 'percent' ? 'white' : '#333';
+                contractsBtn.style.background = type === 'contracts' ? '#007bff' : 'white';
+                contractsBtn.style.color = type === 'contracts' ? 'white' : '#333';
+            }
+            
+            if (positionSizeLabel) {
+                positionSizeLabel.textContent = type === 'percent' ? '%' : 'C';
+            }
+            
+            updateMobileTotalPositionDisplay();
+        }
+
+        // Set Mobile Multiplier
+        function setMobileMultiplier(multiplier) {
+            const multiplierButtons = document.querySelectorAll('.mobile-multiplier-btn');
+            
+            multiplierButtons.forEach(btn => {
+                const btnMultiplier = parseInt(btn.dataset.multiplier, 10);
+                const isActive = btnMultiplier === multiplier;
+                btn.classList.toggle('active', isActive);
+                btn.style.background = isActive ? '#007bff' : 'white';
+                btn.style.color = isActive ? 'white' : '#333';
+                btn.style.borderColor = isActive ? '#007bff' : '#ddd';
+            });
+            
+            updateMobileTotalPositionDisplay();
+        }
+
+        // Update Mobile Total Position Display
+        function updateMobileTotalPositionDisplay() {
+            const positionSizeInput = document.getElementById('mobilePositionSize');
+            const multiplierButtons = document.querySelectorAll('.mobile-multiplier-btn');
+            const totalPositionDisplay = document.getElementById('mobileTotalPositionDisplay');
+            const percentBtn = document.getElementById('mobilePositionTypePercent');
+            
+            if (positionSizeInput && totalPositionDisplay) {
+                const baseValue = parseInt(positionSizeInput.value, 10) || 0;
+                const activeMultiplier = Array.from(multiplierButtons).find(btn => btn.classList.contains('active'));
+                const multiplier = activeMultiplier ? parseInt(activeMultiplier.dataset.multiplier, 10) : 1;
+                const total = baseValue * multiplier;
+                
+                const isPercent = percentBtn && percentBtn.classList.contains('active');
+                totalPositionDisplay.textContent = isPercent ? `${total}%` : `${total} contracts`;
             }
         }
     </script>
