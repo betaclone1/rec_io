@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Add dashboard_order column to monitors_list_0001 table
+Add dashboard_order column to monitor_list_0001 table
 
-This script adds the dashboard_order column to existing monitors_list_0001 tables
+This script adds the dashboard_order column to existing monitor_list_0001 tables
 and initializes the order based on the current ID order.
 """
 
@@ -17,7 +17,7 @@ if project_root not in sys.path:
 from backend.core.config.database import get_postgresql_connection
 
 def add_dashboard_order_column():
-    """Add dashboard_order column to monitors_list_0001 table"""
+    """Add dashboard_order column to monitor_list_0001 table"""
     try:
         conn = get_postgresql_connection()
         if not conn:

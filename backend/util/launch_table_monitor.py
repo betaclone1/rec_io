@@ -6,7 +6,7 @@ Easy launcher for PostgreSQL table monitoring tools.
 Automatically sets up environment and launches the appropriate tool.
 
 Usage:
-    python launch_table_monitor.py --schema live_data --table btc_price_log --mode web
+    python launch_table_monitor.py --schema live_data --table live_price_log_1s_btc --mode web
     python launch_table_monitor.py --schema public --table trades --mode terminal
 """
 
@@ -91,13 +91,13 @@ def main():
         epilog="""
 Examples:
   # Web-based viewer (recommended for development)
-  python launch_table_monitor.py --schema live_data --table btc_price_log --mode web
+  python launch_table_monitor.py --schema live_data --table live_price_log_1s_btc --mode web
   
   # Terminal-based watcher
   python launch_table_monitor.py --schema public --table trades --mode terminal
   
   # Custom port and polling interval
-  python launch_table_monitor.py --schema live_data --table btc_price_log --mode web --port 8081 --poll-interval 2.0
+  python launch_table_monitor.py --schema live_data --table live_price_log_1s_btc --mode web --port 8081 --poll-interval 2.0
         """
     )
     
@@ -110,7 +110,7 @@ Examples:
     parser.add_argument(
         '--table',
         required=True,
-        help='Table name to watch (e.g., btc_price_log, trades)'
+        help='Table name to watch (e.g., live_price_log_1s_btc, trades)'
     )
     
     parser.add_argument(

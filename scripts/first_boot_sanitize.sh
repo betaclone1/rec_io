@@ -125,7 +125,7 @@ perform_sanitization() {
             DELETE FROM system.health_status;
             
             -- Clear live data (keep structure, clear data)
-            DELETE FROM live_data.btc_price_log;
+            
             DELETE FROM live_data.eth_price_log;
             DELETE FROM live_data.live_price_log_1s_btc;
             DELETE FROM live_data.live_price_log_1s_eth;

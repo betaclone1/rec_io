@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Monitor List Management Script
-# Supports multiple users (monitors_list_0001, monitors_list_0002, etc.)
+# Supports multiple users (monitor_list_0001, monitor_list_0002, etc.)
 
 set -e
 
@@ -43,25 +43,25 @@ get_user_number() {
     echo "${user_id#user_}"
 }
 
-# Function to create monitors_list table for a user
+# Function to create monitor_list table for a user
 create_monitors_table() {
     local user_id="$1"
     local user_number=$(get_user_number "$user_id")
     
-    log_info "Creating monitors_list table for user $user_id (user_$user_number)..."
+    log_info "Creating monitor_list table for user $user_id (user_$user_number)..."
     
     PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -p "$DB_PORT" << EOF
         -- Create sequence for 5-digit IDs starting with 10001
-        CREATE SEQUENCE IF NOT EXISTS users.monitors_list_${user_number}_id_seq
+        CREATE SEQUENCE IF NOT EXISTS users.monitor_list_${user_number}_id_seq
         START WITH 10001
         INCREMENT BY 1
         MINVALUE 10001
         MAXVALUE 99999
         CYCLE;
         
-        -- Create monitors_list table
-        CREATE TABLE IF NOT EXISTS users.monitors_list_${user_number} (
-            id INTEGER PRIMARY KEY DEFAULT nextval('users.monitors_list_${user_number}_id_seq'),
+        -- Create monitor_list table
+CREATE TABLE IF NOT EXISTS users.monitor_list_${user_number} (
+    id INTEGER PRIMARY KEY DEFAULT nextval('users.monitor_list_${user_number}_id_seq'),
             name VARCHAR(255) NOT NULL,
             symbol VARCHAR(20) NOT NULL,
             strategy VARCHAR(100),
@@ -77,11 +77,11 @@ create_monitors_table() {
         );
         
         -- Grant privileges
-        GRANT ALL PRIVILEGES ON TABLE users.monitors_list_${user_number} TO rec_io_user;
-        GRANT USAGE, SELECT ON SEQUENCE users.monitors_list_${user_number}_id_seq TO rec_io_user;
+        GRANT ALL PRIVILEGES ON TABLE users.monitor_list_${user_number} TO rec_io_user;
+GRANT USAGE, SELECT ON SEQUENCE users.monitor_list_${user_number}_id_seq TO rec_io_user;
 EOF
     
-    log_success "Created monitors_list_${user_number} table for user $user_id"
+    log_success "Created monitor_list_${user_number} table for user $user_id"
 }
 
 # Function to list all monitors for a user
@@ -106,7 +106,7 @@ list_monitors() {
             bankroll_allotment,
             status,
             created
-        FROM users.monitors_list_${user_number}
+        FROM users.monitor_list_${user_number}
         ORDER BY id;
     "
 }
@@ -125,7 +125,7 @@ add_monitor() {
     log_info "Adding monitor '$name' for user $user_id..."
     
     PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -p "$DB_PORT" -c "
-        INSERT INTO users.monitors_list_${user_number} (
+        INSERT INTO users.monitor_list_${user_number} (
             name, symbol, strategy, auto_trade, bankroll_allotment
         ) VALUES (
             '$name', '$symbol', '$strategy', $auto_trade, $bankroll_allotment
@@ -165,7 +165,7 @@ update_auto_trade_status() {
     log_info "Updating monitor $monitor_id auto trade status to '$auto_trade_status' for user $user_id..."
     
     PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -p "$DB_PORT" -c "
-        UPDATE users.monitors_list_${user_number}
+        UPDATE users.monitor_list_${user_number}
         SET auto_trade_status = '$auto_trade_status'
         WHERE id = $monitor_id;
     "
@@ -183,7 +183,7 @@ delete_monitor() {
     log_warning "Deleting monitor $monitor_id for user $user_id..."
     
     PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -p "$DB_PORT" -c "
-        DELETE FROM users.monitors_list_${user_number}
+        DELETE FROM users.monitor_list_${user_number}
         WHERE id = $monitor_id;
     "
     
@@ -214,7 +214,7 @@ show_monitor() {
             bankroll_allotment,
             status,
             created
-        FROM users.monitors_list_${user_number}
+        FROM users.monitor_list_${user_number}
         WHERE id = $monitor_id;
     "
 }
@@ -226,7 +226,7 @@ show_usage() {
     echo "Usage: $0 <command> [options]"
     echo ""
     echo "Commands:"
-    echo "  create-table <user_id>                    - Create monitors_list table for user"
+    echo "  create-table <user_id>                    - Create monitor_list table for user"
     echo "  list <user_id>                            - List all monitors for user"
     echo "  add <user_id> <name> <symbol> <strategy> [auto_trade] [bankroll] - Add new monitor"
     echo "  update-status <user_id> <monitor_id> <status> - Update monitor status"

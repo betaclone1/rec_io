@@ -6,7 +6,7 @@ A web-based real-time table viewer for monitoring PostgreSQL data flow.
 Similar to Xcode's JSON viewer but for database tables.
 
 Usage:
-    python live_table_viewer.py --schema live_data --table btc_price_log --port 8080
+    python live_table_viewer.py --schema live_data --table live_price_log_1s_btc --port 8080
     python live_table_viewer.py --schema public --table trades --port 8081
 """
 
@@ -671,7 +671,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python live_table_viewer.py --schema live_data --table btc_price_log
+      python live_table_viewer.py --schema live_data --table live_price_log_1s_btc
   python live_table_viewer.py --schema public --table trades --port 8081 --poll-interval 2.0
   
 Environment Variables:
@@ -692,7 +692,7 @@ Environment Variables:
     parser.add_argument(
         '--table',
         required=True,
-        help='Table name to watch (e.g., btc_price_log, trades)'
+        help='Table name to watch (e.g., live_price_log_1s_btc, trades)'
     )
     
     parser.add_argument(

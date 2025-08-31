@@ -7,7 +7,7 @@ Real-time monitoring tools for PostgreSQL tables during database migration and d
 ### Web-Based Viewer (Recommended)
 ```bash
 # Monitor BTC price data
-python backend/util/launch_table_monitor.py --schema live_data --table btc_price_log --mode web
+python backend/util/launch_table_monitor.py --schema live_data --table live_price_log_1s_btc --mode web
 
 # Monitor trades table
 python backend/util/launch_table_monitor.py --schema public --table trades --mode web --port 8081
@@ -16,7 +16,7 @@ python backend/util/launch_table_monitor.py --schema public --table trades --mod
 ### Terminal-Based Watcher
 ```bash
 # Monitor with terminal output
-python backend/util/launch_table_monitor.py --schema live_data --table btc_price_log --mode terminal
+python backend/util/launch_table_monitor.py --schema live_data --table live_price_log_1s_btc --mode terminal
 ```
 
 ## 📁 Files
@@ -39,7 +39,7 @@ python backend/util/launch_table_monitor.py --schema public --table trades --mod
 Monitor test data during development:
 ```bash
 # Watch test data with faster updates
-python backend/util/launch_table_monitor.py --schema live_data --table btc_price_log --mode web --poll-interval 0.5
+python backend/util/launch_table_monitor.py --schema live_data --table live_price_log_1s_btc --mode web --poll-interval 0.5
 ```
 
 ### 3. Multiple Tables
@@ -52,7 +52,7 @@ python backend/util/launch_table_monitor.py --schema public --table trades --mod
 python backend/util/launch_table_monitor.py --schema public --table active_trades --mode web --port 8081
 
 # Terminal 3: Monitor BTC price data
-python backend/util/launch_table_monitor.py --schema live_data --table btc_price_log --mode web --port 8082
+python backend/util/launch_table_monitor.py --schema live_data --table live_price_log_1s_btc --mode web --port 8082
 ```
 
 ## 🌐 Web Viewer Features
@@ -98,7 +98,7 @@ POSTGRES_PASSWORD=
 ### Direct Script Execution
 ```bash
 # Web viewer
-python backend/util/live_table_viewer.py --schema live_data --table btc_price_log --port 8080
+python backend/util/live_table_viewer.py --schema live_data --table live_price_log_1s_btc --port 8080
 
 # Terminal watcher
 python backend/util/live_table_watcher.py --schema public --table trades --poll-interval 2.0
@@ -107,7 +107,7 @@ python backend/util/live_table_watcher.py --schema public --table trades --poll-
 ### Custom Environment
 ```bash
 # Set custom database connection
-POSTGRES_HOST=192.168.1.100 POSTGRES_PORT=5433 python backend/util/launch_table_monitor.py --schema live_data --table btc_price_log --mode web
+POSTGRES_HOST=192.168.1.100 POSTGRES_PORT=5433 python backend/util/launch_table_monitor.py --schema live_data --table live_price_log_1s_btc --mode web
 ```
 
 ## 🎯 Perfect for Migration
@@ -134,7 +134,7 @@ psql -U rec_io_user -d rec_io_db -c "SELECT 1;"
 ### Port Conflicts
 ```bash
 # Use different port
-python backend/util/launch_table_monitor.py --schema live_data --table btc_price_log --mode web --port 8081
+python backend/util/launch_table_monitor.py --schema live_data --table live_price_log_1s_btc --mode web --port 8081
 ```
 
 ### Performance Issues

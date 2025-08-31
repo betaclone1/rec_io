@@ -95,7 +95,7 @@ def init_database():
         
         # Create sequence for 5-digit IDs starting with 10001
         cursor.execute("""
-            CREATE SEQUENCE IF NOT EXISTS users.monitors_list_0001_id_seq
+            CREATE SEQUENCE IF NOT EXISTS users.monitor_list_0001_id_seq
             START WITH 10001
             INCREMENT BY 1
             MINVALUE 10001
@@ -104,8 +104,8 @@ def init_database():
         """)
         
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users.monitors_list_0001 (
-                id INTEGER PRIMARY KEY DEFAULT nextval('users.monitors_list_0001_id_seq'),
+            CREATE TABLE IF NOT EXISTS users.monitor_list_0001 (
+                id INTEGER PRIMARY KEY DEFAULT nextval('users.monitor_list_0001_id_seq'),
                 name VARCHAR(255) NOT NULL,
                 symbol VARCHAR(20) NOT NULL,
                 strategy VARCHAR(100),
@@ -122,13 +122,7 @@ def init_database():
             );
         """)
         
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS live_data.btc_price_log (
-                id SERIAL PRIMARY KEY,
-                price DECIMAL(15,2),
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
+
         
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS live_data.eth_price_log (

@@ -5,19 +5,19 @@
 ### Web Viewer (Recommended)
 ```bash
 # Monitor BTC price data
-python backend/util/launch_table_monitor.py --schema live_data --table btc_price_log --mode web
+python backend/util/launch_table_monitor.py --schema live_data --table live_price_log_1s_btc --mode web
 
 # Monitor trades table
 python backend/util/launch_table_monitor.py --schema public --table trades --mode web --port 8081
 
 # Fast updates for development
-python backend/util/launch_table_monitor.py --schema live_data --table btc_price_log --mode web --poll-interval 0.5
+python backend/util/launch_table_monitor.py --schema live_data --table live_price_log_1s_btc --mode web --poll-interval 0.5
 ```
 
 ### Terminal Watcher
 ```bash
 # Monitor with terminal output
-python backend/util/launch_table_monitor.py --schema live_data --table btc_price_log --mode terminal
+python backend/util/launch_table_monitor.py --schema live_data --table live_price_log_1s_btc --mode terminal
 ```
 
 ## 🎯 Common Use Cases
@@ -37,7 +37,7 @@ python backend/util/launch_table_monitor.py --schema public --table trades --mod
 python backend/util/launch_table_monitor.py --schema public --table active_trades --mode web --port 8081
 
 # Terminal 3: BTC price data
-python backend/util/launch_table_monitor.py --schema live_data --table btc_price_log --mode web --port 8082
+python backend/util/launch_table_monitor.py --schema live_data --table live_price_log_1s_btc --mode web --port 8082
 ```
 
 ## 🌐 Web Interface

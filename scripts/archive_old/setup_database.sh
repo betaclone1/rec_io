@@ -160,12 +160,7 @@ verify_schema() {
         print_warning "live_data schema not found - may need to run migrations"
     fi
     
-    # Check if btc_price_log table exists
-    if psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'live_data' AND table_name = 'btc_price_log';" | grep -q btc_price_log; then
-        print_success "btc_price_log table exists"
-    else
-        print_warning "btc_price_log table not found - may need to run migrations"
-    fi
+
 }
 
 # Create .env file if it doesn't exist

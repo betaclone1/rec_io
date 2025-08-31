@@ -6,7 +6,7 @@ A lightweight CLI tool to monitor PostgreSQL tables in real-time.
 Perfect for watching data flow during database migrations.
 
 Usage:
-    python live_table_watcher.py --schema live_data --table btc_price_log
+    python live_table_watcher.py --schema live_data --table live_price_log_1s_btc
     python live_table_watcher.py --schema public --table trades --poll-interval 2.0
 """
 
@@ -320,7 +320,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python live_table_watcher.py --schema live_data --table btc_price_log
+      python live_table_watcher.py --schema live_data --table live_price_log_1s_btc
   python live_table_watcher.py --schema public --table trades --poll-interval 2.0
   
 Environment Variables:
@@ -341,7 +341,7 @@ Environment Variables:
     parser.add_argument(
         '--table',
         required=True,
-        help='Table name to watch (e.g., btc_price_log, trades)'
+        help='Table name to watch (e.g., live_price_log_1s_btc, trades)'
     )
     
     parser.add_argument(

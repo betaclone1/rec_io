@@ -106,13 +106,7 @@ test_schema() {
         return 1
     fi
     
-    # Check if btc_price_log table exists
-    if psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'live_data' AND table_name = 'btc_price_log';" | grep -q btc_price_log; then
-        print_success "btc_price_log table exists"
-    else
-        print_warning "btc_price_log table not found"
-        return 1
-    fi
+
     
     return 0
 }
@@ -125,20 +119,7 @@ test_table_structure() {
         export PGPASSWORD="$POSTGRES_PASSWORD"
     fi
     
-    # Get column information for btc_price_log table
-    COLUMNS=$(psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -c "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'live_data' AND table_name = 'btc_price_log' ORDER BY ordinal_position;" 2>/dev/null || echo "")
-    
-    if [ -n "$COLUMNS" ]; then
-        print_success "btc_price_log table structure:"
-        echo "$COLUMNS" | while read -r line; do
-            if [ -n "$line" ]; then
-                echo "    $line"
-            fi
-        done
-    else
-        print_warning "Could not retrieve table structure"
-        return 1
-    fi
+
     
     return 0
 }
@@ -151,11 +132,11 @@ test_data_access() {
         export PGPASSWORD="$POSTGRES_PASSWORD"
     fi
     
-    # Test reading from btc_price_log table
+    # Test reading from live_price_log_1s_btc table
     ROW_COUNT=$(psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -c "SELECT COUNT(*) FROM live_data.live_price_log_1s_btc;" 2>/dev/null | tr -d ' ')
     
     if [ -n "$ROW_COUNT" ] && [ "$ROW_COUNT" -ge 0 ]; then
-        print_success "Data access test passed - $ROW_COUNT rows in btc_price_log"
+        print_success "Data access test passed - $ROW_COUNT rows in live_price_log_1s_btc"
         
         # Test reading latest record
         LATEST_RECORD=$(psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -c "SELECT timestamp, price, momentum FROM live_data.live_price_log_1s_btc ORDER BY timestamp DESC LIMIT 1;" 2>/dev/null | head -1)
@@ -163,7 +144,7 @@ test_data_access() {
         if [ -n "$LATEST_RECORD" ]; then
             print_success "Latest record access test passed"
         else
-            print_warning "No recent records found in btc_price_log"
+            print_warning "No recent records found in live_price_log_1s_btc"
         fi
     else
         print_warning "Data access test failed or table is empty"
@@ -280,7 +261,7 @@ try:
             cursor.execute("SELECT COUNT(*) FROM live_data.live_price_log_1s_btc;")
     count = cursor.fetchone()[0]
     
-    print(f"Python connection successful - {count} rows in btc_price_log")
+            print(f"Python connection successful - {count} rows in live_price_log_1s_btc")
     
     cursor.close()
     conn.close()

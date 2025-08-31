@@ -784,21 +784,7 @@ def init_trades_db():
             # Create live_data schema if it doesn't exist
             cursor.execute("CREATE SCHEMA IF NOT EXISTS live_data")
             
-            # Create BTC price log table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS live_data.btc_price_log (
-                    timestamp TEXT PRIMARY KEY,
-                    price NUMERIC(10,2),
-                    one_minute_avg NUMERIC(10,2),
-                    momentum NUMERIC(10,4),
-                    delta_1m NUMERIC(10,4),
-                    delta_2m NUMERIC(10,4),
-                    delta_3m NUMERIC(10,4),
-                    delta_4m NUMERIC(10,4),
-                    delta_15m NUMERIC(10,4),
-                    delta_30m NUMERIC(10,4)
-                )
-            """)
+
             
             # Create indexes for better performance
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_0001_status ON users.trades_0001(status)")
@@ -806,7 +792,7 @@ def init_trades_db():
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_fills_0001_ticker ON users.fills_0001(ticker)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_settlements_0001_ticker ON users.settlements_0001(ticker)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_positions_0001_ticker ON users.positions_0001(ticker)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_btc_price_log_timestamp ON live_data.btc_price_log(timestamp)")
+
             
             pg_conn.commit()
             print("✅ PostgreSQL database structure initialized successfully")

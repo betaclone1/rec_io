@@ -833,6 +833,8 @@
         
         // Load monitors from API, then initialize
         loadMonitors().then(() => {
+          // Apply current sort criteria after loading monitors
+          applyCurrentSort();
           initializeMonitors();
           initializeSortable();
           initializeTooltips();
@@ -865,7 +867,7 @@
               <div class="monitor-symbol">${monitor.symbol}</div>
               <div class="monitor-strategy">${monitor.strategy}</div>
             </div>
-            <div class="monitor-status ${monitor.status === 'active' ? 'active' : monitor.status === 'inactive' ? 'inactive' : monitor.status === 'off' ? 'off' : 'paused'}">${monitor.status === 'active' ? 'ACTIVE' : monitor.status === 'inactive' ? 'INACTIVE' : monitor.status === 'off' ? 'OFF' : 'PAUSED'}</div>
+            <div class="monitor-status ${monitor.auto_trade_status === 'active' ? 'active' : monitor.auto_trade_status === 'inactive' ? 'inactive' : monitor.auto_trade_status === 'off' ? 'off' : 'paused'}">${monitor.auto_trade_status === 'active' ? 'ACTIVE' : monitor.auto_trade_status === 'inactive' ? 'INACTIVE' : monitor.auto_trade_status === 'off' ? 'OFF' : 'PAUSED'}</div>
             <div class="monitor-stats">
               <div style="text-align: center; min-width: 45px;">
                 <div class="stat-value">${monitor.trades}</div>
@@ -876,11 +878,11 @@
                 <div class="stat-label">W/L</div>
               </div>
               <div style="text-align: center; min-width: 60px;">
-                <div class="stat-value ${monitor.return.startsWith('+') ? 'positive' : monitor.return.startsWith('-') ? 'negative' : 'neutral'}">${monitor.return}</div>
+                <div class="stat-value">${monitor.return}</div>
                 <div class="stat-label">Ret%</div>
               </div>
               <div style="text-align: center; min-width: 70px;">
-                <div class="stat-value ${monitor.pnl.startsWith('+') ? 'positive' : monitor.pnl.startsWith('-') ? 'negative' : 'neutral'}">${monitor.pnl}</div>
+                <div class="stat-value">${monitor.pnl}</div>
                 <div class="stat-label">PnL</div>
               </div>
             </div>
@@ -932,11 +934,11 @@
                 <div class="stat-label">W/L</div>
               </div>
               <div class="stat-panel">
-                <div class="stat-value ${monitor.return.startsWith('+') ? 'positive' : monitor.return.startsWith('-') ? 'negative' : 'neutral'}">${monitor.return}</div>
+                <div class="stat-value">${monitor.return}</div>
                 <div class="stat-label">Ret%</div>
               </div>
               <div class="stat-panel">
-                <div class="stat-value ${monitor.pnl.startsWith('+') ? 'positive' : monitor.pnl.startsWith('-') ? 'negative' : 'neutral'}">${monitor.pnl}</div>
+                <div class="stat-value">${monitor.pnl}</div>
                 <div class="stat-label">PnL</div>
               </div>
             </div>
@@ -1000,6 +1002,51 @@
       const grid = document.getElementById('monitors-grid');
       if (grid) {
         grid.innerHTML = monitors.map((monitor, index) => createMonitorTile(monitor, index)).join('');
+      }
+    }
+
+    // Apply current sort criteria to monitors array
+    function applyCurrentSort() {
+      if (currentSortBy === 'custom') {
+        // For custom sort, maintain the current order (which should be from dashboard_order)
+        return;
+      }
+      
+      // Separate the new monitor from regular monitors
+      const newMonitor = monitors.find(m => m.id === 'NEW_MONITOR');
+      const regularMonitors = monitors.filter(m => m.id !== 'NEW_MONITOR');
+      
+      const sortedMonitors = [...regularMonitors].sort((a, b) => {
+        switch (currentSortBy) {
+          case 'name':
+            return a.id.localeCompare(b.id);
+          case 'symbol':
+            return a.symbol.localeCompare(b.symbol);
+          case 'strategy':
+            return a.strategy.localeCompare(b.strategy);
+          case 'trades':
+            return b.trades - a.trades; // Descending order
+          case 'winRate':
+            return parseFloat(b.winRate) - parseFloat(a.winRate); // Descending order
+          case 'return':
+            return parseFloat(b.return.replace(/[+%]/g, '')) - parseFloat(a.return.replace(/[+%]/g, '')); // Descending order
+          case 'pnl':
+            return parseFloat(b.pnl.replace(/[+$,-]/g, '')) - parseFloat(a.pnl.replace(/[+$,-]/g, '')); // Descending order
+          case 'uptime':
+            // Convert uptime to minutes for comparison
+            const aMinutes = convertUptimeToMinutes(a.uptime);
+            const bMinutes = convertUptimeToMinutes(b.uptime);
+            return bMinutes - aMinutes; // Descending order
+          default:
+            return 0;
+        }
+      });
+      
+      // Update the monitors array - new monitor always at the end
+      monitors.length = 0;
+      monitors.push(...sortedMonitors);
+      if (newMonitor) {
+        monitors.push(newMonitor);
       }
     }
 
@@ -1073,8 +1120,14 @@
               sortPicker.value = 'custom';
             }
             
+            // Update the current sort criteria to custom
+            currentSortBy = 'custom';
+            
             // Save the new order to the database
             saveMonitorOrder();
+            
+            // Save the custom sort preference to the database
+            saveDashboardPreferences();
           }
         });
       }
@@ -1086,45 +1139,11 @@
       
       currentSortBy = criteria;
       
-      // Separate the new monitor from regular monitors
-      const newMonitor = monitors.find(m => m.id === 'NEW_MONITOR');
-      const regularMonitors = monitors.filter(m => m.id !== 'NEW_MONITOR');
-      
-      const sortedMonitors = [...regularMonitors].sort((a, b) => {
-        switch (criteria) {
-          case 'name':
-            return a.id.localeCompare(b.id);
-          case 'symbol':
-            return a.symbol.localeCompare(b.symbol);
-          case 'strategy':
-            return a.strategy.localeCompare(b.strategy);
-          case 'trades':
-            return b.trades - a.trades; // Descending order
-          case 'winRate':
-            return parseFloat(b.winRate) - parseFloat(a.winRate); // Descending order
-          case 'return':
-            return parseFloat(b.return.replace(/[+%]/g, '')) - parseFloat(a.return.replace(/[+%]/g, '')); // Descending order
-          case 'pnl':
-            return parseFloat(b.pnl.replace(/[+$,-]/g, '')) - parseFloat(a.pnl.replace(/[+$,-]/g, '')); // Descending order
-          case 'uptime':
-            // Convert uptime to minutes for comparison
-            const aMinutes = convertUptimeToMinutes(a.uptime);
-            const bMinutes = convertUptimeToMinutes(b.uptime);
-            return bMinutes - aMinutes; // Descending order
-          default:
-            return 0;
-        }
+      // Reload monitors from database to get latest order, then apply sort and render
+      loadMonitors().then(() => {
+        applyCurrentSort();
+        initializeMonitors();
       });
-      
-      // Update the monitors array - new monitor always at the end
-      monitors.length = 0;
-      monitors.push(...sortedMonitors);
-      if (newMonitor) {
-        monitors.push(newMonitor);
-      }
-      
-      // Re-render the monitors
-      initializeMonitors();
       
       // Save preferences
       saveDashboardPreferences();
@@ -1149,20 +1168,33 @@
       const grid = document.getElementById('monitors-grid');
       
       if (listViewIcon && tileViewIcon && grid) {
-        if (currentViewMode === 'list') {
-          listViewIcon.style.opacity = '1';
-          tileViewIcon.style.opacity = '0.2';
-          grid.classList.remove('tile-view');
-          grid.classList.add('list-view');
-        } else {
-          listViewIcon.style.opacity = '0.2';
-          tileViewIcon.style.opacity = '1';
-          grid.classList.remove('list-view');
-          grid.classList.add('tile-view');
-        }
+        // Add subtle loading state
+        grid.style.opacity = '0.7';
         
-        // Re-render monitors to update layout
-        initializeMonitors();
+        // First, reload monitors from database to get latest order in the background
+        loadMonitors().then(() => {
+          applyCurrentSort();
+          
+          // Now update the view mode and render with the correct order
+          if (currentViewMode === 'list') {
+            listViewIcon.style.opacity = '1';
+            tileViewIcon.style.opacity = '0.2';
+            grid.classList.remove('tile-view');
+            grid.classList.add('list-view');
+          } else {
+            listViewIcon.style.opacity = '0.2';
+            tileViewIcon.style.opacity = '1';
+            grid.classList.remove('list-view');
+            grid.classList.add('tile-view');
+          }
+          
+          // Render with the correct order and restore opacity
+          initializeMonitors();
+          grid.style.opacity = '1';
+        }).catch(() => {
+          // Restore opacity even if there's an error
+          grid.style.opacity = '1';
+        });
       }
     }
 
@@ -1173,25 +1205,37 @@
       const grid = document.getElementById('monitors-grid');
       
       if (listViewIcon && tileViewIcon) {
-        // Toggle opacity values
-        if (listViewIcon.style.opacity === '1') {
-          // Switch to Tile view
-          listViewIcon.style.opacity = '0.2';
-          tileViewIcon.style.opacity = '1';
-          grid.classList.remove('list-view');
-          grid.classList.add('tile-view');
-          currentViewMode = 'tile';
-        } else {
-          // Switch to List view
-          listViewIcon.style.opacity = '1';
-          tileViewIcon.style.opacity = '0.2';
-          grid.classList.remove('tile-view');
-          grid.classList.add('list-view');
-          currentViewMode = 'list';
-        }
+        // Add subtle loading state
+        grid.style.opacity = '0.7';
         
-        // Re-render monitors to update layout
-        initializeMonitors();
+        // First, reload monitors from database to get latest order in the background
+        loadMonitors().then(() => {
+          applyCurrentSort();
+          
+          // Now update the view mode and render with the correct order
+          if (listViewIcon.style.opacity === '1') {
+            // Switch to Tile view
+            listViewIcon.style.opacity = '0.2';
+            tileViewIcon.style.opacity = '1';
+            grid.classList.remove('list-view');
+            grid.classList.add('tile-view');
+            currentViewMode = 'tile';
+          } else {
+            // Switch to List view
+            listViewIcon.style.opacity = '1';
+            tileViewIcon.style.opacity = '0.2';
+            grid.classList.remove('tile-view');
+            grid.classList.add('list-view');
+            currentViewMode = 'list';
+          }
+          
+          // Render with the correct order and restore opacity
+          initializeMonitors();
+          grid.style.opacity = '1';
+        }).catch(() => {
+          // Restore opacity even if there's an error
+          grid.style.opacity = '1';
+        });
         
         // Save preferences
         saveDashboardPreferences();
@@ -1314,6 +1358,15 @@
           // Update sort picker
           const sortPicker = document.getElementById('sortPicker');
           if (sortPicker) {
+            // Show custom option if current sort is custom
+            const customOption = sortPicker.querySelector('option[value="custom"]');
+            if (customOption) {
+              if (currentSortBy === 'custom') {
+                customOption.style.display = '';
+              } else {
+                customOption.style.display = 'none';
+              }
+            }
             sortPicker.value = currentSortBy;
           }
         }

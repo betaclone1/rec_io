@@ -85,49 +85,15 @@ def create_new_tables():
         conn.close()
 
 def migrate_btc_data():
-    """Migrate data from btc_price_log to live_price_log_1s_btc"""
+    """Migrate data to live_price_log_1s_btc"""
     print("🔄 Migrating BTC price data...")
     
     conn = get_postgres_connection()
     cursor = conn.cursor()
     
     try:
-        # Check if old table exists and has data
-        cursor.execute("SELECT COUNT(*) FROM live_data.btc_price_log")
-        old_count = cursor.fetchone()[0]
-        print(f"📊 Found {old_count} records in old BTC table")
-        
-        if old_count == 0:
-            print("⚠️ No data to migrate for BTC")
-            return
-        
-        # Migrate data with proper column mapping
-        cursor.execute("""
-            INSERT INTO live_data.live_price_log_1s_btc 
-            (timestamp, price, one_minute_avg, momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m)
-            SELECT 
-                timestamp,
-                price,
-                one_minute_avg,
-                momentum,
-                delta_1m,
-                delta_2m,
-                delta_3m,
-                delta_4m,
-                delta_15m,
-                delta_30m
-            FROM live_data.btc_price_log
-            ON CONFLICT (timestamp) DO UPDATE SET
-                price = EXCLUDED.price,
-                one_minute_avg = EXCLUDED.one_minute_avg,
-                momentum = EXCLUDED.momentum,
-                delta_1m = EXCLUDED.delta_1m,
-                delta_2m = EXCLUDED.delta_2m,
-                delta_3m = EXCLUDED.delta_3m,
-                delta_4m = EXCLUDED.delta_4m,
-                delta_15m = EXCLUDED.delta_15m,
-                delta_30m = EXCLUDED.delta_30m
-        """)
+        print("📊 No legacy BTC table to migrate from")
+        return
         
         # Verify migration
         cursor.execute("SELECT COUNT(*) FROM live_data.live_price_log_1s_btc")
@@ -206,8 +172,7 @@ def verify_migration():
     
     try:
         # Check BTC data
-        cursor.execute("SELECT COUNT(*) FROM live_data.btc_price_log")
-        old_btc_count = cursor.fetchone()[0]
+        old_btc_count = 0  # Legacy table no longer exists
         
         cursor.execute("SELECT COUNT(*) FROM live_data.live_price_log_1s_btc")
         new_btc_count = cursor.fetchone()[0]
@@ -270,7 +235,7 @@ def main():
                 # Uncomment the following lines when ready to drop old tables
                 # conn = get_postgres_connection()
                 # cursor = conn.cursor()
-                # cursor.execute("DROP TABLE IF EXISTS live_data.btc_price_log")
+
                 # cursor.execute("DROP TABLE IF EXISTS live_data.eth_price_log")
                 # conn.commit()
                 # cursor.close()

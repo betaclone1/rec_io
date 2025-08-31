@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for monitors_list_0001 table creation and sample data insertion
+Test script for monitor_list_0001 table creation and sample data insertion
 """
 
 import sys
@@ -10,9 +10,9 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'backend'))
 from core.config.database import get_postgresql_connection, init_database
 
 def test_monitors_list_table():
-    """Test the monitors_list_0001 table creation and add sample data"""
+    """Test the monitor_list_0001 table creation and add sample data"""
     
-    print("🔧 Testing monitors_list_0001 table creation...")
+    print("🔧 Testing monitor_list_0001 table creation...")
     
     # Initialize database (this will create the table)
     success, message = init_database()
@@ -36,35 +36,35 @@ def test_monitors_list_table():
             SELECT EXISTS (
                 SELECT FROM information_schema.tables 
                 WHERE table_schema = 'users' 
-                AND table_name = 'monitors_list_0001'
+                AND table_name = 'monitor_list_0001'
             );
         """)
         
         table_exists = cursor.fetchone()[0]
         if not table_exists:
-            print("❌ monitors_list_0001 table does not exist")
+            print("❌ monitor_list_0001 table does not exist")
             return False
         
-        print("✅ monitors_list_0001 table exists")
+        print("✅ monitor_list_0001 table exists")
         
         # Test sequence creation
         cursor.execute("""
             SELECT EXISTS (
                 SELECT FROM information_schema.sequences 
                 WHERE sequence_schema = 'users' 
-                AND sequence_name = 'monitors_list_0001_id_seq'
+                AND sequence_name = 'monitor_list_0001_id_seq'
             );
         """)
         
         sequence_exists = cursor.fetchone()[0]
         if not sequence_exists:
-            print("❌ monitors_list_0001_id_seq sequence does not exist")
+            print("❌ monitor_list_0001_id_seq sequence does not exist")
             return False
         
-        print("✅ monitors_list_0001_id_seq sequence exists")
+        print("✅ monitor_list_0001_id_seq sequence exists")
         
         # Check current sequence value
-        cursor.execute("SELECT last_value FROM users.monitors_list_0001_id_seq;")
+        cursor.execute("SELECT last_value FROM users.monitor_list_0001_id_seq;")
         current_value = cursor.fetchone()[0]
         print(f"✅ Current sequence value: {current_value}")
         
@@ -113,7 +113,7 @@ def test_monitors_list_table():
         
         for monitor in sample_monitors:
             cursor.execute("""
-                INSERT INTO users.monitors_list_0001 (
+                INSERT INTO users.monitor_list_0001 (
                     name, symbol, strategy, auto_trade, auto_trade_status,
                     trades, win_loss, ret_pct, pnl, bankroll_allotment, status
                 ) VALUES (

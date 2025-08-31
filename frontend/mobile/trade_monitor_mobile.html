@@ -1092,23 +1092,7 @@
             
             // Diff mode is local only - no WebSocket updates needed
             
-            // Update position size and multiplier
-            const positionInput = document.getElementById('position-size');
-            const multiplierButtons = document.querySelectorAll('.multiplier-btn');
-            
-            if (positionInput && data.position_size !== undefined) {
-                positionInput.value = data.position_size;
-            }
-            
-            if (multiplierButtons.length && data.multiplier !== undefined) {
-                multiplierButtons.forEach(btn => {
-                    if (parseInt(btn.dataset.multiplier, 10) === data.multiplier) {
-                        btn.classList.add('active');
-                    } else {
-                        btn.classList.remove('active');
-                    }
-                });
-            }
+            // Position variables are now loaded from monitor_list
             
             updatePositionDisplay();
         }
@@ -1148,23 +1132,7 @@
                     plusMinusToggle.classList.add('active'); // Always ON by default
                 }
                 
-                // Set Position Size and Multiplier
-                const positionInput = document.getElementById('position-size');
-                const multiplierButtons = document.querySelectorAll('.multiplier-btn');
-                
-                if (positionInput && data.position_size !== undefined) {
-                    positionInput.value = data.position_size;
-                }
-                
-                if (multiplierButtons.length && data.multiplier !== undefined) {
-                    multiplierButtons.forEach(btn => {
-                        if (parseInt(btn.dataset.multiplier, 10) === data.multiplier) {
-                            btn.classList.add('active');
-                        } else {
-                            btn.classList.remove('active');
-                        }
-                    });
-                }
+                // Position variables are now loaded from monitor_list, not trade_preferences
                 
                 await updatePositionDisplay();
             } catch (error) {
@@ -1188,11 +1156,7 @@
                     bankrollValue.textContent = '$' + Number(bankrollInDollars).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
                 }
                 
-                const totalPositionValue = document.getElementById('total-position-value');
-                if (totalPositionValue) {
-                    const totalPosition = preferences.total_position || 0;
-                    totalPositionValue.textContent = totalPosition;
-                }
+                // Total position is now loaded from monitor_list, not trade_preferences
                 
             } catch (error) {
                 console.error('Error updating position display:', error);
@@ -1210,22 +1174,38 @@
                     console.log('Position size changed to:', value);
                     
                     try {
-                        const response = await fetch(window.location.origin + '/api/set_position_size', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ position_size: value })
-                        });
-                        
-                        if (response.ok) {
-                            updatePositionDisplay();
-                            console.log('Position size updated successfully');
-                        } else {
-                            const errorText = await response.text();
-                            console.error('Failed to update position size:', errorText);
-                            alert(`Failed to update position size: ${response.status} ${response.statusText}`);
+                        // Send position variable update to monitor_manager
+                        if (currentMonitorId) {
+                            const positionType = document.getElementById('toggle-percent')?.style.backgroundColor === 'rgb(0, 123, 255)' ? 'percent' : 'contracts';
+                            const activeMultiplier = Array.from(multiplierButtons).find(btn => btn.classList.contains('active'));
+                            const multiplier = activeMultiplier ? parseFloat(activeMultiplier.dataset.multiplier) : 1.0;
+                            
+                            // Get monitor_manager port dynamically
+                            const portResponse = await fetch('/api/ports');
+                            const portInfo = await portResponse.json();
+                            const monitorManagerPort = portInfo.ports.monitor_manager;
+                            const response = await fetch(`http://localhost:${monitorManagerPort}/api/update_monitor_position`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    monitor_id: currentMonitorId,
+                                    position_size: value,
+                                    position_type: positionType,
+                                    multiplier: multiplier
+                                })
+                            });
+                            
+                            if (response.ok) {
+                                console.log('Monitor position updated successfully');
+                                // Position display will be updated by monitor_manager WebSocket notification
+                            } else {
+                                const errorText = await response.text();
+                                console.error('Failed to update monitor position:', errorText);
+                                alert(`Failed to update monitor position: ${response.status} ${response.statusText}`);
+                            }
                         }
                     } catch (error) {
-                        console.error('Error updating position size:', error);
+                        console.error('Error updating monitor position:', error);
                     }
                 });
             }
@@ -1242,21 +1222,37 @@
                     updatePositionDisplay();
                     
                     try {
-                        const response = await fetch(window.location.origin + '/api/set_multiplier', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ multiplier })
-                        });
-                        
-                        if (!response.ok) {
-                            const errorText = await response.text();
-                            console.error('Failed to update multiplier:', errorText);
-                            alert(`Failed to update multiplier: ${response.status} ${response.statusText}`);
-                        } else {
-                            console.log('Multiplier updated successfully');
+                        // Send position variable update to monitor_manager
+                        if (currentMonitorId) {
+                            const positionSize = parseInt(document.getElementById('position-size').value || 1);
+                            const positionType = document.getElementById('toggle-percent')?.style.backgroundColor === 'rgb(0, 123, 255)' ? 'percent' : 'contracts';
+                            
+                            // Get monitor_manager port dynamically
+                            const portResponse = await fetch('/api/ports');
+                            const portInfo = await portResponse.json();
+                            const monitorManagerPort = portInfo.ports.monitor_manager;
+                            const response = await fetch(`http://localhost:${monitorManagerPort}/api/update_monitor_position`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    monitor_id: currentMonitorId,
+                                    position_size: positionSize,
+                                    position_type: positionType,
+                                    multiplier: multiplier
+                                })
+                            });
+                            
+                            if (response.ok) {
+                                console.log('Monitor position updated successfully');
+                                // Position display will be updated by monitor_manager WebSocket notification
+                            } else {
+                                const errorText = await response.text();
+                                console.error('Failed to update monitor position:', errorText);
+                                alert(`Failed to update monitor position: ${response.status} ${response.statusText}`);
+                            }
                         }
                     } catch (error) {
-                        console.error('Error updating multiplier:', error);
+                        console.error('Error updating monitor position:', error);
                     }
                 });
             });
@@ -3135,26 +3131,23 @@
                             const activeMultiplier = Array.from(multiplierButtons).find(btn => btn.classList.contains('active'));
                             const multiplier = activeMultiplier ? parseInt(activeMultiplier.dataset.multiplier, 10) : 1;
                             
-                            // Save position type
-                            await fetch(window.location.origin + '/api/set_position_type', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ position_type: positionType })
-                            });
-                            
-                            // Save position size
-                            await fetch(window.location.origin + '/api/set_position_size', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ position_size: positionSize })
-                            });
-                            
-                            // Save multiplier
-                            await fetch(window.location.origin + '/api/set_multiplier', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ multiplier: multiplier })
-                            });
+                            // Send position variable update to monitor_manager
+                            if (currentMonitorId) {
+                                // Get monitor_manager port dynamically
+                                const portResponse = await fetch('/api/ports');
+                                const portInfo = await portResponse.json();
+                                const monitorManagerPort = portInfo.ports.monitor_manager;
+                                await fetch(`http://localhost:${monitorManagerPort}/api/update_monitor_position`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        monitor_id: currentMonitorId,
+                                        position_size: positionSize,
+                                        position_type: positionType,
+                                        multiplier: multiplier
+                                    })
+                                });
+                            }
                         }
                         
                         // Update the main display
@@ -3453,52 +3446,8 @@
         // Initialize Mobile Position Controls
         async function initializeMobilePositionControls() {
             try {
-                // Load current preferences
-                const response = await fetch(window.location.origin + '/api/get_preferences');
-                const preferences = await response.json();
-                
-                // Set position type
-                const positionType = preferences.position_type || 'percent';
-                const percentBtn = document.getElementById('mobilePositionTypePercent');
-                const contractsBtn = document.getElementById('mobilePositionTypeContracts');
-                
-                if (percentBtn && contractsBtn) {
-                    percentBtn.classList.toggle('active', positionType === 'percent');
-                    contractsBtn.classList.toggle('active', positionType === 'contracts');
-                    percentBtn.style.background = positionType === 'percent' ? '#007bff' : 'white';
-                    percentBtn.style.color = positionType === 'percent' ? 'white' : '#333';
-                    contractsBtn.style.background = positionType === 'contracts' ? '#007bff' : 'white';
-                    contractsBtn.style.color = positionType === 'contracts' ? 'white' : '#333';
-                }
-                
-                // Set position size
-                const positionSize = preferences.position_size || 20;
-                const positionSizeInput = document.getElementById('mobilePositionSize');
-                const positionSizeLabel = document.getElementById('mobilePositionSizeLabel');
-                
-                if (positionSizeInput) {
-                    positionSizeInput.value = positionSize;
-                }
-                
-                if (positionSizeLabel) {
-                    positionSizeLabel.textContent = positionType === 'percent' ? '%' : 'C';
-                }
-                
-                // Set multiplier
-                const multiplier = preferences.multiplier || 1;
-                const multiplierButtons = document.querySelectorAll('.mobile-multiplier-btn');
-                
-                multiplierButtons.forEach(btn => {
-                    const btnMultiplier = parseInt(btn.dataset.multiplier, 10);
-                    const isActive = btnMultiplier === multiplier;
-                    btn.classList.toggle('active', isActive);
-                    btn.style.background = isActive ? '#007bff' : 'white';
-                    btn.style.color = isActive ? 'white' : '#333';
-                    btn.style.borderColor = isActive ? '#007bff' : '#ddd';
-                });
-                
-                // Update total position display
-                updateMobileTotalPositionDisplay();
+                // Position variables are now loaded from monitor_list, not trade_preferences
+                // Position controls will be initialized when monitor is selected
                 
                 // Add event listeners
                 addMobilePositionEventListeners();

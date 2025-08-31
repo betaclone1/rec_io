@@ -519,10 +519,15 @@
 <body>
     <div class="top-half">
       <div class="column" id="col1">
-      <div class="panel-container" style="height: 50px; min-height: 50px; max-height: 50px; margin-bottom: 10px; display: flex; align-items: center; justify-content: flex-start;">
+      <div class="panel-container" style="height: 50px; min-height: 50px; max-height: 50px; margin-bottom: 10px; display: flex; align-items: center; justify-content: flex-start; gap: 10px;">
+        <select id="monitor-picker" class="dropdown-picker" name="monitor">
+          <option value="">Select Monitor</option>
+        </select>
         <select id="ticker-picker" class="dropdown-picker" name="ticker">
-          <option value="BTC">BTC</option>
-          <option value="ETH">ETH</option>
+          <option value="">Loading...</option>
+        </select>
+        <select id="trade-strategy-picker" class="dropdown-picker" name="trade-strategy">
+          <option value="">Loading...</option>
         </select>
       </div>
       <div class="panel-container" style="min-height: 200px;" id="tickerPanelContainer">
@@ -870,32 +875,19 @@ function hideAutoEntrySettingsModal() {
             </label>
           </div>
         </div>
-        <!-- Trade Strategy and Position Size Row -->
-        <div style="display: flex; align-items: flex-start; gap: 20px; margin-bottom: 12px;">
-          <!-- Trade Strategy Picker -->
-          <div style="flex: 1;">
-            <div style="margin-bottom: 6px; font-size: 0.9rem; font-weight: bold;">Trade Strategy</div>
-            <select id="trade-strategy-picker" class="dropdown-picker" name="trade-strategy">
-              <option value="Hourly HTC">Hourly HTC</option>
-              <option value="Momentum Scalp">Momentum Scalp</option>
-              <option value="*** TEST ***">*** TEST ***</option>
-            </select>
-          </div>
-
-          <!-- Position Size Picker -->
-          <div style="flex: 1;">
-            <div style="font-weight: bold; margin-bottom: 6px; font-size: 0.9rem;">Position Size: <span id="position-display" style="margin-left: 10px; updateupdatefont-weight: normal; color: #ccc;">100 contracts</span></div>
-            <div id="positionSizeSelector" style="display: flex; align-items: center; gap: 10px;">
-              <input type="number" id="position-size" min="1" style="width: 60px; padding: 4px 6px; text-align: right; font-size: 1rem; border-radius: 4px; border: 1px solid #ccc; height: 28px; box-sizing: border-box;" />
-              <div style="display: flex; flex-direction: column; gap: 2px;">
-                <button id="toggle-percent" style="height: 15px; padding: 2px 6px; box-sizing: border-box; font-size: 9px; background-color: #007bff; border: 1px solid #0056b3; color: white; border-radius: 4px; cursor: pointer;" onclick="togglePositionType('percent')">%</button>
-                <button id="toggle-contracts" style="height: 15px; padding: 2px 6px; box-sizing: border-box; font-size: 9px; background-color: transparent; border: 1px solid #ccc; color: white; border-radius: 4px; cursor: pointer;" onclick="togglePositionType('contracts')">C</button>
-              </div>
-              <div>
-                <button class="multiplier-btn" data-multiplier="0.5" style="height: 28px; padding: 4px 8px; box-sizing: border-box; width: 32px;">½</button>
-                <button class="multiplier-btn" data-multiplier="1" style="height: 28px; padding: 4px 8px; box-sizing: border-box; width: 32px;">1</button>
-                <button class="multiplier-btn" data-multiplier="2" style="height: 28px; padding: 4px 8px; box-sizing: border-box; width: 32px;">2</button>
-              </div>
+        <!-- Position Size Picker -->
+        <div style="margin-bottom: 12px;">
+          <div style="font-weight: bold; margin-bottom: 6px; font-size: 0.9rem;">Position Size: <span id="position-display" style="margin-left: 10px; updateupdatefont-weight: normal; color: #ccc;">100 contracts</span></div>
+          <div id="positionSizeSelector" style="display: flex; align-items: center; gap: 10px;">
+            <input type="number" id="position-size" min="1" style="width: 60px; padding: 4px 6px; text-align: right; font-size: 1rem; border-radius: 4px; border: 1px solid #ccc; height: 28px; box-sizing: border-box;" />
+            <div style="display: flex; flex-direction: column; gap: 2px;">
+              <button id="toggle-percent" style="height: 15px; padding: 2px 6px; box-sizing: border-box; font-size: 9px; background-color: #007bff; border: 1px solid #0056b3; color: white; border-radius: 4px; cursor: pointer;" onclick="togglePositionType('percent')">%</button>
+              <button id="toggle-contracts" style="height: 15px; padding: 2px 6px; box-sizing: border-box; font-size: 9px; background-color: transparent; border: 1px solid #ccc; color: white; border-radius: 4px; cursor: pointer;" onclick="togglePositionType('contracts')">C</button>
+            </div>
+            <div>
+              <button class="multiplier-btn" data-multiplier="0.5" style="height: 28px; padding: 4px 8px; box-sizing: border-box; width: 32px;">½</button>
+              <button class="multiplier-btn" data-multiplier="1" style="height: 28px; padding: 4px 8px; box-sizing: border-box; width: 32px;">1</button>
+              <button class="multiplier-btn" data-multiplier="2" style="height: 28px; padding: 4px 8px; box-sizing: border-box; width: 32px;">2</button>
             </div>
           </div>
         </div>
@@ -1049,26 +1041,7 @@ function hideAutoEntrySettingsModal() {
           const bankrollInDollars = bankroll / 100; // Convert cents to dollars
           bankrollEl.textContent = `$${Number(bankrollInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
           
-          // Update total_position in database when bankroll changes
-          fetch(window.location.origin + '/api/update_total_position', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({})
-          }).then(response => {
-            if (!response.ok) {
-              throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            }
-            return response.json();
-          }).then(data => {
-            console.log('Total position updated due to bankroll change:', data);
-            // Update display with the new total_position from database
-            const positionDisplay = document.getElementById('position-display');
-            if (positionDisplay && data.total_position !== undefined) {
-              positionDisplay.textContent = `${data.total_position} contracts`;
-            }
-          }).catch(error => {
-            console.error('Error updating total position due to bankroll change:', error);
-          });
+          // Bankroll changes are now handled by monitor_manager, not trade_preferences
         }
       } catch (error) {
         console.error('Error fetching account balance:', error);
@@ -1115,142 +1088,81 @@ document.addEventListener('DOMContentLoaded', () => {
     window.ignoreWsUpdates = false;
   }
 
-  function updatePositionDisplay() {
-    // Calculate the expected total_position based on current UI state
-    const positionInput = document.getElementById('position-size');
+  // Position display is updated by monitor_manager WebSocket notifications
+  function updatePositionDisplay(totalPosition) {
+    console.log('updatePositionDisplay called with:', totalPosition, new Date().toISOString());
     const positionDisplay = document.getElementById('position-display');
-    
-    if (!positionInput || !positionDisplay) return;
-    
-    const baseValue = parseInt(positionInput.value, 10) || 0;
-    const isPercentMode = document.getElementById('toggle-percent')?.style.backgroundColor === 'rgb(0, 123, 255)';
-    
-    let totalContracts = 0;
-    
-    if (isPercentMode) {
-      // Get bankroll value from the display
-      const bankrollEl = document.getElementById('bankroll-balance');
-      let bankrollValue = 0;
-      if (bankrollEl && bankrollEl.textContent) {
-        // Extract number from "$2,218.72" format
-        const bankrollText = bankrollEl.textContent.replace(/[$,]/g, '');
-        bankrollValue = parseFloat(bankrollText) || 0;
+    if (positionDisplay && totalPosition !== undefined) {
+      positionDisplay.textContent = `${totalPosition} contracts`;
+      console.log('Position display updated to:', totalPosition, new Date().toISOString());
+    } else {
+      console.log('Position display element not found or totalPosition undefined');
+    }
+  }
+
+      // Simple function to send position updates to monitor_manager via main app proxy
+    function sendPositionUpdateToMonitorManager() {
+      if (!currentMonitorId) {
+        console.log('No monitor selected. Please select a monitor first.');
+        return;
       }
       
-      // Calculate contracts: (percentage * bankroll) / 100, then apply multiplier
-      const percentageOfBankroll = (baseValue * bankrollValue) / 100;
-      totalContracts = Math.round(percentageOfBankroll * (currentMultiplier || 1));
-    } else {
-      // Contracts mode - direct calculation
-      totalContracts = baseValue * (currentMultiplier || 1);
+      const positionSize = parseInt(document.getElementById('position-size').value || 1);
+      const positionType = document.getElementById('toggle-percent')?.style.backgroundColor === 'rgb(0, 123, 255)' ? 'percent' : 'contracts';
+      const multiplier = parseFloat(document.querySelector('.multiplier-btn.active')?.dataset.multiplier || 1);
+      
+      console.log('Sending to monitor_manager via proxy:', {
+        monitor_id: currentMonitorId,
+        position_size: positionSize,
+        position_type: positionType,
+        multiplier: multiplier
+      });
+      
+      // Send to main app which will proxy to monitor_manager
+      fetch('/api/update_monitor_position', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          monitor_id: currentMonitorId,
+          position_size: positionSize,
+          position_type: positionType,
+          multiplier: multiplier
+        })
+      }).then(response => {
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        return response.json();
+      }).then(data => {
+        console.log('Monitor position updated successfully:', data, new Date().toISOString());
+        // Position display will be updated by monitor_manager WebSocket notification
+      }).catch(error => {
+        console.error('Error updating monitor position:', error);
+      });
     }
-    
-    positionDisplay.textContent = `${totalContracts} contracts`;
+
+  // Test function to manually trigger monitor_manager update
+  function testMonitorManagerUpdate() {
+    console.log('TEST: Manually calling monitor_manager...');
+    sendPositionUpdateToMonitorManager();
   }
   
-  // Make updatePositionDisplay globally accessible
+  // Make functions globally accessible
   window.updatePositionDisplay = updatePositionDisplay;
+  window.sendPositionUpdateToMonitorManager = sendPositionUpdateToMonitorManager;
   
   // Debounce timer for position size updates
   let positionSizeUpdateTimer = null;
 
-  // Initial preferences fetch and UI setup
-  fetch(window.location.origin + '/api/get_preferences')
-    .then(res => res.json())
-    .then(data => {
-      if (autoStopToggle && data.auto_stop !== undefined) {
-        if (data.auto_stop) {
-          autoStopToggle.classList.add('active');
-        } else {
-          autoStopToggle.classList.remove('active');
-        }
-        window.autoStopEnabled = data.auto_stop;
-      }
-      if (autoStopSupervisorToggle && data.auto_stop !== undefined) {
-        if (data.auto_stop) {
-          autoStopSupervisorToggle.classList.add('active');
-        } else {
-          autoStopSupervisorToggle.classList.remove('active');
-        }
-      }
-      if (autoEntryToggle && data.auto_entry !== undefined) {
-        if (data.auto_entry) {
-          autoEntryToggle.classList.add('active');
-        } else {
-          autoEntryToggle.classList.remove('active');
-        }
-        window.recoEnabled = data.auto_entry;
-        
-        // If AUTO ENTRY is enabled on initial load, apply filtering
-        if (data.auto_entry) {
-          // AUTO ENTRY enabled on initial load - applying automatic filtering
-          setTimeout(() => {
-            if (window.StrikeTable && window.StrikeTable.setAutoEntry) {
-              window.StrikeTable.setAutoEntry(true);
-            }
-          }, 1000); // Delay to ensure strike table is loaded
-        } else {
-          // If AUTO ENTRY is disabled on initial load, enable click handlers
-          setTimeout(() => {
-            if (window.StrikeTable && window.StrikeTable.setAutoEntry) {
-              window.StrikeTable.setAutoEntry(false);
-            }
-          }, 1000); // Delay to ensure strike table is loaded
-        }
-      }
-      // Diff mode defaults to ON and is local only
-      if (diffModeToggle) {
-        window.diffMode = true;
-        updateDiffModeDisplay(true);
-      }
-      if (positionInput && data.position_size !== undefined) {
-        positionInput.value = data.position_size;
-      }
-      if (multiplierButtons.length && data.multiplier !== undefined) {
-        currentMultiplier = data.multiplier;
-        multiplierButtons.forEach(btn => {
-          if (parseInt(btn.dataset.multiplier, 10) === data.multiplier) {
-            btn.classList.add('active');
-          } else {
-            btn.classList.remove('active');
-          }
-        });
-      }
-      if (tradeStrategyPicker && data.trade_strategy !== undefined) {
-        tradeStrategyPicker.value = data.trade_strategy;
-      }
-      
-      // Set position type toggle buttons based on data from database
-      if (data.position_type !== undefined) {
-        if (data.position_type === 'percent') {
-          document.getElementById('toggle-percent').style.backgroundColor = '#007bff';
-          document.getElementById('toggle-percent').style.borderColor = '#0056b3';
-          document.getElementById('toggle-contracts').style.backgroundColor = 'transparent';
-          document.getElementById('toggle-contracts').style.borderColor = '#ccc';
-        } else {
-          document.getElementById('toggle-contracts').style.backgroundColor = '#007bff';
-          document.getElementById('toggle-contracts').style.borderColor = '#0056b3';
-          document.getElementById('toggle-percent').style.backgroundColor = 'transparent';
-          document.getElementById('toggle-percent').style.borderColor = '#ccc';
-        }
-      }
-      
-      // Use total_position from database if available, otherwise calculate
-      if (data.total_position !== undefined) {
-        const positionDisplay = document.getElementById('position-display');
-        if (positionDisplay) {
-          positionDisplay.textContent = `${data.total_position} contracts`;
-        }
-      } else {
-        updatePositionDisplay();
-      }
-    });
+  // Initialize auto stop and auto entry from monitor_manager
+  // Position variables are loaded from monitor_list when monitor is selected
 
   // WebSocket setup - use secure WebSocket for HTTPS
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${protocol}//${window.location.host}/ws/preferences`);
 
   ws.onmessage = (event) => {
+    console.log('WebSocket message received:', new Date().toISOString());
     try {
       const data = JSON.parse(event.data);
 
@@ -1354,28 +1266,21 @@ document.addEventListener('DOMContentLoaded', () => {
         return; // Don't process other WebSocket messages for this type
       }
 
+      // === Monitor Total Position Update Notification ===
+      if (data.type === 'monitor_total_position_updated') {
+        // Update position display if this is the current monitor
+        if (data.monitor_id == currentMonitorId) {
+          console.log('WebSocket notification received:', data, new Date().toISOString());
+          updatePositionDisplay(data.total_position);
+        }
+        return; // Don't process other WebSocket messages for this type
+      }
+
       // Fingerprint and momentum now consolidated in strike table - no separate WebSocket handlers needed
 
       // Diff mode is local only - no WebSocket updates needed
 
-      if (positionInput && data.position_size !== undefined && document.activeElement !== positionInput) {
-        window.ignoreWsUpdates = true;
-        positionInput.value = data.position_size;
-        window.ignoreWsUpdates = false;
-      }
-
-      if (multiplierButtons.length && data.multiplier !== undefined && currentMultiplier !== data.multiplier) {
-        window.ignoreWsUpdates = true;
-        currentMultiplier = data.multiplier;
-        multiplierButtons.forEach(btn => {
-          if (parseInt(btn.dataset.multiplier, 10) === data.multiplier) {
-            btn.classList.add('active');
-          } else {
-            btn.classList.remove('active');
-          }
-        });
-        window.ignoreWsUpdates = false;
-      }
+      // Position variables are now loaded from monitor_list
 
       updatePositionDisplay();
     } catch (e) {
@@ -1600,37 +1505,24 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
       const value = tradeStrategyPicker.value;
-      fetch(window.location.origin + '/api/update_trade_preferences', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ trade_strategy: value })
-      }).then(response => {
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        return response.json();
-      }).then(data => {
-        console.log('Trade strategy updated:', data);
-      }).catch(error => {
-        console.error('Trade strategy backend error:', error);
-        alert(`Failed to update trade strategy: ${error.message}`);
-      });
+      // Trade strategy updates are handled by monitor_manager when monitor is selected
     });
   }
 
   if (positionInput) {
-    // Removed console.log
-    positionInput.addEventListener('change', () => {
-      // Removed console.log
+    positionInput.addEventListener('input', () => {
+      console.log('Position input changed!');
       if (ignoreWsUpdates) {
-        // Removed console.log
+        console.log('Ignoring due to ignoreWsUpdates');
         return;
       }
       
-      let value = parseInt(positionInput.value, 10) || 100;
+      let value = parseInt(positionInput.value, 10) || 1;
+      console.log('Position value:', value);
       
       // Validate based on current mode
       const isPercentMode = document.getElementById('toggle-percent')?.style.backgroundColor === 'rgb(0, 123, 255)';
+      console.log('Is percent mode:', isPercentMode);
       
       if (isPercentMode) {
         // Percent mode: restrict to 1-100
@@ -1643,71 +1535,23 @@ document.addEventListener('DOMContentLoaded', () => {
         positionInput.value = value;
       }
       
-      // Clear any existing timer
-      if (positionSizeUpdateTimer) {
-        clearTimeout(positionSizeUpdateTimer);
-      }
-      
-      // Set a new timer to update the database after 300ms of no changes
-      positionSizeUpdateTimer = setTimeout(() => {
-        fetch(window.location.origin + '/api/set_position_size', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ position_size: value })
-        }).then(response => {
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-          }
-          return response.json();
-        }).then(data => {
-          console.log('Position size updated successfully:', data);
-          // Update display with the total_position from the response
-          const positionDisplay = document.getElementById('position-display');
-          if (positionDisplay && data.total_position !== undefined) {
-            positionDisplay.textContent = `${data.total_position} contracts`;
-          }
-        }).catch(error => {
-          console.error('Position size backend error:', error);
-          alert(`Failed to update position size: ${error.message}`);
-        });
-      }, 300);
+      // Send update immediately
+      console.log('Sending position update to monitor_manager...', new Date().toISOString());
+      sendPositionUpdateToMonitorManager();
     });
   }
 
   multiplierButtons.forEach(btn => {
-    // Removed console.log
     btn.addEventListener('click', () => {
-      // Removed console.log
       if (ignoreWsUpdates) {
-        // Removed console.log
         return;
       }
       
       multiplierButtons.forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       currentMultiplier = parseFloat(btn.dataset.multiplier);
-      // Removed console.log
-      // Removed console.log
-      fetch(window.location.origin + '/api/set_multiplier', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ multiplier: currentMultiplier })
-      }).then(response => {
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        return response.json();
-      }).then(data => {
-        console.log('Multiplier updated successfully:', data);
-        // Update display with the total_position from the response
-        const positionDisplay = document.getElementById('position-display');
-        if (positionDisplay && data.total_position !== undefined) {
-          positionDisplay.textContent = `${data.total_position} contracts`;
-        }
-      }).catch(error => {
-        console.error('Multiplier backend error:', error);
-        alert(`Failed to update multiplier: ${error.message}`);
-      });
+      
+      sendPositionUpdateToMonitorManager();
     });
   });
 
@@ -2068,66 +1912,11 @@ document.addEventListener('DOMContentLoaded', () => {
       
       // Update position_type and position_size if switching to percent mode
       if (type === 'percent') {
-        // First update position_size to 10, then update position_type
-        fetch(window.location.origin + '/api/set_position_size', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ position_size: 10 })
-        }).then(response => {
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-          }
-          return response.json();
-        }).then(data => {
-          console.log('Position size updated to 10:', data);
-          // Update the input field to show 10
-          positionInput.value = 10;
-          
-          // Now update position_type
-          return fetch(window.location.origin + '/api/set_position_type', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ position_type: type })
-          });
-        }).then(response => {
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-          }
-          return response.json();
-        }).then(data => {
-          console.log('Position type updated successfully:', data);
-          // Update display with the total_position from the response
-          const positionDisplay = document.getElementById('position-display');
-          if (positionDisplay && data.total_position !== undefined) {
-            positionDisplay.textContent = `${data.total_position} contracts`;
-          }
-        }).catch(error => {
-          console.error('Position type backend error:', error);
-          alert(`Failed to update position type: ${error.message}`);
-        });
-      } else {
-        // For contracts mode, just update position_type
-        fetch(window.location.origin + '/api/set_position_type', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ position_type: type })
-        }).then(response => {
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-          }
-          return response.json();
-        }).then(data => {
-          console.log('Position type updated successfully:', data);
-          // Update display with the total_position from the response
-          const positionDisplay = document.getElementById('position-display');
-          if (positionDisplay && data.total_position !== undefined) {
-            positionDisplay.textContent = `${data.total_position} contracts`;
-          }
-        }).catch(error => {
-          console.error('Position type backend error:', error);
-          alert(`Failed to update position type: ${error.message}`);
-        });
+        // Update the input field to show 10 for percent mode
+        positionInput.value = 10;
       }
+      
+      sendPositionUpdateToMonitorManager();
     }
     
     window.momentumData = {
@@ -5042,6 +4831,213 @@ if (typeof window.liveData !== 'undefined') {
       }
     }
     
+    // === DROPDOWN POPULATION FUNCTIONS ===
+    
+    // Function to populate symbol picker dropdown
+    async function populateSymbolPicker() {
+      try {
+        const response = await fetch('/api/symbols');
+        const data = await response.json();
+        
+        if (data.status === 'ok') {
+          const symbolPicker = document.getElementById('ticker-picker');
+          if (symbolPicker) {
+            symbolPicker.innerHTML = '';
+            
+            data.symbols.forEach(symbol => {
+              const option = document.createElement('option');
+              option.value = symbol.symbol;
+              option.textContent = symbol.symbol;
+              symbolPicker.appendChild(option);
+            });
+            
+            // Set default to BTC
+            const defaultOption = symbolPicker.querySelector('option[value="BTC"]');
+            if (defaultOption) {
+              defaultOption.selected = true;
+            }
+          }
+        } else {
+          console.error('Failed to load symbols:', data.message);
+        }
+      } catch (error) {
+        console.error('Error loading symbols:', error);
+      }
+    }
+    
+    // Function to populate strategy picker dropdown
+    async function populateStrategyPicker() {
+      try {
+        const response = await fetch('/api/strategies');
+        const data = await response.json();
+        
+        if (data.status === 'ok') {
+          const strategyPicker = document.getElementById('trade-strategy-picker');
+          if (strategyPicker) {
+            strategyPicker.innerHTML = '';
+            
+
+            
+            // Add strategy options
+            data.strategies.forEach(strategy => {
+              const option = document.createElement('option');
+              option.value = strategy;
+              option.textContent = strategy;
+              strategyPicker.appendChild(option);
+            });
+          }
+        } else {
+          console.error('Failed to load strategies:', data.message);
+        }
+      } catch (error) {
+        console.error('Error loading strategies:', error);
+      }
+    }
+    
+    // === MONITOR PICKER FUNCTIONALITY ===
+    
+    // Function to populate monitor picker dropdown
+    async function populateMonitorPicker() {
+      console.log('Populating monitor picker...');
+      try {
+        const response = await fetch('/api/monitors/names?user_id=user_0001');
+        const data = await response.json();
+        console.log('Monitor data received:', data);
+        
+        if (data.status === 'ok') {
+          const monitorPicker = document.getElementById('monitor-picker');
+          if (monitorPicker) {
+            // Clear existing options
+            monitorPicker.innerHTML = '';
+            
+            // Add monitor options
+            data.monitors.forEach(monitor => {
+              const option = document.createElement('option');
+              option.value = monitor.id;
+              // Format display name as "Monitor " + last 5 digits of the name
+              let displayName = "Monitor ";
+              if (monitor.name && monitor.name.length >= 5) {
+                displayName += monitor.name.slice(-5);
+              } else {
+                displayName += monitor.name || "";
+              }
+              option.textContent = displayName;
+              monitorPicker.appendChild(option);
+            });
+            
+            // Set default to first monitor and load it
+            if (data.monitors.length > 0) {
+              const firstMonitorId = data.monitors[0].id;
+              console.log('Setting first monitor as default:', firstMonitorId);
+              monitorPicker.value = firstMonitorId;
+              loadMonitorDetails(firstMonitorId);
+            }
+          }
+        } else {
+          console.error('Failed to load monitors:', data.message);
+        }
+      } catch (error) {
+        console.error('Error loading monitors:', error);
+      }
+    }
+    
+    // Global variable to track current monitor
+    let currentMonitorId = null; // No default - must be set by user selection
+    
+    // Function to load monitor details and update dropdowns
+    async function loadMonitorDetails(monitorId) {
+      console.log('Loading monitor details for ID:', monitorId);
+      try {
+        const response = await fetch(`/api/monitor/${monitorId}?user_id=user_0001`);
+        const data = await response.json();
+        
+        if (data.status === 'ok' && data.monitor) {
+          const monitor = data.monitor;
+          console.log('Monitor loaded:', monitor);
+          
+          // Update symbol picker
+          const symbolPicker = document.getElementById('ticker-picker');
+          if (symbolPicker && monitor.symbol) {
+            symbolPicker.value = monitor.symbol;
+          }
+          
+          // Update strategy picker
+          const strategyPicker = document.getElementById('trade-strategy-picker');
+          if (strategyPicker && monitor.strategy) {
+            strategyPicker.value = monitor.strategy;
+          }
+          
+          // Update position size input
+          const positionInput = document.getElementById('position-size');
+          if (positionInput && monitor.position_size !== undefined) {
+            positionInput.value = monitor.position_size;
+          }
+          
+          // Update multiplier buttons and global variable
+          const multiplierButtons = document.querySelectorAll('.multiplier-btn');
+          multiplierButtons.forEach(btn => {
+            btn.classList.remove('active');
+            if (parseFloat(btn.dataset.multiplier) === monitor.multiplier) {
+              btn.classList.add('active');
+            }
+          });
+          
+          // Update global currentMultiplier variable
+          currentMultiplier = monitor.multiplier;
+          
+          // Update position type buttons
+          const percentBtn = document.getElementById('toggle-percent');
+          const contractsBtn = document.getElementById('toggle-contracts');
+          if (monitor.position_type === 'percent') {
+            if (percentBtn) {
+              percentBtn.style.backgroundColor = '#007bff';
+              percentBtn.style.borderColor = '#0056b3';
+            }
+            if (contractsBtn) {
+              contractsBtn.style.backgroundColor = 'transparent';
+              contractsBtn.style.borderColor = '#ccc';
+            }
+            if (positionInput) {
+              positionInput.min = 1;
+              positionInput.max = 100;
+            }
+          } else if (monitor.position_type === 'contracts') {
+            if (contractsBtn) {
+              contractsBtn.style.backgroundColor = '#007bff';
+              contractsBtn.style.borderColor = '#0056b3';
+            }
+            if (percentBtn) {
+              percentBtn.style.backgroundColor = 'transparent';
+              percentBtn.style.borderColor = '#ccc';
+            }
+            if (positionInput) {
+              positionInput.min = 1;
+              positionInput.max = '';
+            }
+          }
+          
+          // Update global variable
+          currentMonitorId = monitorId;
+          console.log('currentMonitorId set to:', currentMonitorId);
+          
+          // Update position display with monitor's total_position
+          updatePositionDisplay(monitor.total_position);
+        }
+      } catch (error) {
+        console.error('Error loading monitor details:', error);
+      }
+    }
+    
+    // Function to handle monitor picker change
+    function handleMonitorChange() {
+      const monitorPicker = document.getElementById('monitor-picker');
+      const selectedMonitorId = monitorPicker.value;
+      
+      if (selectedMonitorId) {
+        loadMonitorDetails(selectedMonitorId);
+      }
+    }
+    
     // Auto-refresh trade history table every 10 seconds
     document.addEventListener('DOMContentLoaded', function() {
       // Show loading screen immediately
@@ -5049,6 +5045,49 @@ if (typeof window.liveData !== 'undefined') {
       
       // Start pre-loading auto trade settings immediately
       preloadAutoTradeSettings();
+      
+      // Initialize all dropdowns
+      populateMonitorPicker();
+      populateSymbolPicker();
+      populateStrategyPicker();
+      
+      // Add event listeners
+      const monitorPicker = document.getElementById('monitor-picker');
+      if (monitorPicker) {
+        monitorPicker.addEventListener('change', handleMonitorChange);
+      }
+      
+      // Add event listeners for symbol and strategy pickers
+      const symbolPicker = document.getElementById('ticker-picker');
+      if (symbolPicker) {
+        symbolPicker.addEventListener('change', function() {
+          if (currentMonitorId) {
+            fetch(`/api/monitor/${currentMonitorId}/update?user_id=user_0001`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ symbol: this.value })
+            });
+          }
+        });
+      }
+      
+      const strategyPicker = document.getElementById('trade-strategy-picker');
+      if (strategyPicker) {
+        strategyPicker.addEventListener('change', function() {
+          if (currentMonitorId) {
+            // Update monitor strategy
+            fetch(`/api/monitor/${currentMonitorId}/update?user_id=user_0001`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ strategy: this.value })
+            });
+            
+            // Strategy updates are handled by monitor_manager
+          }
+        });
+      }
+      
+      // Monitor loading is now handled in populateMonitorPicker()
       
       // Load all critical data before showing the page
       Promise.all([

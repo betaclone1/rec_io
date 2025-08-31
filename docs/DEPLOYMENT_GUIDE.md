@@ -470,7 +470,7 @@ chmod 755 scripts/*.sh
 
 ```bash
 # Create indexes for better performance
-psql -d rec_io_db -c "CREATE INDEX IF NOT EXISTS idx_btc_price_log_timestamp ON live_data.btc_price_log(timestamp);"
+
 ```
 
 ### 2. System Resources

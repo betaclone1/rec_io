@@ -14,7 +14,7 @@ This directory contains comprehensive documentation for the REC.IO trading syste
 - **✅ BUILT-IN:** All new installations are automatically protected from Digital Ocean's default cleanup operations
 
 ### **PostgreSQL Migration Complete**
-- **✅ Migrated:** All BTC price data from legacy SQLite to PostgreSQL `live_data.btc_price_log`
+- **✅ Migrated:** All BTC price data from legacy SQLite to PostgreSQL `live_data.live_price_log_1s_btc`
 - **✅ Retired:** `btc_price_watchdog` service (archived to `archive/deprecated_services/`)
 - **✅ Retired:** `live_data_analysis.py` module (archived to `archive/deprecated_services/`)
 - **✅ Updated:** All services now read BTC price, momentum, and delta data directly from PostgreSQL
@@ -76,7 +76,7 @@ This directory contains comprehensive documentation for the REC.IO trading syste
 
 ### **Data Architecture**
 - **Primary Database:** PostgreSQL with `live_data` schema
-- **Live Data Source:** `live_data.btc_price_log` for BTC price, momentum, delta
+- **Live Data Source:** `live_data.live_price_log_1s_btc` for BTC price, momentum, delta
 - **Legacy Data:** Archived SQLite databases in `archive/` directory
 - **Configuration:** Centralized port and path management via `MASTER_PORT_MANIFEST.json`
 
@@ -109,7 +109,7 @@ This directory contains comprehensive documentation for the REC.IO trading syste
 - **Data Flow:** Coinbase WebSocket → PostgreSQL → All services
 
 ### **Data Sources**
-- **BTC Price:** PostgreSQL `live_data.btc_price_log`
+- **BTC Price:** PostgreSQL `live_data.live_price_log_1s_btc`
 - **ETH Price:** PostgreSQL `live_data.eth_price_log`
 - **Trade Data:** PostgreSQL core tables
 - **System Health:** PostgreSQL `system.health_status`
