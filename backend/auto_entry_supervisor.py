@@ -14,6 +14,7 @@ import threading
 import requests
 import random
 import sys
+import signal
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional, Any
@@ -29,6 +30,72 @@ if project_root not in sys.path:
 # Import the universal centralized port system
 from backend.core.port_config import get_port
 from backend.util.paths import get_host, get_data_dir, get_service_url, get_trade_history_dir
+
+# Add these functions after the existing imports and before the get_monitor_identifier function
+
+def create_monitor_watchlist_table():
+    """Create monitor-specific watchlist table when supervisor starts"""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
+            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+        )
+        with conn.cursor() as cursor:
+            # Create monitor-specific watchlist table
+            watchlist_table = f"watchlist_{USER_NUMBER}_{MONITOR_ID}"
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS live_data.{watchlist_table} (
+                    id SERIAL PRIMARY KEY,
+                    symbol VARCHAR(10),
+                    current_price DECIMAL(10,2),
+                    ttc_seconds INTEGER,
+                    broker VARCHAR(20),
+                    event_ticker VARCHAR(50),
+                    market_title VARCHAR(200),
+                    strike_tier VARCHAR(20),
+                    market_status VARCHAR(20),
+                    strike DECIMAL(10,2),
+                    buffer DECIMAL(10,2),
+                    buffer_pct DECIMAL(5,2),
+                    probability DECIMAL(5,2),
+                    yes_ask INTEGER,
+                    no_ask INTEGER,
+                    yes_diff INTEGER,
+                    no_diff INTEGER,
+                    volume INTEGER,
+                    ticker VARCHAR(50),
+                    active_side VARCHAR(10),
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            conn.commit()
+        conn.close()
+        log(f"[WATCHLIST] ✅ Created monitor-specific watchlist table: {watchlist_table}")
+    except Exception as e:
+        log(f"[WATCHLIST] ❌ Error creating watchlist table: {e}")
+
+def drop_monitor_watchlist_table():
+    """Drop monitor-specific watchlist table when supervisor stops"""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
+            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+        )
+        with conn.cursor() as cursor:
+            # Drop monitor-specific watchlist table
+            watchlist_table = f"watchlist_{USER_NUMBER}_{MONITOR_ID}"
+            cursor.execute(f"DROP TABLE IF EXISTS live_data.{watchlist_table}")
+            conn.commit()
+        conn.close()
+        log(f"[WATCHLIST] ✅ Dropped monitor-specific watchlist table: {watchlist_table}")
+    except Exception as e:
+        log(f"[WATCHLIST] ❌ Error dropping watchlist table: {e}")
 
 # Monitor identification - extract from script name or command line args
 def get_monitor_identifier():
@@ -48,7 +115,7 @@ def get_monitor_identifier():
         return sys.argv[1]  # Use first argument as monitor identifier
     
     # Default to first active monitor if no identifier provided
-    return "0001_10001"  # Default fallback
+    raise ValueError("No monitor identifier found in script name")
 
 # Get monitor identifier
 MONITOR_IDENTIFIER = get_monitor_identifier()
@@ -102,6 +169,28 @@ previous_watchlist_settings = None
 
 
 # Database-based state management functions (PRIMARY SYSTEM)
+def save_auto_entry_state_to_db(state):
+    """Save auto entry state to production database"""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host='137.184.224.94',  # PRODUCTION SERVER
+            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+        )
+        with conn.cursor() as cursor:
+            # Update the auto entry status and current momentum
+            cursor.execute("""
+                UPDATE users.auto_trade_settings_0001 
+                SET auto_entry_status = %s, updated_at = CURRENT_TIMESTAMP
+                WHERE id = 1
+            """, (state.get('enabled', False),))
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        log(f"[AUTO ENTRY STATE DB] Error saving state to production database: {e}")
+
 def load_auto_entry_state_from_db():
     """Load auto entry state from production database (timestamp-based cooldown)"""
     try:
@@ -833,7 +922,7 @@ def generate_watchlist_from_strike_table():
             "strikes": filtered_strikes
         }
         
-        # Write watchlist to PostgreSQL
+        # Write watchlist to PostgreSQL using monitor-specific table
         try:
             import psycopg2
             conn = psycopg2.connect(
@@ -843,12 +932,16 @@ def generate_watchlist_from_strike_table():
                 password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
             )
             with conn.cursor() as cursor:
-                # Clear existing watchlist data
-                cursor.execute("DELETE FROM live_data.watchlist_btc")
-                # Insert filtered strikes into watchlist table
+                # Use monitor-specific watchlist table
+                watchlist_table = f"watchlist_{USER_NUMBER}_{MONITOR_ID}"
+                
+                # Clear existing watchlist data for this monitor
+                cursor.execute(f"DELETE FROM live_data.{watchlist_table}")
+                
+                # Insert filtered strikes into monitor-specific watchlist table
                 for strike in filtered_strikes:
-                    cursor.execute("""
-                        INSERT INTO live_data.watchlist_btc (
+                    cursor.execute(f"""
+                        INSERT INTO live_data.{watchlist_table} (
                             symbol, current_price, ttc_seconds, broker, event_ticker,
                             market_title, strike_tier, market_status, strike, buffer,
                             buffer_pct, probability, yes_ask, no_ask, yes_diff, no_diff,
@@ -864,7 +957,6 @@ def generate_watchlist_from_strike_table():
                     ))
                 conn.commit()
                 conn.close()
-                # Generated watchlist with {len(filtered_strikes)} filtered strikes in PostgreSQL
                 return True
         except Exception as e:
             log(f"[WATCHLIST] Error writing to PostgreSQL: {e}")
@@ -875,7 +967,7 @@ def generate_watchlist_from_strike_table():
         return False
 
 def get_watchlist_data():
-    """Get current watchlist data from PostgreSQL"""
+    """Get current watchlist data from monitor-specific PostgreSQL table"""
     try:
         import psycopg2
         conn = psycopg2.connect(
@@ -885,7 +977,9 @@ def get_watchlist_data():
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
         )
         with conn.cursor() as cursor:
-            cursor.execute("""
+            # Use monitor-specific watchlist table
+            watchlist_table = f"watchlist_{USER_NUMBER}_{MONITOR_ID}"
+            cursor.execute(f"""
                 SELECT
                     symbol,
                     current_price,
@@ -895,14 +989,14 @@ def get_watchlist_data():
                     market_title,
                     strike_tier,
                     market_status
-                FROM live_data.watchlist_btc
+                FROM live_data.{watchlist_table}
                 LIMIT 1
             """)
             header_data = cursor.fetchone()
             if not header_data:
                 # No watchlist data - this is normal when no strikes meet filter criteria
                 return None
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT
                     strike,
                     buffer,
@@ -915,7 +1009,7 @@ def get_watchlist_data():
                     volume,
                     ticker,
                     active_side
-                FROM live_data.watchlist_btc
+                FROM live_data.{watchlist_table}
                 ORDER BY probability DESC
             """)
             strikes_data = cursor.fetchall()
@@ -1619,9 +1713,23 @@ def spike_alert_settings():
         log(f"[SPIKE ALERT SETTINGS] Error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully"""
+    log(f"🛑 Received signal {signum}, shutting down gracefully...")
+    # Clean up monitor-specific watchlist table on shutdown
+    drop_monitor_watchlist_table()
+    sys.exit(0)
+
 def start_event_driven_supervisor():
     """Start the event-driven auto entry supervisor"""
     log(f"🚀 Starting Auto Entry Supervisor for Monitor {MONITOR_IDENTIFIER}")
+    
+    # Set up signal handlers for graceful shutdown
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    # Create monitor-specific watchlist table on startup
+    create_monitor_watchlist_table()
     
     # Start monitoring loop
     start_monitoring_loop()
@@ -1651,8 +1759,12 @@ def start_event_driven_supervisor():
             time.sleep(60)  # Sleep for 1 minute, just to keep alive
     except KeyboardInterrupt:
         log("🛑 Auto entry supervisor stopped by user")
+        # Clean up monitor-specific watchlist table on shutdown
+        drop_monitor_watchlist_table()
     except Exception as e:
         log(f"❌ Error in supervisor: {e}")
+        # Clean up monitor-specific watchlist table on error
+        drop_monitor_watchlist_table()
 
 
 

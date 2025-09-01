@@ -762,7 +762,9 @@ function updateYesNoButton(spanEl, strike, side, askPrice, isActive, ticker = nu
             contract: tradeData.contract,
             symbol: tradeData.symbol,
             position: tradeData.position,
-            trade_strategy: tradeData.trade_strategy
+            trade_strategy: tradeData.trade_strategy,
+            monitor: tradeData.monitor,
+            entry_method: tradeData.entry_method
           })
         });
         

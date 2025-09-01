@@ -128,7 +128,7 @@ class SupervisorConfigGenerator:
         except Exception as e:
             logger.error(f"Error getting active monitors from database: {e}")
             # Return default monitor if database query fails
-            return [{'id': '10001', 'name': 'mon_0001_10001', 'status': 'active', 'user_number': '0001', 'monitor_id': '10001'}]
+            return []  # No default monitors - must be configured
 
     def _get_port_assignments(self) -> dict:
         """Get port assignments from MASTER_PORT_MANIFEST"""

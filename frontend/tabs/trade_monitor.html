@@ -240,54 +240,7 @@
 
 </style>
 <style>
-#autoStopToggle {
-  width: 32px;
-  height: 17px;
-  background-color: #444;
-  border-radius: 9px;
-  position: relative;
-  cursor: pointer;
-  transition: background-color 0.2s;
-  border: none;
-  outline: none;
-  -webkit-appearance: none;
-  -moz-appearance: none;
-  appearance: none;
-}
 
-#autoStopToggle.active {
-  background-color: #007bff;
-}
-
-#autoStopToggle::after {
-  content: '';
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 13px;
-  height: 13px;
-  background-color: white;
-  border-radius: 50%;
-  transition: transform 0.2s;
-}
-
-#autoStopToggle.active::after {
-  transform: translateX(15px);
-}
-
-#autoStopToggle.loading {
-  opacity: 0.7;
-  pointer-events: none;
-}
-
-#autoStopToggle.loading::after {
-  background-color: #ccc;
-}
-
-#autoStopToggle:focus-visible {
-  outline: 2px solid #007bff;
-  outline-offset: 2px;
-}
 
 #autoStopSupervisorToggle {
   width: 32px;
@@ -384,6 +337,104 @@
 }
 
 #autoEntryToggle:focus-visible {
+  outline: 2px solid #007bff;
+  outline-offset: 2px;
+}
+
+#autoStopToggle {
+  width: 32px;
+  height: 17px;
+  background-color: #444;
+  border-radius: 9px;
+  position: relative;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  border: none;
+  outline: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+}
+
+#autoStopToggle.active {
+  background-color: #007bff;
+}
+
+#autoStopToggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  background-color: white;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+#autoStopToggle.active::after {
+  transform: translateX(15px);
+}
+
+#autoStopToggle.loading {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+#autoStopToggle.loading::after {
+  background-color: #ccc;
+}
+
+#autoStopToggle:focus-visible {
+  outline: 2px solid #007bff;
+  outline-offset: 2px;
+}
+
+#autoTradeToggle {
+  width: 32px;
+  height: 17px;
+  background-color: #444;
+  border-radius: 9px;
+  position: relative;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  border: none;
+  outline: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+}
+
+#autoTradeToggle.active {
+  background-color: #007bff;
+}
+
+#autoTradeToggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  background-color: white;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+#autoTradeToggle.active::after {
+  transform: translateX(15px);
+}
+
+#autoTradeToggle.loading {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+#autoTradeToggle.loading::after {
+  background-color: #ccc;
+}
+
+#autoTradeToggle:focus-visible {
   outline: 2px solid #007bff;
   outline-offset: 2px;
 }
@@ -529,6 +580,10 @@
         <select id="trade-strategy-picker" class="dropdown-picker" name="trade-strategy">
           <option value="">Loading...</option>
         </select>
+        <div style="display: flex; align-items: center; gap: 6px; margin-left: auto;">
+          <label style="font-size: 12px; user-select: none; color: white;">AUTO TRADE</label>
+          <div id="autoTradeToggle" class="auto-trade-toggle"></div>
+        </div>
       </div>
       <div class="panel-container" style="min-height: 200px;" id="tickerPanelContainer">
         <table id="tickerPanel" class="panel-table">
@@ -615,7 +670,7 @@ async function loadAutoStopSettings(retryCount = 0) {
   // Fallback to API call if pre-loaded data not available
   try {
     console.log('Loading auto stop settings from database... (attempt ' + (retryCount + 1) + ')');
-    const response = await fetch(window.location.origin + '/api/auto_trade_settings');
+    const response = await fetch(window.location.origin + '/api/get_auto_trade_settings');
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
@@ -657,7 +712,7 @@ async function loadAutoEntrySettings(retryCount = 0) {
   // Fallback to API call if pre-loaded data not available
   try {
     console.log('Loading auto entry settings from database... (attempt ' + (retryCount + 1) + ')');
-    const response = await fetch(window.location.origin + '/api/auto_trade_settings');
+    const response = await fetch(window.location.origin + '/api/get_auto_trade_settings');
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
@@ -873,6 +928,7 @@ function hideAutoEntrySettingsModal() {
               AUTO ENTRY
               <div id="autoEntryToggle"></div>
             </label>
+
           </div>
         </div>
         <!-- Position Size Picker -->
@@ -1113,10 +1169,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // Starting preferences setup
   
   const autoStopToggle = document.getElementById('autoStopToggle');
-  const autoStopSupervisorToggle = document.getElementById('autoStopSupervisorToggle');
+  const autoEntryToggle = document.getElementById('autoEntryToggle');
+  const autoTradeToggle = document.getElementById('autoTradeToggle');
   const positionInput = document.getElementById('position-size');
   const multiplierButtons = document.querySelectorAll('.multiplier-btn');
-  const autoEntryToggle = document.getElementById('autoEntryToggle');
   const diffModeToggle = document.getElementById('diffModeToggle');
   
 
@@ -1128,6 +1184,46 @@ document.addEventListener('DOMContentLoaded', () => {
   if (typeof window.ignoreWsUpdates === 'undefined') {
     window.ignoreWsUpdates = false;
   }
+
+
+
+  // Load auto trade settings from backend
+  async function loadAutoTradeSettings() {
+    try {
+      const response = await fetch('/api/get_auto_trade_settings');
+      if (!response.ok) return;
+      
+      const data = await response.json();
+      
+      // Update auto stop toggle
+      if (autoStopToggle && data.auto_stop !== undefined) {
+        if (data.auto_stop) {
+          autoStopToggle.classList.add('active');
+        } else {
+          autoStopToggle.classList.remove('active');
+        }
+        window.autoStopEnabled = data.auto_stop;
+      }
+      
+      // Update auto entry toggle
+      if (autoEntryToggle && data.auto_entry !== undefined) {
+        if (data.auto_entry) {
+          autoEntryToggle.classList.add('active');
+        } else {
+          autoEntryToggle.classList.remove('active');
+        }
+      }
+    } catch (error) {
+      console.error('Error loading auto trade settings:', error);
+    }
+  }
+
+  // Load settings when page loads
+  loadAutoTradeSettings();
+
+
+
+
 
   // Position display is updated by monitor_manager WebSocket notifications
   function updatePositionDisplay(totalPosition) {
@@ -1315,15 +1411,7 @@ document.addEventListener('DOMContentLoaded', () => {
         window.autoStopEnabled = data.auto_stop;
         window.ignoreWsUpdates = false;
       }
-      if (autoStopSupervisorToggle && data.auto_stop !== undefined) {
-        window.ignoreWsUpdates = true;
-        if (data.auto_stop) {
-          autoStopSupervisorToggle.classList.add('active');
-        } else {
-          autoStopSupervisorToggle.classList.remove('active');
-        }
-        window.ignoreWsUpdates = false;
-      }
+
 
       if (autoEntryToggle && data.auto_entry !== undefined) {
         window.ignoreWsUpdates = true;
@@ -1363,9 +1451,52 @@ document.addEventListener('DOMContentLoaded', () => {
       if (data.type === 'monitor_list_updated') {
         console.log('Monitor list update received:', data, new Date().toISOString());
         console.log('Current monitor picker before refresh:', document.getElementById('monitor-picker')?.value);
+        console.log('Monitor ID from message:', data.monitor_id, 'Current monitor ID:', currentMonitorId);
+        
         // Refresh the monitor dropdown list
         populateMonitorPicker();
         console.log('Monitor picker refreshed, new value:', document.getElementById('monitor-picker')?.value);
+        
+        // If this update affects the current monitor, refresh the auto trade toggle state
+        if (data.monitor_id && data.monitor_id == currentMonitorId) {
+          console.log('Current monitor updated, refreshing auto trade toggle state');
+          // Fetch the updated monitor data and update the toggle
+          fetch(`/api/monitor/${currentMonitorId}?user_id=user_0001`)
+            .then(response => response.json())
+            .then(monitorData => {
+              if (monitorData.status === 'ok' && monitorData.monitor && autoTradeToggle) {
+                if (monitorData.monitor.auto_trade) {
+                  autoTradeToggle.classList.add('active');
+                } else {
+                  autoTradeToggle.classList.remove('active');
+                }
+                console.log('Auto trade toggle state updated to:', monitorData.monitor.auto_trade);
+              }
+            })
+            .catch(error => {
+              console.error('Error refreshing auto trade toggle state:', error);
+            });
+        } else {
+          console.log('Monitor update does not affect current monitor');
+        }
+        
+        return; // Don't process other WebSocket messages for this type
+      }
+
+      // === Active Trades Change Notification ===
+      if (data.type === 'active_trades_change') {
+        console.log('Active trades change received:', data, new Date().toISOString());
+        
+        // Refresh the Active Trade Supervisor panel
+        if (typeof fetchAndRenderActiveTrades === 'function') {
+          fetchAndRenderActiveTrades();
+        }
+        
+        // Also refresh the Trade History panel to show any status changes
+        if (typeof fetchAndRenderTrades === 'function') {
+          fetchAndRenderTrades();
+        }
+        
         return; // Don't process other WebSocket messages for this type
       }
 
@@ -1381,13 +1512,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
-  // Save handlers, ignoring changes triggered by WebSocket updates
+
+
+
+
+
+
+
+
+  // Auto stop toggle click handler
   if (autoStopToggle) {
     autoStopToggle.addEventListener('click', async () => {
-      if (window.ignoreWsUpdates) {
-        return;
-      }
-      
       const enabled = !autoStopToggle.classList.contains('active');
       
       // Prevent multiple clicks during request
@@ -1406,7 +1541,7 @@ document.addEventListener('DOMContentLoaded', () => {
       window.autoStopEnabled = enabled;
       
       try {
-        const response = await fetch(window.location.origin + '/api/set_auto_stop', {
+        const response = await fetch('/api/set_auto_stop', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ enabled })
@@ -1440,70 +1575,9 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Supervisor toggle - connected to same auto_stop preference
-  if (autoStopSupervisorToggle) {
-    autoStopSupervisorToggle.addEventListener('click', async () => {
-      if (window.ignoreWsUpdates) {
-        return;
-      }
-      
-      const enabled = !autoStopSupervisorToggle.classList.contains('active');
-      
-      // Prevent multiple clicks during request
-      if (autoStopSupervisorToggle.classList.contains('loading')) return;
-      
-      // Add loading state
-      autoStopSupervisorToggle.classList.add('loading');
-      
-      // Immediate visual feedback
-      if (enabled) {
-        autoStopSupervisorToggle.classList.add('active');
-      } else {
-        autoStopSupervisorToggle.classList.remove('active');
-      }
-      
-      window.autoStopEnabled = enabled;
-      
-      try {
-        const response = await fetch(window.location.origin + '/api/set_auto_stop', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled })
-        });
-        
-        if (!response.ok) {
-          // Revert if failed
-          if (enabled) {
-            autoStopSupervisorToggle.classList.remove('active');
-          } else {
-            autoStopSupervisorToggle.classList.add('active');
-          }
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        
-        const data = await response.json();
-        console.log('Auto stop supervisor updated successfully:', data);
-      } catch (error) {
-        // Revert if failed
-        if (enabled) {
-          autoStopSupervisorToggle.classList.remove('active');
-        } else {
-          autoStopSupervisorToggle.classList.add('active');
-        }
-        console.error('Auto stop supervisor backend error:', error);
-      } finally {
-        // Remove loading state
-        autoStopSupervisorToggle.classList.remove('loading');
-      }
-    });
-  }
-
+  // Auto entry toggle click handler
   if (autoEntryToggle) {
     autoEntryToggle.addEventListener('click', async () => {
-      if (window.ignoreWsUpdates) {
-        return;
-      }
-      
       const enabled = !autoEntryToggle.classList.contains('active');
       
       // Prevent multiple clicks during request
@@ -1519,13 +1593,8 @@ document.addEventListener('DOMContentLoaded', () => {
         autoEntryToggle.classList.remove('active');
       }
       
-      // Use clean API to update strike table auto entry mode
-      if (window.StrikeTable && window.StrikeTable.setAutoEntry) {
-        window.StrikeTable.setAutoEntry(enabled);
-      }
-      
       try {
-        const response = await fetch(window.location.origin + '/api/set_auto_entry', {
+        const response = await fetch('/api/set_auto_entry', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ enabled })
@@ -1550,11 +1619,73 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
           autoEntryToggle.classList.add('active');
         }
-        console.error('AUTO ENTRY backend error:', error);
+        console.error('Auto entry backend error:', error);
         alert(`Failed to update auto entry setting: ${error.message}`);
       } finally {
         // Remove loading state
         autoEntryToggle.classList.remove('loading');
+      }
+    });
+  }
+
+  // Auto trade toggle click handler - same as dashboard
+  if (autoTradeToggle) {
+    autoTradeToggle.addEventListener('click', async () => {
+      if (!currentMonitorId) {
+        alert('Please select a monitor first');
+        return;
+      }
+      
+      console.log('Toggle clicked for monitor:', currentMonitorId);
+      
+      // Toggle the auto trade state
+      const enabled = !autoTradeToggle.classList.contains('active');
+      
+      // Update the visual state immediately
+      if (enabled) {
+        autoTradeToggle.classList.add('active');
+      } else {
+        autoTradeToggle.classList.remove('active');
+      }
+      
+      console.log(`Auto trade ${enabled ? 'enabled' : 'disabled'} for ${currentMonitorId}`);
+      
+      // Send update to backend using same endpoint as dashboard
+      try {
+        // Format monitor_id correctly for backend (MON_0001_10001 format)
+        const formattedMonitorId = `MON_0001_${currentMonitorId}`;
+        
+        const response = await fetch('/api/monitor/toggle-auto-trade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            monitor_id: formattedMonitorId, 
+            auto_trade: enabled 
+          })
+        });
+        
+        const data = await response.json();
+        if (data.status === 'ok') {
+          console.log('Successfully updated auto trade in database');
+        } else {
+          // Revert if failed
+          if (enabled) {
+            autoTradeToggle.classList.remove('active');
+          } else {
+            autoTradeToggle.classList.add('active');
+          }
+          console.error('Failed to update auto trade:', data.message);
+          alert(`Failed to update auto trade: ${data.message}`);
+        }
+      } catch (error) {
+        // Revert if failed
+        if (enabled) {
+          autoTradeToggle.classList.remove('active');
+        } else {
+          autoTradeToggle.classList.add('active');
+        }
+        console.error('Error updating auto trade:', error);
+        alert(`Error updating auto trade: ${error.message}`);
       }
     });
   }
@@ -1671,8 +1802,9 @@ document.addEventListener('DOMContentLoaded', () => {
             />
             <label style="font-size: 12px; user-select: none; color: white; display: flex; align-items: center; gap: 6px; margin: 0;">
               AUTO STOP
-              <div id="autoStopSupervisorToggle"></div>
+              <div id="autoStopToggle"></div>
             </label>
+
           </div>
         </div>
         <table id="activeTradeSupervisorTable" class="panel-table" style="width: 100%; border-collapse: collapse;">
@@ -4779,7 +4911,7 @@ if (typeof window.liveData !== 'undefined') {
     async function preloadAutoTradeSettings() {
       try {
         console.log('Pre-loading auto trade settings...');
-        const response = await fetch(window.location.origin + '/api/auto_trade_settings');
+        const response = await fetch(window.location.origin + '/api/get_auto_trade_settings');
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
@@ -5118,6 +5250,15 @@ if (typeof window.liveData !== 'undefined') {
           console.log('currentMonitorId set to:', currentMonitorId);
           console.log('currentMonitorName set to:', monitor.name);
           
+          // Set auto trade toggle state directly from monitor data
+          if (autoTradeToggle && monitor.auto_trade !== undefined) {
+            if (monitor.auto_trade) {
+              autoTradeToggle.classList.add('active');
+            } else {
+              autoTradeToggle.classList.remove('active');
+            }
+          }
+          
           // Update position display with monitor's total_position
           updatePositionDisplay(monitor.total_position);
           
@@ -5149,6 +5290,8 @@ if (typeof window.liveData !== 'undefined') {
         } else {
           console.warn('[MONITOR CHANGE] updateWatchlistTable function not found');
         }
+        
+
       }
     }
     
@@ -5237,47 +5380,10 @@ if (typeof window.liveData !== 'undefined') {
       });
   
       
-      // Set up the auto-refresh interval
-      const refreshInterval = setInterval(function() {
-        // Removed console.log
-        
-        // Refresh trade history data without reloading the page
-        // These functions are defined in this file, so they should be available
-        try {
-          if (typeof fetchAndRenderTrades === 'function') {
-            // Removed console.log
-            fetchAndRenderTrades();
-          } else {
-            // Removed console.log
-          }
-          
-          if (typeof fetchAndRenderRecentTrades === 'function') {
-            // Removed console.log
-            fetchAndRenderRecentTrades();
-          } else {
-            // Removed console.log
-          }
-          
-          // Also try to refresh other trade-related data
-          if (typeof fetchAndRenderTradeHistory === 'function') {
-            // Removed console.log
-            fetchAndRenderTradeHistory();
-          }
-          
-        } catch (error) {
-          console.error('Error during auto-refresh:', error);
-        }
-      }, 10000); // 10 seconds = 10000 milliseconds
-      
-      // Store the interval ID so it can be cleared if needed
-      window.tradeHistoryRefreshInterval = refreshInterval;
-      
-      // Optional: Clear interval when page is unloaded
-      window.addEventListener('beforeunload', function() {
-        if (window.tradeHistoryRefreshInterval) {
-          clearInterval(window.tradeHistoryRefreshInterval);
-        }
-      });
+      // Real-time updates are now handled by WebSocket - no polling needed
+      // The WebSocket handlers in the preferences WebSocket connection will
+      // call fetchAndRenderTrades() and fetchAndRenderRecentTrades() immediately
+      // when trade status changes occur
       
 
     });

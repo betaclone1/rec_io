@@ -68,7 +68,6 @@ def get_host():
     # Check for environment variable first
     env_host = os.getenv("TRADING_SYSTEM_HOST")
     if env_host:
-        print(f"[HOST] Using environment variable: {env_host}")
         return env_host
     
     # Try to detect the actual IP address for network access
@@ -79,10 +78,8 @@ def get_host():
         s.connect(("8.8.8.8", 80))
         local_ip = s.getsockname()[0]
         s.close()
-        print(f"[HOST] Detected IP address: {local_ip}")
         return local_ip
     except Exception as e:
-        print(f"[HOST] IP detection failed: {e}, falling back to localhost")
         # Fallback to localhost if detection fails
         return "localhost"
 

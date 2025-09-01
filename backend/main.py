@@ -215,162 +215,16 @@ def get_auto_stop_settings_postgresql():
             "verification_period_seconds": 15
         }
 
-# PostgreSQL helper functions for trade preferences
-def update_trade_preferences_postgresql(**kwargs):
-    """Update trade preferences in PostgreSQL using UPSERT"""
-    try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
-        with conn.cursor() as cursor:
-            # First, ensure we only have one row
-            cursor.execute("DELETE FROM users.trade_preferences_0001 WHERE id > 1")
-            
-            # Build dynamic UPSERT query
-            columns = list(kwargs.keys())
-            values = list(kwargs.values())
-            placeholders = ['%s'] * len(values)
-            
-            # Add updated_at to the columns
-            columns.append('updated_at')
-            placeholders.append('CURRENT_TIMESTAMP')
-            
-            query = f"""
-                INSERT INTO users.trade_preferences_0001 (id, {', '.join(columns)})
-                VALUES (1, {', '.join(placeholders)})
-                ON CONFLICT (id) DO UPDATE SET
-                {', '.join([f"{col} = EXCLUDED.{col}" for col in columns])}
-            """
-            
-            cursor.execute(query, values)
-            conn.commit()
-            print(f"[PostgreSQL] Updated trade preferences: {kwargs}")
-            print(f"[DEBUG] Multiplier value being stored: {kwargs.get('multiplier')} (type: {type(kwargs.get('multiplier'))})")
-        
-        conn.close()
-    except Exception as e:
-        print(f"[PostgreSQL Error] Failed to update trade preferences: {e}")
+# Legacy trade_preferences functions removed - all position sizing and strategy now handled by monitor_list table
 
-def calculate_total_position(position_size, position_type, multiplier, bankroll_value=0):
-    """Calculate total position based on position_size, position_type, multiplier, and bankroll"""
-    try:
-        # Convert multiplier to float to handle decimal.Decimal from database
-        multiplier = float(multiplier)
-        
-        if position_type == "percent":
-            # Calculate percentage of bankroll, then apply multiplier
-            percentage_of_bankroll = (position_size * bankroll_value) / 100
-            total = round(percentage_of_bankroll * multiplier)
-        else:
-            # Direct calculation for contracts mode
-            total = round(position_size * multiplier)
-        
-        return max(1, total)  # Ensure minimum of 1 contract
-    except Exception as e:
-        print(f"[Calculate Total Position Error] {e}")
-        return 1
+# Legacy calculate_total_position function removed - position sizing now handled by monitor_list table
 
-def update_total_position():
-    """Update total_position in database based on current settings"""
-    try:
-        # Get current preferences
-        prefs = get_trade_preferences_postgresql()
-        position_size = prefs.get("position_size", 1)
-        position_type = prefs.get("position_type", "contracts")
-        multiplier = prefs.get("multiplier", 1.0)
-        
-        # Get current bankroll value from account balance
-        bankroll_value = 0
-        try:
-            import psycopg2
-            from psycopg2.extras import RealDictCursor
-            
-            conn = psycopg2.connect(
-                host="localhost",
-                database="rec_io_db",
-                user="rec_io_user",
-                password="rec_io_password"
-            )
-            
-            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                cursor.execute("""
-                    SELECT bankroll_current 
-                    FROM users.account_balance_0001 
-                    ORDER BY timestamp DESC 
-                    LIMIT 1
-                """)
-                result = cursor.fetchone()
-                conn.close()
-                
-                if result and result['bankroll_current']:
-                    # bankroll_current is in cents, convert to dollars
-                    bankroll_value = float(result['bankroll_current']) / 100
-                    print(f"[Update Total Position] Bankroll value: ${bankroll_value}")
-                else:
-                    print(f"[Update Total Position] No bankroll value found, using 0")
-        except Exception as e:
-            print(f"[Update Total Position] Error getting bankroll: {e}")
-        
-        # Calculate total position
-        total_position = calculate_total_position(position_size, position_type, multiplier, bankroll_value)
-        print(f"[Update Total Position] Calculated total_position: {total_position}")
-        
-        # Update database
-        update_trade_preferences_postgresql(total_position=total_position)
-        
-        return total_position
-    except Exception as e:
-        print(f"[Update Total Position Error] {e}")
-        return 1
+# Legacy update_total_position function removed - position sizing now handled by monitor_list table
 
-def get_trade_preferences_postgresql():
-    """Get trade preferences from PostgreSQL"""
-    try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                SELECT trade_strategy, position_size, multiplier, position_type, total_position
-                FROM users.trade_preferences_0001 WHERE id = 1
-            """)
-            result = cursor.fetchone()
-            conn.close()
-            
-            if result:
-                return {
-                    "trade_strategy": result[0],
-                    "position_size": result[1],
-                    "multiplier": result[2],
-                    "position_type": result[3],
-                    "total_position": result[4]
-                }
-            else:
-                return {
-                    "trade_strategy": "Hourly HTC",
-                    "position_size": 1,
-                    "multiplier": 1,
-                    "position_type": "contracts",
-                    "total_position": 1
-                }
-    except Exception as e:
-        print(f"[PostgreSQL Error] Failed to get trade preferences: {e}")
-        return {
-            "trade_strategy": "Hourly HTC",
-            "position_size": 1,
-            "multiplier": 1
-        }
+# Legacy get_trade_preferences_postgresql function removed - all position sizing and strategy now handled by monitor_list table
 
 def get_all_preferences_postgresql():
-    """Get all preferences from PostgreSQL (combines auto_trade_settings and trade_preferences)"""
+    """Get all preferences from PostgreSQL (auto_trade_settings only - position sizing now handled by monitor_list)"""
     try:
         import psycopg2
         conn = psycopg2.connect(
@@ -380,30 +234,19 @@ def get_all_preferences_postgresql():
             password="rec_io_password"
         )
         with conn.cursor() as cursor:
-            # Get auto trade settings
+            # Get auto trade settings only
             cursor.execute("""
                 SELECT auto_entry, auto_stop
                 FROM users.auto_trade_settings_0001 WHERE id = 1
             """)
             auto_settings = cursor.fetchone()
             
-            # Get trade preferences
-            cursor.execute("""
-                SELECT trade_strategy, position_size, multiplier, position_type, total_position
-                FROM users.trade_preferences_0001 WHERE id = 1
-            """)
-            trade_prefs = cursor.fetchone()
-            
             conn.close()
             
-            # Combine the results
+            # Return only auto trade settings - position sizing handled by monitor_list
             preferences = {
                 "auto_stop": auto_settings[1] if auto_settings else True,  # auto_stop is second column
                 "auto_entry": auto_settings[0] if auto_settings else False,  # auto_entry is first column
-                "position_size": trade_prefs[1] if trade_prefs else 1,
-                "multiplier": trade_prefs[2] if trade_prefs else 1,
-                "position_type": trade_prefs[3] if trade_prefs else "contracts",
-                "total_position": trade_prefs[4] if trade_prefs else 1
             }
             
             return preferences
@@ -412,11 +255,6 @@ def get_all_preferences_postgresql():
         return {
             "auto_stop": True,
             "auto_entry": False,
-            "diff_mode": False,
-            "position_size": 1,
-            "multiplier": 1,
-            "position_type": "contracts",
-            "total_position": 1
         }
 
 def get_trade_history_preferences_postgresql():
@@ -769,27 +607,16 @@ def load_preferences():
 async def save_preferences(prefs):
     global _preferences_cache, _cache_timestamp
     try:
-        # Update PostgreSQL
+        # Update PostgreSQL - only auto_trade_settings (position sizing now handled by monitor_list)
         update_data = {}
         if "auto_stop" in prefs:
             update_data["auto_stop"] = bool(prefs["auto_stop"])
         if "auto_entry" in prefs:
             update_data["auto_entry"] = bool(prefs["auto_entry"])
-        if "position_size" in prefs:
-            update_data["position_size"] = int(prefs["position_size"])
-        if "multiplier" in prefs:
-            update_data["multiplier"] = int(prefs["multiplier"])
         
         if update_data:
-            # Update auto_trade_settings for auto_stop and auto_entry
-            auto_settings = {k: v for k, v in update_data.items() if k in ["auto_stop", "auto_entry"]}
-            if auto_settings:
-                update_auto_trade_settings_postgresql(**auto_settings)
-            
-            # Update trade_preferences for position_size and multiplier
-            trade_settings = {k: v for k, v in update_data.items() if k in ["position_size", "multiplier"]}
-            if trade_settings:
-                update_trade_preferences_postgresql(**trade_settings)
+            # Update auto_trade_settings for auto_stop and auto_entry only
+            update_auto_trade_settings_postgresql(**update_data)
         
         # Update cache
         _preferences_cache = prefs.copy()
@@ -2638,102 +2465,7 @@ async def set_auto_entry(request: Request):
 
 # Diff mode is now local only - no API endpoint needed
 
-@app.post("/api/set_position_size")
-async def set_position_size(request: Request):
-    data = await request.json()
-    position_size = int(data.get("position_size", 100))
-    
-    # Update PostgreSQL
-    update_trade_preferences_postgresql(position_size=position_size)
-    
-    # Update total position calculation
-    update_total_position()
-    
-    # Get the updated total_position value
-    updated_prefs = get_trade_preferences_postgresql()
-    total_position = updated_prefs.get('total_position', 1)
-    
-    # Also update legacy JSON for compatibility during migration
-    prefs = load_preferences()
-    try:
-        prefs["position_size"] = position_size
-        await save_preferences(prefs)
-        await broadcast_preferences_update()
-    except Exception as e:
-        print(f"[Set Position Size Error] {e}")
-    return {"status": "ok", "total_position": total_position}
-
-@app.post("/api/set_multiplier")
-async def set_multiplier(request: Request):
-    data = await request.json()
-    print(f"[DEBUG] Received multiplier data: {data}")
-    multiplier = float(data.get("multiplier", 1))
-    print(f"[DEBUG] Converted multiplier to float: {multiplier}")
-    
-    # Update trade_preferences using exact same working approach as monitor_list
-    try:
-        from backend.core.config.database import get_postgresql_connection
-        conn = get_postgresql_connection()
-        if not conn:
-            return {"status": "error", "message": "Database connection failed"}
-        
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE users.trade_preferences_0001
-            SET multiplier = %s, updated_at = CURRENT_TIMESTAMP
-            WHERE id = 1
-        """, (multiplier,))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"[Trade Preferences Error] {e}")
-    
-    return {"status": "ok", "total_position": 1}
-
-@app.post("/api/update_total_position")
-async def update_total_position_endpoint(request: Request):
-    """Update total_position in database based on current settings and bankroll"""
-    try:
-        # Update total position calculation
-        update_total_position()
-        
-        # Get the updated total_position value
-        updated_prefs = get_trade_preferences_postgresql()
-        total_position = updated_prefs.get('total_position', 1)
-        
-        return {"status": "ok", "total_position": total_position}
-    except Exception as e:
-        print(f"[Update Total Position Error] {e}")
-        return {"error": str(e)}
-
-@app.post("/api/set_position_type")
-async def set_position_type(request: Request):
-    data = await request.json()
-    position_type = data.get("position_type", "contracts")
-    
-    # Validate position_type
-    if position_type not in ["percent", "contracts"]:
-        return {"error": "Invalid position_type. Must be 'percent' or 'contracts'"}
-    
-    # Update PostgreSQL
-    update_trade_preferences_postgresql(position_type=position_type)
-    
-    # Update total position calculation
-    update_total_position()
-    
-    # Get the updated total_position value
-    updated_prefs = get_trade_preferences_postgresql()
-    total_position = updated_prefs.get('total_position', 1)
-    
-    # Also update legacy JSON for compatibility during migration
-    prefs = load_preferences()
-    try:
-        prefs["position_type"] = position_type
-        await save_preferences(prefs)
-        await broadcast_preferences_update()
-    except Exception as e:
-        print(f"[Set Position Type Error] {e}")
-    return {"status": "ok", "total_position": total_position}
+# Legacy position sizing endpoints removed - all position sizing now handled by monitor_list table
 
 @app.post("/api/update_preferences")
 async def update_preferences(request: Request):
@@ -2760,20 +2492,7 @@ async def update_preferences(request: Request):
         await broadcast_preferences_update()
     return {"status": "ok"}
 
-@app.get("/api/get_preferences")
-async def get_preferences():
-    """Get current preferences"""
-    prefs = load_preferences()
-    
-    # Add trade strategy from PostgreSQL
-    try:
-        trade_prefs = get_trade_preferences_postgresql()
-        prefs["trade_strategy"] = trade_prefs["trade_strategy"]
-    except Exception as e:
-        print(f"[Get Preferences Error] Failed to get trade strategy from PostgreSQL: {e}")
-        prefs["trade_strategy"] = "Hourly HTC"  # Default fallback
-    
-    return prefs
+# Legacy /api/get_preferences endpoint removed - position sizing and strategy now handled by monitor_list table
 
 # === ACTIVE TRADES PROXY ROUTE ===
 @app.get("/api/active_trades")
@@ -2952,36 +2671,9 @@ async def get_auto_entry_status():
         print(f"Error getting auto entry status: {e}")
         return {"status": "DISABLED", "cooldown_timer": 0, "error": str(e)}
 
-@app.get("/api/get_trade_preferences")
-async def get_trade_preferences():
-    """Get trade preferences from PostgreSQL"""
-    return get_trade_preferences_postgresql()
+# Legacy /api/get_trade_preferences endpoint removed - position sizing and strategy now handled by monitor_list table
 
-@app.post("/api/update_trade_preferences")
-async def update_trade_preferences(request: Request):
-    """Update trade preferences in PostgreSQL"""
-    try:
-        data = await request.json()
-        
-        # Update PostgreSQL
-        update_trade_preferences_postgresql(**data)
-        
-        # Also update legacy JSON for compatibility during migration
-        prefs = load_preferences()
-        if 'trade_strategy' in data:
-            prefs['trade_strategy'] = data['trade_strategy']
-        if 'position_size' in data:
-            prefs['position_size'] = data['position_size']
-        if 'multiplier' in data:
-            prefs['multiplier'] = data['multiplier']
-        
-        await save_preferences(prefs)
-        await broadcast_preferences_update()
-        
-        return {"status": "ok", "updated": data}
-    except Exception as e:
-        print(f"Error updating trade preferences: {e}")
-        return {"status": "error", "message": str(e)}
+# Legacy /api/update_trade_preferences endpoint removed - position sizing and strategy now handled by monitor_list table
 
 @app.post("/api/update_auto_entry_settings")
 async def update_auto_entry_settings(request: Request):
@@ -3165,6 +2857,12 @@ async def trigger_open_trade(request: Request):
         elif side == "no":
             converted_side = "N"
         
+        # Get current monitor information from the request - NO FALLBACKS
+        monitor = data.get("monitor")
+        if not monitor:
+            print(f"[TRIGGER OPEN TRADE] Error: No monitor specified in trade data")
+            return {"status": "error", "message": "Monitor must be specified"}
+        
         # Prepare the trade data exactly like trade_initiator does
         trade_data = {
             "ticket_id": ticket_id,
@@ -3185,7 +2883,8 @@ async def trigger_open_trade(request: Request):
             "momentum": momentum,
             "prob": prob,
             "win_loss": None,
-            "entry_method": data.get("entry_method", "manual")
+            "entry_method": data.get("entry_method", "manual"),
+            "monitor": monitor  # Add monitor field
         }
         
         # Send request directly to trade_manager
@@ -3484,14 +3183,18 @@ async def get_postgresql_strike_table(symbol: str):
         print(f"Error getting PostgreSQL strike table for {symbol}: {str(e)}")
         return {"error": f"Error loading PostgreSQL strike table for {symbol}: {str(e)}"}
 
-@app.get("/api/watchlist/{symbol}")
-async def get_watchlist(symbol: str):
-    """Get watchlist data for a specific symbol from PostgreSQL"""
+@app.get("/api/watchlist/{monitor_name}")
+async def get_watchlist(monitor_name: str):
+    """Get watchlist data for a specific monitor from PostgreSQL"""
     try:
         import psycopg2
+        import re
         
-        # Convert symbol to lowercase for consistency
-        symbol_lower = symbol.lower()
+        # Extract the numeric part from monitor name (e.g., "mon_0001_10002" -> "0001_10002")
+        # The table name format is watchlist_0001_10002, not watchlist_mon_0001_10002
+        table_suffix = monitor_name
+        if monitor_name.startswith('mon_'):
+            table_suffix = monitor_name[4:]  # Remove "mon_" prefix
         
         # Connect to PostgreSQL using unified configuration
         db_config = unified_config.get_database_config()
@@ -3514,14 +3217,14 @@ async def get_watchlist(symbol: str):
                     market_title,
                     strike_tier,
                     market_status
-                FROM live_data.watchlist_{symbol_lower}
+                FROM live_data.watchlist_{table_suffix}
                 LIMIT 1
             """)
             
             header_data = cursor.fetchone()
             
             if not header_data:
-                return {"error": f"No watchlist data found for {symbol}"}
+                return {"error": f"No watchlist data found for monitor {monitor_name}"}
             
             # Get all strike rows
             cursor.execute(f"""
@@ -3537,7 +3240,7 @@ async def get_watchlist(symbol: str):
                     volume,
                     ticker,
                     active_side
-                FROM live_data.watchlist_{symbol_lower}
+                FROM live_data.watchlist_{table_suffix}
                 ORDER BY probability DESC
             """)
             
@@ -3576,7 +3279,91 @@ async def get_watchlist(symbol: str):
             return response
             
     except Exception as e:
-        return {"error": f"Error loading watchlist for {symbol} from PostgreSQL: {str(e)}"}
+        return {"error": f"Error loading watchlist for monitor {monitor_name} from PostgreSQL: {str(e)}"}
+
+@app.get("/api/active_trades/{monitor_name}")
+async def get_active_trades_for_monitor(monitor_name: str):
+    """Get active trades data for a specific monitor from PostgreSQL"""
+    try:
+        import psycopg2
+        import re
+        
+        # Extract the numeric part from monitor name (e.g., "mon_0001_10002" -> "0001_10002")
+        # The table name format is active_trades_0001_10002, not active_trades_mon_0001_10002
+        table_suffix = monitor_name
+        if monitor_name.startswith('mon_'):
+            table_suffix = monitor_name[4:]  # Remove "mon_" prefix
+        
+        # Connect to PostgreSQL using unified configuration
+        db_config = unified_config.get_database_config()
+        conn = psycopg2.connect(
+            host=db_config.get('host', 'localhost'),
+            database=db_config.get('name', 'rec_io_db'),
+            user=db_config.get('user', 'rec_io_user'),
+            password=db_config.get('password', 'rec_io_password')
+        )
+        
+        with conn.cursor() as cursor:
+            # Get all active trades for this monitor
+            cursor.execute(f"""
+                SELECT 
+                    trade_id, ticket_id, date, time, strike, side, buy_price, position,
+                    contract, ticker, symbol, market, trade_strategy, symbol_open,
+                    momentum, prob, fees, diff, status, current_symbol_price,
+                    current_probability, buffer_from_entry, time_since_entry,
+                    current_close_price, current_pnl, last_updated, created_at
+                FROM users.active_trades_{table_suffix}
+                WHERE status IN ('active', 'pending', 'closing')
+                ORDER BY created_at DESC
+            """)
+            
+            trades_data = cursor.fetchall()
+            conn.close()
+            
+            # Build response
+            active_trades = []
+            for row in trades_data:
+                trade = {
+                    "trade_id": row[0],
+                    "ticket_id": row[1],
+                    "date": row[2].isoformat() if row[2] else None,
+                    "time": str(row[3]) if row[3] else None,
+                    "strike": str(row[4]) if row[4] else None,
+                    "side": row[5],
+                    "buy_price": float(row[6]) if row[6] else None,
+                    "position": int(row[7]) if row[7] else None,
+                    "contract": row[8],
+                    "ticker": row[9],
+                    "symbol": row[10],
+                    "market": row[11],
+                    "trade_strategy": row[12],
+                    "symbol_open": float(row[13]) if row[13] else None,
+                    "momentum": float(row[14]) if row[14] else None,
+                    "prob": float(row[15]) if row[15] else None,
+                    "fees": float(row[16]) if row[16] else None,
+                    "diff": float(row[17]) if row[17] else None,
+                    "status": row[18],
+                    "current_symbol_price": float(row[19]) if row[19] else None,
+                    "current_probability": float(row[20]) if row[20] else None,
+                    "buffer_from_entry": float(row[21]) if row[21] else None,
+                    "time_since_entry": int(row[22]) if row[22] else None,
+                    "current_close_price": float(row[23]) if row[23] else None,
+                    "current_pnl": row[24],
+                    "last_updated": row[25].isoformat() if row[25] else None,
+                    "created_at": row[26].isoformat() if row[26] else None
+                }
+                active_trades.append(trade)
+            
+            return {
+                "status": "success",
+                "timestamp": datetime.now().isoformat(),
+                "active_trades": active_trades,
+                "count": len(active_trades),
+                "monitor_identifier": monitor_name
+            }
+            
+    except Exception as e:
+        return {"error": f"Error loading active trades for monitor {monitor_name} from PostgreSQL: {str(e)}"}
 
 @app.get("/api/unified_ttc/{symbol}")
 async def get_unified_ttc(symbol: str):
@@ -4430,13 +4217,13 @@ async def get_log_stream(request: dict):
             
             # Start tail -f process with unbuffered output for real-time streaming
             process = subprocess.Popen(
-                ["stdbuf", "-oL", "/usr/bin/tail", "-f", log_file],
+                ["tail", "-f", log_file],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 cwd=project_dir,
                 env=env,
-                bufsize=0  # Unbuffered
+                bufsize=1  # Line buffered
             )
             
             # Stream live output with immediate flushing
@@ -4444,11 +4231,8 @@ async def get_log_stream(request: dict):
                 line = process.stdout.readline()
                 if not line:
                     break
-                yield line
-                # Force flush to ensure immediate transmission
-                import sys
-                if hasattr(sys.stdout, 'flush'):
-                    sys.stdout.flush()
+                # Send each line immediately with proper encoding
+                yield line.encode('utf-8').decode('utf-8')
             
         except Exception as e:
             yield f"Error: {str(e)}\n"
@@ -4459,7 +4243,12 @@ async def get_log_stream(request: dict):
     return StreamingResponse(
         generate_log_stream(),
         media_type="text/plain",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "Transfer-Encoding": "chunked"
+        }
     )
 
 @app.post("/api/admin/create-backup")
@@ -5029,7 +4818,7 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
         
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total
+            SELECT id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade
             FROM users.monitor_list_{user_number}
             WHERE id = %s AND status = 'active'
         """, (monitor_id,))
@@ -5038,7 +4827,7 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
         conn.close()
         
         if result:
-            monitor_id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total = result
+            monitor_id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade = result
             return {
                 "status": "ok",
                 "monitor": {
@@ -5050,7 +4839,8 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
                     "multiplier": multiplier,
                     "total_position": total_position,
                     "position_type": position_type,
-                    "bankroll_allotment_total": bankroll_allotment_total
+                    "bankroll_allotment_total": bankroll_allotment_total,
+                    "auto_trade": auto_trade
                 }
             }
         else:
@@ -5346,6 +5136,30 @@ async def toggle_auto_trade(request: dict):
             
         conn.commit()
         conn.close()
+        
+        # Broadcast the update to all connected WebSocket clients
+        try:
+            message = {
+                "type": "monitor_list_updated",
+                "monitor_id": int(db_monitor_id),  # Ensure it's an integer
+                "message": f"Auto trade {'enabled' if auto_trade else 'disabled'} for monitor {monitor_id}"
+            }
+            
+            print(f"[MAIN] 🔔 Broadcasting auto trade toggle: {message}")
+            print(f"[MAIN] 🔔 Connected WebSocket clients: {len(connected_clients)}")
+            
+            # Send to preferences WebSocket clients
+            for websocket in connected_clients.copy():
+                try:
+                    await websocket.send_text(json.dumps(message))
+                    print(f"[MAIN] ✅ Message sent to WebSocket client")
+                except Exception as e:
+                    print(f"Error sending to WebSocket client: {e}")
+                    connected_clients.discard(websocket)
+            
+            print(f"[MAIN] ✅ Auto trade toggle broadcasted to {len(connected_clients)} WebSocket clients")
+        except Exception as e:
+            print(f"[MAIN] ⚠️ Warning: Failed to broadcast auto trade toggle: {e}")
         
         return {"status": "ok", "message": f"Auto trade {'enabled' if auto_trade else 'disabled'} for monitor {monitor_id}"}
         

@@ -81,14 +81,21 @@ function initializeActiveTradeSupervisorTable() {
 async function fetchAndRenderActiveTradeSupervisorTrades() {
   try {
     
-    // Get the active trades using direct API call like other working panels
-    const activeTradeSupervisorUrl = window.location.origin + '/api/active_trades';
+    // Get the current monitor name for monitor-specific active trades
+    const currentMonitorName = window.currentMonitorName;
+    if (!currentMonitorName) {
+      console.warn('[ACTIVE TRADE SUPERVISOR] No current monitor name available');
+      return;
+    }
+    
+    // Get the active trades using monitor-specific API call
+    const activeTradeSupervisorUrl = window.location.origin + `/api/active_trades/${currentMonitorName}`;
     
     // Fetch active trades from the supervisor service
     const response = await fetch(activeTradeSupervisorUrl, { cache: 'no-store' });
     
     if (!response.ok) {
-      console.error('[ACTIVE TRADE SUPERVISOR] Failed to fetch active trades:', response.status);
+      console.error(`[ACTIVE TRADE SUPERVISOR] Failed to fetch active trades for monitor ${currentMonitorName}:`, response.status);
       return;
     }
     

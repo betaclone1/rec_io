@@ -165,20 +165,39 @@ window.prepareTradeData = async function(target) {
     buy_price = parseFloat(askPrice) / 100;
   }
 
-  // Get total_position from database instead of manual calculation
+  // Get total_position from monitor-specific configuration (like auto_entry_supervisor) - NO FALLBACKS
   let position = null;
   try {
-    const response = await fetch(window.location.origin + '/api/get_preferences');
+    const currentMonitorId = window.currentMonitorId;
+    if (!currentMonitorId) {
+      console.error('No current monitor ID available - cannot create trade');
+      return null;
+    }
+    
+    console.log('DEBUG: Fetching monitor data for ID:', currentMonitorId);
+    const response = await fetch(window.location.origin + `/api/monitor/${currentMonitorId}?user_id=user_0001`);
+    console.log('DEBUG: Monitor API response status:', response.status);
     if (response.ok) {
       const data = await response.json();
-      position = data.total_position || 1;
+      console.log('DEBUG: Monitor API response data:', data);
+      if (data.status === 'ok' && data.monitor) {
+        position = data.monitor.total_position;
+        if (!position) {
+          console.error('No total_position found in monitor configuration');
+          return null;
+        }
+        console.log(`Position size loaded from monitor ${currentMonitorId}: ${position}`);
+      } else {
+        console.error('Failed to get monitor data:', data.message);
+        return null;
+      }
     } else {
-      console.error('Failed to get total_position from database');
-      position = 1; // Fallback
+      console.error('Failed to get monitor data from API');
+      return null;
     }
   } catch (error) {
-    console.error('Error fetching total_position:', error);
-    position = 1; // Fallback
+    console.error('Error fetching monitor position size:', error);
+    return null;
   }
 
   const contract = typeof getTruncatedMarketTitle === 'function' ? getTruncatedMarketTitle() : 'BTC Market';
@@ -258,9 +277,54 @@ window.prepareTradeData = async function(target) {
     return null;
   }
 
-  // Get trade strategy
+  // Get trade strategy from monitor configuration (like auto_entry_supervisor) - NO FALLBACKS
+  let tradeStrategy = null;
+  try {
+    const currentMonitorId = window.currentMonitorId;
+    if (!currentMonitorId) {
+      console.error('No current monitor ID available - cannot create trade');
+      return null;
+    }
+    
+    const response = await fetch(window.location.origin + `/api/monitor/${currentMonitorId}?user_id=user_0001`);
+    if (response.ok) {
+      const data = await response.json();
+      if (data.status === 'ok' && data.monitor) {
+        tradeStrategy = data.monitor.strategy;
+        if (!tradeStrategy) {
+          console.error('No strategy found in monitor configuration');
+          return null;
+        }
+        console.log(`Trade strategy loaded from monitor ${currentMonitorId}: ${tradeStrategy}`);
+      } else {
+        console.error('Failed to get monitor data:', data.message);
+        return null;
+      }
+    } else {
+      console.error('Failed to get monitor data from API');
+      return null;
+    }
+  } catch (error) {
+    console.error('Error fetching monitor strategy:', error);
+    return null;
+  }
+  
+  // Allow manual override via picker if available
   const tradeStrategyPicker = document.getElementById('trade-strategy-picker');
-  const tradeStrategy = tradeStrategyPicker ? tradeStrategyPicker.value : "Hourly HTC";
+  if (tradeStrategyPicker && tradeStrategyPicker.value) {
+    tradeStrategy = tradeStrategyPicker.value;
+  }
+
+  // Get current monitor name - NO FALLBACKS
+  const currentMonitorName = window.currentMonitorName;
+  console.log('DEBUG: currentMonitorName =', currentMonitorName);
+  console.log('DEBUG: window.currentMonitorName =', window.currentMonitorName);
+  console.log('DEBUG: window.currentMonitorId =', window.currentMonitorId);
+  
+  if (!currentMonitorName) {
+    console.error('No current monitor name available - cannot create trade');
+    return null;
+  }
 
   const tradeData = {
     symbol: symbol,
@@ -275,7 +339,8 @@ window.prepareTradeData = async function(target) {
     
     prob: prob,
     trade_strategy: tradeStrategy,
-    entry_method: "manual"
+    entry_method: "manual",
+    monitor: currentMonitorName  // Add monitor field
   };
 
   return tradeData;

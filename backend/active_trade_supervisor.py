@@ -13,7 +13,7 @@ import json
 import time
 import threading
 import signal
-from datetime import datetime, timezone, time as datetime_time
+from datetime import datetime, timezone, time as datetime_time, timedelta
 from zoneinfo import ZoneInfo
 import requests
 from typing import Dict, List, Optional, Any
@@ -1249,30 +1249,23 @@ def update_active_trade_monitoring_data():
                     buffer_from_strike = -raw_buffer
                 
                 # Calculate time since entry
-                if isinstance(date_str, str) and isinstance(time_str, str):
-                    # Handle legacy text format
-                    entry_datetime = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
-                else:
-                    # Handle new date/time objects
-                    entry_datetime = datetime.combine(date_str, time_str)
-                entry_datetime = entry_datetime.replace(tzinfo=ZoneInfo("America/New_York"))
+                try:
+                    if hasattr(date_str, 'year') and hasattr(time_str, 'hour'):
+                        # Handle new date/time objects
+                        entry_datetime = datetime.combine(date_str, time_str)
+                    else:
+                        # Handle legacy text format
+                        entry_datetime = datetime.strptime(f"{str(date_str)} {str(time_str)}", "%Y-%m-%d %H:%M:%S")
+                    entry_datetime = entry_datetime.replace(tzinfo=ZoneInfo("America/New_York"))
+                except Exception as e:
+                    log(f"Error calculating entry_datetime for trade {trade_id}: {e}, date_str: {date_str}, time_str: {time_str}")
+                    # Use current time as fallback
+                    entry_datetime = datetime.now(ZoneInfo("America/New_York"))
                 now = datetime.now(ZoneInfo("America/New_York"))
                 time_since_entry = int((now - entry_datetime).total_seconds())
                 
-                # Calculate ttc_seconds (time to contract expiry)
-                # For now, assume expiry is at the next hour (e.g., 2pm for a 2pm contract)
-                if isinstance(time_str, str):
-                    expiry_hour = int(time_str.split(":")[0]) + 1
-                else:
-                    # time_str is a datetime.time object
-                    expiry_hour = time_str.hour + 1
-                
-                if isinstance(date_str, str):
-                    expiry_date = datetime.strptime(date_str, "%Y-%m-%d").replace(hour=expiry_hour, minute=0, second=0, tzinfo=ZoneInfo("America/New_York"))
-                else:
-                    # date_str is a datetime.date object
-                    expiry_date = datetime.combine(date_str, datetime_time(expiry_hour, 0, 0)).replace(tzinfo=ZoneInfo("America/New_York"))
-                ttc_seconds = max(1, int((expiry_date - now).total_seconds()))
+                # Get unified TTC from master strike table
+                ttc_seconds = get_unified_ttc_seconds()
                 
                 # Get momentum score if available
                 momentum_score = float(momentum) if momentum is not None else None
@@ -1374,6 +1367,7 @@ def start_monitoring_loop():
         log("📊 MONITORING: Starting monitoring loop for active trades")
         auto_stop_triggered_trades = set()
         verification_pending_trades = {}  # trade_id -> (trigger_time, verification_end_time)
+        log("🔄 AUTO STOP: Reset auto-stop triggered trades set (clearing any failed attempts)")
         
         try:
             while True:
@@ -1412,10 +1406,6 @@ def start_monitoring_loop():
                 # === AUTO STOP LOGIC ===
                 auto_stop_enabled = is_auto_stop_enabled()
                 if auto_stop_enabled:
-                    log(f"[AUTO STOP] Auto-stop is ENABLED - checking trades")
-                else:
-                    log(f"[AUTO STOP] Auto-stop is DISABLED - skipping auto-stop logic")
-                if auto_stop_enabled:
                     threshold = get_auto_stop_threshold()
                     min_ttc_seconds = get_min_ttc_seconds()
                     verification_enabled = get_verification_period_enabled()
@@ -1425,7 +1415,7 @@ def start_monitoring_loop():
                     for trade in active_trades:
                         prob = trade.get('current_probability')
                         trade_id = trade.get('trade_id')
-                        ttc_seconds = trade.get('time_since_entry')
+                        ttc_seconds = get_unified_ttc_seconds()
                         
                         # Check if trade is in verification period
                         if trade_id in verification_pending_trades:
@@ -1436,15 +1426,18 @@ def start_monitoring_loop():
                                 # Verification period ended - check if conditions still met
                                 if (
                                     prob is not None and
-                                    isinstance(prob, (int, float)) and
-                                    prob < threshold and
+                                    (isinstance(prob, (int, float)) or hasattr(prob, '__float__')) and
+                                    float(prob) < threshold and
                                     trade.get('status') == 'active'
                                 ):
                                     # Conditions still met after verification - trigger auto-stop
                                     log(f"[AUTO STOP] ✅ Verification period ended - triggering auto stop for trade {trade_id} (prob={prob}, verification_duration={verification_seconds}s)")
-                                    trigger_auto_stop_close(trade)
-                                    auto_stop_triggered_trades.add(trade_id)
-                                    del verification_pending_trades[trade_id]
+                                    if trigger_auto_stop_close(trade):
+                                        auto_stop_triggered_trades.add(trade_id)
+                                        del verification_pending_trades[trade_id]
+                                    else:
+                                        log(f"[AUTO STOP] ❌ Auto stop failed for trade {trade_id} after verification, will retry on next check")
+                                        del verification_pending_trades[trade_id]
                                 else:
                                     # Conditions no longer met - cancel verification
                                     log(f"[AUTO STOP] ❌ Verification period ended - conditions no longer met for trade {trade_id} (prob={prob}, threshold={threshold})")
@@ -1458,15 +1451,33 @@ def start_monitoring_loop():
                                 continue
                         
                         # Check for new auto-stop conditions
-                        if (
+                        # Debug logging for trade 2448
+                        if trade_id == 2448:
+                            log(f"[AUTO STOP DEBUG] Trade 2448 - prob: {prob}, threshold: {threshold}, status: {trade.get('status')}, in_triggered: {trade_id in auto_stop_triggered_trades}, ttc: {ttc_seconds}, min_ttc: {min_ttc_seconds}")
+                        
+                        # Debug logging for trade 2448
+                        if trade_id == 2448:
+                            log(f"[AUTO STOP DEBUG] Trade 2448 conditions - prob_valid: {prob is not None}, prob_type: {type(prob)}, prob_lt_threshold: {float(prob) < threshold if prob is not None else 'N/A'}, status_active: {trade.get('status') == 'active'}, not_triggered: {trade_id not in auto_stop_triggered_trades}, ttc_valid: {ttc_seconds is not None}, ttc_ge_min: {ttc_seconds >= min_ttc_seconds if ttc_seconds is not None else 'N/A'}")
+                        
+                        auto_stop_conditions_met = (
                             prob is not None and
-                            isinstance(prob, (int, float)) and
-                            prob < threshold and
+                            (isinstance(prob, (int, float)) or hasattr(prob, '__float__')) and
+                            float(prob) < threshold and
                             trade.get('status') == 'active' and
                             trade_id not in auto_stop_triggered_trades and
                             ttc_seconds is not None and
                             ttc_seconds >= min_ttc_seconds # Respect min_ttc_seconds setting
-                        ):
+                        )
+                        
+                        # Debug logging for trade 2448
+                        if trade_id == 2448:
+                            log(f"[AUTO STOP DEBUG] Trade 2448 - auto_stop_conditions_met: {auto_stop_conditions_met}")
+                        
+                        if auto_stop_conditions_met:
+                            # Debug logging for trade 2448
+                            if trade_id == 2448:
+                                log(f"[AUTO STOP DEBUG] Trade 2448 - verification_enabled: {verification_enabled}")
+                            
                             if verification_enabled:
                                 # Start verification period
                                 verification_end_time = current_time + verification_seconds
@@ -1475,12 +1486,14 @@ def start_monitoring_loop():
                             else:
                                 # No verification - trigger immediately
                                 log(f"[AUTO STOP] Triggering auto stop for trade {trade_id} (prob={prob}, ttc={ttc_seconds}s, min_ttc={min_ttc_seconds}s)")
-                                trigger_auto_stop_close(trade)
-                                auto_stop_triggered_trades.add(trade_id)
+                                if trigger_auto_stop_close(trade):
+                                    auto_stop_triggered_trades.add(trade_id)
+                                else:
+                                    log(f"[AUTO STOP] ❌ Auto stop failed for trade {trade_id}, will retry on next check")
                         elif (
                             prob is not None and
-                            isinstance(prob, (int, float)) and
-                            prob < threshold and
+                            (isinstance(prob, (int, float)) or hasattr(prob, '__float__')) and
+                            float(prob) < threshold and
                             trade.get('status') == 'active' and
                             trade_id not in auto_stop_triggered_trades and
                             (ttc_seconds is None or ttc_seconds < min_ttc_seconds)
@@ -1540,9 +1553,11 @@ def start_monitoring_loop():
                                                 log(f"[MOMENTUM SPIKE] Cancelling verification period for trade {trade_id} due to momentum spike")
                                                 del verification_pending_trades[trade_id]
                                             
-                                            trigger_auto_stop_close(trade)
-                                            auto_stop_triggered_trades.add(trade_id)
-                                            momentum_spike_triggered = True
+                                            if trigger_auto_stop_close(trade):
+                                                auto_stop_triggered_trades.add(trade_id)
+                                                momentum_spike_triggered = True
+                                            else:
+                                                log(f"[MOMENTUM SPIKE] ❌ Auto stop failed for trade {trade_id}, will retry on next check")
                                     
                                     if momentum_spike_triggered:
                                         log(f"[MOMENTUM SPIKE] ✅ Closed {len([t for t in active_trades if t.get('side', '').upper() in ['N', 'NO'] and t.get('status') == 'active'])} NO trades due to positive momentum spike")
@@ -1564,9 +1579,11 @@ def start_monitoring_loop():
                                                 log(f"[MOMENTUM SPIKE] Cancelling verification period for trade {trade_id} due to momentum spike")
                                                 del verification_pending_trades[trade_id]
                                             
-                                            trigger_auto_stop_close(trade)
-                                            auto_stop_triggered_trades.add(trade_id)
-                                            momentum_spike_triggered = True
+                                            if trigger_auto_stop_close(trade):
+                                                auto_stop_triggered_trades.add(trade_id)
+                                                momentum_spike_triggered = True
+                                            else:
+                                                log(f"[MOMENTUM SPIKE] ❌ Auto stop failed for trade {trade_id}, will retry on next check")
                                     
                                     if momentum_spike_triggered:
                                         log(f"[MOMENTUM SPIKE] ✅ Closed {len([t for t in active_trades if t.get('side', '').upper() in ['Y', 'YES'] and t.get('status') == 'active'])} YES trades due to negative momentum spike")
@@ -1819,6 +1836,7 @@ def is_auto_stop_enabled():
 
 def trigger_auto_stop_close(trade):
     """Trigger a close for the given trade using the same payload as manual close."""
+    """Returns True if close was successful, False otherwise."""
     import requests
     import random
     # Generate unique ticket ID
@@ -1831,7 +1849,12 @@ def trigger_auto_stop_close(trade):
     symbol_close = trade.get('current_symbol_price')
     if sell_price is None or symbol_close is None:
         log(f"[AUTO STOP] Skipping close for trade {trade['trade_id']} due to missing price data.")
-        return
+        return False
+    
+    # Convert Decimal objects to float for JSON serialization
+    sell_price_float = float(sell_price) if hasattr(sell_price, '__float__') else sell_price
+    symbol_close_float = float(symbol_close) if hasattr(symbol_close, '__float__') else symbol_close
+    
     payload = {
         'ticket_id': ticket_id,
         'intent': 'close',
@@ -1841,8 +1864,8 @@ def trigger_auto_stop_close(trade):
         'action': 'close',
         'type': 'market',
         'time_in_force': 'IOC',
-        'buy_price': sell_price,
-        'symbol_close': symbol_close,
+        'buy_price': sell_price_float,
+        'symbol_close': symbol_close_float,
         'close_method': 'auto'
     }
     try:
@@ -1860,16 +1883,20 @@ def trigger_auto_stop_close(trade):
             
             # Notify frontend of automated trade close for audio/visual alerts
             try:
+                # Convert Decimal objects to float for JSON serialization
+                buy_price_float = float(trade.get('buy_price')) if hasattr(trade.get('buy_price'), '__float__') else trade.get('buy_price')
+                probability_float = float(trade.get('current_probability')) if hasattr(trade.get('current_probability'), '__float__') else trade.get('current_probability')
+                
                 notification_data = {
                     "type": "automated_trade_closed",
                     "trade_id": trade['trade_id'],
                     "ticker": trade['ticker'],
                     "strike": trade['strike'],
                     "side": trade['side'],
-                    "buy_price": trade.get('buy_price'),
-                    "sell_price": sell_price,
+                    "buy_price": buy_price_float,
+                    "sell_price": sell_price_float,
                     "position": trade['position'],
-                    "probability": trade.get('current_probability'),
+                    "probability": probability_float,
                     "pnl": trade.get('current_pnl'),
                     "timestamp": datetime.now().isoformat()
                 }
@@ -1884,10 +1911,13 @@ def trigger_auto_stop_close(trade):
             except Exception as e:
                 log(f"[AUTO STOP] ❌ Error sending frontend notification: {e}")
             
+            return True
         else:
             log(f"[AUTO STOP] Failed to trigger close for trade {trade['trade_id']}: {resp.status_code} {resp.text}")
+            return False
     except Exception as e:
         log(f"[AUTO STOP] Exception posting close for trade {trade['trade_id']}: {e}")
+        return False
 
 def handle_close_failed_trade(trade_id: int, ticket_id: str) -> bool:
     """
@@ -1977,6 +2007,31 @@ def get_auto_stop_threshold():
     except Exception as e:
         log(f"[AUTO STOP] Error reading threshold from PostgreSQL: {e}")
         return 40
+
+def get_unified_ttc_seconds():
+    """Get unified TTC from master strike table"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT ttc_seconds FROM live_data.strike_table_btc LIMIT 1")
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result and result[0] is not None:
+            return int(result[0])
+        else:
+            log(f"[AUTO STOP] Warning: No TTC data from master strike table, using fallback calculation")
+            # Fallback to simple calculation
+            now = datetime.now(ZoneInfo("America/New_York"))
+            next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            return max(1, int((next_hour - now).total_seconds()))
+            
+    except Exception as e:
+        log(f"[AUTO STOP] Error reading TTC from master strike table: {e}")
+        # Fallback to simple calculation
+        now = datetime.now(ZoneInfo("America/New_York"))
+        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        return max(1, int((next_hour - now).total_seconds()))
 
 def get_min_ttc_seconds():
     """Get the minimum TTC seconds setting from PostgreSQL"""

@@ -246,16 +246,20 @@
                         }
                         
                         const chunk = decoder.decode(value, { stream: true });
-                        if (!isPaused) {
-                            // Process chunk line by line for immediate display
+                        if (!isPaused && chunk.trim()) {
+                            // Process chunk immediately for real-time display
                             const lines = chunk.split('\n');
-                            lines.forEach((line, index) => {
-                                if (line.trim()) {  // Only append non-empty lines
+                            for (const line of lines) {
+                                if (line.trim()) {
                                     appendLog(line + '\n');
                                 }
-                            });
+                            }
+                            // Force immediate scroll to bottom
+                            const output = document.getElementById('logOutput');
+                            output.scrollTop = output.scrollHeight;
                         }
                         
+                        // Continue reading immediately
                         readStream();
                     }).catch(error => {
                         console.error('Error reading log stream:', error);

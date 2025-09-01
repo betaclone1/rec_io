@@ -1070,6 +1070,10 @@
           initializeMonitors();
           initializeSortable();
           initializeTooltips();
+          
+          // Connect to WebSocket after everything is loaded
+          console.log('Dashboard: All monitors loaded, now connecting to WebSocket...');
+          connectWebSocket();
         });
       });
     });
@@ -2694,6 +2698,51 @@
         alert('Error creating monitor: ' + error.message);
       }
     }
+
+    // WebSocket connection for real-time updates
+    let ws = null;
+
+    function connectWebSocket() {
+      // Close existing connection if any
+      if (ws) {
+        ws.close();
+      }
+
+      // Connect to WebSocket
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${protocol}//${window.location.host}/ws/preferences`);
+
+      ws.onopen = function() {
+        console.log('Dashboard WebSocket connected');
+      };
+
+      ws.onmessage = function(event) {
+        try {
+          const data = JSON.parse(event.data);
+          
+          // Handle monitor list updates
+          if (data.type === 'monitor_list_updated') {
+            // Refresh monitors data to update the display
+            loadMonitors().then(() => {
+              initializeMonitors();
+            });
+          }
+        } catch (error) {
+          console.error('Error parsing WebSocket message in dashboard:', error);
+        }
+      };
+
+      ws.onclose = function() {
+        // Reconnect after a delay
+        setTimeout(connectWebSocket, 5000);
+      };
+
+      ws.onerror = function(error) {
+        console.error('Dashboard WebSocket error:', error);
+      };
+    }
+
+
   </script>
 
   <!-- Archive Confirmation Modal -->

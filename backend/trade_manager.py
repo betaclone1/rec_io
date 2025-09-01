@@ -123,8 +123,8 @@ def insert_trade(trade):
                         contract, strike, side, prob, diff, buy_price, position,
                         sell_price, closed_at, fees, pnl, symbol_open, symbol_close,
                         momentum, volatility, win_loss, ticker, ticket_id, market_id,
-                        momentum_delta, entry_method, close_method
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        momentum_delta, entry_method, close_method, monitor
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """, (
                     trade.get('status', 'pending'), trade['date'], trade['time'], 
@@ -133,7 +133,8 @@ def insert_trade(trade):
                     trade.get('diff'), trade['buy_price'], trade['position'], None, None,
                     None, None, symbol_open, None, momentum_for_db, trade.get('volatility'),
                     None, trade.get('ticker'), trade.get('ticket_id'), trade.get('market_id', 'BTC-USD'),
-                    trade.get('momentum_delta'), trade.get('entry_method', 'manual'), trade.get('close_method')
+                    trade.get('momentum_delta'), trade.get('entry_method', 'manual'), trade.get('close_method'),
+                    trade.get('monitor')  # Monitor must be specified - no fallback
                 ))
                 last_id = cursor.fetchone()[0]
                 pg_conn.commit()
@@ -594,13 +595,38 @@ def notify_active_trade_supervisor_direct(trade_id: int, ticket_id: str, status:
     try:
         import requests
         from backend.core.port_config import get_port
+        
+        # Get the monitor field from the trade record
+        monitor_identifier = None
+        pg_conn = get_postgresql_connection()
+        if pg_conn:
+            with pg_conn.cursor() as cursor:
+                cursor.execute("SELECT monitor FROM users.trades_0001 WHERE id = %s", (trade_id,))
+                row = cursor.fetchone()
+                if row and row[0]:
+                    monitor_identifier = row[0]
+            pg_conn.close()
+        
+        # Extract monitor identifier (e.g., "0001_10002" from "mon_0001_10002")
+        if monitor_identifier and monitor_identifier.startswith('mon_'):
+            monitor_suffix = monitor_identifier[4:]  # Remove "mon_" prefix
+        else:
+            # No fallback - monitor must be specified
+            log(f"ERROR: No valid monitor identifier found for trade {trade_id}")
+            return
+        
+        # Get the port for the specific monitor's active trade supervisor
+        # Each monitor instance runs on a different port
         active_trade_supervisor_port = get_port("active_trade_supervisor")
         
+        # For now, we'll use the centralized port since all instances share the same port
+        # In the future, this could be enhanced to use monitor-specific ports
         notification_url = f"http://localhost:{active_trade_supervisor_port}/api/trade_manager_notification"
         payload = {
             "trade_id": trade_id,
             "ticket_id": ticket_id,
-            "status": status
+            "status": status,
+            "monitor_identifier": monitor_suffix  # Add monitor identifier to payload
         }
         
         response = requests.post(notification_url, json=payload, timeout=5)
@@ -608,16 +634,16 @@ def notify_active_trade_supervisor_direct(trade_id: int, ticket_id: str, status:
         if response.status_code == 200:
             result = response.json()
             if result.get("success", False):
-                log(f"NOTIFIED ACTIVE TRADE SUPERVISOR")
+                log(f"NOTIFIED ACTIVE TRADE SUPERVISOR for monitor {monitor_suffix}")
             else:
-                log(f"ACTIVE TRADE SUPERVISOR ERROR")
+                log(f"ACTIVE TRADE SUPERVISOR ERROR for monitor {monitor_suffix}")
         else:
-            log(f"ACTIVE TRADE SUPERVISOR ERROR")
+            log(f"ACTIVE TRADE SUPERVISOR ERROR for monitor {monitor_suffix}")
             
     except ImportError:
         log(f"REQUESTS NOT AVAILABLE")
     except Exception as e:
-        log(f"ERROR SENDING NOTIFICATION")
+        log(f"ERROR SENDING NOTIFICATION: {e}")
 
 def notify_frontend_trade_change() -> None:
     """Send notification to frontend when trades are updated"""
@@ -902,6 +928,24 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
                 
                 pg_conn.commit()
                 pg_conn.close()
+                
+                # Broadcast active trades change to frontend
+                try:
+                    import requests
+                    broadcast_url = f"http://localhost:{get_port('main_app')}/api/broadcast_active_trades_change"
+                    broadcast_payload = {
+                        "count": 1,
+                        "trade_id": trade_id,
+                        "status": status,
+                        "timestamp": time.time()
+                    }
+                    response = requests.post(broadcast_url, json=broadcast_payload, timeout=2)
+                    if response.status_code == 200:
+                        log("NOTIFIED FRONTEND - ACTIVE TRADES CHANGE")
+                    else:
+                        log(f"ACTIVE TRADES BROADCAST FAILED: {response.status_code}")
+                except Exception as e:
+                    log(f"ACTIVE TRADES BROADCAST ERROR: {e}")
         else:
             print(f"⚠️ Skipping PostgreSQL update - no connection available")
     except Exception as e:

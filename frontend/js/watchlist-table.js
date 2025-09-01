@@ -30,8 +30,8 @@ function initializeWatchlistTable() {
   // Initial load
   updateWatchlistTable();
   
-  // Set up periodic updates (every 2 seconds)
-  setInterval(updateWatchlistTable, 2000);
+  // Set up periodic updates (every 1 second)
+  setInterval(updateWatchlistTable, 1000);
   console.log('[WATCHLIST] Watchlist table initialized and periodic updates set up');
 }
 
@@ -156,8 +156,8 @@ function updateWatchlistBuyButton(spanEl, strike, side, askPrice, isActive, tick
   // Determine display value based on diff mode
   let displayValue = '—';
   if (diffMode && diffValue !== null && diffValue !== undefined) {
-    // Show diff value in diff mode
-    displayValue = diffValue;
+    // Show diff value in diff mode with proper formatting
+    displayValue = diffValue > 0 ? `+${Math.round(diffValue)}` : `${Math.round(diffValue)}`;
   } else if (askPrice && askPrice !== '—' && askPrice !== 0) {
     // Show price value in price mode
     displayValue = askPrice;
