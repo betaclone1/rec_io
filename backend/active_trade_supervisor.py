@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
 """
-Active Trade Supervisor
+Active Trade Supervisor - MONITOR-AWARE VERSION
 
 Monitors currently open trades and maintains a standalone database
 for active trade management. Gets notified when trade_manager confirms
 new open trades and creates corresponding entries in ACTIVE_TRADES.DB.
+Supports multiple monitors with monitor-specific configuration.
 """
 
 import os
 import json
 import time
 import threading
-from datetime import datetime, timezone
+import signal
+from datetime import datetime, timezone, time as datetime_time
 from zoneinfo import ZoneInfo
 import requests
 from typing import Dict, List, Optional, Any
 import psycopg2
-# Import the universal centralized port system
 import sys
-import os
 # Add the project root to the Python path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
@@ -27,9 +27,114 @@ if project_root not in sys.path:
 from backend.core.port_config import get_port
 from backend.util.paths import get_host
 
+# Add these functions after the existing imports and before the get_monitor_identifier function
+
+def create_monitor_active_trades_table():
+    """Create monitor-specific active trades table when supervisor starts"""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
+            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+        )
+        with conn.cursor() as cursor:
+            # Create monitor-specific active trades table
+            active_trades_table = f"active_trades_{USER_NUMBER}_{MONITOR_ID}"
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS users.{active_trades_table} (
+                    id SERIAL PRIMARY KEY,
+                    trade_id INTEGER NOT NULL,
+                    ticket_id VARCHAR(50),
+                    date DATE,
+                    time TIME,
+                    strike VARCHAR(50),
+                    side VARCHAR(10),
+                    buy_price DECIMAL(10,4),
+                    position INTEGER,
+                    contract VARCHAR(50),
+                    ticker VARCHAR(50),
+                    symbol VARCHAR(10),
+                    market VARCHAR(50),
+                    trade_strategy VARCHAR(50),
+                    symbol_open DECIMAL(10,2),
+                    momentum DECIMAL(5,2),
+                    prob DECIMAL(5,2),
+                    fees DECIMAL(10,4),
+                    diff DECIMAL(10,4),
+                    status VARCHAR(20) DEFAULT 'active',
+                    current_symbol_price DECIMAL(10,2),
+                    current_probability DECIMAL(5,2),
+                    buffer_from_entry DECIMAL(10,2),
+                    time_since_entry INTEGER,
+                    current_close_price DECIMAL(10,4),
+                    current_pnl VARCHAR(20),
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+        conn.close()
+        log(f"[ACTIVE_TRADES] ✅ Created monitor-specific active trades table: {active_trades_table}")
+    except Exception as e:
+        log(f"[ACTIVE_TRADES] ❌ Error creating active trades table: {e}")
+
+def drop_monitor_active_trades_table():
+    """Drop monitor-specific active trades table when supervisor stops"""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
+            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+        )
+        with conn.cursor() as cursor:
+            # Drop monitor-specific active trades table
+            active_trades_table = f"active_trades_{USER_NUMBER}_{MONITOR_ID}"
+            cursor.execute(f"DROP TABLE IF EXISTS users.{active_trades_table}")
+            conn.commit()
+        conn.close()
+        log(f"[ACTIVE_TRADES] ✅ Dropped monitor-specific active trades table: {active_trades_table}")
+    except Exception as e:
+        log(f"[ACTIVE_TRADES] ❌ Error dropping active trades table: {e}")
+
+def get_monitor_active_trades_table():
+    """Get the monitor-specific active trades table name"""
+    return f"active_trades_{USER_NUMBER}_{MONITOR_ID}"
+
+# Monitor identification - extract from script name or command line args
+def get_monitor_identifier():
+    """Extract monitor identifier from script name or command line arguments"""
+    script_name = os.path.basename(sys.argv[0])
+    
+    # Check if script name contains monitor identifier (e.g., active_trade_supervisor_0001_10001)
+    if '_' in script_name and script_name.count('_') >= 3:
+        parts = script_name.split('_')
+        if len(parts) >= 4:
+            user_number = parts[-2]  # 0001
+            monitor_id = parts[-1]   # 10001
+            return f"{user_number}_{monitor_id}"
+    
+    # Check command line arguments
+    if len(sys.argv) > 1:
+        return sys.argv[1]  # Use first argument as monitor identifier
+    
+    # Default to first active monitor if no identifier provided
+    raise ValueError("No monitor identifier found in script name")
+
+# Get monitor identifier
+MONITOR_IDENTIFIER = get_monitor_identifier()
+USER_NUMBER = MONITOR_IDENTIFIER.split('_')[0]
+MONITOR_ID = MONITOR_IDENTIFIER.split('_')[1]
+
+print(f"[ACTIVE_TRADE_SUPERVISOR_{MONITOR_IDENTIFIER}] 🚀 Monitor-aware supervisor starting")
+print(f"[ACTIVE_TRADE_SUPERVISOR_{MONITOR_IDENTIFIER}] User: {USER_NUMBER}, Monitor: {MONITOR_ID}")
+
 # Get port from centralized system
 ACTIVE_TRADE_SUPERVISOR_PORT = get_port("active_trade_supervisor")
-print(f"[ACTIVE_TRADE_SUPERVISOR] 🚀 Using centralized port: {ACTIVE_TRADE_SUPERVISOR_PORT}")
+print(f"[ACTIVE_TRADE_SUPERVISOR_{MONITOR_IDENTIFIER}] 🚀 Using centralized port: {ACTIVE_TRADE_SUPERVISOR_PORT}")
 
 # Import centralized path utilities
 from backend.util.paths import get_project_root, get_data_dir, get_trade_history_dir, get_kalshi_data_dir, get_service_url, get_active_trades_dir
@@ -60,13 +165,16 @@ def health_check():
     """Health check endpoint."""
     return {
         "status": "healthy",
-        "service": "active_trade_supervisor",
+        "service": f"active_trade_supervisor_{MONITOR_IDENTIFIER}",
+        "monitor_identifier": MONITOR_IDENTIFIER,
+        "user_number": USER_NUMBER,
+        "monitor_id": MONITOR_ID,
         "port": ACTIVE_TRADE_SUPERVISOR_PORT,
         "timestamp": datetime.now().isoformat(),
         "port_system": "centralized"
     }
 
-# Active trades data endpoint
+# Active trades data endpoint (legacy - for backward compatibility)
 @app.route("/api/active_trades")
 def get_active_trades():
     """Get all active trades for frontend display with caching to prevent backend interference"""
@@ -122,12 +230,39 @@ def get_active_trades():
         log(f"❌ Error serving active trades: {e}")
         return jsonify({"error": str(e)}), 500
 
+# Monitor-specific active trades data endpoint
+@app.route("/api/active_trades/<monitor_identifier>")
+def get_active_trades_for_monitor(monitor_identifier):
+    """Get all active trades for a specific monitor"""
+    try:
+        # Validate monitor identifier format
+        if not monitor_identifier or '_' not in monitor_identifier:
+            return jsonify({"error": "Invalid monitor identifier format"}), 400
+        
+        # For now, we'll return the current monitor's data since each supervisor instance
+        # only manages its own monitor's data. In the future, this could be enhanced
+        # to support cross-monitor data access if needed.
+        active_trades = get_all_active_trades()
+        
+        return jsonify({
+            "status": "success",
+            "timestamp": datetime.now().isoformat(),
+            "active_trades": active_trades,
+            "count": len(active_trades),
+            "monitor_identifier": monitor_identifier,
+            "current_monitor": MONITOR_IDENTIFIER
+        })
+    except Exception as e:
+        log(f"❌ Error serving active trades for monitor {monitor_identifier}: {e}")
+        return jsonify({"error": str(e)}), 500
+
 # Port information endpoint
 @app.route("/api/ports")
 def get_ports():
     """Get port information for this service"""
     return {
-        "service": "active_trade_supervisor",
+        "service": f"active_trade_supervisor_{MONITOR_IDENTIFIER}",
+        "monitor_identifier": MONITOR_IDENTIFIER,
         "port": ACTIVE_TRADE_SUPERVISOR_PORT,
         "host": get_host()
     }
@@ -200,7 +335,8 @@ def broadcast_active_trades_change():
                 "timestamp": datetime.now().isoformat()
             }, timeout=2)
             if response.ok:
-                log(f"✅ Active trades change broadcasted: {len(active_trades)} trades")
+                # Broadcast successful
+                pass
             else:
                 log(f"⚠️ Failed to broadcast active trades change: {response.status_code}")
         except Exception as e:
@@ -235,11 +371,22 @@ def handle_trade_manager_notification():
         trade_id = data.get('trade_id')
         ticket_id = data.get('ticket_id')
         status = data.get('status')
+        monitor_identifier = data.get('monitor_identifier')
         
         if not all([trade_id, ticket_id, status]):
             return jsonify({"error": "Missing required fields: trade_id, ticket_id, status"}), 400
         
-        log(f"📡 DIRECT NOTIFICATION: Received from trade_manager")
+        # Validate that this notification is for the correct monitor
+        if monitor_identifier and monitor_identifier != MONITOR_IDENTIFIER:
+            log(f"📡 DIRECT NOTIFICATION: Ignoring notification for different monitor")
+            log(f"📡 DIRECT NOTIFICATION: Expected: {MONITOR_IDENTIFIER}, Received: {monitor_identifier}")
+            return jsonify({
+                "status": "ignored",
+                "message": f"Notification for different monitor: {monitor_identifier}",
+                "success": True
+            }), 200
+        
+        log(f"📡 DIRECT NOTIFICATION: Received from trade_manager for monitor {MONITOR_IDENTIFIER}")
         log(f"📡 DIRECT NOTIFICATION: Trade ID: {trade_id}, Ticket ID: {ticket_id}, Status: {status}")
         
         success = False
@@ -390,8 +537,9 @@ def add_new_active_trade(trade_id: int, ticket_id: str) -> bool:
         # Insert into active trades database
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO users.active_trades_0001 (
+        active_trades_table = get_monitor_active_trades_table()
+        cursor.execute(f"""
+            INSERT INTO users.{active_trades_table} (
                 trade_id, ticket_id, date, time, strike, side, buy_price, position,
                 contract, ticker, symbol, market, trade_strategy, symbol_open,
                 momentum, prob, fees, diff
@@ -436,7 +584,8 @@ def add_new_active_trade(trade_id: int, ticket_id: str) -> bool:
         # Start monitoring loop if this is the first active trade
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM users.active_trades_0001 WHERE status = 'active'")
+        active_trades_table = get_monitor_active_trades_table()
+        cursor.execute(f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE status = 'active'")
         active_count = cursor.fetchone()[0]
         conn.close()
         
@@ -487,8 +636,9 @@ def add_pending_trade(trade_id: int, ticket_id: str) -> bool:
         # Insert into active trades database with 'pending' status
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO users.active_trades_0001 (
+        active_trades_table = get_monitor_active_trades_table()
+        cursor.execute(f"""
+            INSERT INTO users.{active_trades_table} (
                 trade_id, ticket_id, date, time, strike, side, buy_price, position,
                 contract, ticker, symbol, market, trade_strategy, symbol_open,
                 momentum, prob, fees, diff, status
@@ -526,7 +676,8 @@ def add_pending_trade(trade_id: int, ticket_id: str) -> bool:
         # Start monitoring loop if this is the first active trade
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM users.active_trades_0001 WHERE status = 'active'")
+        active_trades_table = get_monitor_active_trades_table()
+        cursor.execute(f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE status = 'active'")
         active_count = cursor.fetchone()[0]
         conn.close()
         
@@ -577,8 +728,9 @@ def confirm_pending_trade(trade_id: int, ticket_id: str) -> bool:
         # Update the pending trade in active_trades.db to 'active' status
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE users.active_trades_0001
+        active_trades_table = get_monitor_active_trades_table()
+        cursor.execute(f"""
+            UPDATE users.{active_trades_table}
             SET status = 'active',
                 buy_price = %s,
                 position = %s,
@@ -653,8 +805,9 @@ def remove_pending_trade(trade_id: int, ticket_id: str) -> bool:
         # Remove the pending trade from active_trades.db
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            DELETE FROM users.active_trades_0001
+        active_trades_table = get_monitor_active_trades_table()
+        cursor.execute(f"""
+            DELETE FROM users.{active_trades_table}
             WHERE trade_id = %s AND status = 'pending'
         """, (trade_id,))
         
@@ -699,8 +852,9 @@ def remove_failed_trade(trade_id: int, ticket_id: str) -> bool:
         # Remove the failed trade from active_trades.db (any status)
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            DELETE FROM users.active_trades_0001
+        active_trades_table = get_monitor_active_trades_table()
+        cursor.execute(f"""
+            DELETE FROM users.{active_trades_table}
             WHERE trade_id = %s
         """, (trade_id,))
         
@@ -744,7 +898,8 @@ def remove_closed_trade(trade_id: int) -> bool:
         # Check if trade exists before trying to remove it
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM users.active_trades_0001 WHERE trade_id = %s", (trade_id,))
+        active_trades_table = get_monitor_active_trades_table()
+        cursor.execute(f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE trade_id = %s", (trade_id,))
         exists = cursor.fetchone()[0] > 0
         conn.close()
         
@@ -755,7 +910,7 @@ def remove_closed_trade(trade_id: int) -> bool:
         # Remove the trade
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM users.active_trades_0001 WHERE trade_id = %s", (trade_id,))
+        cursor.execute(f"DELETE FROM users.{active_trades_table} WHERE trade_id = %s", (trade_id,))
         deleted_count = cursor.rowcount
         conn.commit()
         conn.close()
@@ -794,7 +949,8 @@ def update_trade_status_to_closing(trade_id: int) -> bool:
         # Check if trade exists in active_trades.db
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM users.active_trades_0001 WHERE trade_id = %s", (trade_id,))
+        active_trades_table = get_monitor_active_trades_table()
+        cursor.execute(f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE trade_id = %s", (trade_id,))
         exists = cursor.fetchone()[0] > 0
         conn.close()
         
@@ -805,7 +961,7 @@ def update_trade_status_to_closing(trade_id: int) -> bool:
         # Update the trade status to 'closing'
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("UPDATE users.active_trades_0001 SET status = 'closing' WHERE trade_id = %s", (trade_id,))
+        cursor.execute(f"UPDATE users.{active_trades_table} SET status = 'closing' WHERE trade_id = %s", (trade_id,))
         updated_count = cursor.rowcount
         conn.commit()
         conn.close()
@@ -817,6 +973,9 @@ def update_trade_status_to_closing(trade_id: int) -> bool:
             
             # Invalidate cache when trade status changes
             invalidate_active_trades_cache()
+            
+            # Broadcast active trades change immediately for status change
+            broadcast_active_trades_change()
             
             return True
         else:
@@ -1045,9 +1204,10 @@ def update_active_trade_monitoring_data():
         # Get all active trades
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
+        active_trades_table = get_monitor_active_trades_table()
+        cursor.execute(f"""
             SELECT id, trade_id, buy_price, prob, time, date, strike, side, momentum, ticker, symbol
-            FROM users.active_trades_0001 
+            FROM users.{active_trades_table} 
             WHERE status = 'active'
         """)
         active_trades = cursor.fetchall()
@@ -1089,15 +1249,29 @@ def update_active_trade_monitoring_data():
                     buffer_from_strike = -raw_buffer
                 
                 # Calculate time since entry
-                entry_datetime = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
+                if isinstance(date_str, str) and isinstance(time_str, str):
+                    # Handle legacy text format
+                    entry_datetime = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
+                else:
+                    # Handle new date/time objects
+                    entry_datetime = datetime.combine(date_str, time_str)
                 entry_datetime = entry_datetime.replace(tzinfo=ZoneInfo("America/New_York"))
                 now = datetime.now(ZoneInfo("America/New_York"))
                 time_since_entry = int((now - entry_datetime).total_seconds())
                 
                 # Calculate ttc_seconds (time to contract expiry)
                 # For now, assume expiry is at the next hour (e.g., 2pm for a 2pm contract)
-                expiry_hour = int(time_str.split(":")[0]) + 1
-                expiry_date = datetime.strptime(date_str, "%Y-%m-%d").replace(hour=expiry_hour, minute=0, second=0, tzinfo=ZoneInfo("America/New_York"))
+                if isinstance(time_str, str):
+                    expiry_hour = int(time_str.split(":")[0]) + 1
+                else:
+                    # time_str is a datetime.time object
+                    expiry_hour = time_str.hour + 1
+                
+                if isinstance(date_str, str):
+                    expiry_date = datetime.strptime(date_str, "%Y-%m-%d").replace(hour=expiry_hour, minute=0, second=0, tzinfo=ZoneInfo("America/New_York"))
+                else:
+                    # date_str is a datetime.date object
+                    expiry_date = datetime.combine(date_str, datetime_time(expiry_hour, 0, 0)).replace(tzinfo=ZoneInfo("America/New_York"))
                 ttc_seconds = max(1, int((expiry_date - now).total_seconds()))
                 
                 # Get momentum score if available
@@ -1117,14 +1291,16 @@ def update_active_trade_monitoring_data():
                 # Calculate PnL: 1 - current_close_price - buy_price
                 # For YES trades: PnL = 1 - current_close_price - buy_price
                 # For NO trades: PnL = 1 - current_close_price - buy_price (same formula)
-                pnl = 1 - current_market_price - buy_price
+                # Convert buy_price to float if it's a Decimal
+                buy_price_float = float(buy_price) if hasattr(buy_price, '__float__') else buy_price
+                pnl = 1 - current_market_price - buy_price_float
                 pnl_formatted = f"{pnl:.2f}"  # Format as "0.15" or "-0.08"
                 
                 # Update the monitoring data
                 conn = get_db_connection()
                 cursor = conn.cursor()
-                cursor.execute("""
-                    UPDATE users.active_trades_0001 
+                cursor.execute(f"""
+                    UPDATE users.{active_trades_table} 
                     SET current_symbol_price = %s, 
                         current_probability = %s,
                         buffer_from_entry = %s,
@@ -1139,6 +1315,10 @@ def update_active_trade_monitoring_data():
                 
                 # Invalidate cache when trade data is updated
                 invalidate_active_trades_cache()
+                
+                # Broadcast active trades change to frontend (throttled for performance - status changes are broadcast immediately)
+                if time_since_entry % 1 == 0:  # Broadcast every 1 second to match monitoring frequency
+                    broadcast_active_trades_change()
                 
                 # Only log significant updates (every 60 seconds) to reduce noise
                 if time_since_entry % 60 == 0:
@@ -1161,7 +1341,8 @@ def check_monitoring_failsafe():
         # Check if there are active trades
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM users.active_trades_0001 WHERE status = 'active'")
+        active_trades_table = get_monitor_active_trades_table()
+        cursor.execute(f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE status = 'active'")
         active_count = cursor.fetchone()[0]
         conn.close()
         
@@ -1199,7 +1380,8 @@ def start_monitoring_loop():
                 # Check if there are still active trades
                 conn = get_db_connection()
                 cursor = conn.cursor()
-                cursor.execute("SELECT * FROM users.active_trades_0001 WHERE status = 'active'")
+                active_trades_table = get_monitor_active_trades_table()
+                cursor.execute(f"SELECT * FROM users.{active_trades_table} WHERE status = 'active'")
                 columns = [desc[0] for desc in cursor.description]
                 active_trades = [dict(zip(columns, row)) for row in cursor.fetchall()]
                 conn.close()
@@ -1228,7 +1410,12 @@ def start_monitoring_loop():
                     monitoring_worker.last_failsafe_check = current_time
                 
                 # === AUTO STOP LOGIC ===
-                if is_auto_stop_enabled():
+                auto_stop_enabled = is_auto_stop_enabled()
+                if auto_stop_enabled:
+                    log(f"[AUTO STOP] Auto-stop is ENABLED - checking trades")
+                else:
+                    log(f"[AUTO STOP] Auto-stop is DISABLED - skipping auto-stop logic")
+                if auto_stop_enabled:
                     threshold = get_auto_stop_threshold()
                     min_ttc_seconds = get_min_ttc_seconds()
                     verification_enabled = get_verification_period_enabled()
@@ -1457,27 +1644,24 @@ def get_all_active_trades() -> List[Dict[str, Any]]:
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT * FROM users.active_trades_0001 WHERE status IN ('active', 'pending', 'closing')
+        active_trades_table = get_monitor_active_trades_table()
+        cursor.execute(f"""
+            SELECT * FROM users.{active_trades_table} WHERE status IN ('active', 'pending', 'closing')
         """)
         
         columns = [desc[0] for desc in cursor.description]
         rows = cursor.fetchall()
         conn.close()
         
-        # Convert datetime objects to ISO format strings for JSON serialization
-        def convert_datetime_to_iso(obj):
-            if hasattr(obj, 'isoformat'):
-                return obj.isoformat()
-            return obj
-        
         result = []
         for row in rows:
             trade_dict = dict(zip(columns, row))
-            # Convert any datetime objects to ISO strings
+            # Convert any datetime objects to ISO strings and Decimal objects to float
             for key, value in trade_dict.items():
                 if hasattr(value, 'isoformat'):
                     trade_dict[key] = value.isoformat()
+                elif hasattr(value, '__float__'):  # Handle Decimal objects
+                    trade_dict[key] = float(value)
             result.append(trade_dict)
         
         return result
@@ -1502,7 +1686,8 @@ def sync_with_trades_db():
         # Get all active trade IDs
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT trade_id FROM users.active_trades_0001 WHERE status = 'active'")
+        active_trades_table = get_monitor_active_trades_table()
+        cursor.execute(f"SELECT trade_id FROM users.{active_trades_table} WHERE status = 'active'")
         active_trade_ids = [row[0] for row in cursor.fetchall()]
         conn.close()
         
@@ -1542,7 +1727,8 @@ def start_event_driven_supervisor():
     # Check if there are already active trades and start monitoring if needed
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM users.active_trades_0001 WHERE status = 'active'")
+    active_trades_table = get_monitor_active_trades_table()
+    cursor.execute(f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE status = 'active'")
     active_count = cursor.fetchone()[0]
     conn.close()
     
@@ -1570,7 +1756,8 @@ def start_event_driven_supervisor():
             # If there are active trades but no monitoring thread, restart it
             conn = get_db_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM users.active_trades_0001 WHERE status = 'active'")
+            active_trades_table = get_monitor_active_trades_table()
+            cursor.execute(f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE status = 'active'")
             active_count = cursor.fetchone()[0]
             conn.close()
             
@@ -1711,9 +1898,10 @@ def handle_close_failed_trade(trade_id: int, ticket_id: str) -> bool:
         # Get the trade data from active_trades.db
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
+        active_trades_table = get_monitor_active_trades_table()
+        cursor.execute(f"""
             SELECT trade_id, ticker, strike, side, position, buy_price, current_close_price, current_symbol_price, current_probability, current_pnl
-            FROM users.active_trades_0001 
+            FROM users.{active_trades_table} 
             WHERE trade_id = %s
         """, (trade_id,))
         trade_data = cursor.fetchone()
@@ -1728,8 +1916,8 @@ def handle_close_failed_trade(trade_id: int, ticket_id: str) -> bool:
         # Revert to active status
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE users.active_trades_0001
+        cursor.execute(f"""
+            UPDATE users.{active_trades_table}
             SET status = 'active',
                 current_close_price = NULL,
                 current_pnl = NULL,
@@ -1844,6 +2032,23 @@ def get_verification_period_seconds():
         log(f"[AUTO STOP] Error reading verification_period_seconds from PostgreSQL: {e}")
         return 15
 
+# Signal handlers for graceful shutdown
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully"""
+    log(f"🛑 Received signal {signum}, shutting down gracefully...")
+    drop_monitor_active_trades_table()
+    sys.exit(0)
+
+# Register signal handlers
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
 if __name__ == "__main__":
+    # Create monitor-specific active trades table on startup
+    create_monitor_active_trades_table()
+    
+    # Sync with existing trades on startup
+    sync_on_demand()
+    
     # Start the event-driven supervisor
     start_event_driven_supervisor() 

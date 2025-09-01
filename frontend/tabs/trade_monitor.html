@@ -932,6 +932,47 @@ function hideAutoEntrySettingsModal() {
     // Call this on load
     syncModePickerWithGlobal();
 
+    // Set up message listener early to catch messages from parent window
+    window.addEventListener('message', function(event) {
+      console.log('Trade monitor received message:', event.data);
+      if (event.data && event.data.type === 'SELECT_MONITOR') {
+        const monitorId = event.data.monitorId;
+        console.log('Received message to select monitor:', monitorId);
+        
+        // Wait for the monitor picker to be populated before trying to select
+        const waitForMonitorPicker = () => {
+          const monitorPicker = document.getElementById('monitor-picker');
+          console.log('Looking for monitor picker, found:', monitorPicker);
+          if (monitorPicker) {
+            console.log('Monitor picker options length:', monitorPicker.options.length);
+            console.log('Available options:', Array.from(monitorPicker.options).map(opt => opt.value));
+          }
+          
+          if (monitorPicker && monitorPicker.options.length > 0) {
+            // Check if the monitor exists in the picker
+            const monitorOption = monitorPicker.querySelector(`option[value="${monitorId}"]`);
+            console.log('Looking for monitor option with value:', monitorId, 'Found:', monitorOption);
+            if (monitorOption) {
+              monitorPicker.value = monitorId;
+              console.log('Set monitor picker value to:', monitorId);
+              // Trigger the change event to load the monitor details
+              monitorPicker.dispatchEvent(new Event('change'));
+              console.log('Monitor selected and change event triggered:', monitorId);
+            } else {
+              console.log('Monitor not found in picker:', monitorId);
+            }
+          } else {
+            // If picker not ready, try again in 100ms
+            console.log('Monitor picker not ready, retrying in 100ms...');
+            setTimeout(waitForMonitorPicker, 100);
+          }
+        };
+        
+        // Start waiting for the monitor picker
+        waitForMonitorPicker();
+      }
+    });
+
     // If the mode picker changes, update the backend global mode
     document.addEventListener('DOMContentLoaded', function() {
       const modePicker = document.getElementById("accountModePicker");
@@ -1147,6 +1188,36 @@ document.addEventListener('DOMContentLoaded', () => {
     sendPositionUpdateToMonitorManager();
   }
   
+  // Test function to manually trigger monitor list refresh
+  function testMonitorListRefresh() {
+    console.log('TEST: Manually refreshing monitor list...');
+    populateMonitorPicker();
+  }
+  
+  // Test function to manually trigger monitor list update alert
+  async function testMonitorListAlert() {
+    console.log('TEST: Manually triggering monitor list alert...');
+    try {
+      const response = await fetch('/api/broadcast_monitor_list_update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'monitor_list_updated',
+          message: 'Test monitor list update'
+        })
+      });
+      console.log('Test alert response:', response.status);
+    } catch (error) {
+      console.error('Test alert error:', error);
+    }
+  }
+  
+  // Make test functions globally accessible
+  window.testMonitorListAlert = testMonitorListAlert;
+  
+  // Make test function globally accessible
+  window.testMonitorListRefresh = testMonitorListRefresh;
+  
   // Make functions globally accessible
   window.updatePositionDisplay = updatePositionDisplay;
   window.sendPositionUpdateToMonitorManager = sendPositionUpdateToMonitorManager;
@@ -1160,9 +1231,21 @@ document.addEventListener('DOMContentLoaded', () => {
   // WebSocket setup - use secure WebSocket for HTTPS
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${protocol}//${window.location.host}/ws/preferences`);
+  
+  ws.onopen = () => {
+    console.log('WebSocket connected successfully');
+  };
+  
+  ws.onerror = (error) => {
+    console.error('WebSocket error:', error);
+  };
+  
+  ws.onclose = () => {
+    console.log('WebSocket connection closed');
+  };
 
   ws.onmessage = (event) => {
-    console.log('WebSocket message received:', new Date().toISOString());
+    console.log('WebSocket message received:', new Date().toISOString(), 'Data:', event.data);
     try {
       const data = JSON.parse(event.data);
 
@@ -1273,6 +1356,16 @@ document.addEventListener('DOMContentLoaded', () => {
           console.log('WebSocket notification received:', data, new Date().toISOString());
           updatePositionDisplay(data.total_position);
         }
+        return; // Don't process other WebSocket messages for this type
+      }
+
+      // === Monitor List Update Notification ===
+      if (data.type === 'monitor_list_updated') {
+        console.log('Monitor list update received:', data, new Date().toISOString());
+        console.log('Current monitor picker before refresh:', document.getElementById('monitor-picker')?.value);
+        // Refresh the monitor dropdown list
+        populateMonitorPicker();
+        console.log('Monitor picker refreshed, new value:', document.getElementById('monitor-picker')?.value);
         return; // Don't process other WebSocket messages for this type
       }
 
@@ -2630,19 +2723,28 @@ async function fetchAndRenderTradeHistory() {
     if (!res.ok) throw new Error("Failed to fetch trade history from PostgreSQL");
     const trades = await res.json();
     
+    // Filter trades by current monitor if one is selected
+    let filteredTrades = trades;
+    if (currentMonitorId) {
+      const monitorName = `mon_0001_${currentMonitorId}`;
+      filteredTrades = trades.filter(trade => trade.monitor === monitorName);
+      console.log(`Filtering trades for monitor: ${monitorName}, found ${filteredTrades.length} trades`);
+    }
+    
     const tradeHistoryTableBody = document.querySelector('#tradeHistoryTable tbody');
     if (!tradeHistoryTableBody) return;
     tradeHistoryTableBody.innerHTML = '';
     
-    if (trades.length === 0) {
+    if (filteredTrades.length === 0) {
       const noTradesRow = document.createElement('tr');
-      noTradesRow.innerHTML = '<td colspan="21" style="text-align: center; color: #ccc; padding: 20px;">No Trades</td>';
+      const message = currentMonitorId ? `No Trades for Monitor ${currentMonitorId}` : 'No Trades';
+      noTradesRow.innerHTML = `<td colspan="20" style="text-align: center; color: #ccc; padding: 20px;">${message}</td>`;
       tradeHistoryTableBody.appendChild(noTradesRow);
       return;
     }
     
     // Filter out test trades (where test_filter is TRUE)
-    const nonTestTrades = trades.filter(trade => !trade.test_filter);
+    const nonTestTrades = filteredTrades.filter(trade => !trade.test_filter);
     
     // Sort trades by ID (newest first)
     const sortedTrades = nonTestTrades.sort((a, b) => (b.id || 0) - (a.id || 0));
@@ -2727,7 +2829,7 @@ async function fetchAndRenderTradeHistory() {
     console.error('Error fetching trade history from PostgreSQL:', err);
     const tradeHistoryTableBody = document.querySelector('#tradeHistoryTable tbody');
     if (tradeHistoryTableBody) {
-      tradeHistoryTableBody.innerHTML = '<tr><td colspan="21" style="text-align: center; color: red; padding: 20px;">Error loading trade history</td></tr>';
+      tradeHistoryTableBody.innerHTML = '<tr><td colspan="20" style="text-align: center; color: red; padding: 20px;">Error loading trade history</td></tr>';
     }
   }
 }
@@ -4473,29 +4575,7 @@ if (typeof window.liveData !== 'undefined') {
             });
         }, 500);
         
-        // Test watchlist API and populate table
-        function updateWatchlist() {
-          console.log('[WATCHLIST TEST] Fetching watchlist data...');
-          fetch(window.location.origin + '/api/watchlist/btc')
-            .then(response => response.json())
-            .then(data => {
-              if (data && data.strikes && data.strikes.length > 0) {
-                console.log('[WATCHLIST TEST] Found', data.strikes.length, 'strikes, populating table...');
-                populateWatchlistTable(data.strikes);
-              } else {
-                console.log('[WATCHLIST TEST] No strikes found in response');
-              }
-            })
-            .catch(error => {
-              console.error('[WATCHLIST TEST] API error:', error);
-            });
-        }
-        
-        // Initial load
-        setTimeout(updateWatchlist, 1000);
-        
-        // Set up auto-refresh every 2 seconds
-        setInterval(updateWatchlist, 2000);
+
         
         // Initialize Active Trade Supervisor
         function initializeActiveTradeSupervisor() {
@@ -4835,9 +4915,16 @@ if (typeof window.liveData !== 'undefined') {
     
     // Function to populate symbol picker dropdown
     async function populateSymbolPicker() {
+      console.log('[SYMBOL PICKER] Populating symbol picker...');
+      
+      // Test if element exists
+      const symbolPicker = document.getElementById('ticker-picker');
+      console.log('[SYMBOL PICKER] Element found:', symbolPicker);
+      
       try {
         const response = await fetch('/api/symbols');
         const data = await response.json();
+        console.log('[SYMBOL PICKER] Symbols data received:', data);
         
         if (data.status === 'ok') {
           const symbolPicker = document.getElementById('ticker-picker');
@@ -4846,22 +4933,27 @@ if (typeof window.liveData !== 'undefined') {
             
             data.symbols.forEach(symbol => {
               const option = document.createElement('option');
-              option.value = symbol.symbol;
-              option.textContent = symbol.symbol;
+              option.value = symbol;
+              option.textContent = symbol;
               symbolPicker.appendChild(option);
             });
+            
+            console.log('[SYMBOL PICKER] Populated with', data.symbols.length, 'symbols');
             
             // Set default to BTC
             const defaultOption = symbolPicker.querySelector('option[value="BTC"]');
             if (defaultOption) {
               defaultOption.selected = true;
+              console.log('[SYMBOL PICKER] Set default to BTC');
             }
+          } else {
+            console.error('[SYMBOL PICKER] Symbol picker element not found');
           }
         } else {
-          console.error('Failed to load symbols:', data.message);
+          console.error('[SYMBOL PICKER] Failed to load symbols:', data.message);
         }
       } catch (error) {
-        console.error('Error loading symbols:', error);
+        console.error('[SYMBOL PICKER] Error loading symbols:', error);
       }
     }
     
@@ -4958,7 +5050,10 @@ if (typeof window.liveData !== 'undefined') {
           // Update symbol picker
           const symbolPicker = document.getElementById('ticker-picker');
           if (symbolPicker && monitor.symbol) {
+            console.log('[MONITOR] Setting symbol picker to:', monitor.symbol);
             symbolPicker.value = monitor.symbol;
+          } else {
+            console.warn('[MONITOR] Symbol picker not found or monitor.symbol is empty:', monitor.symbol);
           }
           
           // Update strategy picker
@@ -5018,10 +5113,20 @@ if (typeof window.liveData !== 'undefined') {
           
           // Update global variable
           currentMonitorId = monitorId;
+          window.currentMonitorId = monitorId; // Make it globally accessible
+          window.currentMonitorName = monitor.name; // Store the full monitor name for table lookup
           console.log('currentMonitorId set to:', currentMonitorId);
+          console.log('currentMonitorName set to:', monitor.name);
           
           // Update position display with monitor's total_position
           updatePositionDisplay(monitor.total_position);
+          
+          // Update bankroll display with monitor's bankroll_allotment_total
+          const bankrollEl = document.getElementById("bankroll-balance");
+          if (bankrollEl && monitor.bankroll_allotment_total !== undefined) {
+            const bankrollInDollars = monitor.bankroll_allotment_total / 100; // Convert cents to dollars
+            bankrollEl.textContent = `$${Number(bankrollInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+          }
         }
       } catch (error) {
         console.error('Error loading monitor details:', error);
@@ -5035,6 +5140,15 @@ if (typeof window.liveData !== 'undefined') {
       
       if (selectedMonitorId) {
         loadMonitorDetails(selectedMonitorId);
+        // Refresh trade history to show trades for the newly selected monitor
+        fetchAndRenderTradeHistory();
+        // Refresh watchlist to show data for the newly selected monitor
+        console.log('[MONITOR CHANGE] Refreshing watchlist for new monitor');
+        if (typeof updateWatchlistTable === 'function') {
+          updateWatchlistTable();
+        } else {
+          console.warn('[MONITOR CHANGE] updateWatchlistTable function not found');
+        }
       }
     }
     
@@ -5046,10 +5160,17 @@ if (typeof window.liveData !== 'undefined') {
       // Start pre-loading auto trade settings immediately
       preloadAutoTradeSettings();
       
-      // Initialize all dropdowns
-      populateMonitorPicker();
-      populateSymbolPicker();
-      populateStrategyPicker();
+      // Initialize all dropdowns in the correct order
+      // First populate symbol and strategy pickers, then monitor picker
+      console.log('[INIT] Starting dropdown initialization...');
+      Promise.all([
+        populateSymbolPicker(),
+        populateStrategyPicker()
+      ]).then(() => {
+        // After symbol and strategy pickers are populated, load monitor picker
+        console.log('[INIT] Symbol and strategy pickers populated, now loading monitor picker');
+        populateMonitorPicker();
+      });
       
       // Add event listeners
       const monitorPicker = document.getElementById('monitor-picker');
@@ -5157,6 +5278,8 @@ if (typeof window.liveData !== 'undefined') {
           clearInterval(window.tradeHistoryRefreshInterval);
         }
       });
+      
+
     });
   </script>
 </body>

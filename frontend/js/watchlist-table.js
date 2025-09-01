@@ -6,11 +6,19 @@
 // Fetch watchlist data from the PostgreSQL endpoint
 async function fetchWatchlistData() {
   try {
-    const response = await fetch(window.location.origin + '/api/watchlist/btc');
+    const currentMonitorName = window.currentMonitorName;
+    const url = window.location.origin + `/api/watchlist/${currentMonitorName}`;
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      console.warn(`[WATCHLIST] Server error ${response.status} for monitor ${currentMonitorName}`);
+      return null;
+    }
+    
     const data = await response.json();
     return data;
   } catch (error) {
-    console.error('Error fetching watchlist data:', error);
+    console.error('[WATCHLIST] Error fetching watchlist data:', error);
     return null;
   }
 }
@@ -18,11 +26,13 @@ async function fetchWatchlistData() {
 // === WATCHLIST TABLE INITIALIZATION ===
 
 function initializeWatchlistTable() {
+  console.log('[WATCHLIST] Initializing watchlist table...');
   // Initial load
   updateWatchlistTable();
   
   // Set up periodic updates (every 2 seconds)
   setInterval(updateWatchlistTable, 2000);
+  console.log('[WATCHLIST] Watchlist table initialized and periodic updates set up');
 }
 
 // === WATCHLIST TABLE UPDATES ===
@@ -31,7 +41,7 @@ async function updateWatchlistTable() {
   try {
     const data = await fetchWatchlistData();
     if (!data || !data.strikes) {
-      console.warn('No watchlist data available');
+      console.warn('[WATCHLIST] No watchlist data available');
       return;
     }
     
@@ -104,22 +114,26 @@ async function updateWatchlistTable() {
       // Update buy button
       const yesAsk = strikeData.yes_ask;
       const noAsk = strikeData.no_ask;
+      const yesDiff = strikeData.yes_diff;
+      const noDiff = strikeData.no_diff;
       const volume = strikeData.volume;
       const ticker = strikeData.ticker;
-      const activeSide = strikeData.active_side;
       
       let activeAsk = null;
+      let activeDiff = null;
       let activeEnabled = false;
       
       if (activeSide === 'yes') {
         activeAsk = yesAsk;
+        activeDiff = yesDiff;
         activeEnabled = yesAsk <= 98 && parseInt(volume) >= 1000;
       } else if (activeSide === 'no') {
         activeAsk = noAsk;
+        activeDiff = noDiff;
         activeEnabled = noAsk <= 98 && parseInt(volume) >= 1000;
       }
       
-      updateWatchlistBuyButton(buySpan, strike, activeSide, activeAsk, activeEnabled, ticker);
+      updateWatchlistBuyButton(buySpan, strike, activeSide, activeAsk, activeEnabled, ticker, activeDiff);
       
       // Update position indicator
       updateWatchlistPositionIndicator(strikeTd, strike);
@@ -135,10 +149,17 @@ async function updateWatchlistTable() {
 
 // === WATCHLIST BUY BUTTON FUNCTION ===
 
-function updateWatchlistBuyButton(spanEl, strike, side, askPrice, isActive, ticker = null) {
-  // Determine display value
+function updateWatchlistBuyButton(spanEl, strike, side, askPrice, isActive, ticker = null, diffValue = null) {
+  // Get current diff mode state
+  const diffMode = window.diffMode || false;
+  
+  // Determine display value based on diff mode
   let displayValue = '—';
-  if (askPrice && askPrice !== '—' && askPrice !== 0) {
+  if (diffMode && diffValue !== null && diffValue !== undefined) {
+    // Show diff value in diff mode
+    displayValue = diffValue;
+  } else if (askPrice && askPrice !== '—' && askPrice !== 0) {
+    // Show price value in price mode
     displayValue = askPrice;
   }
   
@@ -257,7 +278,9 @@ function debounce(func, wait) {
 // === WATCHLIST INITIALIZATION ===
 
 document.addEventListener('DOMContentLoaded', function() {
+  console.log('[WATCHLIST] DOMContentLoaded event fired');
   setTimeout(() => {
+    console.log('[WATCHLIST] Initializing watchlist table...');
     initializeWatchlistTable();
   }, 500);
 });

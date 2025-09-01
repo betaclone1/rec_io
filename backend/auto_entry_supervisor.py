@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Auto Entry Supervisor - SIMPLIFIED VERSION
+Auto Entry Supervisor - MONITOR-AWARE VERSION
 
 Monitors watchlist data and triggers automated trades when criteria are met.
 Uses atomic operations to prevent rapid-fire trades.
+Supports multiple monitors with monitor-specific configuration.
 """
 
 import os
@@ -12,19 +13,54 @@ import time
 import threading
 import requests
 import random
+import sys
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional, Any
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
+# Add the project root to Python path for imports
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 # Import the universal centralized port system
 from backend.core.port_config import get_port
 from backend.util.paths import get_host, get_data_dir, get_service_url, get_trade_history_dir
 
+# Monitor identification - extract from script name or command line args
+def get_monitor_identifier():
+    """Extract monitor identifier from script name or command line arguments"""
+    script_name = os.path.basename(sys.argv[0])
+    
+    # Check if script name contains monitor identifier (e.g., auto_entry_supervisor_0001_10001)
+    if '_' in script_name and script_name.count('_') >= 3:
+        parts = script_name.split('_')
+        if len(parts) >= 4:
+            user_number = parts[-2]  # 0001
+            monitor_id = parts[-1]   # 10001
+            return f"{user_number}_{monitor_id}"
+    
+    # Check command line arguments
+    if len(sys.argv) > 1:
+        return sys.argv[1]  # Use first argument as monitor identifier
+    
+    # Default to first active monitor if no identifier provided
+    return "0001_10001"  # Default fallback
+
+# Get monitor identifier
+MONITOR_IDENTIFIER = get_monitor_identifier()
+USER_NUMBER = MONITOR_IDENTIFIER.split('_')[0]
+MONITOR_ID = MONITOR_IDENTIFIER.split('_')[1]
+
+print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] 🚀 Monitor-aware supervisor starting")
+print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] User: {USER_NUMBER}, Monitor: {MONITOR_ID}")
+
 # Get port from centralized system
 AUTO_ENTRY_SUPERVISOR_PORT = get_port("auto_entry_supervisor")
-print(f"[AUTO_ENTRY_SUPERVISOR] 🚀 Using centralized port: {AUTO_ENTRY_SUPERVISOR_PORT}")
+print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] 🚀 Using centralized port: {AUTO_ENTRY_SUPERVISOR_PORT}")
 
 # Create Flask app
 app = Flask(__name__)
@@ -143,16 +179,16 @@ previous_auto_entry_status = None
 # These will be loaded from auto_entry_settings.json
 
 def log(message: str):
-    """Log messages with timestamp"""
+    """Log messages with timestamp and monitor identifier"""
     timestamp = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[AUTO_ENTRY_SUPERVISOR {timestamp}] {message}")
+    print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER} {timestamp}] {message}")
     
     # Also write to a dedicated log file for easy tailing
     try:
         from backend.util.paths import get_project_root
         log_dir = os.path.join(get_project_root(), "logs")
         os.makedirs(log_dir, exist_ok=True)
-        log_file = os.path.join(log_dir, "auto_entry_supervisor.log")
+        log_file = os.path.join(log_dir, f"auto_entry_supervisor_{MONITOR_IDENTIFIER}.log")
         with open(log_file, "a") as f:
             f.write(f"[{timestamp}] {message}\n")
     except Exception as e:
@@ -916,7 +952,7 @@ def get_watchlist_data():
         return None
 
 def get_position_size():
-    """Get total position size from PostgreSQL trade preferences"""
+    """Get total position size from monitor-specific configuration"""
     try:
         import psycopg2
         conn = psycopg2.connect(
@@ -926,24 +962,24 @@ def get_position_size():
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
         )
         with conn.cursor() as cursor:
-            cursor.execute("SELECT total_position FROM users.trade_preferences_0001 WHERE id = 1")
+            cursor.execute("SELECT total_position FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
             result = cursor.fetchone()
             if result:
                 total_position = result[0]
-                log(f"[AUTO ENTRY] Total position loaded from PostgreSQL: {total_position}")
+                log(f"[AUTO ENTRY] Total position loaded from monitor {MONITOR_ID}: {total_position}")
                 return total_position
             else:
-                log(f"[AUTO ENTRY] No trade preferences found in PostgreSQL")
+                log(f"[AUTO ENTRY] No monitor configuration found for monitor {MONITOR_ID}")
                 return None
     except Exception as e:
-        log(f"[AUTO ENTRY] Error loading total position from PostgreSQL: {e}")
+        log(f"[AUTO ENTRY] Error loading total position from monitor {MONITOR_ID}: {e}")
         return None
     finally:
         if conn:
             conn.close()
 
 def get_trade_strategy():
-    """Get trade strategy from PostgreSQL trade preferences"""
+    """Get trade strategy from monitor-specific configuration"""
     try:
         import psycopg2
         conn = psycopg2.connect(
@@ -953,17 +989,17 @@ def get_trade_strategy():
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
         )
         with conn.cursor() as cursor:
-            cursor.execute("SELECT trade_strategy FROM users.trade_preferences_0001 WHERE id = 1")
+            cursor.execute("SELECT strategy FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
             result = cursor.fetchone()
             if result:
                 trade_strategy = result[0]
-                # Trade strategy loaded from PostgreSQL: {trade_strategy}
+                log(f"[AUTO ENTRY] Trade strategy loaded from monitor {MONITOR_ID}: {trade_strategy}")
                 return trade_strategy
             else:
-                log(f"[AUTO ENTRY] No trade preferences found in PostgreSQL")
+                log(f"[AUTO ENTRY] No monitor configuration found for monitor {MONITOR_ID}")
                 return "Hourly HTC"  # Default fallback
     except Exception as e:
-        log(f"[AUTO ENTRY] Error loading trade strategy from PostgreSQL: {e}")
+        log(f"[AUTO ENTRY] Error loading trade strategy from monitor {MONITOR_ID}: {e}")
         return "Hourly HTC"  # Default fallback
     finally:
         if conn:
@@ -1046,7 +1082,8 @@ def trigger_auto_entry_trade(strike_data):
             "momentum": None,  # Will be filled by trade_manager
             "prob": strike_data.get("probability"),
             "win_loss": None,
-            "entry_method": "auto"
+            "entry_method": "auto",
+            "monitor": f"mon_0001_{MONITOR_ID}"  # Add monitor identifier
         }
         
         log(f"[AUTO ENTRY] 📤 Sending trade to trade_manager: {trade_payload}")
@@ -1419,7 +1456,10 @@ def health_check():
         
         return {
             "status": "healthy" if service_healthy else "unhealthy",
-            "service": "auto_entry_supervisor",
+            "service": f"auto_entry_supervisor_{MONITOR_IDENTIFIER}",
+            "monitor_identifier": MONITOR_IDENTIFIER,
+            "user_number": USER_NUMBER,
+            "monitor_id": MONITOR_ID,
             "port": AUTO_ENTRY_SUPERVISOR_PORT,
             "timestamp": datetime.now().isoformat(),
             "port_system": "centralized",
@@ -1432,7 +1472,8 @@ def health_check():
     except Exception as e:
         return {
             "status": "error",
-            "service": "auto_entry_supervisor",
+            "service": f"auto_entry_supervisor_{MONITOR_IDENTIFIER}",
+            "monitor_identifier": MONITOR_IDENTIFIER,
             "error": str(e),
             "timestamp": datetime.now().isoformat()
         }
@@ -1580,7 +1621,7 @@ def spike_alert_settings():
 
 def start_event_driven_supervisor():
     """Start the event-driven auto entry supervisor"""
-    log("🚀 Starting Auto Entry Supervisor (SIMPLIFIED)")
+    log(f"🚀 Starting Auto Entry Supervisor for Monitor {MONITOR_IDENTIFIER}")
     
     # Start monitoring loop
     start_monitoring_loop()

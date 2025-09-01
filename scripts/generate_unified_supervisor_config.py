@@ -71,6 +71,65 @@ class SupervisorConfigGenerator:
             logger.error(f"Error generating supervisor configuration: {e}")
             return False
     
+    def _get_active_monitors(self) -> list:
+        """Get active monitors from database"""
+        try:
+            import psycopg2
+            
+            # Get database configuration
+            db_config = self.config.get_database_config()
+            
+            conn = psycopg2.connect(
+                host=db_config.get("host", "localhost"),
+                database=db_config.get("name", "rec_io_db"),
+                user=db_config.get("user", "rec_io_user"),
+                password=db_config.get("password", "rec_io_password")
+            )
+            
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, name, status 
+                    FROM users.monitor_list_0001 
+                    WHERE status = 'active' 
+                    ORDER BY id
+                """)
+                
+                monitors = []
+                for row in cursor.fetchall():
+                    monitor_id = row[0]
+                    name = row[1]
+                    status = row[2]
+                    
+                    # Extract user_number and monitor_id from name (e.g., "mon_0001_10001")
+                    if name.startswith("mon_"):
+                        parts = name.split("_")
+                        if len(parts) >= 3:
+                            user_number = parts[1]  # 0001
+                            monitor_id = parts[2]   # 10001
+                        else:
+                            user_number = "0001"
+                            monitor_id = str(monitor_id)
+                    else:
+                        user_number = "0001"
+                        monitor_id = str(monitor_id)
+                    
+                    monitors.append({
+                        'id': monitor_id,
+                        'name': name,
+                        'status': status,
+                        'user_number': user_number,
+                        'monitor_id': monitor_id
+                    })
+                
+                conn.close()
+                logger.info(f"Found {len(monitors)} active monitors in database")
+                return monitors
+                
+        except Exception as e:
+            logger.error(f"Error getting active monitors from database: {e}")
+            # Return default monitor if database query fails
+            return [{'id': '10001', 'name': 'mon_0001_10001', 'status': 'active', 'user_number': '0001', 'monitor_id': '10001'}]
+
     def _get_port_assignments(self) -> dict:
         """Get port assignments from MASTER_PORT_MANIFEST"""
         try:
@@ -129,7 +188,11 @@ class SupervisorConfigGenerator:
         # Create environment variables string
         env_vars = self._create_environment_variables(db_config, system_host)
         
-        # Define services to configure
+        # Get active monitors from database
+        active_monitors = self._get_active_monitors()
+        logger.info(f"Found {len(active_monitors)} active monitors: {active_monitors}")
+        
+        # Define core services to configure
         services = [
             {
                 "name": "main_app",
@@ -145,16 +208,6 @@ class SupervisorConfigGenerator:
                 "name": "trade_executor",
                 "script": "trade_executor.py",
                 "port": ports.get("trade_executor", 8001)
-            },
-            {
-                "name": "active_trade_supervisor",
-                "script": "active_trade_supervisor.py",
-                "port": ports.get("active_trade_supervisor", 6000)
-            },
-            {
-                "name": "auto_entry_supervisor",
-                "script": "auto_entry_supervisor.py",
-                "port": ports.get("auto_entry_supervisor", 8002)
             },
             {
                 "name": "symbol_price_watchdog_btc",
@@ -198,6 +251,29 @@ class SupervisorConfigGenerator:
             }
         ]
         
+        # Add monitor-specific services for each active monitor
+        monitor_port_base = 8013  # Start monitor ports at 8013
+        for i, monitor in enumerate(active_monitors):
+            user_number = monitor['user_number']
+            monitor_id = monitor['monitor_id']
+            monitor_identifier = f"{user_number}_{monitor_id}"
+            
+            # Auto entry supervisor for this monitor
+            auto_entry_port = monitor_port_base + (i * 2)
+            services.append({
+                "name": f"auto_entry_supervisor_{monitor_identifier}",
+                "script": f"auto_entry_supervisor.py {monitor_identifier}",
+                "port": auto_entry_port
+            })
+            
+            # Active trade supervisor for this monitor
+            active_trade_port = monitor_port_base + (i * 2) + 1
+            services.append({
+                "name": f"active_trade_supervisor_{monitor_identifier}",
+                "script": f"active_trade_supervisor.py {monitor_identifier}",
+                "port": active_trade_port
+            })
+        
         # Generate supervisor configuration
         config_content = f"""[supervisord]
 nodaemon=true
@@ -214,6 +290,7 @@ file=/tmp/supervisord.sock
 
 [rpcinterface:supervisor]
 supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
+
 
 """
         

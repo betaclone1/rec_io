@@ -61,6 +61,14 @@
     "description": "Safe port range avoiding macOS system services"
   },
   
+  "monitor_process_ports": {
+    "start_port": 8013,
+    "end_port": 8020,
+    "description": "Dynamic port range for monitor-specific processes",
+    "auto_entry_supervisor_offset": 0,
+    "active_trade_supervisor_offset": 1
+  },
+  
   "notes": {
     "avoid_ports": [5000, 7000, 9000, 10000],
     "reason": "These ports conflict with macOS AirPlay, ControlCenter, and other system services"

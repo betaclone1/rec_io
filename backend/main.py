@@ -3877,6 +3877,35 @@ async def broadcast_monitor_total_position(request: Request):
         print(f"[MAIN] ❌ Error handling monitor total position update: {e}")
         return {"success": False, "error": str(e)}
 
+@app.post("/api/broadcast_monitor_list_update")
+async def broadcast_monitor_list_update(request: Request):
+    """Receive monitor list update and broadcast to frontend via WebSocket"""
+    try:
+        data = await request.json()
+        print(f"[MAIN] 🔔 Received monitor list update: {data}")
+        print(f"[MAIN] 🔔 Connected WebSocket clients: {len(connected_clients)}")
+        
+        # Broadcast to all connected WebSocket clients
+        message = {
+            "type": "monitor_list_updated",
+            "message": data.get("message", "Monitor list has been updated")
+        }
+        
+        # Send to preferences WebSocket clients
+        for websocket in connected_clients.copy():
+            try:
+                await websocket.send_text(json.dumps(message))
+            except Exception as e:
+                print(f"Error sending to WebSocket client: {e}")
+                connected_clients.discard(websocket)
+        
+        print(f"[MAIN] ✅ Monitor list update broadcasted to {len(connected_clients)} clients")
+        return {"success": True, "message": "Monitor list update broadcasted"}
+        
+    except Exception as e:
+        print(f"[MAIN] ❌ Error handling monitor list update: {e}")
+        return {"success": False, "error": str(e)}
+
 # Momentum and fingerprint now consolidated in strike table - no separate broadcast endpoints needed
 
 @app.post("/api/notify_db_change")
@@ -4764,9 +4793,11 @@ async def save_dashboard_preferences(request: Request):
         conn = get_postgresql_connection()
         
         data = await request.json()
+        print(f"[DASHBOARD PREFERENCES] Received data: {data}")
         portfolio_chart_view = data.get("portfolio_chart_view", "all")
         monitor_view_mode = data.get("monitor_view_mode", "tile")
         monitor_sort_by = data.get("monitor_sort_by", "name")
+        print(f"[DASHBOARD PREFERENCES] Extracted values: portfolio_chart_view={portfolio_chart_view}, monitor_view_mode={monitor_view_mode}, monitor_sort_by={monitor_sort_by}")
         
         with conn.cursor() as cursor:
             cursor.execute("""
@@ -4783,6 +4814,7 @@ async def save_dashboard_preferences(request: Request):
         conn.commit()
         conn.close()
         
+        print(f"[DASHBOARD PREFERENCES] Successfully saved preferences to database")
         return {
             "status": "ok",
             "message": "Preferences saved successfully"
@@ -4820,6 +4852,7 @@ async def get_monitors(user_id: str = "user_0001"):
                     dashboard_order,
                     created
                 FROM users.monitor_list_{user_number}
+                WHERE status != 'ARCHIVED'
                 ORDER BY dashboard_order, id
             """)
             
@@ -4854,7 +4887,7 @@ async def get_monitors(user_id: str = "user_0001"):
             
             # Format data for frontend - use exact database values
             formatted_monitor = {
-                "id": f"MON_{user_number}.{monitor_id}",
+                "id": f"MON_{user_number}_{monitor_id}",
                 "symbol": symbol,
                 "strategy": strategy,  # Use exact database value
                 "status": status,
@@ -4926,10 +4959,7 @@ async def get_symbols():
         symbols = []
         for row in results:
             symbol = row[0]
-            symbols.append({
-                "symbol": symbol,
-                "display_name": symbol
-            })
+            symbols.append(symbol)
         
         return {
             "status": "ok",
@@ -4999,7 +5029,7 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
         
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT id, name, symbol, strategy, position_size, multiplier, total_position, position_type
+            SELECT id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total
             FROM users.monitor_list_{user_number}
             WHERE id = %s AND status = 'active'
         """, (monitor_id,))
@@ -5008,7 +5038,7 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
         conn.close()
         
         if result:
-            monitor_id, name, symbol, strategy, position_size, multiplier, total_position, position_type = result
+            monitor_id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total = result
             return {
                 "status": "ok",
                 "monitor": {
@@ -5019,7 +5049,8 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
                     "position_size": position_size,
                     "multiplier": multiplier,
                     "total_position": total_position,
-                    "position_type": position_type
+                    "position_type": position_type,
+                    "bankroll_allotment_total": bankroll_allotment_total
                 }
             }
         else:
@@ -5173,6 +5204,53 @@ async def get_monitor_names(user_id: str = "user_0001"):
             "message": str(e)
         }
 
+@app.get("/api/trades/monitors")
+async def get_trade_monitors(user_id: str = "user_0001"):
+    """Get monitor names from the trades table for trade history filtering"""
+    try:
+        from backend.core.config.database import get_postgresql_connection
+        
+        # Extract user number from user_id (e.g., user_0001 -> 0001)
+        user_number = user_id.replace("user_", "")
+        
+        conn = get_postgresql_connection()
+        if not conn:
+            return {
+                "status": "error",
+                "message": "Database connection failed"
+            }
+        
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT DISTINCT monitor
+            FROM users.trades_{user_number}
+            WHERE monitor IS NOT NULL AND monitor != ''
+            ORDER BY monitor
+        """)
+        
+        results = cursor.fetchall()
+        conn.close()
+        
+        # Transform to simple format for dropdown
+        monitors = []
+        for row in results:
+            monitor_name = row[0]
+            monitors.append({
+                "name": monitor_name
+            })
+        
+        return {
+            "status": "ok",
+            "user_id": user_id,
+            "count": len(monitors),
+            "monitors": monitors
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
 @app.post("/api/monitors/update-order")
 async def update_monitors_order(request: dict):
     """Update the dashboard order of monitors"""
@@ -5200,9 +5278,9 @@ async def update_monitors_order(request: dict):
             new_order = order_data.get("order")
             
             if monitor_id and new_order is not None:
-                # Extract the numeric ID from the monitor_id (e.g., MON_0001.10001 -> 10001)
-                if "." in monitor_id:
-                    numeric_id = monitor_id.split(".")[1]
+                # Extract the numeric ID from the monitor_id (e.g., MON_0001_10001 -> 10001)
+                if "_" in monitor_id and monitor_id.startswith("MON_"):
+                    numeric_id = monitor_id.split("_")[-1]
                 else:
                     numeric_id = monitor_id
                 
@@ -5234,21 +5312,34 @@ async def toggle_auto_trade(request: dict):
         if not monitor_id or auto_trade is None:
             return {"status": "error", "message": "Missing monitor_id or auto_trade parameter"}
         
-        # Extract user number and monitor ID from monitor_id (e.g., MON_0001.10001 -> user_0001, 10001)
-        parts = monitor_id.split('.')
-        if len(parts) != 2:
+        # Extract user number and monitor ID from monitor_id (e.g., MON_0001_10001 -> user_0001, 10001)
+        if monitor_id.startswith("MON_") and "_" in monitor_id:
+            parts = monitor_id.split("_")
+            if len(parts) >= 3:
+                user_number = parts[1]
+                db_monitor_id = parts[2]
+            else:
+                return {"status": "error", "message": "Invalid monitor ID format"}
+        else:
             return {"status": "error", "message": "Invalid monitor ID format"}
-        
-        user_number = parts[0].replace("MON_", "")
-        db_monitor_id = parts[1]
         
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            cursor.execute(f"""
-                UPDATE users.monitor_list_{user_number}
-                SET auto_trade = %s
-                WHERE id = %s
-            """, (auto_trade, db_monitor_id))
+            # Update both auto_trade and auto_trade_status
+            if auto_trade:
+                # When enabling auto trade, set status to 'active'
+                cursor.execute(f"""
+                    UPDATE users.monitor_list_{user_number}
+                    SET auto_trade = %s, auto_trade_status = 'active'
+                    WHERE id = %s
+                """, (auto_trade, db_monitor_id))
+            else:
+                # When disabling auto trade, set status to 'off'
+                cursor.execute(f"""
+                    UPDATE users.monitor_list_{user_number}
+                    SET auto_trade = %s, auto_trade_status = 'off'
+                    WHERE id = %s
+                """, (auto_trade, db_monitor_id))
             
             if cursor.rowcount == 0:
                 return {"status": "error", "message": "Monitor not found"}
@@ -5294,6 +5385,264 @@ async def update_monitor_position(request: Request):
     except Exception as e:
         print(f"[PROXY] Error: {e}")
         return {"error": str(e)}, 500
+
+@app.post("/api/monitor/archive")
+async def archive_monitor(request: dict):
+    """Archive a monitor by setting auto_trade to FALSE and status to ARCHIVED"""
+    try:
+        from backend.core.config.database import get_postgresql_connection
+        
+        # Extract parameters from request body
+        monitor_id = request.get("monitor_id")
+        monitor_name = request.get("monitor_name")
+        user_id = request.get("user_id", "user_0001")
+        
+        if not monitor_id or not monitor_name:
+            return {"status": "error", "message": "Missing monitor_id or monitor_name parameter"}
+        
+        # Extract user number and monitor ID from monitor_id (e.g., MON_0001_10001 -> user_0001, 10001)
+        if monitor_id.startswith("MON_") and "_" in monitor_id:
+            parts = monitor_id.split("_")
+            if len(parts) >= 3:
+                user_number = parts[1]
+                db_monitor_id = parts[2]
+            else:
+                return {"status": "error", "message": "Invalid monitor ID format"}
+        else:
+            return {"status": "error", "message": "Invalid monitor ID format"}
+        
+        conn = get_postgresql_connection()
+        if not conn:
+            return {"status": "error", "message": "Database connection failed"}
+        
+        with conn.cursor() as cursor:
+            # First, set auto_trade to FALSE to stop trading
+            cursor.execute(f"""
+                UPDATE users.monitor_list_{user_number}
+                SET auto_trade = FALSE
+                WHERE id = %s
+            """, (db_monitor_id,))
+            
+            if cursor.rowcount == 0:
+                conn.close()
+                return {"status": "error", "message": "Monitor not found"}
+            
+            # Then, set status to ARCHIVED to hide from dashboard
+            cursor.execute(f"""
+                UPDATE users.monitor_list_{user_number}
+                SET status = 'ARCHIVED'
+                WHERE id = %s
+            """, (db_monitor_id,))
+            
+        conn.commit()
+        conn.close()
+        
+        print(f"[ARCHIVE] Monitor {monitor_name} (ID: {monitor_id}) archived successfully")
+        
+        return {"status": "ok", "message": f"Monitor {monitor_name} archived successfully"}
+        
+    except Exception as e:
+        print(f"Error archiving monitor: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/monitor/deactivate")
+async def deactivate_monitor(request: dict):
+    """Deactivate a monitor by setting auto_trade to FALSE, auto_trade_status to 'off', and status to 'inactive'"""
+    try:
+        from backend.core.config.database import get_postgresql_connection
+        
+        # Extract parameters from request body
+        monitor_id = request.get("monitor_id")
+        monitor_name = request.get("monitor_name")
+        user_id = request.get("user_id", "user_0001")
+        
+        if not monitor_id or not monitor_name:
+            return {"status": "error", "message": "Missing monitor_id or monitor_name parameter"}
+        
+        # Extract user number and monitor ID from monitor_id (e.g., MON_0001_10001 -> user_0001, 10001)
+        if monitor_id.startswith("MON_") and "_" in monitor_id:
+            parts = monitor_id.split("_")
+            if len(parts) >= 3:
+                user_number = parts[1]
+                db_monitor_id = parts[2]
+            else:
+                return {"status": "error", "message": "Invalid monitor ID format"}
+        else:
+            return {"status": "error", "message": "Invalid monitor ID format"}
+        
+        conn = get_postgresql_connection()
+        if not conn:
+            return {"status": "error", "message": "Database connection failed"}
+        
+        with conn.cursor() as cursor:
+            # Set auto_trade to FALSE, auto_trade_status to 'off', and status to 'inactive'
+            cursor.execute(f"""
+                UPDATE users.monitor_list_{user_number}
+                SET auto_trade = FALSE, auto_trade_status = 'off', status = 'inactive'
+                WHERE id = %s
+            """, (db_monitor_id,))
+            
+            if cursor.rowcount == 0:
+                conn.close()
+                return {"status": "error", "message": "Monitor not found"}
+            
+        conn.commit()
+        conn.close()
+        
+        print(f"[DEACTIVATE] Monitor {monitor_name} (ID: {monitor_id}) deactivated successfully")
+        
+        return {"status": "ok", "message": f"Monitor {monitor_name} deactivated successfully"}
+        
+    except Exception as e:
+        print(f"Error deactivating monitor: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/monitor/activate")
+async def activate_monitor(request: dict):
+    """Activate a monitor by setting status to 'active'"""
+    try:
+        from backend.core.config.database import get_postgresql_connection
+        
+        # Extract parameters from request body
+        monitor_id = request.get("monitor_id")
+        monitor_name = request.get("monitor_name")
+        user_id = request.get("user_id", "user_0001")
+        
+        if not monitor_id or not monitor_name:
+            return {"status": "error", "message": "Missing monitor_id or monitor_name parameter"}
+        
+        # Extract user number and monitor ID from monitor_id (e.g., MON_0001_10001 -> user_0001, 10001)
+        if monitor_id.startswith("MON_") and "_" in monitor_id:
+            parts = monitor_id.split("_")
+            if len(parts) >= 3:
+                user_number = parts[1]
+                db_monitor_id = parts[2]
+            else:
+                return {"status": "error", "message": "Invalid monitor ID format"}
+        else:
+            return {"status": "error", "message": "Invalid monitor ID format"}
+        
+        conn = get_postgresql_connection()
+        if not conn:
+            return {"status": "error", "message": "Database connection failed"}
+        
+        with conn.cursor() as cursor:
+            # Set status to 'active' to activate the monitor
+            cursor.execute(f"""
+                UPDATE users.monitor_list_{user_number}
+                SET status = 'active'
+                WHERE id = %s
+            """, (db_monitor_id,))
+            
+            if cursor.rowcount == 0:
+                conn.close()
+                return {"status": "error", "message": "Monitor not found"}
+            
+        conn.commit()
+        conn.close()
+        
+        print(f"[ACTIVATE] Monitor {monitor_name} (ID: {monitor_id}) activated successfully")
+        
+        return {"status": "ok", "message": f"Monitor {monitor_name} activated successfully"}
+        
+    except Exception as e:
+        print(f"Error activating monitor: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+
+@app.get("/api/strategies")
+async def get_strategies(user_id: str = "user_0001"):
+    """Get available strategies for the strategy picker dropdown"""
+    try:
+        from backend.core.config.database import get_postgresql_connection
+        
+        user_number = user_id.replace("user_", "")
+        
+        conn = get_postgresql_connection()
+        if not conn:
+            return {
+                "status": "error",
+                "message": "Database connection failed"
+            }
+        
+        cursor = conn.cursor()
+        # First check if strategy_list_0001 table exists, if not create it with default strategies
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users.strategy_list_0001 (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(100) NOT NULL UNIQUE,
+                created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Check if table has any data, if not insert default strategies
+        cursor.execute("SELECT COUNT(*) FROM users.strategy_list_0001")
+        count = cursor.fetchone()[0]
+        
+        if count == 0:
+            # Insert default strategies
+            default_strategies = [
+                'Hourly HTC',
+                'Momentum Scalp',
+                'Test Strategy',
+                'Daily HTC',
+                'Scalp Strategy'
+            ]
+            for strategy in default_strategies:
+                cursor.execute("""
+                    INSERT INTO users.strategy_list_0001 (name) 
+                    VALUES (%s) 
+                    ON CONFLICT (name) DO NOTHING
+                """, (strategy,))
+        
+        # Now get all strategies
+        cursor.execute("""
+            SELECT name
+            FROM users.strategy_list_0001
+            ORDER BY id
+        """)
+        
+        results = cursor.fetchall()
+        conn.commit()
+        conn.close()
+        
+        strategies = [str(row[0]) if row[0] else "" for row in results]
+        
+        return {
+            "status": "ok",
+            "strategies": strategies
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+@app.post("/api/monitor/create")
+async def create_monitor(request: dict):
+    """Create a new monitor - delegates to monitor_manager"""
+    try:
+        import requests
+        from backend.core.port_config import get_port
+        
+        # Forward the request to monitor_manager
+        monitor_manager_port = get_port("monitor_manager")
+        response = requests.post(
+            f"http://localhost:{monitor_manager_port}/api/monitor/create",
+            json=request,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"status": "error", "message": f"Monitor manager error: {response.text}"}
+            
+    except Exception as e:
+        print(f"Error forwarding monitor creation: {e}")
+        return {"status": "error", "message": str(e)}
 
 # Main entry point
 if __name__ == "__main__":

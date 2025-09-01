@@ -139,77 +139,94 @@
             </div>
           </div>
         </div>
-        <div>
-          <div style="margin-bottom: 5px; font-size: 12px; color: #ccc;">Contract</div>
-          <div class="multi-select-dropdown" style="position: relative; width: 100px;">
-            <button id="contract-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
-              Select Contracts
-            </button>
-            <div id="contract-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 200px; overflow-y: auto;">
-              <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                <input type="checkbox" id="contract-all" style="width: 14px; height: 14px;">
-                Select All
-              </label>
-              <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                <input type="checkbox" id="contract-9am" checked style="width: 14px; height: 14px;">
-                9am
-              </label>
-              <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                <input type="checkbox" id="contract-10am" checked style="width: 14px; height: 14px;">
-                10am
-              </label>
-              <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                <input type="checkbox" id="contract-11am" checked style="width: 14px; height: 14px;">
-                11am
-              </label>
-              <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                <input type="checkbox" id="contract-12am" checked style="width: 14px; height: 14px;">
-                12am
-              </label>
-              <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                <input type="checkbox" id="contract-1pm" checked style="width: 14px; height: 14px;">
-                1pm
-              </label>
-              <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                <input type="checkbox" id="contract-2pm" checked style="width: 14px; height: 14px;">
-                2pm
-              </label>
-              <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                <input type="checkbox" id="contract-3pm" checked style="width: 14px; height: 14px;">
-                3pm
-              </label>
-              <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                <input type="checkbox" id="contract-4pm" checked style="width: 14px; height: 14px;">
-                4pm
-              </label>
-              <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                <input type="checkbox" id="contract-5pm" checked style="width: 14px; height: 14px;">
-                5pm
-              </label>
-              <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                <input type="checkbox" id="contract-6pm" checked style="width: 14px; height: 14px;">
-                6pm
-              </label>
-              <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                <input type="checkbox" id="contract-7pm" checked style="width: 14px; height: 14px;">
-                7pm
-              </label>
-              <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                <input type="checkbox" id="contract-8pm" checked style="width: 14px; height: 14px;">
-                8pm
-              </label>
-              <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                <input type="checkbox" id="contract-9pm" checked style="width: 14px; height: 14px;">
-                9pm
-              </label>
-              <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                <input type="checkbox" id="contract-10pm" checked style="width: 14px; height: 14px;">
-                10pm
-              </label>
-              <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer;">
-                <input type="checkbox" id="contract-11pm" checked style="width: 14px; height: 14px;">
-                11pm
-              </label>
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          <div>
+            <div style="margin-bottom: 5px; font-size: 12px; color: #ccc;">Contract</div>
+            <div class="multi-select-dropdown" style="position: relative; width: 100px;">
+              <button id="contract-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
+                Select Contracts
+              </button>
+              <div id="contract-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 200px; overflow-y: auto;">
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-all" style="width: 14px; height: 14px;">
+                  Select All
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-9am" checked style="width: 14px; height: 14px;">
+                  9am
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-10am" checked style="width: 14px; height: 14px;">
+                  10am
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-11am" checked style="width: 14px; height: 14px;">
+                  11am
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-12am" checked style="width: 14px; height: 14px;">
+                  12am
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-1pm" checked style="width: 14px; height: 14px;">
+                  1pm
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-2pm" checked style="width: 14px; height: 14px;">
+                  2pm
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-3pm" checked style="width: 14px; height: 14px;">
+                  3pm
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-4pm" checked style="width: 14px; height: 14px;">
+                  4pm
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-5pm" checked style="width: 14px; height: 14px;">
+                  5pm
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-6pm" checked style="width: 14px; height: 14px;">
+                  6pm
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-7pm" checked style="width: 14px; height: 14px;">
+                  7pm
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-8pm" checked style="width: 14px; height: 14px;">
+                  8pm
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-9pm" checked style="width: 14px; height: 14px;">
+                  9pm
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-10pm" checked style="width: 14px; height: 14px;">
+                  10pm
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer;">
+                  <input type="checkbox" id="contract-11pm" checked style="width: 14px; height: 14px;">
+                  11pm
+                </label>
+              </div>
+            </div>
+          </div>
+          <div>
+            <div style="margin-bottom: 5px; font-size: 12px; color: #ccc;">Monitor</div>
+            <div class="multi-select-dropdown" style="position: relative; width: 150px;">
+              <button id="monitor-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
+                Select Monitors
+              </button>
+              <div id="monitor-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 150px; overflow-y: auto;">
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="monitor-all" style="width: 14px; height: 14px;">
+                  Select All
+                </label>
+                <!-- Monitor options will be populated dynamically -->
+              </div>
             </div>
           </div>
         </div>
@@ -406,6 +423,10 @@
     let currentSort = { key: 'id', asc: false };
     let trades = [];
     let filteredTrades = [];
+
+
+
+
 
     function displayPnL(trade) {
       if (trade.pnl !== null && trade.pnl !== undefined) {
@@ -657,6 +678,37 @@
         
         // For any other strategies, show them
         return true;
+      });
+    }
+
+    // === MONITOR FILTER LOGIC ===
+    function filterTradesByMonitor(trades) {
+      const monitorAllCheckbox = document.getElementById('monitor-all');
+      const monitorCheckboxes = Array.from(document.querySelectorAll('#monitor-dropdown-content input[type="checkbox"]:not(#monitor-all)'));
+      
+      // If no monitors are selected or "Select All" is checked, show all trades
+      if (!monitorAllCheckbox || monitorCheckboxes.length === 0 || monitorAllCheckbox.checked) {
+        return trades;
+      }
+      
+      // Get selected monitor names using the data-monitor-id attribute
+      const selectedMonitors = monitorCheckboxes
+        .filter(checkbox => checkbox.checked)
+        .map(checkbox => checkbox.getAttribute('data-monitor-id'));
+      
+      // If no specific monitors are selected, show all trades
+      if (selectedMonitors.length === 0) {
+        return trades;
+      }
+      
+      return trades.filter(trade => {
+        const monitor = trade.monitor;
+        if (!monitor) return true; // Show trades without monitor
+        
+        // Check if the trade's monitor matches any of the selected monitors
+        return selectedMonitors.some(selectedMonitor => 
+          monitor.toLowerCase() === selectedMonitor.toLowerCase()
+        );
       });
     }
     
@@ -930,6 +982,7 @@
       filtered = filterTradesByContract(filtered);
       filtered = filterTradesBySymbol(filtered);
       filtered = filterTradesByStrategy(filtered);
+      filtered = filterTradesByMonitor(filtered);
       
       filteredTrades = [...filtered];
       applyCurrentSort();
@@ -1470,6 +1523,136 @@
       updateStrategyButtonText();
       updateStrategyAllCheckbox();
 
+      // Hook up monitor filter dropdown
+      const monitorDropdownBtn = document.getElementById('monitor-dropdown-btn');
+      const monitorDropdownContent = document.getElementById('monitor-dropdown-content');
+      const monitorAllCheckbox = document.getElementById('monitor-all');
+      let monitorCheckboxes = []; // Will be populated dynamically
+
+      // Load monitor options from API
+      async function loadMonitorOptions() {
+        try {
+          const response = await fetch('/api/trades/monitors?user_id=user_0001');
+          const data = await response.json();
+          
+          if (data.status === 'ok' && data.monitors) {
+            // Clear existing options except "Select All"
+            const existingOptions = monitorDropdownContent.querySelectorAll('label:not(:first-child)');
+            existingOptions.forEach(option => option.remove());
+            
+                        // Add monitor options
+            data.monitors.forEach(monitor => {
+              const label = document.createElement('label');
+              label.style.cssText = 'display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;';
+              
+              const checkbox = document.createElement('input');
+              checkbox.type = 'checkbox';
+              checkbox.id = `monitor-${monitor.name.replace(/[^a-zA-Z0-9]/g, '-')}`;
+              checkbox.style.cssText = 'width: 14px; height: 14px;';
+              checkbox.checked = true; // Default to checked
+              
+              // Add data-monitor-id attribute for matching with dashboard monitor IDs
+              checkbox.setAttribute('data-monitor-id', monitor.name);
+              
+              // Create text node and append it
+              const textNode = document.createTextNode(monitor.name);
+              
+              label.appendChild(checkbox);
+              label.appendChild(textNode);
+              monitorDropdownContent.appendChild(label);
+              
+
+            });
+            
+            // Update checkboxes array
+            monitorCheckboxes = Array.from(monitorDropdownContent.querySelectorAll('input[type="checkbox"]:not(#monitor-all)'));
+            
+            // Set up event listeners for new checkboxes
+            monitorCheckboxes.forEach(checkbox => {
+              checkbox.addEventListener('change', () => {
+                updateMonitorAllCheckbox();
+                updateMonitorButtonText();
+                applyFilters();
+                savePreferences();
+              });
+            });
+            
+            updateMonitorButtonText();
+            updateMonitorAllCheckbox();
+          }
+        } catch (error) {
+          console.error('Error loading monitor options:', error);
+        }
+      }
+
+      // Toggle dropdown
+      if (monitorDropdownBtn && monitorDropdownContent) {
+        monitorDropdownBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          monitorDropdownContent.style.display = monitorDropdownContent.style.display === 'none' ? 'block' : 'none';
+        });
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', () => {
+          monitorDropdownContent.style.display = 'none';
+        });
+
+        // Prevent dropdown from closing when clicking inside
+        monitorDropdownContent.addEventListener('click', (e) => {
+          e.stopPropagation();
+        });
+      }
+
+      // Handle "Select All" checkbox for monitors
+      if (monitorAllCheckbox) {
+        monitorAllCheckbox.addEventListener('change', () => {
+          const isChecked = monitorAllCheckbox.checked;
+          monitorCheckboxes.forEach(checkbox => {
+            if (checkbox) checkbox.checked = isChecked;
+          });
+          updateMonitorButtonText();
+          applyFilters();
+          savePreferences();
+        });
+      }
+
+      // Function to update "Select All" checkbox state for monitors
+      function updateMonitorAllCheckbox() {
+        if (monitorAllCheckbox && monitorCheckboxes.length > 0) {
+          const allChecked = monitorCheckboxes.every(checkbox => checkbox && checkbox.checked);
+          const someChecked = monitorCheckboxes.some(checkbox => checkbox && checkbox.checked);
+          monitorAllCheckbox.checked = allChecked;
+          monitorAllCheckbox.indeterminate = someChecked && !allChecked;
+        }
+      }
+
+      // Function to update monitor button text
+      function updateMonitorButtonText() {
+        if (monitorDropdownBtn) {
+          const monitorDropdownContent = document.getElementById('monitor-dropdown-content');
+          if (monitorDropdownContent) {
+            const currentCheckboxes = Array.from(monitorDropdownContent.querySelectorAll('input[type="checkbox"]:not(#monitor-all)'));
+            const checkedMonitors = currentCheckboxes.filter(checkbox => checkbox && checkbox.checked);
+            
+            if (checkedMonitors.length === 0) {
+              monitorDropdownBtn.textContent = 'Select Monitors';
+            } else if (checkedMonitors.length === currentCheckboxes.length) {
+              monitorDropdownBtn.textContent = 'All Monitors';
+            } else if (checkedMonitors.length === 1) {
+              // Show the specific monitor name when only one is selected
+              const label = checkedMonitors[0].parentElement;
+              const monitorName = label ? label.textContent : checkedMonitors[0].id.replace('monitor-', '').replace(/-/g, ' ');
+              monitorDropdownBtn.textContent = monitorName;
+            } else {
+              monitorDropdownBtn.textContent = 'Multiple';
+            }
+          }
+        }
+      }
+
+      // Load monitor options on page load
+      loadMonitorOptions();
+
       // Hook up symbol filter dropdown
       const symbolDropdownBtn = document.getElementById('symbol-dropdown-btn');
       const symbolDropdownContent = document.getElementById('symbol-dropdown-content');
@@ -1712,6 +1895,19 @@
       const strategyTest = document.getElementById('strategy-test');
       const analysisIntervalSelect = document.getElementById('analysis-time-interval');
       
+      // Collect monitor preferences dynamically
+      const monitorAllCheckbox = document.getElementById('monitor-all');
+      const monitorCheckboxes = Array.from(document.querySelectorAll('#monitor-dropdown-content input[type="checkbox"]:not(#monitor-all)'));
+      const monitorPreferences = {};
+      
+      if (monitorAllCheckbox && monitorCheckboxes.length > 0) {
+        monitorPreferences.monitor_all = monitorAllCheckbox.checked;
+        monitorCheckboxes.forEach(checkbox => {
+          const monitorName = checkbox.id.replace('monitor-', '').replace(/-/g, '_');
+          monitorPreferences[`monitor_${monitorName}`] = checkbox.checked;
+        });
+      }
+      
       const preferences = {
         date_filter: dateFilterPicker ? dateFilterPicker.value : 'ALL',
         start_date: startDateInput ? startDateInput.value : '',
@@ -1741,6 +1937,7 @@
         strategy_hourly_htc: strategyHourlyHtc ? strategyHourlyHtc.checked : true,
         strategy_momentum_scalp: strategyMomentumScalp ? strategyMomentumScalp.checked : true,
         strategy_test: strategyTest ? strategyTest.checked : true,
+        ...monitorPreferences, // Add monitor preferences
         analysis_interval: analysisIntervalSelect ? analysisIntervalSelect.value : 'daily',
         sort_key: currentSort.key,
         sort_asc: currentSort.asc,
@@ -2454,6 +2651,67 @@
       applyFilters();
       savePreferences();
     }
+
+    // Message listener for selecting monitors from dashboard
+    window.addEventListener('message', function(event) {
+      if (event.data && event.data.type === 'SELECT_MONITOR') {
+        const monitorName = event.data.monitorId;
+        console.log('Received request to select monitor:', monitorName);
+        
+        // Try to select the monitor immediately, then retry if needed
+        const trySelectMonitor = () => {
+          const monitorDropdownContent = document.getElementById('monitor-dropdown-content');
+          if (monitorDropdownContent) {
+            const monitorCheckboxes = Array.from(monitorDropdownContent.querySelectorAll('input[type="checkbox"]:not(#monitor-all)'));
+            
+            if (monitorCheckboxes.length > 0) {
+              // Find and select the specific monitor
+              const targetCheckbox = monitorCheckboxes.find(cb => {
+                const label = cb.parentElement;
+                return label && label.textContent === monitorName;
+              });
+              
+              if (targetCheckbox) {
+                // Uncheck all monitors first
+                monitorCheckboxes.forEach(cb => cb.checked = false);
+                
+                // Uncheck "Select All"
+                const selectAllCheckbox = document.getElementById('monitor-all');
+                if (selectAllCheckbox) {
+                  selectAllCheckbox.checked = false;
+                  selectAllCheckbox.indeterminate = false;
+                  // Trigger change event for "Select All" checkbox
+                  selectAllCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                
+                // Check the target monitor and let the existing event listeners handle everything
+                targetCheckbox.checked = true;
+                targetCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+                
+                console.log('Monitor selected and change event triggered:', monitorName);
+                return true; // Success
+              } else {
+                console.log('Monitor not found in dropdown:', monitorName);
+                return false; // Not found
+              }
+            }
+          }
+          return false; // Not ready
+        };
+        
+        // Try immediately first
+        if (!trySelectMonitor()) {
+          // If not ready, retry after a short delay
+          setTimeout(() => {
+            if (!trySelectMonitor()) {
+              // If still not ready, try one more time
+              setTimeout(trySelectMonitor, 500);
+            }
+          }, 200);
+        }
+      }
+    });
+
   </script>
 </body>
 </html>

@@ -109,6 +109,8 @@
       background-color: rgba(220, 53, 69, 0.1);
     }
 
+
+
     /* Monitors Panel */
     .monitors-panel {
       min-height: 400px;
@@ -386,6 +388,12 @@
       background-color: #007bff;
     }
 
+    .auto-trade-toggle.disabled {
+      background-color: #2d3748;
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+
     .auto-trade-toggle::after {
       content: '';
       position: absolute;
@@ -427,6 +435,73 @@
 
     .tile-view .monitor-settings-icon:hover {
       opacity: 1;
+    }
+
+    .monitor-symbol-container {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .monitor-icons {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .monitor-icon {
+      width: 11px;
+      height: 11px;
+      opacity: 0.4;
+      transition: opacity 0.2s ease;
+      cursor: pointer;
+    }
+
+    .monitor-icon:hover {
+      opacity: 1;
+    }
+
+    .status-light {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      transition: background-color 0.2s ease;
+      transform: translateY(10px); /* Move down */
+    }
+
+    .status-light.active {
+      background-color: #48bb78;
+      box-shadow: 0 0 6px rgba(72, 187, 120, 0.6);
+    }
+
+    .status-light.active:hover {
+      background-color: #e53e3e;
+      box-shadow: 0 0 6px rgba(229, 62, 62, 0.6);
+    }
+
+    .status-light.inactive {
+      background-color: #3d3f41;
+      box-shadow: none;
+    }
+
+    .status-light.inactive:hover {
+      background-color: #48bb78;
+      box-shadow: 0 0 6px rgba(72, 187, 120, 0.6);
+    }
+
+    /* List View Status Light - positioned for horizontal layout */
+    .list-status-light {
+      width: 12px;
+      height: 12px;
+      margin-right: 0px;
+      transform: translateY(0px); /* Move down */
+      flex-shrink: 0; /* Prevent shrinking */
+    }
+
+    /* Darken inactive monitor tiles */
+    .monitor-tile.inactive {
+      opacity: 0.4;
+      filter: brightness(0.7);
     }
 
     /* List View Tile Layout */
@@ -676,6 +751,153 @@
       justify-content: space-between;
       align-items: center;
     }
+
+    /* Archive Modal Styles */
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.7);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+    }
+
+    .modal-content {
+      background-color: #2d3748;
+      border-radius: 8px;
+      padding: 0;
+      max-width: 400px;
+      width: 90%;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+      border: 1px solid #4a5568;
+    }
+
+    .modal-header {
+      background-color: #4a5568;
+      padding: 16px 20px;
+      border-radius: 8px 8px 0 0;
+      border-bottom: 1px solid #2d3748;
+    }
+
+    .modal-header h3 {
+      margin: 0;
+      color: #e2e8f0;
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .modal-body {
+      padding: 20px;
+      color: #e2e8f0;
+    }
+
+    .modal-body p {
+      margin: 0 0 12px 0;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .modal-warning {
+      color: #f6ad55;
+      font-size: 12px;
+      font-style: italic;
+      margin-top: 8px;
+    }
+
+    .modal-keyboard-hint {
+      color: #a0aec0;
+      font-size: 11px;
+      margin-top: 12px;
+      text-align: center;
+    }
+
+    .modal-keyboard-hint kbd {
+      background-color: #4a5568;
+      border: 1px solid #718096;
+      border-radius: 3px;
+      padding: 2px 6px;
+      font-size: 10px;
+      font-family: monospace;
+      color: #e2e8f0;
+    }
+
+    .modal-footer {
+      padding: 16px 20px;
+      display: flex;
+      justify-content: flex-end;
+      gap: 12px;
+      border-top: 1px solid #4a5568;
+      background-color: #2d3748;
+      border-radius: 0 0 8px 8px;
+    }
+
+    .modal-btn {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 4px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .modal-btn-cancel {
+      background-color: #4a5568;
+      color: #e2e8f0;
+    }
+
+    .modal-btn-cancel:hover {
+      background-color: #718096;
+    }
+
+    .modal-btn-confirm {
+      background-color: #e53e3e;
+      color: white;
+    }
+
+    .modal-btn-confirm:hover {
+      background-color: #c53030;
+    }
+
+    /* New Monitor Modal Form Styles */
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    .form-group label {
+      display: block;
+      margin-bottom: 6px;
+      color: #e2e8f0;
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .modal-dropdown,
+    .modal-input {
+      width: 100%;
+      padding: 8px 12px;
+      background-color: #4a5568;
+      border: 1px solid #2d3748;
+      border-radius: 4px;
+      color: #e2e8f0;
+      font-size: 13px;
+      box-sizing: border-box;
+    }
+
+    .modal-dropdown {
+      cursor: pointer;
+    }
+
+    .modal-dropdown:focus,
+    .modal-input:focus {
+      outline: none;
+      border-color: #4299e1;
+      box-shadow: 0 0 0 2px rgba(66, 153, 225, 0.2);
+    }
   </style>
 </head>
 <body>
@@ -765,10 +987,20 @@
       </div>
     </div>
 
-    <!-- Monitors Panel -->
+  <!-- Monitors Panel -->
     <div class="panel-container monitors-panel">
               <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
-          <span>Monitors</span>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span>Monitors</span>
+            <img 
+              src="/images/icons/archive_list_icon.png" 
+              alt="Archive" 
+              title="Archive" 
+              style="width: 12px; opacity: 0.6; transition: opacity 0.2s; transform: translateY(1px); cursor: pointer;"
+              onmouseover="this.style.opacity='1'" 
+              onmouseout="this.style.opacity='0.6'"
+            />
+          </div>
           <div style="display: flex; align-items: center; gap: 12px;">
             <div style="display: flex; align-items: center; gap: 6px;">
               <span style="font-size: 12px; color: #a0aec0;">Sort by</span>
@@ -852,7 +1084,7 @@
       if (monitor.id === 'NEW_MONITOR') {
         // Special layout for new monitor tile
         return `
-          <div class="monitor-tile new-monitor" data-index="${index}">
+          <div class="monitor-tile new-monitor" data-index="${index}" onclick="showNewMonitorModal()">
             <div class="monitor-symbol">${monitor.symbol}</div>
             <div class="monitor-strategy">${monitor.strategy}</div>
           </div>
@@ -862,9 +1094,20 @@
       if (isListView) {
         // List view layout - horizontal data arrangement
         return `
-          <div class="monitor-tile list-view" data-monitor-id="${monitor.id}" data-index="${index}">
-            <div style="display: flex; flex-direction: column; min-width: 100px; margin-right: 16px;">
-              <div class="monitor-symbol">${monitor.symbol}</div>
+          <div class="monitor-tile list-view ${monitor.status === 'inactive' ? 'inactive' : ''}" data-monitor-id="${monitor.id}" data-index="${index}">
+            <!-- Column 1: Status Light -->
+            <div class="status-light list-status-light ${monitor.status === 'active' ? 'active' : 'inactive'}" onclick="toggleMonitorStatus('${monitor.id}', '${monitor.name}', '${monitor.status}')" style="cursor: pointer;" title="${monitor.status === 'active' ? 'Click to deactivate monitor' : 'Click to activate monitor'}"></div>
+            
+            <!-- Column 2: Symbol/Icons and Strategy -->
+            <div style="display: flex; flex-direction: column; min-width: 100px; margin-right: 16px; margin-left: 12px;">
+              <div class="monitor-symbol-container">
+                <span class="monitor-symbol">${monitor.symbol}</span>
+                                  <div class="monitor-icons">
+                    <img src="/images/icons/trade_monitor_icon.png" alt="Monitor" title="Monitor" class="monitor-icon monitor-icon" onclick="loadTradeMonitor(extractMonitorId('${monitor.id}'))">
+                    <img src="/images/icons/trade_history.png" alt="History" title="History" class="monitor-icon history-icon" onclick="loadTradeHistory('${monitor.name}')">
+                    <img src="/images/icons/trash_icon.png" alt="Archive" title="Archive" class="monitor-icon trash-icon" onclick="showArchiveConfirmation('${monitor.id}', '${monitor.name}')">
+                  </div>
+              </div>
               <div class="monitor-strategy">${monitor.strategy}</div>
             </div>
             <div class="monitor-status ${monitor.auto_trade_status === 'active' ? 'active' : monitor.auto_trade_status === 'inactive' ? 'inactive' : monitor.auto_trade_status === 'off' ? 'off' : 'paused'}">${monitor.auto_trade_status === 'active' ? 'ACTIVE' : monitor.auto_trade_status === 'inactive' ? 'INACTIVE' : monitor.auto_trade_status === 'off' ? 'OFF' : 'PAUSED'}</div>
@@ -887,7 +1130,7 @@
               </div>
             </div>
             <div class="monitor-uptime">${monitor.uptime}</div>
-            <div class="monitor-name">${monitor.name}</div>
+            <div class="monitor-name">${monitor.id === 'NEW_MONITOR' ? monitor.name : `Monitor ${monitor.name.slice(-5)}`}</div>
             <div class="monitor-controls">
               <div style="display: flex; align-items: center;">
                 <img 
@@ -898,7 +1141,7 @@
                   onclick="console.log('Monitor Settings icon clicked for ${monitor.id}');"
                 />
                 <div class="auto-trade-label">AUTO TRADE</div>
-                <div class="auto-trade-toggle ${monitor.autoTrade ? 'active' : ''}" onclick="toggleAutoTrade('${monitor.id}')"></div>
+                <div class="auto-trade-toggle ${monitor.autoTrade ? 'active' : ''} ${monitor.status === 'inactive' ? 'disabled' : ''}" ${monitor.status !== 'inactive' ? `onclick="toggleAutoTrade('${monitor.id}')"` : ''}></div>
               </div>
             </div>
           </div>
@@ -906,24 +1149,41 @@
       } else {
         // Tile view layout - original vertical arrangement
         return `
-          <div class="monitor-tile tile-view" data-monitor-id="${monitor.id}" data-index="${index}">
-            <div class="monitor-name">${monitor.name}</div>
-            <div class="monitor-controls">
-              <img 
-                class="monitor-settings-icon"
-                src="/images/icons/panel_settings.png" 
-                alt="Monitor Settings" 
-                title="Monitor Settings" 
-                onclick="console.log('Monitor Settings icon clicked for ${monitor.id}');"
-              />
-              <span class="auto-trade-label">AUTO TRADE</span>
-              <div class="auto-trade-toggle ${monitor.autoTrade ? 'active' : ''}" onclick="toggleAutoTrade('${monitor.id}')"></div>
+          <div class="monitor-tile tile-view ${monitor.status === 'inactive' ? 'inactive' : ''}" data-monitor-id="${monitor.id}" data-index="${index}">
+            <div class="monitor-name">${monitor.id === 'NEW_MONITOR' ? monitor.name : `Monitor ${monitor.name.slice(-5)}`}</div>
+            <div style="display: flex; align-items: flex-start; margin-bottom: 10px;">
+              <!-- Column 1: Status Light -->
+              <div class="status-light ${monitor.status === 'active' ? 'active' : 'inactive'}" onclick="toggleMonitorStatus('${monitor.id}', '${monitor.name}', '${monitor.status}')" style="cursor: pointer;" title="${monitor.status === 'active' ? 'Click to deactivate monitor' : 'Click to activate monitor'}"></div>
+              
+              <!-- Column 2: Symbol/Icons and Strategy -->
+              <div style="display: flex; flex-direction: column; align-items: flex-start; margin-left: 12px; margin-right: auto;">
+                <div class="monitor-symbol-container">
+                  <span class="monitor-symbol">${monitor.symbol}</span>
+                  <div class="monitor-icons">
+                    <img src="/images/icons/trade_monitor_icon.png" alt="Monitor" title="Monitor" class="monitor-icon monitor-icon" onclick="loadTradeMonitor(extractMonitorId('${monitor.id}'))">
+                    <img src="/images/icons/trade_history.png" alt="History" title="History" class="monitor-icon history-icon" onclick="loadTradeHistory('${monitor.name}')">
+                    <img src="/images/icons/trash_icon.png" alt="Archive" title="Archive" class="monitor-icon trash-icon" onclick="showArchiveConfirmation('${monitor.id}', '${monitor.name}')">
+                  </div>
+                </div>
+                <div class="monitor-strategy">${monitor.strategy}</div>
+              </div>
+              
+              <!-- Column 3: Auto Trade Controls and Status -->
+              <div style="display: flex; flex-direction: column; align-items: flex-end;">
+                <div class="monitor-controls">
+                  <img 
+                    class="monitor-settings-icon"
+                    src="/images/icons/panel_settings.png" 
+                    alt="Monitor Settings" 
+                    title="Monitor Settings" 
+                    onclick="console.log('Monitor Settings icon clicked for ${monitor.id}');"
+                  />
+                  <span class="auto-trade-label">AUTO TRADE</span>
+                  <div class="auto-trade-toggle ${monitor.autoTrade ? 'active' : ''} ${monitor.status === 'inactive' ? 'disabled' : ''}" ${monitor.status !== 'inactive' ? `onclick="toggleAutoTrade('${monitor.id}')"` : ''}></div>
+                </div>
+                <div class="monitor-status ${monitor.auto_trade_status === 'active' ? 'active' : monitor.auto_trade_status === 'inactive' ? 'inactive' : monitor.auto_trade_status === 'off' ? 'off' : 'paused'}">${monitor.auto_trade_status === 'active' ? 'ACTIVE' : monitor.auto_trade_status === 'inactive' ? 'INACTIVE' : monitor.auto_trade_status === 'off' ? 'OFF' : 'PAUSED'}</div>
+              </div>
             </div>
-            <div class="symbol-status-row">
-              <div class="monitor-symbol">${monitor.symbol}</div>
-              <div class="monitor-status ${monitor.auto_trade_status === 'active' ? 'active' : monitor.auto_trade_status === 'inactive' ? 'inactive' : monitor.auto_trade_status === 'off' ? 'off' : 'paused'}">${monitor.auto_trade_status === 'active' ? 'ACTIVE' : monitor.auto_trade_status === 'inactive' ? 'INACTIVE' : monitor.auto_trade_status === 'off' ? 'OFF' : 'PAUSED'}</div>
-            </div>
-            <div class="monitor-strategy">${monitor.strategy}</div>
             <div class="monitor-stats">
               <div class="stat-panel">
                 <div class="stat-value">${monitor.trades}</div>
@@ -1001,7 +1261,18 @@
     function initializeMonitors() {
       const grid = document.getElementById('monitors-grid');
       if (grid) {
-        grid.innerHTML = monitors.map((monitor, index) => createMonitorTile(monitor, index)).join('');
+        // Filter out archived monitors - only show active and inactive
+        const visibleMonitors = monitors.filter(monitor => 
+          monitor.status !== 'archived' && monitor.id !== 'NEW_MONITOR'
+        );
+        
+        // Add NEW_MONITOR back at the end
+        const newMonitor = monitors.find(m => m.id === 'NEW_MONITOR');
+        if (newMonitor) {
+          visibleMonitors.push(newMonitor);
+        }
+        
+        grid.innerHTML = visibleMonitors.map((monitor, index) => createMonitorTile(monitor, index)).join('');
       }
     }
 
@@ -1012,9 +1283,9 @@
         return;
       }
       
-      // Separate the new monitor from regular monitors
+      // Separate the new monitor from regular monitors and filter out archived
       const newMonitor = monitors.find(m => m.id === 'NEW_MONITOR');
-      const regularMonitors = monitors.filter(m => m.id !== 'NEW_MONITOR');
+      const regularMonitors = monitors.filter(m => m.id !== 'NEW_MONITOR' && m.status !== 'archived');
       
       const sortedMonitors = [...regularMonitors].sort((a, b) => {
         switch (currentSortBy) {
@@ -1094,7 +1365,7 @@
           dragClass: 'sortable-drag',
           fallbackClass: 'sortable-fallback',
           forceFallback: true,
-          filter: '.new-monitor', // Prevent new monitor tile from being dragged
+          filter: '.new-monitor, .monitor-icon, .monitor-icons', // Prevent new monitor tile and icon areas from being dragged
           onMove: function(evt) {
             // Prevent dropping any tile after the new monitor tile
             const newMonitorIndex = monitors.findIndex(m => m.id === 'NEW_MONITOR');
@@ -1161,83 +1432,36 @@
       return 0;
     }
 
-    // Update monitor view mode based on current preference
-    function updateMonitorViewMode() {
-      const listViewIcon = document.getElementById('listViewIcon');
-      const tileViewIcon = document.getElementById('tileViewIcon');
-      const grid = document.getElementById('monitors-grid');
-      
-      if (listViewIcon && tileViewIcon && grid) {
-        // Add subtle loading state
-        grid.style.opacity = '0.7';
-        
-        // First, reload monitors from database to get latest order in the background
-        loadMonitors().then(() => {
-          applyCurrentSort();
-          
-          // Now update the view mode and render with the correct order
-          if (currentViewMode === 'list') {
-            listViewIcon.style.opacity = '1';
-            tileViewIcon.style.opacity = '0.2';
-            grid.classList.remove('tile-view');
-            grid.classList.add('list-view');
-          } else {
-            listViewIcon.style.opacity = '0.2';
-            tileViewIcon.style.opacity = '1';
-            grid.classList.remove('list-view');
-            grid.classList.add('tile-view');
-          }
-          
-          // Render with the correct order and restore opacity
-          initializeMonitors();
-          grid.style.opacity = '1';
-        }).catch(() => {
-          // Restore opacity even if there's an error
-          grid.style.opacity = '1';
-        });
-      }
-    }
-
-    // Toggle between List and Tile view
+    // Simple toggle between List and Tile view
     function toggleViewMode() {
       const listViewIcon = document.getElementById('listViewIcon');
       const tileViewIcon = document.getElementById('tileViewIcon');
       const grid = document.getElementById('monitors-grid');
       
-      if (listViewIcon && tileViewIcon) {
-        // Add subtle loading state
-        grid.style.opacity = '0.7';
+      if (listViewIcon && tileViewIcon && grid) {
+        // Determine which view to switch to based on which icon was clicked
+        const isCurrentlyList = listViewIcon.style.opacity === '1';
         
-        // First, reload monitors from database to get latest order in the background
-        loadMonitors().then(() => {
-          applyCurrentSort();
-          
-          // Now update the view mode and render with the correct order
-          if (listViewIcon.style.opacity === '1') {
-            // Switch to Tile view
-            listViewIcon.style.opacity = '0.2';
-            tileViewIcon.style.opacity = '1';
-            grid.classList.remove('list-view');
-            grid.classList.add('tile-view');
-            currentViewMode = 'tile';
-          } else {
-            // Switch to List view
-            listViewIcon.style.opacity = '1';
-            tileViewIcon.style.opacity = '0.2';
-            grid.classList.remove('tile-view');
-            grid.classList.add('list-view');
-            currentViewMode = 'list';
-          }
-          
-          // Render with the correct order and restore opacity
-          initializeMonitors();
-          grid.style.opacity = '1';
-        }).catch(() => {
-          // Restore opacity even if there's an error
-          grid.style.opacity = '1';
-        });
+        if (isCurrentlyList) {
+          // Switch to Tile view
+          listViewIcon.style.opacity = '0.2';
+          tileViewIcon.style.opacity = '1';
+          grid.classList.remove('list-view');
+          grid.classList.add('tile-view');
+          currentViewMode = 'tile';
+        } else {
+          // Switch to List view
+          listViewIcon.style.opacity = '1';
+          tileViewIcon.style.opacity = '0.2';
+          grid.classList.remove('tile-view');
+          grid.classList.add('list-view');
+          currentViewMode = 'list';
+        }
         
-        // Save preferences
+        // Re-render monitors with the new view mode
+        initializeMonitors();
+        
+        // Save the new view mode to database
         saveDashboardPreferences();
       }
     }
@@ -1318,6 +1542,10 @@
         .then(data => {
           if (data.status === 'ok') {
             console.log('Successfully updated auto trade in database');
+            // Refresh monitor data to update status display
+            loadMonitors().then(() => {
+              initializeMonitors();
+            });
           } else {
             console.error('Failed to update auto trade:', data.message);
           }
@@ -1352,8 +1580,24 @@
             activeButton.classList.add('active');
           }
           
-          // Update monitor view mode
-          updateMonitorViewMode();
+          // Update monitor view mode based on loaded preference
+          const listViewIcon = document.getElementById('listViewIcon');
+          const tileViewIcon = document.getElementById('tileViewIcon');
+          const grid = document.getElementById('monitors-grid');
+          
+          if (listViewIcon && tileViewIcon && grid) {
+            if (currentViewMode === 'list') {
+              listViewIcon.style.opacity = '1';
+              tileViewIcon.style.opacity = '0.2';
+              grid.classList.remove('tile-view');
+              grid.classList.add('list-view');
+            } else {
+              listViewIcon.style.opacity = '0.2';
+              tileViewIcon.style.opacity = '1';
+              grid.classList.remove('list-view');
+              grid.classList.add('tile-view');
+            }
+          }
           
           // Update sort picker
           const sortPicker = document.getElementById('sortPicker');
@@ -2003,6 +2247,143 @@
       }
     }
 
+    // Helper function to extract numeric monitor ID from full monitor ID
+    function extractMonitorId(fullMonitorId) {
+      if (!fullMonitorId) return null;
+      if (fullMonitorId === 'NEW_MONITOR') return fullMonitorId;
+      
+      // Handle MON_0001_24078 format
+      if (fullMonitorId.includes('_') && fullMonitorId.startsWith('MON_')) {
+        const parts = fullMonitorId.split('_');
+        if (parts.length >= 3) {
+          return parts[2]; // Return the numeric part (24078)
+        }
+      }
+      
+      // If it's already just a numeric ID, return as is
+      return fullMonitorId;
+    }
+
+    // Load trade monitor page with specific monitor selected
+    function loadTradeMonitor(monitorId) {
+      console.log('loadTradeMonitor called with monitorId:', monitorId);
+      
+      // Get the parent window (index.html)
+      const parentWindow = window.parent;
+      
+      // Switch to trade monitor tab (like clicking the sidebar menu)
+      const tradeMonitorNavItem = parentWindow.document.querySelector('[data-page="trade-monitor"]');
+      if (tradeMonitorNavItem) {
+        // Remove active class from all nav items
+        const allNavItems = parentWindow.document.querySelectorAll('.nav-item');
+        allNavItems.forEach(item => item.classList.remove('active'));
+        
+        // Add active class to trade monitor nav item
+        tradeMonitorNavItem.classList.add('active');
+        
+        // Hide all frames
+        const allFrames = parentWindow.document.querySelectorAll('.content-frame');
+        allFrames.forEach(frame => frame.classList.remove('active'));
+        
+        // Show trade monitor frame
+        const tradeMonitorFrame = parentWindow.document.getElementById('tradeMonitorFrame');
+        if (tradeMonitorFrame) {
+          tradeMonitorFrame.classList.add('active');
+          
+          // Wait for the frame to be ready, then send message to select monitor
+          const sendMessage = () => {
+            try {
+              console.log('Attempting to send message to trade monitor frame...');
+              console.log('Frame contentWindow:', tradeMonitorFrame.contentWindow);
+              console.log('Frame readyState:', tradeMonitorFrame.contentWindow?.document?.readyState);
+              
+              // Check if the frame is accessible
+              if (tradeMonitorFrame.contentWindow && tradeMonitorFrame.contentWindow.document.readyState === 'complete') {
+                const message = {
+                  type: 'SELECT_MONITOR',
+                  monitorId: monitorId
+                };
+                console.log('Sending message:', message);
+                tradeMonitorFrame.contentWindow.postMessage(message, '*');
+                console.log('Message sent to trade monitor frame for monitor:', monitorId);
+              } else {
+                // If not ready, try again in 50ms
+                console.log('Frame not ready, retrying in 50ms...');
+                setTimeout(sendMessage, 50);
+              }
+            } catch (error) {
+              console.error('Error sending message to trade monitor frame:', error);
+              // Try again in 100ms if there was an error
+              setTimeout(sendMessage, 100);
+            }
+          };
+          
+          // Start trying to send the message
+          sendMessage();
+        }
+      }
+    }
+
+    // Load trade history page with specific monitor pre-selected
+    function loadTradeHistory(monitorId) {
+      console.log('Loading trade history for monitor:', monitorId);
+      
+      // Get the parent window (index.html)
+      const parentWindow = window.parent;
+      
+      // Switch to trade history tab (like clicking the sidebar menu)
+      const tradeHistoryNavItem = parentWindow.document.querySelector('[data-page="history"]');
+      if (tradeHistoryNavItem) {
+        // Remove active class from all nav items
+        const allNavItems = parentWindow.document.querySelectorAll('.nav-item');
+        allNavItems.forEach(item => item.classList.remove('active'));
+        
+        // Add active class to trade history nav item
+        tradeHistoryNavItem.classList.add('active');
+        
+        // Hide all frames
+        const allFrames = parentWindow.document.querySelectorAll('.content-frame');
+        allFrames.forEach(frame => frame.classList.remove('active'));
+        
+        // Show trade history frame
+        const tradeHistoryFrame = parentWindow.document.getElementById('tradeHistoryFrame');
+        if (tradeHistoryFrame) {
+          tradeHistoryFrame.classList.add('active');
+          
+          // Wait for the frame to be ready, then send message to select monitor
+          const sendMessage = () => {
+            try {
+              console.log('Attempting to send message to trade history frame...');
+              console.log('Frame contentWindow:', tradeHistoryFrame.contentWindow);
+              console.log('Frame readyState:', tradeHistoryFrame.contentWindow?.document?.readyState);
+              
+              // Check if the frame is accessible
+              if (tradeHistoryFrame.contentWindow && tradeHistoryFrame.contentWindow.document.readyState === 'complete') {
+                const message = {
+                  type: 'SELECT_MONITOR',
+                  monitorId: monitorId
+                };
+                console.log('Sending message:', message);
+                tradeHistoryFrame.contentWindow.postMessage(message, '*');
+                console.log('Message sent to trade history frame for monitor:', monitorId);
+              } else {
+                // If not ready, try again in 50ms
+                console.log('Frame not ready, retrying in 50ms...');
+                setTimeout(sendMessage, 50);
+              }
+            } catch (error) {
+              console.error('Error sending message to trade history frame:', error);
+              // Try again in 100ms if there was an error
+              setTimeout(sendMessage, 100);
+            }
+          };
+          
+          // Start trying to send the message
+          sendMessage();
+        }
+      }
+    }
+
     // Initialize market data on page load
     document.addEventListener('DOMContentLoaded', function() {
       // Fetch initial data
@@ -2019,6 +2400,356 @@
         fetchETHPriceChanges();
       }, 30000);
     });
+
+    // Archive confirmation modal functions
+    function showArchiveConfirmation(monitorId, monitorName) {
+      console.log('showArchiveConfirmation called');
+      const modal = document.getElementById('archiveModal');
+      if (modal) {
+        console.log('Showing archive confirmation modal');
+        const monitorNumber = monitorName.slice(-5); // Extract the last 5 characters as monitor number
+        document.getElementById('archiveModalText').textContent = `Are you sure you want to archive Monitor ${monitorNumber}?`;
+        document.getElementById('archiveModal').setAttribute('data-monitor-id', monitorId);
+        document.getElementById('archiveModal').setAttribute('data-monitor-name', monitorName);
+        modal.style.display = 'flex';
+        
+        // Add keyboard event listeners for ENTER and ESC
+        const handleKeyDown = (event) => {
+          console.log('Key pressed:', event.key, 'Modal display:', modal.style.display);
+          // Only handle keyboard events if the modal is visible
+          if (modal.style.display !== 'flex') {
+            console.log('Modal not visible, ignoring key press');
+            return;
+          }
+          
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            console.log('ENTER pressed - triggering confirm');
+            // Trigger confirm button click
+            const confirmButton = document.querySelector('.modal-btn-confirm');
+            console.log('Confirm button found:', confirmButton);
+            if (confirmButton) {
+              confirmButton.click();
+            }
+          } else if (event.key === 'Escape') {
+            event.preventDefault();
+            console.log('ESC pressed - triggering cancel');
+            // Trigger cancel button click
+            const cancelButton = document.querySelector('.modal-btn-cancel');
+            console.log('Cancel button found:', cancelButton);
+            if (cancelButton) {
+              cancelButton.click();
+            }
+          }
+        };
+        
+        // Add event listener to document for global keyboard handling
+        document.addEventListener('keydown', handleKeyDown);
+        console.log('Keyboard event listener attached to document');
+        
+        // Store the handler reference for cleanup
+        modal._keydownHandler = handleKeyDown;
+      } else {
+        console.log('archiveModal not found');
+      }
+    }
+
+    function hideArchiveModal() {
+      console.log('hideArchiveModal called');
+      const modal = document.getElementById('archiveModal');
+      if (modal) {
+        console.log('Hiding archive confirmation modal');
+        modal.style.display = 'none';
+        
+        // Clean up keyboard event listener
+        if (modal._keydownHandler) {
+          document.removeEventListener('keydown', modal._keydownHandler);
+          delete modal._keydownHandler;
+        }
+      } else {
+        console.log('archiveModal not found');
+      }
+    }
+
+    function confirmArchive() {
+      const modal = document.getElementById('archiveModal');
+      const monitorId = modal.getAttribute('data-monitor-id');
+      const monitorName = modal.getAttribute('data-monitor-name');
+      
+      // Call the archive API
+      archiveMonitor(monitorId, monitorName);
+      
+      // Hide the modal
+      hideArchiveModal();
+    }
+
+    async function archiveMonitor(monitorId, monitorName) {
+      try {
+        const response = await fetch('/api/monitor/archive', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            monitor_id: monitorId,
+            monitor_name: monitorName,
+            user_id: 'user_0001'
+          })
+        });
+
+        const result = await response.json();
+        
+        if (result.status === 'ok') {
+          console.log('Monitor archived successfully:', monitorName);
+          // Refresh the dashboard to hide the archived monitor
+          await loadMonitors(); // Fetch fresh data from backend
+          initializeMonitors(); // Re-render with updated data
+        } else {
+          console.error('Failed to archive monitor:', result.message);
+          alert('Failed to archive monitor: ' + result.message);
+        }
+      } catch (error) {
+        console.error('Error archiving monitor:', error);
+        alert('Error archiving monitor: ' + error.message);
+      }
+    }
+
+    async function deactivateMonitor(monitorId, monitorName) {
+      try {
+        const response = await fetch('/api/monitor/deactivate', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            monitor_id: monitorId,
+            monitor_name: monitorName,
+            user_id: 'user_0001'
+          })
+        });
+
+        const result = await response.json();
+        
+        if (result.status === 'ok') {
+          console.log('Monitor deactivated successfully:', monitorName);
+          // Refresh the dashboard to show updated status
+          await loadMonitors(); // Fetch fresh data from backend
+          initializeMonitors(); // Re-render with updated data
+        } else {
+          console.error('Failed to deactivate monitor:', result.message);
+          alert('Failed to deactivate monitor: ' + result.message);
+        }
+      } catch (error) {
+        console.error('Error deactivating monitor:', error);
+        alert('Error deactivating monitor: ' + error.message);
+      }
+    }
+
+    async function toggleMonitorStatus(monitorId, monitorName, currentStatus) {
+      try {
+        const isActive = currentStatus === 'active';
+        const endpoint = isActive ? '/api/monitor/deactivate' : '/api/monitor/activate';
+        const action = isActive ? 'deactivate' : 'activate';
+        
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            monitor_id: monitorId,
+            monitor_name: monitorName,
+            user_id: 'user_0001'
+          })
+        });
+
+        const result = await response.json();
+        
+        if (result.status === 'ok') {
+          console.log(`Monitor ${action}d successfully:`, monitorName);
+          // Refresh the dashboard to show updated status
+          await loadMonitors(); // Fetch fresh data from backend
+          initializeMonitors(); // Re-render with updated data
+        } else {
+          console.error(`Failed to ${action} monitor:`, result.message);
+          alert(`Failed to ${action} monitor: ` + result.message);
+        }
+      } catch (error) {
+        console.error(`Error ${action}ing monitor:`, error);
+        alert(`Error ${action}ing monitor: ` + error.message);
+      }
+    }
+
+    // New Monitor Modal Functions
+    function showNewMonitorModal() {
+      const modal = document.getElementById('newMonitorModal');
+      if (modal) {
+        modal.style.display = 'flex';
+        loadSymbolOptions();
+        loadStrategyOptions();
+      }
+    }
+
+    function hideNewMonitorModal() {
+      const modal = document.getElementById('newMonitorModal');
+      if (modal) {
+        modal.style.display = 'none';
+      }
+    }
+
+    async function loadSymbolOptions() {
+      try {
+        console.log('Loading symbol options...');
+        const response = await fetch('/api/symbols');
+        const data = await response.json();
+        console.log('Symbol data received:', data);
+        
+        const symbolSelect = document.getElementById('newMonitorSymbol');
+        if (symbolSelect && data.status === 'ok') {
+          symbolSelect.innerHTML = '<option value="">Select Symbol</option>';
+          console.log('Symbols array:', data.symbols);
+          data.symbols.forEach(symbol => {
+            console.log('Processing symbol:', symbol, 'Type:', typeof symbol);
+            const option = document.createElement('option');
+            option.value = symbol;
+            option.textContent = symbol;
+            symbolSelect.appendChild(option);
+          });
+        }
+      } catch (error) {
+        console.error('Error loading symbol options:', error);
+      }
+    }
+
+    async function loadStrategyOptions() {
+      try {
+        const response = await fetch('/api/strategies');
+        const data = await response.json();
+        
+        const strategySelect = document.getElementById('newMonitorStrategy');
+        if (strategySelect && data.status === 'ok') {
+          strategySelect.innerHTML = '<option value="">Select Strategy</option>';
+          data.strategies.forEach(strategy => {
+            const option = document.createElement('option');
+            option.value = strategy;
+            option.textContent = strategy;
+            strategySelect.appendChild(option);
+          });
+        }
+      } catch (error) {
+        console.error('Error loading strategy options:', error);
+      }
+    }
+
+    function confirmNewMonitor() {
+      const symbol = document.getElementById('newMonitorSymbol').value;
+      const strategy = document.getElementById('newMonitorStrategy').value;
+      const bankrollPct = document.getElementById('newMonitorBankroll').value;
+      const positionSize = document.getElementById('newMonitorPositionSize').value;
+      const multiplier = document.getElementById('newMonitorMultiplier').value;
+      
+      if (!symbol || !strategy) {
+        alert('Please select both Symbol and Strategy');
+        return;
+      }
+      
+      if (!bankrollPct || !positionSize || !multiplier) {
+        alert('Please fill in all fields');
+        return;
+      }
+      
+      createNewMonitor(symbol, strategy, bankrollPct, positionSize, multiplier);
+      hideNewMonitorModal();
+    }
+
+    async function createNewMonitor(symbol, strategy, bankrollPct, positionSize, multiplier) {
+      try {
+        const response = await fetch('/api/monitor/create', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            symbol: symbol,
+            strategy: strategy,
+            bankroll_allotment_pct: parseInt(bankrollPct),
+            position_size: parseInt(positionSize),
+            multiplier: parseFloat(multiplier),
+            user_id: 'user_0001'
+          })
+        });
+
+        const result = await response.json();
+        
+        if (result.status === 'ok') {
+          console.log('Monitor created successfully:', result.monitor_name);
+          await loadMonitors();
+          initializeMonitors();
+        } else {
+          console.error('Failed to create monitor:', result.message);
+          alert('Failed to create monitor: ' + result.message);
+        }
+      } catch (error) {
+        console.error('Error creating monitor:', error);
+        alert('Error creating monitor: ' + error.message);
+      }
+    }
   </script>
+
+  <!-- Archive Confirmation Modal -->
+  <div id="archiveModal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Archive Monitor</h3>
+      </div>
+      <div class="modal-body">
+        <p id="archiveModalText">Are you sure you want to archive this monitor?</p>
+        <p class="modal-warning">This will stop all trading activity and hide the monitor from the dashboard.</p>
+      </div>
+      <div class="modal-footer">
+        <button class="modal-btn modal-btn-cancel" onclick="hideArchiveModal()">Cancel</button>
+        <button class="modal-btn modal-btn-confirm" onclick="confirmArchive()">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- New Monitor Modal -->
+  <div id="newMonitorModal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" style="width: 400px; max-width: 90vw;">
+      <div class="modal-header">
+        <h3>Create New Monitor</h3>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="newMonitorSymbol">Symbol:</label>
+          <select id="newMonitorSymbol" class="modal-dropdown">
+            <option value="">Select Symbol</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="newMonitorStrategy">Strategy:</label>
+          <select id="newMonitorStrategy" class="modal-dropdown">
+            <option value="">Select Strategy</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="newMonitorBankroll">Bankroll Percentage:</label>
+          <input type="number" id="newMonitorBankroll" class="modal-input" value="10" min="1" max="100" step="1">
+        </div>
+        <div class="form-group">
+          <label for="newMonitorPositionSize">Position Size (Contracts):</label>
+          <input type="number" id="newMonitorPositionSize" class="modal-input" value="100" min="1" step="1">
+        </div>
+        <div class="form-group">
+          <label for="newMonitorMultiplier">Multiplier:</label>
+          <input type="number" id="newMonitorMultiplier" class="modal-input" value="1" min="0.1" step="0.1">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="modal-btn modal-btn-cancel" onclick="hideNewMonitorModal()">Cancel</button>
+        <button class="modal-btn modal-btn-confirm" onclick="confirmNewMonitor()">Create Monitor</button>
+      </div>
+    </div>
+  </div>
 </body>
 </html>

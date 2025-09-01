@@ -17,11 +17,16 @@ This is the starting point - will expand to handle:
 import psycopg2
 import json
 import requests
+import subprocess
+import sys
+import os
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from flask import Flask, request, jsonify
 from backend.core.unified_config import UnifiedConfigManager
 from backend.core.port_config import get_port
+import threading
+import time
 
 app = Flask(__name__)
 
@@ -30,11 +35,16 @@ class MonitorManager:
         self.unified_config = UnifiedConfigManager()
         self.db_config = self.unified_config.get_database_config()
         self.service_name = "monitor_manager"
+        self.project_root = self.unified_config.project_root
+        self.python_executable = self.unified_config.get('runtime.python_executable', sys.executable)
         
         # Foundation for future expansion
         self.active_monitors = {}  # Will track all active monitors
         self.monitor_states = {}   # Will track state of all monitor components
         self.frontend_connections = set()  # Will track frontend connections
+        
+        # Port allocation for monitor processes
+        self.monitor_port_base = 8013
         
     def get_database_connection(self):
         """Get database connection - foundation for all DB operations"""
@@ -52,6 +62,321 @@ class MonitorManager:
             log_entry += f" | Data: {json.dumps(data)}"
         print(log_entry)
     
+    # === MONITOR PROCESS MANAGEMENT ===
+    
+    def get_active_monitors(self) -> List[Dict]:
+        """Get active monitors from database"""
+        try:
+            conn = self.get_database_connection()
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, name, status 
+                    FROM users.monitor_list_0001 
+                    WHERE status = 'active' 
+                    ORDER BY id
+                """)
+                
+                monitors = []
+                for row in cursor.fetchall():
+                    monitor_id = row[0]
+                    name = row[1]
+                    status = row[2]
+                    
+                    # Extract user_number and monitor_id from name (e.g., "mon_0001_10001")
+                    if name.startswith("mon_"):
+                        parts = name.split("_")
+                        if len(parts) >= 3:
+                            user_number = parts[1]  # 0001
+                            monitor_id = parts[2]   # 10001
+                        else:
+                            user_number = "0001"
+                            monitor_id = str(monitor_id)
+                    else:
+                        user_number = "0001"
+                        monitor_id = str(monitor_id)
+                    
+                    monitors.append({
+                        'id': monitor_id,
+                        'name': name,
+                        'status': status,
+                        'user_number': user_number,
+                        'monitor_id': monitor_id
+                    })
+                
+                conn.close()
+                return monitors
+                
+        except Exception as e:
+            self.log_event("ERROR", f"Error getting active monitors from database: {e}")
+            return []
+    
+    def get_running_monitor_processes(self) -> List[str]:
+        """Get list of currently running monitor-specific processes"""
+        try:
+            from backend.util.paths import get_supervisorctl_path, get_supervisor_config_path
+            
+            result = subprocess.run(
+                [get_supervisorctl_path(), "-c", get_supervisor_config_path(), "status"],
+                capture_output=True, text=True, timeout=10
+            )
+            
+            running_processes = []
+            if result.returncode == 0:
+                for line in result.stdout.strip().split('\n'):
+                    if line.strip():
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            process_name = parts[0]
+                            status = parts[1]
+                            
+                            # Check if it's a monitor-specific process
+                            if ((process_name.startswith('auto_entry_supervisor_') or 
+                                 process_name.startswith('active_trade_supervisor_')) and
+                                status == "RUNNING"):
+                                running_processes.append(process_name)
+            
+            return running_processes
+            
+        except Exception as e:
+            self.log_event("ERROR", f"Error getting running monitor processes: {e}")
+            return []
+    
+    def _create_environment_variables(self) -> str:
+        """Create environment variables string for supervisor"""
+        try:
+            env_vars = [
+                f'PATH="{self.unified_config.get("runtime.venv_path", "")}/bin"',
+                f'PYTHONPATH="{self.project_root}"',
+                'PYTHONGC=1',
+                'PYTHONDNSCACHE=1',
+                f'TRADING_SYSTEM_HOST="{self.unified_config.get("runtime.system_host", "localhost")}"',
+                f'REC_SYSTEM_HOST="{self.unified_config.get("runtime.system_host", "localhost")}"',
+                f'REC_PROJECT_ROOT="{self.project_root}"',
+                f'REC_ENVIRONMENT="{self.unified_config.get("system.environment", "development")}"',
+                f'DB_HOST="{self.db_config.get("host", "localhost")}"',
+                f'DB_NAME="{self.db_config.get("name", "rec_io_db")}"',
+                f'DB_USER="{self.db_config.get("user", "rec_io_user")}"',
+                f'DB_PASSWORD="{self.db_config.get("password", "rec_io_password")}"',
+                f'DB_PORT="{self.db_config.get("port", 5432)}"',
+                f'POSTGRES_HOST="{self.db_config.get("host", "localhost")}"',
+                f'POSTGRES_DB="{self.db_config.get("name", "rec_io_db")}"',
+                f'POSTGRES_USER="{self.db_config.get("user", "rec_io_user")}"',
+                f'POSTGRES_PASSWORD="{self.db_config.get("password", "rec_io_password")}"',
+                f'POSTGRES_PORT="{self.db_config.get("port", 5432)}"',
+                f'REC_DB_HOST="{self.db_config.get("host", "localhost")}"',
+                f'REC_DB_NAME="{self.db_config.get("name", "rec_io_db")}"',
+                f'REC_DB_USER="{self.db_config.get("user", "rec_io_user")}"',
+                f'REC_DB_PASS="{self.db_config.get("password", "rec_io_password")}"',
+                f'REC_DB_PORT="{self.db_config.get("port", 5432)}"',
+                f'REC_DB_SSLMODE="{self.db_config.get("sslmode", "disable")}"'
+            ]
+            
+            return ','.join(env_vars)
+            
+        except Exception as e:
+            self.log_event("ERROR", f"Error creating environment variables: {e}")
+            return f'PATH="{self.unified_config.get("runtime.venv_path", "")}/bin",PYTHONPATH="{self.project_root}",PYTHONGC=1,PYTHONDNSCACHE=1'
+    
+    def create_monitor_config_section(self, monitor: Dict, port_offset: int) -> str:
+        """Create supervisor config section for a monitor"""
+        user_number = monitor['user_number']
+        monitor_id = monitor['monitor_id']
+        monitor_identifier = f"{user_number}_{monitor_id}"
+        
+        # Get environment variables
+        env_vars = self._create_environment_variables()
+        
+        # Get log file paths
+        log_dir = os.path.join(self.project_root, 'logs')
+        
+        # Auto entry supervisor
+        auto_entry_port = self.monitor_port_base + (port_offset * 2)
+        auto_entry_config = f"""[program:auto_entry_supervisor_{monitor_identifier}]
+command={self.python_executable} {self.project_root}/backend/auto_entry_supervisor.py {monitor_identifier}
+directory={self.project_root}
+autostart=true
+autorestart=true
+startretries=3
+stopasgroup=true
+killasgroup=true
+stderr_logfile={log_dir}/auto_entry_supervisor_{monitor_identifier}.err.log
+stdout_logfile={log_dir}/auto_entry_supervisor_{monitor_identifier}.out.log
+environment={env_vars}
+
+"""
+        
+        # Active trade supervisor
+        active_trade_port = self.monitor_port_base + (port_offset * 2) + 1
+        active_trade_config = f"""[program:active_trade_supervisor_{monitor_identifier}]
+command={self.python_executable} {self.project_root}/backend/active_trade_supervisor.py {monitor_identifier}
+directory={self.project_root}
+autostart=true
+autorestart=true
+startretries=3
+stopasgroup=true
+killasgroup=true
+stderr_logfile={log_dir}/active_trade_supervisor_{monitor_identifier}.err.log
+stdout_logfile={log_dir}/active_trade_supervisor_{monitor_identifier}.out.log
+environment={env_vars}
+
+"""
+        
+        return auto_entry_config + active_trade_config
+    
+    def spawn_monitor_processes(self, monitor: Dict) -> bool:
+        """Spawn processes for a specific monitor by regenerating supervisor config"""
+        try:
+            self.log_event("INFO", f"Regenerating supervisor config for monitor {monitor['user_number']}_{monitor['monitor_id']}")
+            
+            # Regenerate supervisor configuration
+            result = subprocess.run([
+                sys.executable, 
+                os.path.join(self.project_root, 'scripts', 'generate_unified_supervisor_config.py')
+            ], capture_output=True, text=True, timeout=30)
+            
+            if result.returncode != 0:
+                self.log_event("ERROR", f"Error regenerating supervisor config: {result.stderr}")
+                return False
+            
+            # Reread and update supervisor
+            from backend.util.paths import get_supervisorctl_path, get_supervisor_config_path
+            
+            result = subprocess.run([
+                get_supervisorctl_path(), 
+                "-c", get_supervisor_config_path(), 
+                "reread"
+            ], capture_output=True, text=True, timeout=10)
+            
+            if result.returncode != 0:
+                self.log_event("ERROR", f"Error rereading supervisor config: {result.stderr}")
+                return False
+            
+            result = subprocess.run([
+                get_supervisorctl_path(), 
+                "-c", get_supervisor_config_path(), 
+                "update"
+            ], capture_output=True, text=True, timeout=10)
+            
+            if result.returncode != 0:
+                self.log_event("ERROR", f"Error updating supervisor: {result.stderr}")
+                return False
+            
+            self.log_event("SUCCESS", f"Supervisor config regenerated and updated for monitor {monitor['user_number']}_{monitor['monitor_id']}")
+            return True
+            
+        except Exception as e:
+            self.log_event("ERROR", f"Error spawning monitor processes: {e}")
+            return False
+    
+    def remove_monitor_processes(self, monitor: Dict) -> bool:
+        """Remove processes for a specific monitor by regenerating supervisor config"""
+        try:
+            self.log_event("INFO", f"Regenerating supervisor config to remove monitor {monitor['user_number']}_{monitor['monitor_id']}")
+            
+            # Regenerate supervisor configuration
+            result = subprocess.run([
+                sys.executable, 
+                os.path.join(self.project_root, 'scripts', 'generate_unified_supervisor_config.py')
+            ], capture_output=True, text=True, timeout=30)
+            
+            if result.returncode != 0:
+                self.log_event("ERROR", f"Error regenerating supervisor config: {result.stderr}")
+                return False
+            
+            # Reread and update supervisor
+            from backend.util.paths import get_supervisorctl_path, get_supervisor_config_path
+            
+            result = subprocess.run([
+                get_supervisorctl_path(), 
+                "-c", get_supervisor_config_path(), 
+                "reread"
+            ], capture_output=True, text=True, timeout=10)
+            
+            if result.returncode != 0:
+                self.log_event("ERROR", f"Error rereading supervisor config: {result.stderr}")
+                return False
+            
+            result = subprocess.run([
+                get_supervisorctl_path(), 
+                "-c", get_supervisor_config_path(), 
+                "update"
+            ], capture_output=True, text=True, timeout=10)
+            
+            if result.returncode != 0:
+                self.log_event("ERROR", f"Error updating supervisor: {result.stderr}")
+                return False
+            
+            self.log_event("SUCCESS", f"Supervisor config regenerated and updated to remove monitor {monitor['user_number']}_{monitor['monitor_id']}")
+            return True
+            
+        except Exception as e:
+            self.log_event("ERROR", f"Error removing monitor processes: {e}")
+            return False
+    
+    def sync_monitor_processes(self) -> bool:
+        """Sync monitor processes with database state"""
+        self.log_event("INFO", "Syncing monitor processes with database state")
+        
+        # Get active monitors from database
+        active_monitors = self.get_active_monitors()
+        self.log_event("INFO", f"Found {len(active_monitors)} active monitors in database")
+        
+        # Get currently running monitor processes
+        running_processes = self.get_running_monitor_processes()
+        self.log_event("INFO", f"Found {len(running_processes)} running monitor processes")
+        
+        # Extract monitor identifiers from running processes
+        running_monitors = set()
+        for process_name in running_processes:
+            if process_name.startswith('auto_entry_supervisor_'):
+                monitor_id = process_name.replace('auto_entry_supervisor_', '')
+                running_monitors.add(monitor_id)
+            elif process_name.startswith('active_trade_supervisor_'):
+                monitor_id = process_name.replace('active_trade_supervisor_', '')
+                running_monitors.add(monitor_id)
+        
+        # Get active monitor identifiers
+        active_monitor_ids = set()
+        for monitor in active_monitors:
+            monitor_id = f"{monitor['user_number']}_{monitor['monitor_id']}"
+            active_monitor_ids.add(monitor_id)
+        
+        # Spawn processes for monitors that should be active but aren't running
+        for monitor in active_monitors:
+            monitor_id = f"{monitor['user_number']}_{monitor['monitor_id']}"
+            if monitor_id not in running_monitors:
+                self.log_event("INFO", f"Spawning processes for monitor {monitor_id}")
+                self.spawn_monitor_processes(monitor)
+        
+        # Remove processes for monitors that are running but shouldn't be active
+        for monitor_id in running_monitors:
+            if monitor_id not in active_monitor_ids:
+                self.log_event("INFO", f"Removing processes for monitor {monitor_id}")
+                # Create monitor dict for removal
+                parts = monitor_id.split('_')
+                if len(parts) >= 2:
+                    monitor = {
+                        'user_number': parts[0],
+                        'monitor_id': parts[1]
+                    }
+                    self.remove_monitor_processes(monitor)
+        
+        self.log_event("SUCCESS", "Monitor process sync completed")
+        
+        # Alert frontend to refresh monitor list
+        try:
+            import requests
+            self.log_event("INFO", "Sending monitor list update alert to frontend")
+            response = requests.post('http://localhost:3000/api/broadcast_monitor_list_update', json={
+                'type': 'monitor_list_updated',
+                'message': 'Monitor list has been updated'
+            }, timeout=1)
+            self.log_event("INFO", f"Monitor list update alert sent, response: {response.status_code}")
+        except Exception as e:
+            self.log_event("WEBSOCKET_ERROR", f"Failed to send monitor list update notification: {str(e)}")
+        
+        return True
+
     # === CORE FUNCTIONALITY (Starting Point) ===
     
     def handle_bankroll_update(self) -> Dict[str, Any]:
@@ -409,8 +734,8 @@ def bankroll_updated():
     return jsonify(monitor_manager.handle_bankroll_update())
 
 @app.route('/api/update_monitor_position', methods=['POST'])
-def update_monitor_position():
-    """Endpoint to update monitor position variables and recalculate total_position"""
+def update_monitor_position_variables():
+    """Update monitor position variables and recalculate total_position"""
     try:
         data = request.get_json()
         monitor_id = data.get('monitor_id')
@@ -418,17 +743,141 @@ def update_monitor_position():
         position_type = data.get('position_type')
         multiplier = data.get('multiplier')
         
-        if not monitor_id:
-            return jsonify({"status": "error", "message": "monitor_id is required"})
+        print(f"[MONITOR_MANAGER] Updating monitor {monitor_id} position variables")
+        print(f"[MONITOR_MANAGER] Position size: {position_size}, type: {position_type}, multiplier: {multiplier}")
         
-        return jsonify(monitor_manager.update_monitor_position_variables(monitor_id, position_size, position_type, multiplier))
+        # Update the monitor_list table with new values
+        conn = monitor_manager.get_database_connection() # Use monitor_manager's connection
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                UPDATE users.monitor_list_0001 
+                SET position_size = %s, position_type = %s, multiplier = %s
+                WHERE id = %s
+            """, (position_size, position_type, multiplier, monitor_id))
+            conn.commit()
+        
+        # Recalculate total_position using monitor_manager method
+        result = monitor_manager.update_monitor_position_variables(monitor_id, position_size, position_type, multiplier)
+        
+        if result.get('status') == 'error':
+            return jsonify({'success': False, 'error': result.get('message')}), 500
+        
+        # The monitor_manager method already handles the total_position calculation and WebSocket notification
+        total_position = result.get('total_position', 0)
+        
+        return jsonify({'success': True, 'total_position': total_position})
+        
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
+        print(f"[MONITOR_MANAGER] Error updating monitor position: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/sync_monitor_processes', methods=['POST'])
+def sync_monitor_processes():
+    """Manually trigger monitor process sync"""
+    try:
+        print("[MONITOR_MANAGER] Manual monitor process sync requested")
+        
+        # Use monitor_manager's built-in sync method
+        success = monitor_manager.sync_monitor_processes()
+        
+        if success:
+            return jsonify({'success': True, 'message': 'Monitor processes synced successfully'})
+        else:
+            return jsonify({'success': False, 'error': 'Monitor process sync failed'}), 500
+        
+    except Exception as e:
+        print(f"[MONITOR_MANAGER] Error in manual sync: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/initialize_allotments', methods=['POST'])
 def initialize_allotments():
     """Endpoint to recalculate total_position for all monitors when position variables change"""
     return jsonify(monitor_manager.recalculate_monitor_total_positions())
+
+@app.route('/api/monitor/create', methods=['POST'])
+def create_monitor():
+    """Create a new monitor - business logic handled here"""
+    try:
+        data = request.get_json()
+        
+        # Extract parameters from request body
+        symbol = data.get("symbol")
+        strategy = data.get("strategy")
+        bankroll_allotment_pct = data.get("bankroll_allotment_pct", 10)
+        position_size = data.get("position_size", 100)
+        multiplier = data.get("multiplier", 1.0)
+        user_id = data.get("user_id", "user_0001")
+        
+        if not symbol or not strategy:
+            return jsonify({"status": "error", "message": "Missing symbol or strategy parameter"}), 400
+        
+        # Extract user number from user_id (e.g., user_0001 -> 0001)
+        user_number = user_id.replace("user_", "")
+        
+        conn = monitor_manager.get_database_connection()
+        if not conn:
+            return jsonify({"status": "error", "message": "Database connection failed"}), 500
+        
+        with conn.cursor() as cursor:
+            # Let PostgreSQL handle the ID automatically with SERIAL
+            cursor.execute(f"""
+                INSERT INTO users.monitor_list_{user_number}
+                (name, symbol, strategy, auto_trade, auto_trade_status, status, bankroll_allotment_pct, position_size, multiplier, trades, win_loss, ret_pct, pnl, dashboard_order, created)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                RETURNING id
+            """, (
+                f"mon_{user_number}_temp",  # Temporary name
+                symbol,
+                strategy,
+                False,  # auto_trade defaults to False
+                'off',  # auto_trade_status defaults to 'off'
+                'active',  # status defaults to 'active'
+                bankroll_allotment_pct,
+                position_size,
+                multiplier,
+                0,  # trades defaults to 0
+                0,  # win_loss defaults to 0
+                0,  # ret_pct defaults to 0
+                0,  # pnl defaults to 0
+                999,  # dashboard_order defaults to 999 (end of list)
+            ))
+            
+            # Get the generated ID
+            monitor_id = cursor.fetchone()[0]
+            
+            # Generate the proper monitor name based on the ID
+            monitor_name = f"mon_{user_number}_{monitor_id}"
+            
+            # Update the name with the correct ID
+            cursor.execute(f"""
+                UPDATE users.monitor_list_{user_number}
+                SET name = %s
+                WHERE id = %s
+            """, (monitor_name, monitor_id))
+            
+        conn.commit()
+        conn.close()
+        
+        monitor_manager.log_event("CREATE", f"Monitor {monitor_name} created successfully")
+        
+        # Spawn monitor processes for the new monitor
+        monitor_data = {
+            'user_number': user_number,
+            'monitor_id': str(monitor_id),
+            'name': monitor_name
+        }
+        monitor_manager.spawn_monitor_processes(monitor_data)
+        
+        return jsonify({
+            "status": "ok", 
+            "message": f"Monitor {monitor_name} created successfully",
+            "monitor_name": monitor_name,
+            "monitor_id": monitor_id
+        })
+        
+    except Exception as e:
+        monitor_manager.log_event("ERROR", f"Error creating monitor: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -437,7 +886,7 @@ def health_check():
         "status": "healthy", 
         "service": "monitor_manager",
         "version": "1.0.0",
-        "capabilities": ["bankroll_updates", "position_calculation", "monitor_allotments", "frontend_sync"]
+        "capabilities": ["bankroll_updates", "position_calculation", "monitor_allotments", "frontend_sync", "monitor_creation"]
     })
 
 # === FUTURE ENDPOINTS (Foundation) ===
@@ -459,6 +908,103 @@ def sync_all_states():
     """Future: Synchronize all monitor states"""
     # TODO: Implement comprehensive state synchronization
     return jsonify({"status": "not_implemented", "message": "Future expansion"})
+
+class MonitorStatusWatcher:
+    """Background thread to watch for monitor status changes"""
+    
+    def __init__(self, monitor_manager_instance):
+        self.monitor_manager = monitor_manager_instance
+        self.running = False
+        self.thread = None
+        self.last_status = {}  # Cache of last known status for each monitor
+        
+    def start(self):
+        """Start the status watcher thread"""
+        if not self.running:
+            self.running = True
+            self.thread = threading.Thread(target=self._watch_loop, daemon=True)
+            self.thread.start()
+            print("[MONITOR_MANAGER] Monitor status watcher started")
+    
+    def stop(self):
+        """Stop the status watcher thread"""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=5)
+        print("[MONITOR_MANAGER] Monitor status watcher stopped")
+    
+    def _watch_loop(self):
+        """Main watching loop"""
+        while self.running:
+            try:
+                self._check_for_status_changes()
+                time.sleep(10)  # Check every 10 seconds
+            except Exception as e:
+                print(f"[MONITOR_MANAGER] Error in status watcher: {e}")
+                time.sleep(30)  # Wait longer on error
+    
+    def _check_for_status_changes(self):
+        """Check for monitor status changes in the database"""
+        try:
+            conn = self.monitor_manager.get_database_connection()
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, status FROM users.monitor_list_0001 
+                    ORDER BY id
+                """)
+                
+                current_status = {}
+                for row in cursor.fetchall():
+                    monitor_id = row[0]
+                    status = row[1]
+                    current_status[monitor_id] = status
+                
+                conn.close()
+                
+                # Check for changes
+                for monitor_id, status in current_status.items():
+                    if monitor_id not in self.last_status or self.last_status[monitor_id] != status:
+                        print(f"[MONITOR_MANAGER] Status change detected: Monitor {monitor_id} changed from {self.last_status.get(monitor_id, 'unknown')} to {status}")
+                        self._handle_status_change(monitor_id, status)
+                        self.last_status[monitor_id] = status
+                
+                # Check for removed monitors
+                for monitor_id in list(self.last_status.keys()):
+                    if monitor_id not in current_status:
+                        print(f"[MONITOR_MANAGER] Monitor {monitor_id} removed from database")
+                        del self.last_status[monitor_id]
+                        
+        except Exception as e:
+            print(f"[MONITOR_MANAGER] Error checking status changes: {e}")
+    
+    def _handle_status_change(self, monitor_id, new_status):
+        """Handle a monitor status change"""
+        try:
+            print(f"[MONITOR_MANAGER] Status change detected: Monitor {monitor_id} changed to {new_status}")
+            
+            # Use monitor_manager's built-in sync method
+            success = self.monitor_manager.sync_monitor_processes()
+            
+            if success:
+                print(f"[MONITOR_MANAGER] Monitor process sync completed successfully for monitor {monitor_id}")
+            else:
+                print(f"[MONITOR_MANAGER] Monitor process sync failed for monitor {monitor_id}")
+                
+        except Exception as e:
+            print(f"[MONITOR_MANAGER] Error handling status change for monitor {monitor_id}: {e}")
+
+# Initialize monitor manager instance
+monitor_manager = MonitorManager()
+
+# Initialize the status watcher
+status_watcher = MonitorStatusWatcher(monitor_manager)
+
+def start_status_watcher():
+    """Start the monitor status watcher when the Flask app starts"""
+    status_watcher.start()
+
+# Start the status watcher immediately
+start_status_watcher()
 
 if __name__ == "__main__":
     print("[MONITOR MANAGER] 🚀 Starting Core Monitor Management System")

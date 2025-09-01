@@ -45,17 +45,20 @@ class CascadingFailureDetector:
         self.restart_count = 0
         
         # Service monitoring - only truly critical services
-        self.critical_services = [
+        # Core services that are always critical
+        self.core_critical_services = [
             "main_app",           # Core web interface
             "trade_manager",       # Trade management
             "trade_executor",      # Trade execution
-            "active_trade_supervisor",  # Active trade monitoring
-                    "symbol_price_watchdog_btc", # BTC price data
-        "symbol_price_watchdog_eth", # ETH price data
-        "strike_table_generator", # Strike table data
+            "symbol_price_watchdog_btc", # BTC price data
+            "symbol_price_watchdog_eth", # ETH price data
+            "strike_table_generator", # Strike table data
             "kalshi_account_sync", # Kalshi API sync
             "kalshi_market_watchdog" # Kalshi market data
         ]
+        
+        # Monitor-specific services will be added dynamically
+        self.critical_services = self.core_critical_services.copy()
         
         # Service health tracking
         self.service_health = {}
@@ -79,6 +82,64 @@ class CascadingFailureDetector:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{timestamp}] {message}")
         sys.stdout.flush()
+    
+    def _update_critical_services(self):
+        """Update critical services list to include active monitor processes"""
+        try:
+            import psycopg2
+            
+            # Get active monitors from database
+            conn = psycopg2.connect(
+                host="localhost",
+                database="rec_io_db",
+                user="rec_io_user",
+                password="rec_io_password"
+            )
+            
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, name, status 
+                    FROM users.monitor_list_0001 
+                    WHERE status = 'active' 
+                    ORDER BY id
+                """)
+                
+                monitor_services = []
+                for row in cursor.fetchall():
+                    monitor_id = row[0]
+                    name = row[1]
+                    
+                    # Extract user_number and monitor_id from name (e.g., "mon_0001_10001")
+                    if name.startswith("mon_"):
+                        parts = name.split("_")
+                        if len(parts) >= 3:
+                            user_number = parts[1]  # 0001
+                            monitor_id = parts[2]   # 10001
+                        else:
+                            user_number = "0001"
+                            monitor_id = str(monitor_id)
+                    else:
+                        user_number = "0001"
+                        monitor_id = str(monitor_id)
+                    
+                    monitor_identifier = f"{user_number}_{monitor_id}"
+                    
+                    # Add monitor-specific services to critical list
+                    monitor_services.extend([
+                        f"auto_entry_supervisor_{monitor_identifier}",
+                        f"active_trade_supervisor_{monitor_identifier}"
+                    ])
+                
+                conn.close()
+                
+                # Update critical services list
+                self.critical_services = self.core_critical_services + monitor_services
+                self._log_event(f"Updated critical services: {len(self.critical_services)} total ({len(monitor_services)} monitor-specific)")
+                
+        except Exception as e:
+            self._log_event(f"Error updating critical services: {e}")
+            # Keep existing critical services if update fails
+            self.critical_services = self.core_critical_services.copy()
     
     def check_service_health(self, service_name: str) -> Dict[str, Any]:
         """Check health of a specific service."""
@@ -376,6 +437,9 @@ class CascadingFailureDetector:
         
         try:
             while True:
+                # Update critical services list to include active monitor processes
+                self._update_critical_services()
+                
                 # Update service health
                 self.update_service_health()
                 
