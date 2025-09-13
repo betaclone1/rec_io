@@ -154,24 +154,24 @@ update_monitor_status() {
     log_success "Updated monitor $monitor_id status to '$status'"
 }
 
-# Function to update auto trade status
-update_auto_trade_status() {
-    local user_id="$1"
-    local monitor_id="$2"
-    local auto_trade_status="$3"
-    
-    local user_number=$(get_user_number "$user_id")
-    
-    log_info "Updating monitor $monitor_id auto trade status to '$auto_trade_status' for user $user_id..."
-    
-    PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -p "$DB_PORT" -c "
-        UPDATE users.monitor_list_${user_number}
-        SET auto_trade_status = '$auto_trade_status'
-        WHERE id = $monitor_id;
-    "
-    
-    log_success "Updated monitor $monitor_id auto trade status to '$auto_trade_status'"
-}
+# Function to update auto trade status - REMOVED: now controlled by auto_entry_supervisor
+# update_auto_trade_status() {
+#     local user_id="$1"
+#     local monitor_id="$2"
+#     local auto_trade_status="$3"
+#     
+#     local user_number=$(get_user_number "$user_id")
+#     
+#     log_info "Updating monitor $monitor_id auto trade status to '$auto_trade_status' for user $user_id..."
+#     
+#     PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -p "$DB_PORT" -c "
+#         UPDATE users.monitor_list_${user_number}
+#         SET auto_trade_status = '$auto_trade_status'
+#         WHERE id = $monitor_id;
+#     "
+#     
+#     log_success "Updated monitor $monitor_id auto trade status to '$auto_trade_status'"
+# }
 
 # Function to delete a monitor
 delete_monitor() {
@@ -230,7 +230,7 @@ show_usage() {
     echo "  list <user_id>                            - List all monitors for user"
     echo "  add <user_id> <name> <symbol> <strategy> [auto_trade] [bankroll] - Add new monitor"
     echo "  update-status <user_id> <monitor_id> <status> - Update monitor status"
-    echo "  update-auto-trade <user_id> <monitor_id> <status> - Update auto trade status"
+    echo "  # update-auto-trade command removed - auto_trade_status now controlled by auto_entry_supervisor"
     echo "  delete <user_id> <monitor_id>             - Delete monitor"
     echo "  show <user_id> <monitor_id>               - Show monitor details"
     echo "  help                                       - Show this help"
@@ -240,7 +240,7 @@ show_usage() {
     echo "  $0 list user_0001"
     echo "  $0 add user_0001 'BTC Monitor' BTC momentum_based true 25.0"
     echo "  $0 update-status user_0001 10001 active"
-    echo "  $0 update-auto-trade user_0001 10001 paused"
+    echo "  # $0 update-auto-trade user_0001 10001 paused  # Command removed"
     echo "  $0 delete user_0001 10001"
     echo "  $0 show user_0001 10001"
     echo ""
@@ -282,14 +282,7 @@ case "${1:-help}" in
         fi
         update_monitor_status "$2" "$3" "$4"
         ;;
-    "update-auto-trade")
-        if [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
-            log_error "User ID, monitor ID, and auto trade status required"
-            show_usage
-            exit 1
-        fi
-        update_auto_trade_status "$2" "$3" "$4"
-        ;;
+    # "update-auto-trade" command removed - auto_trade_status now controlled by auto_entry_supervisor
     "delete")
         if [ -z "$2" ] || [ -z "$3" ]; then
             log_error "User ID and monitor ID required"

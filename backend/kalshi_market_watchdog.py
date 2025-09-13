@@ -2,7 +2,9 @@
 
 import sys
 import os
+import argparse
 # Add the project root to the Python path (permanent scalable fix)
+sys.path.insert(0, '/opt/rec_io_server')
 from backend.util.paths import get_project_root
 if get_project_root() not in sys.path:
     sys.path.insert(0, get_project_root())
@@ -34,7 +36,9 @@ DB_CONFIG = {
     'password': os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
 }
 
+# Global variables
 last_failed_ticker = None  # Global tracker
+SYMBOL = None  # Will be set from command line argument
 
 def get_watchdog_port():
     return 5432  # Default PostgreSQL port
@@ -48,14 +52,15 @@ def connect_database():
         print(f"[{datetime.now(EST)}] ❌ Database connection failed: {e}")
         return None
 
-def create_market_kalshi_btc_table(connection):
-    """Create the market_kalshi_btc table if it doesn't exist"""
+def create_market_kalshi_table(connection, symbol):
+    """Create the market_kalshi_{symbol} table if it doesn't exist"""
     try:
         cursor = connection.cursor()
         
-        # Create the market_kalshi_btc table
-        create_table_sql = """
-        CREATE TABLE IF NOT EXISTS live_data.market_kalshi_btc (
+        # Create the market_kalshi_{symbol} table
+        table_name = f"market_kalshi_{symbol.lower()}"
+        create_table_sql = f"""
+        CREATE TABLE IF NOT EXISTS live_data.{table_name} (
             id SERIAL PRIMARY KEY,
             event_ticker VARCHAR(50) NOT NULL,
             market_ticker VARCHAR(100) NOT NULL,
@@ -78,9 +83,10 @@ def create_market_kalshi_btc_table(connection):
         
         # Add unique constraint if it doesn't exist
         try:
-            cursor.execute("""
-                ALTER TABLE live_data.market_kalshi_btc 
-                ADD CONSTRAINT market_kalshi_btc_event_market_unique 
+            constraint_name = f"{table_name}_event_market_unique"
+            cursor.execute(f"""
+                ALTER TABLE live_data.{table_name} 
+                ADD CONSTRAINT {constraint_name} 
                 UNIQUE (event_ticker, market_ticker)
             """)
         except Exception:
@@ -88,22 +94,23 @@ def create_market_kalshi_btc_table(connection):
             pass
         
         connection.commit()
-        print(f"[{datetime.now(EST)}] ✅ Market Kalshi BTC table ready")
+        print(f"[{datetime.now(EST)}] ✅ Market Kalshi {symbol.upper()} table ready")
         
     except Exception as e:
         print(f"[{datetime.now(EST)}] ❌ Failed to create table: {e}")
         connection.rollback()
 
-def get_current_btc_price():
-    """Get current BTC price from the price log"""
+def get_current_price(symbol):
+    """Get current {symbol} price from the price log"""
     try:
         connection = connect_database()
         if not connection:
             return None
             
         cursor = connection.cursor()
-        cursor.execute("""
-            SELECT price FROM live_data.live_price_log_1s_btc 
+        table_name = f"live_price_log_1s_{symbol.lower()}"
+        cursor.execute(f"""
+            SELECT price FROM live_data.{table_name} 
             ORDER BY timestamp DESC LIMIT 1
         """)
         result = cursor.fetchone()
@@ -114,20 +121,42 @@ def get_current_btc_price():
         return None
         
     except Exception as e:
-        print(f"[{datetime.now(EST)}] ❌ Error getting BTC price: {e}")
+        print(f"[{datetime.now(EST)}] ❌ Error getting {symbol.upper()} price: {e}")
         return None
 
-def get_current_event_ticker():
+def get_current_event_ticker(symbol):
     global last_failed_ticker
     now = datetime.now(EST)
 
-    # Construct current hour ticker
+    # Define symbol-specific ticker prefixes and formats
+    symbol_config = {
+        'BTC': {'prefix': 'KXBTCD', 'format': 'crypto'},
+        'ETH': {'prefix': 'KXETHD', 'format': 'crypto'},
+        'INX': {'prefix': 'KXINXU', 'format': 'financial'},
+        'NASDAQ100': {'prefix': 'KXNASDAQ100U', 'format': 'financial'}
+    }
+    
+    if symbol.upper() not in symbol_config:
+        print(f"❌ Unsupported symbol: {symbol}")
+        return None, None
+    
+    config = symbol_config[symbol.upper()]
+    ticker_prefix = config['prefix']
+    format_type = config['format']
+    
+    # Construct current hour ticker based on format
     test_time = now + timedelta(hours=1)
     year_str = test_time.strftime("%y")
     month_str = test_time.strftime("%b").upper()
     day_str = test_time.strftime("%d")
     hour_str = test_time.strftime("%H")
-    current_ticker = f"KXBTCD-{year_str}{month_str}{day_str}{hour_str}"
+    
+    if format_type == 'crypto':
+        # Crypto format: KXBTCD-25SEP1013
+        current_ticker = f"{ticker_prefix}-{year_str}{month_str}{day_str}{hour_str}"
+    else:
+        # Financial format: KXINXU-25SEP11H1400
+        current_ticker = f"{ticker_prefix}-{year_str}{month_str}{day_str}H{hour_str}00"
 
     # Skip retrying if last attempt already failed this ticker
     if last_failed_ticker != current_ticker:
@@ -138,12 +167,16 @@ def get_current_event_ticker():
             last_failed_ticker = current_ticker
 
     # Try next hour
-    test_time = now + timedelta(hours=1)
+    test_time = now + timedelta(hours=2)
     year_str = test_time.strftime("%y")
     month_str = test_time.strftime("%b").upper()
     day_str = test_time.strftime("%d")
     hour_str = test_time.strftime("%H")
-    next_ticker = f"KXBTCD-{year_str}{month_str}{day_str}{hour_str}"
+    
+    if format_type == 'crypto':
+        next_ticker = f"{ticker_prefix}-{year_str}{month_str}{day_str}{hour_str}"
+    else:
+        next_ticker = f"{ticker_prefix}-{year_str}{month_str}{day_str}H{hour_str}00"
 
     data = fetch_event_json(next_ticker)
     if data and "markets" in data:
@@ -165,14 +198,15 @@ def fetch_event_json(event_ticker):
         print(f"[{datetime.now(EST)}] ❌ Exception fetching event JSON: {e}")
         return None
 
-def save_market_data_to_postgresql(event_ticker, markets_data):
-    """Save market data to PostgreSQL market_kalshi_btc table"""
+def save_market_data_to_postgresql(event_ticker, markets_data, symbol):
+    """Save market data to PostgreSQL market_kalshi_{symbol} table"""
     try:
         connection = connect_database()
         if not connection:
             return False
             
         cursor = connection.cursor()
+        table_name = f"market_kalshi_{symbol.lower()}"
         
         # Insert/update market data using ON CONFLICT
         for market in markets_data:
@@ -195,8 +229,8 @@ def save_market_data_to_postgresql(event_ticker, markets_data):
                 liquidity = market.get("liquidity", 0)
                 
                 # Insert with ON CONFLICT to handle updates
-                cursor.execute("""
-                    INSERT INTO live_data.market_kalshi_btc 
+                cursor.execute(f"""
+                    INSERT INTO live_data.{table_name} 
                     (event_ticker, market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask,
                      last_price, volume, volume_24h, open_interest, liquidity, updated_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
@@ -231,34 +265,64 @@ def save_market_data_to_postgresql(event_ticker, markets_data):
         return False
 
 def main():
-    print(f"[{datetime.now(EST)}] 🚀 Starting Kalshi API Market Kalshi BTC Watchdog")
+    global SYMBOL
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Kalshi Market Watchdog for Symbol')
+    parser.add_argument('symbol', help='Symbol to monitor (e.g., BTC, ETH)')
+    args = parser.parse_args()
+    
+    SYMBOL = args.symbol.upper()
+    
+    print(f"[{datetime.now(EST)}] 🚀 Starting Kalshi API Market {SYMBOL} Watchdog")
     
     # Initialize database table
     connection = connect_database()
     if connection:
-        create_market_kalshi_btc_table(connection)
+        create_market_kalshi_table(connection, SYMBOL)
         connection.close()
+    
+    # Track previous event ticker for cleanup
+    previous_event_ticker = None
     
     while True:
         try:
             # Get current event ticker and data using same logic as active kalshi_api_watchdog
-            event_ticker, event_data = get_current_event_ticker()
+            event_ticker, event_data = get_current_event_ticker(SYMBOL)
             
             if event_ticker and event_data and "markets" in event_data:
+                # Check if market changed - if so, clean up old data
+                if previous_event_ticker and previous_event_ticker != event_ticker:
+                    print(f"[{datetime.now(EST)}] 🔄 Market changed: {previous_event_ticker} → {event_ticker}")
+                    print(f"[{datetime.now(EST)}] 🧹 Cleaning up old market data...")
+                    
+                    # Truncate table to remove old market data
+                    connection = connect_database()
+                    if connection:
+                        cursor = connection.cursor()
+                        table_name = f"live_data.market_kalshi_{SYMBOL.lower()}"
+                        cursor.execute(f"TRUNCATE TABLE {table_name}")
+                        connection.commit()
+                        connection.close()
+                        print(f"[{datetime.now(EST)}] ✅ Cleaned up old market data")
+                
                 print(f"[{datetime.now(EST)}] 📊 Processing event: {event_ticker}")
                 
                 # Save to PostgreSQL
-                success = save_market_data_to_postgresql(event_ticker, event_data["markets"])
+                success = save_market_data_to_postgresql(event_ticker, event_data["markets"], SYMBOL)
                 
                 if not success:
                     print(f"[{datetime.now(EST)}] ❌ Failed to save data for {event_ticker}")
+                
+                # Update previous event ticker
+                previous_event_ticker = event_ticker
             else:
                 print(f"[{datetime.now(EST)}] ⚠️ No active event found")
             
             time.sleep(POLL_INTERVAL_SECONDS)
             
         except KeyboardInterrupt:
-            print(f"\n[{datetime.now(EST)}] 🛑 Kalshi API Market Kalshi BTC Watchdog stopped")
+            print(f"\n[{datetime.now(EST)}] 🛑 Kalshi API Market {SYMBOL} Watchdog stopped")
             break
         except Exception as e:
             print(f"[{datetime.now(EST)}] ❌ Unexpected error: {e}")

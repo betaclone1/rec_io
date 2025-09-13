@@ -358,19 +358,20 @@ function renderActiveTradeSupervisorTrades(activeTrades) {
     activeTradeSupervisorTableBody.appendChild(spannerRow);
   } else {
     // There are active trades - add current price spanner row
-    // Try to get current BTC price, with fallback
-    let currentBTCPrice = typeof getCurrentBTCTickerPrice === 'function' ? getCurrentBTCTickerPrice() : null;
+    // Try to get current symbol price, with fallback
+    let currentSymbolPrice = typeof getCurrentSymbolTickerPrice === 'function' ? getCurrentSymbolTickerPrice() : 
+                            (typeof getCurrentBTCTickerPrice === 'function' ? getCurrentBTCTickerPrice() : null);
     
     // If we don't have a current price, try to get it from the first trade's strike as a fallback
-    if (currentBTCPrice === null || currentBTCPrice === "") {
+    if (currentSymbolPrice === null || currentSymbolPrice === "") {
       if (activeTrades.length > 0 && activeTrades[0].strike) {
         // Use the first trade's strike as a rough estimate
-        currentBTCPrice = parseFloat(activeTrades[0].strike.toString().replace(/[\$,]/g, ''));
+        currentSymbolPrice = parseFloat(activeTrades[0].strike.toString().replace(/[\$,]/g, ''));
       }
     }
     
-    if (currentBTCPrice !== null && currentBTCPrice !== "" && !isNaN(currentBTCPrice)) {
-      const spannerRow = createActiveTradeSupervisorSpannerRow(currentBTCPrice);
+    if (currentSymbolPrice !== null && currentSymbolPrice !== "" && !isNaN(currentSymbolPrice)) {
+      const spannerRow = createActiveTradeSupervisorSpannerRow(currentSymbolPrice);
       
       // Find the correct position to insert the spanner row
       const allRows = Array.from(activeTradeSupervisorTableBody.children);
@@ -382,7 +383,7 @@ function renderActiveTradeSupervisorTrades(activeTrades) {
         const strikeCell = row.querySelector('td');
         if (strikeCell) {
           const strike = parseFloat(strikeCell.textContent.replace(/[\$,]/g, ''));
-          if (currentBTCPrice < strike) {
+          if (currentSymbolPrice < strike) {
             insertIndex = i;
             break;
           }
@@ -407,8 +408,9 @@ async function closeActiveTrade(tradeId, ticketId) {
     
     // Use the centralized closeTrade function from the trade execution controller
     if (typeof window.closeTrade === 'function') {
-      // Get current BTC price for sell price
-      const currentPrice = typeof getCurrentBTCTickerPrice === 'function' ? getCurrentBTCTickerPrice() : 0.5;
+      // Get current symbol price for sell price
+      const currentPrice = typeof getCurrentSymbolTickerPrice === 'function' ? getCurrentSymbolTickerPrice() : 
+                          (typeof getCurrentBTCTickerPrice === 'function' ? getCurrentBTCTickerPrice() : 0.5);
 
       
       // Create a mock event object since we don't have the actual event

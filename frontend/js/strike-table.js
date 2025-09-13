@@ -30,10 +30,16 @@ window.strikeRowsMap = new Map();
 
 // === UNIFIED DATA FETCHING ===
 
+// Get current symbol from the symbol picker
+function getCurrentSymbol() {
+  const symbolPicker = document.getElementById('ticker-picker');
+  return symbolPicker ? symbolPicker.value : 'BTC';
+}
+
 // Fetch unified TTC data
-async function fetchUnifiedTTC() {
+async function fetchUnifiedTTC(symbol = 'BTC') {
   try {
-    const response = await fetch(window.location.origin + '/api/unified_ttc/btc');
+    const response = await apiCall(`/api/unified_ttc/${symbol.toLowerCase()}`);
     const data = await response.json();
     return data.ttc_seconds || 0;
   } catch (error) {
@@ -42,10 +48,66 @@ async function fetchUnifiedTTC() {
   }
 }
 
-// Fetch strike table data from PostgreSQL endpoint
-async function fetchStrikeTableData() {
+// System-agnostic API endpoint detection
+async function getApiBaseUrl() {
+  // Try current origin first
   try {
-    const response = await fetch(window.location.origin + '/api/postgresql/strike_table/btc');
+    const currentSymbol = getCurrentSymbol();
+    const testUrl = window.location.origin + `/api/postgresql/strike_table/${currentSymbol.toLowerCase()}`;
+    const response = await fetch(testUrl);
+    if (response.ok) {
+      const data = await response.json();
+      if (data && data.symbol === currentSymbol) {
+        return window.location.origin;
+      }
+    }
+  } catch (error) {
+    // Current origin doesn't have API, try alternatives
+  }
+  
+  // Try main app port (3000) - this has all the APIs
+  const mainAppUrl = `${window.location.protocol}//${window.location.hostname}:3000`;
+  try {
+    const currentSymbol = getCurrentSymbol();
+    const testUrl = mainAppUrl + `/api/postgresql/strike_table/${currentSymbol.toLowerCase()}`;
+    const response = await fetch(testUrl);
+    if (response.ok) {
+      const data = await response.json();
+      if (data && data.symbol === currentSymbol) {
+        return mainAppUrl;
+      }
+    }
+  } catch (error) {
+    // Main app not available
+  }
+  
+  // Fallback to current origin (will show errors but won't break)
+  return window.location.origin;
+}
+
+// Cache the API base URL to avoid repeated detection
+let cachedApiBaseUrl = null;
+
+// Helper function to make API calls with system-agnostic base URL
+async function apiCall(endpoint, options = {}) {
+  try {
+    // Get the correct API base URL (cached after first detection)
+    if (!cachedApiBaseUrl) {
+      cachedApiBaseUrl = await getApiBaseUrl();
+    }
+    
+    const response = await fetch(cachedApiBaseUrl + endpoint, options);
+    return response;
+  } catch (error) {
+    console.error(`Error making API call to ${endpoint}:`, error);
+    throw error;
+  }
+}
+
+// Fetch strike table data from PostgreSQL endpoint
+async function fetchStrikeTableData(symbol = 'BTC') {
+  try {
+    const response = await apiCall(`/api/postgresql/strike_table/${symbol.toLowerCase()}`);
     const data = await response.json();
     return data;
   } catch (error) {
@@ -108,9 +170,9 @@ function updateTTCDisplay(ttcSeconds) {
   }
 }
 
-// Update BTC price display from strike table data
-function updateBTCPriceDisplay(currentPrice) {
-  const priceEl = document.getElementById('btc-price-value');
+// Update symbol price display from strike table data
+function updateSymbolPriceDisplay(currentPrice) {
+  const priceEl = document.getElementById('symbol-price-value');
   if (!priceEl) return;
   
   if (currentPrice && !isNaN(currentPrice)) {
@@ -155,8 +217,11 @@ function updateMarketTitle(strikeTableData) {
 // Main function to update middle column data
 async function updateMiddleColumnData() {
   try {
+    // Get current symbol
+    const currentSymbol = getCurrentSymbol();
+    
     // Fetch strike table data (includes market title)
-    const strikeTableData = await fetchStrikeTableData();
+    const strikeTableData = await fetchStrikeTableData(currentSymbol);
     
     // Update market title
     updateMarketTitle(strikeTableData);
@@ -166,9 +231,9 @@ async function updateMiddleColumnData() {
       updateTTCDisplay(strikeTableData.ttc_seconds);
     }
     
-    // Update BTC price display from strike table data
+    // Update symbol price display from strike table data
     if (strikeTableData && strikeTableData.current_price !== undefined) {
-      updateBTCPriceDisplay(strikeTableData.current_price);
+      updateSymbolPriceDisplay(strikeTableData.current_price);
     }
     
     // Update momentum data from consolidated strike table data
@@ -245,7 +310,8 @@ function generateStrikeTableHTML() {
 }
 
 async function buildStrikeTableRows(basePrice) {
-  const strikeTableData = await fetchStrikeTableData();
+  const currentSymbol = getCurrentSymbol();
+  const strikeTableData = await fetchStrikeTableData(currentSymbol);
   
   // Use actual strikes from API response but limit to 14 total (7 above + 7 below current price)
   if (strikeTableData && strikeTableData.strikes && strikeTableData.strikes.length > 0) {
@@ -365,8 +431,11 @@ async function initializeStrikeTable(basePrice) {
 // Update strike table with data from unified endpoint
 async function updateStrikeTable() {
   try {
+    // Get current symbol
+    const currentSymbol = getCurrentSymbol();
+    
     // Fetch strike table data from unified endpoint
-    const strikeTableData = await fetchStrikeTableData();
+    const strikeTableData = await fetchStrikeTableData(currentSymbol);
     if (!strikeTableData || !strikeTableData.strikes) {
       console.error('No strike table data available');
       return;
@@ -407,7 +476,7 @@ async function updateStrikeTable() {
       
       if (strikeData) {
         // Buffer (pre-calculated)
-        bufferTd.textContent = strikeData.buffer.toLocaleString(undefined, {maximumFractionDigits: 0});
+        bufferTd.textContent = strikeData.buffer.toFixed(2);
 
         // Buffer % (pre-calculated)
         bmTd.textContent = strikeData.buffer_pct ? strikeData.buffer_pct.toFixed(2) : '—';
@@ -437,7 +506,9 @@ async function updateStrikeTable() {
 
         // Simplified button enabling logic
         const volumeNum = parseInt(volume) || 0;
-        const volumeOk = volumeNum >= 1000;
+        // Get min_volume from current monitor settings (default to 1000 if not available)
+        const minVolume = window.currentMonitorMinVolume || 1000;
+        const volumeOk = volumeNum >= minVolume;
         const yesPriceOk = yesAsk <= 98;
         const noPriceOk = noAsk <= 98;
         const currentPrice = strikeTableData.current_price;
@@ -593,7 +664,7 @@ async function updateStrikeTable() {
 window.testActiveTrades = async function() {
   try {
 
-    const tradesRes = await fetch(window.location.origin + '/api/active_trades', { cache: 'no-store' });
+    const tradesRes = await apiCall('/api/active_trades', { cache: 'no-store' });
     if (!tradesRes.ok) {
       console.error('[TEST] API request failed:', tradesRes.status);
       return;
@@ -626,7 +697,7 @@ window.testActiveTrades = async function() {
 async function updatePositionIndicator(strikeCell, strike) {
   try {
     // Fetch active trades from the active_trade_supervisor API endpoint
-    const tradesRes = await fetch(window.location.origin + '/api/active_trades', { cache: 'no-store' });
+    const tradesRes = await apiCall('/api/active_trades', { cache: 'no-store' });
     if (!tradesRes.ok) return;
     
     const data = await tradesRes.json();
@@ -748,7 +819,7 @@ function updateYesNoButton(spanEl, strike, side, askPrice, isActive, ticker = nu
         }
         
         // Call the new trade_manager endpoint with complete data
-        const response = await fetch(window.location.origin + '/api/trigger_open_trade', {
+        const response = await apiCall('/api/trigger_open_trade', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

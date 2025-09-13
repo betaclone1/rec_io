@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.join(get_project_root(), 'scripts'))
 
 from backend.core.port_config import get_port, get_port_info, list_all_ports
 from backend.util.paths import get_data_dir, get_trade_history_dir, get_price_history_dir
+from backend.core.unified_config import unified_config
 
 class SystemMonitor:
     def __init__(self):
@@ -48,18 +49,16 @@ class SystemMonitor:
         
         # Trading state tracking removed - no longer modifying user settings automatically
         
-        # Get service URLs using bulletproof port manager
+        # Get service URLs using bulletproof port manager (updated to match current configuration)
         self.service_urls = {
             "main_app": get_port("main_app"),
             "trade_manager": get_port("trade_manager"),
             "trade_executor": get_port("trade_executor"),
-            "active_trade_supervisor": get_port("active_trade_supervisor"),
-            "auto_entry_supervisor": get_port("auto_entry_supervisor"),
             "symbol_price_watchdog_btc": get_port("symbol_price_watchdog_btc"),
             "symbol_price_watchdog_eth": get_port("symbol_price_watchdog_eth"),
-            "strike_table_generator": get_port("strike_table_generator"),
+            "strike_table_generator_btc": get_port("strike_table_generator_btc"),
             "kalshi_account_sync": get_port("kalshi_account_sync"),
-            "kalshi_market_watchdog": get_port("kalshi_market_watchdog"),
+            "kalshi_market_watchdog_btc": get_port("kalshi_market_watchdog_btc"),
             "monitor_manager": get_port("monitor_manager"),
             "cascading_failure_detector": get_port("cascading_failure_detector"),
             "system_monitor": get_port("system_monitor")
@@ -72,6 +71,82 @@ class SystemMonitor:
             "trade_executor",
             "monitor_manager"
         ]
+        
+        # Initialize dynamic service discovery
+        self._discover_services_from_config()
+    
+    def _discover_services_from_config(self):
+        """Discover all services from the universal configuration system."""
+        try:
+            # Import the supervisor config generator to get the same service list
+            from scripts.generate_unified_supervisor_config import SupervisorConfigGenerator
+            
+            # Create a temporary generator to get the service list
+            generator = SupervisorConfigGenerator()
+            
+            # Get port assignments
+            ports = generator._get_port_assignments()
+            
+            # Get active monitors
+            active_monitors = generator._get_active_monitors()
+            
+            # Build the complete service list dynamically
+            discovered_services = {}
+            
+            # Core services from the generator (updated to match current configuration)
+            core_services = [
+                {"name": "main_app", "script": "main.py"},
+                {"name": "trade_manager", "script": "trade_manager.py"},
+                {"name": "trade_executor", "script": "trade_executor.py"},
+                {"name": "symbol_price_watchdog_btc", "script": "symbol_price_watchdog.py BTC"},
+                {"name": "symbol_price_watchdog_eth", "script": "symbol_price_watchdog.py ETH"},
+                {"name": "kalshi_account_sync", "script": "kalshi_account_sync_ws.py"},
+                {"name": "kalshi_market_watchdog_btc", "script": "kalshi_market_watchdog.py BTC"},
+                {"name": "system_monitor", "script": "system_monitor.py"},
+                {"name": "monitor_manager", "script": "monitor_manager.py"},
+                {"name": "cascading_failure_detector", "script": "cascading_failure_detector.py"}
+            ]
+            
+            # Add core services
+            for service in core_services:
+                service_name = service["name"]
+                discovered_services[service_name] = ports.get(service_name, 8000)
+            
+            # Add monitor-specific services
+            monitor_port_base = 8015
+            for i, monitor in enumerate(active_monitors):
+                user_number = monitor['user_number']
+                monitor_id = monitor['monitor_id']
+                monitor_identifier = f"{user_number}_{monitor_id}"
+                
+                # Auto entry supervisor
+                auto_entry_port = monitor_port_base + (i * 2)
+                auto_entry_name = f"auto_entry_supervisor_{monitor_identifier}"
+                discovered_services[auto_entry_name] = auto_entry_port
+                
+                # Active trade supervisor
+                active_trade_port = monitor_port_base + (i * 2) + 1
+                active_trade_name = f"active_trade_supervisor_{monitor_identifier}"
+                discovered_services[active_trade_name] = active_trade_port
+            
+            # Add strike table generators
+            supported_symbols = ['BTC']
+            strike_table_port_base = 8020
+            for i, symbol in enumerate(supported_symbols):
+                strike_table_port = strike_table_port_base + i
+                strike_table_name = f"strike_table_generator_{symbol.lower()}"
+                discovered_services[strike_table_name] = strike_table_port
+            
+            # Update the service URLs with discovered services
+            self.service_urls = discovered_services
+            
+            print(f"🔍 Discovered {len(discovered_services)} services from universal config")
+            sys.stdout.flush()
+            
+        except Exception as e:
+            print(f"⚠️ Error discovering services from config, using fallback: {e}")
+            sys.stdout.flush()
+            # Keep existing service_urls if discovery fails
     
     def check_service_health(self, service_name: str, port: int) -> Dict[str, Any]:
         """Check health of a specific service using supervisor status only."""
@@ -315,30 +390,8 @@ class SystemMonitor:
     
     def check_all_services_status(self) -> Dict[str, Any]:
         """Check status of ALL core services and monitor-specific processes via supervisor or direct process check."""
-        # Core services that should always be running
-        core_services = [
-            # Core trading system
-            "main_app",
-            "trade_manager", 
-            "trade_executor",
-            
-            # Price and data services
-            "symbol_price_watchdog_btc",
-            "symbol_price_watchdog_eth",
-            "strike_table_generator",
-            
-            # Kalshi API services
-            "kalshi_account_sync",
-            "kalshi_market_watchdog",
-            
-            # System management
-            "monitor_manager",
-            "cascading_failure_detector",
-            "system_monitor"
-        ]
-        
-        # Get all services from supervisor (including dynamically spawned monitor-specific processes)
-        all_services = core_services.copy()
+        # Use dynamically discovered services instead of hardcoded list
+        all_services = list(self.service_urls.keys())
         
         # Try supervisor first, fall back to direct process check
         supervisor_available = False
@@ -680,8 +733,7 @@ class SystemMonitor:
             
             # Check supervisor status for all critical services
             critical_services = [
-                "main_app", "trade_manager", "trade_executor", 
-                "active_trade_supervisor"
+                "main_app", "trade_manager", "trade_executor"
             ]
             
             all_running = True
@@ -759,12 +811,12 @@ class SystemMonitor:
                 print(f"\n🔧 ALL SERVICES STATUS ({all_services['running_services']}/{all_services['total_services']} running):")
                 sys.stdout.flush()
                 
-                # Group services by category
+                # Group services by category (updated to match current configuration)
                 service_categories = {
-                    "Core Trading": ["main_app", "trade_manager", "trade_executor", "auto_entry_supervisor", "active_trade_supervisor"],
-                    "Data Services": ["symbol_price_watchdog_btc", "symbol_price_watchdog_eth", "strike_table_generator"],
-                    "Kalshi API": ["kalshi_account_sync", "kalshi_market_watchdog"],
-        "Monitor Management": ["monitor_manager"],
+                    "Core Trading": ["main_app", "trade_manager", "trade_executor"],
+                    "Data Services": ["symbol_price_watchdog_btc", "symbol_price_watchdog_eth", "strike_table_generator_btc"],
+                    "Kalshi API": ["kalshi_account_sync", "kalshi_market_watchdog_btc"],
+                    "Monitor Management": ["monitor_manager"],
                     "System Management": ["cascading_failure_detector", "system_monitor"]
                 }
                 

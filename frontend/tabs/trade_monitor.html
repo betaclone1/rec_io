@@ -292,103 +292,9 @@
 }
 </style>
 <style>
-#autoEntryToggle {
-  width: 32px;
-  height: 17px;
-  background-color: #444;
-  border-radius: 9px;
-  position: relative;
-  cursor: pointer;
-  transition: background-color 0.2s;
-  border: none;
-  outline: none;
-  -webkit-appearance: none;
-  -moz-appearance: none;
-  appearance: none;
-}
 
-#autoEntryToggle.active {
-  background-color: #007bff;
-}
 
-#autoEntryToggle::after {
-  content: '';
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 13px;
-  height: 13px;
-  background-color: white;
-  border-radius: 50%;
-  transition: transform 0.2s;
-}
 
-#autoEntryToggle.active::after {
-  transform: translateX(15px);
-}
-
-#autoEntryToggle.loading {
-  opacity: 0.7;
-  pointer-events: none;
-}
-
-#autoEntryToggle.loading::after {
-  background-color: #ccc;
-}
-
-#autoEntryToggle:focus-visible {
-  outline: 2px solid #007bff;
-  outline-offset: 2px;
-}
-
-#autoStopToggle {
-  width: 32px;
-  height: 17px;
-  background-color: #444;
-  border-radius: 9px;
-  position: relative;
-  cursor: pointer;
-  transition: background-color 0.2s;
-  border: none;
-  outline: none;
-  -webkit-appearance: none;
-  -moz-appearance: none;
-  appearance: none;
-}
-
-#autoStopToggle.active {
-  background-color: #007bff;
-}
-
-#autoStopToggle::after {
-  content: '';
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 13px;
-  height: 13px;
-  background-color: white;
-  border-radius: 50%;
-  transition: transform 0.2s;
-}
-
-#autoStopToggle.active::after {
-  transform: translateX(15px);
-}
-
-#autoStopToggle.loading {
-  opacity: 0.7;
-  pointer-events: none;
-}
-
-#autoStopToggle.loading::after {
-  background-color: #ccc;
-}
-
-#autoStopToggle:focus-visible {
-  outline: 2px solid #007bff;
-  outline-offset: 2px;
-}
 
 #autoTradeToggle {
   width: 32px;
@@ -530,6 +436,10 @@
   #openPositionsTable tbody tr:hover {
     background-color: #4d586f !important;
   }
+  
+  #openPositionsTable[style*="--hover-disabled: true"] tbody tr:hover {
+    background-color: inherit !important;
+  }
   #openPositionsTable tbody td {
     padding: 4px 6px;
     text-align: center;
@@ -581,7 +491,7 @@
           <option value="">Loading...</option>
         </select>
         <div style="display: flex; align-items: center; gap: 6px; margin-left: auto;">
-          <label style="font-size: 12px; user-select: none; color: white;">AUTO TRADE</label>
+          <label style="font-size: 12px; text-align: right; user-select: none; color: white;">AUTO TRADE</label>
           <div id="autoTradeToggle" class="auto-trade-toggle"></div>
         </div>
       </div>
@@ -590,11 +500,11 @@
           <tbody>
             <tr class="price-row">
               <td style="position: relative;">
-                <span id="btc-price-value" style="display: inline-block;">$—</span>
+                <span id="symbol-price-value" style="display: inline-block;">$—</span>
               </td>
             </tr>
             <tr class="change-row">
-              <td id="btc-changes-cell">1h &nbsp;<span id="change-1h">—</span> &nbsp;&nbsp; 3h &nbsp;<span id="change-3h">—</span> &nbsp;&nbsp; 1d &nbsp;<span id="change-1d">—</span></td>
+              <td id="symbol-changes-cell">1h &nbsp;<span id="change-1h">—</span> &nbsp;&nbsp; 3h &nbsp;<span id="change-3h">—</span> &nbsp;&nbsp; 1d &nbsp;<span id="change-1d">—</span></td>
             </tr>
             <tr class="chart-row">
               <td><div id="tradingview_12345"></div></td>
@@ -605,7 +515,7 @@
       <div class="panel-container" style="min-height: 00px;" id="momentumPanelContainer">
         <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
           <span>Momentum</span>
-          <div id="momentum-percentile-display" style="color: #ccc; font-size: 12px; font-weight: normal;">—</div>
+          <div id="momentum-score-display" style="color: #ccc; font-size: 12px; font-weight: normal;">—</div>
         </div>
         <div class="panel-content" id="momentumPanelContent">
           <div style="display: flex; gap: 10px;">
@@ -614,7 +524,7 @@
             </div>
             <div style="width: 70%; height: 180px; background-color: #1e2733; position: relative;">
               <canvas id="rolling-momentum-chart" style="width: 100%; height: 100%;"></canvas>
-              <div id="momentum-score-display" style="position: absolute; top: 8px; right: 8px;  color: white; padding: 4px 8px; border-radius: 4px; font-size: 20px; font-weight: bold;">—</div>
+              <div id="momentum-percentile-display" style="position: absolute; top: 8px; right: 8px;  color: white; padding: 4px 8px; border-radius: 4px; font-size: 20px; font-weight: bold;">—</div>
             </div>
           </div>
 
@@ -661,20 +571,31 @@
 // Global modal functions - defined at top level for inline onclick handlers
 async function loadAutoStopSettings(retryCount = 0) {
   // Use pre-loaded settings if available
-  if (preloadedAutoTradeSettings && preloadedAutoTradeSettings.auto_stop_settings) {
-    console.log('Using pre-loaded auto stop settings');
+  if (preloadedAutoTradeSettings) {
+    console.log('Using pre-loaded auto trade settings');
     populateAutoStopFormFields(preloadedAutoTradeSettings);
     return;
   }
   
   // Fallback to API call if pre-loaded data not available
   try {
+    if (!currentMonitorId) {
+      console.log('⚠️ No monitor selected, cannot load auto stop settings');
+      return;
+    }
+    
     console.log('Loading auto stop settings from database... (attempt ' + (retryCount + 1) + ')');
-    const response = await fetch(window.location.origin + '/api/get_auto_trade_settings');
+    const response = await fetch(window.location.origin + '/api/get_auto_entry_settings?monitor_id=' + currentMonitorId);
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
     const data = await response.json();
+    
+    if (data.status === 'error') {
+      console.error('Error loading auto stop settings:', data.message);
+      return;
+    }
+    
     console.log('Auto stop settings loaded:', data);
     
     // Update pre-loaded settings for future use
@@ -703,20 +624,31 @@ async function loadAutoStopSettings(retryCount = 0) {
 
 async function loadAutoEntrySettings(retryCount = 0) {
   // Use pre-loaded settings if available
-  if (preloadedAutoTradeSettings && preloadedAutoTradeSettings.auto_entry_settings) {
-    console.log('Using pre-loaded auto entry settings');
+  if (preloadedAutoTradeSettings) {
+    console.log('Using pre-loaded auto trade settings');
     populateAutoEntryFormFields(preloadedAutoTradeSettings);
     return;
   }
   
   // Fallback to API call if pre-loaded data not available
   try {
+    if (!currentMonitorId) {
+      console.log('⚠️ No monitor selected, cannot load auto entry settings');
+      return;
+    }
+    
     console.log('Loading auto entry settings from database... (attempt ' + (retryCount + 1) + ')');
-    const response = await fetch(window.location.origin + '/api/get_auto_trade_settings');
+    const response = await fetch(window.location.origin + '/api/get_auto_entry_settings?monitor_id=' + currentMonitorId);
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
     const data = await response.json();
+    
+    if (data.status === 'error') {
+      console.error('Error loading auto entry settings:', data.message);
+      return;
+    }
+    
     console.log('Auto entry settings loaded:', data);
     
     // Update pre-loaded settings for future use
@@ -926,7 +858,6 @@ function hideAutoEntrySettingsModal() {
             />
             <label style="font-size: 12px; user-select: none; color: white; display: flex; align-items: center; gap: 6px; margin: 0;">
               AUTO ENTRY
-              <div id="autoEntryToggle"></div>
             </label>
 
           </div>
@@ -1131,15 +1062,8 @@ function hideAutoEntrySettingsModal() {
           portfolioEl1.textContent = `$${Number(portfolioInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
         }
         
-        // Update bankroll balance (second display)
-        const bankrollEl = document.getElementById("bankroll-balance");
-        if (bankrollEl) {
-          const bankroll = data.bankroll_current || 0;
-          const bankrollInDollars = bankroll / 100; // Convert cents to dollars
-          bankrollEl.textContent = `$${Number(bankrollInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
-          
-          // Bankroll changes are now handled by monitor_manager, not trade_preferences
-        }
+        // Bankroll balance is now handled by monitor-specific updates, not account-level updates
+        // The bankroll display shows monitor.bankroll_allotment_total, not data.bankroll_current
       } catch (error) {
         console.error('Error fetching account balance:', error);
         const bankrollEl = document.getElementById("bankroll-balance");
@@ -1152,6 +1076,28 @@ function hideAutoEntrySettingsModal() {
         }
       }
     }
+
+    // Function to update monitor-specific bankroll display
+    async function updateMonitorBankrollDisplay() {
+      try {
+        if (!window.currentMonitorId) {
+          console.log('No current monitor ID, skipping bankroll update');
+          return;
+        }
+        
+        const response = await fetch(`${window.location.origin}/api/monitor/bankroll?monitor_id=${window.currentMonitorId}`);
+        const data = await response.json();
+        
+        const bankrollEl = document.getElementById("bankroll-balance");
+        if (bankrollEl) {
+          const bankrollAllotment = data.bankroll_allotment_total || 0;
+          const bankrollInDollars = bankrollAllotment / 100; // Convert cents to dollars
+          bankrollEl.textContent = `$${Number(bankrollInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        }
+      } catch (error) {
+        console.error('Error updating monitor bankroll:', error);
+      }
+    }
     
     // Update balance every 30 seconds
     setInterval(() => {
@@ -1161,6 +1107,11 @@ function hideAutoEntrySettingsModal() {
         updateAccountBalance(mode);
       }
     }, 30000);
+
+    // Update monitor bankroll every 15 seconds
+    setInterval(() => {
+      updateMonitorBankrollDisplay();
+    }, 15000);
   </script>
   <div id="errorTooltip" class="error-tooltip"></div>
 <script>
@@ -1168,8 +1119,7 @@ function hideAutoEntrySettingsModal() {
 document.addEventListener('DOMContentLoaded', () => {
   // Starting preferences setup
   
-  const autoStopToggle = document.getElementById('autoStopToggle');
-  const autoEntryToggle = document.getElementById('autoEntryToggle');
+
   const autoTradeToggle = document.getElementById('autoTradeToggle');
   const positionInput = document.getElementById('position-size');
   const multiplierButtons = document.querySelectorAll('.multiplier-btn');
@@ -1190,29 +1140,27 @@ document.addEventListener('DOMContentLoaded', () => {
   // Load auto trade settings from backend
   async function loadAutoTradeSettings() {
     try {
-      const response = await fetch('/api/get_auto_trade_settings');
+      if (!currentMonitorId) {
+        console.log('⚠️ No monitor selected, cannot load auto trade settings');
+        return;
+      }
+      
+      const response = await fetch('/api/get_auto_entry_settings?monitor_id=' + currentMonitorId);
       if (!response.ok) return;
       
       const data = await response.json();
       
-      // Update auto stop toggle
-      if (autoStopToggle && data.auto_stop !== undefined) {
-        if (data.auto_stop) {
-          autoStopToggle.classList.add('active');
-        } else {
-          autoStopToggle.classList.remove('active');
-        }
-        window.autoStopEnabled = data.auto_stop;
+      if (data.status === 'error') {
+        console.error('Error loading auto trade settings:', data.message);
+        return;
       }
       
-      // Update auto entry toggle
-      if (autoEntryToggle && data.auto_entry !== undefined) {
-        if (data.auto_entry) {
-          autoEntryToggle.classList.add('active');
-        } else {
-          autoEntryToggle.classList.remove('active');
-        }
-      }
+      // Note: This function was originally designed to update toggle states,
+      // but since we're now using monitor_list.auto_trade for the primary gate,
+      // these toggles may not be needed anymore. Keeping the function structure
+      // for now but it may need to be updated or removed.
+      
+
     } catch (error) {
       console.error('Error loading auto trade settings:', error);
     }
@@ -1341,9 +1289,34 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   ws.onmessage = (event) => {
-    console.log('WebSocket message received:', new Date().toISOString(), 'Data:', event.data);
+    console.log('🔌 WebSocket message received:', new Date().toISOString(), 'Data:', event.data);
+    console.log('🔌 Message type:', typeof event.data);
+    if (typeof event.data === 'string') {
+      try {
+        const parsed = JSON.parse(event.data);
+        console.log('🔌 Parsed message type:', parsed.type);
+      } catch (e) {
+        console.log('🔌 Message is not JSON:', event.data);
+      }
+    }
     try {
       const data = JSON.parse(event.data);
+
+      // === Auto Trade Toggle Update ===
+      if (data.type === 'auto_trade_toggled') {
+        console.log('Auto trade toggle received in trade monitor:', data);
+        
+        // Update the auto trade toggle in trade monitor if it exists
+        const autoTradeToggle = document.querySelector('.auto-trade-toggle');
+        if (autoTradeToggle) {
+          if (data.auto_trade) {
+            autoTradeToggle.classList.add('active');
+          } else {
+            autoTradeToggle.classList.remove('active');
+          }
+        }
+        return; // Don't process other WebSocket messages for this type
+      }
 
       // === Automated Trade Notification ===
       if (data.type === 'automated_trade_triggered') {
@@ -1400,40 +1373,82 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
 
-      // Update auto stop toggles
-      if (autoStopToggle && data.auto_stop !== undefined) {
-        window.ignoreWsUpdates = true;
-        if (data.auto_stop) {
-          autoStopToggle.classList.add('active');
-        } else {
-          autoStopToggle.classList.remove('active');
-        }
-        window.autoStopEnabled = data.auto_stop;
-        window.ignoreWsUpdates = false;
-      }
 
-
-      if (autoEntryToggle && data.auto_entry !== undefined) {
-        window.ignoreWsUpdates = true;
-
-        if (data.auto_entry) {
-          autoEntryToggle.classList.add('active');
-        } else {
-          autoEntryToggle.classList.remove('active');
-        }
-        
-        // Use clean API to update strike table auto entry mode
-        if (window.StrikeTable && window.StrikeTable.setAutoEntry) {
-          window.StrikeTable.setAutoEntry(data.auto_entry);
-        }
-        
-        window.ignoreWsUpdates = false;
-      }
 
       // === Auto Entry Indicator Change ===
       if (data.type === 'auto_entry_indicator_change') {
 
         updateAutoEntryIndicator(data.data);
+        return; // Don't process other WebSocket messages for this type
+      }
+
+      // === Auto Trade Status Change ===
+      if (data.type === 'auto_trade_status_change') {
+        console.log('Auto trade status change received in trade monitor:', data);
+        
+        // Update the auto entry indicator if this affects the current monitor
+        // Extract numeric monitor ID from full monitor ID (e.g., "mon_0001_10002" -> "10002")
+        const messageMonitorId = data.data.monitor_id.split('_').pop();
+        
+        console.log('🔍 WebSocket monitor ID comparison:');
+        console.log('  - Full monitor ID from message:', data.data.monitor_id);
+        console.log('  - Extracted numeric ID:', messageMonitorId);
+        console.log('  - Current monitor ID:', currentMonitorId);
+        console.log('  - Type of messageMonitorId:', typeof messageMonitorId);
+        console.log('  - Type of currentMonitorId:', typeof currentMonitorId);
+        console.log('  - Comparison result:', messageMonitorId === currentMonitorId.toString());
+        
+        if (currentMonitorId && messageMonitorId === currentMonitorId.toString()) {
+          console.log('🔄 Auto trade status change affects current monitor, updating display directly...');
+          
+          // Update the display directly with the WebSocket data (no API call needed)
+          const statusData = {
+            status: data.data.auto_trade_status,
+            enabled: data.data.auto_trade_status === 'ACTIVE' || data.data.auto_trade_status === 'INACTIVE',
+            cooldown_timer: latestCooldownTimer // Include the stored cooldown timer value
+          };
+          
+          console.log('📊 Updating display with WebSocket data:', statusData);
+          
+          // Clear cooldown timer if status is not PAUSED
+          if (data.data.auto_trade_status !== 'PAUSED') {
+            latestCooldownTimer = 0;
+            console.log('🧹 Cleared cooldown timer (status is not PAUSED)');
+          }
+          
+          updateAutoEntryIndicator(statusData);
+          console.log('✅ Display updated successfully');
+        } else if (!currentMonitorId) {
+          console.log('⚠️ Auto trade status change received but no monitor selected yet');
+        } else {
+          console.log('⚠️ Auto trade status change for different monitor:', data.data.monitor_id, 'Message monitor ID:', messageMonitorId, 'Current monitor:', currentMonitorId);
+        }
+        
+        return; // Don't process other WebSocket messages for this type
+      }
+
+      // === Cooldown Timer Change ===
+      if (data.type === 'cooldown_timer_change') {
+        console.log('Cooldown timer change received in trade monitor:', data);
+        
+        // Extract numeric monitor ID from full monitor ID (e.g., "mon_0001_10002" -> "10002")
+        const messageMonitorId = data.data.monitor_id.split('_').pop();
+        
+        if (currentMonitorId && messageMonitorId === currentMonitorId.toString()) {
+          console.log('🔄 Cooldown timer change affects current monitor, storing timer value...');
+          
+          // Store the latest cooldown timer value (don't update display yet)
+          latestCooldownTimer = data.data.cooldown_timer;
+          console.log('📊 Stored cooldown timer value:', latestCooldownTimer);
+          
+          // Only update display if we already have a PAUSED status
+          // The status message will handle the actual display update
+        } else if (!currentMonitorId) {
+          console.log('⚠️ Cooldown timer change received but no monitor selected yet');
+        } else {
+          console.log('⚠️ Cooldown timer change for different monitor:', data.data.monitor_id, 'Message monitor ID:', messageMonitorId, 'Current monitor:', currentMonitorId);
+        }
+        
         return; // Don't process other WebSocket messages for this type
       }
 
@@ -1521,112 +1536,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
   // Auto stop toggle click handler
-  if (autoStopToggle) {
-    autoStopToggle.addEventListener('click', async () => {
-      const enabled = !autoStopToggle.classList.contains('active');
-      
-      // Prevent multiple clicks during request
-      if (autoStopToggle.classList.contains('loading')) return;
-      
-      // Add loading state
-      autoStopToggle.classList.add('loading');
-      
-      // Immediate visual feedback
-      if (enabled) {
-        autoStopToggle.classList.add('active');
-      } else {
-        autoStopToggle.classList.remove('active');
-      }
-      
-      window.autoStopEnabled = enabled;
-      
-      try {
-        const response = await fetch('/api/set_auto_stop', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled })
-        });
-        
-        if (!response.ok) {
-          // Revert if failed
-          if (enabled) {
-            autoStopToggle.classList.remove('active');
-          } else {
-            autoStopToggle.classList.add('active');
-          }
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        
-        const data = await response.json();
-        console.log('Auto stop updated successfully:', data);
-      } catch (error) {
-        // Revert if failed
-        if (enabled) {
-          autoStopToggle.classList.remove('active');
-        } else {
-          autoStopToggle.classList.add('active');
-        }
-        console.error('Auto stop backend error:', error);
-        alert(`Failed to update auto stop setting: ${error.message}`);
-      } finally {
-        // Remove loading state
-        autoStopToggle.classList.remove('loading');
-      }
-    });
-  }
 
-  // Auto entry toggle click handler
-  if (autoEntryToggle) {
-    autoEntryToggle.addEventListener('click', async () => {
-      const enabled = !autoEntryToggle.classList.contains('active');
-      
-      // Prevent multiple clicks during request
-      if (autoEntryToggle.classList.contains('loading')) return;
-      
-      // Add loading state
-      autoEntryToggle.classList.add('loading');
-      
-      // Immediate visual feedback
-      if (enabled) {
-        autoEntryToggle.classList.add('active');
-      } else {
-        autoEntryToggle.classList.remove('active');
-      }
-      
-      try {
-        const response = await fetch('/api/set_auto_entry', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled })
-        });
-        
-        if (!response.ok) {
-          // Revert if failed
-          if (enabled) {
-            autoEntryToggle.classList.remove('active');
-          } else {
-            autoEntryToggle.classList.add('active');
-          }
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        
-        const data = await response.json();
-        console.log('Auto entry updated successfully:', data);
-      } catch (error) {
-        // Revert if failed
-        if (enabled) {
-          autoEntryToggle.classList.remove('active');
-        } else {
-          autoEntryToggle.classList.add('active');
-        }
-        console.error('Auto entry backend error:', error);
-        alert(`Failed to update auto entry setting: ${error.message}`);
-      } finally {
-        // Remove loading state
-        autoEntryToggle.classList.remove('loading');
-      }
-    });
-  }
+
+
 
   // Auto trade toggle click handler - same as dashboard
   if (autoTradeToggle) {
@@ -1802,7 +1714,6 @@ document.addEventListener('DOMContentLoaded', () => {
             />
             <label style="font-size: 12px; user-select: none; color: white; display: flex; align-items: center; gap: 6px; margin: 0;">
               AUTO STOP
-              <div id="autoStopToggle"></div>
             </label>
 
           </div>
@@ -1827,6 +1738,9 @@ document.addEventListener('DOMContentLoaded', () => {
         <div id="autoStopSettingsDim" style="position:absolute; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.4);"></div>
         <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border-radius:8px; min-width:400px; min-height:200px; box-shadow:0 4px 32px rgba(0,0,0,0.25); padding:20px; display:flex; flex-direction:column; align-items:stretch;">
           <div id="autoStopSettingsHeader" style="font-size:16px; font-weight:500; margin-bottom:24px; color:#222; letter-spacing:0.2px; text-align:left;">Auto Stop Settings</div>
+          
+
+          
           <div style="flex:1 1 auto; display:flex; flex-direction:column; justify-content:center; align-items:stretch;">
             <label for="autoStopProbabilitySlider" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Current Win Probability:</label>
             <div style="position:relative; margin-bottom:24px; width:100%;">
@@ -1883,6 +1797,9 @@ document.addEventListener('DOMContentLoaded', () => {
         <div id="autoEntrySettingsDim" style="position:absolute; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.4);"></div>
         <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border-radius:8px; min-width:400px; min-height:200px; box-shadow:0 4px 32px rgba(0,0,0,0.25); padding:20px; display:flex; flex-direction:column; align-items:stretch;">
           <div id="autoEntrySettingsHeader" style="font-size:16px; font-weight:500; margin-bottom:24px; color:#222; letter-spacing:0.2px; text-align:left;">Auto Entry Settings</div>
+          
+
+          
           <div style="flex:1 1 auto; display:flex; flex-direction:column; justify-content:center; align-items:stretch;">
             <label for="timeWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Time Window:</label>
             <div style="position:relative; margin-bottom:24px; width:100%;">
@@ -1902,6 +1819,12 @@ document.addEventListener('DOMContentLoaded', () => {
              
             </div>
             
+            <label for="autoEntryMinVolumeSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Volume:</label>
+            <div style="position:relative; margin-bottom:24px; width:100%;">
+              <input type="range" id="autoEntryMinVolumeSlider" min="0" max="2000" step="25" value="1000" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+              <div id="autoEntryMinVolumeValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+            </div>
+            
             <label for="autoEntryProbabilitySlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Win Probability:</label>
             <div style="position:relative; margin-bottom:24px; width:100%;">
               <input type="range" id="autoEntryProbabilitySlider" min="0" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
@@ -1912,6 +1835,12 @@ document.addEventListener('DOMContentLoaded', () => {
             <div style="position:relative; margin-bottom:8px; width:100%;">
               <input type="range" id="autoEntryDifferentialSlider" min="-10" max="10" step="0.25" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
               <div id="autoEntryDifferentialValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+            </div>
+            
+            <label for="autoEntryMaxDifferentialSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Maximum Differential:</label>
+            <div style="position:relative; margin-bottom:8px; width:100%;">
+              <input type="range" id="autoEntryMaxDifferentialSlider" min="0" max="20" step="0.25" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+              <div id="autoEntryMaxDifferentialValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
             </div>
             
             <label for="autoEntryAllowReEntry" style="font-size:14px; color:#333;margin-top:12px; margin-bottom:12px; font-weight:500;">Allow Re-Entry:</label>
@@ -1933,13 +1862,13 @@ document.addEventListener('DOMContentLoaded', () => {
               
               <label for="spikeAlertMomentumSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Spike Level (±):</label>
               <div style="position:relative; margin-bottom:24px; width:100%;">
-                <input type="range" id="spikeAlertMomentumSlider" min="0" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+                <input type="range" id="spikeAlertMomentumSlider" min="50" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
                 <div id="spikeAlertMomentumValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
               </div>
               
               <label for="spikeAlertCooldownSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Level (±):</label>
               <div style="position:relative; margin-bottom:24px; width:100%;">
-                <input type="range" id="spikeAlertCooldownSlider" min="0" max="50" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+                <input type="range" id="spikeAlertCooldownSlider" min="50" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
                 <div id="spikeAlertCooldownValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
               </div>
               
@@ -1962,7 +1891,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   <!-- Bottom Half -->
   <div class="bottom-half">
-    <div class="panel-container" style="min-height: 100px;" id="profileDataPanel">
+    <div class="panel-container" id="profileDataPanel">
       <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
         <div style="display: flex; gap: 20px;">
           <span id="trade-history-tab" class="panel-tab active" style="cursor: pointer; opacity: 1; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="if(!this.classList.contains('active')) this.style.opacity='0.3'">Trade History</span>
@@ -1972,7 +1901,7 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
       </div>
       <div id="trade-history-content" class="tab-content active">
-        <div style="height: 194px; overflow-y: auto;">
+        <div style="height: calc(100% - 40px); overflow-y: auto;">
           <table id="tradeHistoryTable" class="panel-table" style="width: 100%; border-collapse: collapse; font-size: 0.7rem;">
             <style>
               #tradeHistoryTable thead th {
@@ -2032,7 +1961,7 @@ document.addEventListener('DOMContentLoaded', () => {
       </div>
 
       <div id="recent-fills-content" class="tab-content" style="display: none;">
-        <div style="height: 194px; overflow-y: auto;">
+        <div style="height: calc(100% - 40px); overflow-y: auto;">
           <table id="recentTradesTable" class="panel-table" style="width: 100%; border-collapse: collapse;">
             <thead>
               <tr>
@@ -2050,7 +1979,7 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
       </div>
       <div id="settlements-content" class="tab-content" style="display: none;">
-        <div style="height: 194px; overflow-y: auto;">
+        <div style="height: calc(100% - 40px); overflow-y: auto;">
           <table id="settlementsTable" class="panel-table" style="width: 100%; border-collapse: collapse;">
             <thead>
               <tr>
@@ -2068,44 +1997,102 @@ document.addEventListener('DOMContentLoaded', () => {
       </div>
 
       <div id="open-positions-content" class="tab-content" style="display: none;">
-        <table id="openPositionsTable" class="panel-table" style="width: 100%; border-collapse: collapse;">
-          <thead>
-            <tr>
-              <th>Ticker</th>
-              <th>Buy</th>
-              <th>Position</th>
-              <th>Fees</th>
-              <th>Time</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
+        <div style="height: calc(100% - 10px); overflow-y: auto;">
+          <table id="openPositionsTable" class="panel-table" style="width: 100%; border-collapse: collapse;">
+            <thead>
+              <tr>
+                <th>Ticker</th>
+                <th>Buy</th>
+                <th>Position</th>
+                <th>Fees</th>
+                <th>Time</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
 
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
   <script type="text/javascript">
-    new TradingView.widget({
-      "width": "100%",
-      "height": "309",
-      "symbol": "COINBASE:BTCUSD",
-      "interval": "1",
-      "timezone": "America/New_York",
-      "theme": "dark",
-      "style": "1",
-      "locale": "en",
-      "toolbar_bg": "#f1f3f6",
-      "scalesProperties.textColor": "#FFFFFF",
-      "backgroundColor": "#1e2733",
-      "enable_publishing": false,
-      "hide_top_toolbar": true,
-      "hide_legend": true,
-      "save_image": false,
-      "disabled_features": ["volume_force_overlay", "create_volume_indicator_by_default"],
-      "studies": [],
-      "container_id": "tradingview_12345"
-    });
+    // TradingView widget will be initialized after monitor is selected
+    let tradingViewInitialized = false;
+    
+    // Function to initialize TradingView widget with correct symbol
+    function initializeTradingViewWidget(symbol = 'BTC') {
+      if (tradingViewInitialized) {
+        console.log('[TradingView] Widget already initialized, updating symbol to:', symbol);
+        updateTradingViewSymbol(symbol);
+        return;
+      }
+      
+      const symbolMap = {
+        'BTC': 'COINBASE:BTCUSD',
+        'ETH': 'COINBASE:ETHUSD',
+        'SOL': 'COINBASE:SOLUSD'
+      };
+      const tradingViewSymbol = symbolMap[symbol] || `COINBASE:${symbol}USD`;
+      
+      console.log('[TradingView] Initializing widget with symbol:', tradingViewSymbol);
+      
+      window.tvWidget = new TradingView.widget({
+        "width": "100%",
+        "height": "309",
+        "symbol": tradingViewSymbol,
+        "interval": "1",
+        "timezone": "America/New_York",
+        "theme": "dark",
+        "style": "1",
+        "locale": "en",
+        "toolbar_bg": "#f1f3f6",
+        "scalesProperties.textColor": "#FFFFFF",
+        "backgroundColor": "#1e2733",
+        "enable_publishing": false,
+        "hide_top_toolbar": true,
+        "hide_legend": true,
+        "save_image": false,
+        "disabled_features": ["volume_force_overlay", "create_volume_indicator_by_default"],
+        "studies": [],
+        "container_id": "tradingview_12345"
+      });
+      
+      tradingViewInitialized = true;
+      console.log('[TradingView] Widget initialized with symbol:', tradingViewSymbol);
+    }
+    
+    // Function to update TradingView widget symbol
+    function updateTradingViewSymbol(symbol) {
+      console.log('[TradingView] updateTradingViewSymbol called with:', symbol);
+      console.log('[TradingView] window.tvWidget exists:', !!window.tvWidget);
+      
+      if (window.tvWidget && symbol) {
+        const symbolMap = {
+          'BTC': 'COINBASE:BTCUSD',
+          'ETH': 'COINBASE:ETHUSD',
+          'SOL': 'COINBASE:SOLUSD'
+        };
+        const tradingViewSymbol = symbolMap[symbol] || `COINBASE:${symbol}USD`;
+        
+        console.log('[TradingView] Updating widget to symbol:', tradingViewSymbol);
+        try {
+          window.tvWidget.setSymbol(tradingViewSymbol);
+          console.log('[TradingView] Successfully updated to:', tradingViewSymbol);
+        } catch (error) {
+          console.error('[TradingView] Error updating symbol:', error);
+        }
+      } else {
+        console.warn('[TradingView] Cannot update - widget or symbol missing:', {
+          widget: !!window.tvWidget,
+          symbol: symbol
+        });
+      }
+    }
+    
+    // Make functions globally accessible
+    window.updateTradingViewSymbol = updateTradingViewSymbol;
+    window.initializeTradingViewWidget = initializeTradingViewWidget;
   </script>
 
   <script>
@@ -2154,6 +2141,7 @@ document.addEventListener('DOMContentLoaded', () => {
         '30m': null,
       },
       weightedScore: null,
+      momentumPercentile: null,
     };
 
     function formatNumber(val, addPercent) {
@@ -2175,6 +2163,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!window.momentumData.rollingScores) {
         window.momentumData.rollingScores = [];
       }
+      
+      // Ensure rollingPercentiles array exists
+      if (!window.momentumData.rollingPercentiles) {
+        window.momentumData.rollingPercentiles = [];
+      }
 
       const momentumScoreEl = document.getElementById('momentum-score-display');
       if (momentumScoreEl) {
@@ -2183,12 +2176,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Update momentum percentile display
       const momentumPercentileEl = document.getElementById('momentum-percentile-display');
+      console.log('momentumPercentileEl found:', !!momentumPercentileEl);
+      console.log('momentumPercentile value:', momentumPercentile, 'type:', typeof momentumPercentile);
       if (momentumPercentileEl) {
         if (momentumPercentile !== null && momentumPercentile !== undefined && !isNaN(momentumPercentile)) {
-          momentumPercentileEl.textContent = `${momentumPercentile.toFixed(1)}%`;
+          const prefix = momentumPercentile >= 0 ? '+' : '';
+          momentumPercentileEl.textContent = `${prefix}${momentumPercentile.toFixed(0)}%`;
+          console.log('Set momentum percentile to:', `${prefix}${momentumPercentile.toFixed(0)}%`);
         } else {
           momentumPercentileEl.textContent = '—';
+          console.log('Set momentum percentile to dash (value was null/undefined/NaN)');
         }
+      } else {
+        console.log('momentum-percentile-display element not found!');
       }
 
       // After updating the display, append weightedScore to rollingScores and trim to 40
@@ -2196,6 +2196,14 @@ document.addEventListener('DOMContentLoaded', () => {
         window.momentumData.rollingScores.push(weightedScore);
         if (window.momentumData.rollingScores.length > 40) {
           window.momentumData.rollingScores = window.momentumData.rollingScores.slice(-40);
+        }
+      }
+      
+      // After updating the display, append momentumPercentile to rollingPercentiles and trim to 40
+      if (typeof momentumPercentile === "number" && !isNaN(momentumPercentile)) {
+        window.momentumData.rollingPercentiles.push(momentumPercentile);
+        if (window.momentumData.rollingPercentiles.length > 40) {
+          window.momentumData.rollingPercentiles = window.momentumData.rollingPercentiles.slice(-40);
         }
       }
 
@@ -2297,20 +2305,38 @@ document.addEventListener('DOMContentLoaded', () => {
       ctx.lineTo(margin.left, height - margin.bottom);
       ctx.stroke();
 
-      // Y-axis scale: -50 (bottom) to 50 (top)
-      const yMin = -50;
-      const yMax = 50;
+      // Y-axis scale: -100 (bottom) to 100 (top) with compressed middle range
+      const yMin = -100;
+      const yMax = 100;
       function yForValue(v) {
-        // Map v in [yMin, yMax] to [chartHeight+margin.top, margin.top]
-        const y = margin.top + ((yMax - v) / (yMax - yMin)) * chartHeight;
+        // Compress the -75 to 75 range to take up less vertical space
+        // Use a piecewise function that compresses the middle range
+        let compressedValue;
+        if (v >= -75 && v <= 75) {
+          // Compress -75 to 75 range to take up only 40% of the chart height
+          // Map [-75, 75] to [-30, 30] in the compressed space
+          compressedValue = (v / 75) * 30;
+        } else if (v > 75) {
+          // Map 75 to 100 to the upper 30% of the chart
+          // Map [75, 100] to [30, 100]
+          compressedValue = 30 + ((v - 75) / 25) * 70;
+        } else {
+          // Map -100 to -75 to the lower 30% of the chart  
+          // Map [-100, -75] to [-100, -30]
+          compressedValue = -100 + ((v + 100) / 25) * 70;
+        }
+        
+        // Map compressed value to chart coordinates
+        const y = margin.top + ((yMax - compressedValue) / (yMax - yMin)) * chartHeight;
         return y;
       }
 
-      // Draw tick marks and labels for -50, -25, 0, 25, 50 (vertical axis)
+      // Draw tick marks and labels for compressed scale (vertical axis)
       ctx.font = '11px monospace';
       ctx.fillStyle = '#ccc';
       ctx.textAlign = 'right';
-      const ticks = [-50, -25, 0, 25, 50];
+      // Add more tick marks to show the compression: -100, -75, 0, 75, 100
+      const ticks = [-100, -75, 0, 75, 100];
       ticks.forEach(tick => {
         const y = yForValue(tick);
         // Draw tick mark
@@ -2351,7 +2377,7 @@ document.addEventListener('DOMContentLoaded', () => {
       ctx.textAlign = 'center';
       const tickHeight = 5;
       const labelOffset = 15;
-      const labels = ['4m', '3m', '2m', '1m', '0m'];
+      const labels = ['15m', '12m', '9m', '6m', '3m', '0m'];
       for (let i = 0; i < nTicks; ++i) {
         const x = margin.left + (i * chartWidth) / (nTicks - 1);
         // Draw tick mark
@@ -2367,16 +2393,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // === End horizontal axis and ticks ===
 
-      // Plot the momentum score points scaled accordingly
-      // Use history from window.momentumData.rollingScores or fallback to last 40 weightedScore values
+      // Plot the momentum percentile points
+      // Use history from window.momentumData.rollingPercentiles or fallback to current momentumPercentile
       let points = [];
-      if (window.momentumData.rollingScores && Array.isArray(window.momentumData.rollingScores)) {
-        points = window.momentumData.rollingScores.slice(-40);
-      } else if (typeof window.momentumData.weightedScore === 'number') {
-        points = Array(40).fill(window.momentumData.weightedScore);
+      if (window.momentumData.rollingPercentiles && Array.isArray(window.momentumData.rollingPercentiles)) {
+        points = window.momentumData.rollingPercentiles.slice(-40);
+      } else if (typeof window.momentumData.momentumPercentile === 'number') {
+        points = Array(40).fill(window.momentumData.momentumPercentile);
       }
-      // Multiply all points by 100 for display in -50..50 range
-      points = points.map(v => (v === null || v === undefined || isNaN(v) ? null : v * 100));
+      // Percentiles are already in the correct range (-99.9 to 99.9), no scaling needed
+      points = points.map(v => (v === null || v === undefined || isNaN(v) ? null : v));
       // Do NOT reverse the points array; keep natural order (oldest to newest, left to right).
       // If not enough points, pad with nulls
       if (points.length < 2) {
@@ -2406,27 +2432,26 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       if (validIndices.length < 2) return;
 
-      // Helper: map a value in [-40, 40] to a color gradient (red for negative, green for positive)
+      // Helper: map a value in [-100, 100] to a color gradient (green until ±60, then red)
       function colorForValue(val) {
-        // Clamp value to [-40, 40]
-        val = Math.max(-40, Math.min(40, val));
-        // Map negative: -40 (deep red) to 0 (light red)
-        // Map positive: 0 (light green) to 40 (deep green)
-        if (val < 0) {
-          // Red: from #ffb3b3 (light) to #dc3545 (deep)
-          // Interpolate between (255,179,179) and (220,53,69)
-          const t = (val + 40) / 40; // 0 at -40, 1 at 0
-          const r = Math.round(220 * (1 - t) + 255 * t);
-          const g = Math.round(53 * (1 - t) + 179 * t);
-          const b = Math.round(69 * (1 - t) + 179 * t);
-          return `rgb(${r},${g},${b})`;
+        // Clamp value to [-100, 100]
+        val = Math.max(-100, Math.min(100, val));
+        // Use absolute value to determine distance from zero
+        const distanceFromZero = Math.abs(val);
+        
+        // Stay green until ±60, then transition to red
+        if (distanceFromZero <= 60) {
+          // Pure green for values between -60 and +60
+          return '#28a745'; // RGB: 40, 167, 69
         } else {
-          // Green: from #b3ffb3 (light) to #28a745 (deep)
-          // Interpolate between (179,255,179) and (40,167,69)
-          const t = val / 40; // 0 at 0, 1 at 40
-          const r = Math.round(179 * (1 - t) + 40 * t);
-          const g = Math.round(255 * (1 - t) + 167 * t);
-          const b = Math.round(179 * (1 - t) + 69 * t);
+          // Transition from green to red for values beyond ±60
+          const t = (distanceFromZero - 60) / 40; // 0 at ±60, 1 at ±100
+          
+          // Green: #28a745 (RGB: 40, 167, 69) at ±60
+          // Red: #dc3545 (RGB: 220, 53, 69) at ±100
+          const r = Math.round(40 * (1 - t) + 220 * t);
+          const g = Math.round(167 * (1 - t) + 53 * t);
+          const b = Math.round(69 * (1 - t) + 69 * t);
           return `rgb(${r},${g},${b})`;
         }
       }
@@ -2636,21 +2661,26 @@ function getTruncatedMarketTitle() {
     // Extract time from "BTC price today at 5pm?" -> "5pm"
     const timeMatch = marketTitle.match(/at\s+(.+?)\?/i);
     if (timeMatch) {
-      return `BTC ${timeMatch[1].trim()}`;
+      return `${currentSymbol} ${timeMatch[1].trim()}`;
     }
   }
-  return 'BTC Unknown';
+  return `${currentSymbol} Unknown`;
 }
 
-// Utility function to get current BTC ticker price from the UI
-function getCurrentBTCTickerPrice() {
-  const el = document.getElementById('btc-price-value');
+// Utility function to get current symbol ticker price from the UI
+function getCurrentSymbolTickerPrice() {
+  const el = document.getElementById('symbol-price-value');
   if (el && el.textContent) {
     // Remove $ and commas, parse as float
     const val = parseFloat(el.textContent.replace(/\$|,/g, ''));
     return isNaN(val) ? "" : val;
   }
   return "";
+}
+
+// Legacy function name for backward compatibility
+function getCurrentBTCTickerPrice() {
+  return getCurrentSymbolTickerPrice();
 }
 
 // Utility function to get current momentum score from the panel
@@ -2797,7 +2827,7 @@ async function fetchAndRenderRecentTrades() {
           const hour = parseInt(hourMatch[1], 10);
           const ampm = hour >= 12 ? 'pm' : 'am';
           const displayHour = hour === 0 ? 12 : (hour > 12 ? hour - 12 : hour);
-          contract = `BTC ${displayHour}${ampm}`;
+          contract = `${currentSymbol} ${displayHour}${ampm}`;
         } else {
           contract = fill.ticker;
         }
@@ -2915,8 +2945,8 @@ async function fetchAndRenderTradeHistory() {
       // Format win/loss
       const winLoss = trade.win_loss || '';
       
-      // Format momentum
-      const momentum = trade.momentum !== null && trade.momentum !== undefined ? Number(trade.momentum).toFixed(2) : '';
+      // Format momentum percentile (now using 5s average)
+      const momentum = trade.momentum_5s_avg !== null && trade.momentum_5s_avg !== undefined ? Number(trade.momentum_5s_avg).toFixed(1) : '';
       
       // Format symbol prices
       const symbolOpen = trade.symbol_open !== null && trade.symbol_open !== undefined ? '$' + Math.round(trade.symbol_open).toLocaleString() : '';
@@ -3054,8 +3084,8 @@ async function closeExpiredTrades() {
     if (!res.ok) throw new Error("Failed to fetch open trades");
     const openTrades = await res.json();
 
-    // Get current BTC ticker price from DOM element
-    const currentPriceEl = document.getElementById('btc-price-value');
+    // Get current symbol ticker price from DOM element
+    const currentPriceEl = document.getElementById('symbol-price-value');
     const currentSymbolPrice = currentPriceEl ? parseFloat(currentPriceEl.textContent.replace(/\$|,/g, '')) : null;
 
     // Loop over each trade and send a close request
@@ -3095,6 +3125,47 @@ async function closeExpiredTrades() {
     console.error("Error in closeExpiredTrades:", err);
   }
 }
+
+// === Dynamic Height Panel Functions ===
+
+// Centralized height calculation - adjust this one value to change all bottom panel heights
+const BOTTOM_PANEL_HEIGHT = 'calc(100vh - 760px)';
+
+// Table content height - adjust this to fine-tune table height inside the panel
+const TABLE_CONTENT_HEIGHT = 'calc(100% + 15px)';
+
+// Function to adjust bottom panel height based on window size
+function adjustBottomPanelHeight() {
+  const profileDataPanel = document.getElementById('profileDataPanel');
+  if (profileDataPanel) {
+    profileDataPanel.style.height = BOTTOM_PANEL_HEIGHT;
+    
+    // Also set height on tab content containers to ensure proper scrolling
+    const tabContents = [
+      'trade-history-content',
+      'recent-fills-content', 
+      'settlements-content',
+      'open-positions-content'
+    ];
+    
+    tabContents.forEach(contentId => {
+      const content = document.getElementById(contentId);
+      if (content) {
+        content.style.height = TABLE_CONTENT_HEIGHT;
+      }
+    });
+  }
+}
+
+// Initialize bottom panel with dynamic height on page load
+document.addEventListener('DOMContentLoaded', function() {
+  adjustBottomPanelHeight();
+  
+  // Handle window resize for responsive panel
+  window.addEventListener('resize', () => {
+    adjustBottomPanelHeight();
+  });
+});
 
 // === Tab Switching Functionality ===
 function initializeTabSwitching() {
@@ -3255,24 +3326,45 @@ async function fetchAndRenderPositions() {
     const data = await response.json();
     const positions = data.positions || [];
     
+    // Filter positions by current monitor's symbol if monitor is selected
+    let filteredPositions = positions;
+    if (currentMonitorId && currentSymbol) {
+      filteredPositions = positions.filter(position => 
+        position.ticker && position.ticker.includes(currentSymbol)
+      );
+      console.log(`Filtering positions for symbol: ${currentSymbol}, found ${filteredPositions.length} positions`);
+    }
+    
     const openPositionsTableBody = document.querySelector('#openPositionsTable tbody');
     if (!openPositionsTableBody) return;
     
     // Clear existing content
     openPositionsTableBody.innerHTML = '';
     
-    if (positions.length === 0) {
+    if (filteredPositions.length === 0) {
       // Show "No Open Positions" message
       const noPositionsRow = document.createElement('tr');
       noPositionsRow.innerHTML = '<td colspan="5" style="text-align: center; color: #ccc; padding: 20px;">No Open Positions</td>';
       openPositionsTableBody.appendChild(noPositionsRow);
       updateOpenPositionsTabCount(0);
       window.previousPositionsCount = 0;
+      
+      // Disable hover effect when no positions
+      const table = document.getElementById('openPositionsTable');
+      if (table) {
+        table.style.setProperty('--hover-disabled', 'true');
+      }
       return;
     }
     
+    // Enable hover effect when there are positions
+    const table = document.getElementById('openPositionsTable');
+    if (table) {
+      table.style.setProperty('--hover-disabled', 'false');
+    }
+    
     // Filter positions with non-zero positions
-    const activePositions = positions.filter(p => p.position !== 0);
+    const activePositions = filteredPositions.filter(p => p.position !== 0);
     
     // Check if this is a new trade (count increased) or closed trade (count decreased)
     const currentPositionsCount = activePositions.length;
@@ -3504,9 +3596,8 @@ async function fetchAndRenderOpenPositions() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  fetchAndRenderTradeHistory(); // Load trade history data since it's now the default tab
+  // Note: fetchAndRenderTradeHistory() and fetchAndRenderPositions() are now called after currentMonitorId is set in loadMonitorDetails()
   fetchAndRenderRecentTrades();
-  fetchAndRenderPositions();
   initializeTabSwitching();
   
   // Set up WebSocket connection for database change notifications
@@ -3708,12 +3799,37 @@ document.addEventListener('DOMContentLoaded', function() {
 
   async function fetchAutoStopSettings() {
     try {
-      const resp = await fetch(window.location.origin + '/api/get_auto_stop_settings');
+      if (!currentMonitorId) {
+        console.log('⚠️ No monitor selected, cannot fetch auto stop settings');
+        return { 
+          current_probability: 25, 
+          min_ttc_seconds: 60, 
+          momentum_spike_enabled: true, 
+          momentum_spike_threshold: 35,
+          verification_period_enabled: false,
+          verification_period_seconds: 15
+        };
+      }
+      
+      const resp = await fetch(window.location.origin + '/api/get_auto_entry_settings?monitor_id=' + currentMonitorId);
       if (resp.ok) {
         const data = await resp.json();
+        if (data.status === 'error') {
+          console.error('Error fetching auto stop settings:', data.message);
+          return { 
+            current_probability: 25, 
+            min_ttc_seconds: 60, 
+            momentum_spike_enabled: true, 
+            momentum_spike_threshold: 35,
+            verification_period_enabled: false,
+            verification_period_seconds: 15
+          };
+        }
         return data;
       }
-    } catch {}
+    } catch (error) {
+      console.error('Error in fetchAutoStopSettings:', error);
+    }
     return { 
       current_probability: 25, 
       min_ttc_seconds: 60, 
@@ -3726,8 +3842,15 @@ document.addEventListener('DOMContentLoaded', function() {
 
   function showAutoStopSettingsModal() {
     console.log('showAutoStopSettingsModal called');
+    
+    if (!currentMonitorId) {
+      console.log('⚠️ No monitor selected, cannot open auto stop settings modal');
+      alert('Please select a monitor first to configure auto stop settings.');
+      return;
+    }
+    
     if (autoStopSettingsModal) {
-      console.log('Showing auto stop settings modal');
+      console.log('Showing auto stop settings modal for monitor:', currentMonitorId);
       autoStopSettingsModal.style.display = 'block';
       document.body.style.overflow = 'hidden';
     
@@ -3868,11 +3991,16 @@ document.addEventListener('DOMContentLoaded', function() {
       
       if (!isNaN(newProb)) {
         try {
-          const response = await fetch(window.location.origin + '/api/set_auto_stop_settings', {
+          if (!currentMonitorId) {
+            console.error('No monitor selected, cannot save auto stop settings');
+            return;
+          }
+          
+          const response = await fetch(window.location.origin + '/api/set_auto_entry_settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-              enabled: true, 
+            body: JSON.stringify({
+              monitor_id: currentMonitorId,
               current_probability: newProb, 
               min_ttc_seconds: minTTC,
               momentum_spike_enabled: momentumSpikeEnabled,
@@ -3882,7 +4010,12 @@ document.addEventListener('DOMContentLoaded', function() {
             })
           });
           if (response.ok) {
-            // Removed console.log
+            const responseData = await response.json();
+            if (responseData.status === 'error') {
+              console.error('Error saving auto stop settings:', responseData.message);
+              return;
+            }
+            
             lastSavedProbability = newProb;
             window.lastSavedMinTTC = minTTC;
             window.lastSavedMomentumSpikeEnabled = momentumSpikeEnabled;
@@ -3981,8 +4114,14 @@ document.addEventListener('DOMContentLoaded', function() {
   const autoEntrySliderValueDisplay = document.getElementById('autoEntrySliderValueDisplay');
   const autoEntryDifferentialSlider = document.getElementById('autoEntryDifferentialSlider');
   const autoEntryDifferentialValueDisplay = document.getElementById('autoEntryDifferentialValueDisplay');
+  const autoEntryMaxDifferentialSlider = document.getElementById('autoEntryMaxDifferentialSlider');
+  const autoEntryMaxDifferentialValueDisplay = document.getElementById('autoEntryMaxDifferentialValueDisplay');
+  const autoEntryMinVolumeSlider = document.getElementById('autoEntryMinVolumeSlider');
+  const autoEntryMinVolumeValueDisplay = document.getElementById('autoEntryMinVolumeValueDisplay');
   let lastSavedAutoEntryProbability = 25;
   let lastSavedAutoEntryDifferential = 0;
+  let lastSavedAutoEntryMaxDifferential = null;
+  let lastSavedAutoEntryMinVolume = 1000;
 
   // Debug logging
   console.log('Auto Entry Settings - DOMContentLoaded fired');
@@ -4022,6 +4161,42 @@ document.addEventListener('DOMContentLoaded', function() {
       const thumbWidth = 16;
       const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
       autoEntryDifferentialValueDisplay.style.left = `${offset}px`;
+    }
+  }
+
+  function updateAutoEntryMaxDifferentialDisplay(value) {
+    if (autoEntryMaxDifferentialValueDisplay && autoEntryMaxDifferentialSlider) {
+      // Parse as float to handle decimal values
+      const floatValue = parseFloat(value);
+      // For max differential, show the value directly (no + sign needed since min is 0)
+      const displayValue = floatValue.toFixed(2);
+      autoEntryMaxDifferentialValueDisplay.textContent = displayValue;
+      // Calculate thumb position in px
+      const min = parseFloat(autoEntryMaxDifferentialSlider.min);
+      const max = parseFloat(autoEntryMaxDifferentialSlider.max);
+      const percent = (floatValue - min) / (max - min);
+      const sliderWidth = autoEntryMaxDifferentialSlider.offsetWidth;
+      // 16px is approx thumb width, adjust as needed
+      const thumbWidth = 16;
+      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
+      autoEntryMaxDifferentialValueDisplay.style.left = `${offset}px`;
+    }
+  }
+
+  function updateAutoEntryMinVolumeDisplay(value) {
+    if (autoEntryMinVolumeValueDisplay && autoEntryMinVolumeSlider) {
+      // Enforce minimum of 25 for display
+      const displayValue = Math.max(25, parseInt(value, 10));
+      autoEntryMinVolumeValueDisplay.textContent = displayValue;
+      // Calculate thumb position in px
+      const min = parseInt(autoEntryMinVolumeSlider.min, 10);
+      const max = parseInt(autoEntryMinVolumeSlider.max, 10);
+      const percent = (value - min) / (max - min);
+      const sliderWidth = autoEntryMinVolumeSlider.offsetWidth;
+      // 16px is approx thumb width, adjust as needed
+      const thumbWidth = 16;
+      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
+      autoEntryMinVolumeValueDisplay.style.left = `${offset}px`;
     }
   }
 
@@ -4075,23 +4250,42 @@ document.addEventListener('DOMContentLoaded', function() {
 
   async function fetchAutoEntrySettings() {
     try {
-      const resp = await fetch(window.location.origin + '/api/get_auto_entry_settings');
+      if (!currentMonitorId) {
+        console.log('⚠️ No monitor selected, cannot fetch auto entry settings');
+        return { min_probability: 25, min_differential: 0, allow_re_entry: false };
+      }
+      
+      const resp = await fetch(window.location.origin + '/api/get_auto_entry_settings?monitor_id=' + currentMonitorId);
       if (resp.ok) {
         const data = await resp.json();
+        if (data.status === 'error') {
+          console.error('Error fetching auto entry settings:', data.message);
+          return { min_probability: 25, min_differential: 0, max_differential: null, allow_re_entry: false };
+        }
         return {
           min_probability: data.min_probability ?? 25,
           min_differential: data.min_differential ?? 0,
+          max_differential: data.max_differential ?? null,
           allow_re_entry: data.allow_re_entry ?? false
         };
       }
-    } catch {}
-    return { min_probability: 25, min_differential: 0, allow_re_entry: false };
+    } catch (error) {
+      console.error('Error in fetchAutoEntrySettings:', error);
+    }
+    return { min_probability: 25, min_differential: 0, max_differential: null, allow_re_entry: false };
   }
 
   function showAutoEntrySettingsModal() {
     console.log('showAutoEntrySettingsModal called');
+    
+    if (!currentMonitorId) {
+      console.log('⚠️ No monitor selected, cannot open auto entry settings modal');
+      alert('Please select a monitor first to configure auto entry settings.');
+      return;
+    }
+    
     if (autoEntrySettingsModal) {
-      console.log('Showing auto entry settings modal');
+      console.log('Showing auto entry settings modal for monitor:', currentMonitorId);
       autoEntrySettingsModal.style.display = 'block';
       document.body.style.overflow = 'hidden';
     
@@ -4101,10 +4295,13 @@ document.addEventListener('DOMContentLoaded', function() {
       fetchAutoEntrySettings().then(settings => {
         lastSavedAutoEntryProbability = settings.min_probability;
         lastSavedAutoEntryDifferential = settings.min_differential;
+        lastSavedAutoEntryMaxDifferential = settings.max_differential;
         autoEntryProbabilitySlider.value = settings.min_probability;
         autoEntryDifferentialSlider.value = settings.min_differential;
+        autoEntryMaxDifferentialSlider.value = settings.max_differential || 0;
         updateAutoEntrySliderDisplay(settings.min_probability);
         updateAutoEntryDifferentialDisplay(settings.min_differential);
+        updateAutoEntryMaxDifferentialDisplay(settings.max_differential || 0);
         
         // Set the allow re-entry checkbox
         const allowReEntryCheckbox = document.getElementById('autoEntryAllowReEntry');
@@ -4114,7 +4311,17 @@ document.addEventListener('DOMContentLoaded', function() {
         }
       });
       // Fetch all settings
-      fetch(window.location.origin + '/api/get_auto_entry_settings').then(r => r.json()).then(data => {
+      if (!currentMonitorId) {
+        console.log('⚠️ No monitor selected, cannot fetch auto entry settings');
+        return;
+      }
+      
+      fetch(window.location.origin + '/api/get_auto_entry_settings?monitor_id=' + currentMonitorId).then(r => r.json()).then(data => {
+        if (data.status === 'error') {
+          console.error('Error fetching auto entry settings:', data.message);
+          return;
+        }
+        
         const minTTC = data.min_ttc_seconds !== undefined ? data.min_ttc_seconds : 60;
         const minTime = data.min_time !== undefined ? data.min_time : 0;
         const maxTime = data.max_time !== undefined ? data.max_time : 3600;
@@ -4194,8 +4401,10 @@ document.addEventListener('DOMContentLoaded', function() {
       // Reset sliders to last saved values
       autoEntryProbabilitySlider.value = lastSavedAutoEntryProbability;
       autoEntryDifferentialSlider.value = lastSavedAutoEntryDifferential;
+      autoEntryMaxDifferentialSlider.value = lastSavedAutoEntryMaxDifferential || 0;
       updateAutoEntrySliderDisplay(lastSavedAutoEntryProbability);
       updateAutoEntryDifferentialDisplay(lastSavedAutoEntryDifferential);
+      updateAutoEntryMaxDifferentialDisplay(lastSavedAutoEntryMaxDifferential || 0);
       
       // Reset Time Window slider to last saved values
       if (window.lastSavedAutoEntryMinTime !== undefined && window.lastSavedAutoEntryMaxTime !== undefined) {
@@ -4242,8 +4451,10 @@ document.addEventListener('DOMContentLoaded', function() {
     autoEntrySettingsSave.addEventListener('click', async function() {
       const newProb = parseInt(autoEntryProbabilitySlider.value, 10);
       const newDifferential = parseFloat(autoEntryDifferentialSlider.value);
+      const newMaxDifferential = parseFloat(autoEntryMaxDifferentialSlider.value);
+      const newMinVolume = Math.max(25, parseInt(autoEntryMinVolumeSlider.value, 10));
       
-      if (!isNaN(newProb) && !isNaN(newDifferential)) {
+      if (!isNaN(newProb) && !isNaN(newDifferential) && !isNaN(newMinVolume)) {
         try {
           const allowReEntryCheckbox = document.getElementById('autoEntryAllowReEntry');
           const allowReEntry = allowReEntryCheckbox ? allowReEntryCheckbox.checked : false;
@@ -4259,12 +4470,20 @@ document.addEventListener('DOMContentLoaded', function() {
           const spikeAlertCooldown = spikeAlertCooldownSlider ? parseInt(spikeAlertCooldownSlider.value) : 30;
           const spikeAlertTime = spikeAlertTimeSlider ? parseInt(spikeAlertTimeSlider.value) : 15;
           
+          if (!currentMonitorId) {
+            console.error('No monitor selected, cannot save auto entry settings');
+            return;
+          }
+          
           const response = await fetch(window.location.origin + '/api/set_auto_entry_settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+              monitor_id: currentMonitorId,
               min_probability: newProb,
               min_differential: newDifferential,
+              max_differential: newMaxDifferential > 0 ? newMaxDifferential : null,
+              min_volume: newMinVolume,
               min_ttc_seconds: 60, // Keep default TTC for now
               min_time: minTimeSeconds,
               max_time: maxTimeSeconds,
@@ -4277,8 +4496,19 @@ document.addEventListener('DOMContentLoaded', function() {
           });
           
           if (response.ok) {
+            const responseData = await response.json();
+            if (responseData.status === 'error') {
+              console.error('Error saving auto entry settings:', responseData.message);
+              return;
+            }
+            
             lastSavedAutoEntryProbability = newProb;
             lastSavedAutoEntryDifferential = newDifferential;
+            lastSavedAutoEntryMaxDifferential = newMaxDifferential > 0 ? newMaxDifferential : null;
+            lastSavedAutoEntryMinVolume = newMinVolume;
+            
+            // Update global min_volume for frontend filtering
+            window.currentMonitorMinVolume = newMinVolume;
             window.lastSavedAutoEntryMinTime = minTimeSeconds;
             window.lastSavedAutoEntryMaxTime = maxTimeSeconds;
             window.lastSavedAutoEntryAllowReEntry = allowReEntry;
@@ -4308,6 +4538,18 @@ document.addEventListener('DOMContentLoaded', function() {
     updateAutoEntrySliderDisplay(autoEntryProbabilitySlider.value);
   }
   
+  if (autoEntryMinVolumeSlider && autoEntryMinVolumeValueDisplay) {
+    autoEntryMinVolumeSlider.addEventListener('input', function() {
+      updateAutoEntryMinVolumeDisplay(this.value);
+    });
+    // On resize, keep value display in sync
+    window.addEventListener('resize', function() {
+      updateAutoEntryMinVolumeDisplay(autoEntryMinVolumeSlider.value);
+    });
+    // Initial position
+    updateAutoEntryMinVolumeDisplay(autoEntryMinVolumeSlider.value);
+  }
+  
   if (autoEntryDifferentialSlider && autoEntryDifferentialValueDisplay) {
     autoEntryDifferentialSlider.addEventListener('input', function() {
       updateAutoEntryDifferentialDisplay(this.value);
@@ -4318,6 +4560,18 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     // Initial position
     updateAutoEntryDifferentialDisplay(autoEntryDifferentialSlider.value);
+  }
+  
+  if (autoEntryMaxDifferentialSlider && autoEntryMaxDifferentialValueDisplay) {
+    autoEntryMaxDifferentialSlider.addEventListener('input', function() {
+      updateAutoEntryMaxDifferentialDisplay(this.value);
+    });
+    // On resize, keep value display in sync
+    window.addEventListener('resize', function() {
+      updateAutoEntryMaxDifferentialDisplay(autoEntryMaxDifferentialSlider.value);
+    });
+    // Initial position
+    updateAutoEntryMaxDifferentialDisplay(autoEntryMaxDifferentialSlider.value);
   }
   
   // Spike Alert Slider Event Listeners
@@ -4536,17 +4790,46 @@ function connectAutoEntryWebSocket() {
 // Fetch initial auto entry indicator state
 async function fetchInitialAutoEntryIndicator() {
     try {
-        console.log('🔄 Fetching initial auto entry status...');
-        const response = await fetch(window.location.origin + '/api/get_auto_entry_status');
-        if (!response.ok) throw new Error('Failed to fetch auto entry status');
-        const data = await response.json();
+        if (!currentMonitorId) {
+            console.log('⚠️ No monitor selected, cannot fetch auto trade status');
+            console.log('currentMonitorId value:', currentMonitorId);
+            return;
+        }
         
-        console.log('📊 Initial auto entry status received:', data);
+        console.log('🔄 Fetching auto trade status for monitor:', currentMonitorId);
+        console.log('Making API call to:', `/api/monitors?user_id=user_0001`);
+        const response = await fetch(`/api/monitors?user_id=user_0001`);
+        if (!response.ok) throw new Error('Failed to fetch monitors data');
+        const monitorsData = await response.json();
         
-        // Update the indicator display
-        updateAutoEntryIndicator(data);
+        if (monitorsData.status === 'ok' && monitorsData.monitors) {
+            // Find the specific monitor from the monitors array
+            const monitor = monitorsData.monitors.find(m => m.id === `mon_0001_${currentMonitorId}`);
+            
+            if (monitor) {
+                console.log('📊 Monitor data received:', monitor);
+                
+                // Extract auto_trade_status from monitor data
+                const autoTradeStatus = monitor.auto_trade_status || 'DISABLED';
+            
+            // Create data object in the format expected by updateAutoEntryIndicator
+            const statusData = {
+                status: autoTradeStatus,
+                enabled: autoTradeStatus === 'ACTIVE' || autoTradeStatus === 'INACTIVE'
+            };
+            
+            console.log('📊 Auto trade status extracted:', statusData);
+            
+            // Update the indicator display
+            updateAutoEntryIndicator(statusData);
+        } else {
+            console.error('Monitor not found in monitors array');
+        }
+    } else {
+        console.error('Failed to get monitors data:', monitorsData.message);
+    }
     } catch (error) {
-        console.error('Error fetching initial auto entry status:', error);
+        console.error('Error fetching monitor auto trade status:', error);
     }
 }
 
@@ -4562,6 +4845,10 @@ function updateAutoEntryIndicator(data) {
     // Get the indicator elements
     const indicatorDot = indicator.querySelector('div');
     const indicatorText = indicator.querySelector('span');
+    
+    console.log('🔍 Found indicator element:', indicator);
+    console.log('🔍 Found indicator dot:', indicatorDot);
+    console.log('🔍 Found indicator text:', indicatorText);
     
     // Always show the indicator
     indicator.style.display = 'flex';
@@ -4610,7 +4897,15 @@ function updateAutoEntryIndicator(data) {
             break;
             
         case 'DISABLED':
-            indicator.style.display = 'none'; // Hide completely when disabled
+            indicator.style.display = 'flex';
+            indicator.style.backgroundColor = ''; // No background
+            indicator.style.border = '';
+            if (indicatorDot) {
+                indicatorDot.style.background = '#6c757d'; // Gray dot
+            }
+            if (indicatorText) {
+                indicatorText.textContent = 'Auto Trade DISABLED';
+            }
             break;
             
         case 'PAUSED':
@@ -4660,10 +4955,8 @@ document.addEventListener('DOMContentLoaded', () => {
     connectAutoEntryWebSocket();
 });
 
-// Also fetch initial state when live-data.js loads
-if (typeof window.liveData !== 'undefined') {
-    fetchInitialAutoEntryIndicator();
-}
+// Don't fetch initial state until a monitor is selected
+// fetchInitialAutoEntryIndicator() will be called when monitor is selected
 </script>
 
   <script>
@@ -4696,7 +4989,7 @@ if (typeof window.liveData !== 'undefined') {
         // Test API call directly
         setTimeout(function() {
           // Removed console.log
-          fetch(window.location.origin + '/api/strike_tables/btc')
+          fetch(window.location.origin + `/api/strike_tables/${currentSymbol.toLowerCase()}`)
             .then(response => response.json())
             .then(data => {
               // Removed console.log
@@ -4823,11 +5116,11 @@ if (typeof window.liveData !== 'undefined') {
         if (activeSide === 'yes') {
           activeAsk = yesAsk;
           activeDiff = yesDiff;
-          activeEnabled = yesAsk <= 98 && parseInt(volume) >= 1000;
+          activeEnabled = yesAsk <= 98;
         } else if (activeSide === 'no') {
           activeAsk = noAsk;
           activeDiff = noDiff;
-          activeEnabled = noAsk <= 98 && parseInt(volume) >= 1000;
+          activeEnabled = noAsk <= 98;
         }
         
         // Set buy button display based on mode
@@ -4910,12 +5203,23 @@ if (typeof window.liveData !== 'undefined') {
     // Pre-load auto trade settings immediately
     async function preloadAutoTradeSettings() {
       try {
-        console.log('Pre-loading auto trade settings...');
-        const response = await fetch(window.location.origin + '/api/get_auto_trade_settings');
+        if (!currentMonitorId) {
+          console.log('⚠️ No monitor selected, cannot pre-load auto trade settings');
+          return;
+        }
+        
+        console.log('Pre-loading auto trade settings for monitor:', currentMonitorId);
+        const response = await fetch(window.location.origin + '/api/get_auto_entry_settings?monitor_id=' + currentMonitorId);
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
         const data = await response.json();
+        
+        if (data.status === 'error') {
+          console.error('Error pre-loading auto trade settings:', data.message);
+          return;
+        }
+        
         preloadedAutoTradeSettings = data;
         console.log('Auto trade settings pre-loaded successfully:', data);
         
@@ -4931,26 +5235,23 @@ if (typeof window.liveData !== 'undefined') {
     
     // Function to populate auto stop form fields with pre-loaded data
     function populateAutoStopFormFields(data) {
-      if (!data.auto_stop_settings) return;
-      
-      const settings = data.auto_stop_settings;
-      
+      // Data now comes directly from monitor_list table (flat structure)
       // Update probability slider
       const probSlider = document.getElementById('autoStopProbabilitySlider');
       const probDisplay = document.getElementById('sliderValueDisplay');
       if (probSlider && probDisplay) {
-        probSlider.value = settings.win_probability || 0;
-        probDisplay.textContent = (settings.win_probability || 0) + '%';
+        probSlider.value = data.current_probability || 25;
+        probDisplay.textContent = (data.current_probability || 25) + '%';
       }
       
       // Update TTC field
       const ttcDisplay = document.getElementById('autoStopMinTTCDisplay');
       const ttcInput = document.getElementById('autoStopMinTTCInput');
       if (ttcDisplay && ttcInput) {
-        const ttcMinutes = settings.min_time_to_close || 0;
-        ttcInput.value = ttcMinutes;
-        const hours = Math.floor(ttcMinutes / 60);
-        const minutes = ttcMinutes % 60;
+        const ttcSeconds = data.min_ttc_seconds || 60;
+        ttcInput.value = ttcSeconds;
+        const hours = Math.floor(ttcSeconds / 3600);
+        const minutes = Math.floor((ttcSeconds % 3600) / 60);
         ttcDisplay.textContent = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
       }
       
@@ -4959,9 +5260,9 @@ if (typeof window.liveData !== 'undefined') {
       const momentumSlider = document.getElementById('momentumSpikeThresholdSlider');
       const momentumDisplay = document.getElementById('momentumSpikeThresholdValueDisplay');
       if (momentumEnabled && momentumSlider && momentumDisplay) {
-        momentumEnabled.checked = settings.momentum_spike_enabled || false;
-        momentumSlider.value = settings.momentum_spike_threshold || 0;
-        momentumDisplay.textContent = '±' + (settings.momentum_spike_threshold || 0);
+        momentumEnabled.checked = data.momentum_spike_enabled || true;
+        momentumSlider.value = data.momentum_spike_threshold || 35;
+        momentumDisplay.textContent = '±' + (data.momentum_spike_threshold || 35);
       }
       
       // Update verification period settings
@@ -4969,52 +5270,64 @@ if (typeof window.liveData !== 'undefined') {
       const verificationSlider = document.getElementById('verificationPeriodSlider');
       const verificationDisplay = document.getElementById('verificationPeriodValueDisplay');
       if (verificationEnabled && verificationSlider && verificationDisplay) {
-        verificationEnabled.checked = settings.verification_period_enabled || false;
-        verificationSlider.value = settings.verification_period_duration || 0;
-        verificationDisplay.textContent = (settings.verification_period_duration || 0) + 's';
+        verificationEnabled.checked = data.verification_period_enabled || false;
+        verificationSlider.value = data.verification_period_seconds || 15;
+        verificationDisplay.textContent = (data.verification_period_seconds || 15) + 's';
       }
+      
+
     }
     
     // Function to populate auto entry form fields with pre-loaded data
     function populateAutoEntryFormFields(data) {
-      if (!data.auto_entry_settings) return;
-      
-      const settings = data.auto_entry_settings;
+      // Data now comes directly from monitor_list table (flat structure)
       
       // Update time window
       const minTimeDisplay = document.getElementById('timeWindowMinDisplay');
       const maxTimeDisplay = document.getElementById('timeWindowMaxDisplay');
       if (minTimeDisplay && maxTimeDisplay) {
-        const minMinutes = settings.time_window_min || 0;
-        const maxMinutes = settings.time_window_max || 0;
-        const minHours = Math.floor(minMinutes / 60);
-        const minMins = minMinutes % 60;
-        const maxHours = Math.floor(maxMinutes / 60);
-        const maxMins = maxMinutes % 60;
+        const minSeconds = data.min_time || 120;
+        const maxSeconds = data.max_time || 900;
+        const minHours = Math.floor(minSeconds / 3600);
+        const minMins = Math.floor((minSeconds % 3600) / 60);
+        const maxHours = Math.floor(maxSeconds / 3600);
+        const maxMins = Math.floor((maxSeconds % 3600) / 60);
         minTimeDisplay.textContent = `${minHours.toString().padStart(2, '0')}:${minMins.toString().padStart(2, '0')}`;
         maxTimeDisplay.textContent = `${maxHours.toString().padStart(2, '0')}:${maxMins.toString().padStart(2, '0')}`;
       }
+      
+      // Update minimum volume slider
+      const minVolumeSlider = document.getElementById('autoEntryMinVolumeSlider');
+      const minVolumeDisplay = document.getElementById('autoEntryMinVolumeValueDisplay');
+      if (minVolumeSlider && minVolumeDisplay) {
+        const volumeValue = Math.max(25, data.min_volume || 1000);
+        minVolumeSlider.value = volumeValue;
+        minVolumeDisplay.textContent = volumeValue.toString();
+      }
+      
+      // Set global min_volume for frontend filtering
+      window.currentMonitorMinVolume = Math.max(25, data.min_volume || 1000);
       
       // Update probability slider
       const probSlider = document.getElementById('autoEntryProbabilitySlider');
       const probDisplay = document.getElementById('autoEntrySliderValueDisplay');
       if (probSlider && probDisplay) {
-        probSlider.value = settings.min_win_probability || 0;
-        probDisplay.textContent = (settings.min_win_probability || 0) + '%';
+        probSlider.value = data.min_probability || 25;
+        probDisplay.textContent = (data.min_probability || 25) + '%';
       }
       
       // Update differential slider
       const diffSlider = document.getElementById('autoEntryDifferentialSlider');
       const diffDisplay = document.getElementById('autoEntryDifferentialValueDisplay');
       if (diffSlider && diffDisplay) {
-        diffSlider.value = settings.min_differential || 0;
-        diffDisplay.textContent = settings.min_differential || 0;
+        diffSlider.value = data.min_differential || 0.25;
+        diffDisplay.textContent = data.min_differential || 0.25;
       }
       
       // Update re-entry checkbox
       const reEntryCheckbox = document.getElementById('autoEntryAllowReEntry');
       if (reEntryCheckbox) {
-        reEntryCheckbox.checked = settings.allow_re_entry || false;
+        reEntryCheckbox.checked = data.allow_re_entry || false;
       }
       
       // Update spike alert settings
@@ -5027,20 +5340,22 @@ if (typeof window.liveData !== 'undefined') {
       const spikeTimeDisplay = document.getElementById('spikeAlertTimeValueDisplay');
       
       if (spikeEnabled && spikeMomentumSlider && spikeMomentumDisplay) {
-        spikeEnabled.checked = settings.spike_alert_enabled || false;
-        spikeMomentumSlider.value = settings.spike_alert_momentum_level || 0;
-        spikeMomentumDisplay.textContent = '±' + (settings.spike_alert_momentum_level || 0);
+        spikeEnabled.checked = data.spike_alert_enabled || true;
+        spikeMomentumSlider.value = data.spike_alert_momentum_threshold || 40;
+        spikeMomentumDisplay.textContent = '±' + (data.spike_alert_momentum_threshold || 40);
       }
       
       if (spikeCooldownSlider && spikeCooldownDisplay) {
-        spikeCooldownSlider.value = settings.spike_alert_cooldown_level || 0;
-        spikeCooldownDisplay.textContent = '±' + (settings.spike_alert_cooldown_level || 0);
+        spikeCooldownSlider.value = data.spike_alert_cooldown_threshold || 30;
+        spikeCooldownDisplay.textContent = '±' + (data.spike_alert_cooldown_threshold || 30);
       }
       
       if (spikeTimeSlider && spikeTimeDisplay) {
         spikeTimeSlider.value = settings.spike_alert_cooldown_time || 0;
         spikeTimeDisplay.textContent = (settings.spike_alert_cooldown_time || 0) + ' min';
       }
+      
+
     }
     
     // === DROPDOWN POPULATION FUNCTIONS ===
@@ -5149,12 +5464,18 @@ if (typeof window.liveData !== 'undefined') {
               monitorPicker.appendChild(option);
             });
             
-            // Set default to first monitor and load it
+            // Set default monitor - check localStorage first, then fall back to first monitor
             if (data.monitors.length > 0) {
-              const firstMonitorId = data.monitors[0].id;
-              console.log('Setting first monitor as default:', firstMonitorId);
-              monitorPicker.value = firstMonitorId;
-              loadMonitorDetails(firstMonitorId);
+              const storedMonitorId = localStorage.getItem('selectedMonitorId');
+              const defaultMonitorId = storedMonitorId || data.monitors[0].id;
+              
+              // Verify the stored monitor ID exists in the current monitor list
+              const monitorExists = data.monitors.some(monitor => monitor.id == defaultMonitorId);
+              const selectedMonitorId = monitorExists ? defaultMonitorId : data.monitors[0].id;
+              
+              console.log('Setting monitor:', selectedMonitorId, storedMonitorId ? '(from localStorage)' : '(first monitor default)');
+              monitorPicker.value = selectedMonitorId;
+              loadMonitorDetails(selectedMonitorId);
             }
           }
         } else {
@@ -5168,6 +5489,20 @@ if (typeof window.liveData !== 'undefined') {
     // Global variable to track current monitor
     let currentMonitorId = null; // No default - must be set by user selection
     
+    // Global variable to track current symbol
+    let currentSymbol = 'BTC'; // Default to BTC, will be updated when monitor is selected
+    
+    // Store latest cooldown timer value to combine with status updates
+    let latestCooldownTimer = 0;
+    
+    // Function to get current symbol from picker
+    function getCurrentSymbol() {
+      const symbolPicker = document.getElementById('ticker-picker');
+      return symbolPicker ? symbolPicker.value : currentSymbol;
+    }
+    
+    // Simple symbol switching - page reload ensures clean initialization
+    
     // Function to load monitor details and update dropdowns
     async function loadMonitorDetails(monitorId) {
       console.log('Loading monitor details for ID:', monitorId);
@@ -5178,12 +5513,35 @@ if (typeof window.liveData !== 'undefined') {
         if (data.status === 'ok' && data.monitor) {
           const monitor = data.monitor;
           console.log('Monitor loaded:', monitor);
+          console.log('Monitor auto settings:', {
+            auto_trade: monitor.auto_trade,
+            auto_entry: monitor.auto_entry,
+            auto_stop: monitor.auto_stop
+          });
           
-          // Update symbol picker
+          // Update symbol picker and current symbol
           const symbolPicker = document.getElementById('ticker-picker');
           if (symbolPicker && monitor.symbol) {
             console.log('[MONITOR] Setting symbol picker to:', monitor.symbol);
             symbolPicker.value = monitor.symbol;
+            currentSymbol = monitor.symbol; // Update current symbol
+            console.log('[MONITOR] Current symbol set to:', currentSymbol);
+            
+            // Refresh price changes for the new symbol
+            if (window.liveData && typeof window.liveData.fetchSymbolPriceChanges === 'function') {
+              window.liveData.fetchSymbolPriceChanges(currentSymbol);
+            }
+            
+            // Initialize or update TradingView chart to show current symbol
+            if (window.initializeTradingViewWidget) {
+              console.log('[MONITOR] Initializing/updating TradingView to symbol:', currentSymbol);
+              // Add a small delay to ensure DOM is ready
+              setTimeout(() => {
+                window.initializeTradingViewWidget(currentSymbol);
+              }, 100);
+            } else {
+              console.warn('[MONITOR] TradingView initialization function not available yet');
+            }
           } else {
             console.warn('[MONITOR] Symbol picker not found or monitor.symbol is empty:', monitor.symbol);
           }
@@ -5250,6 +5608,12 @@ if (typeof window.liveData !== 'undefined') {
           console.log('currentMonitorId set to:', currentMonitorId);
           console.log('currentMonitorName set to:', monitor.name);
           
+          // Refresh trade history now that currentMonitorId is set
+          fetchAndRenderTradeHistory();
+          
+          // Refresh positions to show only current monitor's symbol
+          fetchAndRenderPositions();
+          
           // Set auto trade toggle state directly from monitor data
           if (autoTradeToggle && monitor.auto_trade !== undefined) {
             if (monitor.auto_trade) {
@@ -5258,6 +5622,8 @@ if (typeof window.liveData !== 'undefined') {
               autoTradeToggle.classList.remove('active');
             }
           }
+          
+
           
           // Update position display with monitor's total_position
           updatePositionDisplay(monitor.total_position);
@@ -5268,6 +5634,9 @@ if (typeof window.liveData !== 'undefined') {
             const bankrollInDollars = monitor.bankroll_allotment_total / 100; // Convert cents to dollars
             bankrollEl.textContent = `$${Number(bankrollInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
           }
+          
+          // Now that we have a monitor selected, fetch and display its auto trade status
+          fetchInitialAutoEntryIndicator();
         }
       } catch (error) {
         console.error('Error loading monitor details:', error);
@@ -5280,18 +5649,20 @@ if (typeof window.liveData !== 'undefined') {
       const selectedMonitorId = monitorPicker.value;
       
       if (selectedMonitorId) {
-        loadMonitorDetails(selectedMonitorId);
-        // Refresh trade history to show trades for the newly selected monitor
-        fetchAndRenderTradeHistory();
-        // Refresh watchlist to show data for the newly selected monitor
-        console.log('[MONITOR CHANGE] Refreshing watchlist for new monitor');
-        if (typeof updateWatchlistTable === 'function') {
-          updateWatchlistTable();
-        } else {
-          console.warn('[MONITOR CHANGE] updateWatchlistTable function not found');
+        console.log('Monitor changed to:', selectedMonitorId, '- reloading trade monitor...');
+        
+        // Store the selected monitor ID in localStorage before reload
+        localStorage.setItem('selectedMonitorId', selectedMonitorId);
+        
+        // Reload the dashboard iframe in the background
+        const dashboardIframe = window.parent.document.querySelector('iframe[src*="dashboard"]');
+        if (dashboardIframe) {
+          console.log('Reloading dashboard iframe...');
+          dashboardIframe.src = dashboardIframe.src; // Force reload
         }
         
-
+        // Reload the trade monitor iframe to ensure clean initialization
+        window.location.reload();
       }
     }
     
@@ -5313,6 +5684,8 @@ if (typeof window.liveData !== 'undefined') {
         // After symbol and strategy pickers are populated, load monitor picker
         console.log('[INIT] Symbol and strategy pickers populated, now loading monitor picker');
         populateMonitorPicker();
+        
+        // TradingView chart will initialize with correct symbol on page load
       });
       
       // Add event listeners
@@ -5326,10 +5699,41 @@ if (typeof window.liveData !== 'undefined') {
       if (symbolPicker) {
         symbolPicker.addEventListener('change', function() {
           if (currentMonitorId) {
+            const newSymbol = this.value;
+            console.log('Symbol changed to:', newSymbol);
+            
+            // Update current symbol and TradingView widget immediately
+            currentSymbol = newSymbol;
+            if (window.initializeTradingViewWidget) {
+              window.initializeTradingViewWidget(newSymbol);
+            }
+            
+            // Update backend monitor symbol
             fetch(`/api/monitor/${currentMonitorId}/update?user_id=user_0001`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ symbol: this.value })
+              body: JSON.stringify({ symbol: newSymbol })
+            })
+            .then(response => response.json())
+            .then(data => {
+              if (data.status === 'ok') {
+                console.log('Symbol updated successfully, reloading both iframes...');
+                
+                // Reload the dashboard iframe in the background
+                const dashboardIframe = window.parent.document.querySelector('iframe[src*="dashboard"]');
+                if (dashboardIframe) {
+                  console.log('Reloading dashboard iframe...');
+                  dashboardIframe.src = dashboardIframe.src; // Force reload
+                }
+                
+                // Reload the trade monitor iframe
+                window.location.reload();
+              } else {
+                console.error('Error updating symbol:', data.message);
+              }
+            })
+            .catch(error => {
+              console.error('Error updating symbol:', error);
             });
           }
         });
@@ -5386,6 +5790,44 @@ if (typeof window.liveData !== 'undefined') {
       // when trade status changes occur
       
 
+    });
+  </script>
+
+  <script>
+    // Listen for messages from parent window
+    window.addEventListener('message', function(event) {
+      console.log('Trade monitor received message:', event.data);
+      
+      if (event.data && event.data.type === 'SELECT_MONITOR') {
+        const monitorId = event.data.monitorId;
+        console.log('Received SELECT_MONITOR message for:', monitorId);
+        
+        const monitorPicker = document.getElementById('monitor-picker');
+        if (monitorPicker && monitorPicker.options.length > 0) {
+          // Check if the monitor ID exists in the dropdown options
+          const monitorExists = Array.from(monitorPicker.options).some(option => option.value === monitorId);
+          if (monitorExists) {
+            console.log('Setting monitor picker to:', monitorId);
+            monitorPicker.value = monitorId;
+            loadMonitorDetails(monitorId);
+          } else {
+            console.log('Monitor ID not found in dropdown options:', monitorId);
+          }
+        } else {
+          console.log('Monitor picker not ready yet, retrying...');
+          setTimeout(() => {
+            const monitorPicker = document.getElementById('monitor-picker');
+            if (monitorPicker && monitorPicker.options.length > 0) {
+              const monitorExists = Array.from(monitorPicker.options).some(option => option.value === monitorId);
+              if (monitorExists) {
+                console.log('Setting monitor picker to:', monitorId);
+                monitorPicker.value = monitorId;
+                loadMonitorDetails(monitorId);
+              }
+            }
+          }, 100);
+        }
+      }
     });
   </script>
 </body>

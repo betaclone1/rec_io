@@ -2,7 +2,6 @@
   "system_name": "REC.IO Trading System",
   "created": "2025-07-19",
   "description": "MASTER PORT MANIFEST - Single source of truth for ALL port assignments",
-  
   "core_services": {
     "main_app": {
       "port": 3000,
@@ -19,7 +18,6 @@
       "description": "Trade execution service",
       "status": "RUNNING"
     },
-
     "active_trade_supervisor": {
       "port": 8007,
       "description": "Active trade monitoring",
@@ -31,7 +29,6 @@
       "status": "RUNNING"
     }
   },
-  
   "watchdog_services": {
     "kalshi_account_sync": {
       "port": 8004,
@@ -54,23 +51,51 @@
       "status": "RUNNING"
     }
   },
-  
   "port_ranges": {
     "safe_range_start": 8000,
     "safe_range_end": 8100,
     "description": "Safe port range avoiding macOS system services"
   },
-  
   "monitor_process_ports": {
     "start_port": 8013,
-    "end_port": 8020,
+    "end_port": 8050,
     "description": "Dynamic port range for monitor-specific processes",
     "auto_entry_supervisor_offset": 0,
     "active_trade_supervisor_offset": 1
   },
-  
+  "monitor_instances": {
+    "0001_10002": {
+      "auto_entry_supervisor": 8013,
+      "active_trade_supervisor": 8014
+    },
+    "0001_10009": {
+      "auto_entry_supervisor": 8015,
+      "active_trade_supervisor": 8016
+    },
+    "0001_10010": {
+      "auto_entry_supervisor": 8033,
+      "active_trade_supervisor": 8034
+    },
+    "0001_10011": {
+      "auto_entry_supervisor": 8035,
+      "active_trade_supervisor": 8036
+    },
+    "supervisor_clean.py": {
+      "auto_entry_supervisor": 8009,
+      "active_trade_supervisor": 8007
+    },
+    "supervisor_test.py": {
+      "auto_entry_supervisor": 8009,
+      "active_trade_supervisor": 8007
+    }
+  },
   "notes": {
-    "avoid_ports": [5000, 7000, 9000, 10000],
+    "avoid_ports": [
+      5000,
+      7000,
+      9000,
+      10000
+    ],
     "reason": "These ports conflict with macOS AirPlay, ControlCenter, and other system services"
   }
-} 
+}

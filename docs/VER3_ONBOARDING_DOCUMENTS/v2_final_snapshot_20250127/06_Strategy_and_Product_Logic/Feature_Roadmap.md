@@ -37,6 +37,7 @@ Define the prioritized feature development plan for REC.IO from the current v2 s
    - Take-profit automation
 5. **Redis Integration**
    - Centralized caching & pub/sub for low-latency updates
+   - **Master System Logging** - Unified event-driven logging system for critical system events
 6. **Containerized Deployment**
    - DigitalOcean App Platform or Fly.io ready
    - Zero-downtime rolling upgrades

@@ -20,7 +20,7 @@ import requests
 import subprocess
 import sys
 import os
-from datetime import datetime
+from datetime import datetime, time as dt_time
 from typing import Dict, Any, Optional, List
 from flask import Flask, request, jsonify
 from backend.core.unified_config import UnifiedConfigManager
@@ -45,6 +45,11 @@ class MonitorManager:
         
         # Port allocation for monitor processes
         self.monitor_port_base = 8013
+        
+        # Daily cleanup scheduler
+        self.last_cleanup_date = None
+        self.cleanup_thread = None
+        self.cleanup_running = False
         
     def get_database_connection(self):
         """Get database connection - foundation for all DB operations"""
@@ -189,8 +194,16 @@ class MonitorManager:
         # Get log file paths
         log_dir = os.path.join(self.project_root, 'logs')
         
-        # Auto entry supervisor
-        auto_entry_port = self.monitor_port_base + (port_offset * 2)
+        # Use new port functions for consistent port assignment
+        from backend.core.port_config import get_monitor_port, register_monitor_ports
+        
+        # Register ports for this monitor to ensure consistency
+        register_monitor_ports(monitor_identifier)
+        
+        # Get monitor-specific ports
+        auto_entry_port = get_monitor_port("auto_entry_supervisor", monitor_identifier)
+        active_trade_port = get_monitor_port("active_trade_supervisor", monitor_identifier)
+        
         auto_entry_config = f"""[program:auto_entry_supervisor_{monitor_identifier}]
 command={self.python_executable} {self.project_root}/backend/auto_entry_supervisor.py {monitor_identifier}
 directory={self.project_root}
@@ -205,8 +218,6 @@ environment={env_vars}
 
 """
         
-        # Active trade supervisor
-        active_trade_port = self.monitor_port_base + (port_offset * 2) + 1
         active_trade_config = f"""[program:active_trade_supervisor_{monitor_identifier}]
 command={self.python_executable} {self.project_root}/backend/active_trade_supervisor.py {monitor_identifier}
 directory={self.project_root}
@@ -715,6 +726,424 @@ environment={env_vars}
             if conn:
                 conn.close()
 
+    def update_monitor_statistics_from_trades(self) -> Dict[str, Any]:
+        """
+        Update monitor statistics by querying the trades database and calculating metrics
+        for each active/inactive monitor (excluding ARCHIVED monitors)
+        """
+        conn = None
+        try:
+            conn = self.get_database_connection()
+            
+            with conn.cursor() as cursor:
+                # Get all active and inactive monitors (excluding ARCHIVED)
+                cursor.execute("""
+                    SELECT id, name, symbol 
+                    FROM users.monitor_list_0001 
+                    WHERE status IN ('active', 'inactive')
+                    ORDER BY id
+                """)
+                
+                monitors = cursor.fetchall()
+                updated_count = 0
+                
+                for monitor_id, monitor_name, symbol in monitors:
+                    # Extract monitor identifier from name (e.g., "mon_0001_10001" -> "mon_0001_10001")
+                    monitor_identifier = monitor_name
+                    
+                    # Query trades for this specific monitor
+                    cursor.execute("""
+                        SELECT 
+                            COUNT(*) as total_trades,
+                            COUNT(CASE WHEN win_loss = 'W' THEN 1 END) as wins,
+                            COUNT(CASE WHEN win_loss = 'L' THEN 1 END) as losses,
+                            COALESCE(SUM(ret_pct), 0) as total_ret_pct,
+                            COALESCE(SUM(pnl), 0) as total_pnl
+                        FROM users.trades_0001 
+                        WHERE monitor = %s AND status IN ('closed', 'settled') AND (test_filter IS NULL OR test_filter = FALSE)
+                    """, (monitor_identifier,))
+                    
+                    trade_stats = cursor.fetchone()
+                    if trade_stats:
+                        total_trades, wins, losses, total_ret_pct, total_pnl = trade_stats
+                        
+                        # Calculate win/loss rate
+                        win_loss_rate = 0.0
+                        if total_trades > 0:
+                            win_loss_rate = round((wins / total_trades) * 100, 1)
+                        
+                        # For ret_pct: use the sum (like trade_history summary panel does)
+                        # Don't divide by total_trades - just use the sum directly
+                        ret_pct_sum = total_ret_pct
+                        
+                        # Update monitor statistics in monitor_list table
+                        cursor.execute("""
+                            UPDATE users.monitor_list_0001 
+                            SET 
+                                trades = %s,
+                                win_loss = %s,
+                                ret_pct = %s,
+                                pnl = %s
+                            WHERE id = %s
+                        """, (total_trades, win_loss_rate, ret_pct_sum, total_pnl, monitor_id))
+                        
+                        updated_count += 1
+                        
+                        self.log_event("STATS_UPDATE", f"Updated monitor {monitor_name}: trades={total_trades}, W/L={win_loss_rate}%, ret_pct={ret_pct_sum}%, PNL=${total_pnl:.2f}")
+                
+                conn.commit()
+                
+                return {
+                    "status": "success",
+                    "message": f"Updated statistics for {updated_count} monitors",
+                    "updated_count": updated_count
+                }
+                
+        except Exception as e:
+            self.log_event("ERROR", f"Error updating monitor statistics from trades: {e}")
+            return {"status": "error", "message": str(e)}
+        finally:
+            if conn:
+                conn.close()
+
+    def handle_trade_status_update(self, trade_id: int, status: str, monitor: str = None, bulk_update: bool = False, ticker: str = None) -> Dict[str, Any]:
+        """
+        Handle trade status updates and automatically update monitor statistics if needed
+        Called when trades are closed, settled, or have other status changes
+        """
+        try:
+            # Only update monitor statistics for closed or settled trades
+            if status in ['closed', 'settled'] and monitor:
+                if bulk_update:
+                    self.log_event("TRADE_UPDATE", f"Bulk trade closure for ticker {ticker}, monitor {monitor}, updating statistics")
+                else:
+                    self.log_event("TRADE_UPDATE", f"Trade {trade_id} {status} for monitor {monitor}, updating statistics")
+                
+                # Update statistics for the specific monitor
+                result = self.update_monitor_statistics_from_trades()
+                
+                # Send WebSocket notification to frontend about monitor statistics update
+                try:
+                    import requests
+                    requests.post('http://localhost:3000/api/broadcast_monitor_statistics_update', json={
+                        'monitor': monitor,
+                        'trade_id': trade_id,
+                        'status': status,
+                        'bulk_update': bulk_update,
+                        'ticker': ticker,
+                        'timestamp': time.time()
+                    }, timeout=1)
+                except Exception as e:
+                    self.log_event("WEBSOCKET_ERROR", f"Failed to send monitor statistics update notification: {str(e)}")
+                
+                return result
+            else:
+                return {"status": "skipped", "message": f"Trade status {status} does not require statistics update"}
+                
+        except Exception as e:
+            self.log_event("ERROR", f"Error handling trade status update: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def periodic_monitor_statistics_update(self) -> Dict[str, Any]:
+        """
+        Periodically update all monitor statistics from trades database
+        This can be called on a schedule or manually for maintenance
+        """
+        try:
+            self.log_event("PERIODIC_UPDATE", "Starting periodic monitor statistics update")
+            
+            result = self.update_monitor_statistics_from_trades()
+            
+            if result.get('status') == 'success':
+                self.log_event("PERIODIC_UPDATE", f"Periodic update completed: {result.get('message')}")
+            else:
+                self.log_event("PERIODIC_UPDATE_ERROR", f"Periodic update failed: {result.get('message')}")
+            
+            return result
+            
+        except Exception as e:
+            self.log_event("ERROR", f"Error in periodic monitor statistics update: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def get_monitor_statistics(self, monitor_id: int) -> Dict[str, Any]:
+        """
+        Get current statistics for a specific monitor
+        """
+        conn = None
+        try:
+            conn = self.get_database_connection()
+            
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT 
+                        id, name, symbol, strategy, trades, win_loss, ret_pct, pnl,
+                        bankroll_allotment_total, total_position, status
+                    FROM users.monitor_list_0001 
+                    WHERE id = %s
+                """, (monitor_id,))
+                
+                result = cursor.fetchone()
+                if result:
+                    monitor_id, name, symbol, strategy, trades, win_loss, ret_pct, pnl, bankroll_allotment_total, total_position, status = result
+                    
+                    return {
+                        "status": "success",
+                        "monitor": {
+                            "id": monitor_id,
+                            "name": name,
+                            "symbol": symbol,
+                            "strategy": strategy,
+                            "trades": trades,
+                            "win_loss": win_loss,
+                            "ret_pct": ret_pct,
+                            "pnl": pnl,
+                            "bankroll_allotment_total": bankroll_allotment_total,
+                            "total_position": total_position,
+                            "status": status
+                        }
+                    }
+                else:
+                    return {"status": "error", "message": "Monitor not found"}
+                
+        except Exception as e:
+            self.log_event("ERROR", f"Error getting monitor statistics: {e}")
+            return {"status": "error", "message": str(e)}
+        finally:
+            if conn:
+                conn.close()
+
+    def get_all_monitor_statistics(self) -> Dict[str, Any]:
+        """
+        Get current statistics for all monitors
+        """
+        conn = None
+        try:
+            conn = self.get_database_connection()
+            
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT 
+                        id, name, symbol, strategy, trades, win_loss, ret_pct, pnl,
+                        bankroll_allotment_total, total_position, status
+                    FROM users.monitor_list_0001 
+                    ORDER BY id
+                """)
+                
+                monitors = []
+                for row in cursor.fetchall():
+                    monitor_id, name, symbol, strategy, trades, win_loss, ret_pct, pnl, bankroll_allotment_total, total_position, status = row
+                    
+                    monitors.append({
+                        "id": monitor_id,
+                        "name": name,
+                        "symbol": symbol,
+                        "strategy": strategy,
+                        "trades": trades,
+                        "win_loss": win_loss,
+                        "ret_pct": ret_pct,
+                        "pnl": pnl,
+                        "bankroll_allotment_total": bankroll_allotment_total,
+                        "total_position": total_position,
+                        "status": status
+                    })
+                
+                return {
+                    "status": "success",
+                    "monitors": monitors,
+                    "count": len(monitors)
+                }
+                
+        except Exception as e:
+            self.log_event("ERROR", f"Error getting all monitor statistics: {e}")
+            return {"status": "error", "message": str(e)}
+        finally:
+            if conn:
+                conn.close()
+
+    def cleanup_inactive_monitor_logs(self):
+        """Clean up log files for inactive and archived monitors"""
+        try:
+            print("[MONITOR_MANAGER] 🧹 Starting cleanup of inactive monitor logs...")
+            
+            # Get inactive and archived monitor IDs from database
+            inactive_monitor_ids = self._get_inactive_monitor_ids()
+            
+            if not inactive_monitor_ids:
+                print("[MONITOR_MANAGER] No inactive monitors found, skipping log cleanup")
+                return
+            
+            print(f"[MONITOR_MANAGER] Found {len(inactive_monitor_ids)} inactive monitors: {inactive_monitor_ids}")
+            
+            # Create monitor_log_archive directory if it doesn't exist
+            archive_dir = os.path.join(self.project_root, "logs", "log_archive", "monitor_log_archive")
+            os.makedirs(archive_dir, exist_ok=True)
+            
+            # Move log files for inactive monitors
+            moved_count = 0
+            for monitor_id in inactive_monitor_ids:
+                moved_count += self._move_monitor_logs_to_archive(monitor_id, archive_dir)
+            
+            print(f"[MONITOR_MANAGER] ✅ Log cleanup completed: {moved_count} files moved to archive")
+            self.log_event("LOG_CLEANUP", f"Cleaned up {moved_count} log files for {len(inactive_monitor_ids)} inactive monitors")
+            
+        except Exception as e:
+            print(f"[MONITOR_MANAGER] ❌ Error during log cleanup: {e}")
+            self.log_event("LOG_CLEANUP_ERROR", f"Log cleanup failed: {str(e)}")
+    
+    def _get_inactive_monitor_ids(self) -> List[str]:
+        """Get list of monitor IDs that are inactive or archived"""
+        try:
+            conn = self.get_database_connection()
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id FROM users.monitor_list_0001 
+                    WHERE status IN ('inactive', 'ARCHIVED')
+                    ORDER BY id
+                """)
+                return [str(row[0]) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"[MONITOR_MANAGER] Error getting inactive monitor IDs: {e}")
+            return []
+    
+    def _move_monitor_logs_to_archive(self, monitor_id: str, archive_dir: str) -> int:
+        """Move all log files for a specific monitor to the archive directory"""
+        moved_count = 0
+        logs_dir = os.path.join(self.project_root, "logs")
+        
+        # Define log file patterns for this monitor - catch all log file types
+        log_patterns = [
+            f"active_trade_supervisor_0001_{monitor_id}*.log",
+            f"auto_entry_supervisor_0001_{monitor_id}*.log"
+        ]
+        
+        try:
+            import glob
+            
+            for pattern in log_patterns:
+                log_files = glob.glob(os.path.join(logs_dir, pattern))
+                
+                for log_file in log_files:
+                    if os.path.isfile(log_file):
+                        filename = os.path.basename(log_file)
+                        destination = os.path.join(archive_dir, filename)
+                        
+                        # Move the file
+                        os.rename(log_file, destination)
+                        moved_count += 1
+                        print(f"[MONITOR_MANAGER] Moved: {filename} -> monitor_log_archive/")
+            
+        except Exception as e:
+            print(f"[MONITOR_MANAGER] Error moving logs for monitor {monitor_id}: {e}")
+        
+        return moved_count
+    
+    def cleanup_orphaned_monitor_logs(self):
+        """Clean up log files for monitors that don't exist in the database"""
+        try:
+            print("[MONITOR_MANAGER] 🧹 Starting cleanup of orphaned monitor logs...")
+            
+            # Get all monitor IDs from database
+            conn = self.get_database_connection()
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT id FROM users.monitor_list_0001 ORDER BY id")
+                valid_monitor_ids = {str(row[0]) for row in cursor.fetchall()}
+            
+            # Create monitor_log_archive directory if it doesn't exist
+            archive_dir = os.path.join(self.project_root, "logs", "log_archive", "monitor_log_archive")
+            os.makedirs(archive_dir, exist_ok=True)
+            
+            logs_dir = os.path.join(self.project_root, "logs")
+            moved_count = 0
+            
+            # Find all monitor log files
+            import glob
+            all_log_files = glob.glob(os.path.join(logs_dir, "*_0001_*.log"))
+            
+            for log_file in all_log_files:
+                filename = os.path.basename(log_file)
+                
+                # Extract monitor ID from filename
+                # Pattern: service_0001_MONITOR_ID.suffix.log
+                # Need to find the position of '0001' and get the next part
+                parts = filename.split('_')
+                try:
+                    idx_0001 = parts.index('0001')
+                    if idx_0001 + 1 < len(parts):
+                        monitor_id = parts[idx_0001 + 1].split('.')[0]  # Remove any file extensions
+                    else:
+                        continue
+                except ValueError:
+                    continue
+                
+                # Check if this monitor ID exists in database
+                if monitor_id not in valid_monitor_ids:
+                    destination = os.path.join(archive_dir, filename)
+                    os.rename(log_file, destination)
+                    moved_count += 1
+                    print(f"[MONITOR_MANAGER] Moved orphaned: {filename} -> monitor_log_archive/")
+            
+            print(f"[MONITOR_MANAGER] ✅ Orphaned log cleanup completed: {moved_count} files moved to archive")
+            if moved_count > 0:
+                self.log_event("ORPHANED_LOG_CLEANUP", f"Cleaned up {moved_count} orphaned log files")
+            
+        except Exception as e:
+            print(f"[MONITOR_MANAGER] ❌ Error during orphaned log cleanup: {e}")
+            self.log_event("ORPHANED_LOG_CLEANUP_ERROR", f"Orphaned log cleanup failed: {str(e)}")
+    
+    def perform_startup_cleanup(self):
+        """Perform cleanup tasks on startup"""
+        try:
+            print("[MONITOR_MANAGER] 🚀 Performing startup cleanup...")
+            
+            # Clean up inactive monitor logs
+            self.cleanup_inactive_monitor_logs()
+            
+            # Clean up orphaned monitor logs
+            self.cleanup_orphaned_monitor_logs()
+            
+            print("[MONITOR_MANAGER] ✅ Startup cleanup completed")
+            
+        except Exception as e:
+            print(f"[MONITOR_MANAGER] ❌ Error during startup cleanup: {e}")
+    
+    def start_daily_cleanup_scheduler(self):
+        """Start the daily cleanup scheduler thread"""
+        if not self.cleanup_running:
+            self.cleanup_running = True
+            self.cleanup_thread = threading.Thread(target=self._daily_cleanup_loop, daemon=True)
+            self.cleanup_thread.start()
+            print("[MONITOR_MANAGER] 🕛 Daily cleanup scheduler started")
+    
+    def stop_daily_cleanup_scheduler(self):
+        """Stop the daily cleanup scheduler thread"""
+        self.cleanup_running = False
+        if self.cleanup_thread:
+            self.cleanup_thread.join(timeout=5)
+        print("[MONITOR_MANAGER] Daily cleanup scheduler stopped")
+    
+    def _daily_cleanup_loop(self):
+        """Main loop for daily cleanup scheduler"""
+        while self.cleanup_running:
+            try:
+                current_time = datetime.now().time()
+                current_date = datetime.now().date()
+                
+                # Check if it's midnight (00:00) and we haven't run cleanup today
+                if (current_time.hour == 0 and current_time.minute == 0 and 
+                    self.last_cleanup_date != current_date):
+                    
+                    print("[MONITOR_MANAGER] 🕛 Midnight detected - running daily log cleanup...")
+                    self.perform_startup_cleanup()
+                    self.last_cleanup_date = current_date
+                    print("[MONITOR_MANAGER] ✅ Daily cleanup completed")
+                
+                # Sleep for 1 minute to check again
+                time.sleep(60)
+                
+            except Exception as e:
+                print(f"[MONITOR_MANAGER] Error in daily cleanup scheduler: {e}")
+                time.sleep(300)  # Wait 5 minutes on error
+
 # Global instance
 monitor_manager = MonitorManager()
 
@@ -723,6 +1152,12 @@ try:
     monitor_manager.log_event("STARTUP", "Monitor manager starting up, initializing bankroll allotments")
     init_result = monitor_manager.initialize_bankroll_allotments()
     monitor_manager.log_event("STARTUP", f"Startup initialization completed: {init_result}")
+    
+    # Also initialize monitor statistics on startup
+    monitor_manager.log_event("STARTUP", "Initializing monitor statistics from trades database")
+    stats_result = monitor_manager.update_monitor_statistics_from_trades()
+    monitor_manager.log_event("STARTUP", f"Monitor statistics initialization completed: {stats_result}")
+    
 except Exception as e:
     monitor_manager.log_event("STARTUP_ERROR", f"Failed to initialize on startup: {str(e)}")
 
@@ -793,6 +1228,42 @@ def sync_monitor_processes():
 def initialize_allotments():
     """Endpoint to recalculate total_position for all monitors when position variables change"""
     return jsonify(monitor_manager.recalculate_monitor_total_positions())
+
+@app.route('/api/update_monitor_statistics', methods=['POST'])
+def update_monitor_statistics():
+    """Update monitor statistics from trades database"""
+    try:
+        print("[MONITOR_MANAGER] Manual monitor statistics update requested")
+        
+        # Use monitor_manager's built-in method
+        result = monitor_manager.update_monitor_statistics_from_trades()
+        
+        if result.get('status') == 'success':
+            return jsonify({'success': True, 'message': result.get('message')})
+        else:
+            return jsonify({'success': False, 'error': result.get('message')}), 500
+        
+    except Exception as e:
+        print(f"[MONITOR_MANAGER] Error in manual statistics update: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/periodic_monitor_statistics_update', methods=['POST'])
+def periodic_monitor_statistics_update():
+    """Trigger periodic update of all monitor statistics"""
+    try:
+        print("[MONITOR_MANAGER] Periodic monitor statistics update requested")
+        
+        # Use monitor_manager's built-in method
+        result = monitor_manager.periodic_monitor_statistics_update()
+        
+        if result.get('status') == 'success':
+            return jsonify({'success': True, 'message': result.get('message')})
+        else:
+            return jsonify({'success': False, 'error': result.get('message')}), 500
+        
+    except Exception as e:
+        print(f"[MONITOR_MANAGER] Error in periodic statistics update: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/monitor/create', methods=['POST'])
 def create_monitor():
@@ -886,8 +1357,55 @@ def health_check():
         "status": "healthy", 
         "service": "monitor_manager",
         "version": "1.0.0",
-        "capabilities": ["bankroll_updates", "position_calculation", "monitor_allotments", "frontend_sync", "monitor_creation"]
+        "capabilities": [
+            "bankroll_updates", 
+            "position_calculation", 
+            "monitor_allotments", 
+            "frontend_sync", 
+            "monitor_creation", 
+            "monitor_statistics_update",
+            "trade_status_handling",
+            "periodic_statistics_update",
+            "individual_monitor_statistics",
+            "all_monitor_statistics"
+        ]
     })
+
+@app.route('/api/monitor/<int:monitor_id>/statistics', methods=['GET'])
+def get_monitor_statistics(monitor_id):
+    """Get statistics for a specific monitor"""
+    try:
+        print(f"[MONITOR_MANAGER] Getting statistics for monitor {monitor_id}")
+        
+        # Use monitor_manager's built-in method
+        result = monitor_manager.get_monitor_statistics(monitor_id)
+        
+        if result.get('status') == 'success':
+            return jsonify(result)
+        else:
+            return jsonify({'success': False, 'error': result.get('message')}), 404
+        
+    except Exception as e:
+        print(f"[MONITOR_MANAGER] Error getting monitor statistics: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/monitors/statistics', methods=['GET'])
+def get_all_monitor_statistics():
+    """Get statistics for all monitors"""
+    try:
+        print("[MONITOR_MANAGER] Getting statistics for all monitors")
+        
+        # Use monitor_manager's built-in method
+        result = monitor_manager.get_all_monitor_statistics()
+        
+        if result.get('status') == 'success':
+            return jsonify(result)
+        else:
+            return jsonify({'success': False, 'error': result.get('message')}), 500
+        
+    except Exception as e:
+        print(f"[MONITOR_MANAGER] Error getting all monitor statistics: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 # === FUTURE ENDPOINTS (Foundation) ===
 
@@ -896,6 +1414,50 @@ def monitor_settings_update():
     """Future: Handle monitor settings updates"""
     # TODO: Implement comprehensive settings management
     return jsonify({"status": "not_implemented", "message": "Future expansion"})
+
+@app.route('/api/toggle-auto-trade', methods=['POST'])
+def toggle_auto_trade():
+    """Toggle auto_trade boolean value for a specific monitor"""
+    try:
+        data = request.get_json()
+        monitor_id = data.get("monitor_id")
+        auto_trade = data.get("auto_trade")
+        user_id = data.get("user_id", "user_0001")
+        
+        if not monitor_id or auto_trade is None:
+            return jsonify({"status": "error", "message": "Missing monitor_id or auto_trade parameter"})
+        
+        # Extract user number and monitor ID from monitor_id (e.g., MON_0001_10001 -> user_0001, 10001)
+        if monitor_id.startswith("MON_") and "_" in monitor_id:
+            parts = monitor_id.split("_")
+            if len(parts) >= 3:
+                user_number = parts[1]
+                db_monitor_id = parts[2]
+            else:
+                return jsonify({"status": "error", "message": "Invalid monitor ID format"})
+        else:
+            return jsonify({"status": "error", "message": "Invalid monitor ID format"})
+        
+        conn = monitor_manager.get_database_connection()
+        with conn.cursor() as cursor:
+            # Update ONLY auto_trade boolean - do NOT change auto_trade_status
+            cursor.execute(f"""
+                UPDATE users.monitor_list_{user_number}
+                SET auto_trade = %s
+                WHERE id = %s
+            """, (auto_trade, db_monitor_id))
+            
+            if cursor.rowcount == 0:
+                return jsonify({"status": "error", "message": "Monitor not found"})
+            
+        conn.commit()
+        conn.close()
+        
+        return jsonify({"status": "ok", "message": f"Auto trade {'enabled' if auto_trade else 'disabled'} for monitor {monitor_id}"})
+        
+    except Exception as e:
+        print(f"Error toggling auto trade: {e}")
+        return jsonify({"status": "error", "message": str(e)})
 
 @app.route('/api/trade_state_update', methods=['POST'])
 def trade_state_update():
@@ -908,6 +1470,43 @@ def sync_all_states():
     """Future: Synchronize all monitor states"""
     # TODO: Implement comprehensive state synchronization
     return jsonify({"status": "not_implemented", "message": "Future expansion"})
+
+@app.route('/api/trade_status_update', methods=['POST'])
+def trade_status_update():
+    """Handle trade status updates and update monitor statistics if needed"""
+    try:
+        data = request.get_json()
+        trade_id = data.get('trade_id')
+        status = data.get('status')
+        monitor = data.get('monitor')
+        bulk_update = data.get('bulk_update', False)
+        ticker = data.get('ticker')
+        
+        if not status:
+            return jsonify({'success': False, 'error': 'Missing status parameter'}), 400
+        
+        if not bulk_update and not trade_id:
+            return jsonify({'success': False, 'error': 'Missing trade_id parameter for individual trade updates'}), 400
+        
+        if not monitor:
+            return jsonify({'success': False, 'error': 'Missing monitor parameter'}), 400
+        
+        if bulk_update:
+            print(f"[MONITOR_MANAGER] Bulk trade status update: ticker {ticker}, status {status}, monitor {monitor}")
+        else:
+            print(f"[MONITOR_MANAGER] Trade status update: ID {trade_id}, status {status}, monitor {monitor}")
+        
+        # Use monitor_manager's built-in method
+        result = monitor_manager.handle_trade_status_update(trade_id, status, monitor, bulk_update, ticker)
+        
+        if result.get('status') in ['success', 'skipped']:
+            return jsonify({'success': True, 'message': result.get('message')})
+        else:
+            return jsonify({'success': False, 'error': result.get('message')}), 500
+        
+    except Exception as e:
+        print(f"[MONITOR_MANAGER] Error handling trade status update: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 class MonitorStatusWatcher:
     """Background thread to watch for monitor status changes"""
@@ -1006,10 +1605,18 @@ def start_status_watcher():
 # Start the status watcher immediately
 start_status_watcher()
 
+# Start the daily cleanup scheduler
+monitor_manager.start_daily_cleanup_scheduler()
+
 if __name__ == "__main__":
     print("[MONITOR MANAGER] 🚀 Starting Core Monitor Management System")
     print("[MONITOR MANAGER] Foundation for comprehensive monitor state management")
     print("[MONITOR MANAGER] Current capability: Bankroll-driven position updates")
     print("[MONITOR MANAGER] Future capabilities: Full monitor lifecycle management")
+    
+    # Perform startup cleanup (move inactive monitor logs to archive)
+    # DISABLED: Too aggressive - moves logs to archive too quickly
+    # monitor_manager.perform_startup_cleanup()
+    
     monitor_port = get_port("monitor_manager")
     app.run(host='0.0.0.0', port=monitor_port, debug=False)

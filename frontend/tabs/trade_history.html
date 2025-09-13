@@ -37,7 +37,7 @@
       border-bottom: 2px solid #787878;
     }
     th, td {
-      border: 1px solid #787878;
+      border: .5px solid #626262;
       padding: 6px 10px;
       text-align: center;
     }
@@ -61,6 +61,15 @@
       font-size: 1.2rem;
       margin-bottom: 10px;
       font-weight: bold;
+    }
+    .panel-header {
+      font-size: 12px;
+      font-weight: normal;
+      color: #c4c4c4;
+      padding-bottom: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
     }
     .group-odd {
       background-color: #394559;
@@ -95,8 +104,11 @@
 <body>
 
   <div style="display: flex; gap: 10px;">
-    <div class="panel-container" style="width: 50%; height: 110px;">
-      <div class="panel-header">Search</div>
+    <div class="panel-container" style="width: 50%; height: 160px;">
+        <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+          <span>Search</span>
+          <a href="#" onclick="resetAllFilters(); return false;" style="color: #ccc; text-decoration: none; font-size: 12px; opacity: 0.6; transition: opacity 0.2s ease;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">Reset</a>
+        </div>
       <div style="margin-top: 10px; display: flex; gap: 20px; align-items: flex-start;">
         <div>
           <div style="display: flex; gap: 15px; align-items: center;">
@@ -263,6 +275,48 @@
               </label>
             </div>
           </div>
+          <div style="margin-top: 10px;">
+            <div style="margin-bottom: 5px; font-size: 12px; color: #ccc;">Day</div>
+            <div class="multi-select-dropdown" style="position: relative; width: 100px;">
+              <button id="day-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
+                Select Days
+              </button>
+              <div id="day-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 150px; overflow-y: auto;">
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="day-all" checked style="width: 14px; height: 14px;">
+                  Select All
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="day-sunday" checked style="width: 14px; height: 14px;">
+                  Sunday
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="day-monday" checked style="width: 14px; height: 14px;">
+                  Monday
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="day-tuesday" checked style="width: 14px; height: 14px;">
+                  Tuesday
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="day-wednesday" checked style="width: 14px; height: 14px;">
+                  Wednesday
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="day-thursday" checked style="width: 14px; height: 14px;">
+                  Thursday
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="day-friday" checked style="width: 14px; height: 14px;">
+                  Friday
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer;">
+                  <input type="checkbox" id="day-saturday" checked style="width: 14px; height: 14px;">
+                  Saturday
+                </label>
+              </div>
+            </div>
+          </div>
         </div>
         <div>
           <div style="margin-bottom: 5px; font-size: 12px; color: #ccc;">Strategy</div>
@@ -294,7 +348,7 @@
       </div>
     </div>
 
-    <div class="panel-container" style="width: 50%; height: 110px;">
+    <div class="panel-container" style="width: 50%; height: 160px;">6
       <div class="panel-header">Summary</div>
       <div class="panel-content" id="summary-content" style="display: flex; justify-content: space-around; padding: 10px;">
         <div style="text-align: center;">
@@ -406,10 +460,11 @@
             <th data-key="position">Position</th>
             <th data-key="fees">Fees</th>
             <th data-key="pnl">PnL</th>
+            <th data-key="ret_pct">Ret %</th>
             <th data-key="closed_at">Closed</th>
             <th data-key="symbol_open">Symbol Open</th>
             <th data-key="symbol_close">Symbol Close</th>
-            <th data-key="momentum">Mom</th>
+            <th data-key="momentum_percentile">Mom %</th>
             
             <th data-key="win_loss">W/L</th>
           </tr>
@@ -616,6 +671,51 @@
         
         // If no matches found, don't show this trade
         return false;
+      });
+    }
+    
+    // === DAY FILTER LOGIC ===
+    function filterTradesByDay(trades) {
+      const dayAllChecked = document.getElementById('day-all').checked;
+      const sundayChecked = document.getElementById('day-sunday').checked;
+      const mondayChecked = document.getElementById('day-monday').checked;
+      const tuesdayChecked = document.getElementById('day-tuesday').checked;
+      const wednesdayChecked = document.getElementById('day-wednesday').checked;
+      const thursdayChecked = document.getElementById('day-thursday').checked;
+      const fridayChecked = document.getElementById('day-friday').checked;
+      const saturdayChecked = document.getElementById('day-saturday').checked;
+      
+      // If "Select All" is checked, return all trades
+      if (dayAllChecked) {
+        return trades;
+      }
+      
+      // If no individual days are selected, return empty array
+      if (!sundayChecked && !mondayChecked && !tuesdayChecked && !wednesdayChecked && !thursdayChecked && !fridayChecked && !saturdayChecked) {
+        return [];
+      }
+      
+      // Filter trades based on selected days
+      return trades.filter(trade => {
+        // Parse date string to avoid timezone issues
+        // Split date string (e.g., "2025-01-15") and create local date
+        const dateParts = trade.date.split('-');
+        const year = parseInt(dateParts[0]);
+        const month = parseInt(dateParts[1]) - 1; // JavaScript months are 0-based
+        const day = parseInt(dateParts[2]);
+        const tradeDate = new Date(year, month, day);
+        const dayOfWeek = tradeDate.getDay(); // 0=Sunday, 1=Monday, etc.
+        
+        switch (dayOfWeek) {
+          case 0: return sundayChecked;
+          case 1: return mondayChecked;
+          case 2: return tuesdayChecked;
+          case 3: return wednesdayChecked;
+          case 4: return thursdayChecked;
+          case 5: return fridayChecked;
+          case 6: return saturdayChecked;
+          default: return false;
+        }
       });
     }
     
@@ -854,24 +954,19 @@
       });
       const avgBuy = buyCount > 0 ? (totalBuy / buyCount) : 0;
       
-      // Calculate Ret %: total PNL + FEES PAID, display as 10% of the value (e.g., $5.00 is 0.50%)
-      let totalPnl = 0;
-      let totalFees = 0;
+      // Calculate Ret %: sum of all ret_pct values from filtered results
+      let totalRetPct = 0;
+      let retPctCount = 0;
       trades.forEach(trade => {
-        if (trade.pnl !== null && trade.pnl !== undefined && trade.pnl !== '') {
-          const pnl = Number(trade.pnl);
-          if (!isNaN(pnl)) {
-            totalPnl += pnl;
-          }
-        }
-        if (trade.fees !== null && trade.fees !== undefined && trade.fees !== '') {
-          const fees = Number(trade.fees);
-          if (!isNaN(fees)) {
-            totalFees += fees;
+        if (trade.ret_pct !== null && trade.ret_pct !== undefined && trade.ret_pct !== '') {
+          const retPct = Number(trade.ret_pct);
+          if (!isNaN(retPct)) {
+            totalRetPct += retPct;
+            retPctCount++;
           }
         }
       });
-      const retValue = (totalPnl + totalFees) * 0.1;
+      const retValue = retPctCount > 0 ? totalRetPct : 0;
       const retPercentage = retValue.toFixed(2) + '%';
       
       // Calculate total PnL and total investment (for display only)
@@ -957,10 +1052,11 @@
           <td>${trade.position !== null ? trade.position : ''}</td>
           <td>${trade.fees !== null ? Number(trade.fees).toFixed(2) : ''}</td>
           <td>${trade.pnl !== null && trade.pnl !== undefined && trade.pnl !== '' ? Number(trade.pnl).toFixed(2) : ''}</td>
+          <td>${trade.ret_pct !== null && trade.ret_pct !== undefined && trade.ret_pct !== '' ? Number(trade.ret_pct).toFixed(2) : ''}</td>
           <td>${trade.closed_at !== null ? trade.closed_at : ''}</td>
           <td>${trade.symbol_open !== null ? '$' + Math.round(trade.symbol_open).toLocaleString() : ''}</td>
           <td>${trade.symbol_close !== null ? '$' + Math.round(trade.symbol_close).toLocaleString() : ''}</td>
-          <td>${plusSign(trade.momentum)}</td>
+          <td>${trade.momentum_percentile !== null && trade.momentum_percentile !== undefined ? Number(trade.momentum_percentile).toFixed(1) : ''}</td>
           
           <td>${plusSign(trade.win_loss)}</td>
         `;
@@ -983,6 +1079,7 @@
       filtered = filterTradesBySymbol(filtered);
       filtered = filterTradesByStrategy(filtered);
       filtered = filterTradesByMonitor(filtered);
+      filtered = filterTradesByDay(filtered);
       
       filteredTrades = [...filtered];
       applyCurrentSort();
@@ -1653,6 +1750,96 @@
       // Load monitor options on page load
       loadMonitorOptions();
 
+      // Hook up day filter dropdown
+      const dayDropdownBtn = document.getElementById('day-dropdown-btn');
+      const dayDropdownContent = document.getElementById('day-dropdown-content');
+      const dayAllCheckbox = document.getElementById('day-all');
+      const dayCheckboxes = [
+        document.getElementById('day-sunday'),
+        document.getElementById('day-monday'),
+        document.getElementById('day-tuesday'),
+        document.getElementById('day-wednesday'),
+        document.getElementById('day-thursday'),
+        document.getElementById('day-friday'),
+        document.getElementById('day-saturday')
+      ];
+
+
+      // Toggle dropdown
+      if (dayDropdownBtn && dayDropdownContent) {
+        dayDropdownBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          dayDropdownContent.style.display = dayDropdownContent.style.display === 'none' ? 'block' : 'none';
+        });
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', () => {
+          dayDropdownContent.style.display = 'none';
+        });
+
+        // Prevent dropdown from closing when clicking inside
+        dayDropdownContent.addEventListener('click', (e) => {
+          e.stopPropagation();
+        });
+      }
+
+      // Handle "Select All" checkbox for days
+      if (dayAllCheckbox) {
+        dayAllCheckbox.addEventListener('change', () => {
+          const isChecked = dayAllCheckbox.checked;
+          dayCheckboxes.forEach(checkbox => {
+            if (checkbox) checkbox.checked = isChecked;
+          });
+          updateDayButtonText();
+          applyFilters();
+          savePreferences();
+        });
+      }
+
+      // Handle individual day checkboxes
+      dayCheckboxes.forEach(checkbox => {
+        if (checkbox) {
+          checkbox.addEventListener('change', () => {
+            updateDayAllCheckbox();
+            updateDayButtonText();
+            applyFilters();
+            savePreferences();
+          });
+        }
+      });
+
+      // Function to update "Select All" checkbox state for days
+      function updateDayAllCheckbox() {
+        if (dayAllCheckbox) {
+          const allChecked = dayCheckboxes.every(checkbox => checkbox && checkbox.checked);
+          const someChecked = dayCheckboxes.some(checkbox => checkbox && checkbox.checked);
+          dayAllCheckbox.checked = allChecked;
+          dayAllCheckbox.indeterminate = someChecked && !allChecked;
+        }
+      }
+
+      // Function to update day button text
+      function updateDayButtonText() {
+        if (dayDropdownBtn) {
+          const checkedDays = dayCheckboxes.filter(checkbox => checkbox && checkbox.checked);
+          if (checkedDays.length === 0) {
+            dayDropdownBtn.textContent = 'Select';
+          } else if (checkedDays.length === dayCheckboxes.length) {
+            dayDropdownBtn.textContent = 'All Days';
+          } else if (checkedDays.length === 1) {
+            // Show the specific day name when only one is selected
+            const dayName = checkedDays[0].id.replace('day-', '');
+            dayDropdownBtn.textContent = dayName.charAt(0).toUpperCase() + dayName.slice(1);
+          } else {
+            dayDropdownBtn.textContent = 'Multiple';
+          }
+        }
+      }
+
+      // Initialize day button text
+      updateDayButtonText();
+      updateDayAllCheckbox();
+
       // Hook up symbol filter dropdown
       const symbolDropdownBtn = document.getElementById('symbol-dropdown-btn');
       const symbolDropdownContent = document.getElementById('symbol-dropdown-content');
@@ -1993,6 +2180,69 @@
           }
         }, 150); // Half the Analysis panel transition time
       }
+    }
+
+    // Reset All Filters Function
+    function resetAllFilters() {
+      console.log('Resetting all filters to default values');
+
+      // Reset date filter to ALL
+      const dateFilterPicker = document.getElementById('date-filter-picker');
+      if (dateFilterPicker) {
+        dateFilterPicker.value = 'ALL';
+        dateFilterPicker.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+
+      // Reset contract dropdown to ALL
+      const contractAllCheckbox = document.getElementById('contract-all');
+      if (contractAllCheckbox) {
+        contractAllCheckbox.checked = true;
+        contractAllCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+
+      // Reset symbol dropdown to ALL
+      const symbolAllCheckbox = document.getElementById('symbol-all');
+      if (symbolAllCheckbox) {
+        symbolAllCheckbox.checked = true;
+        symbolAllCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+
+      // Reset strategy dropdown to ALL
+      const strategyAllCheckbox = document.getElementById('strategy-all');
+      if (strategyAllCheckbox) {
+        strategyAllCheckbox.checked = true;
+        strategyAllCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+
+      // Reset day dropdown to ALL
+      const dayAllCheckbox = document.getElementById('day-all');
+      if (dayAllCheckbox) {
+        dayAllCheckbox.checked = true;
+        dayAllCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+
+      // Reset analysis time interval to default (daily)
+      const analysisTimeInterval = document.getElementById('analysis-time-interval');
+      if (analysisTimeInterval) {
+        analysisTimeInterval.value = 'daily';
+        analysisTimeInterval.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+
+      // Reset win/loss checkboxes
+      const winFilterCheckbox = document.getElementById('win-filter');
+      if (winFilterCheckbox) {
+        winFilterCheckbox.checked = true;
+        winFilterCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      const lossFilterCheckbox = document.getElementById('loss-filter');
+      if (lossFilterCheckbox) {
+        lossFilterCheckbox.checked = true;
+        lossFilterCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+
+      applyFilters(); // Re-apply filters after reset
+      savePreferences(); // Save the new default preferences
+      console.log('All filters reset completed');
     }
 
     // Results Panel Toggle Function
@@ -2709,6 +2959,60 @@
             }
           }, 200);
         }
+      } else if (event.data && event.data.type === 'RESET_DROPDOWNS') {
+        console.log('Received request to reset all dropdowns to ALL values');
+        
+        // Map dashboard date ranges to trade history date filters
+        const dateRangeMapping = {
+          '1d': 'TODAY',
+          '1w': 'THIS_WEEK', 
+          '1m': 'MONTH',
+          '1y': 'YTD',
+          'all': 'ALL'
+        };
+        
+        // Set date filter based on dashboard date range
+        const dateFilterPicker = document.getElementById('date-filter-picker');
+        if (dateFilterPicker && event.data.dateRange) {
+          const mappedDateRange = dateRangeMapping[event.data.dateRange] || 'ALL';
+          console.log('Setting date filter to:', mappedDateRange, 'based on dashboard range:', event.data.dateRange);
+          dateFilterPicker.value = mappedDateRange;
+          dateFilterPicker.dispatchEvent(new Event('change', { bubbles: true }));
+        } else if (dateFilterPicker) {
+          // Fallback to ALL if no date range specified
+          dateFilterPicker.value = 'ALL';
+          dateFilterPicker.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        
+        // Reset contract dropdown to ALL
+        const contractAllCheckbox = document.getElementById('contract-all');
+        if (contractAllCheckbox) {
+          contractAllCheckbox.checked = true;
+          contractAllCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        
+        // Reset symbol dropdown to ALL
+        const symbolAllCheckbox = document.getElementById('symbol-all');
+        if (symbolAllCheckbox) {
+          symbolAllCheckbox.checked = true;
+          symbolAllCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        
+      // Reset strategy dropdown to ALL
+      const strategyAllCheckbox = document.getElementById('strategy-all');
+      if (strategyAllCheckbox) {
+        strategyAllCheckbox.checked = true;
+        strategyAllCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+
+      // Reset analysis time interval to default (daily)
+        const analysisTimeInterval = document.getElementById('analysis-time-interval');
+        if (analysisTimeInterval) {
+          analysisTimeInterval.value = 'daily';
+          analysisTimeInterval.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        
+        console.log('All dropdowns reset to ALL/default values');
       }
     });
 

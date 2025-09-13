@@ -18,9 +18,10 @@ from apscheduler.triggers.cron import CronTrigger
 from backend.util.paths import get_project_root, get_trade_history_dir, get_logs_dir, get_host, get_data_dir
 from backend.account_mode import get_account_mode
 from backend.util.paths import get_accounts_data_dir
+from backend.symbol_price_watchdog import calculate_momentum_percentile
 # Function to get momentum data from PostgreSQL (replacement for archived unified_production_coordinator)
-def get_momentum_data_from_postgresql():
-    """Get current momentum data directly from PostgreSQL."""
+def get_momentum_data_from_postgresql(symbol):
+    """Get current momentum data directly from PostgreSQL for the specified symbol."""
     try:
         import psycopg2
         conn = psycopg2.connect(
@@ -30,7 +31,7 @@ def get_momentum_data_from_postgresql():
             password="rec_io_password"
         )
         cursor = conn.cursor()
-        cursor.execute("SELECT momentum FROM live_data.live_price_log_1s_btc ORDER BY timestamp DESC LIMIT 1")
+        cursor.execute(f"SELECT momentum FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
         result = cursor.fetchone()
         conn.close()
         
@@ -77,15 +78,20 @@ def get_executor_port():
 # ---------- CORE TRADE FUNCTIONS ----------------------------------------------------
 
 def insert_trade(trade):
-    """Insert a new trade with BTC price from unified endpoint"""
+    """Insert a new trade with symbol-specific price from unified endpoint"""
 
+    # Get the symbol from trade data - NO FALLBACKS, symbol must be provided
+    symbol = trade.get('symbol')
+    if not symbol:
+        raise ValueError("Trade symbol must be provided - no fallbacks allowed")
+    symbol_lower = symbol.lower()
     
-    # Get current BTC price directly from PostgreSQL live_data table - INSTANT
+    # Get current symbol price directly from PostgreSQL live_data table - INSTANT
     try:
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
-                cursor.execute("SELECT price FROM live_data.live_price_log_1s_btc ORDER BY timestamp DESC LIMIT 1")
+                cursor.execute(f"SELECT price FROM live_data.live_price_log_1s_{symbol_lower} ORDER BY timestamp DESC LIMIT 1")
                 result = cursor.fetchone()
             
             if result and result[0] is not None:
@@ -99,18 +105,29 @@ def insert_trade(trade):
     
     # Get current momentum from API and format it correctly for database
     momentum_for_db = 0
+    momentum_percentile_for_db = None
+    momentum_5s_avg_for_db = None
     try:
-        momentum_data = get_momentum_data_from_postgresql()
+        momentum_data = get_momentum_data_from_postgresql(symbol)
         momentum_score = momentum_data.get('weighted_momentum_score', 0)
         
         if momentum_score != 0:
             momentum_for_db = round(momentum_score * 100)
+            # Calculate momentum percentile using the momentum score
+            momentum_percentile = calculate_momentum_percentile(symbol, momentum_score)
+            momentum_percentile_for_db = momentum_percentile
+            # Get 5s momentum average from the API data
+            momentum_5s_avg_for_db = momentum_data.get('momentum_5s_avg')
         else:
             momentum_for_db = 0
+            momentum_percentile_for_db = None
+            momentum_5s_avg_for_db = None
     except Exception as e:
         momentum_for_db = 0
+        momentum_percentile_for_db = None
+        momentum_5s_avg_for_db = None
     
-    contract_name = truncate_contract_name(trade.get('contract'))
+    contract_name = truncate_contract_name(trade.get('contract'), symbol)
     
     # Write to PostgreSQL only
     try:
@@ -123,18 +140,18 @@ def insert_trade(trade):
                         contract, strike, side, prob, diff, buy_price, position,
                         sell_price, closed_at, fees, pnl, symbol_open, symbol_close,
                         momentum, volatility, win_loss, ticker, ticket_id, market_id,
-                        momentum_delta, entry_method, close_method, monitor
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        momentum_percentile, momentum_5s_avg, entry_method, close_method, monitor, bankroll
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """, (
                     trade.get('status', 'pending'), trade['date'], trade['time'], 
-                    trade.get('symbol', 'BTC'), trade.get('market', 'Kalshi'), trade.get('trade_strategy', 'Hourly HTC'),
+                    symbol, trade.get('market', 'Kalshi'), trade.get('trade_strategy', 'Hourly HTC'),
                     contract_name, trade['strike'], trade['side'], trade.get('prob'),
                     trade.get('diff'), trade['buy_price'], trade['position'], None, None,
                     None, None, symbol_open, None, momentum_for_db, trade.get('volatility'),
-                    None, trade.get('ticker'), trade.get('ticket_id'), trade.get('market_id', 'BTC-USD'),
-                    trade.get('momentum_delta'), trade.get('entry_method', 'manual'), trade.get('close_method'),
-                    trade.get('monitor')  # Monitor must be specified - no fallback
+                    None, trade.get('ticker'), trade.get('ticket_id'), trade.get('market_id', f'{symbol}-USD'),
+                    momentum_percentile_for_db, momentum_5s_avg_for_db, trade.get('entry_method', 'manual'), trade.get('close_method'),
+                    trade.get('monitor'), trade.get('bankroll_allotment_total')  # Monitor must be specified - no fallback
                 ))
                 last_id = cursor.fetchone()[0]
                 pg_conn.commit()
@@ -156,7 +173,7 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
     pg_conn = get_postgresql_connection()
     if pg_conn:
         with pg_conn.cursor() as cursor:
-            cursor.execute("SELECT ticker FROM users.trades_0001 WHERE id = %s", (id,))
+            cursor.execute("SELECT ticker, symbol FROM users.trades_0001 WHERE id = %s", (id,))
             row = cursor.fetchone()
         pg_conn.close()
     else:
@@ -167,6 +184,7 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
         return
     
     expected_ticker = row[0]
+    symbol = row[1]
     mode = get_account_mode()
     
     deadline = time.time() + 30  # 30 second timeout
@@ -234,17 +252,17 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                     try:
                         import requests
                         main_port = get_port("main_app")
-                        response = requests.get(f"http://localhost:{main_port}/api/btc_price", timeout=5)
+                        response = requests.get(f"http://localhost:{main_port}/api/{symbol.lower()}_price", timeout=5)
                         if response.ok:
-                            btc_data = response.json()
-                            symbol_open = btc_data.get('price')
+                            symbol_data = response.json()
+                            symbol_open = symbol_data.get('price')
                             if symbol_open:
                                 log_event(ticket_id, f"MANAGER: Retrieved current symbol price for open: {symbol_open}")
                             else:
                                 log_event(ticket_id, f"MANAGER: No price data in unified endpoint response")
                                 symbol_open = None
                         else:
-                            log_event(ticket_id, f"MANAGER: Unified BTC price endpoint returned status {response.status_code}")
+                            log_event(ticket_id, f"MANAGER: Unified price endpoint returned status {response.status_code}")
                             symbol_open = None
                     except Exception as e:
                         log_event(ticket_id, f"MANAGER: Failed to get current symbol price from unified endpoint: {e}")
@@ -334,7 +352,7 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
-                cursor.execute("SELECT ticker FROM users.trades_0001 WHERE id = %s", (id,))
+                cursor.execute("SELECT ticker, symbol FROM users.trades_0001 WHERE id = %s", (id,))
                 row = cursor.fetchone()
         else:
             row = None
@@ -345,6 +363,7 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
             return
         
         expected_ticker = row[0]
+        symbol = row[1]
         
         mode = get_account_mode()
         
@@ -442,17 +461,17 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                 try:
                     import requests
                     main_port = get_port("main_app")
-                    response = requests.get(f"http://localhost:{main_port}/api/btc_price", timeout=5)
+                    response = requests.get(f"http://localhost:{main_port}/api/{symbol.lower()}_price", timeout=5)
                     if response.ok:
-                        btc_data = response.json()
-                        symbol_close = btc_data.get('price')
+                        symbol_data = response.json()
+                        symbol_close = symbol_data.get('price')
                         if symbol_close:
                             log_event(ticket_id, f"MANAGER: Retrieved current symbol price for close: {symbol_close}")
                         else:
                             log_event(ticket_id, f"MANAGER: No price data in unified endpoint response")
                             symbol_close = None
                     else:
-                        log_event(ticket_id, f"MANAGER: Unified BTC price endpoint returned status {response.status_code}")
+                        log_event(ticket_id, f"MANAGER: Unified price endpoint returned status {response.status_code}")
                         symbol_close = None
                 except Exception as e:
                     log_event(ticket_id, f"MANAGER: Failed to get current symbol price from unified endpoint: {e}")
@@ -529,15 +548,38 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                                 final_pnl = (sell_price - buy_price) * position - final_total_fees_paid
                                 log_event(ticket_id, f"MANAGER: [{final_time}] Final PnL calculation with final fees: {final_pnl}")
                                 
-                                # Update fees and PnL with final calculation
+                                                                # Calculate ret_pct if we have bankroll data
+                                ret_pct = None
+                                try:
+                                    # Get bankroll from the trade record
+                                    cursor_bankroll = pg_conn_final.cursor()
+                                    cursor_bankroll.execute("SELECT bankroll FROM users.trades_0001 WHERE id = %s", (id,))
+                                    bankroll_row = cursor_bankroll.fetchone()
+                                    if bankroll_row and bankroll_row[0] is not None:
+                                        bankroll = bankroll_row[0]
+                                        if bankroll > 0:  # Prevent division by zero
+                                            # PnL is in dollars, bankroll is in cents
+                                            # Formula: (pnl / (bankroll/100.0)) * 100
+                                            ret_pct = round((final_pnl / (bankroll / 100.0)) * 100, 5)
+                                            log_event(ticket_id, f"MANAGER: [{final_time}] Calculated ret_pct: {ret_pct}% (PnL: {final_pnl}, Bankroll: {bankroll})")
+                                        else:
+                                            log_event(ticket_id, f"MANAGER: [{final_time}] Bankroll is zero, cannot calculate ret_pct")
+                                    else:
+                                        log_event(ticket_id, f"MANAGER: [{final_time}] No bankroll data found for ret_pct calculation")
+                                    cursor_bankroll.close()
+                                except Exception as e:
+                                    log_event(ticket_id, f"MANAGER: [{final_time}] Error calculating ret_pct: {e}")
+                                    ret_pct = None
+                                
+                                # Update fees, PnL, and ret_pct with final calculation
                                 cursor_final.execute("""
                                     UPDATE users.trades_0001 
-                                    SET fees = %s, pnl = %s
+                                    SET fees = %s, pnl = %s, ret_pct = %s
                                     WHERE id = %s
-                                """, (final_total_fees_paid, final_pnl, id))
+                                """, (final_total_fees_paid, final_pnl, ret_pct, id))
                                 pg_conn_final.commit()
-                                log_event(ticket_id, f"MANAGER: [{final_time}] Final fees and PnL written to database: fees={final_total_fees_paid}, pnl={final_pnl}")
-                            pg_conn_final.close()
+                                log_event(ticket_id, f"MANAGER: [{final_time}] Final fees, PnL, and ret_pct written to database: fees={final_total_fees_paid}, pnl={final_pnl}, ret_pct={ret_pct}")
+                                pg_conn_final.close()
                         
                         log_event(ticket_id, f"MANAGER: CLOSE TRADE CONFIRMED - PnL: {final_pnl}, W/L: {win_loss}, Fees: {final_total_fees_paid}")
                         log(f"CLOSE TRADE CONFIRMED: {expected_ticker}, PnL={final_pnl}, W/L={win_loss}")
@@ -590,11 +632,54 @@ def log_event(ticket_id, message):
     except Exception as e:
         print(f"[LOG ERROR] Failed to write log: {message} — {e}")
 
+def notify_active_trade_supervisor_direct_with_monitor(trade_id: int, ticket_id: str, status: str, monitor_identifier: str) -> None:
+    """Send direct notification to active trade supervisor via HTTP API with pre-fetched monitor identifier"""
+    try:
+        import requests
+        from backend.core.port_config import get_monitor_port
+        
+        # Extract monitor identifier (e.g., "0001_10002" from "mon_0001_10002")
+        if monitor_identifier and monitor_identifier.startswith('mon_'):
+            monitor_suffix = monitor_identifier[4:]  # Remove "mon_" prefix
+        else:
+            # No fallback - monitor must be specified
+            log(f"ERROR: No valid monitor identifier found for trade {trade_id}")
+            return
+        
+        # Get the port for the specific monitor's active trade supervisor
+        # Each monitor instance runs on its own dedicated port
+        active_trade_supervisor_port = get_monitor_port("active_trade_supervisor", monitor_suffix)
+        
+        # Use monitor-specific port for notifications
+        notification_url = f"http://localhost:{active_trade_supervisor_port}/api/trade_manager_notification"
+        payload = {
+            "trade_id": trade_id,
+            "ticket_id": ticket_id,
+            "status": status,
+            "monitor_identifier": monitor_suffix  # Add monitor identifier to payload
+        }
+        
+        response = requests.post(notification_url, json=payload, timeout=5)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result.get("success", False):
+                log(f"NOTIFIED ACTIVE TRADE SUPERVISOR for monitor {monitor_suffix}")
+            else:
+                log(f"ACTIVE TRADE SUPERVISOR ERROR for monitor {monitor_suffix}")
+        else:
+            log(f"ACTIVE TRADE SUPERVISOR ERROR for monitor {monitor_suffix}")
+            
+    except ImportError:
+        log(f"REQUESTS NOT AVAILABLE")
+    except Exception as e:
+        log(f"ERROR SENDING NOTIFICATION: {e}")
+
 def notify_active_trade_supervisor_direct(trade_id: int, ticket_id: str, status: str) -> None:
     """Send direct notification to active trade supervisor via HTTP API"""
     try:
         import requests
-        from backend.core.port_config import get_port
+        from backend.core.port_config import get_monitor_port
         
         # Get the monitor field from the trade record
         monitor_identifier = None
@@ -616,11 +701,10 @@ def notify_active_trade_supervisor_direct(trade_id: int, ticket_id: str, status:
             return
         
         # Get the port for the specific monitor's active trade supervisor
-        # Each monitor instance runs on a different port
-        active_trade_supervisor_port = get_port("active_trade_supervisor")
+        # Each monitor instance runs on its own dedicated port
+        active_trade_supervisor_port = get_monitor_port("active_trade_supervisor", monitor_suffix)
         
-        # For now, we'll use the centralized port since all instances share the same port
-        # In the future, this could be enhanced to use monitor-specific ports
+        # Use monitor-specific port for notifications
         notification_url = f"http://localhost:{active_trade_supervisor_port}/api/trade_manager_notification"
         payload = {
             "trade_id": trade_id,
@@ -685,20 +769,21 @@ def notify_strike_table_trade_change(trade_id: int, status: str) -> None:
         # Don't log errors for strike table notifications - they're not critical
         pass
 
-def truncate_contract_name(contract_name):
-    """Truncate contract name to short form like 'BTC 5pm'"""
+def truncate_contract_name(contract_name, symbol=None):
+    """Truncate contract name to short form like 'SYMBOL 5pm'"""
     if not contract_name:
         return contract_name
     
-    if contract_name.startswith("BTC ") and len(contract_name) < 20:
+    # If already short and contains symbol, return as-is
+    if symbol and contract_name.startswith(f"{symbol} ") and len(contract_name) < 20:
         return contract_name
     
     import re
     time_match = re.search(r'at (\d+)(am|pm)', contract_name, re.IGNORECASE)
-    if time_match:
+    if time_match and symbol:
         hour = time_match.group(1)
         ampm = time_match.group(2).lower()
-        return f"BTC {hour}{ampm}"
+        return f"{symbol} {hour}{ampm}"
     
     return contract_name
 
@@ -723,7 +808,7 @@ def init_trades_db():
                     status TEXT DEFAULT 'pending',
                     date TEXT NOT NULL,
                     time TEXT NOT NULL,
-                    symbol TEXT DEFAULT 'BTC',
+                    symbol TEXT NOT NULL,
                     market TEXT DEFAULT 'Kalshi',
                     trade_strategy TEXT DEFAULT 'Hourly HTC',
                     contract TEXT,
@@ -744,8 +829,8 @@ def init_trades_db():
                     win_loss TEXT,
                     ticker TEXT,
                     ticket_id TEXT,
-                    market_id TEXT DEFAULT 'BTC-USD',
-                    momentum_delta REAL,
+                    market_id TEXT,
+                    momentum_percentile REAL,
                     entry_method TEXT DEFAULT 'manual',
                     close_method TEXT
                 )
@@ -969,6 +1054,10 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
         if ticket_row and ticket_row[0]:
             ticket_id = ticket_row[0]
             notify_active_trade_supervisor_direct(trade_id, ticket_id, "open")
+
+    # Notify monitor_manager when a trade is closed
+    if status == 'closed':
+        notify_monitor_manager_trade_closed(trade_id, status)
 
 # ---------- API ENDPOINTS ----------------------------------------------------
 
@@ -1220,6 +1309,17 @@ async def update_trade_status_api(request: Request):
             if ticket_id:
                 log_event(ticket_id, f"MANAGER: {error_type} - DELETING PENDING TRADE")
             
+            # Get monitor identifier BEFORE deleting the trade
+            monitor_identifier = None
+            pg_conn = get_postgresql_connection()
+            if pg_conn:
+                with pg_conn.cursor() as cursor:
+                    cursor.execute("SELECT monitor FROM users.trades_0001 WHERE id = %s", (id,))
+                    row = cursor.fetchone()
+                    if row and row[0]:
+                        monitor_identifier = row[0]
+                pg_conn.close()
+            
             # Delete the pending trade instead of marking as error
             pg_conn = get_postgresql_connection()
             if pg_conn:
@@ -1231,7 +1331,11 @@ async def update_trade_status_api(request: Request):
                     
                     if deleted_count > 0:
                         log(f"DELETED PENDING TRADE {id} DUE TO {error_type}")
-                        notify_active_trade_supervisor_direct(id, ticket_id, "deleted")
+                        # Pass monitor identifier to avoid querying deleted trade
+                        if monitor_identifier:
+                            notify_active_trade_supervisor_direct_with_monitor(id, ticket_id, "deleted", monitor_identifier)
+                        else:
+                            notify_active_trade_supervisor_direct(id, ticket_id, "deleted")
                         return {"message": f"Pending trade deleted due to {error_type.lower()}", "id": id}
                     else:
                         log(f"NO PENDING TRADE FOUND TO DELETE")
@@ -1361,7 +1465,7 @@ def check_expired_trades():
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
-                cursor.execute("SELECT id, ticker FROM users.trades_0001 WHERE status = 'open'")
+                cursor.execute("SELECT id, ticker, symbol FROM users.trades_0001 WHERE status = 'open'")
                 open_trades = cursor.fetchall()
         else:
             open_trades = []
@@ -1372,37 +1476,44 @@ def check_expired_trades():
         now_est = datetime.now(ZoneInfo("America/New_York"))
         closed_at = now_est.strftime("%H:%M:%S")
         
-        try:
-            import requests
-            main_port = get_port("main_app")
-            response = requests.get(f"http://localhost:{main_port}/api/btc_price", timeout=5)
-            if response.ok:
-                btc_data = response.json()
-                symbol_close = btc_data.get('price')
-                if symbol_close:
-                    pass
-                else:
-                    symbol_close = None
-            else:
-                symbol_close = None
-        except Exception as e:
-            symbol_close = None
+        # Get symbol-specific closing prices for each trade
+        symbol_prices = {}
+        for trade_id, ticker, symbol in open_trades:
+            if symbol not in symbol_prices:
+                try:
+                    # Get price from symbol-specific price log
+                    pg_conn = get_postgresql_connection()
+                    if pg_conn:
+                        with pg_conn.cursor() as cursor:
+                            cursor.execute(f"SELECT price FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
+                            result = cursor.fetchone()
+                            if result and result[0] is not None:
+                                symbol_prices[symbol] = float(result[0])
+                            else:
+                                symbol_prices[symbol] = None
+                        pg_conn.close()
+                    else:
+                        symbol_prices[symbol] = None
+                except Exception as e:
+                    symbol_prices[symbol] = None
         
-        # Update PostgreSQL
+        # Update PostgreSQL - handle each trade individually with its symbol-specific closing price
         try:
             pg_conn = get_postgresql_connection()
             if pg_conn:
                 with pg_conn.cursor() as cursor:
-                    cursor.execute("""
-                        UPDATE users.trades_0001 
-                        SET status = 'expired', 
-                            closed_at = %s, 
-                            symbol_close = %s,
-                            close_method = 'expired'
-                        WHERE status = 'open'
-                    """, (closed_at, symbol_close))
+                    for trade_id, ticker, symbol in open_trades:
+                        symbol_close = symbol_prices.get(symbol)
+                        cursor.execute("""
+                            UPDATE users.trades_0001 
+                            SET status = 'expired', 
+                                closed_at = %s, 
+                                symbol_close = %s,
+                                close_method = 'expired'
+                            WHERE id = %s AND status = 'open'
+                        """, (closed_at, symbol_close, trade_id))
                     pg_conn.commit()
-                    print(f"💾 Expired trades update also written to PostgreSQL users.trades_0001")
+                    print(f"💾 Expired trades update written to PostgreSQL users.trades_0001 for {len(open_trades)} trades")
                 pg_conn.close()
             else:
                 print(f"⚠️ Skipping PostgreSQL expired trades update - no connection available")
@@ -1411,8 +1522,8 @@ def check_expired_trades():
         
         notify_frontend_trade_change()
         
-        for id, ticker in open_trades:
-            notify_active_trade_supervisor_direct(id, str(ticker), "expired")
+        for trade_id, ticker, symbol in open_trades:
+            notify_active_trade_supervisor_direct(trade_id, str(ticker), "expired")
         
         expired_tickers = [trade[1] for trade in open_trades]
         poll_settlements_for_matches(expired_tickers)
@@ -1507,6 +1618,31 @@ def poll_settlements_for_matches(expired_tickers):
                             fees = fees if fees is not None else None
                             pnl = round(sell_value - buy_value - fees, 2)
                     
+                    # Calculate ret_pct if we have bankroll data
+                    ret_pct = None
+                    try:
+                        # Get bankroll from the trade record
+                        pg_conn_bankroll = get_postgresql_connection()
+                        if pg_conn_bankroll:
+                            with pg_conn_bankroll.cursor() as cursor_bankroll:
+                                cursor_bankroll.execute("SELECT bankroll FROM users.trades_0001 WHERE ticker = %s AND status = 'expired'", (ticker,))
+                                bankroll_row = cursor_bankroll.fetchone()
+                                if bankroll_row and bankroll_row[0] is not None:
+                                    bankroll = bankroll_row[0]
+                                    if bankroll > 0:  # Prevent division by zero
+                                        # PnL is in dollars, bankroll is in cents
+                                        # Formula: (pnl / (bankroll/100.0)) * 100
+                                        ret_pct = round((pnl / (bankroll / 100.0)) * 100, 5)
+                                        print(f"💾 Calculated ret_pct for settlement: {ret_pct}% (PnL: {pnl}, Bankroll: {bankroll})")
+                                    else:
+                                        print(f"⚠️ Bankroll is zero, cannot calculate ret_pct for settlement")
+                                else:
+                                    print(f"⚠️ No bankroll data found for ret_pct calculation in settlement")
+                            pg_conn_bankroll.close()
+                    except Exception as e:
+                        print(f"❌ Error calculating ret_pct for settlement: {e}")
+                        ret_pct = None
+                    
                     # Update PostgreSQL
                     try:
                         pg_conn = get_postgresql_connection()
@@ -1517,11 +1653,12 @@ def poll_settlements_for_matches(expired_tickers):
                                     SET status = 'closed',
                                         sell_price = %s,
                                         win_loss = %s,
-                                        pnl = %s
+                                        pnl = %s,
+                                        ret_pct = %s
                                     WHERE ticker = %s AND status = 'expired'
-                                """, (sell_price, 'W' if sell_price > 0 else 'L', pnl, ticker))
+                                """, (sell_price, 'W' if sell_price > 0 else 'L', pnl, ret_pct, ticker))
                                 pg_conn.commit()
-                                print(f"💾 Settlement trade update also written to PostgreSQL users.trades_0001")
+                                print(f"💾 Settlement trade update also written to PostgreSQL users.trades_0001 (ret_pct: {ret_pct})")
                             pg_conn.close()
                         else:
                             print(f"⚠️ Skipping PostgreSQL settlement update - no connection available")
@@ -1529,6 +1666,9 @@ def poll_settlements_for_matches(expired_tickers):
                         print(f"❌ Failed to update settlement trade in PostgreSQL: {pg_err}")
                     
                     notify_frontend_trade_change()
+                    
+                    # Notify monitor_manager about trades closed by this settlement
+                    notify_monitor_manager_trades_closed_by_ticker(ticker, 'closed')
                     
                     found_tickers.add(ticker)
                     
@@ -1539,6 +1679,99 @@ def poll_settlements_for_matches(expired_tickers):
             
         except Exception as e:
             time.sleep(2)
+
+def notify_monitor_manager_trade_closed(trade_id: int, status: str) -> None:
+    """Notify monitor_manager when a trade is closed to update monitor statistics"""
+    try:
+        import requests
+        from backend.core.port_config import get_port
+        
+        # Get the monitor_manager port
+        monitor_manager_port = get_port("monitor_manager")
+        
+        # Get the monitor identifier for this trade
+        pg_conn = get_postgresql_connection()
+        if pg_conn:
+            with pg_conn.cursor() as cursor:
+                cursor.execute("SELECT monitor FROM users.trades_0001 WHERE id = %s", (trade_id,))
+                monitor_row = cursor.fetchone()
+                monitor = monitor_row[0] if monitor_row else None
+            pg_conn.close()
+        else:
+            monitor = None
+        
+        if monitor:
+            # Send notification to monitor_manager
+            notification_url = f"http://localhost:{monitor_manager_port}/api/trade_status_update"
+            payload = {
+                "trade_id": trade_id,
+                "status": status,
+                "monitor": monitor
+            }
+            
+            response = requests.post(notification_url, json=payload, timeout=5)
+            if response.status_code == 200:
+                log(f"✅ Notified monitor_manager about closed trade {trade_id} for monitor {monitor}")
+            else:
+                log(f"⚠️ monitor_manager notification failed for trade {trade_id}: {response.status_code}")
+        else:
+            log(f"⚠️ No monitor found for trade {trade_id}, skipping monitor_manager notification")
+            
+    except Exception as e:
+        # Don't fail the trade close if monitor notification fails
+        log(f"⚠️ Error notifying monitor_manager about trade {trade_id}: {e}")
+
+def notify_monitor_manager_trades_closed_by_ticker(ticker: str, status: str) -> None:
+    """Notify monitor_manager about trades closed by ticker (for settlements/expired trades)"""
+    try:
+        import requests
+        from backend.core.port_config import get_port
+        
+        # Get the monitor_manager port
+        monitor_manager_port = get_port("monitor_manager")
+        
+        # Get all trades for this ticker and their monitor identifiers
+        pg_conn = get_postgresql_connection()
+        if pg_conn:
+            with pg_conn.cursor() as cursor:
+                cursor.execute("SELECT id, monitor FROM users.trades_0001 WHERE ticker = %s AND status = 'closed'", (ticker,))
+                trades = cursor.fetchall()
+            pg_conn.close()
+        else:
+            trades = []
+        
+        if trades:
+            # Group trades by monitor to send one notification per monitor
+            monitors = set()
+            for trade_id, monitor in trades:
+                if monitor:
+                    monitors.add(monitor)
+            
+            # Send notification to monitor_manager for each affected monitor
+            for monitor in monitors:
+                try:
+                    notification_url = f"http://localhost:{monitor_manager_port}/api/trade_status_update"
+                    payload = {
+                        "trade_id": None,  # No specific trade ID for bulk updates
+                        "status": status,
+                        "monitor": monitor,
+                        "bulk_update": True,
+                        "ticker": ticker
+                    }
+                    
+                    response = requests.post(notification_url, json=payload, timeout=5)
+                    if response.status_code == 200:
+                        log(f"✅ Notified monitor_manager about bulk trade closure for ticker {ticker}, monitor {monitor}")
+                    else:
+                        log(f"⚠️ monitor_manager bulk notification failed for ticker {ticker}, monitor {monitor}: {response.status_code}")
+                except Exception as e:
+                    log(f"⚠️ Error notifying monitor_manager about bulk trade closure for ticker {ticker}, monitor {monitor}: {e}")
+        else:
+            log(f"⚠️ No closed trades found for ticker {ticker}, skipping monitor_manager notification")
+            
+    except Exception as e:
+        # Don't fail the settlement if monitor notification fails
+        log(f"⚠️ Error notifying monitor_manager about bulk trade closure for ticker {ticker}: {e}")
 
 # ---------- APScheduler Setup ----------------------------------------------------
 

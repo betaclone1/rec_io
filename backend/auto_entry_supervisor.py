@@ -2,9 +2,13 @@
 """
 Auto Entry Supervisor - MONITOR-AWARE VERSION
 
-Monitors watchlist data and triggers automated trades when criteria are met.
+Monitors strike table data directly and triggers automated trades when criteria are met.
 Uses atomic operations to prevent rapid-fire trades.
 Supports multiple monitors with monitor-specific configuration.
+
+PRIMARY GATE: Now uses auto_trade boolean from monitor_list table instead of 
+auto_entry from auto_trade_settings. Each monitor controls its own auto entry 
+supervisor via the auto_trade toggle switch.
 """
 
 import os
@@ -28,12 +32,12 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 # Import the universal centralized port system
-from backend.core.port_config import get_port
+from backend.core.port_config import get_port, get_monitor_port, register_monitor_ports
 from backend.util.paths import get_host, get_data_dir, get_service_url, get_trade_history_dir
 
 # Add these functions after the existing imports and before the get_monitor_identifier function
 
-def create_monitor_watchlist_table():
+def create_monitor_watchlist_table_DELETED():
     """Create monitor-specific watchlist table when supervisor starts"""
     try:
         import psycopg2
@@ -77,7 +81,7 @@ def create_monitor_watchlist_table():
     except Exception as e:
         log(f"[WATCHLIST] ❌ Error creating watchlist table: {e}")
 
-def drop_monitor_watchlist_table():
+def drop_monitor_watchlist_table_DELETED():
     """Drop monitor-specific watchlist table when supervisor stops"""
     try:
         import psycopg2
@@ -125,9 +129,93 @@ MONITOR_ID = MONITOR_IDENTIFIER.split('_')[1]
 print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] 🚀 Monitor-aware supervisor starting")
 print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] User: {USER_NUMBER}, Monitor: {MONITOR_ID}")
 
-# Get port from centralized system
-AUTO_ENTRY_SUPERVISOR_PORT = get_port("auto_entry_supervisor")
-print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] 🚀 Using centralized port: {AUTO_ENTRY_SUPERVISOR_PORT}")
+# Get symbol for this monitor
+def get_monitor_symbol():
+    """Get the symbol for the current monitor from database"""
+    try:
+        import psycopg2
+        
+        # PostgreSQL connection parameters
+        postgres_config = {
+            'host': os.getenv('POSTGRES_HOST', 'localhost'),
+            'port': int(os.getenv('POSTGRES_PORT', '5432')),
+            'database': os.getenv('POSTGRES_DB', 'rec_io_db'),
+            'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
+            'password': os.getenv('POSTGRES_PASSWORD', '')
+        }
+        
+        conn = psycopg2.connect(**postgres_config)
+        cursor = conn.cursor()
+        
+        cursor.execute(f"""
+            SELECT symbol FROM users.monitor_list_{USER_NUMBER} 
+            WHERE id = %s
+        """, (MONITOR_ID,))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result and result[0]:
+            return result[0].upper()  # Return uppercase (BTC, ETH, etc.)
+        else:
+            log(f"[AUTO_ENTRY_SUPERVISOR] ⚠️ No symbol found for monitor {MONITOR_IDENTIFIER}, defaulting to BTC")
+            return "BTC"  # Default fallback
+    except Exception as e:
+        log(f"[AUTO_ENTRY_SUPERVISOR] ❌ Error getting monitor symbol: {e}, defaulting to BTC")
+        return "BTC"  # Default fallback
+
+# Get the symbol for this monitor (will be updated dynamically)
+MONITOR_SYMBOL = get_monitor_symbol()
+print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] 📊 Initial symbol: {MONITOR_SYMBOL}")
+
+def get_current_monitor_symbol():
+    """Get the current symbol for this monitor (dynamic lookup)"""
+    global MONITOR_SYMBOL
+    
+    try:
+        import psycopg2
+        
+        # PostgreSQL connection parameters
+        postgres_config = {
+            'host': os.getenv('POSTGRES_HOST', 'localhost'),
+            'port': int(os.getenv('POSTGRES_PORT', '5432')),
+            'database': os.getenv('POSTGRES_DB', 'rec_io_db'),
+            'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
+            'password': os.getenv('POSTGRES_PASSWORD', '')
+        }
+        
+        conn = psycopg2.connect(**postgres_config)
+        cursor = conn.cursor()
+        
+        cursor.execute(f"""
+            SELECT symbol FROM users.monitor_list_{USER_NUMBER} 
+            WHERE id = %s
+        """, (MONITOR_ID,))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result and result[0]:
+            new_symbol = result[0].upper()  # Return uppercase (BTC, ETH, etc.)
+            
+            # Check if symbol has changed
+            if new_symbol != MONITOR_SYMBOL:
+                log(f"[AUTO_ENTRY_SUPERVISOR] 🔄 Symbol changed from {MONITOR_SYMBOL} to {new_symbol}")
+                MONITOR_SYMBOL = new_symbol
+            
+            return new_symbol
+        else:
+            return "BTC"  # Default fallback
+    except Exception as e:
+        return "BTC"  # Default fallback
+
+# Get port from monitor-specific system
+# Register this monitor's ports to ensure consistency
+register_monitor_ports(MONITOR_IDENTIFIER)
+
+# Get monitor-specific port
+AUTO_ENTRY_SUPERVISOR_PORT = get_monitor_port("auto_entry_supervisor", MONITOR_IDENTIFIER)
+print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] 🚀 Using monitor-specific port: {AUTO_ENTRY_SUPERVISOR_PORT}")
 
 # Create Flask app
 app = Flask(__name__)
@@ -160,11 +248,14 @@ auto_entry_indicator_state = {
     "last_updated": None
 }
 
+# Track previous settings for change detection
+previous_settings = None
+previous_auto_trade_status = None
+
 # Track previous state to detect changes
 previous_indicator_state = None
 
 # State tracking for logging reduction
-previous_watchlist_settings = None
 
 
 
@@ -180,12 +271,9 @@ def save_auto_entry_state_to_db(state):
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
         )
         with conn.cursor() as cursor:
-            # Update the auto entry status and current momentum
-            cursor.execute("""
-                UPDATE users.auto_trade_settings_0001 
-                SET auto_entry_status = %s, updated_at = CURRENT_TIMESTAMP
-                WHERE id = 1
-            """, (state.get('enabled', False),))
+            # LEGACY REMOVED: auto_entry_status updates - now using auto_trade_status only
+            # Update only cooldown and timestamp fields
+            
             conn.commit()
         conn.close()
     except Exception as e:
@@ -202,13 +290,25 @@ def load_auto_entry_state_from_db():
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
         )
         with conn.cursor() as cursor:
+            # Get monitor's strategy and cooldown state
             cursor.execute("""
-                SELECT cooldown_start_time, cooldown_timer, spike_alert_cooldown_minutes, auto_entry_status, updated_at 
-                FROM users.auto_trade_settings_0001 WHERE id = 1
-            """)
-            result = cursor.fetchone()
-            if result:
-                cooldown_start_time, cooldown_timer, cooldown_minutes, auto_entry_status, updated_at = result
+                SELECT strategy, cooldown_start_time, cooldown_timer, updated_at 
+                FROM users.monitor_list_0001 WHERE id = %s
+            """, (MONITOR_ID,))
+            monitor_result = cursor.fetchone()
+            
+            if monitor_result:
+                strategy_name, cooldown_start_time, cooldown_timer, updated_at = monitor_result
+                
+                # Get cooldown settings and time parameters from monitor
+                cursor.execute("""
+                    SELECT spike_alert_cooldown_minutes, min_time, max_time
+                    FROM users.monitor_list_0001 WHERE id = %s
+                """, (MONITOR_IDENTIFIER.split('_')[1],))
+                strategy_result = cursor.fetchone()
+                
+                if strategy_result:
+                    cooldown_minutes, min_time, max_time = strategy_result
                 
                 # Calculate remaining time based on timestamp
                 spike_alert_active = False
@@ -224,18 +324,37 @@ def load_auto_entry_state_from_db():
                         spike_alert_active = True
                         remaining_minutes = remaining_seconds / 60
                         
-                        # Update cooldown_timer with calculated remaining seconds (every time for frontend)
+                        # Update cooldown_timer with calculated remaining seconds (monitor_list is now single source of truth)
                         cursor.execute(
-                            "UPDATE users.auto_trade_settings_0001 SET cooldown_timer = %s WHERE id = 1",
-                            (int(remaining_seconds),)
+                            "UPDATE users.monitor_list_0001 SET cooldown_timer = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                            (int(remaining_seconds), MONITOR_ID)
                         )
+                        
                         conn.commit()
+                        
+                        # Notify frontend of cooldown timer change
+                        try:
+                            port = get_port("main_app")
+                            url = f"http://localhost:{port}/api/notify_cooldown_timer_change"
+                            # Send full monitor ID format that dashboard expects (mon_0001_10002) - lowercase
+                            full_monitor_id = f"mon_{USER_NUMBER}_{MONITOR_ID}"
+                            response = requests.post(url, json={
+                                "monitor_id": full_monitor_id,
+                                "cooldown_timer": int(remaining_seconds)
+                            }, timeout=2)
+                            if response.ok:
+                                log(f"[AUTO ENTRY] ✅ Cooldown timer change notification sent: monitor_id={full_monitor_id}, timer={remaining_seconds}")
+                            else:
+                                log(f"[AUTO ENTRY] ⚠️ Failed to send cooldown timer notification: {response.status_code}")
+                        except Exception as e:
+                            log(f"[AUTO ENTRY] ❌ Error sending cooldown timer notification: {e}")
                     else:
-                        # Cooldown has expired, clear the start time
+                        # Cooldown has expired, clear the start time (monitor_list is now single source of truth)
                         cursor.execute(
-                            "UPDATE users.auto_trade_settings_0001 SET cooldown_start_time = NULL, cooldown_timer = 0 WHERE id = 1",
-                            ()
+                            "UPDATE users.monitor_list_0001 SET cooldown_start_time = NULL, cooldown_timer = 0, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                            (MONITOR_ID,)
                         )
+                        
                         conn.commit()
                 
                 state = {
@@ -249,8 +368,8 @@ def load_auto_entry_state_from_db():
                     "spike_alert_recovery_countdown": remaining_minutes,
                     "current_momentum": None,
                     "current_ttc": 0,
-                    "min_time": 0,
-                    "max_time": 3600,
+                    "min_time": min_time,
+                    "max_time": max_time,
                     "last_updated": updated_at.isoformat() if updated_at else None
                 }
 
@@ -262,7 +381,7 @@ def load_auto_entry_state_from_db():
     return None
 
 
-previous_auto_entry_status = None
+# LEGACY REMOVED: previous_auto_entry_status - now using auto_trade_status only
 
 # SPIKE ALERT constants - NO DEFAULTS, must get from settings
 # These will be loaded from auto_entry_settings.json
@@ -270,23 +389,60 @@ previous_auto_entry_status = None
 def log(message: str):
     """Log messages with timestamp and monitor identifier"""
     timestamp = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER} {timestamp}] {message}")
+    log_message = f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER} {timestamp}] {message}"
     
-    # Also write to a dedicated log file for easy tailing
+    # Print to console (for existing functionality)
+    print(log_message)
+    
+    # Also write to log file
     try:
-        from backend.util.paths import get_project_root
-        log_dir = os.path.join(get_project_root(), "logs")
-        os.makedirs(log_dir, exist_ok=True)
-        log_file = os.path.join(log_dir, f"auto_entry_supervisor_{MONITOR_IDENTIFIER}.log")
-        with open(log_file, "a") as f:
-            f.write(f"[{timestamp}] {message}\n")
+        log_file_path = f"/opt/rec_io_server/logs/auto_entry_supervisor_{MONITOR_IDENTIFIER}.log"
+        with open(log_file_path, "a", encoding="utf-8") as f:
+            f.write(log_message + "\n")
     except Exception as e:
-        print(f"Error writing to log file: {e}")
+        # Don't break the system if logging fails
+        print(f"[LOGGING ERROR] Failed to write to log file: {e}")
+
+def log_heartbeat():
+    """Log heartbeat every 5 minutes with system status"""
+    try:
+        # Get current system status
+        auto_trade_enabled = is_auto_trade_enabled()
+        current_symbol = get_current_monitor_symbol()
+        
+        # Get current momentum
+        current_momentum = get_current_momentum(current_symbol)
+        momentum_str = f"{current_momentum:.2f}" if current_momentum is not None else "N/A"
+        
+        # Get cooldown status
+        cooldown_timer = 0
+        try:
+            import psycopg2
+            conn = psycopg2.connect(
+                host=os.getenv('POSTGRES_HOST', 'localhost'),
+                database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+                user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+                password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+            )
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+                result = cursor.fetchone()
+                cooldown_timer = result[0] if result and result[0] is not None else 0
+            conn.close()
+        except Exception:
+            cooldown_timer = 0
+        
+        cooldown_str = f"{cooldown_timer}s" if cooldown_timer > 0 else "None"
+        
+        log(f"💓 HEARTBEAT | Auto Trade: {auto_trade_enabled} | Symbol: {current_symbol} | Momentum: {momentum_str} | Cooldown: {cooldown_str}")
+        
+    except Exception as e:
+        log(f"💓 HEARTBEAT | Error getting status: {e}")
 
 # Legacy auto_entry_state.json functionality removed - now using PostgreSQL for all state management
 
-def get_current_momentum():
-    """Get current BTC momentum directly from PostgreSQL"""
+def get_current_momentum(symbol="BTC"):
+    """Get current momentum percentile from strike table for specified symbol"""
     try:
         import psycopg2
         
@@ -302,9 +458,9 @@ def get_current_momentum():
         conn = psycopg2.connect(**postgres_config)
         cursor = conn.cursor()
         
-        cursor.execute("""
-            SELECT momentum FROM live_data.live_price_log_1s_btc 
-            ORDER BY timestamp DESC 
+        # Get momentum percentile from strike table (same value across all rows)
+        cursor.execute(f"""
+            SELECT momentum_percentile FROM live_data.strike_table_{symbol.lower()} 
             LIMIT 1
         """)
         
@@ -312,12 +468,12 @@ def get_current_momentum():
         conn.close()
         
         if result and result[0] is not None:
-            momentum_score = float(result[0])
-            return momentum_score
+            momentum_percentile = float(result[0])
+            return momentum_percentile
         else:
             return None
     except Exception as e:
-        log(f"[AUTO ENTRY MOMENTUM] Error getting momentum: {e}")
+        log(f"[AUTO ENTRY MOMENTUM] Error getting momentum for {symbol}: {e}")
         return None
 
 def check_spike_alert_conditions():
@@ -325,8 +481,9 @@ def check_spike_alert_conditions():
     global auto_entry_indicator_state
     
     try:
-        # Get current momentum
-        current_momentum = get_current_momentum()
+        # Get current momentum for this monitor's symbol
+        current_symbol = get_current_monitor_symbol()
+        current_momentum = get_current_momentum(current_symbol)
         if current_momentum is None:
             return
         
@@ -371,8 +528,8 @@ def check_spike_alert_conditions():
             return
         
         spike_alert_enabled = settings["spike_alert_enabled"]
-        spike_threshold = settings["spike_alert_momentum_threshold"] / 100.0  # Convert percentage to decimal
-        cooldown_threshold = settings["spike_alert_cooldown_threshold"] / 100.0  # Convert percentage to decimal
+        spike_threshold = settings["spike_alert_momentum_threshold"]  # Already in percentile (0-100)
+        cooldown_threshold = settings["spike_alert_cooldown_threshold"]  # Already in percentile (0-100)
         cooldown_minutes = settings["spike_alert_cooldown_minutes"]
         
         # Skip spike alert if disabled
@@ -488,9 +645,12 @@ def start_cooldown_period_in_db():
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
         )
         with conn.cursor() as cursor:
+            # Update the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
-                "UPDATE users.auto_trade_settings_0001 SET cooldown_start_time = NOW() WHERE id = 1"
+                "UPDATE users.monitor_list_0001 SET cooldown_start_time = NOW(), updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                (MONITOR_ID,)
             )
+            
             conn.commit()
         conn.close()
         log(f"[AUTO ENTRY] ✅ Started cooldown period in production database")
@@ -508,9 +668,12 @@ def reset_cooldown_period_in_db():
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
         )
         with conn.cursor() as cursor:
+            # Reset the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
-                "UPDATE users.auto_trade_settings_0001 SET cooldown_start_time = NULL, cooldown_timer = 0 WHERE id = 1"
+                "UPDATE users.monitor_list_0001 SET cooldown_start_time = NULL, cooldown_timer = 0, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                (MONITOR_ID,)
             )
+            
             conn.commit()
         conn.close()
         log(f"[AUTO ENTRY] ✅ Reset cooldown period in production database")
@@ -529,19 +692,44 @@ def update_cooldown_timer_in_db(seconds):
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
         )
         with conn.cursor() as cursor:
+            # Update the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
-                "UPDATE users.auto_trade_settings_0001 SET cooldown_timer = %s, updated_at = NOW() WHERE id = 1",
-                (seconds,)
+                "UPDATE users.monitor_list_0001 SET cooldown_timer = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                (seconds, MONITOR_ID)
             )
+            
             conn.commit()
         conn.close()
         log(f"[AUTO ENTRY] ✅ Updated cooldown_timer to {seconds} seconds in production database (LEGACY)")
+        
+        # Notify frontend of cooldown timer change
+        try:
+            port = get_port("main_app")
+            url = f"http://localhost:{port}/api/notify_cooldown_timer_change"
+            # Send full monitor ID format that dashboard expects (mon_0001_10002) - lowercase
+            full_monitor_id = f"mon_{USER_NUMBER}_{MONITOR_ID}"
+            response = requests.post(url, json={
+                "monitor_id": full_monitor_id,
+                "cooldown_timer": seconds
+            }, timeout=2)
+            if response.ok:
+                log(f"[AUTO ENTRY] ✅ Cooldown timer change notification sent: monitor_id={full_monitor_id}, timer={seconds}")
+            else:
+                log(f"[AUTO ENTRY] ⚠️ Failed to send cooldown timer notification: {response.status_code}")
+        except Exception as e:
+            log(f"[AUTO ENTRY] ❌ Error sending cooldown timer notification: {e}")
     except Exception as e:
         log(f"[AUTO ENTRY] ❌ Error updating cooldown_timer: {e}")
 
 def update_auto_entry_status_in_db(status):
-    """Update auto_entry_status in the database"""
+    """Update auto trade status in the monitor_list table"""
+    global previous_auto_trade_status
     try:
+        # Only log if status actually changed
+        if previous_auto_trade_status != status:
+            log(f"[AUTO ENTRY] 🔄 STATUS CHANGE | Monitor {MONITOR_ID} | {previous_auto_trade_status} → {status}")
+            previous_auto_trade_status = status
+        
         import psycopg2
         conn = psycopg2.connect(
             host=os.getenv('POSTGRES_HOST', 'localhost'),
@@ -550,26 +738,41 @@ def update_auto_entry_status_in_db(status):
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
         )
         with conn.cursor() as cursor:
+            # Update the monitor's auto_trade_status field (this is what the frontend reads)
             cursor.execute(
-                "UPDATE users.auto_trade_settings_0001 SET auto_entry_status = %s, updated_at = NOW() WHERE id = 1",
-                (status,)
+                "UPDATE users.monitor_list_0001 SET auto_trade_status = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                (status, MONITOR_ID)
             )
             conn.commit()
         conn.close()
-        global previous_auto_entry_status
-        if previous_auto_entry_status != status:
-            log(f"[AUTO ENTRY] ✅ Updated auto_entry_status to '{status}' in database")
-            previous_auto_entry_status = status
+        # Only log actual status changes, not every update
+        pass
+        
+        # Send WebSocket notification that the database has been updated
+        try:
+            port = get_port("main_app")
+            url = f"http://localhost:{port}/api/notify_auto_trade_status_change"
+            # Send full monitor ID format that dashboard expects (mon_0001_10002) - lowercase
+            full_monitor_id = f"mon_{USER_NUMBER}_{MONITOR_ID}"
+            response = requests.post(url, json={
+                "monitor_id": full_monitor_id,
+                "auto_trade_status": status
+            }, timeout=2)
+            if not response.ok:
+                log(f"[AUTO ENTRY] ⚠️ Failed to send WebSocket notification: {response.status_code}")
+        except Exception as e:
+            # Don't log connection errors every second - they're expected when main app is down
+            pass
     except Exception as e:
-        log(f"[AUTO ENTRY] ❌ Error updating auto_entry_status: {e}")
+        log(f"[AUTO ENTRY] ❌ Error updating auto_trade_status in database: {e}")
 
 def determine_auto_entry_status():
     """Determine the current auto entry status based on conditions"""
     try:
-        # Check if auto entry is enabled
-        auto_entry_enabled = is_auto_entry_enabled()
+        # Check if auto trade is enabled for this monitor
+        auto_trade_enabled = is_auto_trade_enabled()
         
-        if not auto_entry_enabled:
+        if not auto_trade_enabled:
             return "DISABLED"
         
         # Check if service is healthy
@@ -614,6 +817,8 @@ def broadcast_auto_entry_indicator_change():
     try:
         # Determine and update database status first
         new_status = determine_auto_entry_status()
+        
+        # Update the database with the new status
         update_auto_entry_status_in_db(new_status)
         
         # Get cooldown timer from database
@@ -627,7 +832,7 @@ def broadcast_auto_entry_indicator_change():
                 password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
             )
             with conn.cursor() as cursor:
-                cursor.execute("SELECT cooldown_timer FROM users.auto_trade_settings_0001 WHERE id = 1")
+                cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
                 result = cursor.fetchone()
                 cooldown_timer = result[0] if result and result[0] is not None else 0
             conn.close()
@@ -658,23 +863,40 @@ def broadcast_auto_entry_indicator_change():
         previous_indicator_state = current_state_key
         log(f"[AUTO ENTRY DEBUG]   State changed, broadcasting...")
         
-        # Send to main app for WebSocket broadcast
+        # COMMENTED OUT: Legacy auto_entry_indicator_change WebSocket notification - now using auto_trade_status_change only
+        # try:
+        #     port = get_port("main_app")
+        #     url = f"http://localhost:{port}/api/broadcast_auto_entry_indicator"
+        #     response = requests.post(url, json=broadcast_data, timeout=2)
+        #     if response.ok:
+        #         log(f"[AUTO ENTRY] ✅ Auto entry indicator change broadcasted: status={new_status}, cooldown={cooldown_timer}")
+        #     else:
+        #         log(f"[AUTO ENTRY] ⚠️ Failed to broadcast indicator change: {response.status_code}")
+        # except Exception as e:
+        #     log(f"[AUTO ENTRY] ❌ Error broadcasting indicator change: {e}")
+        
+        # ALSO send auto_trade_status_change notification to the new WebSocket channel
         try:
             port = get_port("main_app")
-            url = f"http://localhost:{port}/api/broadcast_auto_entry_indicator"
-            response = requests.post(url, json=broadcast_data, timeout=2)
+            url = f"http://localhost:{port}/api/notify_auto_trade_status_change"
+            # Send full monitor ID format that dashboard expects (mon_0001_10002) - lowercase
+            full_monitor_id = f"mon_{USER_NUMBER}_{MONITOR_ID}"
+            response = requests.post(url, json={
+                "monitor_id": full_monitor_id,
+                "auto_trade_status": new_status
+            }, timeout=2)
             if response.ok:
-                log(f"[AUTO ENTRY] ✅ Auto entry indicator change broadcasted: status={new_status}, cooldown={cooldown_timer}")
+                log(f"[AUTO ENTRY] ✅ Auto trade status change notification sent: monitor_id={full_monitor_id}, status={new_status}")
             else:
-                log(f"[AUTO ENTRY] ⚠️ Failed to broadcast indicator change: {response.status_code}")
+                log(f"[AUTO ENTRY] ⚠️ Failed to send auto trade status notification: {response.status_code}")
         except Exception as e:
-            log(f"[AUTO ENTRY] ❌ Error broadcasting indicator change: {e}")
+            log(f"[AUTO ENTRY] ❌ Error sending auto trade status notification: {e}")
             
     except Exception as e:
         log(f"[AUTO ENTRY] ❌ Error in broadcast_auto_entry_indicator_change: {e}")
 
-def is_auto_entry_enabled():
-    """Check if AUTO ENTRY is enabled in PostgreSQL"""
+def is_auto_trade_enabled():
+    """Check if AUTO ENTRY is enabled by checking auto_trade boolean in monitor_list"""
     try:
         import psycopg2
         conn = psycopg2.connect(
@@ -684,15 +906,23 @@ def is_auto_entry_enabled():
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
         )
         with conn.cursor() as cursor:
-            cursor.execute("SELECT auto_entry FROM users.auto_trade_settings_0001 WHERE id = 1")
+            # Check auto_trade boolean from the specific monitor's row in monitor_list
+            cursor.execute("SELECT auto_trade FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
             result = cursor.fetchone()
-            return result[0] if result else False
+            if result:
+                auto_trade_enabled = result[0]
+                # Only log status changes, not every check
+                return auto_trade_enabled
+            else:
+                log(f"[AUTO ENTRY] No monitor found with ID {MONITOR_ID} in monitor_list")
+                return False
     except Exception as e:
-        log(f"[AUTO ENTRY] Error reading from PostgreSQL: {e}")
+        log(f"[AUTO ENTRY] Error reading auto_trade from monitor_list: {e}")
         return False
 
 def get_auto_entry_settings():
-    """Get auto entry settings from PostgreSQL - NO DEFAULTS"""
+    """Get auto entry settings from monitor's assigned strategy"""
+    global previous_settings
     try:
         import psycopg2
         conn = psycopg2.connect(
@@ -702,59 +932,93 @@ def get_auto_entry_settings():
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
         )
         with conn.cursor() as cursor:
+            # Get monitor's strategy
             cursor.execute("""
-                SELECT min_probability, min_differential, min_time, max_time, allow_re_entry,
-                       spike_alert_enabled, spike_alert_momentum_threshold, 
-                       spike_alert_cooldown_threshold, spike_alert_cooldown_minutes
-                FROM users.auto_trade_settings_0001 WHERE id = 1
-            """)
-            result = cursor.fetchone()
-            if result:
-                settings = {
-                    "min_probability": result[0],
-                    "min_differential": float(result[1]),
-                    "min_time": result[2],
-                    "max_time": result[3],
-                    "allow_re_entry": result[4],
-                    "spike_alert_enabled": result[5],
-                    "spike_alert_momentum_threshold": result[6],
-                    "spike_alert_cooldown_threshold": result[7],
-                    "spike_alert_cooldown_minutes": result[8],
-                    "watchlist_min_volume": 1000,  # Default value
-                    "watchlist_max_ask": 98  # Default value
-                }
-                # Settings loaded from PostgreSQL successfully
-                return settings
+                SELECT strategy FROM users.monitor_list_0001 WHERE id = %s
+            """, (MONITOR_ID,))
+            monitor_result = cursor.fetchone()
+            
+            if monitor_result:
+                strategy_name = monitor_result[0]
+                
+                # Get monitor parameters
+                cursor.execute("""
+                    SELECT min_probability, min_differential, max_differential, min_time, max_time, allow_re_entry,
+                           spike_alert_enabled, spike_alert_momentum_threshold, 
+                           spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
+                           min_volume
+                    FROM users.monitor_list_0001 WHERE id = %s
+                """, (MONITOR_IDENTIFIER.split('_')[1],))
+                strategy_result = cursor.fetchone()
+                
+                if strategy_result:
+                    settings = {
+                        "min_probability": strategy_result[0],
+                        "min_differential": float(strategy_result[1]),
+                        "max_differential": float(strategy_result[2]) if strategy_result[2] is not None else None,
+                        "min_time": strategy_result[3],
+                        "max_time": strategy_result[4],
+                        "allow_re_entry": strategy_result[5],
+                        "spike_alert_enabled": strategy_result[6],
+                        "spike_alert_momentum_threshold": strategy_result[7],
+                        "spike_alert_cooldown_threshold": strategy_result[8],
+                        "spike_alert_cooldown_minutes": strategy_result[9],
+                        "min_volume": strategy_result[10],  # From monitor min_volume
+                        "max_ask": 98  # Default value
+                    }
+                    
+                    # Check for settings changes
+                    if previous_settings is not None:
+                        changed_settings = []
+                        for key, value in settings.items():
+                            if key not in previous_settings or previous_settings[key] != value:
+                                changed_settings.append(f"{key}: {previous_settings.get(key, 'None')} → {value}")
+                        
+                        if changed_settings:
+                            log(f"[AUTO ENTRY] 🔧 SETTINGS CHANGED | Monitor {MONITOR_IDENTIFIER} | Changes: {'; '.join(changed_settings)}")
+                    
+                    previous_settings = settings.copy()
+                    # Only log settings loading on first load or when settings change
+                    if previous_settings is None:
+                        log(f"[AUTO ENTRY] ✅ Loaded settings from monitor: {MONITOR_IDENTIFIER}")
+                    return settings
+                else:
+                    log(f"[AUTO ENTRY] No monitor found with ID: {MONITOR_IDENTIFIER.split('_')[1]}")
+                    return {}
             else:
-                log(f"[AUTO ENTRY] No settings found in PostgreSQL")
+                log(f"[AUTO ENTRY] No monitor found with ID: {MONITOR_ID}")
                 return {}
     except Exception as e:
-        log(f"[AUTO ENTRY] Error reading settings from PostgreSQL: {e}")
+        log(f"[AUTO ENTRY] Error reading settings from strategy: {e}")
         return {}
 
 def get_current_ttc():
     """Get current TTC from unified TTC endpoint"""
     try:
         port = get_port("main_app")
-        url = f"http://localhost:{port}/api/unified_ttc/btc"
+        current_symbol = get_current_monitor_symbol()
+        url = f"http://localhost:{port}/api/unified_ttc/{current_symbol.lower()}"
         response = requests.get(url, timeout=2)
         if response.ok:
             data = response.json()
             ttc = data.get("ttc_seconds", 0)
             return ttc
         else:
-            log(f"[AUTO ENTRY] TTC request failed: {response.status_code}")
+            # Don't log TTC request failures - they're expected when main app is down
+            return 0
     except Exception as e:
-        log(f"[AUTO ENTRY] Error fetching TTC: {e}")
-    return 0
+        # Don't log connection errors every second - they're expected when main app is down
+        return 0
 
 def get_strike_table_path():
     """Get the path to the master strike table JSON file"""
-    return os.path.join(get_data_dir(), "live_data", "markets", "kalshi", "strike_tables", "strike_table_btc.json")
+    current_symbol = get_current_monitor_symbol()
+    return os.path.join(get_data_dir(), "live_data", "markets", "kalshi", "strike_tables", f"strike_table_{current_symbol.lower()}.json")
 
-def get_watchlist_path():
+def get_watchlist_path_DELETED():
     """Get the path to the watchlist JSON file"""
-    return os.path.join(get_data_dir(), "live_data", "markets", "kalshi", "strike_tables", "btc_watchlist.json")
+    current_symbol = get_current_monitor_symbol()
+    return os.path.join(get_data_dir(), "live_data", "markets", "kalshi", "strike_tables", f"{current_symbol.lower()}_watchlist.json")
 
 def get_master_strike_table_data():
     """Get current master strike table data from PostgreSQL"""
@@ -767,7 +1031,8 @@ def get_master_strike_table_data():
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
         )
         with conn.cursor() as cursor:
-            cursor.execute("""
+            current_symbol = get_current_monitor_symbol()
+            cursor.execute(f"""
                 SELECT
                     symbol,
                     current_price,
@@ -776,14 +1041,14 @@ def get_master_strike_table_data():
                     market_title,
                     strike_tier,
                     market_status
-                FROM live_data.strike_table_btc
+                FROM live_data.strike_table_{current_symbol.lower()}
                 LIMIT 1
             """)
             header_data = cursor.fetchone()
             if not header_data:
                 log(f"[WATCHLIST] No strike table data found in PostgreSQL")
                 return None
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT
                     strike,
                     buffer,
@@ -796,7 +1061,7 @@ def get_master_strike_table_data():
                     yes_diff,
                     no_diff,
                     active_side
-                FROM live_data.strike_table_btc
+                FROM live_data.strike_table_{current_symbol.lower()}
                 ORDER BY strike
             """)
             strikes_data = cursor.fetchall()
@@ -831,7 +1096,7 @@ def get_master_strike_table_data():
         log(f"[WATCHLIST] Error reading master strike table data from PostgreSQL: {e}")
         return None
 
-def generate_watchlist_from_strike_table():
+def generate_watchlist_from_strike_table_DELETED():
     """Generate watchlist by filtering the master strike table based on auto entry settings"""
     try:
         # Get master strike table data
@@ -840,7 +1105,7 @@ def generate_watchlist_from_strike_table():
             log(f"[WATCHLIST] No master strike table data available")
             return False
         
-        btc_price = strike_table_data.get("current_price")
+        current_price = strike_table_data.get("current_price")
         ttc_seconds = strike_table_data.get("ttc")
         strikes = strike_table_data["strikes"]
         market_data = {
@@ -860,9 +1125,11 @@ def generate_watchlist_from_strike_table():
         max_ask = settings.get("watchlist_max_ask", 98)
         min_probability = settings.get("min_probability", 0) - 5  # Subtract 5 from min_probability
         min_differential = settings.get("min_differential", 0) - 3  # Subtract 3 from min_differential
+        max_differential = settings.get("max_differential", None)  # No default, use None if not set
         
         # Check if settings have changed
-        current_settings = f"min_prob={min_probability}, min_diff={min_differential}, min_vol={min_volume}, max_ask={max_ask}"
+        max_diff_str = f", max_diff={max_differential}" if max_differential is not None else ""
+        current_settings = f"min_prob={min_probability}, min_diff={min_differential}{max_diff_str}, min_vol={min_volume}, max_ask={max_ask}"
         global previous_watchlist_settings
         if previous_watchlist_settings != current_settings:
             log(f"[WATCHLIST] Filtering with settings: {current_settings}")
@@ -887,7 +1154,7 @@ def generate_watchlist_from_strike_table():
             max_ask_price = max(yes_ask, no_ask)
             
             # Determine which side would be the active buy button
-            is_above_money_line = strike.get("strike", 0) > btc_price
+            is_above_money_line = strike.get("strike", 0) > current_price
             
             # Get the active button's differential
             active_diff = no_diff if is_above_money_line else yes_diff
@@ -897,21 +1164,33 @@ def generate_watchlist_from_strike_table():
             no_diff_ok = no_diff >= min_differential
             at_least_one_diff_ok = yes_diff_ok or no_diff_ok
             
+            # Check max_differential constraint on active side
+            max_diff_ok = True  # Default to True if max_differential is not set
+            if max_differential is not None:
+                # Check the active side's differential against max_differential
+                if is_above_money_line:
+                    # Above money line: active side is NO
+                    max_diff_ok = no_diff <= max_differential
+                else:
+                    # Below money line: active side is YES
+                    max_diff_ok = yes_diff <= max_differential
+            
             # Apply filter criteria from auto entry settings
             volume_ok = volume >= min_volume
             probability_ok = probability > min_probability
             ask_ok = max_ask_price <= max_ask
             
-            if (volume_ok and probability_ok and ask_ok and at_least_one_diff_ok):
+            if (volume_ok and probability_ok and ask_ok and at_least_one_diff_ok and max_diff_ok):
                 filtered_strikes.append(strike)
         
         # Sort by probability (highest to lowest)
         filtered_strikes.sort(key=lambda x: x.get("probability", 0), reverse=True)
         
         # Create watchlist output
+        current_symbol = get_current_monitor_symbol()
         watchlist_output = {
-            "symbol": "BTC",
-            "current_price": btc_price,
+            "symbol": current_symbol,
+            "current_price": current_price,
             "ttc": ttc_seconds,
             "broker": "Kalshi",
             "event_ticker": market_data.get("event_ticker"),
@@ -948,7 +1227,7 @@ def generate_watchlist_from_strike_table():
                             volume, ticker, active_side
                         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
-                        "BTC", btc_price, ttc_seconds, "Kalshi", market_data.get("event_ticker"),
+                        current_symbol, current_price, ttc_seconds, "Kalshi", market_data.get("event_ticker"),
                         market_data.get("event_title"), market_data.get("strike_tier"),
                         market_data.get("market_status"), strike.get("strike"), strike.get("buffer"),
                         strike.get("buffer_pct"), strike.get("probability"), strike.get("yes_ask"),
@@ -966,7 +1245,7 @@ def generate_watchlist_from_strike_table():
         log(f"[WATCHLIST] Error generating watchlist: {e}")
         return False
 
-def get_watchlist_data():
+def get_watchlist_data_DELETED():
     """Get current watchlist data from monitor-specific PostgreSQL table"""
     try:
         import psycopg2
@@ -1099,6 +1378,33 @@ def get_trade_strategy():
         if conn:
             conn.close()
 
+def get_bankroll_allotment():
+    """Get bankroll allotment total from monitor-specific configuration"""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
+            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+        )
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT bankroll_allotment_total FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+            result = cursor.fetchone()
+            if result:
+                bankroll_allotment = result[0]
+                log(f"[AUTO ENTRY] Bankroll allotment loaded from monitor {MONITOR_ID}: {bankroll_allotment}")
+                return bankroll_allotment
+            else:
+                log(f"[AUTO ENTRY] No monitor configuration found for monitor {MONITOR_ID}")
+                return None
+    except Exception as e:
+        log(f"[AUTO ENTRY] Error loading bankroll allotment from monitor {MONITOR_ID}: {e}")
+        return None
+    finally:
+        if conn:
+            conn.close()
+
 def trigger_auto_entry_trade(strike_data):
     """Trigger a buy trade by calling the trade_manager service directly"""
     import requests
@@ -1112,14 +1418,21 @@ def trigger_auto_entry_trade(strike_data):
         port = get_port("trade_manager")
         url = f"http://localhost:{port}/trades"
         
-        # Get contract name from watchlist market_title
-        watchlist_data = get_watchlist_data()
-        contract_name = watchlist_data.get("market_title", "BTC Market") if watchlist_data else "BTC Market"
+        # Get contract name from strike table market_title
+        strike_table_data = get_master_strike_table_data()
+        current_symbol = get_current_monitor_symbol()
+        contract_name = strike_table_data.get("market_title", f"{current_symbol} Market") if strike_table_data else f"{current_symbol} Market"
         
         # Get position size from trade preferences
         position_size = get_position_size()
         if position_size is None:
             log(f"[AUTO ENTRY] ❌ Cannot trigger trade - no valid position size found")
+            return False
+        
+        # Get bankroll allotment from monitor configuration
+        bankroll_allotment = get_bankroll_allotment()
+        if bankroll_allotment is None:
+            log(f"[AUTO ENTRY] ❌ Cannot trigger trade - no valid bankroll allotment found")
             return False
         
         # Create the exact same payload that trade_initiator would create
@@ -1139,18 +1452,18 @@ def trigger_auto_entry_trade(strike_data):
         elif side == "no":
             converted_side = "N"
         
-        # Get current BTC price for symbol_open from main app API
+        # Get current price for symbol_open from main app API
         try:
             main_port = get_port("main_app")
-            btc_url = f"http://localhost:{main_port}/api/btc_price"
-            btc_response = requests.get(btc_url, timeout=2)
-            if btc_response.ok:
-                btc_data = btc_response.json()
-                symbol_open = btc_data.get("price")
+            price_url = f"http://localhost:{main_port}/api/{current_symbol.lower()}_price"
+            price_response = requests.get(price_url, timeout=2)
+            if price_response.ok:
+                price_data = price_response.json()
+                symbol_open = price_data.get("price")
             else:
                 symbol_open = None
         except Exception as e:
-            log(f"[AUTO ENTRY] ⚠️ Could not get BTC price: {e}")
+            log(f"[AUTO ENTRY] ⚠️ Could not get {current_symbol} price: {e}")
             symbol_open = None
         
         # Get trade strategy from PostgreSQL
@@ -1162,7 +1475,7 @@ def trigger_auto_entry_trade(strike_data):
             "status": "pending",
             "date": eastern_date,
             "time": eastern_time,
-            "symbol": "BTC",
+            "symbol": current_symbol,
             "market": "Kalshi",
             "trade_strategy": trade_strategy,
             "contract": contract_name,
@@ -1177,7 +1490,8 @@ def trigger_auto_entry_trade(strike_data):
             "prob": strike_data.get("probability"),
             "win_loss": None,
             "entry_method": "auto",
-            "monitor": f"mon_0001_{MONITOR_ID}"  # Add monitor identifier
+            "monitor": f"mon_0001_{MONITOR_ID}",  # Add monitor identifier
+            "bankroll_allotment_total": bankroll_allotment
         }
         
         log(f"[AUTO ENTRY] 📤 Sending trade to trade_manager: {trade_payload}")
@@ -1214,7 +1528,8 @@ def trigger_auto_entry_trade(strike_data):
                 else:
                     log(f"[AUTO ENTRY] ⚠️ WebSocket notification failed: {notification_response.status_code}")
             except Exception as e:
-                log(f"[AUTO ENTRY] ❌ Error sending WebSocket notification: {e}")
+                # Don't log connection errors every second - they're expected when main app is down
+                pass
             
             return True
         else:
@@ -1294,18 +1609,15 @@ def check_auto_entry_conditions():
     global auto_entry_indicator_state
     
     try:
-        # ALWAYS generate watchlist first (regardless of scanning status)
-        watchlist_generated = generate_watchlist_from_strike_table()
-        if not watchlist_generated:
-            log(f"[AUTO ENTRY] Failed to generate watchlist")
+        # Get strike table data directly (no watchlist needed)
         
         # Check spike alert conditions first
         check_spike_alert_conditions()
         
 
         
-        # Check if AUTO ENTRY is enabled
-        auto_entry_enabled = is_auto_entry_enabled()
+        # Check if AUTO TRADE is enabled for this monitor
+        auto_trade_enabled = is_auto_trade_enabled()
         
         # Check if service is healthy (monitoring thread is running)
         service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
@@ -1313,7 +1625,7 @@ def check_auto_entry_conditions():
         # Check if spike alert is active (blocks all trades)
         spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
         
-        if not auto_entry_enabled:
+        if not auto_trade_enabled:
             auto_entry_indicator_state.update({
                 "enabled": False,
                 "ttc_within_window": False,
@@ -1350,8 +1662,8 @@ def check_auto_entry_conditions():
         ttc_within_window = min_time <= current_ttc <= max_time
         
         # Determine if scanning is actually active
-        # Scanning is active if: enabled + service healthy + TTC in window + no blocking conditions (including spike alert)
-        scanning_active = (auto_entry_enabled and 
+        # Scanning is active if: auto_trade enabled + service healthy + TTC in window + no blocking conditions (including spike alert)
+        scanning_active = (auto_trade_enabled and 
                           service_healthy and 
                           ttc_within_window and
                           not spike_alert_active)  # SPIKE ALERT blocks scanning
@@ -1380,15 +1692,15 @@ def check_auto_entry_conditions():
             log(f"[AUTO ENTRY] ⏸️ SPIKE ALERT ACTIVE - Skipping all trade processing")
             return
         
-        # Get watchlist data
-        watchlist_data = get_watchlist_data()
-        if not watchlist_data or "strikes" not in watchlist_data:
+        # Get strike table data directly
+        strike_table_data = get_master_strike_table_data()
+        if not strike_table_data or "strikes" not in strike_table_data:
             return
         
         # Process each strike ONCE
         processed_strikes = set()  # Prevent duplicate processing
         
-        for i, strike in enumerate(watchlist_data["strikes"]):
+        for i, strike in enumerate(strike_table_data["strikes"]):
             try:
                 # Use active_side for strike_key generation
                 active_side = strike.get('active_side')
@@ -1424,10 +1736,32 @@ def check_auto_entry_conditions():
                 # STEP 4: Check differential threshold (if applicable)
                 if min_differential is not None:
                     diff = strike.get('yes_diff') if active_side == 'yes' else strike.get('no_diff')
-                    # Strike differential: {diff} (min required: {min_differential})
                     if diff is None or diff < (min_differential - 0.5):
-                        # Skipping {strike_key} - differential {diff} below threshold {min_differential}
                         continue
+                
+                # STEP 4.5: Check max differential threshold (if applicable)
+                max_differential = settings.get("max_differential")
+                if max_differential is not None:
+                    diff = strike.get('yes_diff') if active_side == 'yes' else strike.get('no_diff')
+                    if diff is None or diff > max_differential:
+                        # Skipping {strike_key} - differential {diff} above max threshold {max_differential}
+                        continue
+                
+                # STEP 5: Check volume threshold
+                min_volume = settings.get("min_volume", 1000)
+                volume = strike.get('volume', 0)
+                if volume is None or volume < min_volume:
+                    continue
+                
+                # STEP 6: Check max ask price threshold
+                max_ask = settings.get("max_ask", 98)
+                yes_ask = strike.get('yes_ask', 0)
+                no_ask = strike.get('no_ask', 0)
+                if yes_ask is None or no_ask is None:
+                    continue
+                max_ask_price = max(yes_ask, no_ask)
+                if max_ask_price > max_ask:
+                    continue
                 
                 # STEP 5: Determine buy price based on active_side
                 if active_side == 'yes':
@@ -1454,9 +1788,11 @@ def check_auto_entry_conditions():
                     continue
                 
                 # STEP 8: Trigger the trade
+                log(f"[AUTO ENTRY] 🚀 TRIGGERING TRADE | {strike_key} | Prob: {prob}% | Buy Price: ${buy_price:.2f} | Ticker: {strike.get('ticker')}")
                 if trigger_auto_entry_trade(strike_data):
-                    log(f"[AUTO ENTRY] ✅ Trade triggered for {strike_key}")
+                    log(f"[AUTO ENTRY] ✅ TRADE SUCCESSFUL | {strike_key} | Trade triggered and sent to trade_manager")
                 else:
+                    log(f"[AUTO ENTRY] ❌ TRADE FAILED | {strike_key} | Failed to trigger trade")
                     # Remove from cooldown if trade failed
                     if strike_key in last_trade_times:
                         del last_trade_times[strike_key]
@@ -1480,7 +1816,7 @@ def cleanup_old_cooldowns():
         del last_trade_times[key]
     
             # Only log if we actually cleaned up something (and only if significant)
-        if len(keys_to_remove) > 5:
+        if len(keys_to_remove) > 20:
             log(f"[AUTO ENTRY] Cleaned up {len(keys_to_remove)} old cooldowns")
 
 def start_monitoring_loop():
@@ -1502,14 +1838,9 @@ def start_monitoring_loop():
                 check_count += 1
                 current_time = time.time()
                 
-                # Heartbeat every 60 seconds
-                if current_time - last_heartbeat >= 60:
-                    # Get current status for heartbeat
-                    current_status = determine_auto_entry_status()
-                    settings = get_auto_entry_settings()
-                    enabled = is_auto_entry_enabled()
-                    
-                    log(f"[AUTO ENTRY HEARTBEAT] Check #{check_count} - Status: {current_status}, Enabled: {enabled}, Settings: {len(settings)} loaded")
+                # Heartbeat every 5 minutes (300 seconds)
+                if current_time - last_heartbeat >= 300:
+                    log_heartbeat()
                     last_heartbeat = current_time
                 
                 # Only log every 1000 checks (reduces logging by 99.9%)
@@ -1546,7 +1877,7 @@ def health_check():
     """Health check endpoint."""
     try:
         service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
-        enabled = is_auto_entry_enabled()
+        enabled = is_auto_trade_enabled()
         
         return {
             "status": "healthy" if service_healthy else "unhealthy",
@@ -1572,24 +1903,7 @@ def health_check():
             "timestamp": datetime.now().isoformat()
         }
 
-# Auto entry status endpoint
-@app.route("/api/auto_entry_status")
-def get_auto_entry_status():
-    """Get current auto entry status"""
-    try:
-        enabled = is_auto_entry_enabled()
-        settings = get_auto_entry_settings()
-        current_ttc = get_current_ttc()
-        
-        return jsonify({
-            "enabled": enabled,
-            "settings": settings,
-            "current_ttc": current_ttc,
-            "cooldown_entries_count": len(last_trade_times),
-            "timestamp": datetime.now().isoformat()
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+# LEGACY REMOVED: /api/auto_entry_status endpoint - now using auto_trade_status system
 
 # Auto entry indicator endpoint (for frontend display)
 @app.route("/api/auto_entry_indicator")
@@ -1602,7 +1916,7 @@ def get_auto_entry_indicator():
 def get_auto_entry_scanning_status():
     """Get detailed scanning status information"""
     try:
-        enabled = is_auto_entry_enabled()
+        enabled = is_auto_trade_enabled()
         settings = get_auto_entry_settings()
         current_ttc = get_current_ttc()
         service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
@@ -1716,8 +2030,6 @@ def spike_alert_settings():
 def signal_handler(signum, frame):
     """Handle shutdown signals gracefully"""
     log(f"🛑 Received signal {signum}, shutting down gracefully...")
-    # Clean up monitor-specific watchlist table on shutdown
-    drop_monitor_watchlist_table()
     sys.exit(0)
 
 def start_event_driven_supervisor():
@@ -1728,8 +2040,6 @@ def start_event_driven_supervisor():
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
-    # Create monitor-specific watchlist table on startup
-    create_monitor_watchlist_table()
     
     # Start monitoring loop
     start_monitoring_loop()
@@ -1759,12 +2069,8 @@ def start_event_driven_supervisor():
             time.sleep(60)  # Sleep for 1 minute, just to keep alive
     except KeyboardInterrupt:
         log("🛑 Auto entry supervisor stopped by user")
-        # Clean up monitor-specific watchlist table on shutdown
-        drop_monitor_watchlist_table()
     except Exception as e:
         log(f"❌ Error in supervisor: {e}")
-        # Clean up monitor-specific watchlist table on error
-        drop_monitor_watchlist_table()
 
 
 

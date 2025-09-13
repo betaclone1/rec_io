@@ -1,0 +1,31 @@
+# Analytics Package Requirements
+# Core dependencies for the analytics pipeline
+
+# Database
+psycopg2-binary>=2.9.0
+psycopg2>=2.9.0
+
+# Data processing
+pandas>=1.5.0
+numpy>=1.21.0
+scipy>=1.9.0
+
+# Web framework (for API endpoints)
+fastapi>=0.95.0
+uvicorn>=0.20.0
+
+# HTTP client
+requests>=2.28.0
+
+# Cryptocurrency data
+ccxt>=3.0.0
+
+# Timezone handling
+pytz>=2022.1
+
+# Logging and utilities
+python-dateutil>=2.8.0
+
+# Optional: For enhanced performance
+# numba>=0.56.0  # Uncomment for JIT compilation if needed
+# cython>=0.29.0  # Uncomment for C extensions if needed

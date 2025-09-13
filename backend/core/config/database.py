@@ -122,7 +122,6 @@ def init_database():
             );
         """)
         
-
         
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS live_data.eth_price_log (

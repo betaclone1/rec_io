@@ -32,7 +32,10 @@ DEFAULT_PORTS = {
     "active_trade_supervisor": 6000,
 
     "kalshi_account_sync": 8004,
-    "kalshi_market_watchdog": 8005
+    "kalshi_market_watchdog_btc": 8005,
+    "kalshi_market_watchdog_eth": 8011,
+    "strike_table_generator_btc": 8014,
+    "strike_table_generator_eth": 8015
 }
 
 def ensure_port_config_exists():
@@ -71,9 +74,14 @@ def ensure_port_config_exists():
                     "description": "Kalshi account synchronization",
                     "status": "RUNNING"
                 },
-                "kalshi_market_watchdog": {
+                "kalshi_market_watchdog_btc": {
                     "port": 8005,
-                    "description": "Kalshi market data monitoring",
+                    "description": "Kalshi BTC market data monitoring",
+                    "status": "RUNNING"
+                },
+                "kalshi_market_watchdog_eth": {
+                    "port": 8011,
+                    "description": "Kalshi ETH market data monitoring",
                     "status": "RUNNING"
                 },
                 "monitor_manager": {
@@ -148,6 +156,109 @@ def list_all_ports() -> Dict[str, int]:
     except Exception as e:
         print(f"[PORT_CONFIG] Error reading master manifest: {e}")
         return DEFAULT_PORTS
+
+def get_monitor_port(service_name: str, monitor_identifier: str) -> int:
+    """
+    Get port for a specific monitor instance.
+    
+    Args:
+        service_name: Either 'active_trade_supervisor' or 'auto_entry_supervisor'
+        monitor_identifier: Monitor identifier like '0001_10009'
+        
+    Returns:
+        Port number for the monitor-specific service
+    """
+    ensure_port_config_exists()
+    
+    try:
+        with open(PORT_CONFIG_FILE, 'r') as f:
+            manifest = json.load(f)
+        
+        # Get port range configuration
+        port_range = manifest.get("monitor_process_ports", {})
+        start_port = port_range.get("start_port", 8013)
+        
+        # Parse monitor identifier (e.g., "0001_10009")
+        if '_' not in monitor_identifier:
+            raise ValueError(f"Invalid monitor identifier format: {monitor_identifier}")
+        
+        user_number, monitor_id = monitor_identifier.split('_')
+        
+        # Check if this monitor already has assigned ports in the manifest
+        monitor_instances = manifest.get("monitor_instances", {})
+        if monitor_identifier in monitor_instances:
+            assigned_ports = monitor_instances[monitor_identifier]
+            if service_name in assigned_ports:
+                return assigned_ports[service_name]
+        
+        # Calculate port offset based on monitor ID
+        # Convert monitor ID to offset (10009 -> 9, 10002 -> 2)
+        try:
+            monitor_num = int(monitor_id)
+            port_offset = monitor_num - 10000  # Convert 10009 -> 9, 10002 -> 2
+        except ValueError:
+            raise ValueError(f"Invalid monitor ID format: {monitor_id}")
+        
+        # Apply service-specific offset
+        if service_name == "active_trade_supervisor":
+            service_offset = port_range.get("active_trade_supervisor_offset", 1)
+        elif service_name == "auto_entry_supervisor":
+            service_offset = port_range.get("auto_entry_supervisor_offset", 0)
+        else:
+            raise ValueError(f"Unknown monitor service: {service_name}")
+        
+        # Calculate final port: start_port + (offset * 2) + service_offset
+        # Monitor 10002 (offset=2): 8013 + (2*2) + 0 = 8013, 8013 + (2*2) + 1 = 8014
+        # Monitor 10009 (offset=9): 8013 + (9*2) + 0 = 8031, 8013 + (9*2) + 1 = 8032
+        final_port = start_port + (port_offset * 2) + service_offset
+        
+        # Validate port is within range
+        end_port = port_range.get("end_port", 8020)
+        if final_port > end_port:
+            raise ValueError(f"Port {final_port} exceeds monitor port range (max: {end_port})")
+        
+        return final_port
+        
+    except Exception as e:
+        print(f"[PORT_CONFIG] Error calculating monitor port for {service_name} {monitor_identifier}: {e}")
+        # Fallback to centralized port
+        return get_port(service_name)
+
+def get_monitor_service_url(service_name: str, monitor_identifier: str, endpoint: str = "") -> str:
+    """Get full URL for monitor-specific service."""
+    port = get_monitor_port(service_name, monitor_identifier)
+    host = get_host()
+    return f"http://{host}:{port}{endpoint}"
+
+def register_monitor_ports(monitor_identifier: str) -> Dict[str, int]:
+    """
+    Register and return port assignments for a monitor.
+    This ensures consistent port assignment across the system.
+    """
+    ports = {
+        "auto_entry_supervisor": get_monitor_port("auto_entry_supervisor", monitor_identifier),
+        "active_trade_supervisor": get_monitor_port("active_trade_supervisor", monitor_identifier)
+    }
+    
+    # Update manifest with assigned ports
+    try:
+        with open(PORT_CONFIG_FILE, 'r') as f:
+            manifest = json.load(f)
+        
+        if "monitor_instances" not in manifest:
+            manifest["monitor_instances"] = {}
+        
+        manifest["monitor_instances"][monitor_identifier] = ports
+        
+        with open(PORT_CONFIG_FILE, 'w') as f:
+            json.dump(manifest, f, indent=2)
+            
+        print(f"[PORT_CONFIG] Registered ports for monitor {monitor_identifier}: {ports}")
+        
+    except Exception as e:
+        print(f"[PORT_CONFIG] Error registering monitor ports: {e}")
+    
+    return ports
 
 def get_port_info() -> Dict:
     """Get comprehensive port information for API endpoints using universal host system."""

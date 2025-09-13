@@ -149,8 +149,8 @@ window.closeTrade = async function(tradeId, sellPrice, event) {
 window.prepareTradeData = async function(target) {
 
 
-  // Extract trade data from the button element
-  const symbol = target.getAttribute('data-symbol') || 'BTC';
+  // Extract trade data from the button element - use current symbol if not specified
+  const symbol = target.getAttribute('data-symbol') || (typeof getCurrentSymbol === 'function' ? getCurrentSymbol() : 'BTC');
   
   if (target?.disabled) {
     return null;
@@ -231,13 +231,14 @@ window.prepareTradeData = async function(target) {
     kalshiTicker = target.parentElement.dataset.ticker;
   }
 
-  // Get other data
-  const symbol_open = typeof getCurrentBTCTickerPrice === 'function' ? getCurrentBTCTickerPrice() : null;
+  // Get other data - use current symbol instead of hardcoded BTC
+  const symbol_open = typeof getCurrentSymbolTickerPrice === 'function' ? getCurrentSymbolTickerPrice() : null;
   
-  // Get momentum from API instead of DOM element
+  // Get momentum from API instead of DOM element - use current symbol
   let momentum = null;
   try {
-    const momentumResponse = await fetch(window.location.origin + '/api/momentum');
+    const currentSymbol = typeof getCurrentSymbol === 'function' ? getCurrentSymbol() : 'BTC';
+    const momentumResponse = await fetch(window.location.origin + `/api/momentum?symbol=${currentSymbol}`);
     if (momentumResponse.ok) {
       const momentumData = await momentumResponse.json();
       momentum = momentumData.momentum_score;

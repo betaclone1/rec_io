@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitor History Display Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #1a1a1a;
+            color: white;
+        }
+        
+        .monitor-tile {
+            background: #2a2a2a;
+            border: 1px solid #444;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 10px 0;
+            position: relative;
+        }
+        
+        .monitor-header {
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #4CAF50;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+        }
+        
+        .stat-item {
+            text-align: center;
+            padding: 8px;
+            background: #333;
+            border-radius: 4px;
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            color: #ccc;
+            margin-bottom: 4px;
+        }
+        
+        .stat-value {
+            font-size: 16px;
+            font-weight: bold;
+            color: white;
+        }
+        
+        .controls {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #2a2a2a;
+            border-radius: 8px;
+        }
+        
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        
+        button:hover {
+            background: #45a049;
+        }
+        
+        .info {
+            background: #333;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Monitor History Display Test</h1>
+    
+    <div class="controls">
+        <button onclick="refreshStats()">Refresh Statistics</button>
+        <button onclick="showAllStats()">Show All Stats</button>
+        <button onclick="testCalculations()">Test Calculations</button>
+    </div>
+    
+    <div class="info">
+        <strong>Instructions:</strong> This page demonstrates the monitor history display system.
+        The statistics shown below are calculated dynamically from raw trade data, not from the database.
+        Click the buttons above to test different functions.
+    </div>
+    
+    <!-- Sample monitor tiles -->
+    <div class="monitor-tile" data-monitor-id="10001" data-monitor-name="mon_0001_10001">
+        <div class="monitor-header">Monitor 10001 (BTC Hourly HTC)</div>
+        <div class="stats-grid">
+            <div class="stat-item">
+                <div class="stat-label">Trades</div>
+                <div class="stat-value stat-trades">0</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">W/L %</div>
+                <div class="stat-value stat-win-loss">0%</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Ret %</div>
+                <div class="stat-value stat-ret-pct">0%</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">PnL</div>
+                <div class="stat-value stat-pnl">$0.00</div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="monitor-tile" data-monitor-id="10002" data-monitor-name="mon_0001_10002">
+        <div class="monitor-header">Monitor 10002 (BTC Momentum Scalp)</div>
+        <div class="stats-grid">
+            <div class="stat-item">
+                <div class="stat-label">Trades</div>
+                <div class="stat-value stat-trades">0</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">W/L %</div>
+                <div class="stat-value stat-win-loss">0%</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Ret %</div>
+                <div class="stat-value stat-ret-pct">0%</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">PnL</div>
+                <div class="stat-value stat-pnl">$0.00</div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="monitor-tile" data-monitor-id="10003" data-monitor-name="mon_0001_10003">
+        <div class="monitor-header">Monitor 10003 (ETH Test Strategy)</div>
+        <div class="stats-grid">
+            <div class="stat-item">
+                <div class="stat-label">Trades</div>
+                <div class="stat-value stat-trades">0</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">W/L %</div>
+                <div class="stat-value stat-win-loss">0%</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Ret %</div>
+                <div class="stat-value stat-ret-pct">0%</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">PnL</div>
+                <div class="stat-value stat-pnl">$0.00</div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="info">
+        <strong>Note:</strong> The 📊 indicator in the top-right corner of each tile shows that these statistics are calculated from trade data, not stored in the database.
+    </div>
+    
+    <!-- Include the monitor history display script -->
+    <script src="js/monitor_history_display.js"></script>
+    
+    <script>
+        // Test functions
+        function refreshStats() {
+            console.log('Refreshing monitor statistics...');
+            window.monitorHistoryDisplay.refresh();
+        }
+        
+        function showAllStats() {
+            console.log('All calculated statistics:');
+            console.log(window.monitorHistoryDisplay.getAllStats());
+        }
+        
+        function testCalculations() {
+            console.log('Testing calculations...');
+            
+            // Test with sample data
+            const sampleTrades = [
+                { monitor: 'mon_0001_10001', status: 'closed', win_loss: 'W', ret_pct: 2.5, pnl: 25.00, test_filter: false },
+                { monitor: 'mon_0001_10001', status: 'closed', win_loss: 'L', ret_pct: -1.2, pnl: -12.00, test_filter: false },
+                { monitor: 'mon_0001_10001', status: 'closed', win_loss: 'W', ret_pct: 3.1, pnl: 31.00, test_filter: false },
+                { monitor: 'mon_0001_10001', status: 'open', win_loss: null, ret_pct: null, pnl: null, test_filter: false }, // Should be ignored
+                { monitor: 'mon_0001_10001', status: 'closed', win_loss: 'W', ret_pct: 1.8, pnl: 18.00, test_filter: true }, // Should be ignored (test trade)
+            ];
+            
+            const stats = window.monitorHistoryDisplay.calculateMonitorStats('mon_0001_10001', sampleTrades);
+            console.log('Sample calculation result:', stats);
+            
+            // Expected: trades=3, win_loss=66.7%, ret_pct=4.4%, pnl=44.00
+        }
+        
+        // Log when the system is ready
+        window.addEventListener('load', () => {
+            console.log('Monitor History Display Test Page Loaded');
+            console.log('Available functions: refreshStats(), showAllStats(), testCalculations()');
+        });
+    </script>
+</body>
+</html>

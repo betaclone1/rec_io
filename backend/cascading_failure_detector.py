@@ -24,6 +24,8 @@ sys.path.insert(0, get_project_root())
 # Add scripts directory for user_notifications
 sys.path.insert(0, os.path.join(get_project_root(), 'scripts'))
 
+from backend.core.unified_config import unified_config
+
 class FailureLevel:
     NONE = "none"
     WARNING = "warning"
@@ -52,13 +54,20 @@ class CascadingFailureDetector:
             "trade_executor",      # Trade execution
             "symbol_price_watchdog_btc", # BTC price data
             "symbol_price_watchdog_eth", # ETH price data
-            "strike_table_generator", # Strike table data
+            "strike_table_generator_btc", # BTC strike table data
+            "strike_table_generator_eth", # ETH strike table data
             "kalshi_account_sync", # Kalshi API sync
-            "kalshi_market_watchdog" # Kalshi market data
+            "kalshi_market_watchdog_btc", # BTC Kalshi market data
+            "kalshi_market_watchdog_eth", # ETH Kalshi market data
+            "kalshi_market_watchdog_inx", # INX Kalshi market data
+            "kalshi_market_watchdog_nasdaq100", # NASDAQ100 Kalshi market data
         ]
         
         # Monitor-specific services will be added dynamically
         self.critical_services = self.core_critical_services.copy()
+        
+        # Initialize dynamic service discovery
+        self._discover_services_from_config()
         
         # Service health tracking
         self.service_health = {}
@@ -85,60 +94,47 @@ class CascadingFailureDetector:
     
     def _update_critical_services(self):
         """Update critical services list to include active monitor processes"""
+        # Use the dynamic service discovery method instead of manual database queries
+        self._discover_services_from_config()
+    
+    def _discover_services_from_config(self):
+        """Discover all services from the universal configuration system."""
         try:
-            import psycopg2
+            # Import the supervisor config generator to get the same service list
+            from scripts.generate_unified_supervisor_config import SupervisorConfigGenerator
             
-            # Get active monitors from database
-            conn = psycopg2.connect(
-                host="localhost",
-                database="rec_io_db",
-                user="rec_io_user",
-                password="rec_io_password"
-            )
+            # Create a temporary generator to get the service list
+            generator = SupervisorConfigGenerator()
             
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT id, name, status 
-                    FROM users.monitor_list_0001 
-                    WHERE status = 'active' 
-                    ORDER BY id
-                """)
+            # Get active monitors
+            active_monitors = generator._get_active_monitors()
+            
+            # Build the complete service list dynamically
+            discovered_services = []
+            
+            # Add core services (already defined in self.core_critical_services)
+            discovered_services.extend(self.core_critical_services)
+            
+            # Add monitor-specific services
+            for monitor in active_monitors:
+                user_number = monitor['user_number']
+                monitor_id = monitor['monitor_id']
+                monitor_identifier = f"{user_number}_{monitor_id}"
                 
-                monitor_services = []
-                for row in cursor.fetchall():
-                    monitor_id = row[0]
-                    name = row[1]
-                    
-                    # Extract user_number and monitor_id from name (e.g., "mon_0001_10001")
-                    if name.startswith("mon_"):
-                        parts = name.split("_")
-                        if len(parts) >= 3:
-                            user_number = parts[1]  # 0001
-                            monitor_id = parts[2]   # 10001
-                        else:
-                            user_number = "0001"
-                            monitor_id = str(monitor_id)
-                    else:
-                        user_number = "0001"
-                        monitor_id = str(monitor_id)
-                    
-                    monitor_identifier = f"{user_number}_{monitor_id}"
-                    
-                    # Add monitor-specific services to critical list
-                    monitor_services.extend([
-                        f"auto_entry_supervisor_{monitor_identifier}",
-                        f"active_trade_supervisor_{monitor_identifier}"
-                    ])
-                
-                conn.close()
-                
-                # Update critical services list
-                self.critical_services = self.core_critical_services + monitor_services
-                self._log_event(f"Updated critical services: {len(self.critical_services)} total ({len(monitor_services)} monitor-specific)")
-                
+                # Add monitor-specific services to critical list
+                discovered_services.extend([
+                    f"auto_entry_supervisor_{monitor_identifier}",
+                    f"active_trade_supervisor_{monitor_identifier}"
+                ])
+            
+            # Update the critical services list
+            self.critical_services = discovered_services
+            
+            self._log_event(f"🔍 Discovered {len(discovered_services)} critical services from universal config")
+            
         except Exception as e:
-            self._log_event(f"Error updating critical services: {e}")
-            # Keep existing critical services if update fails
+            self._log_event(f"⚠️ Error discovering services from config, using fallback: {e}")
+            # Keep existing critical_services if discovery fails
             self.critical_services = self.core_critical_services.copy()
     
     def check_service_health(self, service_name: str) -> Dict[str, Any]:

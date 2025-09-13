@@ -126,11 +126,15 @@ async function updateWatchlistTable() {
       if (activeSide === 'yes') {
         activeAsk = yesAsk;
         activeDiff = yesDiff;
-        activeEnabled = yesAsk <= 98 && parseInt(volume) >= 1000;
+        // Get min_volume from current monitor settings (default to 1000 if not available)
+        const minVolume = window.currentMonitorMinVolume || 1000;
+        activeEnabled = yesAsk <= 98 && parseInt(volume) >= minVolume;
       } else if (activeSide === 'no') {
         activeAsk = noAsk;
         activeDiff = noDiff;
-        activeEnabled = noAsk <= 98 && parseInt(volume) >= 1000;
+        // Get min_volume from current monitor settings (default to 1000 if not available)
+        const minVolume = window.currentMonitorMinVolume || 1000;
+        activeEnabled = noAsk <= 98 && parseInt(volume) >= minVolume;
       }
       
       updateWatchlistBuyButton(buySpan, strike, activeSide, activeAsk, activeEnabled, ticker, activeDiff);

@@ -59,6 +59,9 @@ connected_clients = set()
 # Global set of connected websocket clients for database changes
 db_change_clients = set()
 
+# Global set of connected websocket clients for unified frontend updates
+
+
 # Legacy preference path removed - all data now in PostgreSQL
 
 # Global preferences cache
@@ -66,154 +69,11 @@ _preferences_cache = None
 _cache_timestamp = 0
 CACHE_TTL = 1.0  # 1 second cache TTL
 
-# PostgreSQL helper functions for auto trade settings
-def update_auto_trade_settings_postgresql(**kwargs):
-    """Update auto trade settings in PostgreSQL using UPDATE"""
-    try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
-        with conn.cursor() as cursor:
-            # First, ensure we only have one row
-            cursor.execute("DELETE FROM users.auto_trade_settings_0001 WHERE id > 1")
-            
-            # Check if row exists
-            cursor.execute("SELECT COUNT(*) FROM users.auto_trade_settings_0001 WHERE id = 1")
-            row_exists = cursor.fetchone()[0] > 0
-            
-            if row_exists:
-                # UPDATE existing row
-                set_clauses = []
-                values = []
-                for key, value in kwargs.items():
-                    set_clauses.append(f"{key} = %s")
-                    values.append(value)
-                
-                if set_clauses:
-                    query = f"UPDATE users.auto_trade_settings_0001 SET {', '.join(set_clauses)}, updated_at = CURRENT_TIMESTAMP WHERE id = 1"
-                    cursor.execute(query, values)
-            else:
-                # INSERT new row with defaults
-                columns = list(kwargs.keys())
-                values = list(kwargs.values())
-                placeholders = ['%s'] * len(values)
-                
-                # Add default values for missing columns
-                default_columns = ['id', 'auto_entry', 'auto_stop', 'min_probability', 'min_differential', 'min_time', 'max_time', 'allow_re_entry', 'spike_alert_enabled', 'spike_alert_momentum_threshold', 'spike_alert_cooldown_threshold', 'spike_alert_cooldown_minutes', 'current_probability', 'min_ttc_seconds', 'momentum_spike_enabled', 'momentum_spike_threshold', 'auto_entry_status', 'user_id', 'cooldown_timer']
-                default_values = [1, False, False, 95, 0.25, 120, 900, False, True, 36, 30, 15, 40, 60, True, 36, 'disabled', '0001', 0]
-                
-                # Merge provided values with defaults
-                for col, val in zip(columns, values):
-                    if col in default_columns:
-                        idx = default_columns.index(col)
-                        default_values[idx] = val
-                
-                query = f"INSERT INTO users.auto_trade_settings_0001 ({', '.join(default_columns)}) VALUES ({', '.join(['%s'] * len(default_values))})"
-                cursor.execute(query, default_values)
-            
-            conn.commit()
-            print(f"[PostgreSQL] Updated auto trade settings: {kwargs}")
-        
-        conn.close()
-    except Exception as e:
-        print(f"[PostgreSQL Error] Failed to update auto trade settings: {e}")
+# LEGACY REMOVED: update_auto_trade_settings_postgresql function - now using strategy_list table directly
 
-def get_auto_trade_settings_postgresql():
-    """Get auto trade settings from PostgreSQL"""
-    try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                SELECT auto_entry, auto_stop, 
-                       min_probability, min_differential, min_time, max_time, allow_re_entry,
-                       spike_alert_enabled, spike_alert_momentum_threshold, spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
-                       current_probability, min_ttc_seconds, momentum_spike_enabled, momentum_spike_threshold
-                FROM users.auto_trade_settings_0001 WHERE id = 1
-            """)
-            result = cursor.fetchone()
-            conn.close()
-            
-            if result:
-                return {
-                    "auto_entry": result[0],
-                    "auto_stop": result[1],
-                    "min_probability": result[2],
-                    "min_differential": float(result[3]) if result[3] else 0.25,
-                    "min_time": result[4],
-                    "max_time": result[5],
-                    "allow_re_entry": result[6],
-                    "spike_alert_enabled": result[7],
-                    "spike_alert_momentum_threshold": result[8],
-                    "spike_alert_cooldown_threshold": result[9],
-                    "spike_alert_cooldown_minutes": result[10],
-                    "current_probability": result[11],
-                    "min_ttc_seconds": result[12],
-                    "momentum_spike_enabled": result[13],
-                    "momentum_spike_threshold": result[14]
-                }
-            else:
-                return None
-    except Exception as e:
-        print(f"[PostgreSQL Error] Failed to get auto trade settings: {e}")
-        return None
+# LEGACY REMOVED: get_auto_trade_settings_postgresql function - now using strategy_list table directly
 
-def get_auto_stop_settings_postgresql():
-    """Get auto stop settings from PostgreSQL"""
-    try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                SELECT current_probability, min_ttc_seconds, momentum_spike_enabled, momentum_spike_threshold,
-                       verification_period_enabled, verification_period_seconds
-                FROM users.auto_trade_settings_0001 WHERE id = 1
-            """)
-            result = cursor.fetchone()
-            conn.close()
-            
-            if result:
-                return {
-                    "current_probability": result[0],
-                    "min_ttc_seconds": result[1],
-                    "momentum_spike_enabled": result[2],
-                    "momentum_spike_threshold": result[3],
-                    "verification_period_enabled": result[4],
-                    "verification_period_seconds": result[5]
-                }
-            else:
-                return {
-                    "current_probability": 40,
-                    "min_ttc_seconds": 60,
-                    "momentum_spike_enabled": True,
-                    "momentum_spike_threshold": 36,
-                    "verification_period_enabled": False,
-                    "verification_period_seconds": 15
-                }
-    except Exception as e:
-        print(f"[PostgreSQL Error] Failed to get auto stop settings: {e}")
-        return {
-            "current_probability": 40,
-            "min_ttc_seconds": 60,
-            "momentum_spike_enabled": True,
-            "momentum_spike_threshold": 36,
-            "verification_period_enabled": False,
-            "verification_period_seconds": 15
-        }
+# LEGACY REMOVED: get_auto_stop_settings_postgresql function - now using strategy_list table directly
 
 # Legacy trade_preferences functions removed - all position sizing and strategy now handled by monitor_list table
 
@@ -223,39 +83,7 @@ def get_auto_stop_settings_postgresql():
 
 # Legacy get_trade_preferences_postgresql function removed - all position sizing and strategy now handled by monitor_list table
 
-def get_all_preferences_postgresql():
-    """Get all preferences from PostgreSQL (auto_trade_settings only - position sizing now handled by monitor_list)"""
-    try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
-        with conn.cursor() as cursor:
-            # Get auto trade settings only
-            cursor.execute("""
-                SELECT auto_entry, auto_stop
-                FROM users.auto_trade_settings_0001 WHERE id = 1
-            """)
-            auto_settings = cursor.fetchone()
-            
-            conn.close()
-            
-            # Return only auto trade settings - position sizing handled by monitor_list
-            preferences = {
-                "auto_stop": auto_settings[1] if auto_settings else True,  # auto_stop is second column
-                "auto_entry": auto_settings[0] if auto_settings else False,  # auto_entry is first column
-            }
-            
-            return preferences
-    except Exception as e:
-        print(f"[PostgreSQL Error] Failed to get all preferences: {e}")
-        return {
-            "auto_stop": True,
-            "auto_entry": False,
-        }
+# LEGACY REMOVED: get_all_preferences_postgresql function - now using strategy-specific endpoints
 
 def get_trade_history_preferences_postgresql():
     """Get trade history preferences from PostgreSQL"""
@@ -276,6 +104,7 @@ def get_trade_history_preferences_postgresql():
                        contract_9pm, contract_10pm, contract_11pm,
                        symbol_btc, symbol_eth, symbol_spy, symbol_ndx, symbol_usd_eur,
                        strategy_hourly_htc, strategy_momentum_scalp, strategy_test,
+                       day_sunday, day_monday, day_tuesday, day_wednesday, day_thursday, day_friday, day_saturday,
                        analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp
                 FROM users.trade_history_preferences_0001 WHERE id = 1
             """)
@@ -312,11 +141,18 @@ def get_trade_history_preferences_postgresql():
                     "strategy_hourly_htc": result[25],
                     "strategy_momentum_scalp": result[26],
                     "strategy_test": result[27],
-                    "analysis_interval": result[28],
-                    "sort_key": result[29],
-                    "sort_asc": result[30],
-                    "page_size": result[31],
-                    "last_search_timestamp": result[32]
+                    "day_sunday": result[28],
+                    "day_monday": result[29],
+                    "day_tuesday": result[30],
+                    "day_wednesday": result[31],
+                    "day_thursday": result[32],
+                    "day_friday": result[33],
+                    "day_saturday": result[34],
+                    "analysis_interval": result[35],
+                    "sort_key": result[36],
+                    "sort_asc": result[37],
+                    "page_size": result[38],
+                    "last_search_timestamp": result[39]
                 }
             else:
                 return {
@@ -348,6 +184,13 @@ def get_trade_history_preferences_postgresql():
                     "strategy_hourly_htc": True,
                     "strategy_momentum_scalp": True,
                     "strategy_test": True,
+                    "day_sunday": True,
+                    "day_monday": True,
+                    "day_tuesday": True,
+                    "day_wednesday": True,
+                    "day_thursday": True,
+                    "day_friday": True,
+                    "day_saturday": True,
                     "analysis_interval": "daily",
                     "sort_key": None,
                     "sort_asc": True,
@@ -585,21 +428,19 @@ def load_preferences():
     if _preferences_cache is not None and (current_time - _cache_timestamp) < CACHE_TTL:
         return _preferences_cache.copy()
     
-    # Load from PostgreSQL
+    # Load from PostgreSQL - now using strategy-specific endpoints
     try:
-        prefs = get_all_preferences_postgresql()
-        
-        # Total position is now handled by monitor_manager, not trade_preferences
-        updated_prefs = prefs
+        # Default preferences - auto settings now handled by strategy-specific endpoints
+        default_prefs = {"diff_mode": False, "position_size": 1, "multiplier": 1}
         
         # Update cache
-        _preferences_cache = updated_prefs
+        _preferences_cache = default_prefs
         _cache_timestamp = current_time
-        return updated_prefs
+        return default_prefs
     except Exception as e:
         print(f"[Preferences Load Error] {e}")
         # Default preferences
-        default_prefs = {"auto_stop": True, "auto_entry": False, "diff_mode": False, "position_size": 1, "multiplier": 1}
+        default_prefs = {"diff_mode": False, "position_size": 1, "multiplier": 1}
         _preferences_cache = default_prefs
         _cache_timestamp = current_time
         return default_prefs
@@ -607,21 +448,13 @@ def load_preferences():
 async def save_preferences(prefs):
     global _preferences_cache, _cache_timestamp
     try:
-        # Update PostgreSQL - only auto_trade_settings (position sizing now handled by monitor_list)
-        update_data = {}
-        if "auto_stop" in prefs:
-            update_data["auto_stop"] = bool(prefs["auto_stop"])
-        if "auto_entry" in prefs:
-            update_data["auto_entry"] = bool(prefs["auto_entry"])
-        
-        if update_data:
-            # Update auto_trade_settings for auto_stop and auto_entry only
-            update_auto_trade_settings_postgresql(**update_data)
+        # Auto settings now handled by strategy-specific endpoints
+        # Only handle non-auto settings here
         
         # Update cache
         _preferences_cache = prefs.copy()
         _cache_timestamp = time.time()
-        print(f"[Preferences] ✅ Updated PostgreSQL: {list(update_data.keys())}")
+        print(f"[Preferences] ✅ Updated cache: {list(prefs.keys())}")
     except Exception as e:
         print(f"[Preferences Save Error] {e}")
 
@@ -895,6 +728,8 @@ async def websocket_db_changes(websocket: WebSocket):
             await websocket.receive_text()  # Keep connection alive
     except WebSocketDisconnect:
         db_change_clients.remove(websocket)
+
+
 
 # Serve main index.html
 @app.get("/", response_class=HTMLResponse)
@@ -1234,6 +1069,25 @@ async def test_mobile():
     """Test route for debugging mobile routes."""
     return {"message": "Mobile test route works!"}
 
+# Test route for monitor history display
+@app.get("/test_monitor_history_display.html", response_class=HTMLResponse)
+async def serve_test_monitor_history_display():
+    """Serve the test page for monitor history display."""
+    file_path = f"{frontend_dir}/test_monitor_history_display.html"
+    if os.path.exists(file_path):
+        with open(file_path, "r") as f:
+            content = f.read()
+            return HTMLResponse(
+                content=content,
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0"
+                }
+            )
+    else:
+        return HTMLResponse(content="Test page not found", status_code=404)
+
 # Test route for debugging mobile path
 @app.get("/mobile/test")
 async def test_mobile_path():
@@ -1400,8 +1254,8 @@ async def get_ttc_data():
 
 # Core data endpoint
 @app.get("/core")
-async def get_core_data():
-    """Get core trading data."""
+async def get_core_data(symbol: str = "BTC"):
+    """Get core trading data for specified symbol."""
     try:
         # Get current time
         now = datetime.now(pytz.timezone('US/Eastern'))
@@ -1470,9 +1324,9 @@ async def get_core_data():
                 password="rec_io_password"
             )
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile
-                FROM live_data.live_price_log_1s_btc 
+            cursor.execute(f"""
+                SELECT momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg
+                FROM live_data.live_price_log_1s_{symbol.lower()} 
                 ORDER BY timestamp DESC 
                 LIMIT 1
             """)
@@ -1480,7 +1334,7 @@ async def get_core_data():
             conn.close()
             
             if result:
-                momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile = result
+                momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg = result
                 momentum_data = {
                     'weighted_momentum_score': float(momentum) if momentum is not None else 0.0,
                     'delta_1m': float(delta_1m) if delta_1m is not None else None,
@@ -1489,7 +1343,8 @@ async def get_core_data():
                     'delta_4m': float(delta_4m) if delta_4m is not None else None,
                     'delta_15m': float(delta_15m) if delta_15m is not None else None,
                     'delta_30m': float(delta_30m) if delta_30m is not None else None,
-                    'momentum_percentile': float(momentum_percentile) if momentum_percentile is not None else None
+                    'momentum_percentile': float(momentum_percentile) if momentum_percentile is not None else None,
+                    'momentum_5s_avg': float(momentum_5s_avg) if momentum_5s_avg is not None else None
                 }
                 print(f"[MAIN] Momentum analysis: {momentum_data.get('weighted_momentum_score', 'N/A'):.4f}%")
             else:
@@ -1929,6 +1784,47 @@ async def get_account_balance(mode: str = "prod"):
         print(f"Error getting account balance from PostgreSQL: {e}")
         return {"portfolio": 0, "positions": 0}
 
+@app.get("/api/monitor/bankroll")
+async def get_monitor_bankroll(monitor_id: str):
+    """Get monitor-specific bankroll allotment from PostgreSQL database."""
+    try:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+        
+        # Connect to PostgreSQL
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            # Get monitor-specific bankroll allotment
+            cursor.execute("""
+                SELECT bankroll_allotment_total, name, symbol
+                FROM users.monitor_list_0001 
+                WHERE id = %s
+            """, (monitor_id,))
+            monitor_result = cursor.fetchone()
+            
+            conn.close()
+            
+            if monitor_result:
+                bankroll_allotment = monitor_result['bankroll_allotment_total'] or 0
+                return {
+                    "monitor_id": monitor_id,
+                    "bankroll_allotment_total": bankroll_allotment,
+                    "name": monitor_result['name'],
+                    "symbol": monitor_result['symbol']
+                }
+            else:
+                return {"monitor_id": monitor_id, "bankroll_allotment_total": 0, "name": "Unknown", "symbol": "BTC"}
+            
+    except Exception as e:
+        print(f"Error getting monitor bankroll from PostgreSQL: {e}")
+        return {"monitor_id": monitor_id, "bankroll_allotment_total": 0, "name": "Unknown", "symbol": "BTC"}
+
 @app.get("/api/account/balance/history")
 async def get_account_balance_history(mode: str = "prod", limit: int = 1000):
     """Get historical account balance data from PostgreSQL database."""
@@ -2222,8 +2118,8 @@ async def get_current_fingerprint():
         return {"fingerprint": "error", "error": str(e)}
 
 @app.get("/api/momentum")
-async def get_current_momentum():
-    """Get current momentum score directly from PostgreSQL."""
+async def get_current_momentum(symbol: str = "BTC"):
+    """Get current momentum score directly from PostgreSQL for specified symbol."""
     try:
         import psycopg2
         conn = psycopg2.connect(
@@ -2233,7 +2129,7 @@ async def get_current_momentum():
             password="rec_io_password"
         )
         cursor = conn.cursor()
-        cursor.execute("SELECT momentum FROM live_data.live_price_log_1s_btc ORDER BY timestamp DESC LIMIT 1")
+        cursor.execute(f"SELECT momentum FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
         result = cursor.fetchone()
         conn.close()
         
@@ -2401,67 +2297,13 @@ async def get_strike_table_mobile():
 
 # === PREFERENCES API ENDPOINTS ===
 
-@app.post("/api/set_auto_stop")
-async def set_auto_stop(request: Request):
-    data = await request.json()
-    enabled = bool(data.get("enabled", False))
-    
-    # Return immediate response
-    response_data = {"status": "ok", "enabled": enabled}
-    
-    # Handle file operations asynchronously
-    async def update_preferences():
-        try:
-            # Update PostgreSQL directly (new workflow)
-            update_auto_trade_settings_postgresql(auto_stop=enabled)
-            
-            # Broadcast the update to connected clients
-            await broadcast_preferences_update()
-        except Exception as e:
-            print(f"[Auto Stop Update Error] {e}")
-    
-    # Start async task without waiting
-    import asyncio
-    asyncio.create_task(update_preferences())
-    
-    return response_data
+# LEGACY REMOVED: /api/set_auto_stop endpoint - no longer used, auto stop now controlled by auto_trade in monitor_list
 
-@app.post("/api/set_auto_entry")
-async def set_auto_entry(request: Request):
-    data = await request.json()
-    enabled = bool(data.get("enabled", False))
-    
-    # Return immediate response
-    response_data = {"status": "ok", "enabled": enabled}
-    
-    # Handle file operations asynchronously
-    async def update_preferences():
-        try:
-            # Update PostgreSQL directly (new workflow)
-            update_auto_trade_settings_postgresql(auto_entry=enabled)
-            
-            # Broadcast the update to connected clients
-            await broadcast_preferences_update()
-            
-            # Trigger auto entry supervisor to reload settings
-            try:
-                import subprocess
-                import sys
-                from backend.util.paths import get_dynamic_project_root
-                # Import the auto_entry_supervisor module and call reload function
-                sys.path.append(get_dynamic_project_root())
-                from backend.auto_entry_supervisor import log
-                log("[AUTO ENTRY] Settings updated via API - supervisor will reload on next check")
-            except Exception as e:
-                print(f"[Auto Entry Status Update Error] {e}")
-        except Exception as e:
-            print(f"[Auto Entry Update Error] {e}")
-    
-    # Start async task without waiting
-    import asyncio
-    asyncio.create_task(update_preferences())
-    
-    return response_data
+# LEGACY REMOVED: /api/set_auto_entry endpoint - no longer used, auto entry now controlled by auto_trade in monitor_list
+
+# LEGACY REMOVED: /api/get_auto_stop endpoint - no longer used, auto stop now controlled by auto_trade in monitor_list
+
+# LEGACY REMOVED: /api/get_auto_entry endpoint - no longer used, auto entry now controlled by auto_trade in monitor_list
 
 # Diff mode is now local only - no API endpoint needed
 
@@ -2591,6 +2433,12 @@ def save_trade_history_preferences(preferences):
             if field in preferences:
                 update_data[field] = bool(preferences[field])
         
+        # Day filters
+        day_fields = ["day_sunday", "day_monday", "day_tuesday", "day_wednesday", "day_thursday", "day_friday", "day_saturday"]
+        for field in day_fields:
+            if field in preferences:
+                update_data[field] = bool(preferences[field])
+        
         # Analysis interval
         if "analysis_interval" in preferences:
             update_data["analysis_interval"] = str(preferences["analysis_interval"])
@@ -2637,23 +2485,109 @@ async def set_trade_history_preferences(request: Request):
         print(f"[Trade History Preferences Set Error] {e}")
         return {"status": "error", "message": str(e)}
 
-@app.get("/api/get_auto_stop")
-async def get_auto_stop():
-    prefs = load_preferences()
-    return {"enabled": prefs.get("auto_stop", True)}
+# LEGACY REMOVED: /api/get_auto_stop endpoint - no longer used, auto stop now controlled by auto_trade in monitor_list
 
-@app.get("/api/get_auto_trade_settings")
-async def get_auto_trade_settings():
-    """Get auto trade settings from PostgreSQL"""
-    settings = get_auto_trade_settings_postgresql()
-    if settings is None:
-        return {"status": "error", "message": "Failed to retrieve auto trade settings"}
-    return settings
+# LEGACY REMOVED: /api/get_auto_entry endpoint - no longer used, auto entry now controlled by auto_trade in monitor_list
 
-@app.get("/api/get_auto_entry_status")
-async def get_auto_entry_status():
-    """Get current auto entry status and cooldown timer from PostgreSQL"""
+# LEGACY REMOVED: /api/get_auto_trade_settings endpoint - now using strategy-specific endpoints
+
+# LEGACY REMOVED: /api/get_auto_entry_status endpoint - now using auto_trade_status system
+
+@app.post("/api/notify_auto_trade_status_change")
+async def notify_auto_trade_status_change(request: Request):
+    """Notify frontend of auto trade status change via WebSocket"""
     try:
+        data = await request.json()
+        monitor_id = data.get("monitor_id")
+        auto_trade_status = data.get("auto_trade_status")
+        
+        if not monitor_id or not auto_trade_status:
+            return {"status": "error", "message": "Missing monitor_id or auto_trade_status"}
+        
+        # Broadcast to all connected WebSocket clients
+        message = {
+            "type": "auto_trade_status_change",
+            "data": {
+                "monitor_id": monitor_id,
+                "auto_trade_status": auto_trade_status
+            }
+        }
+        
+        # Send to preferences WebSocket clients
+        for websocket in connected_clients.copy():
+            try:
+                await websocket.send_text(json.dumps(message))
+            except Exception as e:
+                print(f"Error sending to WebSocket client: {e}")
+                connected_clients.discard(websocket)
+        
+        print(f"[MAIN] ✅ Auto trade status change broadcasted to {len(connected_clients)} clients")
+        return {"status": "ok", "message": "Auto trade status change notification sent"}
+    except Exception as e:
+        print(f"Error in notify_auto_trade_status_change: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/notify_cooldown_timer_change")
+async def notify_cooldown_timer_change(request: Request):
+    """Notify frontend of cooldown timer change via WebSocket"""
+    try:
+        data = await request.json()
+        monitor_id = data.get("monitor_id")
+        cooldown_timer = data.get("cooldown_timer")
+        
+        if not monitor_id or cooldown_timer is None:
+            return {"status": "error", "message": "Missing monitor_id or cooldown_timer"}
+        
+        # Broadcast to all connected WebSocket clients
+        message = {
+            "type": "cooldown_timer_change",
+            "data": {
+                "monitor_id": monitor_id,
+                "cooldown_timer": cooldown_timer
+            }
+        }
+        
+        # Send to preferences WebSocket clients
+        for websocket in connected_clients.copy():
+            try:
+                await websocket.send_text(json.dumps(message))
+            except Exception as e:
+                print(f"Error sending to WebSocket client: {e}")
+                connected_clients.discard(websocket)
+        
+        print(f"[MAIN] ✅ Cooldown timer change broadcasted to {len(connected_clients)} clients")
+        return {"status": "ok", "message": "Cooldown timer change notification sent"}
+    except Exception as e:
+        print(f"Error in notify_cooldown_timer_change: {e}")
+        return {"status": "error", "message": str(e)}
+
+# Legacy /api/get_trade_preferences endpoint removed - position sizing and strategy now handled by monitor_list table
+
+# Legacy /api/update_trade_preferences endpoint removed - position sizing and strategy now handled by monitor_list table
+
+# LEGACY REMOVED: /api/update_auto_entry_settings endpoint - now using /api/set_auto_entry_settings
+
+# LEGACY REMOVED: /api/update_auto_stop_settings endpoint - now using /api/set_auto_entry_settings
+
+import os
+# Legacy auto stop settings path removed - all data now in PostgreSQL
+
+# Legacy auto stop settings functions removed - all data now in PostgreSQL
+
+# LEGACY REMOVED: /api/get_auto_stop_settings and /api/set_auto_stop_settings endpoints - now using /api/set_auto_entry_settings
+
+# Legacy auto entry settings path removed - all data now in PostgreSQL
+
+# Legacy auto entry settings functions removed - all data now in PostgreSQL
+
+@app.get("/api/get_auto_entry_settings")
+async def get_auto_entry_settings(monitor_id: str = None):
+    """Get auto entry and auto stop settings for a specific monitor from monitor_list table"""
+    if not monitor_id:
+        return {"status": "error", "message": "Monitor ID required"}
+    
+    try:
+        import psycopg2
         conn = psycopg2.connect(
             host="localhost",
             database="rec_io_db",
@@ -2661,156 +2595,182 @@ async def get_auto_entry_status():
             password="rec_io_password"
         )
         with conn.cursor() as cursor:
-            cursor.execute("SELECT auto_entry_status, cooldown_timer FROM users.auto_trade_settings_0001 WHERE id = 1")
+            # Get settings directly from monitor_list table
+            cursor.execute("""
+                SELECT min_probability, min_differential, max_differential, min_time, max_time, allow_re_entry,
+                       spike_alert_enabled, spike_alert_momentum_threshold, 
+                       spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
+                       current_probability, min_ttc_seconds, momentum_spike_enabled, 
+                       momentum_spike_threshold, verification_period_enabled, verification_period_seconds,
+                       min_volume
+                FROM users.monitor_list_0001 WHERE id = %s
+            """, (monitor_id,))
             result = cursor.fetchone()
-            status = result[0] if result else "DISABLED"
-            cooldown_timer = result[1] if result and result[1] is not None else 0
+            
             conn.close()
-            return {"status": status, "cooldown_timer": cooldown_timer}
+            
+            if result:
+                return {
+                    "min_probability": result[0],
+                    "min_differential": float(result[1]) if result[1] else 0.25,
+                    "max_differential": float(result[2]) if result[2] is not None else None,
+                    "min_time": result[3],
+                    "max_time": result[4],
+                    "allow_re_entry": result[5],
+                    "spike_alert_enabled": result[6],
+                    "spike_alert_momentum_threshold": result[7],
+                    "spike_alert_cooldown_threshold": result[8],
+                    "spike_alert_cooldown_minutes": result[9],
+                    "current_probability": result[10],
+                    "min_ttc_seconds": result[11],
+                    "momentum_spike_enabled": result[12],
+                    "momentum_spike_threshold": result[13],
+                    "verification_period_enabled": result[14],
+                    "verification_period_seconds": result[15],
+                    "min_volume": result[16]
+                }
+            else:
+                return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
+                
     except Exception as e:
-        print(f"Error getting auto entry status: {e}")
-        return {"status": "DISABLED", "cooldown_timer": 0, "error": str(e)}
-
-# Legacy /api/get_trade_preferences endpoint removed - position sizing and strategy now handled by monitor_list table
-
-# Legacy /api/update_trade_preferences endpoint removed - position sizing and strategy now handled by monitor_list table
-
-@app.post("/api/update_auto_entry_settings")
-async def update_auto_entry_settings(request: Request):
-    """Update auto entry settings in PostgreSQL"""
-    data = await request.json()
-    
-    # Extract auto entry settings
-    update_data = {}
-    if "min_probability" in data:
-        update_data["min_probability"] = int(data["min_probability"])
-    if "min_differential" in data:
-        update_data["min_differential"] = float(data["min_differential"])
-    if "min_time" in data:
-        update_data["min_time"] = int(data["min_time"])
-    if "max_time" in data:
-        update_data["max_time"] = int(data["max_time"])
-    if "allow_re_entry" in data:
-        update_data["allow_re_entry"] = bool(data["allow_re_entry"])
-    if "spike_alert_enabled" in data:
-        update_data["spike_alert_enabled"] = bool(data["spike_alert_enabled"])
-    if "spike_alert_momentum_threshold" in data:
-        update_data["spike_alert_momentum_threshold"] = int(data["spike_alert_momentum_threshold"])
-    if "spike_alert_cooldown_threshold" in data:
-        update_data["spike_alert_cooldown_threshold"] = int(data["spike_alert_cooldown_threshold"])
-    if "spike_alert_cooldown_minutes" in data:
-        update_data["spike_alert_cooldown_minutes"] = int(data["spike_alert_cooldown_minutes"])
-    
-    if update_data:
-        update_auto_trade_settings_postgresql(**update_data)
-    
-    return {"status": "ok", "updated": update_data}
-
-@app.post("/api/update_auto_stop_settings")
-async def update_auto_stop_settings(request: Request):
-    """Update auto stop settings in PostgreSQL"""
-    data = await request.json()
-    
-    # Extract auto stop settings
-    update_data = {}
-    if "current_probability" in data:
-        update_data["current_probability"] = int(data["current_probability"])
-    if "min_ttc_seconds" in data:
-        update_data["min_ttc_seconds"] = int(data["min_ttc_seconds"])
-    if "momentum_spike_enabled" in data:
-        update_data["momentum_spike_enabled"] = bool(data["momentum_spike_enabled"])
-    if "momentum_spike_threshold" in data:
-        update_data["momentum_spike_threshold"] = int(data["momentum_spike_threshold"])
-    
-    if update_data:
-        update_auto_trade_settings_postgresql(**update_data)
-    
-    return {"status": "ok", "updated": update_data}
-
-import os
-# Legacy auto stop settings path removed - all data now in PostgreSQL
-
-# Legacy auto stop settings functions removed - all data now in PostgreSQL
-
-@app.get("/api/get_auto_stop_settings")
-async def get_auto_stop_settings():
-    return get_auto_stop_settings_postgresql()
-
-@app.post("/api/set_auto_stop_settings")
-async def set_auto_stop_settings(request: Request):
-    data = await request.json()
-    
-    # Update PostgreSQL database
-    try:
-        update_data = {}
-        if "current_probability" in data:
-            update_data["current_probability"] = int(data["current_probability"])
-        if "min_ttc_seconds" in data:
-            update_data["min_ttc_seconds"] = int(data["min_ttc_seconds"])
-        if "momentum_spike_enabled" in data:
-            update_data["momentum_spike_enabled"] = bool(data["momentum_spike_enabled"])
-        if "momentum_spike_threshold" in data:
-            update_data["momentum_spike_threshold"] = int(data["momentum_spike_threshold"])
-        if "verification_period_enabled" in data:
-            update_data["verification_period_enabled"] = bool(data["verification_period_enabled"])
-        if "verification_period_seconds" in data:
-            update_data["verification_period_seconds"] = int(data["verification_period_seconds"])
-        
-        if update_data:
-            update_auto_trade_settings_postgresql(**update_data)
-            print(f"[Auto Stop Settings] ✅ Updated PostgreSQL: {list(update_data.keys())}")
-    except Exception as e:
-        print(f"[Auto Stop Settings] ❌ PostgreSQL Update Error: {e}")
-    
-    # Return updated settings from PostgreSQL
-    updated_settings = get_auto_stop_settings_postgresql()
-    return {"status": "ok", **updated_settings}
-
-# Legacy auto entry settings path removed - all data now in PostgreSQL
-
-# Legacy auto entry settings functions removed - all data now in PostgreSQL
-
-@app.get("/api/get_auto_entry_settings")
-async def get_auto_entry_settings():
-    return get_auto_trade_settings_postgresql()
+        print(f"[Auto Entry Settings] ❌ Error getting monitor settings: {e}")
+        return {"status": "error", "message": str(e)}
 
 @app.post("/api/set_auto_entry_settings")
 async def set_auto_entry_settings(request: Request):
     data = await request.json()
     
-    # Update PostgreSQL database
-    try:
-        update_data = {}
-        if "min_probability" in data:
-            update_data["min_probability"] = int(data["min_probability"])
-        if "min_differential" in data:
-            update_data["min_differential"] = float(data["min_differential"])
-        if "min_time" in data:
-            update_data["min_time"] = int(data["min_time"])
-        if "max_time" in data:
-            update_data["max_time"] = int(data["max_time"])
-        if "allow_re_entry" in data:
-            update_data["allow_re_entry"] = bool(data["allow_re_entry"])
-        if "spike_alert_enabled" in data:
-            update_data["spike_alert_enabled"] = bool(data["spike_alert_enabled"])
-        if "spike_alert_momentum_threshold" in data:
-            update_data["spike_alert_momentum_threshold"] = int(data["spike_alert_momentum_threshold"])
-        if "spike_alert_cooldown_threshold" in data:
-            update_data["spike_alert_cooldown_threshold"] = int(data["spike_alert_cooldown_threshold"])
-        if "spike_alert_cooldown_minutes" in data:
-            update_data["spike_alert_cooldown_minutes"] = int(data["spike_alert_cooldown_minutes"])
-        
-        if update_data:
-            update_auto_trade_settings_postgresql(**update_data)
-            print(f"[Auto Entry Settings] ✅ Updated PostgreSQL: {list(update_data.keys())}")
-    except Exception as e:
-        print(f"[Auto Entry Settings] ❌ PostgreSQL Update Error: {e}")
+    monitor_id = data.get("monitor_id")
+    if not monitor_id:
+        return {"status": "error", "message": "Monitor ID required"}
     
-    # Return updated settings from PostgreSQL
-    updated_settings = get_auto_trade_settings_postgresql()
-    if updated_settings is None:
-        return {"status": "error", "message": "Failed to retrieve auto trade settings"}
-    return {"status": "ok", **updated_settings}
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        with conn.cursor() as cursor:
+            # Check if monitor exists
+            cursor.execute("""
+                SELECT id FROM users.monitor_list_0001 WHERE id = %s
+            """, (monitor_id,))
+            monitor_result = cursor.fetchone()
+            
+            if not monitor_result:
+                return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
+            
+            # Build update fields and values
+            update_fields = []
+            update_values = []
+            
+            # Auto entry parameters
+            if "min_probability" in data:
+                update_fields.append("min_probability = %s")
+                update_values.append(int(data["min_probability"]))
+            if "min_differential" in data:
+                update_fields.append("min_differential = %s")
+                update_values.append(float(data["min_differential"]))
+            if "max_differential" in data:
+                update_fields.append("max_differential = %s")
+                update_values.append(float(data["max_differential"]) if data["max_differential"] is not None else None)
+            if "min_volume" in data:
+                update_fields.append("min_volume = %s")
+                update_values.append(int(data["min_volume"]))
+            if "min_time" in data:
+                update_fields.append("min_time = %s")
+                update_values.append(int(data["min_time"]))
+            if "max_time" in data:
+                update_fields.append("max_time = %s")
+                update_values.append(int(data["max_time"]))
+            if "allow_re_entry" in data:
+                update_fields.append("allow_re_entry = %s")
+                update_values.append(bool(data["allow_re_entry"]))
+            if "spike_alert_enabled" in data:
+                update_fields.append("spike_alert_enabled = %s")
+                update_values.append(bool(data["spike_alert_enabled"]))
+            if "spike_alert_momentum_threshold" in data:
+                update_fields.append("spike_alert_momentum_threshold = %s")
+                update_values.append(int(data["spike_alert_momentum_threshold"]))
+            if "spike_alert_cooldown_threshold" in data:
+                update_fields.append("spike_alert_cooldown_threshold = %s")
+                update_values.append(int(data["spike_alert_cooldown_threshold"]))
+            if "spike_alert_cooldown_minutes" in data:
+                update_fields.append("spike_alert_cooldown_minutes = %s")
+                update_values.append(int(data["spike_alert_cooldown_minutes"]))
+            
+            # Auto stop parameters
+            if "current_probability" in data:
+                update_fields.append("current_probability = %s")
+                update_values.append(int(data["current_probability"]))
+            if "min_ttc_seconds" in data:
+                update_fields.append("min_ttc_seconds = %s")
+                update_values.append(int(data["min_ttc_seconds"]))
+            if "momentum_spike_enabled" in data:
+                update_fields.append("momentum_spike_enabled = %s")
+                update_values.append(bool(data["momentum_spike_enabled"]))
+            if "momentum_spike_threshold" in data:
+                update_fields.append("momentum_spike_threshold = %s")
+                update_values.append(int(data["momentum_spike_threshold"]))
+            if "verification_period_enabled" in data:
+                update_fields.append("verification_period_enabled = %s")
+                update_values.append(bool(data["verification_period_enabled"]))
+            if "verification_period_seconds" in data:
+                update_fields.append("verification_period_seconds = %s")
+                update_values.append(int(data["verification_period_seconds"]))
+            
+            if update_fields:
+                # Update the monitor in monitor_list table
+                query = f"UPDATE users.monitor_list_0001 SET {', '.join(update_fields)} WHERE id = %s"
+                update_values.append(monitor_id)
+                cursor.execute(query, update_values)
+                
+                print(f"[Auto Entry & Auto Stop Settings] ✅ Updated monitor {monitor_id}: {list(data.keys())}")
+                
+                # Return the updated settings
+                cursor.execute("""
+                    SELECT min_probability, min_differential, min_time, max_time, allow_re_entry,
+                           spike_alert_enabled, spike_alert_momentum_threshold, 
+                           spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
+                           current_probability, min_ttc_seconds, momentum_spike_enabled, 
+                           momentum_spike_threshold, verification_period_enabled, verification_period_seconds,
+                           min_volume
+                    FROM users.monitor_list_0001 WHERE id = %s
+                """, (monitor_id,))
+                updated_result = cursor.fetchone()
+                
+                if updated_result:
+                    updated_settings = {
+                        "min_probability": updated_result[0],
+                        "min_differential": float(updated_result[1]),
+                        "min_time": updated_result[2],
+                        "max_time": updated_result[3],
+                        "allow_re_entry": updated_result[4],
+                        "spike_alert_enabled": updated_result[5],
+                        "spike_alert_momentum_threshold": updated_result[6],
+                        "spike_alert_cooldown_threshold": updated_result[7],
+                        "spike_alert_cooldown_minutes": updated_result[8],
+                        "current_probability": updated_result[9],
+                        "min_ttc_seconds": updated_result[10],
+                        "momentum_spike_enabled": updated_result[11],
+                        "momentum_spike_threshold": updated_result[12],
+                        "verification_period_enabled": updated_result[13],
+                        "verification_period_seconds": updated_result[14],
+                        "min_volume": updated_result[15]
+                    }
+                    conn.commit()
+                    conn.close()
+                    return {"status": "ok", **updated_settings}
+                else:
+                    return {"status": "error", "message": "Failed to retrieve updated settings"}
+            else:
+                return {"status": "error", "message": "No valid fields to update"}
+                
+    except Exception as e:
+        print(f"[Auto Entry Settings] ❌ Error updating strategy: {e}")
+        return {"status": "error", "message": str(e)}
 
 @app.post("/api/trigger_open_trade")
 async def trigger_open_trade(request: Request):
@@ -2863,6 +2823,38 @@ async def trigger_open_trade(request: Request):
             print(f"[TRIGGER OPEN TRADE] Error: No monitor specified in trade data")
             return {"status": "error", "message": "Monitor must be specified"}
         
+        # Extract monitor ID from monitor string (e.g., "mon_0001_10001" -> "10001")
+        monitor_id = monitor.split('_')[-1] if monitor and '_' in monitor else None
+        if not monitor_id:
+            print(f"[TRIGGER OPEN TRADE] Error: Invalid monitor format: {monitor}")
+            return {"status": "error", "message": "Invalid monitor format"}
+        
+        # Get bankroll_allotment_total from monitor configuration
+        bankroll_allotment_total = None
+        try:
+            import psycopg2
+            conn = psycopg2.connect(
+                host=os.getenv('POSTGRES_HOST', 'localhost'),
+                database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+                user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+                password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+            )
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT bankroll_allotment_total FROM users.monitor_list_0001 WHERE id = %s", (monitor_id,))
+                result = cursor.fetchone()
+                if result:
+                    bankroll_allotment_total = result[0]
+                    print(f"[TRIGGER OPEN TRADE] Bankroll allotment loaded from monitor {monitor_id}: {bankroll_allotment_total}")
+                else:
+                    print(f"[TRIGGER OPEN TRADE] No monitor configuration found for monitor {monitor_id}")
+                    return {"status": "error", "message": "Monitor configuration not found"}
+        except Exception as e:
+            print(f"[TRIGGER OPEN TRADE] Error loading bankroll allotment from monitor {monitor_id}: {e}")
+            return {"status": "error", "message": f"Failed to load monitor configuration: {e}"}
+        finally:
+            if conn:
+                conn.close()
+        
         # Prepare the trade data exactly like trade_initiator does
         trade_data = {
             "ticket_id": ticket_id,
@@ -2884,7 +2876,8 @@ async def trigger_open_trade(request: Request):
             "prob": prob,
             "win_loss": None,
             "entry_method": data.get("entry_method", "manual"),
-            "monitor": monitor  # Add monitor field
+            "monitor": monitor,  # Add monitor field
+            "bankroll_allotment_total": bankroll_allotment_total
         }
         
         # Send request directly to trade_manager
@@ -3023,7 +3016,7 @@ async def get_strike_table(symbol: str):
                     market_title,
                     strike_tier,
                     market_status,
-                    momentum_weighted_score
+                    momentum_percentile
                 FROM live_data.strike_table_{symbol_lower}
                 LIMIT 1
             """)
@@ -3111,7 +3104,7 @@ async def get_postgresql_strike_table(symbol: str):
                     symbol,
                     current_price,
                     ttc_seconds,
-                    momentum_weighted_score,
+                    momentum_percentile,
                     market_title,
                     timestamp
                 FROM live_data.strike_table_{symbol.lower()} 
@@ -3143,16 +3136,16 @@ async def get_postgresql_strike_table(symbol: str):
             
             strikes_data = cursor.fetchall()
             
-            # Calculate momentum bucket from momentum_weighted_score
-            momentum_score = float(header_data[3]) if header_data[3] else 0
-            momentum_bucket = round(momentum_score * 100)
+            # Calculate momentum bucket from momentum_percentile
+            momentum_percentile = float(header_data[3]) if header_data[3] else 0
+            momentum_bucket = round(momentum_percentile)
             
             # Format the response
             response = {
                 "symbol": header_data[0],
                 "current_price": float(header_data[1]) if header_data[1] else None,
                 "ttc_seconds": int(header_data[2]) if header_data[2] else None,
-                "momentum_weighted_score": momentum_score,
+                "momentum_percentile": momentum_percentile,
                 "momentum_bucket": momentum_bucket,
                 "market_title": header_data[4],
                 "timestamp": header_data[5].isoformat() if header_data[5] else None,
@@ -3716,6 +3709,8 @@ async def notify_db_change(request: Request):
     except Exception as e:
         print(f"❌ Error handling DB change notification: {e}")
         return {"status": "error", "message": str(e)}
+
+
 
 # Authentication endpoints
 @app.post("/api/auth/login")
@@ -4547,7 +4542,7 @@ async def get_dashboard_preferences(mode: str = "prod"):
         
         with conn.cursor() as cursor:
             cursor.execute("""
-                SELECT portfolio_chart_view, monitor_view_mode, monitor_sort_by
+                SELECT portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view
                 FROM users.dashboard_preferences_0001 
                 WHERE user_id = 1
             """)
@@ -4560,14 +4555,16 @@ async def get_dashboard_preferences(mode: str = "prod"):
                 "status": "ok",
                 "portfolio_chart_view": result[0],
                 "monitor_view_mode": result[1] if result[1] else "tile",
-                "monitor_sort_by": result[2] if result[2] else "name"
+                "monitor_sort_by": result[2] if result[2] else "name",
+                "allocation_view": result[3] if result[3] else "pie"
             }
         else:
             return {
                 "status": "ok",
                 "portfolio_chart_view": "all",  # Default value
                 "monitor_view_mode": "tile",    # Default value
-                "monitor_sort_by": "name"       # Default value
+                "monitor_sort_by": "name",      # Default value
+                "allocation_view": "pie"        # Default value
             }
             
     except Exception as e:
@@ -4586,19 +4583,21 @@ async def save_dashboard_preferences(request: Request):
         portfolio_chart_view = data.get("portfolio_chart_view", "all")
         monitor_view_mode = data.get("monitor_view_mode", "tile")
         monitor_sort_by = data.get("monitor_sort_by", "name")
-        print(f"[DASHBOARD PREFERENCES] Extracted values: portfolio_chart_view={portfolio_chart_view}, monitor_view_mode={monitor_view_mode}, monitor_sort_by={monitor_sort_by}")
+        allocation_view = data.get("allocation_view", "pie")
+        print(f"[DASHBOARD PREFERENCES] Extracted values: portfolio_chart_view={portfolio_chart_view}, monitor_view_mode={monitor_view_mode}, monitor_sort_by={monitor_sort_by}, allocation_view={allocation_view}")
         
         with conn.cursor() as cursor:
             cursor.execute("""
-                INSERT INTO users.dashboard_preferences_0001 (user_id, portfolio_chart_view, monitor_view_mode, monitor_sort_by, updated_at)
-                VALUES (1, %s, %s, %s, CURRENT_TIMESTAMP)
+                INSERT INTO users.dashboard_preferences_0001 (user_id, portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, updated_at)
+                VALUES (1, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                 ON CONFLICT (user_id) 
                 DO UPDATE SET 
                     portfolio_chart_view = EXCLUDED.portfolio_chart_view,
                     monitor_view_mode = EXCLUDED.monitor_view_mode,
                     monitor_sort_by = EXCLUDED.monitor_sort_by,
+                    allocation_view = EXCLUDED.allocation_view,
                     updated_at = CURRENT_TIMESTAMP
-            """, (portfolio_chart_view, monitor_view_mode, monitor_sort_by))
+            """, (portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view))
             
         conn.commit()
         conn.close()
@@ -4612,6 +4611,27 @@ async def save_dashboard_preferences(request: Request):
     except Exception as e:
         print(f"Error saving dashboard preferences: {e}")
         return {"status": "error", "message": str(e)}
+
+@app.get("/api/total_position")
+async def get_total_position():
+    """Get total_position from first row of monitor_list_0001"""
+    try:
+        from backend.core.config.database import get_postgresql_connection
+        conn = get_postgresql_connection()
+        
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT total_position FROM users.monitor_list_0001 ORDER BY id LIMIT 1")
+            result = cursor.fetchone()
+            
+        conn.close()
+        
+        if result and result[0] is not None:
+            return {"total_position": result[0]}
+        else:
+            return {"total_position": 0}
+            
+    except Exception as e:
+        return {"total_position": 0}
 
 @app.get("/api/monitors")
 async def get_monitors(user_id: str = "user_0001"):
@@ -4676,7 +4696,7 @@ async def get_monitors(user_id: str = "user_0001"):
             
             # Format data for frontend - use exact database values
             formatted_monitor = {
-                "id": f"MON_{user_number}_{monitor_id}",
+                "id": f"mon_{user_number}_{monitor_id}",
                 "symbol": symbol,
                 "strategy": strategy,  # Use exact database value
                 "status": status,
@@ -5041,6 +5061,169 @@ async def get_trade_monitors(user_id: str = "user_0001"):
             "message": str(e)
         }
 
+@app.get("/api/monitors/allocation")
+async def get_monitors_allocation(user_id: str = "user_0001"):
+    """Get bankroll allocation data for active monitors"""
+    try:
+        from backend.core.config.database import get_postgresql_connection
+        
+        # Extract user number from user_id (e.g., user_0001 -> 0001)
+        user_number = user_id.replace("user_", "")
+        
+        conn = get_postgresql_connection()
+        if not conn:
+            return {
+                "status": "error",
+                "message": "Database connection failed"
+            }
+        
+        with conn.cursor() as cursor:
+            # Get active monitors with their bankroll allocations
+            cursor.execute(f"""
+                SELECT 
+                    id,
+                    name,
+                    symbol,
+                    strategy,
+                    bankroll_allotment_pct,
+                    bankroll_allotment_total,
+                    status
+                FROM users.monitor_list_{user_number}
+                WHERE status = 'active' AND bankroll_allotment_total > 0
+                ORDER BY bankroll_allotment_total DESC, id
+            """)
+            
+            monitor_results = cursor.fetchall()
+            
+            # Get total bankroll from account_balance (stored in cents)
+            cursor.execute(f"""
+                SELECT bankroll_current, portfolio
+                FROM users.account_balance_{user_number}
+                ORDER BY timestamp DESC 
+                LIMIT 1
+            """)
+            
+            balance_result = cursor.fetchone()
+            bankroll_value = balance_result[0] if balance_result and balance_result[0] else 0
+            portfolio_value = balance_result[1] if balance_result and balance_result[1] else 0
+            
+            # Use bankroll_current if available, otherwise portfolio (both in cents)
+            total_bankroll_cents = bankroll_value if bankroll_value > 0 else portfolio_value
+            total_bankroll_dollars = total_bankroll_cents / 100  # Convert cents to dollars
+            
+        conn.close()
+        
+        # Transform database results to frontend format
+        allocations = []
+        for row in monitor_results:
+            monitor_id, name, symbol, strategy, bankroll_allotment_pct, bankroll_allotment_total, status = row
+            
+            # bankroll_allotment_pct is in decimal (0.99 = 99%)
+            # bankroll_allotment_total is in cents (219653 = $2,196.53)
+            percentage = float(bankroll_allotment_pct) * 100  # Convert decimal to percentage
+            dollar_amount = float(bankroll_allotment_total) / 100  # Convert cents to dollars
+            
+            allocations.append({
+                "id": f"mon_{user_number}_{monitor_id}",
+                "name": name,
+                "symbol": symbol,
+                "strategy": strategy,
+                "bankroll_pct": round(percentage, 2),
+                "dollar_amount": round(dollar_amount, 2),
+                "total_bankroll": total_bankroll_dollars
+            })
+        
+        return {
+            "status": "ok",
+            "allocations": allocations,
+            "total_bankroll": total_bankroll_dollars
+        }
+        
+    except Exception as e:
+        print(f"Error getting monitors allocation: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+@app.post("/api/monitors/allocation/update")
+async def update_monitors_allocation(request: dict):
+    """Update bankroll allocation percentages for monitors"""
+    try:
+        from backend.core.config.database import get_postgresql_connection
+        
+        user_id = request.get("user_id", "user_0001")
+        updates = request.get("updates", [])
+        
+        if not updates:
+            return {"status": "error", "message": "No updates provided"}
+        
+        # Extract user number from user_id (e.g., user_0001 -> 0001)
+        user_number = user_id.replace("user_", "")
+        
+        conn = get_postgresql_connection()
+        if not conn:
+            return {
+                "status": "error",
+                "message": "Database connection failed"
+            }
+        
+        with conn.cursor() as cursor:
+            # Get current total bankroll to calculate new dollar amounts
+            cursor.execute(f"""
+                SELECT bankroll_current, portfolio
+                FROM users.account_balance_{user_number}
+                ORDER BY timestamp DESC 
+                LIMIT 1
+            """)
+            
+            balance_result = cursor.fetchone()
+            bankroll_value = balance_result[0] if balance_result and balance_result[0] else 0
+            portfolio_value = balance_result[1] if balance_result and balance_result[1] else 0
+            
+            # Use bankroll_current if available, otherwise portfolio (both in cents)
+            total_bankroll_cents = bankroll_value if bankroll_value > 0 else portfolio_value
+            
+            # Update each monitor's allocation
+            for update in updates:
+                monitor_id = update.get("id", "").replace(f"mon_{user_number}_", "")
+                new_percentage = update.get("percentage", 0)
+                
+                if not monitor_id or new_percentage < 0:
+                    continue
+                
+                # Convert percentage to decimal (99% -> 0.99)
+                new_decimal = new_percentage / 100
+                
+                # Calculate new dollar amount in cents
+                new_dollar_amount_cents = int(total_bankroll_cents * new_decimal)
+                
+                # Update the monitor's allocation
+                cursor.execute(f"""
+                    UPDATE users.monitor_list_{user_number}
+                    SET 
+                        bankroll_allotment_pct = %s,
+                        bankroll_allotment_total = %s
+                    WHERE id = %s AND status = 'active'
+                """, (new_decimal, new_dollar_amount_cents, monitor_id))
+                
+                print(f"Updated monitor {monitor_id}: {new_percentage}% (${new_dollar_amount_cents/100:.2f})")
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "status": "ok",
+            "message": f"Updated {len(updates)} monitor allocations"
+        }
+        
+    except Exception as e:
+        print(f"Error updating monitors allocation: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
 @app.post("/api/monitors/update-order")
 async def update_monitors_order(request: dict):
     """Update the dashboard order of monitors"""
@@ -5068,11 +5251,13 @@ async def update_monitors_order(request: dict):
             new_order = order_data.get("order")
             
             if monitor_id and new_order is not None:
-                # Extract the numeric ID from the monitor_id (e.g., MON_0001_10001 -> 10001)
-                if "_" in monitor_id and monitor_id.startswith("MON_"):
+                # Extract the numeric ID from the monitor_id (e.g., mon_0001_10001 -> 10001 or MON_0001_10001 -> 10001)
+                if "_" in monitor_id and (monitor_id.startswith("MON_") or monitor_id.startswith("mon_")):
                     numeric_id = monitor_id.split("_")[-1]
                 else:
                     numeric_id = monitor_id
+                
+                print(f"[MONITOR ORDER] Updating monitor {monitor_id} -> numeric_id: {numeric_id}, order: {new_order}")
                 
                 cursor.execute(f"""
                     UPDATE users.monitor_list_{user_number}
@@ -5092,8 +5277,6 @@ async def update_monitors_order(request: dict):
 async def toggle_auto_trade(request: dict):
     """Toggle auto_trade boolean value for a specific monitor"""
     try:
-        from backend.core.config.database import get_postgresql_connection
-        
         # Extract parameters from request body
         monitor_id = request.get("monitor_id")
         auto_trade = request.get("auto_trade")
@@ -5102,46 +5285,54 @@ async def toggle_auto_trade(request: dict):
         if not monitor_id or auto_trade is None:
             return {"status": "error", "message": "Missing monitor_id or auto_trade parameter"}
         
-        # Extract user number and monitor ID from monitor_id (e.g., MON_0001_10001 -> user_0001, 10001)
-        if monitor_id.startswith("MON_") and "_" in monitor_id:
+        # Extract user number and monitor ID from monitor_id
+        # Handle multiple formats: MON_0001_10001, mon_0001_10001, or just 10001
+        if (monitor_id.startswith("MON_") or monitor_id.startswith("mon_")) and "_" in monitor_id:
             parts = monitor_id.split("_")
             if len(parts) >= 3:
                 user_number = parts[1]
                 db_monitor_id = parts[2]
             else:
                 return {"status": "error", "message": "Invalid monitor ID format"}
+        elif monitor_id.isdigit():
+            # Handle numeric ID format (e.g., "10010")
+            user_number = "0001"  # Default user number
+            db_monitor_id = monitor_id
         else:
             return {"status": "error", "message": "Invalid monitor ID format"}
         
-        conn = get_postgresql_connection()
-        with conn.cursor() as cursor:
-            # Update both auto_trade and auto_trade_status
-            if auto_trade:
-                # When enabling auto trade, set status to 'active'
+        # Update the database directly
+        try:
+            from backend.core.config.database import get_postgresql_connection
+            conn = get_postgresql_connection()
+            
+            with conn.cursor() as cursor:
+                # Update ONLY auto_trade boolean - do NOT change auto_trade_status
                 cursor.execute(f"""
                     UPDATE users.monitor_list_{user_number}
-                    SET auto_trade = %s, auto_trade_status = 'active'
+                    SET auto_trade = %s, updated_at = CURRENT_TIMESTAMP
                     WHERE id = %s
                 """, (auto_trade, db_monitor_id))
-            else:
-                # When disabling auto trade, set status to 'off'
-                cursor.execute(f"""
-                    UPDATE users.monitor_list_{user_number}
-                    SET auto_trade = %s, auto_trade_status = 'off'
-                    WHERE id = %s
-                """, (auto_trade, db_monitor_id))
+                
+                if cursor.rowcount == 0:
+                    conn.close()
+                    return {"status": "error", "message": "Monitor not found"}
+                
+            conn.commit()
+            conn.close()
             
-            if cursor.rowcount == 0:
-                return {"status": "error", "message": "Monitor not found"}
+            print(f"[MAIN] ✅ Updated monitor {monitor_id} auto_trade to {auto_trade}")
             
-        conn.commit()
-        conn.close()
+        except Exception as e:
+            print(f"[MAIN] ❌ Error updating database: {e}")
+            return {"status": "error", "message": f"Database error: {str(e)}"}
         
-        # Broadcast the update to all connected WebSocket clients
+        # Broadcast the auto trade toggle to all connected WebSocket clients
         try:
             message = {
-                "type": "monitor_list_updated",
-                "monitor_id": int(db_monitor_id),  # Ensure it's an integer
+                "type": "auto_trade_toggled",
+                "monitor_id": monitor_id,
+                "auto_trade": auto_trade,
                 "message": f"Auto trade {'enabled' if auto_trade else 'disabled'} for monitor {monitor_id}"
             }
             
@@ -5164,7 +5355,7 @@ async def toggle_auto_trade(request: dict):
         return {"status": "ok", "message": f"Auto trade {'enabled' if auto_trade else 'disabled'} for monitor {monitor_id}"}
         
     except Exception as e:
-        print(f"Error toggling auto trade: {e}")
+        print(f"Error in toggle auto trade: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/update_monitor_position")
@@ -5214,14 +5405,19 @@ async def archive_monitor(request: dict):
         if not monitor_id or not monitor_name:
             return {"status": "error", "message": "Missing monitor_id or monitor_name parameter"}
         
-        # Extract user number and monitor ID from monitor_id (e.g., MON_0001_10001 -> user_0001, 10001)
-        if monitor_id.startswith("MON_") and "_" in monitor_id:
+        # Extract user number and monitor ID from monitor_id
+        # Handle multiple formats: MON_0001_10001, mon_0001_10001, or just 10001
+        if (monitor_id.startswith("MON_") or monitor_id.startswith("mon_")) and "_" in monitor_id:
             parts = monitor_id.split("_")
             if len(parts) >= 3:
                 user_number = parts[1]
                 db_monitor_id = parts[2]
             else:
                 return {"status": "error", "message": "Invalid monitor ID format"}
+        elif monitor_id.isdigit():
+            # Handle numeric ID format (e.g., "10010")
+            user_number = "0001"  # Default user number
+            db_monitor_id = monitor_id
         else:
             return {"status": "error", "message": "Invalid monitor ID format"}
         
@@ -5253,6 +5449,23 @@ async def archive_monitor(request: dict):
         
         print(f"[ARCHIVE] Monitor {monitor_name} (ID: {monitor_id}) archived successfully")
         
+        # Broadcast monitor list update to all connected WebSocket clients
+        message = {
+            "type": "monitor_list_updated",
+            "monitor_id": monitor_id,
+            "action": "archived"
+        }
+        
+        # Send to preferences WebSocket clients
+        for websocket in connected_clients.copy():
+            try:
+                await websocket.send_text(json.dumps(message))
+            except Exception as e:
+                print(f"Error sending monitor list update to WebSocket client: {e}")
+                connected_clients.discard(websocket)
+        
+        print(f"[ARCHIVE] ✅ Monitor list update broadcasted to {len(connected_clients)} clients")
+        
         return {"status": "ok", "message": f"Monitor {monitor_name} archived successfully"}
         
     except Exception as e:
@@ -5273,14 +5486,19 @@ async def deactivate_monitor(request: dict):
         if not monitor_id or not monitor_name:
             return {"status": "error", "message": "Missing monitor_id or monitor_name parameter"}
         
-        # Extract user number and monitor ID from monitor_id (e.g., MON_0001_10001 -> user_0001, 10001)
-        if monitor_id.startswith("MON_") and "_" in monitor_id:
+        # Extract user number and monitor ID from monitor_id
+        # Handle multiple formats: MON_0001_10001, mon_0001_10001, or just 10001
+        if (monitor_id.startswith("MON_") or monitor_id.startswith("mon_")) and "_" in monitor_id:
             parts = monitor_id.split("_")
             if len(parts) >= 3:
                 user_number = parts[1]
                 db_monitor_id = parts[2]
             else:
                 return {"status": "error", "message": "Invalid monitor ID format"}
+        elif monitor_id.isdigit():
+            # Handle numeric ID format (e.g., "10010")
+            user_number = "0001"  # Default user number
+            db_monitor_id = monitor_id
         else:
             return {"status": "error", "message": "Invalid monitor ID format"}
         
@@ -5289,10 +5507,10 @@ async def deactivate_monitor(request: dict):
             return {"status": "error", "message": "Database connection failed"}
         
         with conn.cursor() as cursor:
-            # Set auto_trade to FALSE, auto_trade_status to 'off', and status to 'inactive'
+            # Set auto_trade to FALSE and status to 'inactive' (auto_trade_status now controlled by auto_entry_supervisor)
             cursor.execute(f"""
                 UPDATE users.monitor_list_{user_number}
-                SET auto_trade = FALSE, auto_trade_status = 'off', status = 'inactive'
+                SET auto_trade = FALSE, status = 'inactive'
                 WHERE id = %s
             """, (db_monitor_id,))
             
@@ -5304,6 +5522,23 @@ async def deactivate_monitor(request: dict):
         conn.close()
         
         print(f"[DEACTIVATE] Monitor {monitor_name} (ID: {monitor_id}) deactivated successfully")
+        
+        # Broadcast monitor list update to all connected WebSocket clients
+        message = {
+            "type": "monitor_list_updated",
+            "monitor_id": monitor_id,
+            "action": "deactivated"
+        }
+        
+        # Send to preferences WebSocket clients
+        for websocket in connected_clients.copy():
+            try:
+                await websocket.send_text(json.dumps(message))
+            except Exception as e:
+                print(f"Error sending monitor list update to WebSocket client: {e}")
+                connected_clients.discard(websocket)
+        
+        print(f"[DEACTIVATE] ✅ Monitor list update broadcasted to {len(connected_clients)} clients")
         
         return {"status": "ok", "message": f"Monitor {monitor_name} deactivated successfully"}
         
@@ -5325,14 +5560,19 @@ async def activate_monitor(request: dict):
         if not monitor_id or not monitor_name:
             return {"status": "error", "message": "Missing monitor_id or monitor_name parameter"}
         
-        # Extract user number and monitor ID from monitor_id (e.g., MON_0001_10001 -> user_0001, 10001)
-        if monitor_id.startswith("MON_") and "_" in monitor_id:
+        # Extract user number and monitor ID from monitor_id
+        # Handle multiple formats: MON_0001_10001, mon_0001_10001, or just 10001
+        if (monitor_id.startswith("MON_") or monitor_id.startswith("mon_")) and "_" in monitor_id:
             parts = monitor_id.split("_")
             if len(parts) >= 3:
                 user_number = parts[1]
                 db_monitor_id = parts[2]
             else:
                 return {"status": "error", "message": "Invalid monitor ID format"}
+        elif monitor_id.isdigit():
+            # Handle numeric ID format (e.g., "10010")
+            user_number = "0001"  # Default user number
+            db_monitor_id = monitor_id
         else:
             return {"status": "error", "message": "Invalid monitor ID format"}
         
@@ -5356,6 +5596,23 @@ async def activate_monitor(request: dict):
         conn.close()
         
         print(f"[ACTIVATE] Monitor {monitor_name} (ID: {monitor_id}) activated successfully")
+        
+        # Broadcast monitor list update to all connected WebSocket clients
+        message = {
+            "type": "monitor_list_updated",
+            "monitor_id": monitor_id,
+            "action": "activated"
+        }
+        
+        # Send to preferences WebSocket clients
+        for websocket in connected_clients.copy():
+            try:
+                await websocket.send_text(json.dumps(message))
+            except Exception as e:
+                print(f"Error sending monitor list update to WebSocket client: {e}")
+                connected_clients.discard(websocket)
+        
+        print(f"[ACTIVATE] ✅ Monitor list update broadcasted to {len(connected_clients)} clients")
         
         return {"status": "ok", "message": f"Monitor {monitor_name} activated successfully"}
         

@@ -67,7 +67,25 @@ def load_momentum_profile(symbol: str) -> Dict[float, float]:
         conn = get_postgres_connection()
         cursor = conn.cursor()
         
-        profile_table = f"analytics.{symbol.lower()}_momentum_profile"
+        # Find the latest dated momentum profile table for this symbol
+        cursor.execute("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'analytics' 
+            AND table_name LIKE %s
+            ORDER BY table_name DESC
+        """, (f"{symbol.lower()}_momentum_profile_%",))
+        
+        results = cursor.fetchall()
+        if not results:
+            # Fallback to base table if no dated tables exist
+            profile_table = f"analytics.{symbol.lower()}_momentum_profile"
+            print(f"⚠️ No dated momentum profile found for {symbol}, using base table")
+        else:
+            # Use the most recent dated table
+            profile_table = f"analytics.{results[0][0]}"
+            print(f"📊 Using momentum profile: {results[0][0]}")
+        
         cursor.execute(f"SELECT percentile, momentum_value FROM {profile_table} ORDER BY percentile")
         
         profile = {}
@@ -320,6 +338,43 @@ def calculate_weighted_momentum_score(deltas: Dict[str, Optional[float]]) -> Opt
         return weighted_sum / total_weight
     return None
 
+def calculate_5s_momentum_average(symbol: str = 'BTC') -> Optional[float]:
+    """Calculate 5-second rolling average of momentum values and return as percentile"""
+    try:
+        conn = get_postgres_connection()
+        cursor = conn.cursor()
+        
+        table_name = SYMBOL_CONFIG[symbol]['table_name']
+        
+        # Get the last 5 momentum values (last 5 seconds)
+        cursor.execute(f"""
+            SELECT momentum 
+            FROM live_data.{table_name} 
+            WHERE momentum IS NOT NULL 
+            ORDER BY timestamp DESC 
+            LIMIT 5
+        """)
+        
+        results = cursor.fetchall()
+        
+        if len(results) < 1:
+            conn.close()
+            return None
+        
+        # Calculate average of the momentum values
+        momentum_values = [float(row[0]) for row in results]
+        momentum_5s_avg = sum(momentum_values) / len(momentum_values)
+        
+        # Convert the 5-second average to percentile
+        momentum_5s_percentile = calculate_momentum_percentile(symbol, momentum_5s_avg)
+        
+        conn.close()
+        return momentum_5s_percentile
+        
+    except Exception as e:
+        print(f"⚠️ 5s momentum average calculation failed: {e}")
+        return None
+
 def calculate_native_momentum(symbol: str = 'BTC') -> Dict[str, Any]:
     """Calculate complete momentum analysis including deltas and weighted score"""
     deltas = calculate_momentum_deltas(symbol)
@@ -378,13 +433,20 @@ def insert_tick(symbol: str, timestamp: str, price: float):
             except Exception as e:
                 print(f"⚠️ Momentum percentile calculation failed: {e}")
         
+        # Calculate 5-second momentum average
+        momentum_5s_avg = None
+        try:
+            momentum_5s_avg = calculate_5s_momentum_average(symbol)
+        except Exception as e:
+            print(f"⚠️ 5s momentum average calculation failed: {e}")
+        
         table_name = SYMBOL_CONFIG[symbol]['table_name']
         
-        # Insert the data with all columns including momentum_percentile
+        # Insert the data with all columns including momentum_percentile and momentum_5s_avg
         cursor.execute(f'''
             INSERT INTO live_data.{table_name} 
-            (timestamp, price, one_minute_avg, momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile) 
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (timestamp, price, one_minute_avg, momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (timestamp) DO UPDATE SET
                 price = EXCLUDED.price,
                 one_minute_avg = EXCLUDED.one_minute_avg,
@@ -395,7 +457,8 @@ def insert_tick(symbol: str, timestamp: str, price: float):
                 delta_4m = EXCLUDED.delta_4m,
                 delta_15m = EXCLUDED.delta_15m,
                 delta_30m = EXCLUDED.delta_30m,
-                momentum_percentile = EXCLUDED.momentum_percentile
+                momentum_percentile = EXCLUDED.momentum_percentile,
+                momentum_5s_avg = EXCLUDED.momentum_5s_avg
         ''', (
             timestamp, 
             price, 
@@ -407,7 +470,8 @@ def insert_tick(symbol: str, timestamp: str, price: float):
             momentum_data.get('delta_4m'),
             momentum_data.get('delta_15m'),
             momentum_data.get('delta_30m'),
-            momentum_percentile
+            momentum_percentile,
+            momentum_5s_avg
         ))
         
         # ROLLING WINDOW: Clean up data older than 30 days

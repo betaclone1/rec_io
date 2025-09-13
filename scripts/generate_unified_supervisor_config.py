@@ -164,11 +164,10 @@ class SupervisorConfigGenerator:
                 "symbol_price_watchdog_btc": 8008,
                 "symbol_price_watchdog_eth": 8009,
                 "kalshi_account_sync": 8004,
-                "kalshi_market_watchdog": 8005,
+                "kalshi_market_watchdog_btc": 8005,
                 "system_monitor": 8006,
                 "monitor_manager": 8012,
-                "cascading_failure_detector": 8007,
-                "strike_table_generator": 8010
+                "cascading_failure_detector": 8007
             }
             
             logger.info(f"Using default port assignments: {default_ports}")
@@ -220,19 +219,14 @@ class SupervisorConfigGenerator:
                 "port": ports.get("symbol_price_watchdog_eth", 8009)
             },
             {
-                "name": "strike_table_generator",
-                "script": "strike_table_generator.py continuous 1",
-                "port": ports.get("strike_table_generator", 8010)
-            },
-            {
                 "name": "kalshi_account_sync",
                 "script": "kalshi_account_sync_ws.py",
                 "port": ports.get("kalshi_account_sync", 8004)
             },
             {
-                "name": "kalshi_market_watchdog",
-                "script": "kalshi_market_watchdog.py",
-                "port": ports.get("kalshi_market_watchdog", 8005)
+                "name": "kalshi_market_watchdog_btc",
+                "script": "kalshi_market_watchdog.py BTC",
+                "port": ports.get("kalshi_market_watchdog_btc", 8005)
             },
             {
                 "name": "system_monitor",
@@ -252,7 +246,7 @@ class SupervisorConfigGenerator:
         ]
         
         # Add monitor-specific services for each active monitor
-        monitor_port_base = 8013  # Start monitor ports at 8013
+        monitor_port_base = 8015  # Start monitor ports at 8015
         for i, monitor in enumerate(active_monitors):
             user_number = monitor['user_number']
             monitor_id = monitor['monitor_id']
@@ -272,6 +266,19 @@ class SupervisorConfigGenerator:
                 "name": f"active_trade_supervisor_{monitor_identifier}",
                 "script": f"active_trade_supervisor.py {monitor_identifier}",
                 "port": active_trade_port
+            })
+        
+        # Add symbol-specific strike table generators
+        # Define supported symbols (this should match the symbols in symbol_price_watchdog.py)
+        supported_symbols = ['BTC']  # Add more symbols as needed
+        
+        strike_table_port_base = 8020  # Start strike table ports at 8020
+        for i, symbol in enumerate(supported_symbols):
+            strike_table_port = strike_table_port_base + i
+            services.append({
+                "name": f"strike_table_generator_{symbol.lower()}",
+                "script": f"strike_table_generator.py {symbol} continuous 1",
+                "port": strike_table_port
             })
         
         # Generate supervisor configuration

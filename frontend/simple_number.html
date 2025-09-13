@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Number</title>
+    <style>
+        body {
+            background-color: white;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: Arial, sans-serif;
+        }
+        #number {
+            font-size: 72px;
+            color: black;
+        }
+    </style>
+</head>
+<body>
+    <div id="number">--</div>
+
+    <script>
+        async function loadNumber() {
+            try {
+                const response = await fetch('/api/monitors');
+                const data = await response.json();
+                
+                if (data.status === 'ok' && data.monitors && data.monitors.length > 0) {
+                    // Get the first monitor's total_position
+                    const firstMonitor = data.monitors[0];
+                    if (firstMonitor && firstMonitor.id !== 'NEW_MONITOR') {
+                        // Extract the monitor ID from the formatted ID (e.g., "MON_0001_10002" -> 10002)
+                        const monitorId = firstMonitor.id.replace('MON_0001_', '');
+                        
+                        // Get the specific monitor data to get total_position
+                        const monitorResponse = await fetch(`/api/monitors/${monitorId}`);
+                        const monitorData = await monitorResponse.json();
+                        
+                        if (monitorData.success && monitorData.monitor && monitorData.monitor.total_position !== undefined) {
+                            document.getElementById('number').textContent = monitorData.monitor.total_position;
+                        } else {
+                            document.getElementById('number').textContent = '0';
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading number:', error);
+                document.getElementById('number').textContent = 'ERROR';
+            }
+        }
+
+        // Load the number when the page loads
+        loadNumber();
+    </script>
+</body>
+</html>

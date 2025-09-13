@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-STRIKE TABLE GENERATOR - POSTGRESQL VERSION
+STRIKE TABLE GENERATOR - POSTGRESQL VERSION (MULTI-SYMBOL)
 Generates strike table data using lookup table for probabilities and writes to PostgreSQL.
 
 This system replaces the JSON-based strike table generation with PostgreSQL tables
 in the live_data schema for better performance and data consistency.
+Supports multiple symbols (BTC, ETH, etc.) via command line parameter.
 """
 
 import os
@@ -12,6 +13,8 @@ import sys
 import psycopg2
 import json
 import logging
+import argparse
+import time
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple
 from decimal import Decimal
@@ -41,10 +44,68 @@ POSTGRES_CONFIG = {
 class LookupProbabilityCalculator:
     """Probability calculator using the lookup table instead of live interpolation."""
     
-    def __init__(self, symbol: str = "btc"):
+    def __init__(self, symbol: str):
         self.symbol = symbol.lower()
         self.db_config = POSTGRES_CONFIG
-        self.lookup_table_name = f"probability_lookup_{self.symbol}"
+        self.lookup_table_name = self._find_latest_lookup_table()
+        self.max_buffer = self._get_max_buffer_for_symbol()
+    
+    def _find_latest_lookup_table(self) -> str:
+        """Find the most recent master lookup table for this symbol."""
+        conn = None
+        try:
+            conn = psycopg2.connect(**self.db_config)
+            cursor = conn.cursor()
+            
+            # Query to find all lookup tables for this symbol
+            cursor.execute("""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'analytics' 
+                AND table_name LIKE %s
+                ORDER BY table_name DESC
+            """, (f"probability_lookup_{self.symbol}_master_%",))
+            
+            results = cursor.fetchall()
+            if not results:
+                raise ValueError(f"No lookup tables found for symbol {self.symbol.upper()}")
+            
+            # Get the most recent table (highest date string)
+            latest_table = results[0][0]
+            logger.info(f"📊 Using lookup table: {latest_table}")
+            return latest_table
+            
+        except Exception as e:
+            logger.error(f"❌ Error finding lookup table for {self.symbol.upper()}: {e}")
+            raise
+        finally:
+            if conn:
+                conn.close()
+    
+    def _get_max_buffer_for_symbol(self) -> float:
+        """Get the maximum buffer value for this symbol's lookup table."""
+        conn = None
+        try:
+            conn = psycopg2.connect(**self.db_config)
+            cursor = conn.cursor()
+            
+            cursor.execute(f"""
+                SELECT MAX(buffer_points) as max_buffer
+                FROM analytics.{self.lookup_table_name}
+            """)
+            
+            result = cursor.fetchone()
+            if not result or not result[0]:
+                raise ValueError(f"No buffer data found in lookup table {self.lookup_table_name}")
+            
+            return float(result[0])
+            
+        except Exception as e:
+            logger.error(f"Error getting max buffer for {self.symbol.upper()}: {e}")
+            raise
+        finally:
+            if conn:
+                conn.close()
     
     def get_probability(self, ttc_seconds: int, buffer_points: int, momentum_bucket: int) -> tuple[float, float]:
         """
@@ -58,15 +119,28 @@ class LookupProbabilityCalculator:
         Returns:
             Tuple of (positive_probability, negative_probability) as prob_within values
         """
-        # Check if buffer is outside lookup table range (0-2000)
-        if buffer_points > 2000:
-            logger.info(f"Buffer {buffer_points} outside lookup table range (0-2000), returning 99.9")
-            return 99.9, 99.9
+        # Round TTC to nearest 10-second increment to match lookup table granularity
+        ttc_seconds = round(ttc_seconds / 10) * 10
+        
+        # Round momentum to nearest available bucket in lookup table
+        # The lookup table has 10-point increments: -90, -80, -70, -60, -50, -40, -30, -20, -10, 10, 20, 30, 40, 50, 60, 70, 80, 90
+        # Note: momentum=0 is not available, so it will round to -10 or 10
+        available_buckets = [-90, -80, -70, -60, -50, -40, -30, -20, -10, 10, 20, 30, 40, 50, 60, 70, 80, 90]
+        momentum_bucket = min(available_buckets, key=lambda x: abs(x - momentum_bucket))
+        
+        # Check if buffer is outside lookup table range for this symbol
+        if buffer_points > self.max_buffer:
+            logger.warning(f"Buffer {buffer_points} outside lookup table range (0-{self.max_buffer}), using max buffer as fallback")
+            buffer_points = self.max_buffer
         
         conn = None
         try:
             conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
+            
+            # Calculate dynamic buffer range based on symbol's buffer spacing
+            # TTC spacing is always 5 seconds, buffer spacing varies by symbol
+            buffer_range = max(5, self.max_buffer * 0.01)  # 1% of max_buffer, minimum 5
             
             # Find the 4 nearest points for bilinear interpolation
             query = f"""
@@ -74,21 +148,25 @@ class LookupProbabilityCalculator:
             FROM analytics.{self.lookup_table_name}
             WHERE momentum_bucket = %s
             AND ttc_seconds >= %s - 5 AND ttc_seconds <= %s + 5
-            AND buffer_points >= %s - 10 AND buffer_points <= %s + 10
+            AND buffer_points >= %s - %s AND buffer_points <= %s + %s
             ORDER BY ABS(ttc_seconds - %s) + ABS(buffer_points - %s)
             LIMIT 4
             """
             
             cursor.execute(query, (
                 momentum_bucket, ttc_seconds, ttc_seconds, 
-                buffer_points, buffer_points, ttc_seconds, buffer_points
+                buffer_points, buffer_range, buffer_points, buffer_range, 
+                ttc_seconds, buffer_points
             ))
             
             results = cursor.fetchall()
             
+            # Convert Decimal types to float for all results
+            results = [(float(r[0]), float(r[1]), float(r[2]), float(r[3])) for r in results]
+            
             if len(results) == 0:
                 logger.warning(f"No data found for TTC={ttc_seconds}, buffer={buffer_points}, momentum={momentum_bucket}")
-                return 50.0, 50.0  # Default to 50% if no data
+                return None, None
             
             elif len(results) == 1:
                 # Single point - return exact value
@@ -113,20 +191,50 @@ class LookupProbabilityCalculator:
                 
                 return pos_interp, neg_interp
             
+            elif len(results) == 3:
+                # Handle 3 results by using linear interpolation with the closest 2 points
+                # Sort by distance and take the 2 closest
+                results_with_distance = []
+                for r in results:
+                    distance = abs(r[0] - ttc_seconds) + abs(r[1] - buffer_points)
+                    results_with_distance.append((distance, r))
+                
+                results_with_distance.sort(key=lambda x: x[0])
+                closest_two = [r[1] for r in results_with_distance[:2]]
+                
+                # Use linear interpolation with the 2 closest points
+                point1, point2 = closest_two[0], closest_two[1]
+                ttc1, buffer1, pos1, neg1 = point1
+                ttc2, buffer2, pos2, neg2 = point2
+                
+                # Calculate weights based on distance
+                total_distance = abs(ttc2 - ttc1) + abs(buffer2 - buffer1)
+                if total_distance == 0:
+                    return float(pos1), float(neg1)
+                
+                weight1 = 1 - (abs(ttc_seconds - ttc1) + abs(buffer_points - buffer1)) / total_distance
+                weight2 = 1 - weight1
+                
+                pos_interp = weight1 * float(pos1) + weight2 * float(pos2)
+                neg_interp = weight1 * float(neg1) + weight2 * float(neg2)
+                
+                return pos_interp, neg_interp
+            
             elif len(results) >= 4:
                 # Bilinear interpolation with 4 points
                 return self._bilinear_interpolate(results, ttc_seconds, buffer_points)
             
             else:
-                logger.warning(f"Unexpected number of results: {len(results)}")
-                return 50.0, 50.0
+                logger.error(f"Unexpected number of results: {len(results)}")
+                raise ValueError(f"Unexpected number of lookup results: {len(results)}")
                 
         except Exception as e:
             logger.error(f"Error in lookup probability calculation: {e}")
-            return 50.0, 50.0
+            raise
         finally:
             if conn:
                 conn.close()
+    
     
     def _bilinear_interpolate(self, results: List[Tuple], ttc_seconds: int, buffer_points: int) -> Tuple[float, float]:
         """Perform bilinear interpolation with 4 points."""
@@ -161,16 +269,16 @@ class LookupProbabilityCalculator:
             
             # Perform bilinear interpolation
             pos_interp = self._interpolate_2d(
-                corners[(ttc_lower, buffer_lower)][0], corners[(ttc_upper, buffer_lower)][0],
-                corners[(ttc_lower, buffer_upper)][0], corners[(ttc_upper, buffer_upper)][0],
-                ttc_lower, ttc_upper, buffer_lower, buffer_upper,
+                float(corners[(ttc_lower, buffer_lower)][0]), float(corners[(ttc_upper, buffer_lower)][0]),
+                float(corners[(ttc_lower, buffer_upper)][0]), float(corners[(ttc_upper, buffer_upper)][0]),
+                int(ttc_lower), int(ttc_upper), int(buffer_lower), int(buffer_upper),
                 ttc_seconds, buffer_points
             )
             
             neg_interp = self._interpolate_2d(
-                corners[(ttc_lower, buffer_lower)][1], corners[(ttc_upper, buffer_lower)][1],
-                corners[(ttc_lower, buffer_upper)][1], corners[(ttc_upper, buffer_upper)][1],
-                ttc_lower, ttc_upper, buffer_lower, buffer_upper,
+                float(corners[(ttc_lower, buffer_lower)][1]), float(corners[(ttc_upper, buffer_lower)][1]),
+                float(corners[(ttc_lower, buffer_upper)][1]), float(corners[(ttc_upper, buffer_upper)][1]),
+                int(ttc_lower), int(ttc_upper), int(buffer_lower), int(buffer_upper),
                 ttc_seconds, buffer_points
             )
             
@@ -226,7 +334,7 @@ class LookupProbabilityCalculator:
 class StrikeTableGenerator:
     """Generates strike table data and writes to PostgreSQL live_data schema."""
     
-    def __init__(self, symbol: str = "btc"):
+    def __init__(self, symbol: str):
         self.symbol = symbol.lower()
         self.db_config = POSTGRES_CONFIG
         self.calculator = LookupProbabilityCalculator(symbol)
@@ -242,7 +350,7 @@ class StrikeTableGenerator:
             Formatted title like 'BTC price today at 3pm'
         """
         if not event_ticker:
-            return "BTC price today"
+            return f"{self.symbol.upper()} price today"
         
         try:
             # Parse event ticker format: KXBTCD-25AUG1515
@@ -252,7 +360,7 @@ class StrikeTableGenerator:
             # Extract date and time from the end
             parts = event_ticker.split('-')
             if len(parts) < 2:
-                return "BTC price today"
+                return f"{self.symbol.upper()} price today"
             
             date_time_part = parts[-1]  # 25AUG1515
             
@@ -282,17 +390,17 @@ class StrikeTableGenerator:
                 event_date = datetime.strptime(f"{day}{month}20{year}", "%d%b%Y")
                 
                 if event_date.date() == today.date():
-                    return f"BTC price today at {time_str}"
+                    return f"{self.symbol.upper()} price today at {time_str}"
                 else:
                     # Format date like "Aug 15"
                     month_name = event_date.strftime("%b")
-                    return f"BTC price on {month_name} {day} at {time_str}"
+                    return f"{self.symbol.upper()} price on {month_name} {day} at {time_str}"
             
-            return "BTC price today"
+            return f"{self.symbol.upper()} price today"
             
         except Exception as e:
             logger.error(f"Error parsing event ticker {event_ticker}: {e}")
-            return "BTC price today"
+            return f"{self.symbol.upper()} price today"
         
     def setup_live_data_schema(self):
         """Create live_data schema and tables if they don't exist."""
@@ -327,7 +435,7 @@ class StrikeTableGenerator:
                 volume INTEGER,
                 ticker VARCHAR(50),
                 active_side VARCHAR(10),
-                momentum_weighted_score DECIMAL(5,3),
+                momentum_percentile DECIMAL(5,1),
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             )
             """
@@ -351,24 +459,25 @@ class StrikeTableGenerator:
                 conn.close()
     
     def get_current_market_data(self) -> Dict[str, Any]:
-        """Get current market data from live_data.live_price_log_1s_btc and Kalshi snapshot."""
+        """Get current market data from live_data.live_price_log_1s_{symbol} and Kalshi snapshot."""
         try:
             # Get current price and momentum from PostgreSQL
             conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
             
-            cursor.execute("""
-            SELECT price, momentum FROM live_data.live_price_log_1s_btc 
+            cursor.execute(f"""
+            SELECT price, momentum, momentum_percentile FROM live_data.live_price_log_1s_{self.symbol} 
             ORDER BY timestamp DESC 
             LIMIT 1
             """)
             
             result = cursor.fetchone()
             if not result:
-                raise ValueError("No price data found in live_data.live_price_log_1s_btc")
+                raise ValueError(f"No price data found in live_data.live_price_log_1s_{self.symbol}")
             
             current_price = float(result[0])
             momentum_score = float(result[1]) if result[1] is not None else 0.0
+            momentum_percentile = float(result[2]) if result[2] is not None else 0.0
             
             conn.close()
             
@@ -378,6 +487,7 @@ class StrikeTableGenerator:
             return {
                 "current_price": current_price,
                 "momentum_score": momentum_score,
+                "momentum_percentile": momentum_percentile,
                 "market_data": market_data
             }
             
@@ -386,30 +496,30 @@ class StrikeTableGenerator:
             raise
     
     def get_kalshi_market_snapshot(self) -> Dict[str, Any]:
-        """Get live Kalshi market snapshot from the market_kalshi_btc database table"""
+        """Get live Kalshi market snapshot from the market_kalshi_{symbol} database table"""
         try:
             conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
             
-            # Get the latest event_ticker from the market_kalshi_btc table
-            cursor.execute("""
+            # Get the latest event_ticker from the market_kalshi_{symbol} table
+            cursor.execute(f"""
                 SELECT event_ticker 
-                FROM live_data.market_kalshi_btc 
+                FROM live_data.market_kalshi_{self.symbol} 
                 ORDER BY updated_at DESC 
                 LIMIT 1
             """)
             
             result = cursor.fetchone()
             if not result:
-                raise ValueError("No event_ticker found in market_kalshi_btc table")
+                raise ValueError(f"No event_ticker found in market_kalshi_{self.symbol} table")
             
             event_ticker = result[0]
             
             # Get all markets for this event_ticker
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask, 
                        last_price, volume, volume_24h, open_interest, liquidity, updated_at
-                FROM live_data.market_kalshi_btc 
+                FROM live_data.market_kalshi_{self.symbol} 
                 WHERE event_ticker = %s
                 ORDER BY updated_at DESC
             """, (event_ticker,))
@@ -452,7 +562,7 @@ class StrikeTableGenerator:
             
             # For database records, we'll use the event_ticker as the title and estimate strike_date
             # The strike_date is typically the hour from the event_ticker
-            event_title = f"BTC Price at {event_ticker}"
+            event_title = f"{self.symbol.upper()} Price at {event_ticker}"
             
             # Extract date from event_ticker (e.g., KXBTCD-25AUG1515 -> 2025-08-15T15:00:00)
             try:
@@ -561,12 +671,13 @@ class StrikeTableGenerator:
             market_info = self.get_current_market_data()
             current_price = market_info["current_price"]
             momentum_score = market_info["momentum_score"]
+            momentum_percentile = market_info["momentum_percentile"]
             market_data = market_info["market_data"]
             
             # Calculate TTC
             ttc_seconds = self.calculate_ttc_seconds(market_data["strike_date"])
             
-            logger.info(f"📊 Current data - Price: ${current_price:,.2f}, TTC: {ttc_seconds}s, Momentum: {momentum_score:.3f}")
+            logger.info(f"📊 Current data - Price: ${current_price:,.2f}, TTC: {ttc_seconds}s, Momentum Percentile: {momentum_percentile:.1f}")
             
             # Get available market strikes
             markets = market_data.get("markets", [])
@@ -591,9 +702,9 @@ class StrikeTableGenerator:
             
             logger.info(f"🎯 Processing {len(strikes)} strikes from market data")
             
-            # Calculate momentum bucket - convert from decimal to percentage
-            # momentum_score is like 0.043 (4.3%), convert to bucket like 4
-            momentum_bucket = round(momentum_score * 100)
+            # Use momentum percentile directly as bucket
+            # momentum_percentile is already in percentile format like -47.0, -51.0, etc.
+            momentum_bucket = round(momentum_percentile)
             
             # Write to database
             conn = psycopg2.connect(**self.db_config)
@@ -615,6 +726,11 @@ class StrikeTableGenerator:
                         ttc_seconds, int(buffer), momentum_bucket
                     )
                     
+                    # Handle case where no probability found
+                    if pos_prob is None or neg_prob is None:
+                        logger.warning(f"⚠️ No probability found for strike {strike}, skipping")
+                        continue
+                    
                     # Determine probability based on strike position
                     if strike < current_price:
                         probability = pos_prob
@@ -622,9 +738,6 @@ class StrikeTableGenerator:
                         probability = neg_prob
                     
                     # Get market data for this strike
-                    # Convert strike back to the format used in market data
-                    market_strike = f"{strike - 0.01:.2f}"
-                    
                     yes_ask = None
                     no_ask = None
                     volume = None
@@ -634,8 +747,8 @@ class StrikeTableGenerator:
                     for market in markets:
                         floor_strike = market.get("floor_strike")
                         if floor_strike is not None:
-                            # Compare as floats to handle precision issues
-                            if abs(float(floor_strike) - float(market_strike)) < 0.01:
+                            # Direct integer comparison - no precision issues
+                            if int(float(floor_strike)) == strike:
                                 yes_ask = market.get("yes_ask")
                                 no_ask = market.get("no_ask")
                                 volume = market.get("volume")
@@ -666,15 +779,17 @@ class StrikeTableGenerator:
                     INSERT INTO live_data.strike_table_{self.symbol.lower()} 
                     (symbol, current_price, ttc_seconds, broker, event_ticker, market_title,
                      strike_tier, market_status, strike, buffer, buffer_pct, probability,
-                     yes_ask, no_ask, yes_diff, no_diff, volume, ticker, active_side, momentum_weighted_score)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     yes_ask, no_ask, yes_diff, no_diff, volume, ticker, active_side, 
+                     momentum_weighted_score, momentum_percentile, timestamp, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
                         self.symbol.upper(), current_price, ttc_seconds, "Kalshi",
                         market_data.get("event_ticker"), market_title,
                         market_data.get("strike_tier"), market_data.get("market_status"),
                         strike, buffer, buffer_pct, probability,
                         yes_ask, no_ask, yes_diff, no_diff,
-                        volume, ticker, active_side, momentum_score
+                        volume, ticker, active_side, momentum_score, momentum_percentile,
+                        datetime.now(), datetime.now()
                     ))
                     
                     strike_data.append({
@@ -696,6 +811,8 @@ class StrikeTableGenerator:
         
         except Exception as e:
             logger.error(f"❌ Error generating strike table: {e}")
+            if conn:
+                conn.rollback()
             return False
         finally:
             if conn:
@@ -720,7 +837,7 @@ class StrikeTableGenerator:
             cursor.execute(f"""
             SELECT symbol, current_price, ttc_seconds, broker, event_ticker, market_title,
                    strike_tier, market_status, strike, buffer, buffer_pct, probability,
-                   yes_ask, no_ask, yes_diff, no_diff, volume, ticker, active_side, momentum_weighted_score
+                   yes_ask, no_ask, yes_diff, no_diff, volume, ticker, active_side, momentum_percentile
             FROM live_data.strike_table_{self.symbol.lower()}
             WHERE timestamp = %s
             ORDER BY strike
@@ -774,12 +891,12 @@ class StrikeTableGenerator:
             if conn:
                 conn.close()
 
-def run_continuous_generation(interval_seconds: int = 30):
+def run_continuous_generation(interval_seconds: int = 30, symbol: str = "btc"):
     """Run the strike table generator continuously."""
-    logger.info(f"🚀 Starting continuous strike table generation (interval: {interval_seconds}s)")
+    logger.info(f"🚀 Starting continuous strike table generation for {symbol.upper()} (interval: {interval_seconds}s)")
     
     # Initialize generator
-    generator = StrikeTableGenerator("btc")
+    generator = StrikeTableGenerator(symbol)
     
     # Setup schema
     generator.setup_live_data_schema()
@@ -836,24 +953,25 @@ def run_continuous_generation(interval_seconds: int = 30):
 
 def main():
     """Main function - choose between test mode and continuous mode."""
-    import sys
+    parser = argparse.ArgumentParser(description='Strike Table Generator (Multi-Symbol)')
+    parser.add_argument('symbol', help='Symbol to generate strike table for (e.g., BTC, ETH)')
+    parser.add_argument('mode', help='Mode: test for single generation, continuous for ongoing generation')
+    parser.add_argument('interval', type=int, nargs='?', default=30, help='Seconds between generations (for continuous mode)')
     
-    if len(sys.argv) > 1 and sys.argv[1] == "continuous":
+    args = parser.parse_args()
+    symbol = args.symbol.upper()
+    mode = args.mode
+    interval = args.interval
+    
+    if mode == "continuous":
         # Run in continuous mode
-        interval = 30  # Default 30 seconds
-        if len(sys.argv) > 2:
-            try:
-                interval = int(sys.argv[2])
-            except ValueError:
-                logger.warning(f"⚠️ Invalid interval '{sys.argv[2]}', using default 30s")
-        
-        run_continuous_generation(interval)
+        run_continuous_generation(interval, symbol)
     else:
         # Run in test mode
-        logger.info("🚀 Testing PostgreSQL Strike Table Generator")
+        logger.info(f"🚀 Testing PostgreSQL Strike Table Generator for {symbol}")
         
         # Initialize generator
-        generator = StrikeTableGenerator("btc")
+        generator = StrikeTableGenerator(symbol)
         
         # Setup schema
         generator.setup_live_data_schema()
@@ -900,6 +1018,52 @@ def main():
             conn.close()
         else:
             logger.error("❌ Strike table generation failed")
+    
+    def get_strike_table_consistency_info(self) -> Optional[Dict[str, Any]]:
+        """
+        Get information about the consistency of the current strike table data.
+        Returns None if no data exists, or a dict with consistency info.
+        """
+        try:
+            conn = psycopg2.connect(**self.db_config)
+            cursor = conn.cursor()
+            
+            # Get timestamp consistency info
+            cursor.execute(f"""
+                SELECT 
+                    COUNT(*) as total_records,
+                    COUNT(DISTINCT timestamp) as unique_timestamps,
+                    MIN(timestamp) as earliest_timestamp,
+                    MAX(timestamp) as latest_timestamp,
+                    MAX(timestamp) - MIN(timestamp) as time_span
+                FROM live_data.strike_table_{self.symbol.lower()}
+            """)
+            
+            result = cursor.fetchone()
+            if not result or result[0] == 0:
+                return None
+            
+            total_records, unique_timestamps, earliest, latest, time_span = result
+            
+            # Check if all records have the same timestamp (atomic update)
+            is_consistent = unique_timestamps == 1
+            
+            return {
+                "total_records": total_records,
+                "unique_timestamps": unique_timestamps,
+                "earliest_timestamp": earliest,
+                "latest_timestamp": latest,
+                "time_span_seconds": time_span.total_seconds() if time_span else 0,
+                "is_consistent": is_consistent,
+                "consistency_status": "CONSISTENT" if is_consistent else "MIXED_TIMESTAMPS"
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error checking strike table consistency: {e}")
+            return None
+        finally:
+            if conn:
+                conn.close()
 
 if __name__ == "__main__":
     main()

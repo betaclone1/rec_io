@@ -8,6 +8,7 @@ window.momentumData = {
   weightedScore: null,
   deltas: {}, // New: to store individual minute deltas
   momentumPercentile: null, // New: to store momentum percentile
+  rollingPercentiles: [], // New: to store rolling momentum percentiles for chart
 };
 
 // === UTILITY FUNCTIONS ===
@@ -39,8 +40,8 @@ function decorateChange(el, val) {
 // === CORE DATA FETCHING FUNCTIONS ===
 
 // Fetch core data (momentum score only - BTC price now handled by strike table)
-function fetchCore() {
-  fetch(window.location.origin + '/core')
+function fetchCore(symbol = 'BTC') {
+  fetch(window.location.origin + `/core?symbol=${symbol}`)
     .then(response => {
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -59,12 +60,19 @@ function fetchCore() {
       if (data.delta_15m !== undefined) window.momentumData.deltas['15m'] = data.delta_15m;
       if (data.delta_30m !== undefined) window.momentumData.deltas['30m'] = data.delta_30m;
 
-      // Update momentum percentile
-      if (data.momentum_percentile !== undefined) window.momentumData.momentumPercentile = data.momentum_percentile;
+      // Update momentum percentile (now using 5s average)
+      console.log('Received momentum_5s_avg from API:', data.momentum_5s_avg);
+      if (data.momentum_5s_avg !== undefined) {
+        window.momentumData.momentumPercentile = data.momentum_5s_avg;
+        console.log('Set window.momentumData.momentumPercentile to (5s avg):', data.momentum_5s_avg);
+      }
 
       // Trigger momentum panel update if function exists
       if (typeof updateMomentumPanel === 'function') {
+        console.log('Calling updateMomentumPanel()');
         updateMomentumPanel();
+      } else {
+        console.log('updateMomentumPanel function not found');
       }
     })
     .catch(error => {
@@ -72,11 +80,11 @@ function fetchCore() {
     });
 }
 
-// Fetch BTC price changes from backend API and update ticker panel
-async function fetchBTCPriceChanges() {
+// Fetch symbol price changes from backend API and update ticker panel
+async function fetchSymbolPriceChanges(symbol = 'BTC') {
   try {
-    const res = await fetch(window.location.origin + '/btc_price_changes');
-    if (!res.ok) throw new Error('Failed to fetch BTC price changes');
+    const res = await fetch(window.location.origin + `/${symbol.toLowerCase()}_price_changes`);
+    if (!res.ok) throw new Error(`Failed to fetch ${symbol} price changes`);
     const data = await res.json();
     
     // Update 1h, 3h, 1d change numbers in the price panel
@@ -93,8 +101,13 @@ async function fetchBTCPriceChanges() {
       if (el) decorateChange(el, data.change1d);
     }
   } catch (error) {
-    console.error('Error fetching BTC price changes:', error);
+    console.error(`Error fetching ${symbol} price changes:`, error);
   }
+}
+
+// Legacy function name for backward compatibility
+async function fetchBTCPriceChanges() {
+  return fetchSymbolPriceChanges('BTC');
 }
 
 // === AUTO ENTRY INDICATOR FUNCTIONS ===
@@ -163,17 +176,26 @@ function updateAutoEntryIndicator(data) {
 
 // Initialize polling when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
+  // Get current symbol and fetch price changes
+  const getCurrentSymbol = () => {
+    const symbolPicker = document.getElementById('ticker-picker');
+    return symbolPicker ? symbolPicker.value : 'BTC';
+  };
+  
   // Initial data fetches
-  fetchCore();
-  fetchBTCPriceChanges();
+  fetchCore(getCurrentSymbol());
+  
+  // Initial price changes fetch
+  fetchSymbolPriceChanges(getCurrentSymbol());
 
   // Set up polling intervals
-  setInterval(fetchCore, 5000);                 // Momentum data every 5 seconds for live updates
-  setInterval(fetchBTCPriceChanges, 60000);    // Price changes every minute (unchanged frequency)
+  setInterval(() => fetchCore(getCurrentSymbol()), 5000);                 // Momentum data every 5 seconds for live updates
+  setInterval(() => fetchSymbolPriceChanges(getCurrentSymbol()), 60000);    // Price changes every minute with current symbol
 });
 
 // Export functions for use by other modules
 window.liveData = {
   fetchCore,
-  fetchBTCPriceChanges
+  fetchSymbolPriceChanges,
+  fetchBTCPriceChanges // Legacy compatibility
 }; 

@@ -519,6 +519,8 @@
             </div>
             <div class="ttc-clock" id="ttc-clock">--:--</div>
         </div>
+        
+
 
         <!-- Price and Momentum Panel -->
         <div class="mobile-panel">
@@ -546,12 +548,8 @@
                 <div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
                     <div style="display: flex; align-items: center; gap: 12px;">
                         <div class="toggle-group" style="margin: 0;">
-                            <div class="mobile-toggle" id="autoEntryToggle"></div>
-                            <span class="toggle-label" style="font-size: 10px;">Auto<br>Entry</span>
-                        </div>
-                        <div class="toggle-group" style="margin: 0;">
-                            <div class="mobile-toggle" id="autoStopToggle"></div>
-                            <span class="toggle-label" style="font-size: 10px;">Auto<br>Stop</span>
+                            <div class="mobile-toggle" id="mobileAutoTradeToggle"></div>
+                            <span class="toggle-label" style="font-size: 10px;">AUTO<br>TRADE</span>
                         </div>
                     </div>
                     
@@ -929,14 +927,17 @@
             // Start Active Trade Supervisor polling
             startActiveTradeSupervisorPolling();
             
+            // Fetch initial auto entry indicator status
+            fetchInitialAutoEntryIndicator();
+            
 
         });
 
         function initializeMobileToggles() {
-            // Auto Entry Toggle
-            const autoEntryToggle = document.getElementById('autoEntryToggle');
-            if (autoEntryToggle) {
-                autoEntryToggle.addEventListener('click', async function() {
+            // Auto Trade Toggle (hardcoded to monitor 10002)
+            const mobileAutoTradeToggle = document.getElementById('mobileAutoTradeToggle');
+            if (mobileAutoTradeToggle) {
+                mobileAutoTradeToggle.addEventListener('click', async function() {
                     const enabled = !this.classList.contains('active');
                     
                     // Prevent multiple clicks during request
@@ -949,63 +950,32 @@
                     this.classList.toggle('active');
                     
                     try {
-                        const response = await fetch(window.location.origin + '/api/set_auto_entry', {
+                        // Hardcoded to monitor 10002 as requested
+                        const formattedMonitorId = 'MON_0001_10002';
+                        
+                        const response = await fetch('/api/monitor/toggle-auto-trade', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ enabled })
+                            body: JSON.stringify({ 
+                                monitor_id: formattedMonitorId, 
+                                auto_trade: enabled 
+                            })
                         });
                         
-                        if (!response.ok) {
+                        const data = await response.json();
+                        if (data.status === 'ok') {
+                            console.log('Successfully updated auto trade in database');
+                        } else {
                             // Revert if failed
                             this.classList.toggle('active');
-                            const errorText = await response.text();
-                            console.error('Failed to update auto entry setting:', errorText);
-                            alert(`Failed to update auto entry setting: ${response.status} ${response.statusText}`);
+                            console.error('Failed to update auto trade:', data.message);
+                            alert(`Failed to update auto trade: ${data.message}`);
                         }
                     } catch (error) {
                         // Revert if failed
                         this.classList.toggle('active');
-                        console.error('Error updating auto entry:', error);
-                    } finally {
-                        // Remove loading state
-                        this.classList.remove('loading');
-                    }
-                });
-            }
-
-            // Auto Stop Toggle
-            const autoStopToggle = document.getElementById('autoStopToggle');
-            if (autoStopToggle) {
-                autoStopToggle.addEventListener('click', async function() {
-                    const enabled = !this.classList.contains('active');
-                    
-                    // Prevent multiple clicks during request
-                    if (this.classList.contains('loading')) return;
-                    
-                    // Add loading state
-                    this.classList.add('loading');
-                    
-                    // Immediate visual feedback
-                    this.classList.toggle('active');
-                    
-                    try {
-                        const response = await fetch(window.location.origin + '/api/set_auto_stop', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ enabled })
-                        });
-                        
-                        if (!response.ok) {
-                            // Revert if failed
-                            this.classList.toggle('active');
-                            const errorText = await response.text();
-                            console.error('Failed to update auto stop setting:', errorText);
-                            alert(`Failed to update auto stop setting: ${response.status} ${response.statusText}`);
-                        }
-                    } catch (error) {
-                        // Revert if failed
-                        this.classList.toggle('active');
-                        console.error('Error updating auto stop:', error);
+                        console.error('Error updating auto trade:', error);
+                        alert(`Error updating auto trade: ${error.message}`);
                     } finally {
                         // Remove loading state
                         this.classList.remove('loading');
@@ -1062,9 +1032,54 @@
         }
 
         function updateTogglesFromWebSocket(data) {
-            // === Auto Entry Indicator Change ===
+            // === Auto Trade Status Change ===
+            if (data.type === 'auto_trade_status_change') {
+                // Check if this is for our hardcoded monitor mon_0001_10002
+                if (data.data.monitor_id === 'mon_0001_10002') {
+                    const statusData = {
+                        status: data.data.auto_trade_status,
+                        enabled: data.data.auto_trade_status === 'ACTIVE' || data.data.auto_trade_status === 'INACTIVE',
+                        cooldown_timer: latestCooldownTimer // Include the stored cooldown timer value
+                    };
+                    
+                    console.log('📊 Updating display with WebSocket data:', statusData);
+                    
+                    // Clear cooldown timer if status is not PAUSED
+                    if (data.data.auto_trade_status !== 'PAUSED') {
+                        latestCooldownTimer = 0;
+                        console.log('🧹 Cleared cooldown timer (status is not PAUSED)');
+                    }
+                    
+                    updateAutoEntryIndicator(statusData);
+                    console.log('✅ Display updated successfully');
+                }
+                return; // Don't process other WebSocket messages for this type
+            }
+            
+            // === Cooldown Timer Change ===
+            if (data.type === 'cooldown_timer_change') {
+                console.log('Cooldown timer change received in trade monitor (mobile):', data);
+                
+                // Check if this is for our hardcoded monitor mon_0001_10002
+                if (data.data.monitor_id === 'mon_0001_10002') {
+                    console.log('🔄 Cooldown timer change affects current monitor, storing timer value...');
+                    
+                    // Store the latest cooldown timer value (don't update display yet)
+                    latestCooldownTimer = data.data.cooldown_timer;
+                    console.log('📊 Stored cooldown timer value:', latestCooldownTimer);
+                    
+                    // Only update display if we already have a PAUSED status
+                    // The status message will handle the actual display update
+                } else {
+                    console.log('⚠️ Cooldown timer change for different monitor:', data.data.monitor_id);
+                }
+                
+                return; // Don't process other WebSocket messages for this type
+            }
+            
+            // === Legacy Auto Entry Indicator Change (fallback) ===
             if (data.type === 'auto_entry_indicator_change') {
-                console.log('🔔 Auto entry indicator change:', data.data);
+                console.log('🔔 Legacy auto entry indicator change:', data.data);
                 updateAutoEntryIndicator(data.data);
                 return; // Don't process other WebSocket messages for this type
             }
@@ -1078,16 +1093,10 @@
 
             // Momentum now consolidated in strike table - no separate WebSocket handler needed
             
-            // Update Auto Entry toggle
-            const autoEntryToggle = document.getElementById('autoEntryToggle');
-            if (autoEntryToggle && data.auto_entry !== undefined) {
-                autoEntryToggle.classList.toggle('active', data.auto_entry);
-            }
-            
-            // Update Auto Stop toggle
-            const autoStopToggle = document.getElementById('autoStopToggle');
-            if (autoStopToggle && data.auto_stop !== undefined) {
-                autoStopToggle.classList.toggle('active', data.auto_stop);
+            // Update Auto Trade toggle (hardcoded to monitor 10002)
+            const mobileAutoTradeToggle = document.getElementById('mobileAutoTradeToggle');
+            if (mobileAutoTradeToggle && data.auto_trade !== undefined) {
+                mobileAutoTradeToggle.classList.toggle('active', data.auto_trade);
             }
             
             // Diff mode is local only - no WebSocket updates needed
@@ -1104,24 +1113,16 @@
 
         async function loadToggleStates() {
             try {
-                const response = await fetch(window.location.origin + '/api/get_preferences');
-                const data = await response.json();
+                // Load auto trade state for monitor 10002 (hardcoded as requested)
+                const monitorResponse = await fetch('/api/monitor/10002?user_id=user_0001');
+                const monitorData = await monitorResponse.json();
                 
-                // Set Auto Entry toggle
-                const autoEntryToggle = document.getElementById('autoEntryToggle');
-                if (autoEntryToggle) {
-                    autoEntryToggle.classList.remove('active');
-                    if (data.auto_entry === true) {
-                        autoEntryToggle.classList.add('active');
-                    }
-                }
-                
-                // Set Auto Stop toggle
-                const autoStopToggle = document.getElementById('autoStopToggle');
-                if (autoStopToggle) {
-                    autoStopToggle.classList.remove('active');
-                    if (data.auto_stop === true) {
-                        autoStopToggle.classList.add('active');
+                // Set Auto Trade toggle
+                const mobileAutoTradeToggle = document.getElementById('mobileAutoTradeToggle');
+                if (mobileAutoTradeToggle && monitorData.status === 'ok' && monitorData.monitor) {
+                    mobileAutoTradeToggle.classList.remove('active');
+                    if (monitorData.monitor.auto_trade === true) {
+                        mobileAutoTradeToggle.classList.add('active');
                     }
                 }
                 
@@ -1142,13 +1143,15 @@
 
         async function updatePositionDisplay() {
             try {
-                const [preferencesResponse, bankrollResponse] = await Promise.all([
+                const [preferencesResponse, bankrollResponse, totalPositionResponse] = await Promise.all([
                     fetch(window.location.origin + '/api/get_preferences'),
-                    fetch(window.location.origin + '/api/account/balance')
+                    fetch(window.location.origin + '/api/account/balance'),
+                    fetch(window.location.origin + '/api/total_position')
                 ]);
                 
                 const preferences = await preferencesResponse.json();
                 const bankrollData = await bankrollResponse.json();
+                const totalPositionData = await totalPositionResponse.json();
                 
                 const bankrollValue = document.getElementById('bankroll-value');
                 if (bankrollValue && bankrollData.bankroll_current !== undefined) {
@@ -1156,7 +1159,11 @@
                     bankrollValue.textContent = '$' + Number(bankrollInDollars).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
                 }
                 
-                // Total position is now loaded from monitor_list, not trade_preferences
+                // Get total_position directly from the simple endpoint
+                const totalPositionValue = document.getElementById('total-position-value');
+                if (totalPositionValue && totalPositionData.total_position !== undefined) {
+                    totalPositionValue.textContent = totalPositionData.total_position;
+                }
                 
             } catch (error) {
                 console.error('Error updating position display:', error);
@@ -1357,6 +1364,8 @@
                         }
                         
                         // Update momentum score from consolidated strike table data
+                        
+                        // Auto trade status is handled by WebSocket, no periodic refresh needed
                         if (strikeData.momentum && strikeData.momentum.weighted_score !== undefined) {
                             const momentumEl = document.getElementById('momentum-score-display');
                             if (momentumEl) {
@@ -1399,6 +1408,15 @@
             // Mobile monitor doesn't have price change display elements - no polling needed
 
             // Toggle states are now handled by WebSocket - no polling needed
+
+            // Auto trade status polling (backup to WebSocket, every 30 seconds)
+            setInterval(async () => {
+                try {
+                    fetchInitialAutoEntryIndicator();
+                } catch (error) {
+                    // Silent error handling
+                }
+            }, 30000); // Every 30 seconds
 
 
         }
@@ -1933,7 +1951,8 @@
                 momentum: momentum,
                 prob: prob,
                 trade_strategy: "Hourly HTC",
-                entry_method: "manual"
+                entry_method: "manual",
+                monitor: `mon_0001_${currentMonitorId}`
             };
             
             return tradeData;
@@ -1964,7 +1983,8 @@
                         contract: tradeData.contract,
                         symbol: tradeData.symbol,
                         position: tradeData.position,
-                        trade_strategy: tradeData.trade_strategy
+                        trade_strategy: tradeData.trade_strategy,
+                        monitor: tradeData.monitor
                     })
                 });
                 
@@ -2504,6 +2524,9 @@
         // WebSocket connection for real-time auto entry status updates
         let autoEntryWebSocket = null;
         
+        // Store latest cooldown timer value to combine with status updates
+        let latestCooldownTimer = 0;
+        
         // Connect to WebSocket for auto entry indicator updates
         function connectAutoEntryWebSocket() {
             try {
@@ -2542,20 +2565,26 @@
             }
         }
         
-        // Fetch initial auto entry indicator state
+        // TEMPORARY: Hardcoded mobile solution for monitor 0001_10002
         async function fetchInitialAutoEntryIndicator() {
             try {
-                console.log('🔄 Fetching initial auto entry status (mobile)...');
-                const response = await fetch(window.location.origin + '/api/get_auto_entry_status');
-                if (!response.ok) throw new Error('Failed to fetch auto entry status');
+                const response = await fetch(window.location.origin + '/api/monitors?user_id=user_0001');
+                if (!response.ok) throw new Error('Failed to fetch monitors');
                 const data = await response.json();
                 
-                console.log('📊 Initial auto entry status received (mobile):', data);
-                
-                // Update the indicator display
-                updateAutoEntryIndicator(data);
+                // Find monitor mon_0001_10002 (full ID like desktop version)
+                const monitor = data.monitors.find(m => m.id === 'mon_0001_10002');
+                if (monitor) {
+                    const statusData = {
+                        status: monitor.auto_trade_status || 'DISABLED',
+                        enabled: monitor.auto_trade_status === 'ACTIVE'
+                    };
+                    updateAutoEntryIndicator(statusData);
+                } else {
+                    updateAutoEntryIndicator({ status: 'DISABLED', enabled: false });
+                }
             } catch (error) {
-                console.error('Error fetching initial auto entry status (mobile):', error);
+                updateAutoEntryIndicator({ status: 'DISABLED', enabled: false });
             }
         }
         
@@ -2563,7 +2592,6 @@
         function updateAutoEntryIndicator(data) {
             const indicator = document.getElementById('autoEntryIndicator');
             if (!indicator) {
-                console.error('Auto entry indicator element not found');
                 return;
             }
             
@@ -2571,7 +2599,7 @@
             const indicatorDot = indicator.querySelector('div');
             const indicatorText = indicator.querySelector('span');
             
-            // Always show the indicator
+            // Always show the indicator (mobile version)
             indicator.style.display = 'flex';
             
             // Handle both old and new endpoint responses
@@ -2618,7 +2646,15 @@
                     break;
                     
                 case 'DISABLED':
-                    indicator.style.display = 'none'; // Hide completely when disabled
+                    indicator.style.display = 'flex'; // Always show on mobile
+                    indicator.style.backgroundColor = ''; // No background
+                    indicator.style.border = '';
+                    if (indicatorDot) {
+                        indicatorDot.style.background = '#6c757d'; // Gray dot
+                    }
+                    if (indicatorText) {
+                        indicatorText.textContent = 'Auto DISABLED';
+                    }
                     break;
                     
                 case 'PAUSED':
@@ -2892,19 +2928,24 @@
                     const preferences = await preferencesResponse.json();
                     
                     // Update main toggle states (only the ones on the main page)
-                    const autoEntryToggle = document.getElementById('autoEntryToggle');
-                    const autoStopToggle = document.getElementById('autoStopToggle');
+                    const mobileAutoTradeToggle = document.getElementById('mobileAutoTradeToggle');
                     
-                    if (autoEntryToggle) {
-                        autoEntryToggle.classList.toggle('active', preferences.auto_entry === true);
-                    }
-                    if (autoStopToggle) {
-                        autoStopToggle.classList.toggle('active', preferences.auto_stop === true);
+                    if (mobileAutoTradeToggle) {
+                        // Load auto trade state for monitor 10002 (hardcoded as requested)
+                        try {
+                            const monitorResponse = await fetch('/api/monitor/10002?user_id=user_0001');
+                            const monitorData = await monitorResponse.json();
+                            if (monitorData.status === 'ok' && monitorData.monitor) {
+                                mobileAutoTradeToggle.classList.toggle('active', monitorData.monitor.auto_trade === true);
+                            }
+                        } catch (error) {
+                            console.error('Error loading auto trade state:', error);
+                        }
                     }
                 }
                 
-                // Load Auto Entry Settings
-                const autoEntryResponse = await fetch(window.location.origin + '/api/get_auto_entry_settings');
+                // Load Auto Entry Settings from unified endpoint (hardcoded to monitor 10002)
+                const autoEntryResponse = await fetch(window.location.origin + '/api/get_auto_entry_settings?monitor_id=10002');
                 if (autoEntryResponse.ok) {
                     const autoEntryData = await autoEntryResponse.json();
                     
@@ -2938,8 +2979,8 @@
                     mobileMaxTimeSeconds = mobileLastSavedAutoEntryMaxTime;
                 }
                 
-                // Load Auto Stop Settings
-                const autoStopResponse = await fetch(window.location.origin + '/api/get_auto_stop_settings');
+                // Load Auto Stop Settings from unified endpoint (hardcoded to monitor 10002)
+                const autoStopResponse = await fetch(window.location.origin + '/api/get_auto_entry_settings?monitor_id=10002');
                 if (autoStopResponse.ok) {
                     const autoStopData = await autoStopResponse.json();
                     
@@ -2973,6 +3014,7 @@
                     
                     if (momentumSpikeEnabledCheckbox) {
                         momentumSpikeEnabledCheckbox.checked = mobileLastSavedMomentumSpikeEnabled;
+                        updateMobileMomentumSpikeThresholdDisplay(mobileLastSavedMomentumSpikeThreshold);
                     }
                     
                     if (momentumSpikeThresholdSlider) {
@@ -3070,11 +3112,12 @@
                 const newSpikeAlertTime = spikeAlertTimeSlider ? parseInt(spikeAlertTimeSlider.value) : 15;
                 
                 if (!isNaN(newProb) && !isNaN(newDifferential) && !isNaN(newStopProb) && !isNaN(newMinTTC)) {
-                    // Save Auto Entry Settings
+                    // Save Auto Entry Settings using unified endpoint (hardcoded to monitor 10002)
                     const autoEntryResponse = await fetch(window.location.origin + '/api/set_auto_entry_settings', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
+                            monitor_id: 10002,
                             min_probability: newProb,
                             min_differential: newDifferential,
                             min_ttc_seconds: 60,
@@ -3088,11 +3131,12 @@
                         })
                     });
                     
-                    // Save Auto Stop Settings
-                    const autoStopResponse = await fetch(window.location.origin + '/api/set_auto_stop_settings', {
+                    // Save Auto Stop Settings using unified endpoint (hardcoded to monitor 10002)
+                    const autoStopResponse = await fetch(window.location.origin + '/api/set_auto_entry_settings', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
+                            monitor_id: 10002,
                             current_probability: newStopProb,
                             min_ttc_seconds: newMinTTC,
                             momentum_spike_enabled: newMomentumSpikeEnabled,
