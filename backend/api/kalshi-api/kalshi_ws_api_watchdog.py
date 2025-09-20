@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Kalshi WebSocket API Watchdog
-Real-time market ticker monitoring using WebSocket connections
+Real-time orderbook monitoring using WebSocket connections
 """
 
 import sys
@@ -116,7 +116,7 @@ def fetch_event_json(event_ticker):
         print(f"[{datetime.now()}] ❌ Exception fetching event JSON: {e}")
         return None
 
-class KalshiMarketTickerWatchdog:
+class KalshiOrderbookWatchdog:
     def __init__(self):
         self.websocket = None
         self.subscription_id = None
@@ -125,6 +125,7 @@ class KalshiMarketTickerWatchdog:
         self.max_reconnect_attempts = 5
         self.current_markets = []
         self.db_connection = None
+        self.orderbook_state = {}  # Track current orderbook state per market
         
     def connect_database(self):
         """Connect to PostgreSQL database"""
@@ -139,6 +140,30 @@ class KalshiMarketTickerWatchdog:
             return True
         except Exception as e:
             print(f"[{datetime.now(EST)}] ❌ Failed to connect to database: {e}")
+            return False
+    
+    def clear_previous_data(self):
+        """Clear previous orderbook data to start fresh"""
+        if not self.db_connection:
+            return False
+        
+        try:
+            with self.db_connection.cursor() as cursor:
+                # Clear all previous data
+                cursor.execute("DELETE FROM testing.kalshi_orderbook_snapshot")
+                cursor.execute("DELETE FROM testing.kalshi_orderbook_deltas")
+                cursor.execute("DELETE FROM testing.kalshi_level2_orderbook")
+                self.db_connection.commit()
+            
+            print(f"[{datetime.now(EST)}] 🧹 Cleared all previous orderbook data - starting fresh")
+            return True
+            
+        except Exception as e:
+            print(f"[{datetime.now(EST)}] ❌ Error clearing previous data: {e}")
+            try:
+                self.db_connection.rollback()
+            except:
+                pass
             return False
     
     def extract_strike_price(self, market_ticker):
@@ -156,8 +181,8 @@ class KalshiMarketTickerWatchdog:
             print(f"[{datetime.now(EST)}] ❌ Error extracting strike price: {e}")
             return "Unknown"
     
-    def update_market_data(self, ticker_data):
-        """Update market data in PostgreSQL database"""
+    def save_orderbook_snapshot(self, market_ticker, orderbook_data, sequence_number):
+        """Save complete orderbook snapshot to PostgreSQL database"""
         if not self.db_connection:
             return False
         
@@ -171,56 +196,287 @@ class KalshiMarketTickerWatchdog:
                 if not self.db_connection:
                     return False
             
-            market_ticker = ticker_data.get('market_ticker', '')
-            strike = self.extract_strike_price(market_ticker)
-            
-            # Prepare the data for upsert
-            data = {
-                'strike': strike,
-                'market_ticker': market_ticker,
-                'price': ticker_data.get('price'),
-                'yes_bid': ticker_data.get('yes_bid'),
-                'yes_ask': ticker_data.get('yes_ask'),
-                'volume': ticker_data.get('volume'),
-                'open_interest': ticker_data.get('open_interest'),
-                'dollar_volume': ticker_data.get('dollar_volume'),
-                'dollar_open_interest': ticker_data.get('dollar_open_interest'),
-                'timestamp': ticker_data.get('ts')
-            }
-            
-            # Upsert query
-            query = """
-                INSERT INTO live_data.kalshi_btc_market 
-                (strike, market_ticker, price, yes_bid, yes_ask, volume, open_interest, dollar_volume, dollar_open_interest, timestamp, last_updated)
-                VALUES (%(strike)s, %(market_ticker)s, %(price)s, %(yes_bid)s, %(yes_ask)s, %(volume)s, %(open_interest)s, %(dollar_volume)s, %(dollar_open_interest)s, %(timestamp)s, NOW())
-                ON CONFLICT (strike, market_ticker) 
-                DO UPDATE SET 
-                    price = EXCLUDED.price,
-                    yes_bid = EXCLUDED.yes_bid,
-                    yes_ask = EXCLUDED.yes_ask,
-                    volume = EXCLUDED.volume,
-                    open_interest = EXCLUDED.open_interest,
-                    dollar_volume = EXCLUDED.dollar_volume,
-                    dollar_open_interest = EXCLUDED.dollar_open_interest,
-                    timestamp = EXCLUDED.timestamp,
-                    last_updated = NOW()
-            """
-            
             with self.db_connection.cursor() as cursor:
-                cursor.execute(query, data)
+                # Clear existing snapshot for this market
+                cursor.execute(
+                    "DELETE FROM testing.kalshi_orderbook_snapshot WHERE market_ticker = %s",
+                    (market_ticker,)
+                )
+                
+                # Insert new snapshot data
+                for side in ['yes', 'no']:
+                    if side in orderbook_data:
+                        for price_level in orderbook_data[side]:
+                            price, size = price_level
+                            cursor.execute("""
+                                INSERT INTO testing.kalshi_orderbook_snapshot 
+                                (market_ticker, side, price, size, sequence_number)
+                                VALUES (%s, %s, %s, %s, %s)
+                            """, (market_ticker, side, price, size, sequence_number))
+                
                 self.db_connection.commit()
             
-            print(f"[{datetime.now(EST)}] 💾 Updated PostgreSQL: {strike} - Bid: {data['yes_bid']}, Ask: {data['yes_ask']}")
+            print(f"[{datetime.now(EST)}] 📊 Saved orderbook snapshot for {market_ticker} (seq: {sequence_number})")
             return True
             
         except Exception as e:
-            print(f"[{datetime.now(EST)}] ❌ Error updating database: {e}")
-            # Try to rollback and continue
+            print(f"[{datetime.now(EST)}] ❌ Error saving orderbook snapshot: {e}")
             try:
                 self.db_connection.rollback()
             except:
                 pass
             return False
+    
+    def save_orderbook_delta(self, market_ticker, side, price, delta, sequence_number):
+        """Save orderbook delta to PostgreSQL database"""
+        if not self.db_connection:
+            return False
+        
+        try:
+            # Check if connection is in a bad state and reconnect if needed
+            try:
+                self.db_connection.rollback()
+            except:
+                # If rollback fails, reconnect
+                self.connect_database()
+                if not self.db_connection:
+                    return False
+            
+            with self.db_connection.cursor() as cursor:
+                # Insert delta record
+                cursor.execute("""
+                    INSERT INTO testing.kalshi_orderbook_deltas 
+                    (market_ticker, side, price, delta, sequence_number)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (market_ticker, side, price, delta, sequence_number))
+                
+                # Update snapshot table
+                if delta > 0:
+                    # Add or update size
+                    cursor.execute("""
+                        INSERT INTO testing.kalshi_orderbook_snapshot 
+                        (market_ticker, side, price, size, sequence_number)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (market_ticker, side, price)
+                        DO UPDATE SET 
+                            size = testing.kalshi_orderbook_snapshot.size + %s,
+                            sequence_number = %s
+                    """, (market_ticker, side, price, delta, sequence_number, delta, sequence_number))
+                else:
+                    # Remove or reduce size
+                    cursor.execute("""
+                        UPDATE testing.kalshi_orderbook_snapshot 
+                        SET size = size + %s, sequence_number = %s
+                        WHERE market_ticker = %s AND side = %s AND price = %s
+                    """, (delta, sequence_number, market_ticker, side, price))
+                    
+                    # Remove if size becomes 0 or negative
+                    cursor.execute("""
+                        DELETE FROM testing.kalshi_orderbook_snapshot 
+                        WHERE market_ticker = %s AND side = %s AND price = %s AND size <= 0
+                    """, (market_ticker, side, price))
+                
+                self.db_connection.commit()
+            
+            print(f"[{datetime.now(EST)}] 📈 Delta: {market_ticker} {side} {price} {delta:+d} (seq: {sequence_number})")
+            return True
+            
+        except Exception as e:
+            print(f"[{datetime.now(EST)}] ❌ Error saving orderbook delta: {e}")
+            try:
+                self.db_connection.rollback()
+            except:
+                pass
+            return False
+    
+    def display_orderbook_state(self, market_ticker):
+        """Display current orderbook state from database"""
+        if not self.db_connection:
+            return
+        
+        try:
+            with self.db_connection.cursor() as cursor:
+                # Get current orderbook state
+                cursor.execute("""
+                    SELECT side, price, size 
+                    FROM testing.kalshi_orderbook_snapshot 
+                    WHERE market_ticker = %s 
+                    ORDER BY side, price DESC
+                """, (market_ticker,))
+                
+                rows = cursor.fetchall()
+                
+                if rows:
+                    print(f"\n[{datetime.now(EST)}] 📊 LIVE ORDERBOOK: {market_ticker}")
+                    print("=" * 60)
+                    
+                    # Separate YES and NO sides
+                    yes_orders = [(price, size) for side, price, size in rows if side == 'yes']
+                    no_orders = [(price, size) for side, price, size in rows if side == 'no']
+                    
+                    # Display YES side (descending price)
+                    print("YES (Price >= Strike):")
+                    for price, size in yes_orders[:10]:  # Top 10 levels
+                        print(f"  {price:3d} | {size:6d} shares")
+                    
+                    print("-" * 30)
+                    
+                    # Display NO side (ascending price)
+                    print("NO (Price < Strike):")
+                    for price, size in reversed(no_orders[-10:]):  # Top 10 levels
+                        print(f"  {price:3d} | {size:6d} shares")
+                    
+                    print("=" * 60)
+                else:
+                    print(f"[{datetime.now(EST)}] ⚠️ No orderbook data found for {market_ticker}")
+                    
+        except Exception as e:
+            print(f"[{datetime.now(EST)}] ❌ Error displaying orderbook: {e}")
+    
+    def save_level2_orderbook(self, market_ticker, sequence_number):
+        """Save Level 2 orderbook data as individual price level rows"""
+        if not self.db_connection:
+            return False
+        
+        try:
+            with self.db_connection.cursor() as cursor:
+                # Get current orderbook state
+                cursor.execute("""
+                    SELECT side, price, size 
+                    FROM testing.kalshi_orderbook_snapshot 
+                    WHERE market_ticker = %s 
+                    ORDER BY side, price DESC
+                """, (market_ticker,))
+                
+                rows = cursor.fetchall()
+                
+                if not rows:
+                    return False
+                
+                # Extract strike price from market ticker
+                try:
+                    strike_price = float(market_ticker.split("-T")[1])
+                except:
+                    strike_price = 0
+                
+                # Separate YES and NO sides
+                yes_orders = [(price, size) for side, price, size in rows if side == 'yes']
+                no_orders = [(price, size) for side, price, size in rows if side == 'no']
+                
+                # Sort orders properly
+                yes_orders.sort(key=lambda x: x[0], reverse=True)  # Highest price first (best ask)
+                no_orders.sort(key=lambda x: x[0], reverse=True)   # Highest price first (best bid)
+                
+                # Calculate totals
+                total_bid_volume = sum(size for _, size in no_orders)
+                total_ask_volume = sum(size for _, size in yes_orders)
+                
+                # Calculate best bid/ask and spread
+                best_bid_price = no_orders[0][0] if no_orders else None
+                best_ask_price = yes_orders[0][0] if yes_orders else None
+                spread = (best_ask_price - best_bid_price) if (best_bid_price and best_ask_price) else None
+                mid_price = ((best_bid_price + best_ask_price) / 2) if (best_bid_price and best_ask_price) else None
+                
+                # Clear existing Level 2 data for this market
+                cursor.execute("DELETE FROM testing.kalshi_level2_orderbook WHERE market_ticker = %s", (market_ticker,))
+                
+                # Insert NO side (bids) - up to top 10 levels
+                for rank, (price, size) in enumerate(no_orders[:10], 1):
+                    is_best_bid = (rank == 1)
+                    cursor.execute("""
+                        INSERT INTO testing.kalshi_level2_orderbook 
+                        (market_ticker, strike_price, side, price, size, level_rank, is_best_bid, is_best_ask,
+                         spread, mid_price, total_bid_volume, total_ask_volume, sequence_number)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (market_ticker, strike_price, 'no', price, size, rank, is_best_bid, False,
+                          spread, mid_price, total_bid_volume, total_ask_volume, sequence_number))
+                
+                # Insert YES side (asks) - up to top 10 levels
+                for rank, (price, size) in enumerate(yes_orders[:10], 1):
+                    is_best_ask = (rank == 1)
+                    cursor.execute("""
+                        INSERT INTO testing.kalshi_level2_orderbook 
+                        (market_ticker, strike_price, side, price, size, level_rank, is_best_bid, is_best_ask,
+                         spread, mid_price, total_bid_volume, total_ask_volume, sequence_number)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (market_ticker, strike_price, 'yes', price, size, rank, False, is_best_ask,
+                          spread, mid_price, total_bid_volume, total_ask_volume, sequence_number))
+                
+                self.db_connection.commit()
+            
+            # Display Level 2 orderbook
+            self.display_level2_orderbook(market_ticker)
+            return True
+            
+        except Exception as e:
+            print(f"[{datetime.now(EST)}] ❌ Error saving Level 2 orderbook: {e}")
+            try:
+                self.db_connection.rollback()
+            except:
+                pass
+            return False
+    
+    def display_level2_orderbook(self, market_ticker):
+        """Display Level 2 orderbook from database"""
+        if not self.db_connection:
+            return
+        
+        try:
+            with self.db_connection.cursor() as cursor:
+                # Get Level 2 orderbook data
+                cursor.execute("""
+                    SELECT side, price, size, level_rank, is_best_bid, is_best_ask, spread, mid_price,
+                           total_bid_volume, total_ask_volume, strike_price
+                    FROM testing.kalshi_level2_orderbook 
+                    WHERE market_ticker = %s 
+                    ORDER BY side, level_rank
+                """, (market_ticker,))
+                
+                rows = cursor.fetchall()
+                
+                if not rows:
+                    print(f"[{datetime.now(EST)}] ⚠️ No Level 2 orderbook data found for {market_ticker}")
+                    return
+                
+                # Get first row for summary data
+                first_row = rows[0]
+                strike_price = first_row[10]
+                spread = first_row[6]
+                mid_price = first_row[7]
+                total_bid_volume = first_row[8]
+                total_ask_volume = first_row[9]
+                
+                print(f"\n[{datetime.now(EST)}] 📊 LEVEL 2 ORDERBOOK: {market_ticker}")
+                print(f"Strike: ${strike_price:,.2f}")
+                
+                if spread is not None and mid_price is not None:
+                    print(f"Spread: {spread:2d} | Mid: {mid_price:5.2f}")
+                
+                print("=" * 60)
+                
+                # Display BID levels (NO side)
+                print("BID LEVELS (NO - Price < Strike):")
+                bid_rows = [row for row in rows if row[0] == 'no']
+                for row in bid_rows[:5]:  # Top 5 levels
+                    side, price, size, rank, is_best_bid, is_best_ask, _, _, _, _, _ = row
+                    marker = "★" if is_best_bid else " "
+                    print(f"  {marker} {rank}. {price:3d} | {size:6d} shares")
+                
+                print("-" * 30)
+                
+                # Display ASK levels (YES side)
+                print("ASK LEVELS (YES - Price >= Strike):")
+                ask_rows = [row for row in rows if row[0] == 'yes']
+                for row in ask_rows[:5]:  # Top 5 levels
+                    side, price, size, rank, is_best_bid, is_best_ask, _, _, _, _, _ = row
+                    marker = "★" if is_best_ask else " "
+                    print(f"  {marker} {rank}. {price:3d} | {size:6d} shares")
+                
+                print(f"Total Bid Volume: {total_bid_volume:,} | Total Ask Volume: {total_ask_volume:,}")
+                print("=" * 60)
+                
+        except Exception as e:
+            print(f"[{datetime.now(EST)}] ❌ Error displaying Level 2 orderbook: {e}")
     
     async def connect_websocket(self):
         """Connect to Kalshi WebSocket API"""
@@ -283,26 +539,68 @@ class KalshiMarketTickerWatchdog:
             print(f"[{datetime.now(EST)}] ❌ WebSocket connection failed: {e}")
             return False
     
-    def get_current_markets(self):
-        """Get current Bitcoin markets to subscribe to"""
+    def get_current_bitcoin_price(self):
+        """Get current Bitcoin price from a reliable source"""
+        try:
+            # Use CoinGecko API to get current BTC price
+            response = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd", timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            btc_price = data.get("bitcoin", {}).get("usd", 0)
+            print(f"[{datetime.now(EST)}] 💰 Current Bitcoin price: ${btc_price:,.2f}")
+            return btc_price
+        except Exception as e:
+            print(f"[{datetime.now(EST)}] ❌ Failed to get Bitcoin price: {e}")
+            return 118000  # Fallback price
+    
+    def find_nearest_strike_market(self, btc_price):
+        """Find the market with strike price closest to current BTC price"""
         current_ticker, data = get_current_event_ticker()
         if not current_ticker or not data:
             print(f"[{datetime.now(EST)}] ❌ No current Bitcoin markets found")
-            return []
+            return None
         
         markets = data.get("markets", [])
-        market_tickers = []
+        nearest_market = None
+        min_distance = float('inf')
         
         for market in markets:
             ticker = market.get("ticker")
-            if ticker and "KXBTC" in ticker:
-                market_tickers.append(ticker)
+            if ticker and "KXBTC" in ticker and "-T" in ticker:
+                # Extract strike price from ticker like "KXBTCD-25SEP1415-T115499.99"
+                try:
+                    strike_part = ticker.split("-T")[1]
+                    strike_price = float(strike_part)
+                    distance = abs(strike_price - btc_price)
+                    
+                    if distance < min_distance:
+                        min_distance = distance
+                        nearest_market = ticker
+                        
+                except (ValueError, IndexError) as e:
+                    print(f"[{datetime.now(EST)}] ⚠️ Could not parse strike from {ticker}: {e}")
+                    continue
         
-        print(f"[{datetime.now(EST)}] 📊 Found {len(market_tickers)} Bitcoin markets: {market_tickers}")
-        return market_tickers
+        if nearest_market:
+            strike_price = float(nearest_market.split("-T")[1])
+            print(f"[{datetime.now(EST)}] 🎯 Nearest strike: {nearest_market} (${strike_price:,.2f}, distance: ${min_distance:,.2f})")
+        
+        return nearest_market
     
-    async def subscribe_to_market_tickers(self, market_tickers):
-        """Subscribe to market ticker channel for specific markets"""
+    def get_current_markets(self):
+        """Get the single nearest-to-money Bitcoin market to subscribe to"""
+        btc_price = self.get_current_bitcoin_price()
+        nearest_market = self.find_nearest_strike_market(btc_price)
+        
+        if nearest_market:
+            print(f"[{datetime.now(EST)}] 📊 Subscribing to nearest-to-money market: {nearest_market}")
+            return [nearest_market]
+        else:
+            print(f"[{datetime.now(EST)}] ❌ No suitable Bitcoin market found")
+            return []
+    
+    async def subscribe_to_orderbook_updates(self, market_tickers):
+        """Subscribe to orderbook delta channel for specific markets"""
         if not self.websocket:
             return False
         
@@ -312,13 +610,13 @@ class KalshiMarketTickerWatchdog:
                 "id": self.command_id,
                 "cmd": "subscribe",
                 "params": {
-                    "channels": ["ticker_v2"],
+                    "channels": ["orderbook_delta"],
                     "market_tickers": market_tickers
                 }
             }
             
             await self.websocket.send(json.dumps(subscription_message))
-            print(f"[{datetime.now(EST)}] 📡 Sent ticker subscription: {json.dumps(subscription_message)}")
+            print(f"[{datetime.now(EST)}] 📡 Sent orderbook subscription: {json.dumps(subscription_message)}")
             
             # Wait for subscription confirmation
             response = await asyncio.wait_for(self.websocket.recv(), timeout=10)
@@ -326,44 +624,68 @@ class KalshiMarketTickerWatchdog:
             
             if response_data.get("type") == "subscribed":
                 self.subscription_id = response_data.get("msg", {}).get("sid")
-                print(f"[{datetime.now(EST)}] ✅ Subscribed to market tickers with SID: {self.subscription_id}")
+                print(f"[{datetime.now(EST)}] ✅ Subscribed to orderbook updates with SID: {self.subscription_id}")
                 return True
             else:
-                print(f"[{datetime.now(EST)}] ❌ Market ticker subscription failed: {response_data}")
+                print(f"[{datetime.now(EST)}] ❌ Orderbook subscription failed: {response_data}")
                 return False
                 
         except Exception as e:
-            print(f"[{datetime.now(EST)}] ❌ Failed to subscribe to market tickers: {e}")
+            print(f"[{datetime.now(EST)}] ❌ Failed to subscribe to orderbook updates: {e}")
             return False
     
-    async def handle_ticker_message(self, message):
-        """Handle incoming market ticker messages"""
+    async def handle_orderbook_message(self, message):
+        """Handle incoming orderbook messages"""
         try:
             data = json.loads(message)
             
-            if data.get("type") == "ticker_v2":
-                ticker_data = data.get("msg", {})
-                market_ticker = ticker_data.get('market_ticker', '')
+            if data.get("type") == "orderbook_snapshot":
+                # Handle initial orderbook snapshot
+                snapshot_data = data.get("msg", {})
+                market_ticker = snapshot_data.get('market_ticker', '')
+                sequence_number = data.get('seq', 0)
                 
                 # Only process KXBTC entries
                 if "KXBTC" in market_ticker:
-                    print(f"\n[{datetime.now(EST)}] 📊 KXBTC TICKER UPDATE!")
+                    print(f"\n[{datetime.now(EST)}] 📊 ORDERBOOK SNAPSHOT!")
                     print(f"   Market Ticker: {market_ticker}")
-                    print(f"   Price: {ticker_data.get('price')}")
-                    print(f"   Yes Bid: {ticker_data.get('yes_bid')}")
-                    print(f"   Yes Ask: {ticker_data.get('yes_ask')}")
-                    print(f"   Volume: {ticker_data.get('volume')}")
-                    print(f"   Open Interest: {ticker_data.get('open_interest')}")
-                    print(f"   Dollar Volume: {ticker_data.get('dollar_volume')}")
-                    print(f"   Dollar Open Interest: {ticker_data.get('dollar_open_interest')}")
-                    print(f"   Timestamp: {ticker_data.get('ts')}")
+                    print(f"   Sequence: {sequence_number}")
+                    
+                    # Extract orderbook data
+                    orderbook_data = {}
+                    for side in ['yes', 'no']:
+                        if side in snapshot_data:
+                            orderbook_data[side] = snapshot_data[side]
+                            print(f"   {side.upper()}: {len(snapshot_data[side])} levels")
+                    
                     print("=" * 50)
                     
-                    # Update PostgreSQL database
-                    self.update_market_data(ticker_data)
+                    # Save snapshot to database
+                    if self.save_orderbook_snapshot(market_ticker, orderbook_data, sequence_number):
+                        # Save and display Level 2 orderbook
+                        self.save_level2_orderbook(market_ticker, sequence_number)
                 else:
-                    # Log non-KXBTC entries but don't write them
-                    print(f"[{datetime.now(EST)}] ⚠️ Non-KXBTC ticker ignored: {market_ticker}")
+                    print(f"[{datetime.now(EST)}] ⚠️ Non-KXBTC orderbook snapshot ignored: {market_ticker}")
+                    
+            elif data.get("type") == "orderbook_delta":
+                # Handle orderbook delta updates
+                delta_data = data.get("msg", {})
+                market_ticker = delta_data.get('market_ticker', '')
+                side = delta_data.get('side', '')
+                price = delta_data.get('price', 0)
+                delta = delta_data.get('delta', 0)
+                sequence_number = data.get('seq', 0)
+                
+                # Only process KXBTC entries
+                if "KXBTC" in market_ticker:
+                    print(f"[{datetime.now(EST)}] 📈 ORDERBOOK DELTA: {market_ticker} {side} {price} {delta:+d} (seq: {sequence_number})")
+                    
+                    # Save delta to database
+                    if self.save_orderbook_delta(market_ticker, side, price, delta, sequence_number):
+                        # Save and display Level 2 orderbook
+                        self.save_level2_orderbook(market_ticker, sequence_number)
+                else:
+                    print(f"[{datetime.now(EST)}] ⚠️ Non-KXBTC orderbook delta ignored: {market_ticker}")
                 
             elif data.get("type") == "subscribed":
                 print(f"[{datetime.now(EST)}] ✅ Subscription confirmed: {data}")
@@ -388,6 +710,9 @@ class KalshiMarketTickerWatchdog:
                     await asyncio.sleep(5)
                     continue
                 
+                # Clear previous data to start fresh
+                self.clear_previous_data()
+                
                 # Connect to WebSocket
                 if not await self.connect_websocket():
                     print(f"[{datetime.now(EST)}] ❌ Failed to connect, retrying in 5 seconds...")
@@ -401,17 +726,17 @@ class KalshiMarketTickerWatchdog:
                     await asyncio.sleep(30)
                     continue
                 
-                # Subscribe to market tickers
-                if not await self.subscribe_to_market_tickers(market_tickers):
+                # Subscribe to orderbook updates
+                if not await self.subscribe_to_orderbook_updates(market_tickers):
                     print(f"[{datetime.now(EST)}] ❌ Failed to subscribe, retrying...")
                     continue
                 
-                print(f"[{datetime.now(EST)}] 🎧 Listening for market ticker updates...")
-                print(f"[{datetime.now(EST)}] 💡 Real-time ticker data will be written to PostgreSQL!")
+                print(f"[{datetime.now(EST)}] 🎧 Listening for orderbook updates...")
+                print(f"[{datetime.now(EST)}] 💡 Real-time orderbook data will be written to PostgreSQL!")
                 
                 # Listen for messages
                 async for message in self.websocket:
-                    await self.handle_ticker_message(message)
+                    await self.handle_orderbook_message(message)
                     
             except Exception as e:
                 if "ConnectionClosed" in str(e) or "connection closed" in str(e).lower():
@@ -429,18 +754,18 @@ class KalshiMarketTickerWatchdog:
                     await asyncio.sleep(5)
 
 def main():
-    print("🔌 Kalshi Market Ticker WebSocket Watchdog Starting...")
+    print("🔌 Kalshi Orderbook WebSocket Watchdog Starting...")
     
     # Create and run WebSocket watchdog
-    watchdog = KalshiMarketTickerWatchdog()
+    watchdog = KalshiOrderbookWatchdog()
     
     try:
         # Run the WebSocket watchdog
         asyncio.run(watchdog.run_websocket())
     except KeyboardInterrupt:
-        print("🛑 Market ticker watchdog stopped by user")
+        print("🛑 Orderbook watchdog stopped by user")
     except Exception as e:
-        print(f"❌ Error in market ticker watchdog: {e}")
+        print(f"❌ Error in orderbook watchdog: {e}")
 
 if __name__ == "__main__":
     main() 

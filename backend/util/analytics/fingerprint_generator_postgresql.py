@@ -172,7 +172,7 @@ def insert_fingerprint_data(conn, table_name, df):
         conn.rollback()
         raise
 
-def generate_directional_fingerprint(df, percentile_value=None, description=""):
+def generate_directional_fingerprint(df, percentile_value=None, description="", bucket_size=1):
     """
     Generate a directional fingerprint matrix for the given dataframe.
     Tracks both positive and negative price movements relative to ATM line.
@@ -206,17 +206,17 @@ def generate_directional_fingerprint(df, percentile_value=None, description=""):
             print(f"❌ Error: momentum_percentile column not found for percentile filtering")
             return None
         
-        # Filter to rows within the percentile bucket (e.g., percentile_value = -99 means -99.0 to -98.0)
-        percentile_min = percentile_value
-        percentile_max = percentile_value + 1.0
+        # Filter to rows within the momentum bucket (e.g., bucket_value = -99 with bucket_size=10 means -99.0 to -90.0)
+        bucket_min = percentile_value
+        bucket_max = percentile_value + bucket_size
         
-        filtered_df = df[(df['momentum_percentile'] >= percentile_min) & (df['momentum_percentile'] < percentile_max)]
+        filtered_df = df[(df['momentum_percentile'] >= bucket_min) & (df['momentum_percentile'] < bucket_max)]
         
         if len(filtered_df) == 0:
-            print(f"⚠️  No data found for percentile bucket {percentile_value}")
+            print(f"⚠️  No data found for momentum bucket {percentile_value} (range {bucket_min} to {bucket_max})")
             return None
         
-        print(f"📊 Using {len(filtered_df)} rows for percentile bucket {percentile_value} (range {percentile_min} to {percentile_max})")
+        print(f"📊 Using {len(filtered_df)} rows for momentum bucket {percentile_value} (range {bucket_min} to {bucket_max})")
         baseline_indices = filtered_df.index.tolist()
     else:
         # Use all data for baseline
@@ -353,28 +353,36 @@ Examples:
             print(f"❌ Skipping {symbol.upper()} - no data available")
             continue
         
-        # Generate percentile-based fingerprints (-99 to +99)
-        percentile_buckets = list(range(-99, 100))  # -99 to +99 (201 buckets)
-        print(f"📊 Generating {len(percentile_buckets)} fingerprint tables for {symbol.upper()}")
+        # Generate bucketed fingerprints (-99 to +99, grouped in 10-point ranges)
+        momentum_buckets = []
+        # Negative buckets: -90, -80, -70, -60, -50, -40, -30, -20, -10
+        for i in range(-90, 0, 10):
+            momentum_buckets.append(i)
+        # Positive buckets: +10, +20, +30, +40, +50, +60, +70, +80, +90
+        for i in range(10, 100, 10):
+            momentum_buckets.append(i)
         
-        for percentile_value in percentile_buckets:
-            print(f"   Processing percentile bucket: {percentile_value:3d}")
+        print(f"📊 Generating {len(momentum_buckets)} bucketed fingerprint tables for {symbol.upper()}")
+        print(f"📊 Each bucket represents a 10-point momentum range (e.g., -99 bucket = -99 to -90)")
+        
+        for bucket_value in momentum_buckets:
+            print(f"   Processing momentum bucket: {bucket_value:3d} (range {bucket_value:3d} to {bucket_value+9:3d})")
             
-            # Generate fingerprint for this percentile bucket
-            bucket_df = generate_directional_fingerprint(df, percentile_value, f"percentile {percentile_value}")
+            # Generate fingerprint for this momentum bucket (10-point range)
+            bucket_df = generate_directional_fingerprint(df, bucket_value, f"momentum bucket {bucket_value}", bucket_size=10)
             
             if bucket_df is not None:
                 # Create table name with proper formatting
-                if percentile_value < 0:
-                    table_name = f"{symbol}_fingerprint_{percentile_value:03d}"  # e.g., btc_fingerprint_-99
+                if bucket_value < 0:
+                    table_name = f"{symbol}_fingerprint_{bucket_value:03d}"  # e.g., btc_fingerprint_-90
                 else:
-                    table_name = f"{symbol}_fingerprint_{percentile_value:02d}"  # e.g., btc_fingerprint_99
+                    table_name = f"{symbol}_fingerprint_{bucket_value:02d}"  # e.g., btc_fingerprint_10
                 
                 # Write to PostgreSQL database
                 create_fingerprint_table(db_conn, table_name, bucket_df)
                 insert_fingerprint_data(db_conn, table_name, bucket_df)
             else:
-                print(f"   ⚠️  Skipping percentile bucket {percentile_value} - no data")
+                print(f"   ⚠️  Skipping momentum bucket {bucket_value} - no data")
 
     # Close database connection
     if db_conn:

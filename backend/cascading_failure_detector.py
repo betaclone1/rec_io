@@ -54,11 +54,16 @@ class CascadingFailureDetector:
             "trade_executor",      # Trade execution
             "symbol_price_watchdog_btc", # BTC price data
             "symbol_price_watchdog_eth", # ETH price data
+            "symbol_price_watchdog_spx", # SPX price data
             "strike_table_generator_btc", # BTC strike table data
             "strike_table_generator_eth", # ETH strike table data
+            "strike_table_generator_spx", # SPX strike table data
+            "strike_table_generator_ndx", # NDX strike table data
             "kalshi_account_sync", # Kalshi API sync
             "kalshi_market_watchdog_btc", # BTC Kalshi market data
             "kalshi_market_watchdog_eth", # ETH Kalshi market data
+            "kalshi_market_watchdog_spx", # SPX Kalshi market data
+            "kalshi_market_watchdog_ndx", # NDX Kalshi market data
             "kalshi_market_watchdog_inx", # INX Kalshi market data
             "kalshi_market_watchdog_nasdaq100", # NASDAQ100 Kalshi market data
         ]

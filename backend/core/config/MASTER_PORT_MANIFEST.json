@@ -87,6 +87,10 @@
     "supervisor_test.py": {
       "auto_entry_supervisor": 8009,
       "active_trade_supervisor": 8007
+    },
+    "0001_10012": {
+      "auto_entry_supervisor": 8037,
+      "active_trade_supervisor": 8038
     }
   },
   "notes": {

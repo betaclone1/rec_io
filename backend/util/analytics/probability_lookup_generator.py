@@ -138,10 +138,26 @@ class ProbabilityLookupGenerator:
             conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
             
+            # Find the most recent price profile table with date suffix
+            cursor.execute(f"""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'analytics' 
+                AND table_name LIKE '{self.symbol}_price_profile_%'
+                ORDER BY table_name DESC
+                LIMIT 1
+            """)
+            result = cursor.fetchone()
+            if not result:
+                print(f"❌ No price profile table found for {self.symbol}")
+                return None
+            
+            price_profile_table = result[0]
+            
             # Get the 95-99th percentile price movement for extreme buffer sizing
             cursor.execute(f"""
                 SELECT avg_price_change_pct 
-                FROM analytics.{self.symbol}_price_profile 
+                FROM analytics.{price_profile_table} 
                 WHERE range_name = '95-99'
             """)
             
@@ -422,13 +438,12 @@ class ProbabilityLookupGenerator:
         try:
             conn = psycopg2.connect(**self.db_config)
             
-            # Format table name correctly for negative and positive momentum percentile buckets
+            # The momentum_percentile parameter is now the actual bucket value (e.g., -90, -80, 10, 20)
+            # Format table name correctly for bucketed tables
             if momentum_percentile < 0:
-                # For negative numbers, format as -01, -02, etc.
-                abs_value = abs(momentum_percentile)
-                table_name = f"{self.fingerprint_table_prefix}_-{abs_value:02d}"  # Creates -01, -02, etc.
+                table_name = f"{self.fingerprint_table_prefix}_{momentum_percentile:03d}"  # e.g., btc_fingerprint_-90
             else:
-                table_name = f"{self.fingerprint_table_prefix}_{momentum_percentile:02d}"  # Creates 00, 01, etc.
+                table_name = f"{self.fingerprint_table_prefix}_{momentum_percentile:02d}"  # e.g., btc_fingerprint_10
             
             # Get all data from the fingerprint table
             query = f'SELECT * FROM analytics."{table_name}" ORDER BY time_to_close'
@@ -580,7 +595,7 @@ class ProbabilityLookupGenerator:
             return 0.0, 0.0
     
     def create_master_table(self, ttc_range: Tuple[int, int], buffer_range: Tuple[int, int], 
-                          momentum_percentiles: List[int], ttc_step: int = 5, buffer_step: int = 10):
+                          momentum_percentiles: List[int], ttc_step: int = 10, buffer_step: int = 10):
         """
         Create the master probability lookup table.
         
@@ -764,7 +779,7 @@ class ProbabilityLookupGenerator:
                 conn.close()
     
     def create_master_table_batched(self, ttc_range: Tuple[int, int], buffer_range: Tuple[int, int], 
-                                  momentum_percentiles: List[int], ttc_step: int = 5, buffer_step: float = 10.0):
+                                  momentum_percentiles: List[int], ttc_step: int = 10, buffer_step: float = 10.0):
         """
         Create the master probability lookup table using batched processing with resume capability.
         """
@@ -1238,16 +1253,27 @@ def main():
             buffer_range = (0, max_buffer)
             momentum_min = args.momentum_range[0] if args.momentum_range else -10
             momentum_max = args.momentum_range[1] if args.momentum_range else 10
-            momentum_percentiles = list(range(momentum_min, momentum_max + 1))
+            # Use the same bucketing approach for test mode
+            momentum_percentiles = []
+            for i in range(momentum_min, momentum_max + 1, 10):
+                momentum_percentiles.append(i)
             logger.info(f"🧪 TEST MODE: TTC={ttc_range}, Buffer=0-{max_buffer}, Momentum={momentum_min}-{momentum_max}")
         else:
             # FULL DATASET: Complete probability table with full momentum range
-            ttc_range = (0, 3600)  # 0 to 60 minutes (3600 seconds)
-            buffer_range = (0, int(buffer_config['buffer_width_usd']))  # Dynamic buffer width
-            momentum_percentiles = list(range(-99, 100))  # Full range: -99 to +99 (201 percentiles)
-            logger.info(f"📊 FULL DATASET: Generating complete probability table with {len(momentum_percentiles)} momentum percentiles")
+            ttc_range = (0, 3600)  # 0 to 60 minutes (3600 seconds) with 10-second steps
+            buffer_range = (0, buffer_config['buffer_width_usd'])  # Dynamic buffer width (preserve precision)
+            # Use the same 18 momentum buckets as the fingerprint generator
+            momentum_percentiles = []
+            # Negative buckets: -90, -80, -70, -60, -50, -40, -30, -20, -10
+            for i in range(-90, 0, 10):
+                momentum_percentiles.append(i)
+            # Positive buckets: +10, +20, +30, +40, +50, +60, +70, +80, +90
+            for i in range(10, 100, 10):
+                momentum_percentiles.append(i)
+            logger.info(f"📊 FULL DATASET: Generating complete probability table with {len(momentum_percentiles)} momentum buckets")
+            logger.info(f"📊 Momentum buckets: {momentum_percentiles}")
         
-        ttc_step = 10  # 10-second steps (reduced granularity for stability)
+        ttc_step = 10  # 10-second steps (optimized)
         buffer_step = float(buffer_config['step_size_usd'])  # Dynamic step size (keep precision)
         
         # Reset progress if requested

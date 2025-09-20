@@ -1,12 +1,10 @@
 import asyncio
-import websockets
 import json
 from datetime import datetime, timedelta
 from datetime import timezone
 from zoneinfo import ZoneInfo
 import os
 import sys
-import aiohttp
 import requests
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -28,37 +26,19 @@ from backend.util.paths import get_btc_price_history_dir, ensure_data_dirs
 # Ensure all data directories exist
 ensure_data_dirs()
 
-# Symbol configuration
+# Symbol configuration for test version (SPX and NDX)
 SYMBOL_CONFIG = {
-    'BTC': {
-        'method': 'coinbase',
-        'api_endpoint': 'wss://ws-feed.exchange.coinbase.com',
-        'product_id': 'BTC-USD',
-        'table_name': 'live_price_log_1s_btc',
-        'heartbeat_file': 'btc_logger_heartbeat_postgresql.txt',
-        'price_change_file': 'btc_price_change_postgresql.json'
-    },
-    'ETH': {
-        'method': 'coinbase',
-        'api_endpoint': 'wss://ws-feed.exchange.coinbase.com',
-        'product_id': 'ETH-USD',
-        'table_name': 'live_price_log_1s_eth',
-        'heartbeat_file': 'eth_logger_heartbeat_postgresql.txt',
-        'price_change_file': 'eth_price_change_postgresql.json'
-    },
     'SPX': {
-        'method': 'yahoo_finance',
-        'yahoo_symbol': '^SPX',
-        'table_name': 'live_price_log_1s_spx',
-        'heartbeat_file': 'spx_logger_heartbeat_postgresql.txt',
-        'price_change_file': 'spx_price_change_postgresql.json'
+        'yahoo_symbol': '^SPX',  # SPX Index on Yahoo Finance
+        'table_name': 'live_price_log_1s_spx_test',
+        'heartbeat_file': 'spx_test_logger_heartbeat_postgresql.txt',
+        'price_change_file': 'spx_test_price_change_postgresql.json'
     },
     'NDX': {
-        'method': 'yahoo_finance',
-        'yahoo_symbol': '^NDX',
-        'table_name': 'live_price_log_1s_ndx',
-        'heartbeat_file': 'ndx_logger_heartbeat_postgresql.txt',
-        'price_change_file': 'ndx_price_change_postgresql.json'
+        'yahoo_symbol': '^NDX',  # NASDAQ-100 Index on Yahoo Finance
+        'table_name': 'live_price_log_1s_ndx_test',
+        'heartbeat_file': 'ndx_test_logger_heartbeat_postgresql.txt',
+        'price_change_file': 'ndx_test_price_change_postgresql.json'
     }
 }
 
@@ -225,7 +205,7 @@ def get_current_price(symbol: str) -> float:
         print(f"Error getting current price: {e}")
         return 0.0
 
-def get_momentum_data(symbol: str = 'BTC') -> dict:
+def get_momentum_data(symbol: str = 'SPX') -> dict:
     """
     Calculate momentum data natively using the same logic as live_data_analysis.py
     Returns a dictionary with momentum information.
@@ -354,7 +334,7 @@ def calculate_weighted_momentum_score(deltas: Dict[str, Optional[float]]) -> Opt
         return weighted_sum / total_weight
     return None
 
-def calculate_5s_momentum_average(symbol: str = 'BTC') -> Optional[float]:
+def calculate_5s_momentum_average(symbol: str = 'SPX') -> Optional[float]:
     """Calculate 5-second rolling average of momentum values and return as percentile"""
     try:
         conn = get_postgres_connection()
@@ -391,7 +371,7 @@ def calculate_5s_momentum_average(symbol: str = 'BTC') -> Optional[float]:
         print(f"⚠️ 5s momentum average calculation failed: {e}")
         return None
 
-def calculate_native_momentum(symbol: str = 'BTC') -> Dict[str, Any]:
+def calculate_native_momentum(symbol: str = 'SPX') -> Dict[str, Any]:
     """Calculate complete momentum analysis including deltas and weighted score"""
     deltas = calculate_momentum_deltas(symbol)
     weighted_score = calculate_weighted_momentum_score(deltas)
@@ -441,20 +421,11 @@ def insert_tick(symbol: str, timestamp: str, price: float):
                 'delta_30m': None
             }
         
-        # Calculate momentum percentile
+        # Skip momentum percentile calculation (no profile available for SPX yet)
         momentum_percentile = None
-        if momentum_data.get('momentum') is not None:
-            try:
-                momentum_percentile = calculate_momentum_percentile(symbol, momentum_data['momentum'])
-            except Exception as e:
-                print(f"⚠️ Momentum percentile calculation failed: {e}")
         
-        # Calculate 5-second momentum average
+        # Skip 5-second momentum average for now
         momentum_5s_avg = None
-        try:
-            momentum_5s_avg = calculate_5s_momentum_average(symbol)
-        except Exception as e:
-            print(f"⚠️ 5s momentum average calculation failed: {e}")
         
         table_name = SYMBOL_CONFIG[symbol]['table_name']
         
@@ -508,134 +479,24 @@ def insert_tick(symbol: str, timestamp: str, price: float):
     finally:
         conn.close()
 
-async def log_symbol_price(symbol: str):
-    """Log price data for the specified symbol"""
-    global last_logged_second
+class YahooFinanceWatchdog:
+    """Yahoo Finance WebSocket watchdog for SPX live data logging"""
     
-    last_logged_second = None
-    symbol_config = SYMBOL_CONFIG[symbol]
+    def __init__(self, symbol: str):
+        self.symbol = symbol
+        self.symbol_config = SYMBOL_CONFIG[symbol]
+        self.last_logged_second = None
+        self.ticker = None
+        
+        # Skip momentum profile for now - just focus on price feed
+        print(f"🔄 Skipping momentum profile loading for {symbol} (test mode)...")
     
-    # Pre-load momentum profile for this symbol
-    print(f"🔄 Pre-loading momentum profile for {symbol}...")
-    load_momentum_profile(symbol)
-    
-    while True:
-        try:
-            async with websockets.connect(symbol_config['api_endpoint']) as websocket:
-                subscribe_message = {
-                    "type": "subscribe",
-                    "channels": [{"name": "ticker", "product_ids": [symbol_config['product_id']]}]
-                }
-                await websocket.send(json.dumps(subscribe_message))
-
-                while True:
-                    try:
-                        message = await asyncio.wait_for(websocket.recv(), timeout=10)
-                        data = json.loads(message)
-
-                        if data.get("type") != "ticker" or "price" not in data:
-                            continue
-
-                        price = float(data["price"])
-                        now = datetime.now(ZoneInfo("America/New_York"))
-                        now = now.replace(microsecond=0)
-
-                        current_second = int(now.timestamp())
-                        if last_logged_second == current_second:
-                            continue
-                        last_logged_second = current_second
-
-                        rounded_timestamp = now.strftime("%Y-%m-%dT%H:%M:%S")
-                        formatted_price = f"${price:,.2f}"
-
-                        insert_tick(symbol, rounded_timestamp, price)
-
-                        # Ensure the directory exists before writing to the heartbeat file
-                        heartbeat_path = os.path.join(get_btc_price_history_dir(), symbol_config['heartbeat_file'])
-                        os.makedirs(os.path.dirname(heartbeat_path), exist_ok=True)
-                        with open(heartbeat_path, "w") as hb:
-                            hb.write(f"{rounded_timestamp} {symbol} logger alive (PostgreSQL)\n")
-
-                    except asyncio.TimeoutError:
-                        print("⚠️ WebSocket timeout. Reconnecting...")
-                        break
-        except Exception as e:
-            print("⚠️ Logger encountered an error:", e)
-            import traceback
-            traceback.print_exc()
-            await asyncio.sleep(5)
-
-async def poll_kraken_price_changes(symbol: str):
-    """Poll Kraken for price changes (supports BTC and ETH)"""
-    while True:
-        try:
-            # Configure Kraken API endpoints for different symbols
-            if symbol == 'BTC':
-                url = "https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=60"
-            elif symbol == 'ETH':
-                url = "https://api.kraken.com/0/public/OHLC?pair=ETHUSD&interval=60"
-            else:
-                # Skip for unsupported symbols
-                await asyncio.sleep(60)
-                continue
-                
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=10) as resp:
-                    if resp.status == 200:
-                        json_data = await resp.json()
-                        result = json_data.get("result", {})
-                        pair_key = next((key for key in result.keys() if key != "last"), None)
-                        if pair_key and pair_key in result:
-                            data = result[pair_key]
-                            if len(data) >= 25:
-                                close_now = float(data[-1][4])
-                                close_1h = float(data[-2][4])
-                                close_3h = float(data[-4][4])
-                                close_1d = float(data[-25][4])
-                                def pct_change(from_val, to_val):
-                                    return (to_val - from_val) / from_val * 100 if from_val else None
-                                changes = {
-                                    "change1h": pct_change(close_1h, close_now),
-                                    "change3h": pct_change(close_3h, close_now),
-                                    "change1d": pct_change(close_1d, close_now),
-                                    "timestamp": datetime.now(ZoneInfo("America/New_York"))
-                                }
-                                # Write to PostgreSQL database
-                                conn = get_postgres_connection()
-                                if conn:
-                                    try:
-                                        cursor = conn.cursor()
-                                        table_name = f"price_change_{symbol.lower()}"
-                                        cursor.execute(f"""
-                                            INSERT INTO live_data.{table_name} 
-                                            (change1h, change3h, change1d, timestamp)
-                                            VALUES (%s, %s, %s, %s)
-                                        """, (changes["change1h"], changes["change3h"], changes["change1d"], changes["timestamp"]))
-                                        conn.commit()
-                                        cursor.close()
-                                        conn.close()
-                                    except Exception as e:
-                                        print(f"[Database Error for {symbol}]", e)
-                                        if conn:
-                                            conn.close()
-        except Exception as e:
-            print(f"[Kraken Poll Error for {symbol}]", e)
-        await asyncio.sleep(60)
-
-def handle_yahoo_finance_symbol(symbol: str):
-    """Handle Yahoo Finance symbols (SPX, NDX, etc.) synchronously"""
-    symbol_config = SYMBOL_CONFIG[symbol]
-    last_logged_second = None
-    
-    # Pre-load momentum profile for this symbol
-    print(f"🔄 Pre-loading momentum profile for {symbol}...")
-    load_momentum_profile(symbol)
-    
-    def on_new_msg(ws, msg):
+    def on_new_msg(self, ws, msg):
         """Handle incoming Yahoo Finance ticker messages"""
-        nonlocal last_logged_second
         try:
-            # Parse the Yahoo Finance message
+            print(f"📨 Received message: {msg}")  # Debug: print the actual message format
+            
+            # Parse the Yahoo Finance message - yliveticker returns different formats
             price = None
             if isinstance(msg, dict):
                 # Try different possible price field names
@@ -645,58 +506,115 @@ def handle_yahoo_finance_symbol(symbol: str):
                         break
             
             if price is None:
+                print(f"⚠️ No price found in message: {msg}")
                 return
             
             now = datetime.now(ZoneInfo("America/New_York"))
             now = now.replace(microsecond=0)
             
             current_second = int(now.timestamp())
-            if last_logged_second == current_second:
+            if self.last_logged_second == current_second:
                 return
-            last_logged_second = current_second
+            self.last_logged_second = current_second
             
             rounded_timestamp = now.strftime("%Y-%m-%dT%H:%M:%S")
             
+            print(f"💰 Processing {self.symbol} price: ${price:,.2f}")
+            
             # Insert the tick data
-            insert_tick(symbol, rounded_timestamp, price)
+            insert_tick(self.symbol, rounded_timestamp, price)
             
             # Update heartbeat file
-            heartbeat_path = os.path.join(get_btc_price_history_dir(), symbol_config['heartbeat_file'])
+            heartbeat_path = os.path.join(get_btc_price_history_dir(), self.symbol_config['heartbeat_file'])
             os.makedirs(os.path.dirname(heartbeat_path), exist_ok=True)
             with open(heartbeat_path, "w") as hb:
-                hb.write(f"{rounded_timestamp} {symbol} logger alive (PostgreSQL)\n")
+                hb.write(f"{rounded_timestamp} {self.symbol} test logger alive (PostgreSQL)\n")
                 
         except Exception as e:
             print(f"⚠️ Error processing Yahoo Finance message: {e}")
             import traceback
             traceback.print_exc()
     
-    try:
-        print(f"🚀 Starting Yahoo Finance watchdog for {symbol} ({symbol_config['yahoo_symbol']})")
-        
-        # Create and start the Yahoo Finance live ticker
-        ticker = yliveticker.YLiveTicker(
-            on_ticker=on_new_msg,
-            ticker_names=[symbol_config['yahoo_symbol']]
-        )
-        
-        # Keep the main thread alive
-        while True:
-            import time
-            time.sleep(1)
+    def start_logging(self):
+        """Start the Yahoo Finance live ticker"""
+        try:
+            print(f"🚀 Starting Yahoo Finance watchdog for {self.symbol} ({self.symbol_config['yahoo_symbol']})")
             
-    except KeyboardInterrupt:
-        print(f"\n🛑 Stopping {symbol} watchdog...")
-        if ticker:
-            ticker.close()
-    except Exception as e:
-        print(f"❌ Yahoo Finance watchdog error: {e}")
-        import traceback
-        traceback.print_exc()
+            # Create and start the Yahoo Finance live ticker
+            self.ticker = yliveticker.YLiveTicker(
+                on_ticker=self.on_new_msg,
+                ticker_names=[self.symbol_config['yahoo_symbol']]
+            )
+            
+            # Keep the main thread alive
+            while True:
+                import time
+                time.sleep(1)
+                
+        except KeyboardInterrupt:
+            print(f"\n🛑 Stopping {self.symbol} watchdog...")
+            if self.ticker:
+                self.ticker.close()
+        except Exception as e:
+            print(f"❌ Yahoo Finance watchdog error: {e}")
+            import traceback
+            traceback.print_exc()
+
+async def poll_yahoo_price_changes(symbol: str):
+    """Poll Yahoo Finance for price changes using yfinance"""
+    import yfinance as yf
+    
+    while True:
+        try:
+            yahoo_symbol = SYMBOL_CONFIG[symbol]['yahoo_symbol']
+            ticker = yf.Ticker(yahoo_symbol)
+            
+            # Get historical data for the last day with 1-hour intervals
+            hist = ticker.history(period="1d", interval="1h")
+            
+            if not hist.empty and len(hist) >= 2:
+                close_now = hist['Close'].iloc[-1]
+                close_1h = hist['Close'].iloc[-2] if len(hist) >= 2 else close_now
+                close_3h = hist['Close'].iloc[-4] if len(hist) >= 4 else close_now
+                close_1d = hist['Close'].iloc[0] if len(hist) >= 24 else close_now
+                
+                def pct_change(from_val, to_val):
+                    return (to_val - from_val) / from_val * 100 if from_val else None
+                
+                changes = {
+                    "change1h": pct_change(close_1h, close_now),
+                    "change3h": pct_change(close_3h, close_now),
+                    "change1d": pct_change(close_1d, close_now),
+                    "timestamp": datetime.now(ZoneInfo("America/New_York"))
+                }
+                
+                # Write to PostgreSQL database
+                conn = get_postgres_connection()
+                if conn:
+                    try:
+                        cursor = conn.cursor()
+                        table_name = f"price_change_{symbol.lower()}_test"
+                        cursor.execute(f"""
+                            INSERT INTO live_data.{table_name} 
+                            (change1h, change3h, change1d, timestamp)
+                            VALUES (%s, %s, %s, %s)
+                        """, (changes["change1h"], changes["change3h"], changes["change1d"], changes["timestamp"]))
+                        conn.commit()
+                        cursor.close()
+                        conn.close()
+                        print(f"📊 {symbol} price changes logged: 1h={changes['change1h']:.2f}%, 3h={changes['change3h']:.2f}%, 1d={changes['change1d']:.2f}%")
+                    except Exception as e:
+                        print(f"[Database Error for {symbol}]", e)
+                        if conn:
+                            conn.close()
+                            
+        except Exception as e:
+            print(f"[Yahoo Finance Poll Error for {symbol}]", e)
+        await asyncio.sleep(300)  # Poll every 5 minutes
 
 async def main():
-    parser = argparse.ArgumentParser(description='Symbol Price Watchdog')
-    parser.add_argument('symbol', help='Symbol to monitor (e.g., BTC, ETH, SPX)')
+    parser = argparse.ArgumentParser(description='Symbol Price Watchdog Test Version')
+    parser.add_argument('symbol', help='Symbol to monitor (e.g., SPX)')
     args = parser.parse_args()
     
     symbol = args.symbol.upper()
@@ -706,20 +624,22 @@ async def main():
         print(f"Supported symbols: {list(SYMBOL_CONFIG.keys())}")
         return
     
-    config = SYMBOL_CONFIG[symbol]
-    method = config.get('method', 'coinbase')  # Default to coinbase for backward compatibility
+    print(f"Starting {symbol} Price Watchdog Test Version (PostgreSQL + Yahoo Finance)")
     
-    print(f"Starting {symbol} Price Watchdog (PostgreSQL) using {method}")
+    # Create the watchdog instance
+    watchdog = YahooFinanceWatchdog(symbol)
     
-    if method == 'yahoo_finance':
-        # Yahoo Finance symbols (SPX, NDX, etc.) - run synchronously
-        handle_yahoo_finance_symbol(symbol)
-    else:
-        # Coinbase symbols (BTC, ETH) - run async
-        await asyncio.gather(
-            log_symbol_price(symbol),
-            poll_kraken_price_changes(symbol)
-        )
+    # Start both the live ticker and price change polling
+    try:
+        # Run price change polling in the background
+        poll_task = asyncio.create_task(poll_yahoo_price_changes(symbol))
+        
+        # Start the main watchdog (this will block)
+        watchdog.start_logging()
+        
+    except KeyboardInterrupt:
+        print(f"\n🛑 Shutting down {symbol} watchdog...")
+        poll_task.cancel()
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())

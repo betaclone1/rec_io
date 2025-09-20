@@ -145,7 +145,8 @@ def trigger_trade():
         raw_side = data.get("side", "yes")
         side = "yes" if raw_side in ["Y", "yes"] else "no"
         count = data.get("count", data.get("position", 1))
-        order_type = data.get("type", "market")
+        # Always use limit orders - Kalshi no longer accepts market orders
+        order_type = "limit"
         buy_price = data.get("buy_price")
         
         order_payload = {
@@ -157,6 +158,12 @@ def trigger_trade():
             "action": "buy",
             "client_order_id": str(uuid.uuid4())
         }
+        
+        # Add price field based on side (hardcoded to 99 for market-like behavior)
+        if side == "yes":
+            order_payload["yes_price"] = 99
+        else:
+            order_payload["no_price"] = 99
         
 
         timestamp = str(int(time.time() * 1000))

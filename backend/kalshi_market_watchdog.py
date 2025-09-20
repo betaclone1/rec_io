@@ -133,6 +133,8 @@ def get_current_event_ticker(symbol):
         'BTC': {'prefix': 'KXBTCD', 'format': 'crypto'},
         'ETH': {'prefix': 'KXETHD', 'format': 'crypto'},
         'INX': {'prefix': 'KXINXU', 'format': 'financial'},
+        'SPX': {'prefix': 'KXINXU', 'format': 'financial'},  # SPX maps to INX tickers
+        'NDX': {'prefix': 'KXNASDAQ100U', 'format': 'financial'},  # NDX maps to NASDAQ100 tickers
         'NASDAQ100': {'prefix': 'KXNASDAQ100U', 'format': 'financial'}
     }
     
@@ -184,6 +186,84 @@ def get_current_event_ticker(symbol):
 
     return None, None
 
+def get_current_symbol_price(symbol):
+    """Get current price for the symbol from live price tables"""
+    try:
+        connection = connect_database()
+        if not connection:
+            return None
+            
+        cursor = connection.cursor()
+        
+        # Map symbol to price table
+        price_tables = {
+            'BTC': 'live_price_log_1s_btc',
+            'ETH': 'live_price_log_1s_eth', 
+            'SPX': 'live_price_log_1s_spx',
+            'NDX': 'live_price_log_1s_ndx'
+        }
+        
+        table_name = price_tables.get(symbol.upper())
+        if not table_name:
+            connection.close()
+            return None
+            
+        cursor.execute(f"SELECT price FROM live_data.{table_name} ORDER BY timestamp DESC LIMIT 1")
+        result = cursor.fetchone()
+        connection.close()
+        
+        if result:
+            return float(result[0])
+        return None
+        
+    except Exception as e:
+        print(f"[{datetime.now(EST)}] ❌ Error getting current price for {symbol}: {e}")
+        return None
+
+def filter_markets_by_price_range(markets_data, symbol, strike_count=75):
+    """Filter markets to keep only the closest strikes to current price"""
+    try:
+        current_price = get_current_symbol_price(symbol)
+        if not current_price:
+            print(f"[{datetime.now(EST)}] ⚠️ No current price for {symbol}, returning all markets")
+            return markets_data
+        
+        # Extract strike prices and sort by distance from current price
+        markets_with_distance = []
+        for market in markets_data:
+            subtitle = market.get("subtitle", "")
+            strike_str = subtitle.split(" or above")[0].strip() if "or above" in subtitle else ""
+            
+            try:
+                # Parse strike price (remove $ and commas)
+                strike_price = float(strike_str.replace("$", "").replace(",", ""))
+                distance = abs(strike_price - current_price)
+                markets_with_distance.append((market, strike_price, distance))
+            except (ValueError, AttributeError):
+                # Skip markets with unparseable strikes
+                continue
+        
+        # Sort by distance from current price and take the closest ones
+        markets_with_distance.sort(key=lambda x: x[2])  # Sort by distance
+        closest_markets = markets_with_distance[:strike_count]
+        
+        # Extract just the market data
+        filtered_markets = [market_data[0] for market_data in closest_markets]
+        
+        strike_range = ""
+        if closest_markets:
+            min_strike = min(m[1] for m in closest_markets)
+            max_strike = max(m[1] for m in closest_markets)
+            strike_range = f"${min_strike:,.0f} - ${max_strike:,.0f}"
+        
+        print(f"[{datetime.now(EST)}] 🎯 Filtered {len(markets_data)} markets to {len(filtered_markets)} strikes around ${current_price:,.2f} (range: {strike_range})")
+        
+        return filtered_markets
+        
+    except Exception as e:
+        print(f"[{datetime.now(EST)}] ❌ Error filtering markets: {e}")
+        return markets_data  # Return all markets if filtering fails
+
 def fetch_event_json(event_ticker):
     url = f"{BASE_URL}/events/{event_ticker}"
     try:
@@ -217,6 +297,16 @@ def save_market_data_to_postgresql(event_ticker, markets_data, symbol):
                 # Extract strike from subtitle (e.g., "$104,250 or above" -> "$104,250")
                 subtitle = market.get("subtitle", "")
                 strike = subtitle.split(" or above")[0].strip() if "or above" in subtitle else ""
+                
+                # Format strike consistently for financial symbols (SPX, NDX, INX)
+                if symbol.upper() in ['SPX', 'NDX', 'INX'] and strike:
+                    try:
+                        # Remove any existing $ and decimals, then reformat
+                        clean_strike = strike.replace("$", "").replace(",", "")
+                        strike_value = int(float(clean_strike))
+                        strike = f"${strike_value:,}"
+                    except (ValueError, TypeError):
+                        pass  # Keep original strike if parsing fails
                 
                 yes_bid = market.get("yes_bid", 0)
                 yes_ask = market.get("yes_ask", 0)
@@ -308,8 +398,11 @@ def main():
                 
                 print(f"[{datetime.now(EST)}] 📊 Processing event: {event_ticker}")
                 
+                # Filter markets to 75 closest strikes around current price
+                filtered_markets = filter_markets_by_price_range(event_data["markets"], SYMBOL, 75)
+                
                 # Save to PostgreSQL
-                success = save_market_data_to_postgresql(event_ticker, event_data["markets"], SYMBOL)
+                success = save_market_data_to_postgresql(event_ticker, filtered_markets, SYMBOL)
                 
                 if not success:
                     print(f"[{datetime.now(EST)}] ❌ Failed to save data for {event_ticker}")

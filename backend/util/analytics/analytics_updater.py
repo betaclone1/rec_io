@@ -20,7 +20,7 @@ import sys
 import time
 import logging
 import argparse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 from pathlib import Path
 import pandas as pd
 import subprocess
@@ -34,6 +34,29 @@ from momentum_generator_pg import fill_missing_momentum_in_db
 from symbol_profiler import SymbolProfiler
 from fingerprint_archiver import create_archive, find_fingerprint_files
 
+def is_weekday_9am_to_12pm(timestamp_str):
+    """
+    Check if timestamp is a weekday between 9:00 AM and 12:00 PM East Coast time.
+    
+    Args:
+        timestamp_str: Timestamp string in format 'YYYY-MM-DD HH:MM:SS'
+        
+    Returns:
+        bool: True if weekday between 9am-12pm East Coast time
+    """
+    # Parse timestamp (assume it's already in East Coast time since that's how we store it)
+    dt = pd.to_datetime(timestamp_str)
+    
+    # Check if it's a weekday (Monday=0, Sunday=6)
+    is_weekday = dt.weekday() < 5  # Monday=0 to Friday=4
+    
+    # Check if time is between 9:00 AM and 12:00 PM
+    time_9am = dt_time(9, 0, 0)
+    time_12pm = dt_time(12, 0, 0)
+    is_business_hours = time_9am <= dt.time() < time_12pm
+    
+    return is_weekday and is_business_hours
+
 # Configure logging
 def setup_logging():
     """Setup logging for the weekly update process."""
@@ -43,14 +66,24 @@ def setup_logging():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = log_dir / f"weekly_update_{timestamp}.log"
     
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
+    # Create file handler with immediate flushing
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    
+    # Create console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    
+    # Force immediate flushing
+    logging.getLogger().handlers[0].flush()
     
     return logging.getLogger(__name__), log_file
 
@@ -62,6 +95,21 @@ def log_step(logger, step_name, start_time=None):
     else:
         logger.info(f"🚀 Starting: {step_name}")
         return time.time()
+    
+    # Force flush logs immediately
+    for handler in logger.handlers:
+        handler.flush()
+
+def log_table_operation(logger, operation, symbol, table_name, details=""):
+    """Log table-specific operations with detailed information."""
+    message = f"TABLE: {operation} - {symbol.upper()} - {table_name}"
+    if details:
+        message += f" - {details}"
+    logger.info(message)
+    
+    # Force flush logs immediately
+    for handler in logger.handlers:
+        handler.flush()
 
 def get_symbols_from_db():
     """Get list of symbols from PostgreSQL database."""
@@ -83,15 +131,24 @@ def update_symbol_datasets(logger, symbols):
     for symbol in symbols:
         try:
             logger.info(f"Updating {symbol} dataset in PostgreSQL...")
+            log_table_operation(logger, "UPDATING", symbol, f"{symbol.lower()}_price_history", "Starting price data update")
             
             # Update the dataset in PostgreSQL
-            table_name, rows_fetched = update_existing_db(f"{symbol}/USD")
+            # Financial symbols don't need /USD suffix
+            if symbol.upper() in ['SPX', 'NDX', 'SPY', 'QQQ']:
+                symbol_for_fetch = symbol
+            else:
+                symbol_for_fetch = f"{symbol}/USD"
+            
+            table_name, rows_fetched = update_existing_db(symbol_for_fetch)
             
             if rows_fetched > 0:
                 logger.info(f"✅ {symbol} dataset updated successfully: {rows_fetched} new rows")
+                log_table_operation(logger, "COMPLETED", symbol, f"{symbol.lower()}_price_history", f"{rows_fetched} new rows added")
                 updated_symbols.append(symbol)
             else:
                 logger.warning(f"⚠️ {symbol} dataset update: no new data")
+                log_table_operation(logger, "NO_UPDATE", symbol, f"{symbol.lower()}_price_history", "No new data available")
                 
         except Exception as e:
             logger.error(f"❌ Error updating {symbol} dataset: {e}")
@@ -107,11 +164,13 @@ def run_momentum_generation(logger, symbols):
     for symbol in symbols:
         try:
             logger.info(f"Generating momentum for {symbol} in PostgreSQL...")
+            log_table_operation(logger, "PROCESSING", symbol, f"{symbol.lower()}_price_history", "Calculating momentum values")
             
             # Run momentum generation in PostgreSQL
             fill_missing_momentum_in_db(symbol)
             
             logger.info(f"✅ {symbol} momentum generation completed")
+            log_table_operation(logger, "COMPLETED", symbol, f"{symbol.lower()}_price_history", "Momentum calculation finished")
             processed_symbols.append(symbol)
             
         except Exception as e:
@@ -131,10 +190,21 @@ def generate_momentum_profiles(logger, symbols):
             
             # Create profiler and generate profile
             profiler = SymbolProfiler(symbol.lower())
+            
+            # Generate momentum profile
+            from datetime import datetime
+            today = datetime.now().strftime("%Y%m%d")
+            momentum_table = f"{symbol.lower()}_momentum_profile_{today}"
+            price_table = f"{symbol.lower()}_price_profile_{today}"
+            
+            log_table_operation(logger, "CREATING", symbol, momentum_table, "Generating momentum profile")
             profile_df = profiler.generate_profile()
+            log_table_operation(logger, "COMPLETED", symbol, momentum_table, f"{len(profile_df)} percentile records")
             
             # Generate price profile
+            log_table_operation(logger, "CREATING", symbol, price_table, "Generating price profile")
             profiler.generate_price_profile()
+            log_table_operation(logger, "COMPLETED", symbol, price_table, "Price profile generated")
             
             logger.info(f"✅ {symbol} momentum and price profiles generated: {len(profile_df)} percentiles")
             processed_symbols.append(symbol)
@@ -145,9 +215,12 @@ def generate_momentum_profiles(logger, symbols):
     logger.info(f"Profile generation completed for {len(processed_symbols)} symbols")
     return processed_symbols
 
-def assign_momentum_percentiles(logger, symbols):
+def assign_momentum_percentiles(logger, symbols, weekday_filter=False):
     """Step 4: Assign momentum percentiles to price history tables."""
     logger.info("📊 Step 4: Assigning momentum percentiles to price history tables")
+    
+    if weekday_filter:
+        logger.info("📅 Using weekday filter for percentile assignment: Only processing data from weekdays 9:00 AM - 12:00 PM East Coast")
     
     processed_symbols = []
     for symbol in symbols:
@@ -156,6 +229,12 @@ def assign_momentum_percentiles(logger, symbols):
             
             # Create profiler instance
             profiler = SymbolProfiler(symbol.lower())
+            
+            # Override table names with date suffix
+            from datetime import datetime
+            today = datetime.now().strftime("%Y%m%d")
+            suffix = "_weekday" if weekday_filter else ""
+            profiler.momentum_profile_table = f"analytics.{symbol.lower()}_momentum_profile_{today}{suffix}"
             
             # Assign momentum percentiles
             profiler.assign_momentum_percentiles()
@@ -256,20 +335,27 @@ def archive_existing_fingerprints(logger, symbols):
     
     return archived_files
 
-def generate_new_fingerprints(logger, symbols):
+def generate_new_fingerprints(logger, symbols, weekday_filter=False):
     """Step 7: Run fingerprint_generator_postgresql to generate updated percentile-based fingerprints."""
     logger.info("🔢 Step 7: Generating new percentile-based fingerprint tables in PostgreSQL")
+    
+    if weekday_filter:
+        logger.info("📅 Using weekday filter: Only processing data from weekdays 9:00 AM - 12:00 PM East Coast")
     
     logger.info(f"Generating percentile-based fingerprints for symbols: {symbols}")
     
     # Run fingerprint generation using subprocess with symbol arguments
     # The new fingerprint generator takes symbol names directly
-    process = subprocess.Popen([
-        sys.executable, os.path.join(os.path.dirname(__file__), "fingerprint_generator_postgresql.py")
-    ] + symbols, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=os.path.dirname(__file__))
+    command = [sys.executable, os.path.join(os.path.dirname(__file__), "fingerprint_generator_postgresql.py")] + symbols
+    
+    # Add weekday filter argument if enabled
+    if weekday_filter:
+        command.append("--weekday-filter")
+    
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=os.path.dirname(__file__))
     
     # Monitor progress in real-time
-    total_tables = len(symbols) * 201  # 201 fingerprint tables per symbol
+    total_tables = len(symbols) * 20  # 20 bucketed fingerprint tables per symbol
     completed_tables = 0
     
     while True:
@@ -282,7 +368,7 @@ def generate_new_fingerprints(logger, symbols):
             print(f"FINGERPRINT: {line}", flush=True)  # Real-time output
             
             # Track actual progress
-            if "Processing percentile bucket:" in line:
+            if "Processing momentum bucket:" in line:
                 completed_tables += 1
                 percent = (completed_tables / total_tables) * 100
                 logger.info(f"PROGRESS: Step 7 - {completed_tables}/{total_tables} tables ({percent:.1f}%)")
@@ -297,17 +383,72 @@ def generate_new_fingerprints(logger, symbols):
     logger.info(f"Fingerprint generation completed for {len(symbols)} symbols")
     return symbols
 
-def generate_lookup_tables(logger, symbols):
+def generate_momentum_profiles(logger, symbols, weekday_filter=False):
+    """Step 3: Generate momentum and price profiles with dated table names."""
+    logger.info("📊 Step 3: Generating momentum and price profiles")
+    
+    if weekday_filter:
+        logger.info("📅 Using weekday filter for profile generation: Only processing data from weekdays 9:00 AM - 12:00 PM East Coast")
+    
+    from datetime import datetime
+    
+    # Get today's date for table naming
+    today = datetime.now().strftime("%Y%m%d")
+    
+    successful_symbols = []
+    
+    for symbol in symbols:
+        symbol_lower = symbol.lower()
+        logger.info(f"🔧 Generating profiles for {symbol.upper()}...")
+        
+        try:
+            # Create SymbolProfiler instance with custom table names
+            suffix = "_weekday" if weekday_filter else ""
+            momentum_table_name = f"{symbol_lower}_momentum_profile_{today}{suffix}"
+            price_table_name = f"{symbol_lower}_price_profile_{today}{suffix}"
+            
+            # Create profiler and override table names
+            profiler = SymbolProfiler(symbol_lower)
+            profiler.momentum_profile_table = f"analytics.{momentum_table_name}"
+            profiler.price_profile_table = f"analytics.{price_table_name}"
+            
+            # Generate momentum profile with dated table name
+            logger.info(f"📊 Creating momentum profile: {momentum_table_name}")
+            profiler.generate_profile()
+            
+            # Generate price profile with dated table name  
+            logger.info(f"📊 Creating price profile: {price_table_name}")
+            profiler.generate_price_profile()
+            
+            logger.info(f"✅ Successfully generated profiles for {symbol.upper()}")
+            successful_symbols.append(symbol)
+            
+        except Exception as e:
+            logger.error(f"❌ Error generating profiles for {symbol.upper()}: {e}")
+            continue
+    
+    logger.info(f"✅ Profile generation completed for {len(successful_symbols)} symbols")
+    return successful_symbols
+
+def generate_lookup_tables(logger, symbols, weekday_filter=False):
     """Step 8: Run probability_lookup_generator to generate probability lookup tables."""
     logger.info("📊 Step 8: Generating probability lookup tables in PostgreSQL")
     
     logger.info(f"Generating probability lookup tables for symbols: {symbols}")
     
+    # Build command arguments
+    command_args = symbols + ["--reset-progress"]
+    
+    # Add weekday filter argument if enabled
+    if weekday_filter:
+        command_args.append("--weekday-filter")
+    
     # Run lookup table generation using subprocess with symbol arguments
     # The lookup generator takes symbol names directly and has resume capability
+    # Always reset progress to ensure fresh generation
     process = subprocess.Popen([
         sys.executable, os.path.join(os.path.dirname(__file__), "probability_lookup_generator.py")
-    ] + symbols, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=os.path.dirname(__file__))
+    ] + command_args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=os.path.dirname(__file__))
     
     # Monitor progress in real-time
     while True:
@@ -361,24 +502,33 @@ def create_master_lookup_tables(logger, symbols):
             conn = psycopg2.connect(**db_config)
             cursor = conn.cursor()
             
-            # Check if the main lookup table exists and has data
+            # Find the most recent timestamped lookup table that was just created
             cursor.execute(f"""
-                SELECT COUNT(*) FROM information_schema.tables 
+                SELECT table_name 
+                FROM information_schema.tables 
                 WHERE table_schema = 'analytics' 
-                AND table_name = 'probability_lookup_{symbol_lower}'
+                AND table_name LIKE 'probability_lookup_{symbol_lower}_%'
+                AND table_name NOT LIKE '%master%'
+                AND table_name NOT LIKE '%test%'
+                ORDER BY table_name DESC
+                LIMIT 1
             """)
             
-            if cursor.fetchone()[0] == 0:
-                logger.warning(f"⚠️ Main lookup table for {symbol.upper()} does not exist, skipping master table creation")
+            result = cursor.fetchone()
+            if not result:
+                logger.warning(f"⚠️ No timestamped lookup table found for {symbol.upper()}, skipping master table creation")
                 conn.close()
                 continue
             
-            # Check if the main table has data
-            cursor.execute(f"SELECT COUNT(*) FROM analytics.probability_lookup_{symbol_lower}")
+            timestamped_table_name = result[0]
+            logger.info(f"📋 Found timestamped table: {timestamped_table_name}")
+            
+            # Check if the timestamped table has data
+            cursor.execute(f"SELECT COUNT(*) FROM analytics.{timestamped_table_name}")
             row_count = cursor.fetchone()[0]
             
             if row_count == 0:
-                logger.warning(f"⚠️ Main lookup table for {symbol.upper()} is empty, skipping master table creation")
+                logger.warning(f"⚠️ Timestamped lookup table {timestamped_table_name} is empty, skipping master table creation")
                 conn.close()
                 continue
             
@@ -398,11 +548,11 @@ def create_master_lookup_tables(logger, symbols):
                 conn.close()
                 continue
             
-            # Create the master table by copying the main table
+            # Create the master table by copying the timestamped table
             logger.info(f"📋 Creating master table: {master_table_name}")
             cursor.execute(f"""
                 CREATE TABLE analytics.{master_table_name} AS 
-                SELECT * FROM analytics.probability_lookup_{symbol_lower}
+                SELECT * FROM analytics.{timestamped_table_name}
             """)
             
             # Create index for optimal performance
@@ -441,6 +591,92 @@ def create_master_lookup_tables(logger, symbols):
     logger.info(f"✅ Master lookup table creation completed for {len(successful_symbols)} symbols")
     return successful_symbols
 
+def cleanup_analytics_tables(logger, symbols):
+    """Clean up working tables and old master tables after successful analytics update."""
+    logger.info("🧹 Starting analytics table cleanup...")
+    
+    import psycopg2
+    from datetime import datetime
+    
+    # Database configuration
+    db_config = {
+        'host': 'localhost',
+        'database': 'rec_io_db',
+        'user': 'rec_io_user',
+        'password': 'rec_io_password'
+    }
+    
+    today = datetime.now().strftime("%Y%m%d")
+    
+    for symbol in symbols:
+        symbol_lower = symbol.lower()
+        logger.info(f"🧹 Cleaning up tables for {symbol.upper()}...")
+        
+        try:
+            conn = psycopg2.connect(**db_config)
+            cursor = conn.cursor()
+            
+            # 1. Delete working tables from current session (timestamped, non-master)
+            cursor.execute(f"""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'analytics' 
+                AND table_name LIKE 'probability_lookup_{symbol_lower}_%'
+                AND table_name NOT LIKE '%master%'
+                ORDER BY table_name DESC
+            """)
+            
+            working_tables = cursor.fetchall()
+            for (table_name,) in working_tables:
+                logger.info(f"🗑️ Deleting working table: {table_name}")
+                cursor.execute(f"DROP TABLE analytics.{table_name}")
+            
+            # 2. Delete oldest master lookup tables (keep current and previous)
+            cursor.execute(f"""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'analytics' 
+                AND table_name LIKE 'probability_lookup_{symbol_lower}_master_%'
+                ORDER BY table_name ASC
+            """)
+            
+            all_master_tables = [row[0] for row in cursor.fetchall()]
+            
+            # Delete all but the 2 most recent (delete oldest ones)
+            if len(all_master_tables) > 2:
+                tables_to_delete = all_master_tables[:-2]  # Keep last 2, delete the rest
+                for table_name in tables_to_delete:
+                    logger.info(f"🗑️ Deleting old master table: {table_name}")
+                    cursor.execute(f"DROP TABLE analytics.{table_name}")
+            
+            # 3. Delete oldest profile tables (momentum and price)
+            for profile_type in ['momentum_profile', 'price_profile']:
+                cursor.execute(f"""
+                    SELECT table_name 
+                    FROM information_schema.tables 
+                    WHERE table_schema = 'analytics' 
+                    AND table_name LIKE '{symbol_lower}_{profile_type}_%'
+                    ORDER BY table_name ASC
+                    LIMIT 1
+                """)
+                
+                oldest_table = cursor.fetchone()
+                if oldest_table:
+                    table_name = oldest_table[0]
+                    logger.info(f"🗑️ Deleting oldest {profile_type} table: {table_name}")
+                    cursor.execute(f"DROP TABLE analytics.{table_name}")
+            
+            conn.commit()
+            conn.close()
+            logger.info(f"✅ Cleanup completed for {symbol.upper()}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error during cleanup for {symbol.upper()}: {e}")
+            if 'conn' in locals():
+                conn.close()
+    
+    logger.info("✅ Analytics table cleanup completed")
+
 def verify_lookup_table_completeness(cursor, table_name, symbol):
     """Verify that a lookup table has complete coverage of all required parameters."""
     try:
@@ -463,10 +699,10 @@ def verify_lookup_table_completeness(cursor, table_name, symbol):
         stats = cursor.fetchone()
         min_ttc, max_ttc, ttc_count, min_momentum, max_momentum, momentum_count, min_buffer, max_buffer, buffer_count, total_rows = stats
         
-        # Check for missing TTC values (should be 0-3600 in 5-second increments = 721 values)
+        # Check for missing TTC values (should be 0-3600 in 10-second increments = 361 values)
         cursor.execute(f"""
             WITH expected_ttc AS (
-                SELECT generate_series(0, 3600, 5) as ttc_seconds
+                SELECT generate_series(0, 3600, 10) as ttc_seconds
             ),
             actual_ttc AS (
                 SELECT DISTINCT ttc_seconds FROM analytics.{table_name}
@@ -479,10 +715,10 @@ def verify_lookup_table_completeness(cursor, table_name, symbol):
         
         missing_ttc = cursor.fetchone()[0] or ""
         
-        # Check for missing momentum values (should be -99 to +99 = 199 values)
+        # Check for missing momentum values (should be 18 buckets: -90, -80, ..., -10, 10, 20, ..., 90)
         cursor.execute(f"""
             WITH expected_momentum AS (
-                SELECT generate_series(-99, 99, 1) as momentum_bucket
+                SELECT unnest(ARRAY[-90, -80, -70, -60, -50, -40, -30, -20, -10, 10, 20, 30, 40, 50, 60, 70, 80, 90]) as momentum_bucket
             ),
             actual_momentum AS (
                 SELECT DISTINCT momentum_bucket FROM analytics.{table_name}
@@ -497,8 +733,8 @@ def verify_lookup_table_completeness(cursor, table_name, symbol):
         
         # Determine if table is complete
         is_complete = (
-            min_ttc == 0 and max_ttc == 3600 and ttc_count == 721 and
-            min_momentum == -99 and max_momentum == 99 and momentum_count == 199 and
+            min_ttc == 0 and max_ttc == 3600 and ttc_count == 361 and
+            min_momentum == -90 and max_momentum == 90 and momentum_count == 18 and
             missing_ttc == "" and missing_momentum == ""
         )
         
@@ -567,6 +803,7 @@ def main():
     parser.add_argument("symbols", nargs="+", help="Symbols to process (e.g., btc eth)")
     parser.add_argument("--steps", nargs="+", help="Specific steps to run (e.g., update_price_logs generate_lookup_tables)")
     parser.add_argument("--skip-steps", nargs="+", help="Steps to skip (e.g., update_price_logs)")
+    parser.add_argument("--weekday-filter", action="store_true", help="Filter data to weekdays 9:00 AM - 12:00 PM East Coast only")
     args = parser.parse_args()
     
     # Convert symbols to uppercase
@@ -581,6 +818,12 @@ def main():
     logger.info(f"Timestamp: {datetime.now().isoformat()}")
     logger.info(f"Log file: {log_file}")
     logger.info(f"Processing symbols: {symbols}")
+    
+    # Log weekday filter setting
+    if args.weekday_filter:
+        logger.info("📅 Weekday filter ENABLED: Only using data from weekdays 9:00 AM - 12:00 PM East Coast")
+    else:
+        logger.info("📅 Weekday filter DISABLED: Using all historical data")
     
     # Define all available steps
     all_steps = [
@@ -625,10 +868,14 @@ def main():
     }
     
     try:
-        # Step 1: Update symbol datasets
+        # Step 1: Update symbol datasets  
         if "update_price_logs" in steps_to_run:
             step_start = log_step(logger, "Symbol dataset updates")
             results['updated_symbols'] = update_symbol_datasets(logger, symbols)
+            # If no symbols had new data, still process all requested symbols for analytics
+            if not results['updated_symbols']:
+                logger.info("📊 No new price data found, but processing all requested symbols for analytics")
+                results['updated_symbols'] = symbols
             log_step(logger, "Symbol dataset updates", step_start)
         else:
             logger.info("⏭️ Skipping Step 1: Update symbol datasets")
@@ -646,7 +893,7 @@ def main():
         # Step 3: Generate profiles (momentum + price profiles)
         if "generate_profiles" in steps_to_run:
             step_start = log_step(logger, "Profile generation")
-            results['profile_symbols'] = generate_momentum_profiles(logger, results['momentum_symbols'])
+            results['profile_symbols'] = generate_momentum_profiles(logger, results['momentum_symbols'], args.weekday_filter)
             log_step(logger, "Profile generation", step_start)
         else:
             logger.info("⏭️ Skipping Step 3: Profile generation")
@@ -655,7 +902,7 @@ def main():
         # Step 4: Assign momentum percentiles
         if "assign_percentiles" in steps_to_run:
             step_start = log_step(logger, "Momentum percentile assignment")
-            results['percentile_symbols'] = assign_momentum_percentiles(logger, results['profile_symbols'])
+            results['percentile_symbols'] = assign_momentum_percentiles(logger, results['profile_symbols'], args.weekday_filter)
             log_step(logger, "Momentum percentile assignment", step_start)
         else:
             logger.info("⏭️ Skipping Step 4: Momentum percentile assignment")
@@ -682,7 +929,7 @@ def main():
         # Step 7: Generate new fingerprints
         if "generate_fingerprints" in steps_to_run:
             step_start = log_step(logger, "Fingerprint generation")
-            results['generated_symbols'] = generate_new_fingerprints(logger, results['percentile_symbols'])
+            results['generated_symbols'] = generate_new_fingerprints(logger, results['percentile_symbols'], args.weekday_filter)
             log_step(logger, "Fingerprint generation", step_start)
         else:
             logger.info("⏭️ Skipping Step 7: Fingerprint generation")
@@ -691,7 +938,7 @@ def main():
         # Step 8: Generate probability lookup tables
         if "generate_lookup_tables" in steps_to_run:
             step_start = log_step(logger, "Lookup table generation")
-            results['lookup_symbols'] = generate_lookup_tables(logger, results['generated_symbols'])
+            results['lookup_symbols'] = generate_lookup_tables(logger, results['generated_symbols'], args.weekday_filter)
             log_step(logger, "Lookup table generation", step_start)
         else:
             logger.info("⏭️ Skipping Step 8: Lookup table generation")
@@ -705,6 +952,12 @@ def main():
         else:
             logger.info("⏭️ Skipping Step 9: Master lookup table creation")
             results['master_symbols'] = results['lookup_symbols']
+        
+        # Step 10: Cleanup old tables (always run if master tables were created)
+        if "create_master_lookup_tables" in steps_to_run and results['master_symbols']:
+            step_start = log_step(logger, "Analytics table cleanup")
+            cleanup_analytics_tables(logger, results['master_symbols'])
+            log_step(logger, "Analytics table cleanup", step_start)
         
         # Create summary report
         results['total_duration'] = time.time() - start_time

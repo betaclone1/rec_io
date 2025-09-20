@@ -5207,7 +5207,47 @@ async def update_monitors_allocation(request: dict):
                     WHERE id = %s AND status = 'active'
                 """, (new_decimal, new_dollar_amount_cents, monitor_id))
                 
-                print(f"Updated monitor {monitor_id}: {new_percentage}% (${new_dollar_amount_cents/100:.2f})")
+                # CRITICAL: Recalculate total_position after allotment change
+                # Get current monitor settings for calculation
+                cursor.execute(f"""
+                    SELECT position_size, position_type, multiplier 
+                    FROM users.monitor_list_{user_number} 
+                    WHERE id = %s
+                """, (monitor_id,))
+                
+                pos_result = cursor.fetchone()
+                if pos_result:
+                    position_size, position_type, multiplier = pos_result
+                    
+                    # Calculate new total_position based on updated allotment
+                    if position_type == 'percent':
+                        # For percent: round((position_size * allotment_dollars / 100) * multiplier)
+                        allotment_dollars = new_dollar_amount_cents / 100
+                        new_total_position = int(round((position_size * allotment_dollars / 100) * float(multiplier)))
+                    else:
+                        # For contracts: position_size * multiplier
+                        new_total_position = int(position_size * float(multiplier))
+                    
+                    # Update total_position
+                    cursor.execute(f"""
+                        UPDATE users.monitor_list_{user_number} 
+                        SET total_position = %s 
+                        WHERE id = %s
+                    """, (new_total_position, monitor_id))
+                    
+                    print(f"Updated monitor {monitor_id}: {new_percentage}% (${new_dollar_amount_cents/100:.2f}) -> total_position: {new_total_position}")
+                    
+                    # Send WebSocket notification to frontend about total_position update
+                    try:
+                        import requests
+                        requests.post('http://localhost:3000/api/broadcast_monitor_total_position', json={
+                            'monitor_id': monitor_id,
+                            'total_position': new_total_position
+                        }, timeout=1)
+                    except Exception as e:
+                        print(f"Failed to send total_position update notification: {str(e)}")
+                else:
+                    print(f"Updated monitor {monitor_id}: {new_percentage}% (${new_dollar_amount_cents/100:.2f}) - no position data found")
         
         conn.commit()
         conn.close()

@@ -5,6 +5,7 @@ import sys
 import psycopg2
 from datetime import datetime, timedelta
 import numpy as np
+from typing import Optional
 
 # Add project root to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
@@ -281,6 +282,7 @@ def update_momentum_in_db(symbol: str, df: pd.DataFrame, indices_to_update=None,
 def fill_missing_momentum_in_db(symbol: str, start_date: str = None, end_date: str = None):
     """
     Fill missing momentum values in the PostgreSQL database.
+    Uses gap substitution method for financial symbols.
     
     Args:
         symbol: The symbol (BTC, ETH, etc.)
@@ -288,6 +290,10 @@ def fill_missing_momentum_in_db(symbol: str, start_date: str = None, end_date: s
         end_date: Optional end date filter (YYYY-MM-DD)
     """
     print(f"Filling missing momentum for {symbol} in database...")
+    
+    # Check if this is a financial symbol
+    is_financial = is_financial_symbol(symbol)
+    print(f"Symbol type: {'Financial' if is_financial else 'Crypto'}")
     
     # Load data from database
     df = load_data_from_db(symbol, start_date, end_date)
@@ -304,28 +310,14 @@ def fill_missing_momentum_in_db(symbol: str, start_date: str = None, end_date: s
     # Calculate momentum for missing rows
     calculated_indices = []
     for i in indices:
-        if i < 30:
-            continue  # Not enough history
+        if is_financial:
+            momentum = calculate_financial_momentum_with_gaps(df, i)
+        else:
+            momentum = calculate_crypto_momentum_standard(df, i)
         
-        P_now = df.loc[i, 'close']
-        P_1m  = df.loc[i - 1, 'close']
-        P_2m  = df.loc[i - 2, 'close']
-        P_3m  = df.loc[i - 3, 'close']
-        P_4m  = df.loc[i - 4, 'close']
-        P_15m = df.loc[i - 15, 'close']
-        P_30m = df.loc[i - 30, 'close']
-        
-        score = (
-            ((P_now - P_1m)  / P_1m)  * 0.30 +
-            ((P_now - P_2m)  / P_2m)  * 0.25 +
-            ((P_now - P_3m)  / P_3m)  * 0.20 +
-            ((P_now - P_4m)  / P_4m)  * 0.15 +
-            ((P_now - P_15m) / P_15m) * 0.05 +
-            ((P_now - P_30m) / P_30m) * 0.05
-        ) * 100
-        
-        df.at[i, 'momentum'] = round(score, 4)
-        calculated_indices.append(i)
+        if momentum is not None:
+            df.at[i, 'momentum'] = momentum
+            calculated_indices.append(i)
     
     # Update database with calculated momentum values (only the ones we calculated)
     update_momentum_in_db(symbol, df, calculated_indices, update_percentiles=True)
@@ -358,6 +350,149 @@ def calculate_momentum_for_db(symbol: str, start_date: str = None, end_date: str
     # Update database with calculated momentum values
     update_momentum_in_db(symbol, df, update_percentiles=True)
     print(f"Successfully calculated and updated momentum for {symbol} in database.")
+
+def is_financial_symbol(symbol: str) -> bool:
+    """
+    Determine if a symbol is a financial symbol (stocks, indices) vs crypto.
+    """
+    financial_symbols = ['SPX', 'NDX', 'SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA']
+    crypto_symbols = ['BTC', 'ETH', 'LTC', 'XRP', 'ADA', 'DOT', 'SOL', 'AVAX', 'MATIC']
+    
+    base_symbol = symbol.split('/')[0].split('-')[0].upper()
+    
+    # Check crypto first
+    if base_symbol in crypto_symbols:
+        return False
+    if '/' in symbol and 'USD' in symbol:
+        return False  # Likely crypto (BTC/USD, ETH/USD)
+    
+    # Check financial
+    if base_symbol in financial_symbols:
+        return True
+    
+    # Default to financial for unknown single symbols
+    return True
+
+def calculate_financial_momentum_with_gaps(df: pd.DataFrame, index: int) -> Optional[float]:
+    """
+    Calculate momentum for financial symbols using gap substitution method.
+    """
+    if index < 1:
+        return None
+    
+    current_price = df.loc[index, 'close']
+    current_timestamp = df.loc[index, 'timestamp']
+    
+    # Get overnight gap (if we're early in trading session)
+    overnight_gap = get_overnight_gap_delta(df, index)
+    
+    # Calculate each momentum component
+    deltas = []
+    weights = [0.30, 0.25, 0.20, 0.15, 0.05, 0.05]  # 1m, 2m, 3m, 4m, 15m, 30m
+    lookbacks = [1, 2, 3, 4, 15, 30]
+    
+    for minutes_back, weight in zip(lookbacks, weights):
+        if index >= minutes_back and is_same_trading_session(df, index, index - minutes_back):
+            # We have live data for this lookback period
+            past_price = df.loc[index - minutes_back, 'close']
+            delta = (current_price - past_price) / past_price
+        elif overnight_gap is not None:
+            # Use overnight gap as substitute
+            delta = overnight_gap
+        else:
+            # No data available, skip this component
+            continue
+            
+        deltas.append(delta * weight)
+    
+    if not deltas:
+        return None
+    
+    # Sum weighted deltas and convert to percentage
+    momentum = sum(deltas) * 100
+    return round(momentum, 4)
+
+def calculate_crypto_momentum_standard(df: pd.DataFrame, index: int) -> Optional[float]:
+    """
+    Calculate momentum for crypto symbols using standard method.
+    """
+    if index < 30:
+        return None  # Not enough history
+    
+    P_now = df.loc[index, 'close']
+    P_1m  = df.loc[index - 1, 'close']
+    P_2m  = df.loc[index - 2, 'close']
+    P_3m  = df.loc[index - 3, 'close']
+    P_4m  = df.loc[index - 4, 'close']
+    P_15m = df.loc[index - 15, 'close']
+    P_30m = df.loc[index - 30, 'close']
+    
+    score = (
+        ((P_now - P_1m)  / P_1m)  * 0.30 +
+        ((P_now - P_2m)  / P_2m)  * 0.25 +
+        ((P_now - P_3m)  / P_3m)  * 0.20 +
+        ((P_now - P_4m)  / P_4m)  * 0.15 +
+        ((P_now - P_15m) / P_15m) * 0.05 +
+        ((P_now - P_30m) / P_30m) * 0.05
+    ) * 100
+    
+    return round(score, 4)
+
+def get_overnight_gap_delta(df: pd.DataFrame, current_index: int) -> Optional[float]:
+    """Get overnight gap delta if we're early in the trading session."""
+    current_timestamp = df.loc[current_index, 'timestamp']
+    current_price = df.loc[current_index, 'close']
+    
+    # Only use gap substitution in first 30 minutes of trading
+    if not is_early_trading_session(current_timestamp):
+        return None
+    
+    # Find previous trading day's close
+    prev_close = find_previous_close(df, current_index)
+    if prev_close is None:
+        return None
+    
+    # Calculate overnight gap delta
+    gap_delta = (current_price - prev_close) / prev_close
+    return gap_delta
+
+def is_early_trading_session(timestamp: pd.Timestamp) -> bool:
+    """Check if we're in the first 30 minutes of trading (9:30-10:00 AM)."""
+    import pandas as pd
+    time_of_day = timestamp.time()
+    return (pd.Timestamp('09:30:00').time() <= time_of_day <= pd.Timestamp('10:00:00').time())
+
+def find_previous_close(df: pd.DataFrame, current_index: int) -> Optional[float]:
+    """Find the previous trading day's closing price by looking for a significant time gap."""
+    current_timestamp = df.loc[current_index, 'timestamp']
+    
+    # Look backwards for a gap > 30 minutes (indicates overnight/weekend break)
+    for i in range(current_index - 1, max(0, current_index - 200), -1):
+        past_timestamp = df.loc[i, 'timestamp']
+        time_diff = (current_timestamp - past_timestamp).total_seconds() / 60  # minutes
+        
+        if time_diff > 30:  # Found overnight/weekend gap
+            return df.loc[i, 'close']
+    
+    return None
+
+def is_same_trading_session(df: pd.DataFrame, index1: int, index2: int) -> bool:
+    """Check if two indices are from the same trading session."""
+    if index1 < 0 or index2 < 0 or index1 >= len(df) or index2 >= len(df):
+        return False
+        
+    timestamp1 = df.loc[index1, 'timestamp']
+    timestamp2 = df.loc[index2, 'timestamp']
+    
+    # Different dates = different sessions
+    if timestamp1.date() != timestamp2.date():
+        return False
+    
+    # Check for gaps > 5 minutes
+    time_diff = abs((timestamp1 - timestamp2).total_seconds() / 60)
+    expected_diff = abs(index1 - index2) * 1.5  # Allow 1.5 minutes per index step
+    
+    return time_diff <= expected_diff
 
 def get_symbols_from_db():
     """

@@ -1461,16 +1461,16 @@ def check_expired_trades():
         # Step 1: Delete trades with status ERROR
         delete_error_trades()
         
-        # Step 2: Check for open trades to mark as expired
+        # Step 2: Check for open and closing trades to mark as expired
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
-                cursor.execute("SELECT id, ticker, symbol FROM users.trades_0001 WHERE status = 'open'")
-                open_trades = cursor.fetchall()
+                cursor.execute("SELECT id, ticker, symbol FROM users.trades_0001 WHERE status IN ('open', 'closing')")
+                active_trades = cursor.fetchall()
         else:
-            open_trades = []
+            active_trades = []
         
-        if not open_trades:
+        if not active_trades:
             return
         
         now_est = datetime.now(ZoneInfo("America/New_York"))
@@ -1478,7 +1478,7 @@ def check_expired_trades():
         
         # Get symbol-specific closing prices for each trade
         symbol_prices = {}
-        for trade_id, ticker, symbol in open_trades:
+        for trade_id, ticker, symbol in active_trades:
             if symbol not in symbol_prices:
                 try:
                     # Get price from symbol-specific price log
@@ -1502,7 +1502,7 @@ def check_expired_trades():
             pg_conn = get_postgresql_connection()
             if pg_conn:
                 with pg_conn.cursor() as cursor:
-                    for trade_id, ticker, symbol in open_trades:
+                    for trade_id, ticker, symbol in active_trades:
                         symbol_close = symbol_prices.get(symbol)
                         cursor.execute("""
                             UPDATE users.trades_0001 
@@ -1510,10 +1510,10 @@ def check_expired_trades():
                                 closed_at = %s, 
                                 symbol_close = %s,
                                 close_method = 'expired'
-                            WHERE id = %s AND status = 'open'
+                            WHERE id = %s AND status IN ('open', 'closing')
                         """, (closed_at, symbol_close, trade_id))
                     pg_conn.commit()
-                    print(f"💾 Expired trades update written to PostgreSQL users.trades_0001 for {len(open_trades)} trades")
+                    print(f"💾 Expired trades update written to PostgreSQL users.trades_0001 for {len(active_trades)} trades (open and closing)")
                 pg_conn.close()
             else:
                 print(f"⚠️ Skipping PostgreSQL expired trades update - no connection available")
@@ -1522,10 +1522,10 @@ def check_expired_trades():
         
         notify_frontend_trade_change()
         
-        for trade_id, ticker, symbol in open_trades:
+        for trade_id, ticker, symbol in active_trades:
             notify_active_trade_supervisor_direct(trade_id, str(ticker), "expired")
         
-        expired_tickers = [trade[1] for trade in open_trades]
+        expired_tickers = [trade[1] for trade in active_trades]
         poll_settlements_for_matches(expired_tickers)
         
     except Exception as e:

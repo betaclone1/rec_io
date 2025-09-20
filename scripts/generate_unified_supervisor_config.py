@@ -163,8 +163,12 @@ class SupervisorConfigGenerator:
                 "auto_entry_supervisor": 8002,
                 "symbol_price_watchdog_btc": 8008,
                 "symbol_price_watchdog_eth": 8009,
+                "symbol_price_watchdog_spx": 8017,
+                "symbol_price_watchdog_ndx": 8019,
                 "kalshi_account_sync": 8004,
                 "kalshi_market_watchdog_btc": 8005,
+                "kalshi_market_watchdog_spx": 8018,
+                "kalshi_market_watchdog_ndx": 8020,
                 "system_monitor": 8006,
                 "monitor_manager": 8012,
                 "cascading_failure_detector": 8007
@@ -219,6 +223,16 @@ class SupervisorConfigGenerator:
                 "port": ports.get("symbol_price_watchdog_eth", 8009)
             },
             {
+                "name": "symbol_price_watchdog_spx",
+                "script": "symbol_price_watchdog.py SPX",
+                "port": ports.get("symbol_price_watchdog_spx", 8017)
+            },
+            {
+                "name": "symbol_price_watchdog_ndx",
+                "script": "symbol_price_watchdog.py NDX",
+                "port": ports.get("symbol_price_watchdog_ndx", 8019)
+            },
+            {
                 "name": "kalshi_account_sync",
                 "script": "kalshi_account_sync_ws.py",
                 "port": ports.get("kalshi_account_sync", 8004)
@@ -227,6 +241,21 @@ class SupervisorConfigGenerator:
                 "name": "kalshi_market_watchdog_btc",
                 "script": "kalshi_market_watchdog.py BTC",
                 "port": ports.get("kalshi_market_watchdog_btc", 8005)
+            },
+            {
+                "name": "kalshi_market_watchdog_eth",
+                "script": "kalshi_market_watchdog.py ETH",
+                "port": ports.get("kalshi_market_watchdog_eth", 8010)
+            },
+            {
+                "name": "kalshi_market_watchdog_spx",
+                "script": "kalshi_market_watchdog.py SPX",
+                "port": ports.get("kalshi_market_watchdog_spx", 8018)
+            },
+            {
+                "name": "kalshi_market_watchdog_ndx",
+                "script": "kalshi_market_watchdog.py NDX",
+                "port": ports.get("kalshi_market_watchdog_ndx", 8020)
             },
             {
                 "name": "system_monitor",
@@ -270,7 +299,7 @@ class SupervisorConfigGenerator:
         
         # Add symbol-specific strike table generators
         # Define supported symbols (this should match the symbols in symbol_price_watchdog.py)
-        supported_symbols = ['BTC']  # Add more symbols as needed
+        supported_symbols = ['BTC', 'ETH', 'SPX', 'NDX']  # Add more symbols as needed
         
         strike_table_port_base = 8020  # Start strike table ports at 8020
         for i, symbol in enumerate(supported_symbols):

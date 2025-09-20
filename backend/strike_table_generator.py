@@ -107,7 +107,7 @@ class LookupProbabilityCalculator:
             if conn:
                 conn.close()
     
-    def get_probability(self, ttc_seconds: int, buffer_points: int, momentum_bucket: int) -> tuple[float, float]:
+    def get_probability(self, ttc_seconds: int, buffer_points: int, momentum_bucket: int, conn=None) -> tuple[float, float]:
         """
         Get probability values from lookup table with bilinear interpolation.
         
@@ -133,9 +133,12 @@ class LookupProbabilityCalculator:
             logger.warning(f"Buffer {buffer_points} outside lookup table range (0-{self.max_buffer}), using max buffer as fallback")
             buffer_points = self.max_buffer
         
-        conn = None
+        use_external_conn = conn is not None
+        if not use_external_conn:
+            conn = None
         try:
-            conn = psycopg2.connect(**self.db_config)
+            if not use_external_conn:
+                conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
             
             # Calculate dynamic buffer range based on symbol's buffer spacing
@@ -232,7 +235,7 @@ class LookupProbabilityCalculator:
             logger.error(f"Error in lookup probability calculation: {e}")
             raise
         finally:
-            if conn:
+            if conn and not use_external_conn:
                 conn.close()
     
     
@@ -337,7 +340,9 @@ class StrikeTableGenerator:
     def __init__(self, symbol: str):
         self.symbol = symbol.lower()
         self.db_config = POSTGRES_CONFIG
+        logger.info(f"🔧 Initializing strike table generator for {symbol.upper()}")
         self.calculator = LookupProbabilityCalculator(symbol)
+        logger.info(f"✅ Strike table generator initialized for {symbol.upper()}")
     
     def generate_market_title(self, event_ticker: str) -> str:
         """
@@ -435,11 +440,21 @@ class StrikeTableGenerator:
                 volume INTEGER,
                 ticker VARCHAR(50),
                 active_side VARCHAR(10),
+                momentum_weighted_score DECIMAL(5,3),
                 momentum_percentile DECIMAL(5,1),
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             )
             """
             cursor.execute(strike_table_sql)
+            
+            # Add missing momentum_weighted_score column if it doesn't exist
+            try:
+                cursor.execute(f"ALTER TABLE live_data.strike_table_{self.symbol.lower()} ADD COLUMN momentum_weighted_score DECIMAL(5,3);")
+                conn.commit()  # Commit the ALTER TABLE before continuing
+            except psycopg2.ProgrammingError:
+                # Column already exists, ignore error
+                conn.rollback()  # Rollback and continue
+                pass
             
             # Create index for strike table
             strike_index_sql = f"""
@@ -462,6 +477,7 @@ class StrikeTableGenerator:
         """Get current market data from live_data.live_price_log_1s_{symbol} and Kalshi snapshot."""
         try:
             # Get current price and momentum from PostgreSQL
+            logger.info(f"🔍 Connecting to database for {self.symbol.upper()} price data...")
             conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
             
@@ -533,11 +549,13 @@ class StrikeTableGenerator:
             for row in market_rows:
                 market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask, last_price, volume, volume_24h, open_interest, liquidity, updated_at = row
                 
-                # Convert strike from "$104,250" format to float
+                # Convert strike from "$104,250" or "6,475.0099" format to float
                 floor_strike = None
-                if strike and strike.startswith('$'):
+                if strike:
                     try:
-                        floor_strike = float(strike.replace('$', '').replace(',', ''))
+                        # Handle both formats: with or without '$' prefix
+                        clean_strike = strike.replace('$', '').replace(',', '')
+                        floor_strike = float(clean_strike)
                     except ValueError:
                         continue
                 
@@ -673,6 +691,7 @@ class StrikeTableGenerator:
             momentum_score = market_info["momentum_score"]
             momentum_percentile = market_info["momentum_percentile"]
             market_data = market_info["market_data"]
+            logger.info(f"✅ Got market data - Price: ${current_price:,.2f}, Momentum: {momentum_percentile:.1f}")
             
             # Calculate TTC
             ttc_seconds = self.calculate_ttc_seconds(market_data["strike_date"])
@@ -696,9 +715,19 @@ class StrikeTableGenerator:
             # Sort by distance from current price
             available_strikes.sort(key=lambda x: abs(x - current_price))
             
-            # Take the closest strikes (up to 21 total)
-            max_strikes = min(21, len(available_strikes))
-            strikes = available_strikes[:max_strikes]
+            # Filter strikes to only include those within lookup table buffer range
+            max_buffer = self.calculator.max_buffer
+            filtered_strikes = []
+            for strike in available_strikes:
+                buffer = abs(current_price - strike)
+                if buffer <= max_buffer:
+                    filtered_strikes.append(strike)
+                else:
+                    logger.debug(f"Skipping strike {strike} - buffer {buffer} exceeds max buffer {max_buffer}")
+            
+            # Take the closest strikes (up to 21 total) from filtered list
+            max_strikes = min(21, len(filtered_strikes))
+            strikes = filtered_strikes[:max_strikes]
             
             logger.info(f"🎯 Processing {len(strikes)} strikes from market data")
             
@@ -711,7 +740,13 @@ class StrikeTableGenerator:
             cursor = conn.cursor()
             
             # Clear ALL previous strike table data - only keep current iteration
-            cursor.execute(f"DELETE FROM live_data.strike_table_{self.symbol.lower()}")
+            try:
+                cursor.execute(f"DELETE FROM live_data.strike_table_{self.symbol.lower()}")
+                logger.info(f"✅ Cleared previous strike table data for {self.symbol.upper()}")
+            except Exception as e:
+                logger.error(f"❌ Error clearing strike table: {e}")
+                conn.rollback()
+                raise
             
             # Process each strike
             strike_data = []
@@ -723,7 +758,7 @@ class StrikeTableGenerator:
                     
                     # Get probability from lookup table
                     pos_prob, neg_prob = self.calculator.get_probability(
-                        ttc_seconds, int(buffer), momentum_bucket
+                        ttc_seconds, int(buffer), momentum_bucket, conn
                     )
                     
                     # Handle case where no probability found

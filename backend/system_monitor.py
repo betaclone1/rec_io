@@ -130,7 +130,7 @@ class SystemMonitor:
                 discovered_services[active_trade_name] = active_trade_port
             
             # Add strike table generators
-            supported_symbols = ['BTC']
+            supported_symbols = ['BTC', 'ETH', 'SPX']
             strike_table_port_base = 8020
             for i, symbol in enumerate(supported_symbols):
                 strike_table_port = strike_table_port_base + i
@@ -814,8 +814,8 @@ class SystemMonitor:
                 # Group services by category (updated to match current configuration)
                 service_categories = {
                     "Core Trading": ["main_app", "trade_manager", "trade_executor"],
-                    "Data Services": ["symbol_price_watchdog_btc", "symbol_price_watchdog_eth", "strike_table_generator_btc"],
-                    "Kalshi API": ["kalshi_account_sync", "kalshi_market_watchdog_btc"],
+                    "Data Services": ["symbol_price_watchdog_btc", "symbol_price_watchdog_eth", "symbol_price_watchdog_spx", "symbol_price_watchdog_ndx", "strike_table_generator_btc", "strike_table_generator_eth", "strike_table_generator_spx", "strike_table_generator_ndx"],
+                    "Kalshi API": ["kalshi_account_sync", "kalshi_market_watchdog_btc", "kalshi_market_watchdog_eth", "kalshi_market_watchdog_spx", "kalshi_market_watchdog_ndx"],
                     "Monitor Management": ["monitor_manager"],
                     "System Management": ["cascading_failure_detector", "system_monitor"]
                 }

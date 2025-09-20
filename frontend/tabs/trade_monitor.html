@@ -2031,6 +2031,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const symbolMap = {
         'BTC': 'COINBASE:BTCUSD',
         'ETH': 'COINBASE:ETHUSD',
+        'SPX': 'SPX500',
+        'NDX': 'NDX',
         'SOL': 'COINBASE:SOLUSD'
       };
       const tradingViewSymbol = symbolMap[symbol] || `COINBASE:${symbol}USD`;
@@ -2071,11 +2073,20 @@ document.addEventListener('DOMContentLoaded', () => {
         const symbolMap = {
           'BTC': 'COINBASE:BTCUSD',
           'ETH': 'COINBASE:ETHUSD',
-          'SOL': 'COINBASE:SOLUSD'
+          'SPX': 'SPX500',
+          'NDX': 'NDX'
         };
+        
+        // Debug: Check if symbol exists in map
+        console.log('[TradingView] Symbol in map:', symbolMap[symbol]);
+        console.log('[TradingView] Symbol type:', typeof symbol);
+        console.log('[TradingView] Symbol length:', symbol ? symbol.length : 'null');
+        
         const tradingViewSymbol = symbolMap[symbol] || `COINBASE:${symbol}USD`;
         
+        console.log('[TradingView] Final tradingViewSymbol:', tradingViewSymbol);
         console.log('[TradingView] Updating widget to symbol:', tradingViewSymbol);
+        
         try {
           window.tvWidget.setSymbol(tradingViewSymbol);
           console.log('[TradingView] Successfully updated to:', tradingViewSymbol);
@@ -2945,8 +2956,8 @@ async function fetchAndRenderTradeHistory() {
       // Format win/loss
       const winLoss = trade.win_loss || '';
       
-      // Format momentum percentile (now using 5s average)
-      const momentum = trade.momentum_5s_avg !== null && trade.momentum_5s_avg !== undefined ? Number(trade.momentum_5s_avg).toFixed(1) : '';
+      // Format momentum percentile
+      const momentum = trade.momentum_percentile !== null && trade.momentum_percentile !== undefined ? Number(trade.momentum_percentile).toFixed(1) : '';
       
       // Format symbol prices
       const symbolOpen = trade.symbol_open !== null && trade.symbol_open !== undefined ? '$' + Math.round(trade.symbol_open).toLocaleString() : '';
@@ -3329,10 +3340,13 @@ async function fetchAndRenderPositions() {
     // Filter positions by current monitor's symbol if monitor is selected
     let filteredPositions = positions;
     if (currentMonitorId && currentSymbol) {
+      // Map SPX to INX for Kalshi ticker matching (SPX uses INX tickers on Kalshi)
+      const tickerSymbol = currentSymbol === 'SPX' ? 'INX' : currentSymbol;
+      
       filteredPositions = positions.filter(position => 
-        position.ticker && position.ticker.includes(currentSymbol)
+        position.ticker && position.ticker.includes(tickerSymbol)
       );
-      console.log(`Filtering positions for symbol: ${currentSymbol}, found ${filteredPositions.length} positions`);
+      console.log(`Filtering positions for symbol: ${currentSymbol} (ticker: ${tickerSymbol}), found ${filteredPositions.length} positions`);
     }
     
     const openPositionsTableBody = document.querySelector('#openPositionsTable tbody');

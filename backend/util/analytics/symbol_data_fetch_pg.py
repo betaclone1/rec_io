@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import time
 from typing import Optional, Tuple
 import pytz
+import yfinance as yf
 
 # Use Coinbase (Kraken limits historical depth)
 exchange = ccxt.coinbase({'enableRateLimit': True})
@@ -35,6 +36,55 @@ def convert_utc_to_east_coast(utc_timestamp):
     # Convert to East Coast time and remove timezone info
     east_coast_time = utc_timestamp.tz_convert(EAST_COAST_TZ)
     return east_coast_time.tz_localize(None)
+
+def is_financial_symbol(symbol: str) -> bool:
+    """
+    Determine if a symbol is a financial symbol (stocks, indices) vs crypto.
+    
+    Args:
+        symbol: Trading symbol (e.g., 'SPX', 'BTC/USD')
+        
+    Returns:
+        True if financial symbol, False if crypto
+    """
+    # Financial symbols (indices, stocks)
+    financial_symbols = ['SPX', 'NDX', 'SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA']
+    crypto_symbols = ['BTC', 'ETH', 'LTC', 'XRP', 'ADA', 'DOT', 'SOL', 'AVAX', 'MATIC']
+    
+    # Extract base symbol (remove /USD, -USD suffixes)
+    base_symbol = symbol.split('/')[0].split('-')[0].upper()
+    
+    # Check crypto first
+    if base_symbol in crypto_symbols:
+        return False
+    if '/' in symbol and 'USD' in symbol:
+        return False  # Likely crypto (BTC/USD, ETH/USD)
+    
+    # Check financial
+    if base_symbol in financial_symbols:
+        return True
+    
+    # Default to financial for unknown single symbols
+    return True
+
+def get_yahoo_symbol_format(symbol: str) -> str:
+    """
+    Convert symbol to Yahoo Finance format.
+    
+    Args:
+        symbol: Trading symbol (e.g., 'SPX')
+        
+    Returns:
+        Yahoo Finance formatted symbol (e.g., '^GSPC' for SPX)
+    """
+    symbol_mapping = {
+        'SPX': '^GSPC',  # S&P 500 Index
+        'NDX': '^NDX',   # NASDAQ 100 Index
+        'SPY': 'SPY',    # SPDR S&P 500 ETF
+        'QQQ': 'QQQ'     # Invesco QQQ Trust
+    }
+    
+    return symbol_mapping.get(symbol.upper(), symbol)
 
 def get_postgresql_connection():
     """Get PostgreSQL connection"""
@@ -115,18 +165,20 @@ def fetch_full_5year_data_pg(symbol: str = 'BTC/USD') -> Tuple[str, int]:
 def update_existing_db(symbol: str = 'BTC/USD') -> Tuple[str, int]:
     """
     Update an existing PostgreSQL table with new data from the last timestamp to current time.
+    Supports both crypto symbols (via CCXT) and financial symbols (via Yahoo Finance).
     
     Args:
-        symbol: Trading symbol (e.g., 'BTC/USD')
+        symbol: Trading symbol (e.g., 'BTC/USD', 'SPX')
         
     Returns:
         Tuple of (table_name, number_of_rows_fetched)
     """
-    # Extract symbol name (e.g., 'BTC/USD' -> 'BTC')
+    # Extract symbol name (e.g., 'BTC/USD' -> 'BTC', 'SPX' -> 'SPX')
     symbol_name = symbol.split('/')[0]
     table_name = f"{symbol_name.lower()}_price_history"
     
     print(f"Looking for table: historical_data.{table_name}")
+    print(f"Symbol type: {'Financial' if is_financial_symbol(symbol) else 'Crypto'}")
     
     # Check if table exists
     conn = get_postgresql_connection()
@@ -153,16 +205,25 @@ def update_existing_db(symbol: str = 'BTC/USD') -> Tuple[str, int]:
         latest_timestamp = get_latest_timestamp_from_db(symbol.split('/')[0])
         if latest_timestamp:
             # Table has data, perform incremental update
-            return _perform_incremental_update_pg(symbol, table_name)
+            if is_financial_symbol(symbol):
+                return _perform_incremental_update_yahoo_pg(symbol, table_name)
+            else:
+                return _perform_incremental_update_pg(symbol, table_name)
         else:
             # Table exists but is empty, perform full download
             print(f"Table {table_name} exists but is empty. Performing full download...")
-            return _perform_full_download_pg(symbol, table_name)
+            if is_financial_symbol(symbol):
+                return _perform_full_download_yahoo_pg(symbol, table_name)
+            else:
+                return _perform_full_download_pg(symbol, table_name)
     else:
         # Table doesn't exist, create it and perform full download
         print(f"Table {table_name} doesn't exist. Creating table and performing full download...")
         create_table_if_not_exists(symbol)
-        return _perform_full_download_pg(symbol, table_name)
+        if is_financial_symbol(symbol):
+            return _perform_full_download_yahoo_pg(symbol, table_name)
+        else:
+            return _perform_full_download_pg(symbol, table_name)
 
 def _perform_incremental_update_pg(symbol: str, table_name: str) -> Tuple[str, int]:
     """Perform incremental update: fetch from last timestamp to current time, rolling window."""
@@ -555,6 +616,219 @@ def create_table_if_not_exists(symbol: str):
         raise e
     finally:
         conn.close()
+
+# Yahoo Finance functions for financial symbols
+def _perform_incremental_update_yahoo_pg(symbol: str, table_name: str) -> Tuple[str, int]:
+    """
+    Perform incremental update for financial symbols using Yahoo Finance.
+    
+    Args:
+        symbol: Financial symbol (e.g., 'SPX')
+        table_name: Database table name
+        
+    Returns:
+        Tuple of (table_name, number_of_rows_fetched)
+    """
+    print(f"Performing Yahoo Finance incremental update for {symbol} in table {table_name}...")
+    
+    # Get the latest timestamp in existing data
+    latest_timestamp = get_latest_timestamp_from_db(symbol.split('/')[0])
+    if not latest_timestamp:
+        raise Exception(f"No existing data found in table {table_name}")
+    
+    print(f"Latest data timestamp: {latest_timestamp}")
+    
+    # Get Yahoo Finance formatted symbol
+    yahoo_symbol = get_yahoo_symbol_format(symbol)
+    print(f"Yahoo Finance symbol: {yahoo_symbol}")
+    
+    # Calculate how many days to fetch (from latest timestamp to now + buffer)
+    days_to_fetch = (datetime.now() - latest_timestamp).days + 2
+    print(f"Fetching {days_to_fetch} days of data")
+    
+    try:
+        # Fetch data from Yahoo Finance
+        ticker = yf.Ticker(yahoo_symbol)
+        data = ticker.history(period=f"{days_to_fetch}d", interval="1m")
+        
+        if data.empty:
+            print("No new data available from Yahoo Finance")
+            return table_name, 0
+        
+        # Reset index to get timestamp as column
+        data = data.reset_index()
+        
+        # Convert to our format
+        new_df = pd.DataFrame()
+        new_df['timestamp'] = data['Datetime']
+        new_df['open'] = data['Open']
+        new_df['high'] = data['High']
+        new_df['low'] = data['Low']
+        new_df['close'] = data['Close']
+        new_df['volume'] = data['Volume']
+        new_df['momentum'] = None
+        new_df['momentum_percentile'] = None
+        
+        # Convert timestamps to East Coast time
+        new_df['timestamp'] = pd.to_datetime(new_df['timestamp'])
+        if new_df['timestamp'].dt.tz is not None:
+            new_df['timestamp'] = new_df['timestamp'].dt.tz_convert('America/New_York').dt.tz_localize(None)
+        
+        # Filter out data we already have (only keep data after latest timestamp)
+        new_df = new_df[new_df['timestamp'] > latest_timestamp]
+        
+        # Apply after-hours filtering (09:30-16:00 only)
+        new_df = new_df[
+            (new_df['timestamp'].dt.time >= pd.Timestamp('09:30:00').time()) &
+            (new_df['timestamp'].dt.time <= pd.Timestamp('16:00:00').time())
+        ]
+        
+        if new_df.empty:
+            print("No new data after filtering")
+            return table_name, 0
+        
+        print(f"Found {len(new_df)} new records to insert")
+        
+        # Insert new data into PostgreSQL
+        conn = get_postgresql_connection()
+        if not conn:
+            raise Exception("Failed to connect to PostgreSQL")
+        
+        try:
+            cursor = conn.cursor()
+            
+            # Insert new data
+            for _, row in new_df.iterrows():
+                cursor.execute(f"""
+                    INSERT INTO historical_data.{table_name} 
+                    (timestamp, open, high, low, close, volume, momentum, momentum_percentile)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (timestamp) DO NOTHING
+                """, (
+                    row['timestamp'],
+                    float(row['open']),
+                    float(row['high']),
+                    float(row['low']),
+                    float(row['close']),
+                    float(row['volume']),
+                    None,
+                    None
+                ))
+            
+            conn.commit()
+            print(f"✅ Successfully inserted {len(new_df)} new records")
+            return table_name, len(new_df)
+            
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+            
+    except Exception as e:
+        print(f"❌ Error fetching Yahoo Finance data: {e}")
+        raise e
+
+def _perform_full_download_yahoo_pg(symbol: str, table_name: str) -> Tuple[str, int]:
+    """
+    Perform full download for financial symbols using Yahoo Finance.
+    
+    Args:
+        symbol: Financial symbol (e.g., 'SPX')
+        table_name: Database table name
+        
+    Returns:
+        Tuple of (table_name, number_of_rows_fetched)
+    """
+    print(f"Performing Yahoo Finance full download for {symbol} in table {table_name}...")
+    
+    # Get Yahoo Finance formatted symbol
+    yahoo_symbol = get_yahoo_symbol_format(symbol)
+    print(f"Yahoo Finance symbol: {yahoo_symbol}")
+    
+    try:
+        # Fetch 5 years of data from Yahoo Finance
+        ticker = yf.Ticker(yahoo_symbol)
+        data = ticker.history(period="5y", interval="1m")
+        
+        if data.empty:
+            print("No data available from Yahoo Finance")
+            return table_name, 0
+        
+        # Reset index to get timestamp as column
+        data = data.reset_index()
+        
+        # Convert to our format
+        df = pd.DataFrame()
+        df['timestamp'] = data['Datetime']
+        df['open'] = data['Open']
+        df['high'] = data['High']
+        df['low'] = data['Low']
+        df['close'] = data['Close']
+        df['volume'] = data['Volume']
+        df['momentum'] = None
+        df['momentum_percentile'] = None
+        
+        # Convert timestamps to East Coast time
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        if df['timestamp'].dt.tz is not None:
+            df['timestamp'] = df['timestamp'].dt.tz_convert('America/New_York').dt.tz_localize(None)
+        
+        # Apply after-hours filtering (09:30-16:00 only)
+        df = df[
+            (df['timestamp'].dt.time >= pd.Timestamp('09:30:00').time()) &
+            (df['timestamp'].dt.time <= pd.Timestamp('16:00:00').time())
+        ]
+        
+        print(f"Found {len(df)} records after filtering")
+        
+        # Clear existing data and insert new data
+        conn = get_postgresql_connection()
+        if not conn:
+            raise Exception("Failed to connect to PostgreSQL")
+        
+        try:
+            cursor = conn.cursor()
+            
+            # Clear existing data
+            cursor.execute(f"DELETE FROM historical_data.{table_name}")
+            
+            # Insert new data in batches
+            batch_size = 1000
+            for i in range(0, len(df), batch_size):
+                batch = df.iloc[i:i+batch_size]
+                
+                for _, row in batch.iterrows():
+                    cursor.execute(f"""
+                        INSERT INTO historical_data.{table_name} 
+                        (timestamp, open, high, low, close, volume, momentum, momentum_percentile)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        row['timestamp'],
+                        float(row['open']),
+                        float(row['high']),
+                        float(row['low']),
+                        float(row['close']),
+                        float(row['volume']),
+                        None,
+                        None
+                    ))
+                
+                print(f"Inserted batch {i//batch_size + 1}/{(len(df)-1)//batch_size + 1}")
+            
+            conn.commit()
+            print(f"✅ Successfully inserted {len(df)} records")
+            return table_name, len(df)
+            
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+            
+    except Exception as e:
+        print(f"❌ Error fetching Yahoo Finance data: {e}")
+        raise e
 
 # Legacy function for backward compatibility
 def fetch_btc_data_pg():

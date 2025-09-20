@@ -3357,17 +3357,15 @@
           border: 1px solid rgba(74, 158, 255, 0.2);
           min-height: 50px;
           width: 100%;
-          max-width: 300px;
-          margin-left: auto;
-          margin-right: auto;
           display: block;
           position: relative;
+          box-sizing: border-box;
         `;
         container.appendChild(listContainer);
         console.log('Created new list container:', listContainer);
       } else {
         console.log('Found existing list container:', listContainer);
-        // Reset the list container styling to ensure consistent centering
+        // Reset the list container styling to ensure consistent width
         listContainer.style.cssText = `
           margin-top: 10px;
           padding: 15px;
@@ -3376,10 +3374,8 @@
           border: 1px solid rgba(74, 158, 255, 0.2);
           min-height: 50px;
           width: 100%;
-          max-width: 300px;
-          margin-left: auto;
-          margin-right: auto;
           display: block;
+          box-sizing: border-box;
           position: relative;
         `;
       }

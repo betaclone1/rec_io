@@ -288,7 +288,8 @@
     
     // WebSocket connection for database change notifications
     function setupDatabaseChangeListener() {
-      const ws = new WebSocket(`ws://${window.location.host}/ws/db_changes`);
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${protocol}//${window.location.host}/ws/db_changes`);
       
       ws.onopen = function() {
         console.log('🔗 Connected to database change notifications (account manager)');
@@ -326,6 +327,21 @@
     
     // Set up WebSocket connection for database change notifications
     setupDatabaseChangeListener();
+
+    // Periodic auto-refresh every 10 seconds
+    function setupPeriodicRefresh() {
+      const refreshInterval = 10000; // 10 seconds
+      
+      setInterval(() => {
+        console.log('⏰ Periodic refresh triggered (account manager)');
+        loadAccountData();
+      }, refreshInterval);
+      
+      console.log('⏰ Periodic refresh setup: every 10 seconds (account manager)');
+    }
+
+    // Set up periodic auto-refresh every 10 seconds
+    setupPeriodicRefresh();
 
     function arrayToCSV(rows, headerOrder) {
       const escape = v => `"${String(v ?? '').replace(/"/g, '""')}"`;

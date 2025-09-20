@@ -9,12 +9,17 @@ import json
 import time
 import base64
 import os
+import sys
 from datetime import datetime
+from pathlib import Path
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.backends import default_backend
 import websockets
 from dotenv import load_dotenv
+
+# Add the project root to the path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 
 class RawOrderbookData:
     def __init__(self):

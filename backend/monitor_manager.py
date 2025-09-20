@@ -1290,11 +1290,39 @@ def create_monitor():
             return jsonify({"status": "error", "message": "Database connection failed"}), 500
         
         with conn.cursor() as cursor:
+            # Get current bankroll to calculate allotment_total
+            cursor.execute(f"""
+                SELECT bankroll_current, portfolio
+                FROM users.account_balance_{user_number}
+                ORDER BY timestamp DESC 
+                LIMIT 1
+            """)
+            
+            balance_result = cursor.fetchone()
+            bankroll_value = balance_result[0] if balance_result and balance_result[0] else 0
+            portfolio_value = balance_result[1] if balance_result and balance_result[1] else 0
+            
+            # Use bankroll_current if available, otherwise portfolio (both in cents)
+            total_bankroll_cents = bankroll_value if bankroll_value > 0 else portfolio_value
+            
+            # Calculate bankroll_allotment_total
+            bankroll_allotment_total = int((bankroll_allotment_pct / 100) * total_bankroll_cents)
+            
+            # Calculate total_position based on position settings
+            position_type = 'percent'  # Default position type for new monitors
+            if position_type == 'percent':
+                # For percent: round((position_size * allotment_dollars / 100) * multiplier)
+                allotment_dollars = bankroll_allotment_total / 100
+                total_position = int(round((position_size * allotment_dollars / 100) * float(multiplier)))
+            else:
+                # For contracts: position_size * multiplier
+                total_position = int(position_size * float(multiplier))
+            
             # Let PostgreSQL handle the ID automatically with SERIAL
             cursor.execute(f"""
                 INSERT INTO users.monitor_list_{user_number}
-                (name, symbol, strategy, auto_trade, auto_trade_status, status, bankroll_allotment_pct, position_size, multiplier, trades, win_loss, ret_pct, pnl, dashboard_order, created)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                (name, symbol, strategy, auto_trade, auto_trade_status, status, bankroll_allotment_pct, bankroll_allotment_total, position_size, position_type, multiplier, total_position, trades, win_loss, ret_pct, pnl, dashboard_order, created)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 RETURNING id
             """, (
                 f"mon_{user_number}_temp",  # Temporary name
@@ -1303,9 +1331,12 @@ def create_monitor():
                 False,  # auto_trade defaults to False
                 'off',  # auto_trade_status defaults to 'off'
                 'active',  # status defaults to 'active'
-                bankroll_allotment_pct,
+                bankroll_allotment_pct / 100,  # Convert to decimal
+                bankroll_allotment_total,
                 position_size,
+                position_type,
                 multiplier,
+                total_position,
                 0,  # trades defaults to 0
                 0,  # win_loss defaults to 0
                 0,  # ret_pct defaults to 0
