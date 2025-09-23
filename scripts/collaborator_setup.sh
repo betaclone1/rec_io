@@ -13,16 +13,18 @@ echo "Executing database sanitization..."
 PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db << 'SQL_EOF'
 -- Clear ALL user-specific data
 DELETE FROM users.trades_0001;
-DELETE FROM users.active_trades_0001;
+DELETE FROM users.active_trades_0001_10002;
+DELETE FROM users.active_trades_0001_10009;
+DELETE FROM users.active_trades_0001_10014;
 DELETE FROM users.fills_0001;
 DELETE FROM users.settlements_0001;
 DELETE FROM users.positions_0001;
-DELETE FROM users.trade_preferences_0001;
 DELETE FROM users.orders_0001;
 DELETE FROM users.account_balance_0001;
-DELETE FROM users.watchlist_0001;
 DELETE FROM users.trade_logs_0001;
-DELETE FROM users.auto_trade_settings_0001;
+DELETE FROM users.monitor_list_0001;
+DELETE FROM users.dashboard_preferences_0001;
+DELETE FROM users.trade_history_preferences_0001;
 
 -- Clear user info (will be updated with new user data later)
 DELETE FROM users.user_info_0001;
@@ -137,20 +139,51 @@ INSERT INTO users.user_info_0001 (
     'fallback_hash_$NEW_USER_PASSWORD', CURRENT_TIMESTAMP
 );
 
--- Create safe auto-trade settings
-INSERT INTO users.auto_trade_settings_0001 (
-    id, auto_entry, auto_stop, min_probability, min_differential, min_time, max_time, 
-    allow_re_entry, spike_alert_enabled, spike_alert_momentum_threshold, 
-    spike_alert_cooldown_threshold, spike_alert_cooldown_minutes, current_probability, 
-    min_ttc_seconds, momentum_spike_enabled, momentum_spike_threshold, 
-    auto_entry_status, user_id, cooldown_timer, verification_period_enabled, verification_period_seconds, created_at, updated_at
-) VALUES (
-    1, FALSE, FALSE, 95, 0.25, 120, 900, FALSE, TRUE, 35, 25, 60, 40, 60, TRUE, 35, 
-    'disabled', '0001', 0, TRUE, 20, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-);
+-- Note: Auto-trade settings are now managed through the monitor/strategy system
+-- No legacy auto_trade_settings table creation needed
 SQL_EOF
 
 echo "New user information and settings created in database"
+
+# Step 4.5: IMPORT HISTORICAL TRADES (OPTIONAL)
+echo ""
+echo "Checking for historical trade data..."
+USER_DATA_PACKAGE=""
+if [ -f "user_data_package_*.tar.gz" ]; then
+    USER_DATA_PACKAGE=$(ls user_data_package_*.tar.gz | head -1)
+    echo "Found user data package: $USER_DATA_PACKAGE"
+    echo "Importing historical trades..."
+    
+    # Extract the backup file
+    tar -xzf "$USER_DATA_PACKAGE" --wildcards "*/database_backup.sql" 2>/dev/null
+    
+    # Find the extracted backup file
+    BACKUP_FILE=$(find . -name "database_backup.sql" | head -1)
+    
+    if [ ! -z "$BACKUP_FILE" ]; then
+        # Extract just the trades COPY statement and data
+        grep -A 10000 "COPY users.trades_0001" "$BACKUP_FILE" > trades_import.sql 2>/dev/null
+        
+        if [ -s trades_import.sql ]; then
+            # Import the trades
+            PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db < trades_import.sql
+            
+            # Count imported trades
+            TRADE_COUNT=$(PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db -t -c "SELECT COUNT(*) FROM users.trades_0001;")
+            echo "✅ Historical trades imported successfully ($TRADE_COUNT trades)"
+        else
+            echo "⚠️  No trades data found in backup file"
+        fi
+        
+        # Cleanup
+        rm -f trades_import.sql
+        rm -rf user_data_package_*/
+    else
+        echo "❌ Could not find database_backup.sql in package"
+    fi
+else
+    echo "No user data package found - starting with clean trade history"
+fi
 
 # Step 5: WRITE THE TWO TEXT FILES
 echo "Writing Kalshi credential files..."
@@ -186,7 +219,8 @@ echo "Kalshi files written and copied to system locations"
 # Step 6: VERIFY ALL FILES ARE WRITTEN
 echo "Verifying all credential files and database updates..."
 echo "Database user info updated: ✓"
-echo "Database auto-trade settings created: ✓"
+echo "Database sanitization completed: ✓"
+echo "Historical trades imported (if available): ✓"
 echo "Kalshi auth file created: ✓"
 echo "Kalshi PEM file created: ✓"
 echo "Kalshi .env file created: ✓"

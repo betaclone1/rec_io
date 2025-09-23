@@ -494,9 +494,14 @@ async function updateStrikeTable() {
         else riskClass = 'high-risk';
         row.classList.add(riskClass);
 
-        // Yes/No ask prices (pre-calculated)
-        const yesAsk = strikeData.yes_ask;
-        const noAsk = strikeData.no_ask;
+        // Yes/No ask prices (pre-calculated) - require _dollars values
+        // Convert _dollars to display format (multiply by 100, show as whole numbers)
+        if (!strikeData.yes_ask_dollars || !strikeData.no_ask_dollars) {
+          console.warn(`⚠️ Missing _dollars values for strike ${strike}, skipping`);
+          return;
+        }
+        const yesAsk = Math.round(parseFloat(strikeData.yes_ask_dollars) * 100);
+        const noAsk = Math.round(parseFloat(strikeData.no_ask_dollars) * 100);
         const yesDiff = strikeData.yes_diff;
         const noDiff = strikeData.no_diff;
         const volume = strikeData.volume;
@@ -531,8 +536,12 @@ async function updateStrikeTable() {
         }
         
         // Update both buttons with their correct enabled state
-        updateYesNoButton(yesSpan, strike, "yes", yesAsk, yesEnabled, strikeData.ticker, false, diffMode, yesDiff);
-        updateYesNoButton(noSpan, strike, "no", noAsk, noEnabled, strikeData.ticker, false, diffMode, noDiff);
+        // Use _dollars values for trade execution (no fallback)
+        const yesAskForTrade = strikeData.yes_ask_dollars;
+        const noAskForTrade = strikeData.no_ask_dollars;
+        
+        updateYesNoButton(yesSpan, strike, "yes", yesAsk, yesEnabled, strikeData.ticker, false, diffMode, yesDiff, yesAskForTrade);
+        updateYesNoButton(noSpan, strike, "no", noAsk, noEnabled, strikeData.ticker, false, diffMode, noDiff, noAskForTrade);
         
         // Update position indicator for this strike
         const strikeCell = row.querySelector('td:first-child'); // First column is strike price
@@ -753,7 +762,7 @@ function debounce(func, wait) {
 }
 
 // Helper function to update Yes/No button with conditional redraw
-function updateYesNoButton(spanEl, strike, side, askPrice, isActive, ticker = null, forceRefresh = false, diffMode = false, diffValue = null) {
+function updateYesNoButton(spanEl, strike, side, askPrice, isActive, ticker = null, forceRefresh = false, diffMode = false, diffValue = null, askPriceForTrade = null) {
   const key = `${strike}-${side}`;
   const prev = lastButtonStates.get(key);
   
@@ -801,8 +810,9 @@ function updateYesNoButton(spanEl, strike, side, askPrice, isActive, ticker = nu
   spanEl.setAttribute('data-side', side);
   
   // Store the actual ask price for trade execution (not the display value)
-  if (askPrice && askPrice !== '—' && askPrice !== 0) {
-    spanEl.setAttribute('data-ask-price', askPrice);
+  // Use the _dollars value for trade execution (no fallback)
+  if (askPriceForTrade && askPriceForTrade !== '—' && askPriceForTrade !== 0) {
+    spanEl.setAttribute('data-ask-price', askPriceForTrade);
   } else {
     spanEl.removeAttribute('data-ask-price');
   }

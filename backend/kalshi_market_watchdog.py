@@ -70,6 +70,11 @@ def create_market_kalshi_table(connection, symbol):
             no_bid INTEGER,
             no_ask INTEGER,
             last_price INTEGER,
+            yes_bid_dollars TEXT,
+            yes_ask_dollars TEXT,
+            no_bid_dollars TEXT,
+            no_ask_dollars TEXT,
+            last_price_dollars TEXT,
             volume INTEGER,
             volume_24h INTEGER,
             open_interest INTEGER,
@@ -313,6 +318,14 @@ def save_market_data_to_postgresql(event_ticker, markets_data, symbol):
                 no_bid = market.get("no_bid", 0)
                 no_ask = market.get("no_ask", 0)
                 last_price = market.get("last_price", 0)
+                
+                # Extract dollar values from API response (new subpenny pricing fields)
+                yes_bid_dollars = market.get("yes_bid_dollars")
+                yes_ask_dollars = market.get("yes_ask_dollars")
+                no_bid_dollars = market.get("no_bid_dollars")
+                no_ask_dollars = market.get("no_ask_dollars")
+                last_price_dollars = market.get("last_price_dollars")
+                
                 volume = market.get("volume", 0)
                 volume_24h = market.get("volume_24h", 0)
                 open_interest = market.get("open_interest", 0)
@@ -321,22 +334,29 @@ def save_market_data_to_postgresql(event_ticker, markets_data, symbol):
                 # Insert with ON CONFLICT to handle updates
                 cursor.execute(f"""
                     INSERT INTO live_data.{table_name} 
-                    (event_ticker, market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask,
-                     last_price, volume, volume_24h, open_interest, liquidity, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    (event_ticker, market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask, last_price,
+                     yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
+                     volume, volume_24h, open_interest, liquidity, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                     ON CONFLICT (event_ticker, market_ticker) DO UPDATE SET
                         yes_bid = EXCLUDED.yes_bid,
                         yes_ask = EXCLUDED.yes_ask,
                         no_bid = EXCLUDED.no_bid,
                         no_ask = EXCLUDED.no_ask,
                         last_price = EXCLUDED.last_price,
+                        yes_bid_dollars = EXCLUDED.yes_bid_dollars,
+                        yes_ask_dollars = EXCLUDED.yes_ask_dollars,
+                        no_bid_dollars = EXCLUDED.no_bid_dollars,
+                        no_ask_dollars = EXCLUDED.no_ask_dollars,
+                        last_price_dollars = EXCLUDED.last_price_dollars,
                         volume = EXCLUDED.volume,
                         volume_24h = EXCLUDED.volume_24h,
                         open_interest = EXCLUDED.open_interest,
                         liquidity = EXCLUDED.liquidity,
                         updated_at = NOW()
-                """, (event_ticker, market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask,
-                      last_price, volume, volume_24h, open_interest, liquidity))
+                """, (event_ticker, market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask, last_price,
+                      yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
+                      volume, volume_24h, open_interest, liquidity))
                 
             except Exception as e:
                 print(f"[{datetime.now(EST)}] ❌ Error processing market {market.get('ticker', 'unknown')}: {e}")

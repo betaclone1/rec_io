@@ -137,8 +137,11 @@
     <div class="mobile-container">
         <!-- Content Area -->
         <div class="content-area">
+            <!-- Dashboard Page -->
+            <iframe id="dashboard-frame" class="page-frame active" src=""></iframe>
+            
             <!-- Monitor Page -->
-            <iframe id="monitor-frame" class="page-frame active" src=""></iframe>
+            <iframe id="monitor-frame" class="page-frame" src=""></iframe>
             
             <!-- History Page -->
             <iframe id="history-frame" class="page-frame" src=""></iframe>
@@ -155,7 +158,11 @@
 
         <!-- Bottom Tab Navigation -->
         <div class="bottom-tabs">
-            <a href="#" class="tab-item active" data-tab="monitor">
+            <a href="#" class="tab-item active" data-tab="dashboard">
+                <img src="../images/icons/dashboard_icon.png" alt="Dashboard" class="tab-icon">
+                <span class="tab-label">Dashboard</span>
+            </a>
+            <a href="#" class="tab-item" data-tab="monitor">
                 <img src="../images/icons/trade_monitor_icon.png" alt="Monitor" class="tab-icon">
                 <span class="tab-label">Monitor</span>
             </a>
@@ -166,10 +173,6 @@
             <a href="#" class="tab-item" data-tab="account">
                 <img src="../images/icons/account_manager_icon.png" alt="Account" class="tab-icon">
                 <span class="tab-label">Account</span>
-            </a>
-            <a href="#" class="tab-item" data-tab="user">
-                <img src="../images/icons/user_icon.png" alt="User" class="tab-icon">
-                <span class="tab-label">User</span>
             </a>
             <a href="#" class="tab-item" data-tab="system">
                 <img src="../images/icons/system_icon_HEALTHY.png" alt="System" class="tab-icon">
@@ -197,6 +200,7 @@
             
             // Set up iframe sources with authentication tokens
             const iframeSources = {
+                dashboard: `/mobile/dashboard?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`,
                 monitor: `/mobile/trade_monitor?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`,
                 history: `/mobile/trade_history?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`,
                 account: `/mobile/account_manager?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`,
@@ -236,8 +240,8 @@
                 });
             });
 
-            // Initialize with monitor tab active
-            switchTab('monitor');
+            // Initialize with dashboard tab active
+            switchTab('dashboard');
         });
 
         // Auto-refresh functionality for frontend changes

@@ -77,6 +77,7 @@ window.closeTrade = async function(tradeId, sellPrice, event) {
 
     // Compose payload to match open ticket, plus intent: 'close'
     const payload = {
+      id:               tradeId,  // Include the specific trade_id
       ticket_id:        ticket_id,
       intent:           'close',
       ticker:           trade.ticker,
@@ -161,8 +162,8 @@ window.prepareTradeData = async function(target) {
   
   let buy_price = 0;
   if (askPrice) {
-    // Convert from cents to dollars (e.g., "96" becomes 0.96)
-    buy_price = parseFloat(askPrice) / 100;
+    // Use ask price directly as dollars (no conversion needed)
+    buy_price = parseFloat(askPrice);
   }
 
   // Get total_position from monitor-specific configuration (like auto_entry_supervisor) - NO FALLBACKS

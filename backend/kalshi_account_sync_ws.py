@@ -650,16 +650,25 @@ def sync_positions():
                         total_traded = p.get("total_traded")
                         position_value = p.get("position")
                         market_exposure = p.get("market_exposure")
-                        realized_pnl = float(p.get("realized_pnl")) / 100 if p.get("realized_pnl") is not None else None
-                        fees_paid = float(p.get("fees_paid")) / 100 if p.get("fees_paid") is not None else None
+                        # Legacy cent values - no longer used, kept for database compatibility only
+                        realized_pnl = None
+                        fees_paid = None
                         last_updated_ts = p.get("last_updated_ts")
                         raw_json = json.dumps(p)
+                        
+                        # Extract dollar values from API response (new subpenny pricing fields)
+                        total_traded_dollars = p.get("total_traded_dollars")
+                        market_exposure_dollars = p.get("market_exposure_dollars")
+                        realized_pnl_dollars = p.get("realized_pnl_dollars")
+                        fees_paid_dollars = p.get("fees_paid_dollars")
 
                         cursor.execute("""
                             INSERT INTO users.positions_0001
-                            (ticker, total_traded, position, market_exposure, realized_pnl, fees_paid, last_updated_ts, raw_json)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                        """, (ticker, total_traded, position_value, market_exposure, realized_pnl, fees_paid, last_updated_ts, raw_json))
+                            (ticker, total_traded, position, market_exposure, realized_pnl, fees_paid, last_updated_ts, raw_json,
+                             total_traded_dollars, market_exposure_dollars, realized_pnl_dollars, fees_paid_dollars)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (ticker, total_traded, position_value, market_exposure, realized_pnl, fees_paid, last_updated_ts, raw_json,
+                              total_traded_dollars, market_exposure_dollars, realized_pnl_dollars, fees_paid_dollars))
                     except Exception as e:
                         print(f"❌ Failed to insert position {p.get('ticker')} to PostgreSQL: {e}")
                 
@@ -799,8 +808,13 @@ def sync_fills():
                         side = fill.get("side")
                         action = fill.get("action")
                         count = fill.get("count")
-                        yes_price = float(fill.get("yes_price")) / 100 if fill.get("yes_price") is not None else None
-                        no_price = float(fill.get("no_price")) / 100 if fill.get("no_price") is not None else None
+                        # Legacy cent values - no longer used, kept for database compatibility only
+                        yes_price = None
+                        no_price = None
+                        # Extract dollar values from API response (new subpenny pricing fields)
+                        # Note: Fills API uses "yes_price_fixed" and "no_price_fixed" instead of "_dollars"
+                        yes_price_dollars = fill.get("yes_price_fixed")
+                        no_price_dollars = fill.get("no_price_fixed")
                         is_taker = bool(fill.get("is_taker")) if fill.get("is_taker") is not None else None
                         created_time = fill.get("created_time")
                         raw_json = json.dumps(fill)
@@ -808,10 +822,10 @@ def sync_fills():
                         try:
                             cursor.execute("""
                                 INSERT INTO users.fills_0001
-                                (trade_id, ticker, order_id, side, action, count, yes_price, no_price, is_taker, created_time, raw_json)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                (trade_id, ticker, order_id, side, action, count, yes_price, no_price, yes_price_fixed, no_price_fixed, is_taker, created_time, raw_json)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                                 ON CONFLICT (trade_id) DO NOTHING
-                            """, (trade_id, ticker, order_id, side, action, count, yes_price, no_price, is_taker, created_time, raw_json))
+                            """, (trade_id, ticker, order_id, side, action, count, yes_price, no_price, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json))
                             pg_new_count += 1
                         except Exception as e:
                             print(f"❌ Failed to insert fill {trade_id} to PostgreSQL: {e}")
@@ -957,12 +971,21 @@ def sync_settlements():
                         ticker = settlement.get("ticker")
                         market_result = settlement.get("market_result")
                         yes_count = settlement.get("yes_count")
-                        yes_total_cost = float(settlement.get("yes_total_cost", 0)) / 100 if settlement.get("yes_total_cost") is not None else None
+                        yes_total_cost = settlement.get("yes_total_cost")
                         no_count = settlement.get("no_count")
-                        no_total_cost = float(settlement.get("no_total_cost", 0)) / 100 if settlement.get("no_total_cost") is not None else None
-                        revenue = float(settlement.get("revenue", 0)) / 100 if settlement.get("revenue") is not None else None
+                        no_total_cost = settlement.get("no_total_cost")
+                        revenue = settlement.get("revenue")
                         settled_time = settlement.get("settled_time")
                         raw_json = json.dumps(settlement)
+
+                        # Convert cent values to dollars (divide by 100)
+                        try:
+                            revenue = float(revenue) / 100 if revenue is not None else None
+                            yes_total_cost = float(yes_total_cost) / 100 if yes_total_cost is not None else None
+                            no_total_cost = float(no_total_cost) / 100 if no_total_cost is not None else None
+                        except Exception as e:
+                            print(f"⚠️ Error formatting cost fields for {ticker} at {settled_time}: {e}")
+                            continue
 
                         cursor.execute("""
                             INSERT INTO users.settlements_0001
@@ -1075,62 +1098,126 @@ def sync_orders():
         print("⚠️ API returned zero orders.")
     
     # ------------------------------------------------------------
-    # Write to PostgreSQL
+    # Write to PostgreSQL with DELTA CHECKING and UPDATES
     try:
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
-                # Get existing order_ids from PostgreSQL
-                cursor.execute("SELECT order_id FROM users.orders_0001")
-                pg_existing_ids = set(row[0] for row in cursor.fetchall())
+                # Get existing orders with key fields for delta comparison
+                cursor.execute("""
+                    SELECT order_id, status, fill_count, remaining_count, last_update_time, 
+                           taker_fees, maker_fees, taker_fill_cost, maker_fill_cost
+                    FROM users.orders_0001
+                """)
+                existing_orders = {row[0]: {
+                    'status': row[1],
+                    'fill_count': row[2], 
+                    'remaining_count': row[3],
+                    'last_update_time': row[4],
+                    'taker_fees': row[5],
+                    'maker_fees': row[6], 
+                    'taker_fill_cost': row[7],
+                    'maker_fill_cost': row[8]
+                } for row in cursor.fetchall()}
                 
                 pg_new_count = 0
+                pg_updated_count = 0
+                
                 for order in all_orders:
                     order_id = order.get("order_id")
-                    if not order_id or order_id in pg_existing_ids:
-                        continue  # Skip if already exists in PostgreSQL
+                    if not order_id:
+                        continue
                     
-                    try:
-                        cursor.execute("""
-                            INSERT INTO users.orders_0001
-                            (order_id, user_id, ticker, status, action, side, type, yes_price, no_price,
-                             initial_count, remaining_count, fill_count, created_time, expiration_time,
-                             last_update_time, client_order_id, order_group_id, queue_position,
-                             self_trade_prevention_type, maker_fees, taker_fees, maker_fill_cost,
-                             taker_fill_cost, raw_json)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """, (
-                            order_id,
-                            order.get("user_id"),
-                            order.get("ticker"),
-                            order.get("status"),
-                            order.get("action"),
-                            order.get("side"),
-                            order.get("type"),
-                            order.get("yes_price"),
-                            order.get("no_price"),
-                            order.get("initial_count"),
-                            order.get("remaining_count"),
-                            order.get("fill_count"),
-                            order.get("created_time"),
-                            order.get("expiration_time"),
-                            order.get("last_update_time"),
-                            order.get("client_order_id"),
-                            order.get("order_group_id"),
-                            order.get("queue_position"),
-                            order.get("self_trade_prevention_type"),
-                            order.get("maker_fees"),
-                            order.get("taker_fees"),
-                            order.get("maker_fill_cost"),
-                            order.get("taker_fill_cost"),
-                            json.dumps(order)
-                        ))
-                        pg_new_count += 1
-                    except Exception as e:
-                        print(f"❌ Failed to insert order {order_id} to PostgreSQL: {e}")
+                    # Check if order exists
+                    if order_id in existing_orders:
+                        # DELTA CHECK - Compare key fields that can change
+                        existing = existing_orders[order_id]
+                        needs_update = False
+                        
+                        # Check for changes in critical fields
+                        if (existing['status'] != order.get("status") or
+                            existing['fill_count'] != order.get("fill_count") or
+                            existing['remaining_count'] != order.get("remaining_count") or
+                            existing['last_update_time'] != order.get("last_update_time") or
+                            existing['taker_fees'] != order.get("taker_fees") or
+                            existing['maker_fees'] != order.get("maker_fees") or
+                            existing['taker_fill_cost'] != order.get("taker_fill_cost") or
+                            existing['maker_fill_cost'] != order.get("maker_fill_cost")):
+                            needs_update = True
+                        
+                        if needs_update:
+                            try:
+                                # UPDATE existing order with new data
+                                cursor.execute("""
+                                    UPDATE users.orders_0001 SET
+                                        status = %s, fill_count = %s, remaining_count = %s,
+                                        last_update_time = %s, taker_fees = %s, maker_fees = %s,
+                                        taker_fill_cost = %s, maker_fill_cost = %s, queue_position = %s,
+                                        raw_json = %s, updated_at = CURRENT_TIMESTAMP
+                                    WHERE order_id = %s
+                                """, (
+                                    order.get("status"),
+                                    order.get("fill_count"),
+                                    order.get("remaining_count"), 
+                                    order.get("last_update_time"),
+                                    order.get("taker_fees"),
+                                    order.get("maker_fees"),
+                                    order.get("taker_fill_cost"),
+                                    order.get("maker_fill_cost"),
+                                    order.get("queue_position"),
+                                    json.dumps(order),
+                                    order_id
+                                ))
+                                pg_updated_count += 1
+                                print(f"🔄 Updated order {order_id}: status={order.get('status')}, fills={order.get('fill_count')}")
+                            except Exception as e:
+                                print(f"❌ Failed to update order {order_id}: {e}")
+                    else:
+                        # INSERT new order
+                        try:
+                            cursor.execute("""
+                                INSERT INTO users.orders_0001
+                                (order_id, user_id, ticker, status, action, side, type, yes_price, no_price, yes_price_dollars, no_price_dollars,
+                                 initial_count, remaining_count, fill_count, created_time, expiration_time,
+                                 last_update_time, client_order_id, order_group_id, queue_position,
+                                 self_trade_prevention_type, maker_fees, taker_fees, maker_fill_cost,
+                                 taker_fill_cost, raw_json)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """, (
+                                order_id,
+                                order.get("user_id"),
+                                order.get("ticker"),
+                                order.get("status"),
+                                order.get("action"),
+                                order.get("side"),
+                                order.get("type"),
+                                order.get("yes_price"),
+                                order.get("no_price"),
+                                order.get("yes_price_dollars"),
+                                order.get("no_price_dollars"),
+                                order.get("initial_count"),
+                                order.get("remaining_count"),
+                                order.get("fill_count"),
+                                order.get("created_time"),
+                                order.get("expiration_time"),
+                                order.get("last_update_time"),
+                                order.get("client_order_id"),
+                                order.get("order_group_id"),
+                                order.get("queue_position"),
+                                order.get("self_trade_prevention_type"),
+                                order.get("maker_fees"),
+                                order.get("taker_fees"),
+                                order.get("maker_fill_cost"),
+                                order.get("taker_fill_cost"),
+                                json.dumps(order)
+                            ))
+                            pg_new_count += 1
+                            print(f"➕ Inserted new order {order_id}: status={order.get('status')}")
+                        except Exception as e:
+                            print(f"❌ Failed to insert order {order_id}: {e}")
                 
                 pg_conn.commit()
-                print(f"💾 {pg_new_count} new orders also written to PostgreSQL users.orders_0001")
+                print(f"💾 Orders sync complete: {pg_new_count} new, {pg_updated_count} updated in PostgreSQL users.orders_0001")
             pg_conn.close()
         else:
             print(f"⚠️ Skipping PostgreSQL write - no connection available")
@@ -1141,6 +1228,21 @@ def sync_orders():
     print(f"💾 Orders written to PostgreSQL only")
 
     notify_frontend_db_change("orders", {"orders": len(all_orders)})
+    
+    # Notify trade_manager about orders update
+    try:
+        trade_manager_port = get_port("trade_manager")
+        response = requests.post(
+            f"http://localhost:{trade_manager_port}/api/positions_updated",
+            json={"database": "orders"},
+            timeout=2
+        )
+        if response.status_code == 200:
+            print(f"✅ Notified trade_manager about orders update")
+        else:
+            print(f"⚠️ Failed to notify trade_manager about orders: {response.status_code}")
+    except Exception as e:
+        print(f"❌ Error notifying trade_manager about orders: {e}")
 
 
 class KalshiWebSocketSync:

@@ -168,12 +168,12 @@ def insert_trade(trade):
     return last_id
 
 def confirm_open_trade(id: int, ticket_id: str) -> None:
-    """Confirms a PENDING trade has been opened in the market account"""
-    # Get initial trade info
+    """Confirms a PENDING trade has been opened by checking ORDERS table for complete fill"""
+    # Get initial trade info including the order_id_open we stored
     pg_conn = get_postgresql_connection()
     if pg_conn:
         with pg_conn.cursor() as cursor:
-            cursor.execute("SELECT ticker, symbol FROM users.trades_0001 WHERE id = %s", (id,))
+            cursor.execute("SELECT ticker, symbol, order_id_open FROM users.trades_0001 WHERE id = %s", (id,))
             row = cursor.fetchone()
         pg_conn.close()
     else:
@@ -185,107 +185,109 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
     
     expected_ticker = row[0]
     symbol = row[1]
-    mode = get_account_mode()
+    stored_order_id_open = row[2]
+    
+    if not stored_order_id_open:
+        log_event(ticket_id, f"MANAGER: No order_id_open stored for trade ID {id} - cannot confirm via ORDERS table")
+        return
     
     deadline = time.time() + 30  # 30 second timeout
-    connection_refresh_time = time.time() + 10  # Refresh connection every 10 seconds
     
     while time.time() < deadline:
         try:
-            # Refresh connection every 10 seconds to prevent stale connections
-            if time.time() >= connection_refresh_time:
-                pg_conn = get_postgresql_connection()
-                connection_refresh_time = time.time() + 10
-            else:
-                pg_conn = get_postgresql_connection()
-            
+            pg_conn = get_postgresql_connection()
             if not pg_conn:
-                log_event(ticket_id, f"MANAGER: Cannot connect to PostgreSQL positions table")
+                log_event(ticket_id, f"MANAGER: Cannot connect to PostgreSQL orders table")
                 time.sleep(1)
                 continue
             
-            with pg_conn.cursor() as cursor_pos:
-                cursor_pos.execute("SELECT position, market_exposure, fees_paid FROM users.positions_0001 WHERE ticker = %s", (expected_ticker,))
-                row = cursor_pos.fetchone()
+            # Check ORDERS table for our specific order_id
+            with pg_conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT remaining_count, fill_count, initial_count, status, 
+                           taker_fees, maker_fees, taker_fill_cost, side
+                    FROM users.orders_0001 
+                    WHERE order_id = %s
+                """, (stored_order_id_open,))
+                order_row = cursor.fetchone()
             
-            if row and row[0] is not None and row[1] is not None:
-                pos = abs(row[0])
-                exposure = abs(row[1])
-                fees_paid = float(row[2]) if row[2] is not None else None
-                price = round(float(exposure) / float(pos) / 100, 2) if pos > 0 else 0.0
+            if order_row:
+                remaining_count, fill_count, initial_count, order_status, taker_fees, maker_fees, taker_fill_cost, side = order_row
                 
-                # Get current status with fresh connection
-                pg_conn_status = get_postgresql_connection()
-                if pg_conn_status:
-                    with pg_conn_status.cursor() as cursor:
-                        cursor.execute("SELECT status FROM users.trades_0001 WHERE id = %s", (id,))
-                        status_row = cursor.fetchone()
-                        current_status = status_row[0] if status_row else None
-                    pg_conn_status.close()
-                else:
-                    current_status = None
+                log_event(ticket_id, f"MANAGER: Opening order {stored_order_id_open} status: {order_status}, remaining: {remaining_count}, filled: {fill_count}/{initial_count}")
                 
-                if current_status == "pending" and pos > 0 and exposure > 0:
-                    # Get probability with fresh connection
-                    pg_conn_prob = get_postgresql_connection()
-                    if pg_conn_prob:
-                        with pg_conn_prob.cursor() as cursor:
-                            cursor.execute("SELECT prob FROM users.trades_0001 WHERE id = %s", (id,))
-                            prob_row = cursor.fetchone()
-                        pg_conn_prob.close()
+                # Check if order is completely filled (remaining_count = 0) and executed
+                if order_status == "executed" and remaining_count == 0 and fill_count > 0:
+                    # Calculate fees from orders table (already in cents, convert to dollars)
+                    total_fees_cents = (taker_fees or 0) + (maker_fees or 0)
+                    total_fees_dollars = total_fees_cents / 100.0
+                    
+                    # Calculate position size and buy price from order data
+                    position_size = fill_count
+                    # taker_fill_cost is in cents, convert to price per share
+                    buy_price = (taker_fill_cost / 100.0) / position_size if position_size > 0 else 0.0
+                    
+                    log_event(ticket_id, f"MANAGER: Order completely filled - pos={position_size}, price={buy_price:.4f}, fees=${total_fees_dollars:.4f}")
+                
+                    # Get current trade status
+                    pg_conn_status = get_postgresql_connection()
+                    if pg_conn_status:
+                        with pg_conn_status.cursor() as cursor:
+                            cursor.execute("SELECT status FROM users.trades_0001 WHERE id = %s", (id,))
+                            status_row = cursor.fetchone()
+                            current_status = status_row[0] if status_row else None
+                        pg_conn_status.close()
                     else:
-                        prob_row = None
+                        current_status = None
                     
-                    prob_value = prob_row[0] if prob_row and prob_row[0] is not None else None
-                    diff_value = None
-                    
-                    if prob_value is not None:
-                        prob_decimal = float(prob_value) / 100
-                        diff_decimal = prob_decimal - price
-                        diff_value = int(round(diff_decimal * 100))
-                        diff_formatted = f"+{diff_value}" if diff_value >= 0 else f"{diff_value}"
-                    else:
-                        diff_formatted = None
-                    
-                    # Get current symbol price for symbol_open (same as symbol_close logic)
-                    symbol_open = None
-                    try:
-                        import requests
-                        main_port = get_port("main_app")
-                        response = requests.get(f"http://localhost:{main_port}/api/{symbol.lower()}_price", timeout=5)
-                        if response.ok:
-                            symbol_data = response.json()
-                            symbol_open = symbol_data.get('price')
-                            if symbol_open:
-                                log_event(ticket_id, f"MANAGER: Retrieved current symbol price for open: {symbol_open}")
-                            else:
-                                log_event(ticket_id, f"MANAGER: No price data in unified endpoint response")
-                                symbol_open = None
+                    if current_status == "pending":
+                        # Get probability for diff calculation
+                        pg_conn_prob = get_postgresql_connection()
+                        if pg_conn_prob:
+                            with pg_conn_prob.cursor() as cursor:
+                                cursor.execute("SELECT prob FROM users.trades_0001 WHERE id = %s", (id,))
+                                prob_row = cursor.fetchone()
+                            pg_conn_prob.close()
                         else:
-                            log_event(ticket_id, f"MANAGER: Unified price endpoint returned status {response.status_code}")
-                            symbol_open = None
-                    except Exception as e:
-                        log_event(ticket_id, f"MANAGER: Failed to get current symbol price from unified endpoint: {e}")
-                        symbol_open = None
+                            prob_row = None
+                        
+                        prob_value = prob_row[0] if prob_row and prob_row[0] is not None else None
+                        diff_value = None
+                        
+                        if prob_value is not None:
+                            prob_decimal = float(prob_value) / 100
+                            diff_decimal = prob_decimal - buy_price
+                            diff_value = int(round(diff_decimal * 100))
+                            diff_formatted = f"+{diff_value}" if diff_value >= 0 else f"{diff_value}"
+                        else:
+                            diff_formatted = None
                     
-                    # Update additional fields in PostgreSQL BEFORE status change
-                    try:
-                        pg_conn_update = get_postgresql_connection()
-                        if pg_conn_update:
-                            with pg_conn_update.cursor() as cursor:
-                                # First try to update by ID
-                                cursor.execute("""
-                                    UPDATE users.trades_0001
-                                    SET position = %s,
-                                        buy_price = %s,
-                                        fees = %s,
-                                        diff = %s,
-                                        symbol_open = %s
-                                    WHERE id = %s
-                                """, (pos, price, fees_paid, diff_formatted, symbol_open, id))
-                                
-                                # If no rows were updated, try to find by ticker
-                                if cursor.rowcount == 0:
+                        # Get current symbol price for symbol_open
+                        symbol_open = None
+                        try:
+                            import requests
+                            main_port = get_port("main_app")
+                            response = requests.get(f"http://localhost:{main_port}/api/{symbol.lower()}_price", timeout=5)
+                            if response.ok:
+                                symbol_data = response.json()
+                                symbol_open = symbol_data.get('price')
+                                if symbol_open:
+                                    log_event(ticket_id, f"MANAGER: Retrieved current symbol price for open: {symbol_open}")
+                                else:
+                                    log_event(ticket_id, f"MANAGER: No price data in unified endpoint response")
+                                    symbol_open = None
+                            else:
+                                log_event(ticket_id, f"MANAGER: Unified price endpoint returned status {response.status_code}")
+                                symbol_open = None
+                        except Exception as e:
+                            log_event(ticket_id, f"MANAGER: Failed to get current symbol price from unified endpoint: {e}")
+                            symbol_open = None
+                        
+                        # Update additional fields in PostgreSQL BEFORE status change
+                        try:
+                            pg_conn_update = get_postgresql_connection()
+                            if pg_conn_update:
+                                with pg_conn_update.cursor() as cursor:
                                     cursor.execute("""
                                         UPDATE users.trades_0001
                                         SET position = %s,
@@ -293,41 +295,46 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                                             fees = %s,
                                             diff = %s,
                                             symbol_open = %s
-                                        WHERE ticker = %s
-                                    """, (pos, price, fees_paid, diff_formatted, symbol_open, expected_ticker))
+                                        WHERE id = %s
+                                    """, (position_size, buy_price, total_fees_dollars, diff_formatted, symbol_open, id))
                                     
                                     if cursor.rowcount > 0:
-                                        print(f"💾 Trade additional fields updated in PostgreSQL users.trades_0001 (found by ticker)")
+                                        print(f"💾 Trade additional fields updated in PostgreSQL users.trades_0001 from ORDERS data")
                                     else:
-                                        print(f"⚠️ No matching trade found in PostgreSQL for ID {id} or ticker {expected_ticker}")
-                                else:
-                                    print(f"💾 Trade additional fields also updated in PostgreSQL users.trades_0001")
-                                
-                                pg_conn_update.commit()
-                            pg_conn_update.close()
-                        else:
-                            print(f"⚠️ Skipping PostgreSQL additional fields update - no connection available")
-                    except Exception as pg_err:
-                        print(f"❌ Failed to update trade additional fields in PostgreSQL: {pg_err}")
-                    
-                    # Update trade status to open (this will also update PostgreSQL and notify ATS)
-                    update_trade_status(id, 'open')
-                    
-                    log_event(ticket_id, f"MANAGER: OPEN TRADE CONFIRMED — pos={pos}, price={price}, fees={fees_paid}, diff={diff_formatted}")
-                    # Notify strike table for display update (lowest priority)
-                    notify_strike_table_trade_change(id, "open")
-                    break
+                                        print(f"⚠️ No matching trade found in PostgreSQL for ID {id}")
+                                    
+                                    pg_conn_update.commit()
+                                pg_conn_update.close()
+                            else:
+                                print(f"⚠️ Skipping PostgreSQL additional fields update - no connection available")
+                        except Exception as pg_err:
+                            print(f"❌ Failed to update trade additional fields in PostgreSQL: {pg_err}")
+                        
+                        # Update trade status to open (this will also update PostgreSQL and notify ATS)
+                        update_trade_status(id, 'open')
+                        
+                        log_event(ticket_id, f"MANAGER: OPEN TRADE CONFIRMED via ORDERS table — pos={position_size}, price={buy_price:.4f}, fees=${total_fees_dollars:.4f}, diff={diff_formatted}")
+                        # Notify strike table for display update (lowest priority)
+                        notify_strike_table_trade_change(id, "open")
+                        pg_conn.close()
+                        break
+                    else:
+                        log_event(ticket_id, f"MANAGER: Trade status is not pending (current: {current_status}) - skipping confirmation")
+                        pg_conn.close()
+                        break
+                else:
+                    log_event(ticket_id, f"MANAGER: Order not yet completely filled - status: {order_status}, remaining: {remaining_count}")
+            else:
+                log_event(ticket_id, f"MANAGER: Opening order {stored_order_id_open} not found in ORDERS table yet")
+            
+            pg_conn.close()
                     
         except Exception as e:
             log_event(ticket_id, f"MANAGER: OPEN TRADE WATCH DB read error: {e}")
         
         time.sleep(1)
     
-    # Close the main polling connection
-    if 'pg_conn' in locals() and pg_conn:
-        pg_conn.close()
-    
-    log_event(ticket_id, f"MANAGER: OPEN TRADE polling complete for ticker: {expected_ticker}")
+    log_event(ticket_id, f"MANAGER: OPEN TRADE polling complete for order_id_open: {stored_order_id_open}")
     
     # Final status check with fresh connection
     pg_conn_final = get_postgresql_connection()
@@ -341,19 +348,21 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
         current_status = None
     
     if current_status == "pending":
-        log_event(ticket_id, f"MANAGER: PENDING TRADE FAILED TO FILL - TIMEOUT")
+        log_event(ticket_id, f"MANAGER: PENDING TRADE FAILED TO FILL - TIMEOUT (order_id_open: {stored_order_id_open})")
         notify_active_trade_supervisor_direct(id, ticket_id, "error")
 
 def confirm_close_trade(id: int, ticket_id: str) -> None:
-    """Confirms a CLOSING trade has been closed in the market account"""
+    """Confirms a CLOSING trade has been closed by checking ORDERS table for complete close fill"""
     log(f"CONFIRMING CLOSE TRADE: {id}")
     
     try:
+        # Get trade info including the order_id_close we stored
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
-                cursor.execute("SELECT ticker, symbol FROM users.trades_0001 WHERE id = %s", (id,))
+                cursor.execute("SELECT ticker, symbol, order_id_close FROM users.trades_0001 WHERE id = %s", (id,))
                 row = cursor.fetchone()
+            pg_conn.close()
         else:
             row = None
         
@@ -364,252 +373,153 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
         
         expected_ticker = row[0]
         symbol = row[1]
+        stored_order_id_close = row[2]
         
-        mode = get_account_mode()
-        
-        # Read from PostgreSQL positions table
-        pg_conn = get_postgresql_connection()
-        if not pg_conn:
-            log_event(ticket_id, f"MANAGER: Cannot connect to PostgreSQL positions table")
+        if not stored_order_id_close:
+            log_event(ticket_id, f"MANAGER: No order_id_close stored for trade ID {id} - cannot confirm via ORDERS table")
+            log(f"NO CLOSE ORDER_ID FOR TRADE: {id}")
             return
         
-        # Check position once - positions change notification should handle timing
+        # Check ORDERS table for our specific close order_id
+        pg_conn = get_postgresql_connection()
+        if not pg_conn:
+            log_event(ticket_id, f"MANAGER: Cannot connect to PostgreSQL orders table")
+            return
+        
+        # Check close order once - orders change notification should handle timing
         try:
-            with pg_conn.cursor() as cursor_pos:
-                cursor_pos.execute("SELECT position FROM users.positions_0001 WHERE ticker = %s", (expected_ticker,))
-                row = cursor_pos.fetchone()
+            with pg_conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT remaining_count, fill_count, status, taker_fees, maker_fees
+                    FROM users.orders_0001 
+                    WHERE order_id = %s
+                """, (stored_order_id_close,))
+                order_row = cursor.fetchone()
             
-            if row and row[0] == 0:
-                import time
-                zero_time = time.time()
-                log_event(ticket_id, f"MANAGER: [{zero_time}] POSITION ZEROED OUT for {expected_ticker}")
-                log(f"POSITION ZEROED OUT: {expected_ticker}")
+            if order_row:
+                remaining_count, fill_count, order_status, taker_fees, maker_fees = order_row
+                log_event(ticket_id, f"MANAGER: Close order {stored_order_id_close} status: {order_status}, remaining: {remaining_count}, filled: {fill_count}")
                 
-                now_est = datetime.now(ZoneInfo("America/New_York"))
-                closed_at = now_est.strftime("%H:%M:%S")
-                
-                # Calculate total fees from orders table (opening + closing orders)
-                total_fees_paid = None
-                pg_conn_orders = get_postgresql_connection()
-                if pg_conn_orders:
-                    with pg_conn_orders.cursor() as cursor_orders:
-                        import time
-                        current_time = time.time()
-                        log_event(ticket_id, f"MANAGER: [{current_time}] Querying orders table for ticker: {expected_ticker}")
-                        cursor_orders.execute("""
-                            SELECT SUM(taker_fees) as total_fees
-                            FROM users.orders_0001 
-                            WHERE ticker = %s
-                        """, (expected_ticker,))
-                        fees_row = cursor_orders.fetchone()
-                        log_event(ticket_id, f"MANAGER: [{current_time}] Raw fees_row from cursor: {fees_row}")
-                        # Convert cents to dollars for PnL calculation
-                        raw_fees_cents = fees_row[0] if fees_row and fees_row[0] is not None else None
-                        total_fees_paid = float(raw_fees_cents) / 100.0 if raw_fees_cents is not None else None
-                        log_event(ticket_id, f"MANAGER: Raw fees from SQL (cents): {raw_fees_cents}, converted to dollars: {total_fees_paid}")
-                    pg_conn_orders.close()
-                
-                log_event(ticket_id, f"MANAGER: Calculated total fees from orders: {total_fees_paid}")
-                
-                pg_conn = get_postgresql_connection()
-                if pg_conn:
-                    with pg_conn.cursor() as cursor:
-                        cursor.execute("SELECT side FROM users.trades_0001 WHERE id = %s", (id,))
-                        side_row = cursor.fetchone()
-                else:
-                    side_row = None
-                
-                original_side = side_row[0] if side_row else None
-                
-
-                
-                pg_conn = get_postgresql_connection()
-                if pg_conn:
-                    with pg_conn.cursor() as cursor_fills:
-                        opposite_side = 'no' if original_side == 'Y' else 'yes'
-                        
-                        cursor_fills.execute("""
-                            SELECT yes_price, no_price, created_time, side 
-                            FROM users.fills_0001 
-                            WHERE ticker = %s AND side = %s 
-                            ORDER BY created_time DESC 
-                            LIMIT 1
-                        """, (expected_ticker, opposite_side))
-                        fill_row = cursor_fills.fetchone()
-                else:
-                    fill_row = None
-                
-                if not fill_row or not original_side:
-                    log_event(ticket_id, f"MANAGER: No closing fill found for {opposite_side} side - cannot calculate sell price")
-                    log(f"NO CLOSING FILL FOUND")
-                    return
-                
-                yes_price, no_price, fill_time, fill_side = fill_row
-                
-                # Use the price for the opposite side (the side we're buying to close)
-                # Sell price should be 1 - the price we're paying to close
-                if original_side == 'Y':  # Original was YES, so use NO price (we're buying NO to close)
-                    sell_price = 1 - float(no_price)  # Keep as decimal
-                elif original_side == 'N':  # Original was NO, so use YES price (we're buying YES to close)
-                    sell_price = 1 - float(yes_price)  # Keep as decimal
-                else:
-                    log_event(ticket_id, f"MANAGER: Invalid original side: {original_side}")
-                    log(f"INVALID ORIGINAL SIDE")
-                    return
-                
-                symbol_close = None
-                try:
-                    import requests
-                    main_port = get_port("main_app")
-                    response = requests.get(f"http://localhost:{main_port}/api/{symbol.lower()}_price", timeout=5)
-                    if response.ok:
-                        symbol_data = response.json()
-                        symbol_close = symbol_data.get('price')
-                        if symbol_close:
-                            log_event(ticket_id, f"MANAGER: Retrieved current symbol price for close: {symbol_close}")
-                        else:
-                            log_event(ticket_id, f"MANAGER: No price data in unified endpoint response")
-                            symbol_close = None
+                # Check if close order is completely filled (remaining_count = 0) and executed
+                if order_status == "executed" and remaining_count == 0 and fill_count > 0:
+                    log_event(ticket_id, f"MANAGER: CLOSE ORDER COMPLETELY FILLED - Trade {id} confirmed closed")
+                    log(f"CLOSE ORDER COMPLETELY FILLED: {expected_ticker}")
+                    
+                    now_est = datetime.now(ZoneInfo("America/New_York"))
+                    closed_at = now_est.strftime("%H:%M:%S")
+                    
+                    # SIMPLE: Get opening fees already recorded + add closing fees from this order
+                    pg_conn_trade = get_postgresql_connection()
+                    if pg_conn_trade:
+                        with pg_conn_trade.cursor() as cursor:
+                            cursor.execute("SELECT fees FROM users.trades_0001 WHERE id = %s", (id,))
+                            existing_fees_row = cursor.fetchone()
+                            existing_fees = existing_fees_row[0] if existing_fees_row else 0.0
+                        pg_conn_trade.close()
                     else:
-                        log_event(ticket_id, f"MANAGER: Unified price endpoint returned status {response.status_code}")
-                        symbol_close = None
-                except Exception as e:
-                    log_event(ticket_id, f"MANAGER: Failed to get current symbol price from unified endpoint: {e}")
+                        existing_fees = 0.0
+                    
+                    # Add closing order fees to existing opening fees
+                    close_order_fees_cents = (taker_fees or 0) + (maker_fees or 0)
+                    close_order_fees_dollars = close_order_fees_cents / 100.0
+                    total_fees_paid = existing_fees + close_order_fees_dollars
+                    
+                    log_event(ticket_id, f"MANAGER: SIMPLE fee calc - existing: ${existing_fees}, close order: ${close_order_fees_dollars}, total: ${total_fees_paid}")
+                    
+                    # Get sell price from the close order data
+                    pg_conn_close_order = get_postgresql_connection()
+                    if pg_conn_close_order:
+                        with pg_conn_close_order.cursor() as cursor:
+                            cursor.execute("""
+                                SELECT side, taker_fill_cost, fill_count
+                                FROM users.orders_0001 
+                                WHERE order_id = %s
+                            """, (stored_order_id_close,))
+                            close_order_data = cursor.fetchone()
+                        pg_conn_close_order.close()
+                    else:
+                        close_order_data = None
+                    
+                    if close_order_data:
+                        close_side, close_fill_cost, close_fill_count = close_order_data
+                        # Calculate sell price from close order (cost per share)
+                        sell_price = (close_fill_cost / 100.0) / close_fill_count if close_fill_count > 0 else 0.0
+                        # For close orders, sell_price should be 1 - the price we paid to close
+                        sell_price = 1 - sell_price
+                        log_event(ticket_id, f"MANAGER: Calculated sell_price from close order: {sell_price}")
+                    else:
+                        sell_price = None
+                        log_event(ticket_id, f"MANAGER: Could not get close order data for sell price calculation")
+                    
+                    # Get current symbol price for symbol_close
                     symbol_close = None
-                
-                pg_conn_trade = get_postgresql_connection()
-                if pg_conn_trade:
-                    with pg_conn_trade.cursor() as cursor:
-                        cursor.execute("SELECT buy_price, position FROM users.trades_0001 WHERE id = %s", (id,))
-                        trade_data = cursor.fetchone()
-                else:
-                    trade_data = None
-                
-                if trade_data:
-                    buy_price, position = trade_data
-                    buy_value = buy_price * position
-                    sell_value = sell_price * position
-                    fees = total_fees_paid if total_fees_paid is not None else None
-                    pnl = round(sell_value - buy_value - fees, 2)
-                    win_loss = "W" if pnl > 0 else "L" if pnl < 0 else "D"
-                    
-                    pg_conn_method = get_postgresql_connection()
-                    if pg_conn_method:
-                        with pg_conn_method.cursor() as cursor:
-                            cursor.execute("SELECT close_method FROM users.trades_0001 WHERE id = %s", (id,))
-                            close_method_row = cursor.fetchone()
-                            close_method = close_method_row[0] if close_method_row else "manual"
-                    else:
-                        close_method = "manual"
-                    
                     try:
-                        # Update the fees in the trades table to match the calculated total
-                        log_event(ticket_id, f"MANAGER: About to write fees to database: {total_fees_paid}")
-                        pg_conn_fees = get_postgresql_connection()
-                        if pg_conn_fees:
-                            with pg_conn_fees.cursor() as cursor_fees:
-                                cursor_fees.execute("""
-                                    UPDATE users.trades_0001 
-                                    SET fees = %s 
-                                    WHERE id = %s
-                                """, (total_fees_paid, id))
-                                pg_conn_fees.commit()
-                                log_event(ticket_id, f"MANAGER: Fees written to database successfully")
-                            pg_conn_fees.close()
-                        
-                        update_trade_status(id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, total_fees_paid)
-                        
-                        # Add 5-second pause after trade is marked as closed, before final fee calculation
-                        import time
-                        pause_start = time.time()
-                        log_event(ticket_id, f"MANAGER: [{pause_start}] Trade marked as closed, adding 5-second pause before final fee calculation")
-                        time.sleep(5)
-                        pause_end = time.time()
-                        log_event(ticket_id, f"MANAGER: [{pause_end}] 5-second pause completed")
-                        
-                        # Recalculate fees after pause to ensure we have the latest data
-                        pg_conn_final = get_postgresql_connection()
-                        if pg_conn_final:
-                            with pg_conn_final.cursor() as cursor_final:
-                                import time
-                                final_time = time.time()
-                                log_event(ticket_id, f"MANAGER: [{final_time}] Final query for ticker: {expected_ticker}")
-                                cursor_final.execute("""
-                                    SELECT SUM(taker_fees) as total_fees
-                                    FROM users.orders_0001 
-                                    WHERE ticker = %s
-                                """, (expected_ticker,))
-                                final_fees_row = cursor_final.fetchone()
-                                final_raw_fees_cents = final_fees_row[0] if final_fees_row and final_fees_row[0] is not None else None
-                                final_total_fees_paid = float(final_raw_fees_cents) / 100.0 if final_raw_fees_cents is not None else None
-                                log_event(ticket_id, f"MANAGER: [{final_time}] Final fee calculation after pause (cents): {final_raw_fees_cents}, converted to dollars: {final_total_fees_paid}")
-                                
-                                # Recalculate PnL with final fees
-                                final_pnl = (sell_price - buy_price) * position - final_total_fees_paid
-                                log_event(ticket_id, f"MANAGER: [{final_time}] Final PnL calculation with final fees: {final_pnl}")
-                                
-                                                                # Calculate ret_pct if we have bankroll data
-                                ret_pct = None
-                                try:
-                                    # Get bankroll from the trade record
-                                    cursor_bankroll = pg_conn_final.cursor()
-                                    cursor_bankroll.execute("SELECT bankroll FROM users.trades_0001 WHERE id = %s", (id,))
-                                    bankroll_row = cursor_bankroll.fetchone()
-                                    if bankroll_row and bankroll_row[0] is not None:
-                                        bankroll = bankroll_row[0]
-                                        if bankroll > 0:  # Prevent division by zero
-                                            # PnL is in dollars, bankroll is in cents
-                                            # Formula: (pnl / (bankroll/100.0)) * 100
-                                            ret_pct = round((final_pnl / (bankroll / 100.0)) * 100, 5)
-                                            log_event(ticket_id, f"MANAGER: [{final_time}] Calculated ret_pct: {ret_pct}% (PnL: {final_pnl}, Bankroll: {bankroll})")
-                                        else:
-                                            log_event(ticket_id, f"MANAGER: [{final_time}] Bankroll is zero, cannot calculate ret_pct")
-                                    else:
-                                        log_event(ticket_id, f"MANAGER: [{final_time}] No bankroll data found for ret_pct calculation")
-                                    cursor_bankroll.close()
-                                except Exception as e:
-                                    log_event(ticket_id, f"MANAGER: [{final_time}] Error calculating ret_pct: {e}")
-                                    ret_pct = None
-                                
-                                # Update fees, PnL, and ret_pct with final calculation
-                                cursor_final.execute("""
-                                    UPDATE users.trades_0001 
-                                    SET fees = %s, pnl = %s, ret_pct = %s
-                                    WHERE id = %s
-                                """, (final_total_fees_paid, final_pnl, ret_pct, id))
-                                pg_conn_final.commit()
-                                log_event(ticket_id, f"MANAGER: [{final_time}] Final fees, PnL, and ret_pct written to database: fees={final_total_fees_paid}, pnl={final_pnl}, ret_pct={ret_pct}")
-                                pg_conn_final.close()
-                        
-                        log_event(ticket_id, f"MANAGER: CLOSE TRADE CONFIRMED - PnL: {final_pnl}, W/L: {win_loss}, Fees: {final_total_fees_paid}")
-                        log(f"CLOSE TRADE CONFIRMED: {expected_ticker}, PnL={final_pnl}, W/L={win_loss}")
-                        
-                        # Try to notify active trade supervisor, but don't fail if it doesn't work
-                        try:
-                            notify_active_trade_supervisor_direct(id, ticket_id, "closed")
-                        except Exception as e:
-                            log(f"NOTIFICATION FAILED BUT TRADE FINALIZED")
-                        
-                        # Notify strike table for display update (lowest priority)
-                        notify_strike_table_trade_change(id, "closed")
-                        
-                        return
+                        import requests
+                        main_port = get_port("main_app")
+                        response = requests.get(f"http://localhost:{main_port}/api/{symbol.lower()}_price", timeout=5)
+                        if response.ok:
+                            symbol_data = response.json()
+                            symbol_close = symbol_data.get('price')
+                            log_event(ticket_id, f"MANAGER: Retrieved current symbol price for close: {symbol_close}")
                     except Exception as e:
-                        log_event(ticket_id, f"MANAGER: Error in finalization: {e}")
-                        log(f"TRADE FINALIZATION FAILED")
-                        return
-                else:
-                    log_event(ticket_id, f"MANAGER: Could not get trade data for PnL calculation")
-                    log(f"COULD NOT GET TRADE DATA FOR PNL")
+                        log_event(ticket_id, f"MANAGER: Failed to get current symbol price: {e}")
+                    
+                    # Get trade data for PnL calculation including existing fees
+                    pg_conn_trade = get_postgresql_connection()
+                    if pg_conn_trade:
+                        with pg_conn_trade.cursor() as cursor:
+                            cursor.execute("SELECT buy_price, position, close_method, fees FROM users.trades_0001 WHERE id = %s", (id,))
+                            trade_data = cursor.fetchone()
+                        pg_conn_trade.close()
+                    else:
+                        trade_data = None
+                    
+                    if trade_data and sell_price is not None:
+                        buy_price, position, close_method, existing_fees = trade_data
+                        close_method = close_method or "manual"
+                        existing_fees = existing_fees or 0.0
+                        
+                        # Use the total fees we calculated (existing + close order fees)
+                        total_fees = total_fees_paid if total_fees_paid is not None else 0.0
+                        
+                        log_event(ticket_id, f"MANAGER: Final total fees for PnL: ${total_fees}")
+                        
+                        # Calculate PnL with total fees
+                        buy_value = buy_price * position
+                        sell_value = sell_price * position
+                        pnl = round(sell_value - buy_value - total_fees, 2)
+                        win_loss = "W" if pnl > 0 else "L" if pnl < 0 else "D"
+                        
+                        log_event(ticket_id, f"MANAGER: PnL calculation - buy: ${buy_price}, sell: ${sell_price}, total_fees: ${total_fees}, pnl: ${pnl}")
+                        
+                        # Update trade status to closed with all calculated values
+                        update_trade_status(id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, total_fees)
+                        
+                        log_event(ticket_id, f"MANAGER: CLOSE TRADE CONFIRMED - PnL: ${pnl}, W/L: {win_loss}, Fees: ${total_fees}")
+                        log(f"CLOSE TRADE CONFIRMED: {expected_ticker}, PnL=${pnl}, W/L={win_loss}")
+                    else:
+                        # Fallback - just mark as closed without detailed calculations
+                        update_trade_status(id, "closed")
+                        log_event(ticket_id, f"MANAGER: CLOSE TRADE CONFIRMED (minimal data)")
+                    
+                    # Notify active trade supervisor
+                    notify_active_trade_supervisor_direct(id, ticket_id, "closed")
+                    
+                    # Notify strike table for display update
+                    notify_strike_table_trade_change(id, "closed")
+                    
+                    pg_conn.close()
                     return
+                else:
+                    log_event(ticket_id, f"MANAGER: Close order not yet completely filled - status: {order_status}, remaining: {remaining_count}")
             else:
-                position_value = row[0] if row else "None"
-                log_event(ticket_id, f"MANAGER: Position not zeroed out yet - Current: {position_value}")
-                log(f"POSITION NOT ZEROED OUT - Current: {position_value}")
-                return
+                log_event(ticket_id, f"MANAGER: Close order {stored_order_id_close} not found in ORDERS table yet")
+            
+            pg_conn.close()
+                    
         except Exception as e:
-            log_event(ticket_id, f"MANAGER: Error checking position: {e}")
-            log(f"ERROR CHECKING POSITION: {e}")
+            log_event(ticket_id, f"MANAGER: CLOSE TRADE WATCH DB read error: {e}")
+            log(f"ERROR CHECKING CLOSE ORDER: {e}")
             return
     except Exception as e:
         log_event(ticket_id, f"MANAGER: Error in confirm_close_trade: {e}")
@@ -832,7 +742,9 @@ def init_trades_db():
                     market_id TEXT,
                     momentum_percentile REAL,
                     entry_method TEXT DEFAULT 'manual',
-                    close_method TEXT
+                    close_method TEXT,
+                    order_id_open TEXT,
+                    order_id_close TEXT
                 )
             """)
             
@@ -856,6 +768,8 @@ def init_trades_db():
                     count INTEGER,
                     yes_price REAL,
                     no_price REAL,
+                    yes_price_fixed TEXT,
+                    no_price_fixed TEXT,
                     is_taker BOOLEAN,
                     created_time TEXT,
                     raw_json TEXT
@@ -884,10 +798,16 @@ def init_trades_db():
                 CREATE TABLE IF NOT EXISTS users.positions_0001 (
                     id SERIAL PRIMARY KEY,
                     ticker TEXT,
+                    total_traded INTEGER,
                     position INTEGER,
-                    market_exposure REAL,
+                    market_exposure INTEGER,
+                    realized_pnl REAL,
                     fees_paid REAL,
-                    created_time TEXT,
+                    last_updated_ts TEXT,
+                    total_traded_dollars TEXT,
+                    market_exposure_dollars TEXT,
+                    realized_pnl_dollars TEXT,
+                    fees_paid_dollars TEXT,
                     raw_json TEXT
                 )
             """)
@@ -897,9 +817,39 @@ def init_trades_db():
             
 
             
+            # Add order_id columns if they don't exist (for existing databases)
+            try:
+                cursor.execute("ALTER TABLE users.trades_0001 ADD COLUMN order_id_open TEXT")
+                print("✅ Added order_id_open column to existing trades table")
+            except Exception as e:
+                if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+                    print("✅ order_id_open column already exists in trades table")
+                else:
+                    print(f"⚠️ Note: Could not add order_id_open column: {e}")
+            
+            try:
+                cursor.execute("ALTER TABLE users.trades_0001 ADD COLUMN order_id_close TEXT")
+                print("✅ Added order_id_close column to existing trades table")
+            except Exception as e:
+                if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+                    print("✅ order_id_close column already exists in trades table")
+                else:
+                    print(f"⚠️ Note: Could not add order_id_close column: {e}")
+            
+            # Migrate existing order_id data to order_id_open
+            try:
+                cursor.execute("UPDATE users.trades_0001 SET order_id_open = order_id WHERE order_id IS NOT NULL AND order_id_open IS NULL")
+                migrated_count = cursor.rowcount
+                if migrated_count > 0:
+                    print(f"✅ Migrated {migrated_count} existing order_id values to order_id_open")
+            except Exception as e:
+                print(f"⚠️ Could not migrate existing order_id data: {e}")
+            
             # Create indexes for better performance
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_0001_status ON users.trades_0001(status)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_0001_ticker ON users.trades_0001(ticker)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_0001_order_id_open ON users.trades_0001(order_id_open)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_0001_order_id_close ON users.trades_0001(order_id_close)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_fills_0001_ticker ON users.fills_0001(ticker)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_settlements_0001_ticker ON users.settlements_0001(ticker)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_positions_0001_ticker ON users.positions_0001(ticker)")
@@ -966,9 +916,9 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
                 if status == 'closed':
                     cursor.execute("""
                         UPDATE users.trades_0001 
-                        SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s 
+                        SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s 
                         WHERE id = %s
-                    """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, trade_id))
+                    """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, trade_id))
                 else:
                     cursor.execute("""
                         UPDATE users.trades_0001 
@@ -976,40 +926,10 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
                         WHERE id = %s
                     """, (status, trade_id))
                 
-                # If no rows were updated, try to find by ticker
-                if cursor.rowcount == 0:
-                    # Get ticker from PostgreSQL
-                    pg_conn_ticker = get_postgresql_connection()
-                    if pg_conn_ticker:
-                        with pg_conn_ticker.cursor() as cursor_ticker:
-                            cursor_ticker.execute("SELECT ticker FROM users.trades_0001 WHERE id = %s", (trade_id,))
-                            ticker_row = cursor_ticker.fetchone()
-                    else:
-                        ticker_row = None
-                    
-                    if ticker_row and ticker_row[0]:
-                        ticker = ticker_row[0]
-                        if status == 'closed':
-                            cursor.execute("""
-                                UPDATE users.trades_0001 
-                                SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s 
-                                WHERE ticker = %s
-                            """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, ticker))
-                        else:
-                            cursor.execute("""
-                                UPDATE users.trades_0001 
-                                SET status = %s 
-                                WHERE ticker = %s
-                            """, (status, ticker))
-                        
-                        if cursor.rowcount > 0:
-                            print(f"💾 Trade status update written to PostgreSQL users.trades_0001 (found by ticker)")
-                        else:
-                            print(f"⚠️ No matching trade found in PostgreSQL for ID {trade_id} or ticker {ticker}")
-                    else:
-                        print(f"⚠️ Could not find ticker for trade ID {trade_id} in PostgreSQL")
-                else:
+                if cursor.rowcount > 0:
                     print(f"💾 Trade status update written to PostgreSQL users.trades_0001")
+                else:
+                    print(f"⚠️ No matching trade found in PostgreSQL for ID {trade_id}")
                 
                 pg_conn.commit()
                 pg_conn.close()
@@ -1119,40 +1039,48 @@ async def add_trade(request: Request):
     
     if intent == "close":
         log(f"CLOSE TICKET RECEIVED")
-        ticker = data.get("ticker")
-        if ticker:
-            # IMMEDIATELY send to executor FIRST
-            try:
-                import requests
-                executor_port = get_executor_port()
-                log(f"SENDING CLOSE TO EXECUTOR")
-                close_payload = {
-                    "ticker": ticker,
-                    "side": data.get("side"),
-                    "count": data.get("count"),
-                    "action": "close",
-                    "type": "market",
-                    "time_in_force": "IOC",
-                    "buy_price": 1.00,  # Set to 100 cents for unlimited close orders
-                    "symbol_close": None,
-                    "intent": "close"
-                }
-                response = requests.post(f"http://localhost:{executor_port}/trigger_trade", json=close_payload, timeout=5)
-                log(f"EXECUTOR RESPONSE: {response.status_code}")
-            except Exception as e:
-                log(f"CLOSE EXECUTOR ERROR: {e}")
+        trade_id = data.get("id")  # Get trade_id directly from request
+        ticker = data.get("ticker")  # Still need ticker for executor payload
+        
+        if trade_id:
+            log(f"CLOSING SPECIFIC TRADE ID: {trade_id}")
             
-            # Get trade_id for notifications
+            # Verify this trade exists and is open
             pg_conn = get_postgresql_connection()
             if pg_conn:
                 with pg_conn.cursor() as cursor:
-                    cursor.execute("SELECT id FROM users.trades_0001 WHERE ticker = %s", (ticker,))
+                    cursor.execute("SELECT ticker, status FROM users.trades_0001 WHERE id = %s", (trade_id,))
                     row = cursor.fetchone()
             else:
                 row = None
             
-            if row:
-                trade_id = row[0]
+            if row and row[1] == 'open':
+                verified_ticker = row[0]
+                log(f"VERIFIED OPEN TRADE: ID={trade_id}, TICKER={verified_ticker}")
+                
+                # IMMEDIATELY send to executor with trade_id
+                try:
+                    import requests
+                    executor_port = get_executor_port()
+                    log(f"SENDING CLOSE TO EXECUTOR")
+                    close_payload = {
+                        "id": trade_id,  # Include trade_id for close orders
+                        "ticker": verified_ticker,  # Use verified ticker from database
+                        "side": data.get("side"),
+                        "count": data.get("count"),
+                        "action": "close",
+                        "type": "market",
+                        "time_in_force": "IOC",
+                        "buy_price": 1.00,  # Set to 100 cents for unlimited close orders
+                        "symbol_close": None,
+                        "intent": "close",
+                        "ticket_id": data.get("ticket_id")  # Include ticket_id for close orders
+                    }
+                    response = requests.post(f"http://localhost:{executor_port}/trigger_trade", json=close_payload, timeout=5)
+                    log(f"EXECUTOR RESPONSE: {response.status_code}")
+                except Exception as e:
+                    log(f"CLOSE EXECUTOR ERROR: {e}")
+                
                 # Update database status
                 symbol_close = None
                 sell_price = data.get("buy_price")
@@ -1163,7 +1091,7 @@ async def add_trade(request: Request):
                     pg_conn_update = get_postgresql_connection()
                     if pg_conn_update:
                         with pg_conn_update.cursor() as cursor:
-                            cursor.execute("UPDATE users.trades_0001 SET status = 'closing', symbol_close = %s, close_method = %s WHERE ticker = %s", (symbol_close, close_method, ticker))
+                            cursor.execute("UPDATE users.trades_0001 SET status = 'closing', symbol_close = %s, close_method = %s WHERE id = %s", (symbol_close, close_method, trade_id))
                             pg_conn_update.commit()
                             print(f"💾 Manual close trade also marked as 'closing' in PostgreSQL users.trades_0001")
                         pg_conn_update.close()
@@ -1175,40 +1103,17 @@ async def add_trade(request: Request):
                 # Notify active trade supervisor
                 notify_active_trade_supervisor_direct(trade_id, data.get('ticket_id'), "closing")
                 
-                # Check positions
-                try:
-                    mode = get_account_mode()
-                    pg_conn = get_postgresql_connection()
-                    
-                    if pg_conn:
-                        with pg_conn.cursor() as cursor_pos:
-                            cursor_pos.execute("SELECT position FROM users.positions_0001 WHERE ticker = %s", (ticker,))
-                            row = cursor_pos.fetchone()
-
-                        if row:
-                            pos_db = abs(row[0])
-                            pg_conn_trade = get_postgresql_connection()
-                            if pg_conn_trade:
-                                with pg_conn_trade.cursor() as cursor:
-                                    cursor.execute("SELECT position FROM users.trades_0001 WHERE ticker = %s", (ticker,))
-                                    trade_row = cursor.fetchone()
-                            else:
-                                trade_row = None
-
-                            if trade_row and abs(trade_row[0]) == pos_db:
-                                log(f"CLOSE POSITION CONFIRMED: {ticker}")
-                            else:
-                                log(f"CLOSE CHECK MISMATCH")
-                        else:
-                            log(f"NO MATCHING ENTRY IN POSITIONS TABLE")
-                    else:
-                        log(f"CANNOT CONNECT TO POSTGRESQL POSITIONS TABLE")
-                except Exception as e:
-                    log(f"CLOSE CHECK ERROR: {e}")
-
-                log(f"CLOSE TICKET SENT - WAITING FOR CONFIRMATION")
+                log(f"CLOSE TICKET SENT FOR TRADE {trade_id} - WAITING FOR CONFIRMATION")
             else:
-                log(f"COULD NOT FIND TRADE ID FOR TICKER")
+                if row:
+                    log(f"TRADE {trade_id} EXISTS BUT STATUS IS: {row[1]} (expected: open)")
+                    return {"error": f"Trade {trade_id} is not open (status: {row[1]})", "id": trade_id}
+                else:
+                    log(f"TRADE {trade_id} NOT FOUND")
+                    return {"error": f"Trade {trade_id} not found", "id": trade_id}
+        else:
+            log(f"NO TRADE_ID PROVIDED IN CLOSE REQUEST")
+            return {"error": "trade_id (id) is required for close requests"}
 
         return {"message": "Close ticket received and processed"}
     
@@ -1253,6 +1158,8 @@ async def update_trade_status_api(request: Request):
     id = data.get("id")
     ticket_id = data.get("ticket_id")
     new_status = data.get("status", "").strip().lower()
+    order_id = data.get("order_id")  # Extract order_id from payload
+    intent = data.get("intent", "open")  # Extract intent to determine which order_id field to use
         
     if not new_status or (not id and not ticket_id):
         raise HTTPException(status_code=400, detail="Missing id or ticket_id or status")
@@ -1281,6 +1188,40 @@ async def update_trade_status_api(request: Request):
 
     if new_status == "accepted":
         log(f"TRADE ACCEPTED BY EXECUTOR")
+        
+        # Store the order_id in the database if provided
+        if order_id:
+            # Determine which order_id field to update based on intent
+            if intent == "close":
+                order_id_field = "order_id_close"
+                log_type = "CLOSING"
+            else:
+                order_id_field = "order_id_open"
+                log_type = "OPENING"
+            
+            log(f"STORING {log_type} ORDER_ID: {order_id}")
+            if ticket_id:
+                log_event(ticket_id, f"MANAGER: STORING KALSHI {log_type} ORDER_ID: {order_id}")
+            
+            try:
+                pg_conn = get_postgresql_connection()
+                if pg_conn:
+                    with pg_conn.cursor() as cursor:
+                        cursor.execute(f"UPDATE users.trades_0001 SET {order_id_field} = %s WHERE id = %s", (order_id, id))
+                        pg_conn.commit()
+                        log(f"{log_type} ORDER_ID STORED SUCCESSFULLY")
+                        if ticket_id:
+                            log_event(ticket_id, f"MANAGER: {log_type} ORDER_ID STORED IN DATABASE: {order_id}")
+                    pg_conn.close()
+                else:
+                    log(f"FAILED TO STORE {log_type} ORDER_ID - NO DATABASE CONNECTION")
+                    if ticket_id:
+                        log_event(ticket_id, f"MANAGER: FAILED TO STORE {log_type} ORDER_ID - NO DATABASE CONNECTION")
+            except Exception as e:
+                log(f"ERROR STORING {log_type} ORDER_ID: {e}")
+                if ticket_id:
+                    log_event(ticket_id, f"MANAGER: ERROR STORING {log_type} ORDER_ID: {e}")
+        
         log(f"WAITING FOR POSITION CONFIRMATION")
         return {"message": "Trade accepted – waiting for position confirmation", "id": id}
 
@@ -1379,8 +1320,8 @@ async def positions_updated_api(request: Request):
                 for id, ticket_id in pending_trades:
                     threading.Thread(target=confirm_open_trade, args=(id, ticket_id), daemon=True).start()
         
-        # Handle closing trades (only when fills database is updated)
-        if db_name == "fills":
+        # Handle closing trades (when orders database is updated)
+        if db_name == "orders":
             pg_conn = get_postgresql_connection()
             if pg_conn:
                 with pg_conn.cursor() as cursor:
@@ -1390,7 +1331,7 @@ async def positions_updated_api(request: Request):
                 closing_trades = []
             
             if closing_trades:
-                # log(f"[🔔 POSITIONS UPDATED] Found {len(closing_trades)} closing trades to confirm")
+                log(f"[🔔 ORDERS UPDATED] Found {len(closing_trades)} closing trades to confirm")
                 for id, ticket_id in closing_trades:
                     pg_conn = get_postgresql_connection()
                     if pg_conn:
@@ -1402,6 +1343,7 @@ async def positions_updated_api(request: Request):
                     
                     if current_status and current_status[0] == 'closing':
                         # Process closing trade directly - no threading needed for single trades
+                        log(f"[🔔 ORDERS UPDATED] Confirming close for trade {id}")
                         confirm_close_trade(id, ticket_id)
         
         return {"message": f"{db_name}_updated received"}
@@ -1594,76 +1536,62 @@ def poll_settlements_for_matches(expired_tickers):
                     revenue = row[0]
                     sell_price = 1.00 if revenue > 0 else 0.00
                     
-                    total_fees_paid = None
-                    pg_conn = get_postgresql_connection()
-                    if pg_conn:
-                        with pg_conn.cursor() as cursor_pos:
-                            cursor_pos.execute("SELECT fees_paid FROM users.positions_0001 WHERE ticker = %s", (ticker,))
-                            fees_row = cursor_pos.fetchone()
-                            total_fees_paid = float(fees_row[0]) if fees_row and fees_row[0] is not None else None
-                    
+                    # For settlements, process each trade individually to calculate correct PnL
                     pg_conn_trades = get_postgresql_connection()
                     if pg_conn_trades:
                         with pg_conn_trades.cursor() as cursor_trades:
-                            cursor_trades.execute("SELECT buy_price, position, fees FROM users.trades_0001 WHERE ticker = %s AND status = 'expired'", (ticker,))
-                            trade_row = cursor_trades.fetchone()
+                            # Get ALL trades for this ticker, not just the first one
+                            cursor_trades.execute("SELECT id, buy_price, position, fees, bankroll FROM users.trades_0001 WHERE ticker = %s AND status = 'expired'", (ticker,))
+                            trade_rows = cursor_trades.fetchall()
                     else:
-                        trade_row = None
-                    if trade_row:
-                        buy_price, position, fees = trade_row
+                        trade_rows = []
+                    
+                    # Process each trade individually
+                    for trade_row in trade_rows:
+                        trade_id, buy_price, position, existing_fees, bankroll = trade_row
                         pnl = None
+                        ret_pct = None
+                        
                         if buy_price is not None and sell_price is not None and position is not None:
                             buy_value = buy_price * position
                             sell_value = sell_price * position
-                            fees = fees if fees is not None else None
-                            pnl = round(sell_value - buy_value - fees, 2)
+                            # Use existing fees from trade record (no additional settlement fees)
+                            total_fees_paid = existing_fees if existing_fees is not None else 0.0
+                            pnl = round(sell_value - buy_value - total_fees_paid, 2)
+                            
+                            # Calculate ret_pct for this specific trade
+                            if bankroll is not None and bankroll > 0:  # Prevent division by zero
+                                # PnL is in dollars, bankroll is in cents
+                                # Formula: (pnl / (bankroll/100.0)) * 100
+                                ret_pct = round((pnl / (bankroll / 100.0)) * 100, 5)
+                                print(f"💾 Calculated ret_pct for trade {trade_id}: {ret_pct}% (PnL: {pnl}, Bankroll: {bankroll})")
+                            else:
+                                print(f"⚠️ Bankroll is zero or None for trade {trade_id}, cannot calculate ret_pct")
+                        
+                        # Update this specific trade
+                        try:
+                            pg_conn_update = get_postgresql_connection()
+                            if pg_conn_update:
+                                with pg_conn_update.cursor() as cursor_update:
+                                    cursor_update.execute("""
+                                        UPDATE users.trades_0001 
+                                        SET status = 'closed',
+                                            sell_price = %s,
+                                            win_loss = %s,
+                                            pnl = %s,
+                                            ret_pct = %s
+                                        WHERE id = %s AND status = 'expired'
+                                    """, (sell_price, 'W' if sell_price > 0 else 'L', pnl, ret_pct, trade_id))
+                                    pg_conn_update.commit()
+                                    print(f"💾 Settlement update for trade {trade_id}: PnL={pnl}, ret_pct={ret_pct}")
+                                pg_conn_update.close()
+                            else:
+                                print(f"⚠️ Skipping PostgreSQL settlement update for trade {trade_id} - no connection available")
+                        except Exception as pg_err:
+                            print(f"❌ Failed to update settlement trade {trade_id} in PostgreSQL: {pg_err}")
                     
-                    # Calculate ret_pct if we have bankroll data
-                    ret_pct = None
-                    try:
-                        # Get bankroll from the trade record
-                        pg_conn_bankroll = get_postgresql_connection()
-                        if pg_conn_bankroll:
-                            with pg_conn_bankroll.cursor() as cursor_bankroll:
-                                cursor_bankroll.execute("SELECT bankroll FROM users.trades_0001 WHERE ticker = %s AND status = 'expired'", (ticker,))
-                                bankroll_row = cursor_bankroll.fetchone()
-                                if bankroll_row and bankroll_row[0] is not None:
-                                    bankroll = bankroll_row[0]
-                                    if bankroll > 0:  # Prevent division by zero
-                                        # PnL is in dollars, bankroll is in cents
-                                        # Formula: (pnl / (bankroll/100.0)) * 100
-                                        ret_pct = round((pnl / (bankroll / 100.0)) * 100, 5)
-                                        print(f"💾 Calculated ret_pct for settlement: {ret_pct}% (PnL: {pnl}, Bankroll: {bankroll})")
-                                    else:
-                                        print(f"⚠️ Bankroll is zero, cannot calculate ret_pct for settlement")
-                                else:
-                                    print(f"⚠️ No bankroll data found for ret_pct calculation in settlement")
-                            pg_conn_bankroll.close()
-                    except Exception as e:
-                        print(f"❌ Error calculating ret_pct for settlement: {e}")
-                        ret_pct = None
-                    
-                    # Update PostgreSQL
-                    try:
-                        pg_conn = get_postgresql_connection()
-                        if pg_conn:
-                            with pg_conn.cursor() as cursor:
-                                cursor.execute("""
-                                    UPDATE users.trades_0001 
-                                    SET status = 'closed',
-                                        sell_price = %s,
-                                        win_loss = %s,
-                                        pnl = %s,
-                                        ret_pct = %s
-                                    WHERE ticker = %s AND status = 'expired'
-                                """, (sell_price, 'W' if sell_price > 0 else 'L', pnl, ret_pct, ticker))
-                                pg_conn.commit()
-                                print(f"💾 Settlement trade update also written to PostgreSQL users.trades_0001 (ret_pct: {ret_pct})")
-                            pg_conn.close()
-                        else:
-                            print(f"⚠️ Skipping PostgreSQL settlement update - no connection available")
-                    except Exception as pg_err:
-                        print(f"❌ Failed to update settlement trade in PostgreSQL: {pg_err}")
+                    if pg_conn_trades:
+                        pg_conn_trades.close()
                     
                     notify_frontend_trade_change()
                     

@@ -1142,6 +1142,8 @@ def get_kalshi_market_snapshot(symbol: str = None) -> Optional[Dict[str, Any]]:
                 market_ticker,
                 yes_ask,
                 no_ask,
+                yes_ask_dollars,
+                no_ask_dollars,
                 volume,
                 event_ticker,
                 strike
@@ -1163,9 +1165,11 @@ def get_kalshi_market_snapshot(symbol: str = None) -> Optional[Dict[str, Any]]:
                 "ticker": row[0],  # market_ticker
                 "yes_ask": row[1],
                 "no_ask": row[2],
-                "volume": row[3],
-                "event_ticker": row[4],
-                "strike": row[5]
+                "yes_ask_dollars": row[3],
+                "no_ask_dollars": row[4],
+                "volume": row[5],
+                "event_ticker": row[6],
+                "strike": row[7]
             }
             markets.append(market)
         
@@ -1202,21 +1206,24 @@ def get_current_closing_price_for_trade(trade_ticker: str, trade_side: str) -> O
             if market.get("ticker") == trade_ticker:
                 # For YES trades, we want the NO_ASK (opposite side)
                 # For NO trades, we want the YES_ASK (opposite side)
+                # Use _dollars values for subpenny precision, fallback to cent conversion
                 if trade_side.upper() == "Y":  # YES trade
+                    closing_price_dollars = market.get("no_ask_dollars")
                     closing_price_cents = market.get("no_ask")
                 elif trade_side.upper() == "N":  # NO trade
+                    closing_price_dollars = market.get("yes_ask_dollars")
                     closing_price_cents = market.get("yes_ask")
                 else:
                     log(f"⚠️ Unknown trade side: {trade_side}")
                     return None
                 
-                if closing_price_cents is not None:
-                    # Convert from cents to decimal (e.g., 94 -> 0.94)
-                    closing_price_decimal = closing_price_cents / 100.0
-                    # Only log closing price data occasionally to reduce noise
+                # Use _dollars values directly (no fallback to cents)
+                if closing_price_dollars is not None:
+                    # Use subpenny precision directly (no conversion needed)
+                    closing_price_decimal = float(closing_price_dollars)
                     return closing_price_decimal
                 else:
-                    log(f"⚠️ No closing price found for {trade_ticker} ({trade_side})")
+                    log(f"⚠️ No closing price (_dollars) found for {trade_ticker} ({trade_side})")
                     return None
         
         log(f"⚠️ Market not found for ticker: {trade_ticker}")
@@ -1979,6 +1986,7 @@ def trigger_auto_stop_close(trade):
     symbol_close_float = float(symbol_close) if hasattr(symbol_close, '__float__') else symbol_close
     
     payload = {
+        'id': trade['trade_id'],  # Include the specific trade_id from active_trades table
         'ticket_id': ticket_id,
         'intent': 'close',
         'ticker': trade['ticker'],

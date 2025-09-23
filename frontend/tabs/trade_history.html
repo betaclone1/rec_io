@@ -2234,6 +2234,13 @@
         dayAllCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
       }
 
+      // Reset monitor dropdown to ALL
+      const monitorAllCheckbox = document.getElementById('monitor-all');
+      if (monitorAllCheckbox) {
+        monitorAllCheckbox.checked = true;
+        monitorAllCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+
       // Reset analysis time interval to default (daily)
       const analysisTimeInterval = document.getElementById('analysis-time-interval');
       if (analysisTimeInterval) {

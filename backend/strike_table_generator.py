@@ -435,6 +435,8 @@ class StrikeTableGenerator:
                 probability DECIMAL(5,2),
                 yes_ask DECIMAL(5,2),
                 no_ask DECIMAL(5,2),
+                yes_ask_dollars TEXT,
+                no_ask_dollars TEXT,
                 yes_diff DECIMAL(5,2),
                 no_diff DECIMAL(5,2),
                 volume INTEGER,
@@ -533,8 +535,9 @@ class StrikeTableGenerator:
             
             # Get all markets for this event_ticker
             cursor.execute(f"""
-                SELECT market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask, 
-                       last_price, volume, volume_24h, open_interest, liquidity, updated_at
+                SELECT market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask, last_price,
+                       yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
+                       volume, volume_24h, open_interest, liquidity, updated_at
                 FROM live_data.market_kalshi_{self.symbol} 
                 WHERE event_ticker = %s
                 ORDER BY updated_at DESC
@@ -547,7 +550,7 @@ class StrikeTableGenerator:
             # Convert database rows to market dictionary format
             markets = []
             for row in market_rows:
-                market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask, last_price, volume, volume_24h, open_interest, liquidity, updated_at = row
+                market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask, last_price, yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars, volume, volume_24h, open_interest, liquidity, updated_at = row
                 
                 # Convert strike from "$104,250" or "6,475.0099" format to float
                 floor_strike = None
@@ -567,6 +570,11 @@ class StrikeTableGenerator:
                     "no_bid": no_bid,
                     "no_ask": no_ask,
                     "last_price": last_price,
+                    "yes_bid_dollars": yes_bid_dollars,
+                    "yes_ask_dollars": yes_ask_dollars,
+                    "no_bid_dollars": no_bid_dollars,
+                    "no_ask_dollars": no_ask_dollars,
+                    "last_price_dollars": last_price_dollars,
                     "volume": volume,
                     "volume_24h": volume_24h,
                     "open_interest": open_interest,
@@ -775,6 +783,8 @@ class StrikeTableGenerator:
                     # Get market data for this strike
                     yes_ask = None
                     no_ask = None
+                    yes_ask_dollars = None
+                    no_ask_dollars = None
                     volume = None
                     ticker = None
                     
@@ -786,6 +796,8 @@ class StrikeTableGenerator:
                             if int(float(floor_strike)) == strike:
                                 yes_ask = market.get("yes_ask")
                                 no_ask = market.get("no_ask")
+                                yes_ask_dollars = market.get("yes_ask_dollars")
+                                no_ask_dollars = market.get("no_ask_dollars")
                                 volume = market.get("volume")
                                 ticker = market.get("ticker")
                                 break
@@ -794,16 +806,25 @@ class StrikeTableGenerator:
                         logger.warning(f"⚠️ Missing ask prices for strike {strike}, skipping")
                         continue
                     
-                    # Calculate yes_diff and no_diff based on money line position
+                    # Calculate yes_diff and no_diff based on money line position using subpenny precision
+                    # Convert _dollars values to cents for calculation (multiply by 100)
+                    # Require _dollars values - no fallback to legacy cents
+                    if not yes_ask_dollars or not no_ask_dollars:
+                        logger.warning(f"⚠️ Missing _dollars values for strike {strike}, skipping")
+                        continue
+                    
+                    yes_ask_cents = float(yes_ask_dollars) * 100
+                    no_ask_cents = float(no_ask_dollars) * 100
+                    
                     if strike < current_price:
                         # Strike is BELOW current price (money line)
-                        yes_diff = probability - yes_ask
-                        no_diff = 100 - probability - no_ask
+                        yes_diff = probability - yes_ask_cents
+                        no_diff = 100 - probability - no_ask_cents
                         active_side = 'yes'
                     else:
                         # Strike is ABOVE current price (money line)
-                        yes_diff = 100 - probability - yes_ask
-                        no_diff = probability - no_ask
+                        yes_diff = 100 - probability - yes_ask_cents
+                        no_diff = probability - no_ask_cents
                         active_side = 'no'
                     
                     # Generate market title from event ticker
@@ -814,15 +835,15 @@ class StrikeTableGenerator:
                     INSERT INTO live_data.strike_table_{self.symbol.lower()} 
                     (symbol, current_price, ttc_seconds, broker, event_ticker, market_title,
                      strike_tier, market_status, strike, buffer, buffer_pct, probability,
-                     yes_ask, no_ask, yes_diff, no_diff, volume, ticker, active_side, 
+                     yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume, ticker, active_side, 
                      momentum_weighted_score, momentum_percentile, timestamp, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
                         self.symbol.upper(), current_price, ttc_seconds, "Kalshi",
                         market_data.get("event_ticker"), market_title,
                         market_data.get("strike_tier"), market_data.get("market_status"),
                         strike, buffer, buffer_pct, probability,
-                        yes_ask, no_ask, yes_diff, no_diff,
+                        yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_diff, no_diff,
                         volume, ticker, active_side, momentum_score, momentum_percentile,
                         datetime.now(), datetime.now()
                     ))
@@ -872,7 +893,7 @@ class StrikeTableGenerator:
             cursor.execute(f"""
             SELECT symbol, current_price, ttc_seconds, broker, event_ticker, market_title,
                    strike_tier, market_status, strike, buffer, buffer_pct, probability,
-                   yes_ask, no_ask, yes_diff, no_diff, volume, ticker, active_side, momentum_percentile
+                   yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume, ticker, active_side, momentum_percentile
             FROM live_data.strike_table_{self.symbol.lower()}
             WHERE timestamp = %s
             ORDER BY strike
@@ -905,16 +926,18 @@ class StrikeTableGenerator:
                     "probability": float(row[11]),
                     "yes_ask": float(row[12]) if row[12] is not None else None,
                     "no_ask": float(row[13]) if row[13] is not None else None,
-                    "yes_diff": float(row[14]) if row[14] is not None else None,
-                    "no_diff": float(row[15]) if row[15] is not None else None,
-                    "volume": int(row[16]) if row[16] is not None else None,
-                    "ticker": row[17],
-                    "active_side": row[18]
+                    "yes_ask_dollars": row[14],
+                    "no_ask_dollars": row[15],
+                    "yes_diff": float(row[16]) if row[16] is not None else None,
+                    "no_diff": float(row[17]) if row[17] is not None else None,
+                    "volume": int(row[18]) if row[18] is not None else None,
+                    "ticker": row[19],
+                    "active_side": row[20]
                 })
             
             # Add momentum data
             result["momentum"] = {
-                "weighted_score": float(rows[0][19]) if rows[0][19] is not None else 0.0
+                "weighted_score": float(rows[0][21]) if rows[0][21] is not None else 0.0
             }
             
             return result

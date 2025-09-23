@@ -161,9 +161,9 @@ def trigger_trade():
         
         # Add price field based on side (hardcoded to 99 for market-like behavior)
         if side == "yes":
-            order_payload["yes_price"] = 99
+            order_payload["yes_price_dollars"] = "0.9900"
         else:
-            order_payload["no_price"] = 99
+            order_payload["no_price_dollars"] = "0.9900"
         
 
         timestamp = str(int(time.time() * 1000))
@@ -237,12 +237,24 @@ def trigger_trade():
             return jsonify({"status": "rejected", "error": response.text}), response.status_code
         elif response.status_code in [200, 201]:
             log_event(ticket_id, f"✅ TRADE SUCCESS - Status: {response.status_code}, Response: {response.text}")
+            
+            # Extract order_id from Kalshi response
+            order_id = None
+            try:
+                response_json = response.json()
+                if "order" in response_json and "order_id" in response_json["order"]:
+                    order_id = response_json["order"]["order_id"]
+                    log_event(ticket_id, f"📋 EXTRACTED ORDER_ID: {order_id}")
+            except Exception as e:
+                log_event(ticket_id, f"⚠️ Failed to extract order_id: {e}")
+            
             # Use the trade ID if provided, otherwise use ticket_id
             trade_id = data.get("id")
+            intent = data.get("intent", "open")  # Get the intent to determine which order_id field to use
             if trade_id:
-                status_payload = {"id": trade_id, "status": "accepted", "success_message": response.text}
+                status_payload = {"id": trade_id, "status": "accepted", "success_message": response.text, "order_id": order_id, "intent": intent}
             else:
-                status_payload = {"ticket_id": ticket_id, "status": "accepted", "success_message": response.text}
+                status_payload = {"ticket_id": ticket_id, "status": "accepted", "success_message": response.text, "order_id": order_id, "intent": intent}
             manager_port = get_manager_port()
             status_url = f"http://{get_host()}:{manager_port}/api/update_trade_status"
             def notify_accepted():

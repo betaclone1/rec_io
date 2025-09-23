@@ -277,8 +277,8 @@ def update_trade_history_preferences_postgresql(**kwargs):
 AUTH_TOKENS_FILE = os.path.join(get_data_dir(), "users", "user_0001", "auth_tokens.json")
 DEVICE_TOKENS_FILE = os.path.join(get_data_dir(), "users", "user_0001", "device_tokens.json")
 
-# Authentication settings - can be overridden for local development
-AUTH_ENABLED = True  # Force authentication enabled
+# Authentication settings - respect environment variable
+AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "false").lower() == "true"
 # Force authentication in production
 if os.environ.get("REC_ENVIRONMENT") == "production":
     AUTH_ENABLED = True
@@ -929,7 +929,51 @@ async def serve_mobile_trade_monitor(request: Request):
                 }
             )
     else:
-        return HTMLResponse(content="Mobile trade monitor not found", status_code=404)
+            return HTMLResponse(content="Mobile trade monitor not found", status_code=404)
+
+# Serve mobile dashboard with cache busting
+@app.get("/mobile/dashboard", response_class=HTMLResponse)
+async def serve_mobile_dashboard(request: Request):
+    """Serve mobile dashboard with cache busting headers."""
+    # Check if user is authenticated
+    if AUTH_ENABLED:
+        # Get token from query parameters
+        token = request.query_params.get("token", "")
+        device_id = request.query_params.get("deviceId", "")
+        
+        if not token or not device_id:
+            return RedirectResponse(url="/login")
+        
+        # Verify the token
+        try:
+            auth_tokens = load_auth_tokens()
+            if token not in auth_tokens:
+                return RedirectResponse(url="/login")
+            
+            token_data = auth_tokens[token]
+            expires = datetime.fromisoformat(token_data["expires"])
+            
+            if datetime.now() >= expires:
+                return RedirectResponse(url="/login")
+                
+        except Exception as e:
+            print(f"[AUTH] Error verifying token: {e}")
+            return RedirectResponse(url="/login")
+    
+    file_path = f"{frontend_dir}/mobile/dashboard_mobile.html"
+    if os.path.exists(file_path):
+        with open(file_path, "r") as f:
+            content = f.read()
+            return HTMLResponse(
+                content=content,
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0"
+                }
+            )
+    else:
+        return HTMLResponse(content="Mobile dashboard not found", status_code=404)
 
 # Serve mobile account manager with cache busting
 @app.get("/mobile/account_manager", response_class=HTMLResponse)
@@ -2256,6 +2300,8 @@ async def get_strike_table_mobile():
                     probability,
                     yes_ask,
                     no_ask,
+                    yes_ask_dollars,
+                    no_ask_dollars,
                     volume,
                     ticker,
                     yes_diff,
@@ -2281,11 +2327,13 @@ async def get_strike_table_mobile():
                     "probability": float(row[3]) if row[3] else None,
                     "yes_ask": int(row[4]) if row[4] else None,
                     "no_ask": int(row[5]) if row[5] else None,
-                    "volume": int(row[6]) if row[6] else None,
-                    "ticker": row[7],
-                    "yes_diff": float(row[8]) if row[8] else None,
-                    "no_diff": float(row[9]) if row[9] else None,
-                    "active_side": row[10]
+                    "yes_ask_dollars": row[6],
+                    "no_ask_dollars": row[7],
+                    "volume": int(row[8]) if row[8] else None,
+                    "ticker": row[9],
+                    "yes_diff": float(row[10]) if row[10] else None,
+                    "no_diff": float(row[11]) if row[11] else None,
+                    "active_side": row[12]
                 }
                 strikes.append(strike)
             
@@ -3035,6 +3083,8 @@ async def get_strike_table(symbol: str):
                     probability,
                     yes_ask,
                     no_ask,
+                    yes_ask_dollars,
+                    no_ask_dollars,
                     volume,
                     ticker,
                     yes_diff,
@@ -3125,6 +3175,8 @@ async def get_postgresql_strike_table(symbol: str):
                     probability,
                     yes_ask,
                     no_ask,
+                    yes_ask_dollars,
+                    no_ask_dollars,
                     volume,
                     ticker,
                     yes_diff,
@@ -3161,11 +3213,13 @@ async def get_postgresql_strike_table(symbol: str):
                     "probability": float(strike_row[3]) if strike_row[3] else None,
                     "yes_ask": int(strike_row[4]) if strike_row[4] else None,
                     "no_ask": int(strike_row[5]) if strike_row[5] else None,
-                    "volume": int(strike_row[6]) if strike_row[6] else None,
-                    "ticker": strike_row[7],
-                    "yes_diff": float(strike_row[8]) if strike_row[8] else None,
-                    "no_diff": float(strike_row[9]) if strike_row[9] else None,
-                    "active_side": strike_row[10]
+                    "yes_ask_dollars": strike_row[6],
+                    "no_ask_dollars": strike_row[7],
+                    "volume": int(strike_row[8]) if strike_row[8] else None,
+                    "ticker": strike_row[9],
+                    "yes_diff": float(strike_row[10]) if strike_row[10] else None,
+                    "no_diff": float(strike_row[11]) if strike_row[11] else None,
+                    "active_side": strike_row[12]
                 }
                 response["strikes"].append(strike_data)
             

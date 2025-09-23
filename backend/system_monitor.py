@@ -100,8 +100,13 @@ class SystemMonitor:
                 {"name": "trade_executor", "script": "trade_executor.py"},
                 {"name": "symbol_price_watchdog_btc", "script": "symbol_price_watchdog.py BTC"},
                 {"name": "symbol_price_watchdog_eth", "script": "symbol_price_watchdog.py ETH"},
+                {"name": "symbol_price_watchdog_ndx", "script": "symbol_price_watchdog.py NDX"},
+                {"name": "symbol_price_watchdog_spx", "script": "symbol_price_watchdog.py SPX"},
                 {"name": "kalshi_account_sync", "script": "kalshi_account_sync_ws.py"},
                 {"name": "kalshi_market_watchdog_btc", "script": "kalshi_market_watchdog.py BTC"},
+                {"name": "kalshi_market_watchdog_eth", "script": "kalshi_market_watchdog.py ETH"},
+                {"name": "kalshi_market_watchdog_ndx", "script": "kalshi_market_watchdog.py NDX"},
+                {"name": "kalshi_market_watchdog_spx", "script": "kalshi_market_watchdog.py SPX"},
                 {"name": "system_monitor", "script": "system_monitor.py"},
                 {"name": "monitor_manager", "script": "monitor_manager.py"},
                 {"name": "cascading_failure_detector", "script": "cascading_failure_detector.py"}
@@ -130,7 +135,7 @@ class SystemMonitor:
                 discovered_services[active_trade_name] = active_trade_port
             
             # Add strike table generators
-            supported_symbols = ['BTC', 'ETH', 'SPX']
+            supported_symbols = ['BTC', 'ETH', 'NDX', 'SPX']
             strike_table_port_base = 8020
             for i, symbol in enumerate(supported_symbols):
                 strike_table_port = strike_table_port_base + i
@@ -390,6 +395,9 @@ class SystemMonitor:
     
     def check_all_services_status(self) -> Dict[str, Any]:
         """Check status of ALL core services and monitor-specific processes via supervisor or direct process check."""
+        # Re-discover services dynamically on each check to pick up monitor changes
+        self._discover_services_from_config()
+        
         # Use dynamically discovered services instead of hardcoded list
         all_services = list(self.service_urls.keys())
         

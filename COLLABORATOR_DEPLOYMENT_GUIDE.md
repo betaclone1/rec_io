@@ -1,5 +1,5 @@
 # REC.IO Collaborator Deployment Guide
-UPDATED: August 19, 2025
+UPDATED: January 15, 2025
 
 ## Overview
 
@@ -111,11 +111,68 @@ After SSH'ing into your droplet, you'll see a welcome message and instructions. 
      - **API Secret**: Paste your entire private key (including BEGIN/END lines) and press **Ctrl+D** when done
    - The system will automatically:
      - Sanitize all data (clear database, disable maintenance)
+     - **Import historical trades** (if you have a user data package - see below)
      - Update user information in database
      - Write credential files
      - Start all services (MASTER_RESTART)
 
 4. **System will auto-start on future reboots** (automatic)
+
+### Step 5.5: Import Historical Trade Data (Optional)
+
+If you have historical trade data from a previous REC.IO system, you can easily import it:
+
+#### **Option A: Automatic Import (Recommended)**
+
+1. **Upload your user data package** to the droplet before running setup:
+   ```bash
+   # From your local machine, upload the package
+   scp user_data_package_YYYYMMDD_HHMMSS.tar.gz root@YOUR_DROPLET_IP:/opt/rec_io_server/
+   ```
+
+2. **Run the setup script** as normal:
+   ```bash
+   ./scripts/collaborator_setup.sh
+   ```
+
+3. **The script will automatically**:
+   - Detect the user data package
+   - Extract the historical trades data
+   - Import all your trade history
+   - Report the number of trades imported
+
+#### **Option B: Manual Import (After Setup)**
+
+If you didn't upload the package before setup:
+
+1. **Upload your user data package**:
+   ```bash
+   scp user_data_package_YYYYMMDD_HHMMSS.tar.gz root@YOUR_DROPLET_IP:/opt/rec_io_server/
+   ```
+
+2. **Extract and import manually**:
+   ```bash
+   cd /opt/rec_io_server
+   tar -xzf user_data_package_*.tar.gz --wildcards "*/database_backup.sql"
+   BACKUP_FILE=$(find . -name "database_backup.sql" | head -1)
+   grep -A 10000 "COPY users.trades_0001" "$BACKUP_FILE" > trades_import.sql
+   PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db < trades_import.sql
+   rm -f trades_import.sql
+   rm -rf user_data_package_*/
+   ```
+
+#### **What Gets Imported:**
+- ✅ All historical trades with full data
+- ✅ PnL calculations and trade results
+- ✅ Trade timestamps and contract details
+- ✅ Entry/exit prices and fees
+- ✅ All trade metadata
+
+#### **What Stays Clean:**
+- ✅ New user information
+- ✅ Fresh account balance
+- ✅ Clean active trades
+- ✅ Fresh positions and fills
 
 ### Step 6: Access Your Trading System
 
@@ -128,6 +185,7 @@ Once setup is complete:
 
 ### Automatic Processes (No Action Required)
 - ✅ **Data sanitization** - All original user data is removed
+- ✅ **Historical data import** - Trade history imported from user data package (if provided)
 - ✅ **System configuration** - Database and services are prepared
 - ✅ **Security setup** - Proper permissions and isolation
 

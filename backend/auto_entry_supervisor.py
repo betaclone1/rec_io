@@ -1056,6 +1056,8 @@ def get_master_strike_table_data():
                     probability,
                     yes_ask,
                     no_ask,
+                    yes_ask_dollars,
+                    no_ask_dollars,
                     volume,
                     ticker,
                     yes_diff,
@@ -1083,11 +1085,13 @@ def get_master_strike_table_data():
                     "probability": float(strike_row[3]) if strike_row[3] else None,
                     "yes_ask": int(strike_row[4]) if strike_row[4] else None,
                     "no_ask": int(strike_row[5]) if strike_row[5] else None,
-                    "volume": int(strike_row[6]) if strike_row[6] else None,
-                    "ticker": strike_row[7],
-                    "yes_diff": float(strike_row[8]) if strike_row[8] else None,
-                    "no_diff": float(strike_row[9]) if strike_row[9] else None,
-                    "active_side": strike_row[10]
+                    "yes_ask_dollars": strike_row[6],
+                    "no_ask_dollars": strike_row[7],
+                    "volume": int(strike_row[8]) if strike_row[8] else None,
+                    "ticker": strike_row[9],
+                    "yes_diff": float(strike_row[10]) if strike_row[10] else None,
+                    "no_diff": float(strike_row[11]) if strike_row[11] else None,
+                    "active_side": strike_row[12]
                 }
                 response["strikes"].append(strike_data)
             conn.close()
@@ -1556,7 +1560,8 @@ def can_trade_strike(strike_key):
     return True
 
 def is_strike_already_traded(strike_data):
-    """Check if we already have an open or pending trade on this strike by querying trades_0001 table directly"""
+    """Check if we already have an open or pending trade on this strike by querying trades_0001 table directly.
+    Only blocks new trades if there's an existing trade from the SAME MONITOR on the same strike/side."""
     try:
         import psycopg2
         conn = psycopg2.connect(
@@ -1567,9 +1572,12 @@ def is_strike_already_traded(strike_data):
         )
         cursor = conn.cursor()
         
-        # Query trades_0001 table directly for open/pending trades with ticker
+        # Get current monitor identifier
+        current_monitor = f"mon_0001_{MONITOR_ID}"
+        
+        # Query trades_0001 table directly for open/pending trades with ticker AND same monitor
         cursor.execute("""
-            SELECT id, ticker, side, status 
+            SELECT id, ticker, side, status, monitor 
             FROM users.trades_0001 
             WHERE status IN ('open', 'pending')
         """)
@@ -1577,14 +1585,23 @@ def is_strike_already_traded(strike_data):
         trades = cursor.fetchall()
         conn.close()
         
-        # Checking {len(trades)} trades (open/pending) for ticker {strike_data.get('ticker')} {strike_data.get('side')}
+        ticker = strike_data.get('ticker')
+        side = strike_data.get('side')
+        
+        # Only log if there are trades to check (reduce log spam)
+        if len(trades) > 0:
+            log(f"Checking {len(trades)} trades (open/pending) for ticker {ticker} {side} from monitor {current_monitor}")
         
         for trade in trades:
-            trade_id, trade_ticker, trade_side, trade_status = trade
+            trade_id, trade_ticker, trade_side, trade_status, trade_monitor = trade
+            
+            # Only check trades from the same monitor
+            if trade_monitor != current_monitor:
+                continue
             
             # Normalize side comparison (Y = yes, N = no)
             normalized_trade_side = str(trade_side).upper()
-            normalized_strike_side = strike_data.get('side', '').upper()
+            normalized_strike_side = side.upper() if side else ''
             
             # Handle Y/YES and N/NO mapping
             if normalized_trade_side == 'Y' and normalized_strike_side == 'YES':
@@ -1593,15 +1610,17 @@ def is_strike_already_traded(strike_data):
                 normalized_trade_side = 'NO'
             
             # Compare ticker and side
-            if (trade_ticker == strike_data.get('ticker') and 
+            if (trade_ticker == ticker and 
                 normalized_trade_side == normalized_strike_side):
-                log(f"[AUTO ENTRY] ⚠️ Found {trade_status} trade (ID: {trade_id}) on {strike_data.get('strike')} {strike_data.get('side')}")
+                log(f"⚠️ Found {trade_status} trade (ID: {trade_id}) on {strike_data.get('strike', 'unknown')} {side} from same monitor {current_monitor}")
                 return True
         
-        # No open or pending trades found for {strike_data.get('strike')} {strike_data.get('side')}
+        # Only log when there are actual trades but none match (reduce log spam)
+        if len(trades) > 0:
+            log(f"No matching trades found for {strike_data.get('strike', 'unknown')} {side} from monitor {current_monitor}")
         return False
     except Exception as e:
-        log(f"[AUTO ENTRY] Error checking trades_0001 table: {e}")
+        log(f"Error checking trades_0001 table: {e}")
         return False
 
 def check_auto_entry_conditions():
@@ -1753,23 +1772,37 @@ def check_auto_entry_conditions():
                 if volume is None or volume < min_volume:
                     continue
                 
-                # STEP 6: Check max ask price threshold
+                # STEP 6: Check max ask price threshold using _dollars values
                 max_ask = settings.get("max_ask", 98)
-                yes_ask = strike.get('yes_ask', 0)
-                no_ask = strike.get('no_ask', 0)
-                if yes_ask is None or no_ask is None:
+                yes_ask_dollars = strike.get('yes_ask_dollars')
+                no_ask_dollars = strike.get('no_ask_dollars')
+                if not yes_ask_dollars or not no_ask_dollars:
+                    log(f"⚠️ Missing _dollars values for strike {strike.get('strike')}, skipping")
                     continue
-                max_ask_price = max(yes_ask, no_ask)
+                # Convert _dollars to cents for comparison with max_ask threshold
+                yes_ask_cents = float(yes_ask_dollars) * 100
+                no_ask_cents = float(no_ask_dollars) * 100
+                max_ask_price = max(yes_ask_cents, no_ask_cents)
                 if max_ask_price > max_ask:
                     continue
                 
-                # STEP 5: Determine buy price based on active_side
+                # STEP 5: Determine buy price based on active_side using subpenny precision
                 if active_side == 'yes':
                     side = 'yes'
-                    buy_price = strike.get('yes_ask', 0) / 100.0  # Convert cents to decimal
+                    # Use yes_ask_dollars directly (no conversion needed)
+                    yes_ask_dollars = strike.get('yes_ask_dollars')
+                    if not yes_ask_dollars:
+                        log(f"⚠️ Missing yes_ask_dollars for strike {strike.get('strike')}, skipping")
+                        continue
+                    buy_price = float(yes_ask_dollars)
                 elif active_side == 'no':
                     side = 'no'
-                    buy_price = strike.get('no_ask', 0) / 100.0  # Convert cents to decimal
+                    # Use no_ask_dollars directly (no conversion needed)
+                    no_ask_dollars = strike.get('no_ask_dollars')
+                    if not no_ask_dollars:
+                        log(f"⚠️ Missing no_ask_dollars for strike {strike.get('strike')}, skipping")
+                        continue
+                    buy_price = float(no_ask_dollars)
                 else:
                     continue
                 

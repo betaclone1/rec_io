@@ -5,18 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Dashboard</title>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles/global.css">
+  <link rel="stylesheet" href="../styles/global.css">
   
   <!-- Preload critical images -->
-  <link rel="preload" href="/images/icons/list_view_icon.png" as="image" type="image/png">
-  <link rel="preload" href="/images/icons/tile_view_icon.png" as="image" type="image/png">
-  <link rel="preload" href="/images/icons/pie_chart_icon.png" as="image" type="image/png">
-  <link rel="preload" href="/images/icons/bar_chart_icon.png" as="image" type="image/png">
+  <link rel="preload" href="../images/icons/list_view_icon.png" as="image" type="image/png">
+  <link rel="preload" href="../images/icons/tile_view_icon.png" as="image" type="image/png">
+  <link rel="preload" href="../images/icons/pie_chart_icon.png" as="image" type="image/png">
+  <link rel="preload" href="../images/icons/bar_chart_icon.png" as="image" type="image/png">
   
   <script src="https://d3js.org/d3.v7.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
-  <script src="/js/monitor_history_display.js"></script>
+  <script src="../js/monitor_history_display.js"></script>
   <style>
     /* Dashboard Container */
     .dashboard-container {
@@ -26,17 +25,15 @@
       gap: 10px;
     }
 
-    /* Portfolio Panel */
+    /* Portfolio Panel - Mobile: Full width */
     .portfolio-panel {
       min-height: 300px;
-      width: 75%;
+      width: 100%;
     }
 
-    /* New Panel */
+    /* New Panel - Mobile: Hide */
     .new-panel {
-      min-height: 300px;
-      width: 25%;
-      padding: 8px;
+      display: none;
     }
 
     /* Markets List */
@@ -53,9 +50,6 @@
       border-bottom: none;
     }
 
-    .market-item:hover {
-      background-color: #4a5568;
-    }
 
     .market-item:last-child {
       border-bottom: none;
@@ -115,10 +109,10 @@
 
 
 
-    /* Allocation Panel */
+    /* Allocation Panel - Mobile: Full width */
     .allocation-panel {
       min-height: 400px;
-      width: 25%;
+      width: 100%;
     }
 
     /* Rebalance Icon Container */
@@ -154,16 +148,16 @@
       width: 100%;
     }
 
-    /* Monitors Panel */
+    /* Monitors Panel - Mobile: Full width */
     .monitors-panel {
       min-height: 400px;
-      width: 75%;
+      width: 100%;
     }
 
     .monitors-grid {
       display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
+      flex-direction: column;
+      gap: 8px;
       padding: 10px 0;
     }
 
@@ -171,7 +165,7 @@
       display: flex;
       flex-direction: column;
       flex-wrap: nowrap;
-      gap: 4px;
+      gap: 8px;
       padding: 10px 0;
     }
 
@@ -180,7 +174,6 @@
       background-color: #1f2530;
       border-radius: 8px;
       padding: 16px;
-      cursor: grab;
       border: 1px solid #34495e;
       user-select: none;
       min-width: 280px;
@@ -189,11 +182,21 @@
       flex-direction: column;
       gap: 4px;
       position: relative;
+      pointer-events: none;
+    }
+    
+    /* Disable all hover effects on monitor tiles */
+    .monitor-tile:hover {
+      background-color: #1f2530 !important;
+      border-color: #34495e !important;
+      transform: none !important;
+    }
+    
+    /* Re-enable pointer events for auto trade toggle */
+    .auto-trade-toggle {
+      pointer-events: auto !important;
     }
 
-    .monitor-tile:hover {
-      background: #3f556b;
-    }
 
     /* Monitor Name */
     .monitor-name {
@@ -464,9 +467,6 @@
       margin-right: 6px;
     }
 
-    .list-view .monitor-settings-icon:hover {
-      opacity: 1;
-    }
 
     .tile-view .monitor-settings-icon {
       width: 14px;
@@ -477,9 +477,6 @@
       margin-right: 6px;
     }
 
-    .tile-view .monitor-settings-icon:hover {
-      opacity: 1;
-    }
 
     .monitor-symbol-container {
       display: flex;
@@ -501,9 +498,6 @@
       cursor: pointer;
     }
 
-    .monitor-icon:hover {
-      opacity: 1;
-    }
 
     .status-light {
       width: 12px;
@@ -518,20 +512,12 @@
       box-shadow: 0 0 6px rgba(72, 187, 120, 0.6);
     }
 
-    .status-light.active:hover {
-      background-color: #e53e3e;
-      box-shadow: 0 0 6px rgba(229, 62, 62, 0.6);
-    }
 
     .status-light.inactive {
       background-color: #3d3f41;
       box-shadow: none;
     }
 
-    .status-light.inactive:hover {
-      background-color: #48bb78;
-      box-shadow: 0 0 6px rgba(72, 187, 120, 0.6);
-    }
 
     /* List View Status Light - positioned for horizontal layout */
     .list-status-light {
@@ -586,15 +572,7 @@
       user-select: none;
     }
 
-    .list-view .monitor-tile.new-monitor:hover {
-      border-color: #007bff;
-      background: rgba(0, 123, 255, 0.1);
-    }
 
-    .tile-view .monitor-tile.new-monitor:hover {
-      border-color: #007bff;
-      background: rgba(0, 123, 255, 0.1);
-    }
 
     .list-view .monitor-tile.new-monitor:active {
       cursor: pointer;
@@ -604,11 +582,6 @@
       cursor: pointer;
     }
 
-    .sortable-ghost ~ .monitor-tile.new-monitor:hover,
-    .sortable-chosen ~ .monitor-tile.new-monitor:hover {
-      border-color: #4a5568;
-      background: transparent;
-    }
 
     .list-view .new-monitor .monitor-symbol {
       font-size: 24px;
@@ -701,7 +674,7 @@
     }
 
     .portfolio-value {
-      font-size: 35px;
+      font-size: 17.5px;
       font-weight: bold;
       color: #ffffff;
       line-height: 1;
@@ -714,7 +687,7 @@
     }
 
     .change-element {
-      font-size: 18px;
+      font-size: 9px;
       font-weight: bold;
       display: flex;
       align-items: center;
@@ -759,9 +732,10 @@
       color: #ffffff;
     }
 
-    /* Panels Row */
+    /* Panels Row - Mobile: Stack vertically */
     .panels-row {
       display: flex;
+      flex-direction: column;
       gap: 10px;
     }
 
@@ -894,18 +868,12 @@
       color: #e2e8f0;
     }
 
-    .modal-btn-cancel:hover {
-      background-color: #718096;
-    }
 
     .modal-btn-confirm {
       background-color: #e53e3e;
       color: white;
     }
 
-    .modal-btn-confirm:hover {
-      background-color: #c53030;
-    }
 
     /* New Monitor Modal Form Styles */
     .form-group {
@@ -973,66 +941,19 @@
         </div>
       </div>
 
-      <!-- New Panel -->
-      <div class="panel-container new-panel">
-        <div class="markets-list">
-          <div class="market-item" data-symbol="BTC">
-            <div class="market-info">
-              <div class="market-symbol">BTC</div>
-              <div class="market-name">Bitcoin</div>
-            </div>
-            <div class="market-data">
-              <div class="market-price" id="btc-price">$0.00</div>
-              <div class="market-changes">
-                1h <span id="btc-change-1h">—</span> &nbsp;&nbsp; 1d <span id="btc-change-1d">—</span>
-              </div>
-            </div>
-          </div>
-          
-          <div class="market-item" data-symbol="ETH">
-            <div class="market-info">
-              <div class="market-symbol">ETH</div>
-              <div class="market-name">Ethereum</div>
-            </div>
-            <div class="market-data">
-              <div class="market-price" id="eth-price">$0.00</div>
-              <div class="market-changes">
-                1h <span id="eth-change-1h">—</span> &nbsp;&nbsp; 1d <span id="eth-change-1d">—</span>
-              </div>
-            </div>
-          </div>
-          
-          <div class="market-item" data-symbol="SPY">
-            <div class="market-info">
-              <div class="market-symbol">SPY</div>
-              <div class="market-name">S&P 500</div>
-            </div>
-            <div class="market-data">
-              <div class="market-price" id="spy-price">$458.25</div>
-              <div class="market-changes">
-                1h <span id="spy-change-1h">+0.45% ▲</span> &nbsp;&nbsp; 1d <span id="spy-change-1d">+1.84% ▲</span>
-              </div>
-            </div>
-          </div>
-          
-          <div class="market-item" data-symbol="QQQ">
-            <div class="market-info">
-              <div class="market-symbol">QQQ</div>
-              <div class="market-name">Nasdaq ETF</div>
-            </div>
-            <div class="market-data">
-              <div class="market-price" id="qqq-price">$395.50</div>
-              <div class="market-changes">
-                1h <span id="qqq-change-1h">+0.32% ▲</span> &nbsp;&nbsp; 1d <span id="qqq-change-1d">+1.41% ▲</span>
-              </div>
-            </div>
-          </div>
+
+    <!-- Monitors and Allocation Row -->
+    <div class="panels-row">
+      <!-- Monitors Panel -->
+      <div class="panel-container monitors-panel">
+        <div class="panel-header">
+          <span>Monitors</span>
+        </div>
+        <div class="monitors-grid" id="monitors-grid">
+          <!-- Monitor tiles will be dynamically generated here -->
         </div>
       </div>
-    </div>
 
-    <!-- Allocation and Monitors Row -->
-    <div class="panels-row">
       <!-- Allocation Panel -->
       <div class="panel-container allocation-panel">
         <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
@@ -1040,14 +961,14 @@
           <div style="font-size: 12px; user-select: none; color: white; display: flex; align-items: center; gap: 6px; margin: 0; cursor: pointer;" id="chartTypeToggle" onclick="toggleChartType()">
             <img 
               id="pieChartIcon"
-              src="/images/icons/pie_chart_icon.png" 
+              src="../images/icons/pie_chart_icon.png" 
               alt="Pie Chart" 
               title="Pie Chart" 
               style="width: 12px; height: 12px; opacity: 1; transition: opacity 0.2s;"
             />
             <img 
               id="barChartIcon"
-              src="/images/icons/bar_chart_icon.png" 
+              src="../images/icons/bar_chart_icon.png" 
               alt="Bar Chart" 
               title="Bar Chart" 
               style="width: 12px; height: 12px; opacity: 0.2; transition: opacity 0.2s;"
@@ -1060,63 +981,11 @@
           </div>
         </div>
       </div>
-
-      <!-- Monitors Panel -->
-      <div class="panel-container monitors-panel">
-        <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span>Monitors</span>
-            <img 
-              src="/images/icons/archive_list_icon.png" 
-              alt="Archive" 
-              title="Archive" 
-              style="width: 12px; opacity: 0.6; transition: opacity 0.2s; transform: translateY(1px); cursor: pointer;"
-              onmouseover="this.style.opacity='1'" 
-              onmouseout="this.style.opacity='0.6'"
-            />
-          </div>
-          <div style="display: flex; align-items: center; gap: 12px;">
-            <div style="display: flex; align-items: center; gap: 6px;">
-              <span style="font-size: 12px; color: #a0aec0;">Sort by</span>
-              <select id="sortPicker" class="dropdown-picker" onchange="sortMonitors(this.value)" style="font-size: 11px; padding: 2px 6px;">
-                <option value="name">Name</option>
-                <option value="symbol">Symbol</option>
-                <option value="strategy">Strategy</option>
-                <option value="trades">Trades</option>
-                <option value="winRate">W/L</option>
-                <option value="return">Ret</option>
-                <option value="pnl">PnL</option>
-                <option value="uptime">Uptime</option>
-                <option value="custom" style="display: none;">Custom</option>
-              </select>
-            </div>
-            <div style="font-size: 12px; user-select: none; color: white; display: flex; align-items: center; gap: 6px; margin: 0; cursor: pointer;" id="viewModeToggle" onclick="toggleViewMode()">
-              <img 
-                id="listViewIcon"
-                src="/images/icons/list_view_icon.png" 
-                alt="List View" 
-                title="List View" 
-                style="width: 16px; height: 16px; opacity: 0.2; transition: opacity 0.2s;"
-              />
-              <img 
-                id="tileViewIcon"
-                src="/images/icons/tile_view_icon.png" 
-                alt="Tile View" 
-                title="Tile View" 
-                style="width: 16px; height: 16px; opacity: 1; transition: opacity 0.2s;"
-              />
-            </div>
-          </div>
-        </div>
-        <div class="monitors-grid" id="monitors-grid">
-          <!-- Monitor tiles will be dynamically generated here -->
-        </div>
-      </div>
     </div>
   </div>
 
   <script>
-    // SortableJS for drag and drop
+    // Mobile dashboard functionality
 
     // Load account mode and fetch portfolio data
     let GLOBAL_ACCOUNT_MODE = 'prod'; // Default to production mode
@@ -2126,12 +1995,17 @@
         // Toggle the auto trade state
         monitor.autoTrade = !monitor.autoTrade;
         
-        // Update the visual state of the toggle
-        const toggleElement = event.target;
-        if (monitor.autoTrade) {
-          toggleElement.classList.add('active');
+        // Update the visual state of the toggle - find the toggle element by monitor ID
+        const toggleElement = document.querySelector(`[onclick*="toggleAutoTrade('${monitorId}')"]`);
+        if (toggleElement) {
+          if (monitor.autoTrade) {
+            toggleElement.classList.add('active');
+          } else {
+            toggleElement.classList.remove('active');
+          }
+          console.log('Toggle element found and updated:', toggleElement.classList.contains('active'));
         } else {
-          toggleElement.classList.remove('active');
+          console.error('Toggle element not found for monitor:', monitorId);
         }
         
         console.log(`Auto trade ${monitor.autoTrade ? 'enabled' : 'disabled'} for ${monitorId}`);
@@ -2151,17 +2025,41 @@
             auto_trade: monitor.autoTrade 
           })
         })
-        .then(response => response.json())
+        .then(response => {
+          console.log('Toggle response status:', response.status);
+          return response.json();
+        })
         .then(data => {
+          console.log('Toggle response data:', data);
           if (data.status === 'ok') {
             console.log('Successfully updated auto trade in database');
           } else {
             console.error('Failed to update auto trade:', data.message);
+            // Revert the toggle state on error
+            monitor.autoTrade = !monitor.autoTrade;
+            if (toggleElement) {
+              if (monitor.autoTrade) {
+                toggleElement.classList.add('active');
+              } else {
+                toggleElement.classList.remove('active');
+              }
+            }
           }
         })
         .catch(error => {
           console.error('Error updating auto trade:', error);
+          // Revert the toggle state on error
+          monitor.autoTrade = !monitor.autoTrade;
+          if (toggleElement) {
+            if (monitor.autoTrade) {
+              toggleElement.classList.add('active');
+            } else {
+              toggleElement.classList.remove('active');
+            }
+          }
         });
+      } else {
+        console.error('Monitor not found:', monitorId);
       }
     }
 

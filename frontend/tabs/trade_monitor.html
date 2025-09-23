@@ -5114,9 +5114,9 @@ document.addEventListener('DOMContentLoaded', () => {
         else riskClass = 'high-risk';
         row.classList.add(riskClass);
         
-        // Update buy button
-        const yesAsk = strikeData.yes_ask;
-        const noAsk = strikeData.no_ask;
+        // Update buy button - use _dollars values when available
+        const yesAsk = strikeData.yes_ask_dollars ? Math.round(parseFloat(strikeData.yes_ask_dollars) * 100) : strikeData.yes_ask;
+        const noAsk = strikeData.no_ask_dollars ? Math.round(parseFloat(strikeData.no_ask_dollars) * 100) : strikeData.no_ask;
         const yesDiff = strikeData.yes_diff;
         const noDiff = strikeData.no_diff;
         const volume = strikeData.volume;
