@@ -8,6 +8,12 @@ echo "==========================================================================
 echo "Sanitizing user data..."
 cd /opt/rec_io_server
 
+# Remove production flag if it exists (new deployments shouldn't have this)
+if [ -f ".production_system" ]; then
+    echo "Removing production system flag for new deployment..."
+    rm -f .production_system
+fi
+
 # Clear database
 echo "Executing database sanitization..."
 PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db << 'SQL_EOF'
@@ -226,6 +232,11 @@ echo "Kalshi PEM file created: ✓"
 echo "Kalshi .env file created: ✓"
 echo "System credential locations created: ✓"
 echo "All credential files and database updates complete"
+
+# Step 6.5: CREATE SANITIZATION FLAG
+echo "Creating sanitization completion flag..."
+touch /opt/rec_io_server/.sanitization_complete
+echo "Sanitization completion flag created"
 
 # Step 7: RUN MASTER RESTART
 echo "Running MASTER RESTART..."

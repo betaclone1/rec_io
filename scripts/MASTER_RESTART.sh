@@ -53,27 +53,11 @@ print_header() {
     echo -e "${PURPLE}=============================================================================${NC}"
 }
 
-# Function to check if system has been sanitized
-check_sanitization_status() {
-    print_status "Checking system sanitization status..."
-    
-    # Check if master users table exists (indicates system hasn't been sanitized)
-    if PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db -c "SELECT 1 FROM information_schema.tables WHERE table_schema = 'users' AND table_name = 'master_users';" 2>/dev/null | grep -q "1"; then
-        print_error "SECURITY WARNING: System has not been sanitized!"
-        print_error "This droplet contains original user data and credentials."
-        echo ""
-        print_warning "To sanitize the system, run:"
-        print_warning "  ./scripts/collaborator_setup.sh"
-        echo ""
-        print_warning "Or if you want to proceed anyway (NOT RECOMMENDED):"
-        print_warning "  PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db -c \"DROP TABLE IF EXISTS users.master_users CASCADE;\""
-        echo ""
-        print_error "ABORTING: System startup blocked for security reasons"
-        exit 1
-    fi
-    
-    print_success "System sanitization check passed"
-}
+# Function to check if system has been sanitized (DISABLED FOR PRODUCTION)
+# check_sanitization_status() {
+#     # Security check disabled for production systems
+#     return 0
+# }
 
 # Function to check if a port is in use (only listening processes)
 check_port() {

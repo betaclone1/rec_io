@@ -2179,7 +2179,7 @@
         // Adjust Results panel height after Analysis panel animation
         setTimeout(() => {
           if (resultsContent && resultsContent.style.height !== '0px' && resultsContent.style.height !== '') {
-            resultsContent.style.height = 'calc(100vh - 470px)'; // 220 + 250
+            resultsContent.style.height = 'calc(100vh - 530px)'; // 160 + 160 + 250 + 20 - 60
           }
         }, 150); // Half the Analysis panel transition time
       } else {
@@ -2189,7 +2189,7 @@
         // Adjust Results panel height after Analysis panel animation
         setTimeout(() => {
           if (resultsContent && resultsContent.style.height !== '0px' && resultsContent.style.height !== '') {
-            resultsContent.style.height = 'calc(100vh - 220px)'; // Back to original
+            resultsContent.style.height = 'calc(100vh - 280px)'; // 160 + 160 + 20 - 60
           }
         }, 150); // Half the Analysis panel transition time
       }
@@ -2274,7 +2274,7 @@
       if (content.style.height === '0px' || content.style.height === '') {
         // Expand the panel - check if Analysis panel is expanded
         const analysisExpanded = analysisContent && analysisContent.style.height !== '0px' && analysisContent.style.height !== '';
-        const baseHeight = analysisExpanded ? 'calc(100vh - 470px)' : 'calc(100vh - 220px)';
+        const baseHeight = analysisExpanded ? 'calc(100vh - 530px)' : 'calc(100vh - 280px)';
         content.style.height = baseHeight;
         icon.style.transform = 'rotate(180deg)';
       } else {
@@ -2292,7 +2292,7 @@
       if (resultsContent && resultsIcon) {
         // Since Analysis panel starts expanded, use the same height as when Analysis panel is expanded
         // This matches the value used in toggleAnalysisPanel when Analysis panel is expanded
-        resultsContent.style.height = 'calc(100vh - 470px)';
+        resultsContent.style.height = 'calc(100vh - 530px)';
         resultsIcon.style.transform = 'rotate(180deg)';
       }
     });

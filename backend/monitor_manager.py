@@ -1265,6 +1265,78 @@ def periodic_monitor_statistics_update():
         print(f"[MONITOR_MANAGER] Error in periodic statistics update: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
+def get_strategy_default_settings(strategy_name, user_number="0001"):
+    """Get default auto trade settings for a strategy from strategy_list table"""
+    try:
+        conn = monitor_manager.get_database_connection()
+        if not conn:
+            print(f"[STRATEGY DEFAULTS] Database connection failed")
+            return {}
+        
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT min_probability, min_differential, max_differential, min_time, max_time, 
+                       allow_re_entry, spike_alert_enabled, spike_alert_momentum_threshold,
+                       spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
+                       current_probability, min_ttc_seconds, momentum_spike_enabled,
+                       momentum_spike_threshold, verification_period_enabled, 
+                       verification_period_seconds, min_volume
+                FROM users.strategy_list_{user_number} 
+                WHERE name = %s
+            """, (strategy_name,))
+            
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                defaults = {
+                    'min_probability': result[0],
+                    'min_differential': float(result[1]) if result[1] else 0.25,
+                    'max_differential': float(result[2]) if result[2] is not None else None,
+                    'min_time': result[3],
+                    'max_time': result[4],
+                    'allow_re_entry': result[5],
+                    'spike_alert_enabled': result[6],
+                    'spike_alert_momentum_threshold': result[7],
+                    'spike_alert_cooldown_threshold': result[8],
+                    'spike_alert_cooldown_minutes': result[9],
+                    'current_probability': result[10],
+                    'min_ttc_seconds': result[11],
+                    'momentum_spike_enabled': result[12],
+                    'momentum_spike_threshold': result[13],
+                    'verification_period_enabled': result[14],
+                    'verification_period_seconds': result[15],
+                    'min_volume': result[16]
+                }
+                print(f"[STRATEGY DEFAULTS] Loaded defaults for strategy '{strategy_name}': {defaults}")
+                return defaults
+            else:
+                print(f"[STRATEGY DEFAULTS] No defaults found for strategy '{strategy_name}', using fallback defaults")
+                # Return fallback defaults if strategy not found
+                return {
+                    'min_probability': 25,
+                    'min_differential': 0.25,
+                    'max_differential': None,
+                    'min_time': 0,
+                    'max_time': 0,
+                    'allow_re_entry': False,
+                    'spike_alert_enabled': False,
+                    'spike_alert_momentum_threshold': 80,
+                    'spike_alert_cooldown_threshold': 60,
+                    'spike_alert_cooldown_minutes': 30,
+                    'current_probability': None,
+                    'min_ttc_seconds': 0,
+                    'momentum_spike_enabled': False,
+                    'momentum_spike_threshold': 70,
+                    'verification_period_enabled': False,
+                    'verification_period_seconds': 60,
+                    'min_volume': 0
+                }
+                
+    except Exception as e:
+        print(f"[STRATEGY DEFAULTS] Error getting strategy defaults for '{strategy_name}': {e}")
+        return {}
+
 @app.route('/api/monitor/create', methods=['POST'])
 def create_monitor():
     """Create a new monitor - business logic handled here"""
@@ -1284,6 +1356,10 @@ def create_monitor():
         
         # Extract user number from user_id (e.g., user_0001 -> 0001)
         user_number = user_id.replace("user_", "")
+        
+        # Get strategy default settings
+        strategy_defaults = get_strategy_default_settings(strategy, user_number)
+        print(f"[MONITOR CREATE] Using strategy defaults for '{strategy}': {strategy_defaults}")
         
         conn = monitor_manager.get_database_connection()
         if not conn:
@@ -1321,8 +1397,10 @@ def create_monitor():
             # Let PostgreSQL handle the ID automatically with SERIAL
             cursor.execute(f"""
                 INSERT INTO users.monitor_list_{user_number}
-                (name, symbol, strategy, auto_trade, auto_trade_status, status, bankroll_allotment_pct, bankroll_allotment_total, position_size, position_type, multiplier, total_position, trades, win_loss, ret_pct, pnl, dashboard_order, created)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                (name, symbol, strategy, auto_trade, auto_trade_status, status, bankroll_allotment_pct, bankroll_allotment_total, position_size, position_type, multiplier, total_position, trades, win_loss, ret_pct, pnl, dashboard_order, created,
+                 min_probability, min_differential, max_differential, min_time, max_time, allow_re_entry, spike_alert_enabled, spike_alert_momentum_threshold, spike_alert_cooldown_threshold, spike_alert_cooldown_minutes, current_probability, min_ttc_seconds, momentum_spike_enabled, momentum_spike_threshold, verification_period_enabled, verification_period_seconds, min_volume)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(),
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
                 f"mon_{user_number}_temp",  # Temporary name
@@ -1342,6 +1420,24 @@ def create_monitor():
                 0,  # ret_pct defaults to 0
                 0,  # pnl defaults to 0
                 999,  # dashboard_order defaults to 999 (end of list)
+                # Strategy default auto trade settings
+                strategy_defaults.get('min_probability', 25),
+                strategy_defaults.get('min_differential', 0.25),
+                strategy_defaults.get('max_differential', None),
+                strategy_defaults.get('min_time', 0),
+                strategy_defaults.get('max_time', 0),
+                strategy_defaults.get('allow_re_entry', False),
+                strategy_defaults.get('spike_alert_enabled', False),
+                strategy_defaults.get('spike_alert_momentum_threshold', 80),
+                strategy_defaults.get('spike_alert_cooldown_threshold', 60),
+                strategy_defaults.get('spike_alert_cooldown_minutes', 30),
+                strategy_defaults.get('current_probability', None),
+                strategy_defaults.get('min_ttc_seconds', 0),
+                strategy_defaults.get('momentum_spike_enabled', False),
+                strategy_defaults.get('momentum_spike_threshold', 70),
+                strategy_defaults.get('verification_period_enabled', False),
+                strategy_defaults.get('verification_period_seconds', 60),
+                strategy_defaults.get('min_volume', 0)
             ))
             
             # Get the generated ID

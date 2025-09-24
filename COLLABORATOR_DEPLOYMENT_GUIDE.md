@@ -93,10 +93,10 @@ Once the droplet is active:
 
 After SSH'ing into your droplet, you'll see a welcome message and instructions. Follow these steps:
 
-1. **Navigate to the project directory**:
+1. **IMMEDIATELY block the system from starting** (CRITICAL SECURITY STEP):
    
    cd /opt/rec_io_server
-   ./scripts/collaborator_setup.sh
+   ./scripts/block_new_deployment.sh
 
 2. **Run the collaborator setup script**:
    

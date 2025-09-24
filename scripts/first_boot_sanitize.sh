@@ -262,6 +262,11 @@ the setup process.
 WARNING_EOF
     
     print_status "Created warning file: /opt/rec_io/SANITIZATION_WARNING.txt"
+    
+    # Create sanitization completion flag
+    touch "$PROJECT_ROOT/.sanitization_complete"
+    print_status "Created sanitization completion flag"
+    
     print_success "First boot sanitization completed"
 }
 
