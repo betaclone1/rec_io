@@ -492,8 +492,28 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                         
                         log_event(ticket_id, f"MANAGER: PnL calculation - buy: ${buy_price}, sell: ${sell_price}, total_fees: ${total_fees}, pnl: ${pnl}")
                         
-                        # Update trade status to closed with all calculated values
-                        update_trade_status(id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, total_fees)
+                        # Calculate ret_pct (return percentage) - same logic as settlement process
+                        ret_pct = None
+                        pg_conn_bankroll = get_postgresql_connection()
+                        if pg_conn_bankroll:
+                            with pg_conn_bankroll.cursor() as cursor_bankroll:
+                                cursor_bankroll.execute("SELECT bankroll FROM users.trades_0001 WHERE id = %s", (id,))
+                                bankroll_row = cursor_bankroll.fetchone()
+                                bankroll = bankroll_row[0] if bankroll_row else None
+                            pg_conn_bankroll.close()
+                        else:
+                            bankroll = None
+                        
+                        if bankroll is not None and bankroll > 0:  # Prevent division by zero
+                            # PnL is in dollars, bankroll is in cents
+                            # Formula: (pnl / (bankroll/100.0)) * 100
+                            ret_pct = round((pnl / (bankroll / 100.0)) * 100, 5)
+                            log_event(ticket_id, f"MANAGER: Calculated ret_pct: {ret_pct}% (PnL: ${pnl}, Bankroll: {bankroll} cents)")
+                        else:
+                            log_event(ticket_id, f"MANAGER: Bankroll is zero or None for trade {id}, cannot calculate ret_pct")
+                        
+                        # Update trade status to closed with all calculated values including ret_pct
+                        update_trade_status_with_ret_pct(id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, total_fees, ret_pct)
                         
                         log_event(ticket_id, f"MANAGER: CLOSE TRADE CONFIRMED - PnL: ${pnl}, W/L: {win_loss}, Fees: ${total_fees}")
                         log(f"CLOSE TRADE CONFIRMED: {expected_ticker}, PnL=${pnl}, W/L={win_loss}")
@@ -871,8 +891,8 @@ init_trades_db()
 
 
 
-def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbol_close=None, win_loss=None, pnl=None, close_method=None, fees=None):
-    """Update trade status in PostgreSQL database only."""
+def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_price=None, symbol_close=None, win_loss=None, pnl=None, close_method=None, fees=None, ret_pct=None):
+    """Update trade status in PostgreSQL database with ret_pct calculation."""
     if status == 'closed':
         if closed_at is None:
             utc_now = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC"))
@@ -916,9 +936,146 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
                 if status == 'closed':
                     cursor.execute("""
                         UPDATE users.trades_0001 
-                        SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s 
+                        SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, ret_pct = %s 
                         WHERE id = %s
-                    """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, trade_id))
+                    """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, ret_pct, trade_id))
+                else:
+                    cursor.execute("""
+                        UPDATE users.trades_0001 
+                        SET status = %s 
+                        WHERE id = %s
+                    """, (status, trade_id))
+                
+                if cursor.rowcount > 0:
+                    print(f"💾 Trade status update written to PostgreSQL users.trades_0001")
+                else:
+                    print(f"⚠️ No matching trade found in PostgreSQL for ID {trade_id}")
+                
+                pg_conn.commit()
+                pg_conn.close()
+                
+                # Broadcast active trades change to frontend
+                try:
+                    import requests
+                    broadcast_url = f"http://localhost:{get_port('main_app')}/api/broadcast_active_trades_change"
+                    broadcast_payload = {
+                        "count": 1,
+                        "trade_id": trade_id,
+                        "status": status,
+                        "timestamp": time.time()
+                    }
+                    response = requests.post(broadcast_url, json=broadcast_payload, timeout=2)
+                    if response.status_code == 200:
+                        log("NOTIFIED FRONTEND - ACTIVE TRADES CHANGE")
+                    else:
+                        log(f"ACTIVE TRADES BROADCAST FAILED: {response.status_code}")
+                except Exception as e:
+                    log(f"ACTIVE TRADES BROADCAST ERROR: {e}")
+        else:
+            print(f"⚠️ Skipping PostgreSQL update - no connection available")
+    except Exception as e:
+        print(f"❌ Failed to update PostgreSQL: {e}")
+        if pg_conn:
+            pg_conn.close()
+    
+    notify_frontend_trade_change()
+    
+    # Notify Active Trade Supervisor when status changes to open
+    if status == 'open':
+        # Get ticket_id from PostgreSQL
+        pg_conn = get_postgresql_connection()
+        if pg_conn:
+            with pg_conn.cursor() as cursor:
+                cursor.execute("SELECT ticket_id FROM users.trades_0001 WHERE id = %s", (trade_id,))
+                ticket_row = cursor.fetchone()
+        else:
+            ticket_row = None
+        
+        ticket_id = ticket_row[0] if ticket_row else None
+        
+        # Get monitor identifier for this trade
+        pg_conn = get_postgresql_connection()
+        if pg_conn:
+            with pg_conn.cursor() as cursor:
+                cursor.execute("SELECT monitor FROM users.trades_0001 WHERE id = %s", (trade_id,))
+                monitor_row = cursor.fetchone()
+                monitor = monitor_row[0] if monitor_row else None
+            pg_conn.close()
+        else:
+            monitor = None
+        
+        if monitor:
+            notify_active_trade_supervisor_direct_with_monitor(trade_id, ticket_id, status, monitor)
+        else:
+            notify_active_trade_supervisor_direct(trade_id, ticket_id, status)
+    
+    # Notify monitor_manager when trade is closed
+    if status == 'closed':
+        notify_monitor_manager_trade_closed(trade_id, status)
+
+def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbol_close=None, win_loss=None, pnl=None, close_method=None, fees=None):
+    """Update trade status in PostgreSQL database only."""
+    if status == 'closed':
+        if closed_at is None:
+            utc_now = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC"))
+            est_now = utc_now.astimezone(ZoneInfo("America/New_York"))
+            closed_at = est_now.isoformat()
+
+        if pnl is not None:
+            calculated_pnl = pnl
+        else:
+            pg_conn = get_postgresql_connection()
+            if pg_conn:
+                with pg_conn.cursor() as cursor_pg:
+                    cursor_pg.execute("SELECT buy_price, position FROM users.trades_0001 WHERE id = %s", (trade_id,))
+                    row = cursor_pg.fetchone()
+                    buy_price = row[0] if row else None
+                    position = row[1] if row else None
+                    fees_paid = fees if fees is not None else 0.0
+            else:
+                buy_price = None
+                position = None
+                fees_paid = fees if fees is not None else 0.0
+
+            if buy_price is not None and sell_price is not None:
+                win_loss = 'W' if sell_price > buy_price else 'L'
+            else:
+                win_loss = None
+
+            calculated_pnl = None
+            if buy_price is not None and sell_price is not None and position is not None:
+                buy_value = buy_price * position
+                sell_value = sell_price * position
+                fees = fees_paid if fees_paid is not None else 0.0
+                calculated_pnl = round(sell_value - buy_value - fees, 2)
+
+    # Update PostgreSQL only
+    try:
+        pg_conn = get_postgresql_connection()
+        if pg_conn:
+            with pg_conn.cursor() as cursor:
+                # First try to update by ID
+                if status == 'closed':
+                    # Calculate ret_pct if we have pnl and bankroll
+                    ret_pct = None
+                    if calculated_pnl is not None:
+                        pg_conn_ret = get_postgresql_connection()
+                        if pg_conn_ret:
+                            with pg_conn_ret.cursor() as cursor_ret:
+                                cursor_ret.execute("SELECT bankroll FROM users.trades_0001 WHERE id = %s", (trade_id,))
+                                bankroll_row = cursor_ret.fetchone()
+                                bankroll = bankroll_row[0] if bankroll_row else None
+                            pg_conn_ret.close()
+                            
+                            if bankroll is not None and bankroll > 0:
+                                # Formula: (pnl / (bankroll/100.0)) * 100
+                                ret_pct = round((calculated_pnl / (bankroll / 100.0)) * 100, 5)
+                    
+                    cursor.execute("""
+                        UPDATE users.trades_0001 
+                        SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, ret_pct = %s 
+                        WHERE id = %s
+                    """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, ret_pct, trade_id))
                 else:
                     cursor.execute("""
                         UPDATE users.trades_0001 
