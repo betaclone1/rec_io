@@ -197,14 +197,21 @@
   </div>
 
   <script>
-
+    let authCheckInProgress = false;
 
     // Check if we're already authenticated
     function checkAuthStatus() {
+      // Prevent multiple simultaneous auth checks
+      if (authCheckInProgress) {
+        return;
+      }
+      
       const token = localStorage.getItem('rec_auth_token');
       const deviceId = localStorage.getItem('rec_device_id');
       
       if (token && deviceId) {
+        authCheckInProgress = true;
+        
         // Verify token is still valid
         fetch(window.location.origin + '/api/auth/verify', {
           method: 'POST',
@@ -216,11 +223,21 @@
         .then(response => response.json())
         .then(data => {
           if (data.authenticated) {
+            console.log('Authentication verified, redirecting...');
             window.location.href = getRedirectUrl(token, deviceId);
+          } else {
+            console.log('Authentication failed, clearing tokens');
+            localStorage.removeItem('rec_auth_token');
+            localStorage.removeItem('rec_device_id');
           }
         })
-        .catch(() => {
-          // Token invalid, stay on login page
+        .catch((error) => {
+          console.log('Authentication verification failed:', error);
+          localStorage.removeItem('rec_auth_token');
+          localStorage.removeItem('rec_device_id');
+        })
+        .finally(() => {
+          authCheckInProgress = false;
         });
       }
     }
@@ -326,8 +343,10 @@
       }
     }
     
-    // Check auth status on page load
-    checkAuthStatus();
+    // Check auth status on page load (only if we're on the login page)
+    if (window.location.pathname === '/login') {
+      checkAuthStatus();
+    }
   </script>
 </body>
 </html> 
