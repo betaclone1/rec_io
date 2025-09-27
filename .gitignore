@@ -1,4 +1,4 @@
-# Global file ignore
+`# Global file ignore
 
 # Database files (excluding historical data)
 *.db
