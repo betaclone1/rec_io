@@ -149,3 +149,4 @@ backend/data/historical_data/btc_historical/btc_1m_master_5y.csv
 
 # DigitalOcean credentials (sensitive)
 DIGITAL_OCEAN_CREDENTIALS.md
+backend/supervisord.conf
