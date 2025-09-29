@@ -15,6 +15,7 @@
   
   <script src="https://d3js.org/d3.v7.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
   <script src="../js/monitor_history_display.js"></script>
   <style>
     /* Dashboard Container */
@@ -1044,7 +1045,6 @@
       }
       
       // Connect to WebSocket after everything is loaded
-      console.log('Dashboard: All monitors loaded, now connecting to WebSocket...');
       connectWebSocket();
     });
 
@@ -3437,6 +3437,68 @@
         window.monitorHistoryDisplay.refresh(currentView);
       }
     }, 30000);
+
+    // Function to check and update auto trade status every 10 seconds
+    async function checkAutoTradeStatus() {
+      try {
+        // Fetch current monitor data to get latest auto trade status
+        const response = await fetch('/api/monitors?user_id=user_0001');
+        if (response.ok) {
+          const data = await response.json();
+          const currentMonitors = data.monitors || [];
+          
+          // Update local monitor data with latest auto trade status and toggle state
+          currentMonitors.forEach(apiMonitor => {
+            const localMonitor = monitors.find(m => m.id === apiMonitor.id);
+            if (localMonitor) {
+              // Update auto trade status if changed
+              if (localMonitor.auto_trade_status !== apiMonitor.auto_trade_status) {
+                console.log(`Auto trade status changed for ${apiMonitor.id}: ${localMonitor.auto_trade_status} -> ${apiMonitor.auto_trade_status}`);
+                localMonitor.auto_trade_status = apiMonitor.auto_trade_status;
+                
+                // Update the visual status indicator
+                const statusElement = document.querySelector(`[data-monitor-id="${apiMonitor.id}"] .monitor-status`);
+                if (statusElement) {
+                  statusElement.className = `monitor-status ${getStatusClass(apiMonitor.auto_trade_status)}`;
+                  statusElement.textContent = apiMonitor.auto_trade_status.toUpperCase();
+                }
+              }
+              
+              // Update auto trade toggle state if changed
+              if (localMonitor.autoTrade !== apiMonitor.autoTrade) {
+                console.log(`Auto trade toggle changed for ${apiMonitor.id}: ${localMonitor.autoTrade} -> ${apiMonitor.autoTrade}`);
+                localMonitor.autoTrade = apiMonitor.autoTrade;
+                
+                // Update the visual toggle state
+                const toggleElement = document.querySelector(`[data-monitor-id="${apiMonitor.id}"] .auto-trade-toggle`);
+                if (toggleElement) {
+                  if (apiMonitor.autoTrade) {
+                    toggleElement.classList.add('active');
+                  } else {
+                    toggleElement.classList.remove('active');
+                  }
+                } else {
+                  // Try alternative selector using onclick attribute
+                  const altToggleElement = document.querySelector(`[onclick*="toggleAutoTrade('${apiMonitor.id}')"]`);
+                  if (altToggleElement) {
+                    if (apiMonitor.autoTrade) {
+                      altToggleElement.classList.add('active');
+                    } else {
+                      altToggleElement.classList.remove('active');
+                    }
+                  }
+                }
+              }
+            }
+          });
+        }
+      } catch (error) {
+        console.error('Error checking auto trade status:', error);
+      }
+    }
+
+    // Check auto trade status every 10 seconds
+    setInterval(checkAutoTradeStatus, 10000);
 
     // Market data functions
     function formatUSD(val) {

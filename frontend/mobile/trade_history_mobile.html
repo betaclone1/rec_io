@@ -160,33 +160,232 @@
     <div class="mobile-container">
         <!-- Search Section -->
         <div class="search-section">
-            <div class="filter-row">
-                <select id="date-filter-picker" class="filter-select">
-                    <option value="ALL">All</option>
-                    <option value="TODAY">Today</option>
-                    <option value="THIS_WEEK">This Week</option>
-                    <option value="SUNDAY">- Sunday</option>
-                    <option value="MONDAY">- Monday</option>
-                    <option value="TUESDAY">- Tuesday</option>
-                    <option value="WEDNESDAY">- Wednesday</option>
-                    <option value="THURSDAY">- Thursday</option>
-                    <option value="FRIDAY">- Friday</option>
-                    <option value="SATURDAY">- Saturday</option>
-                    <option value="LAST_WEEK">Last Week</option>
-                    <option value="MONTH">This Month</option>
-                    <option value="PREV_30">Prev 30</option>
-                    <option value="YTD">YTD</option>
-                    <option value="PREV_YEAR">Prev Year</option>
-                    <option value="CUSTOM">Custom</option>
-                </select>
-                <label class="filter-checkbox">
-                    <input type="checkbox" id="filter-win" checked style="width: 14px; height: 14px;">
-                    Win
-                </label>
-                <label class="filter-checkbox">
-                    <input type="checkbox" id="filter-loss" checked style="width: 14px; height: 14px;">
-                    Loss
-                </label>
+            <!-- Date and Win/Loss Filters -->
+            <div style="margin-bottom: 15px;">
+                <div style="display: flex; gap: 15px; align-items: center; margin-bottom: 10px;">
+                    <select id="date-filter-picker" class="filter-select" style="width: 110px;">
+                        <option value="ALL">All</option>
+                        <option value="TODAY">Today</option>
+                        <option value="THIS_WEEK">This Week</option>
+                        <option value="SUNDAY">- Sunday</option>
+                        <option value="MONDAY">- Monday</option>
+                        <option value="TUESDAY">- Tuesday</option>
+                        <option value="WEDNESDAY">- Wednesday</option>
+                        <option value="THURSDAY">- Thursday</option>
+                        <option value="FRIDAY">- Friday</option>
+                        <option value="SATURDAY">- Saturday</option>
+                        <option value="LAST_WEEK">Last Week</option>
+                        <option value="MONTH">This Month</option>
+                        <option value="PREV_30">Prev 30</option>
+                        <option value="YTD">YTD</option>
+                        <option value="PREV_YEAR">Prev Year</option>
+                        <option value="CUSTOM">Custom</option>
+                    </select>
+                    <div style="display: flex; gap: 15px;">
+                        <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
+                            <input type="checkbox" id="filter-win" checked style="width: 14px; height: 14px;">
+                            Win
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
+                            <input type="checkbox" id="filter-loss" checked style="width: 14px; height: 14px;">
+                            Loss
+                        </label>
+                    </div>
+                    <div style="flex: 1; display: flex; justify-content: flex-end;">
+                        <a href="#" onclick="resetAllFilters(); return false;" style="color: #ccc; text-decoration: none; font-size: 12px; opacity: 0.6; transition: opacity 0.2s ease;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">Reset</a>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 5px;">
+                        <input type="date" id="start-date" style="width: 100px; padding: 4px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; font-family: inherit;">
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 5px;">
+                        <label style="font-size: 12px; color: #ccc; align: center;"> to </label>
+                        <input type="date" id="end-date" style="width: 100px; padding: 4px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; font-family: inherit;">
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Additional Filters - Two Rows -->
+            <div style="display: flex; flex-direction: column; gap: 15px;">
+                <!-- Row 1: Contracts and Monitors -->
+                <div style="display: flex; gap: 15px;">
+                    <!-- Contract Filter -->
+                    <div>
+                        <div class="multi-select-dropdown" style="position: relative; width: 200px;">
+                            <button id="contract-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
+                                Select Contracts
+                            </button>
+                            <div id="contract-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 200px; overflow-y: auto;">
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-all" style="width: 14px; height: 14px;">
+                                    Select All
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-9am" checked style="width: 14px; height: 14px;">
+                                    9am
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-10am" checked style="width: 14px; height: 14px;">
+                                    10am
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-11am" checked style="width: 14px; height: 14px;">
+                                    11am
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-12pm" checked style="width: 14px; height: 14px;">
+                                    12pm
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-1pm" checked style="width: 14px; height: 14px;">
+                                    1pm
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-2pm" checked style="width: 14px; height: 14px;">
+                                    2pm
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-3pm" checked style="width: 14px; height: 14px;">
+                                    3pm
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-4pm" checked style="width: 14px; height: 14px;">
+                                    4pm
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-5pm" checked style="width: 14px; height: 14px;">
+                                    5pm
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-6pm" checked style="width: 14px; height: 14px;">
+                                    6pm
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-7pm" checked style="width: 14px; height: 14px;">
+                                    7pm
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-8pm" checked style="width: 14px; height: 14px;">
+                                    8pm
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-9pm" checked style="width: 14px; height: 14px;">
+                                    9pm
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-10pm" checked style="width: 14px; height: 14px;">
+                                    10pm
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer;">
+                                    <input type="checkbox" id="contract-11pm" checked style="width: 14px; height: 14px;">
+                                    11pm
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer;">
+                                    <input type="checkbox" id="contract-12am" checked style="width: 14px; height: 14px;">
+                                    12am
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Monitor Filter -->
+                    <div>
+                        <div class="multi-select-dropdown" style="position: relative; width: 200px;">
+                            <button id="monitor-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
+                                Select Monitors
+                            </button>
+                            <div id="monitor-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 150px; overflow-y: auto;">
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="monitor-all" style="width: 14px; height: 14px;">
+                                    Select All
+                                </label>
+                                <!-- Monitor options will be populated dynamically -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Row 2: Symbols and Days -->
+                <div style="display: flex; gap: 15px;">
+                    <!-- Symbol Filter -->
+                    <div>
+                        <div class="multi-select-dropdown" style="position: relative; width: 200px;">
+                            <button id="symbol-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
+                                Select Symbols
+                            </button>
+                            <div id="symbol-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 150px; overflow-y: auto;">
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="symbol-all" style="width: 14px; height: 14px;">
+                                    Select All
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="symbol-btc" checked style="width: 14px; height: 14px;">
+                                    BTC
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="symbol-eth" checked style="width: 14px; height: 14px;">
+                                    ETH
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="symbol-spy" checked style="width: 14px; height: 14px;">
+                                    SPY
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="symbol-ndx" checked style="width: 14px; height: 14px;">
+                                    NDX
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer;">
+                                    <input type="checkbox" id="symbol-usd-eur" checked style="width: 14px; height: 14px;">
+                                    USD/EUR
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Day Filter -->
+                    <div>
+                        <div class="multi-select-dropdown" style="position: relative; width: 200px;">
+                            <button id="day-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
+                                Select Days
+                            </button>
+                            <div id="day-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 150px; overflow-y: auto;">
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="day-all" checked style="width: 14px; height: 14px;">
+                                    Select All
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="day-sunday" checked style="width: 14px; height: 14px;">
+                                    Sunday
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="day-monday" checked style="width: 14px; height: 14px;">
+                                    Monday
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="day-tuesday" checked style="width: 14px; height: 14px;">
+                                    Tuesday
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="day-wednesday" checked style="width: 14px; height: 14px;">
+                                    Wednesday
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="day-thursday" checked style="width: 14px; height: 14px;">
+                                    Thursday
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="day-friday" checked style="width: 14px; height: 14px;">
+                                    Friday
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer;">
+                                    <input type="checkbox" id="day-saturday" checked style="width: 14px; height: 14px;">
+                                    Saturday
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -355,8 +554,20 @@
                         const prevYearStr = formatDate(prevYear);
                         return trade.date >= prevYearStr && trade.date <= today;
                     }
-                    case 'CUSTOM':
+                    case 'CUSTOM': {
+                        // Check for custom date inputs
+                        const startDateInput = document.getElementById('start-date');
+                        const endDateInput = document.getElementById('end-date');
+                        const customStartDate = startDateInput ? startDateInput.value : null;
+                        const customEndDate = endDateInput ? endDateInput.value : null;
+                        
+                        // If custom dates are set, use them
+                        if (customStartDate && customEndDate) {
+                            return trade.date >= customStartDate && trade.date <= customEndDate;
+                        }
+                        // If no custom dates set, show all trades
                         return true;
+                    }
                     default:
                         return true;
                 }
@@ -571,6 +782,167 @@
             updateSummary(tradesToRender);
         }
 
+        // === CONTRACT FILTER LOGIC ===
+        function filterTradesByContract(trades) {
+            const contract12amChecked = document.getElementById('contract-12am').checked;
+            const contract9amChecked = document.getElementById('contract-9am').checked;
+            const contract10amChecked = document.getElementById('contract-10am').checked;
+            const contract11amChecked = document.getElementById('contract-11am').checked;
+            const contract12pmChecked = document.getElementById('contract-12pm').checked;
+            const contract1pmChecked = document.getElementById('contract-1pm').checked;
+            const contract2pmChecked = document.getElementById('contract-2pm').checked;
+            const contract3pmChecked = document.getElementById('contract-3pm').checked;
+            const contract4pmChecked = document.getElementById('contract-4pm').checked;
+            const contract5pmChecked = document.getElementById('contract-5pm').checked;
+            const contract6pmChecked = document.getElementById('contract-6pm').checked;
+            const contract7pmChecked = document.getElementById('contract-7pm').checked;
+            const contract8pmChecked = document.getElementById('contract-8pm').checked;
+            const contract9pmChecked = document.getElementById('contract-9pm').checked;
+            const contract10pmChecked = document.getElementById('contract-10pm').checked;
+            const contract11pmChecked = document.getElementById('contract-11pm').checked;
+            
+            // If no contracts are selected, show no trades
+            if (!contract12amChecked && !contract9amChecked && !contract10amChecked && !contract11amChecked && !contract12pmChecked && 
+                !contract1pmChecked && !contract2pmChecked && !contract3pmChecked && !contract4pmChecked && 
+                !contract5pmChecked && !contract6pmChecked && !contract7pmChecked && !contract8pmChecked && 
+                !contract9pmChecked && !contract10pmChecked && !contract11pmChecked) {
+                return [];
+            }
+            
+            return trades.filter(trade => {
+                const contract = trade.contract;
+                if (!contract) return true; // Show trades without contract
+                
+                // Check if contract contains any of the selected times
+                if (contract12amChecked && contract.includes('12am')) return true;
+                if (contract9amChecked && contract.includes('9am')) return true;
+                if (contract10amChecked && contract.includes('10am')) return true;
+                if (contract11amChecked && contract.includes('11am')) return true;
+                if (contract12pmChecked && contract.includes('12pm')) return true;
+                if (contract1pmChecked && contract.includes('1pm')) return true;
+                if (contract2pmChecked && contract.includes('2pm')) return true;
+                if (contract3pmChecked && contract.includes('3pm')) return true;
+                if (contract4pmChecked && contract.includes('4pm')) return true;
+                if (contract5pmChecked && contract.includes('5pm')) return true;
+                if (contract6pmChecked && contract.includes('6pm')) return true;
+                if (contract7pmChecked && contract.includes('7pm')) return true;
+                if (contract8pmChecked && contract.includes('8pm')) return true;
+                if (contract9pmChecked && contract.includes('9pm')) return true;
+                if (contract10pmChecked && contract.includes('10pm')) return true;
+                if (contract11pmChecked && contract.includes('11pm')) return true;
+                
+                return false;
+            });
+        }
+        
+        // === DAY FILTER LOGIC ===
+        function filterTradesByDay(trades) {
+            const dayAllChecked = document.getElementById('day-all').checked;
+            const sundayChecked = document.getElementById('day-sunday').checked;
+            const mondayChecked = document.getElementById('day-monday').checked;
+            const tuesdayChecked = document.getElementById('day-tuesday').checked;
+            const wednesdayChecked = document.getElementById('day-wednesday').checked;
+            const thursdayChecked = document.getElementById('day-thursday').checked;
+            const fridayChecked = document.getElementById('day-friday').checked;
+            const saturdayChecked = document.getElementById('day-saturday').checked;
+            
+            // If "Select All" is checked, return all trades
+            if (dayAllChecked) {
+                return trades;
+            }
+            
+            // If no individual days are selected, return empty array
+            if (!sundayChecked && !mondayChecked && !tuesdayChecked && !wednesdayChecked && !thursdayChecked && !fridayChecked && !saturdayChecked) {
+                return [];
+            }
+            
+            // Filter trades based on selected days
+            return trades.filter(trade => {
+                // Parse date string to avoid timezone issues
+                // Split date string (e.g., "2025-01-15") and create local date
+                const dateParts = trade.date.split('-');
+                if (dateParts.length !== 3) return false;
+                
+                const year = parseInt(dateParts[0]);
+                const month = parseInt(dateParts[1]) - 1; // JavaScript months are 0-based
+                const day = parseInt(dateParts[2]);
+                
+                const tradeDate = new Date(year, month, day);
+                const dayOfWeek = tradeDate.getDay(); // 0 = Sunday, 1 = Monday, etc.
+                
+                if (dayOfWeek === 0 && sundayChecked) return true;
+                if (dayOfWeek === 1 && mondayChecked) return true;
+                if (dayOfWeek === 2 && tuesdayChecked) return true;
+                if (dayOfWeek === 3 && wednesdayChecked) return true;
+                if (dayOfWeek === 4 && thursdayChecked) return true;
+                if (dayOfWeek === 5 && fridayChecked) return true;
+                if (dayOfWeek === 6 && saturdayChecked) return true;
+                
+                return false;
+            });
+        }
+        
+        // === SYMBOL FILTER LOGIC ===
+        function filterTradesBySymbol(trades) {
+            const btcChecked = document.getElementById('symbol-btc').checked;
+            const ethChecked = document.getElementById('symbol-eth').checked;
+            const spyChecked = document.getElementById('symbol-spy').checked;
+            const ndxChecked = document.getElementById('symbol-ndx').checked;
+            const usdEurChecked = document.getElementById('symbol-usd-eur').checked;
+            
+            // If no symbols are selected, show all trades
+            if (!btcChecked && !ethChecked && !spyChecked && !ndxChecked && !usdEurChecked) {
+                return trades;
+            }
+            
+            return trades.filter(trade => {
+                const symbol = trade.symbol;
+                if (!symbol) return true; // Show trades without symbol
+                
+                if (symbol === 'BTC') {
+                    return btcChecked;
+                } else if (symbol === 'ETH') {
+                    return ethChecked;
+                } else if (symbol === 'SPY') {
+                    return spyChecked;
+                } else if (symbol === 'NDX') {
+                    return ndxChecked;
+                } else if (symbol === 'USD/EUR') {
+                    return usdEurChecked;
+                }
+                
+                return false;
+            });
+        }
+        
+        // === MONITOR FILTER LOGIC ===
+        function filterTradesByMonitor(trades) {
+            const monitorAllCheckbox = document.getElementById('monitor-all');
+            const monitorCheckboxes = Array.from(document.querySelectorAll('#monitor-dropdown-content input[type="checkbox"]:not(#monitor-all)'));
+            
+            // If no monitors are selected or "Select All" is checked, show all trades
+            if (!monitorAllCheckbox || monitorCheckboxes.length === 0 || monitorAllCheckbox.checked) {
+                return trades;
+            }
+            
+            // Get selected monitor names using the data-monitor-id attribute
+            const selectedMonitors = monitorCheckboxes
+                .filter(checkbox => checkbox.checked)
+                .map(checkbox => checkbox.getAttribute('data-monitor-id'));
+            
+            // If no specific monitors are selected, show all trades
+            if (selectedMonitors.length === 0) {
+                return trades;
+            }
+            
+            return trades.filter(trade => {
+                const monitor = trade.monitor;
+                if (!monitor) return true; // Show trades without monitor
+                
+                return selectedMonitors.some(selectedMonitor => monitor.includes(selectedMonitor));
+            });
+        }
+
         function applyFilters() {
             const dateFilterPicker = document.getElementById('date-filter-picker');
             
@@ -579,10 +951,69 @@
             
             filtered = filterTradesByDate(filtered, dateFilterPicker ? dateFilterPicker.value : 'TODAY');
             filtered = filterTradesByWinLoss(filtered);
+            filtered = filterTradesByContract(filtered);
+            filtered = filterTradesBySymbol(filtered);
+            filtered = filterTradesByMonitor(filtered);
+            filtered = filterTradesByDay(filtered);
             
             filteredTrades = [...filtered];
             applyCurrentSort();
             renderTrades(filteredTrades);
+        }
+
+        // Reset All Filters Function
+        function resetAllFilters() {
+            console.log('Resetting all filters to default values');
+
+            // Reset date filter to ALL
+            const dateFilterPicker = document.getElementById('date-filter-picker');
+            if (dateFilterPicker) {
+                dateFilterPicker.value = 'ALL';
+                dateFilterPicker.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+
+            // Reset contract dropdown to ALL
+            const contractAllCheckbox = document.getElementById('contract-all');
+            if (contractAllCheckbox) {
+                contractAllCheckbox.checked = true;
+                contractAllCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+
+            // Reset symbol dropdown to ALL
+            const symbolAllCheckbox = document.getElementById('symbol-all');
+            if (symbolAllCheckbox) {
+                symbolAllCheckbox.checked = true;
+                symbolAllCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+
+            // Reset day dropdown to ALL
+            const dayAllCheckbox = document.getElementById('day-all');
+            if (dayAllCheckbox) {
+                dayAllCheckbox.checked = true;
+                dayAllCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+
+            // Reset monitor dropdown to ALL
+            const monitorAllCheckbox = document.getElementById('monitor-all');
+            if (monitorAllCheckbox) {
+                monitorAllCheckbox.checked = true;
+                monitorAllCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+
+            // Reset win/loss checkboxes
+            const winFilterCheckbox = document.getElementById('filter-win');
+            if (winFilterCheckbox) {
+                winFilterCheckbox.checked = true;
+                winFilterCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            const lossFilterCheckbox = document.getElementById('filter-loss');
+            if (lossFilterCheckbox) {
+                lossFilterCheckbox.checked = true;
+                lossFilterCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+
+            applyFilters(); // Re-apply filters after reset
+            console.log('All filters reset completed');
         }
 
         async function fetchAllTrades() {
@@ -621,10 +1052,325 @@
             }
         }
 
+        // Update date range display and populate date inputs
+        function updateDateRangeDisplay() {
+            const filterPicker = document.getElementById('date-filter-picker');
+            const startDateInput = document.getElementById('start-date');
+            const endDateInput = document.getElementById('end-date');
+            if (!filterPicker || !startDateInput || !endDateInput) return;
+            
+            const selectedValue = filterPicker.value;
+            const now = new Date();
+            let startDate = '';
+            let endDate = '';
+            
+            function getDateOfThisWeek(dayOfWeek) {
+                const curr = new Date(now);
+                const currDay = curr.getDay();
+                const diff = dayOfWeek - currDay;
+                curr.setDate(curr.getDate() + diff);
+                return formatDate(curr);
+            }
+            
+            function getDateOfLastWeek(dayOfWeek) {
+                const curr = new Date(now);
+                const currDay = curr.getDay();
+                curr.setDate(curr.getDate() - currDay - 7 + dayOfWeek);
+                return formatDate(curr);
+            }
+            
+            function getLatestSunday() {
+                const curr = new Date(now);
+                curr.setDate(curr.getDate() - curr.getDay());
+                return formatDate(curr);
+            }
+            
+            function getPrevSunday() {
+                const curr = new Date(now);
+                curr.setDate(curr.getDate() - curr.getDay() - 7);
+                return formatDate(curr);
+            }
+            
+            function getNextSaturdayOfPrevWeek() {
+                const curr = new Date(now);
+                curr.setDate(curr.getDate() - curr.getDay() - 1);
+                return formatDate(curr);
+            }
+            
+            switch (selectedValue) {
+                case 'TODAY': {
+                    const today = formatDate(now);
+                    startDate = today;
+                    endDate = today;
+                    break;
+                }
+                case 'THIS_WEEK': {
+                    const sunday = getLatestSunday();
+                    const today = formatDate(now);
+                    startDate = sunday;
+                    endDate = today;
+                    break;
+                }
+                case 'SUNDAY':
+                    startDate = endDate = getDateOfThisWeek(0);
+                    break;
+                case 'MONDAY':
+                    startDate = endDate = getDateOfThisWeek(1);
+                    break;
+                case 'TUESDAY':
+                    startDate = endDate = getDateOfThisWeek(2);
+                    break;
+                case 'WEDNESDAY':
+                    startDate = endDate = getDateOfThisWeek(3);
+                    break;
+                case 'THURSDAY':
+                    startDate = endDate = getDateOfThisWeek(4);
+                    break;
+                case 'FRIDAY':
+                    startDate = endDate = getDateOfThisWeek(5);
+                    break;
+                case 'SATURDAY':
+                    startDate = endDate = getDateOfThisWeek(6);
+                    break;
+                case 'LAST_WEEK': {
+                    const prevSunday = getPrevSunday();
+                    const nextSaturday = getNextSaturdayOfPrevWeek();
+                    startDate = prevSunday;
+                    endDate = nextSaturday;
+                    break;
+                }
+                case 'MONTH': {
+                    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+                    const today = formatDate(now);
+                    startDate = formatDate(monthStart);
+                    endDate = today;
+                    break;
+                }
+                case 'PREV_30': {
+                    const prev30 = new Date(now);
+                    prev30.setDate(now.getDate() - 30);
+                    const today = formatDate(now);
+                    startDate = formatDate(prev30);
+                    endDate = today;
+                    break;
+                }
+                case 'YTD': {
+                    const ytdStart = `${now.getFullYear()}-01-01`;
+                    const today = formatDate(now);
+                    startDate = ytdStart;
+                    endDate = today;
+                    break;
+                }
+                case 'PREV_YEAR': {
+                    const prevYear = new Date(now);
+                    prevYear.setFullYear(now.getFullYear() - 1);
+                    startDate = formatDate(prevYear);
+                    endDate = formatDate(now);
+                    break;
+                }
+                case 'CUSTOM':
+                    // Don't change the date inputs for custom selection
+                    return;
+                default:
+                    break;
+            }
+            
+            // Update the date input fields
+            if (startDate) startDateInput.value = startDate;
+            if (endDate) endDateInput.value = endDate;
+        }
+
         // Event listeners
-        document.getElementById('date-filter-picker').addEventListener('change', applyFilters);
+        document.getElementById('date-filter-picker').addEventListener('change', () => {
+            updateDateRangeDisplay();
+            applyFilters();
+        });
         document.getElementById('filter-win').addEventListener('change', applyFilters);
         document.getElementById('filter-loss').addEventListener('change', applyFilters);
+        
+        // Date range inputs
+        const startDateInput = document.getElementById('start-date');
+        const endDateInput = document.getElementById('end-date');
+        if (startDateInput) {
+            startDateInput.addEventListener('change', () => {
+                // Switch to Custom when user manually enters a date
+                const dateFilterPicker = document.getElementById('date-filter-picker');
+                if (dateFilterPicker && dateFilterPicker.value !== 'CUSTOM') {
+                    dateFilterPicker.value = 'CUSTOM';
+                }
+                applyFilters();
+            });
+        }
+        if (endDateInput) {
+            endDateInput.addEventListener('change', () => {
+                // Switch to Custom when user manually enters a date
+                const dateFilterPicker = document.getElementById('date-filter-picker');
+                if (dateFilterPicker && dateFilterPicker.value !== 'CUSTOM') {
+                    dateFilterPicker.value = 'CUSTOM';
+                }
+                applyFilters();
+            });
+        }
+        
+        // Contract filter checkboxes
+        const contractCheckboxes = document.querySelectorAll('#contract-dropdown-content input[type="checkbox"]');
+        contractCheckboxes.forEach(checkbox => {
+            checkbox.addEventListener('change', applyFilters);
+        });
+        
+        // Symbol filter checkboxes
+        const symbolCheckboxes = document.querySelectorAll('#symbol-dropdown-content input[type="checkbox"]');
+        symbolCheckboxes.forEach(checkbox => {
+            checkbox.addEventListener('change', applyFilters);
+        });
+        
+        // Day filter checkboxes
+        const dayCheckboxes = document.querySelectorAll('#day-dropdown-content input[type="checkbox"]');
+        dayCheckboxes.forEach(checkbox => {
+            checkbox.addEventListener('change', applyFilters);
+        });
+        
+        // Monitor filter checkboxes (will be populated dynamically)
+        // This will be handled when monitors are loaded
+
+        // Dropdown functionality
+        function setupDropdowns() {
+            // Contract dropdown
+            const contractBtn = document.getElementById('contract-dropdown-btn');
+            const contractContent = document.getElementById('contract-dropdown-content');
+            
+            contractBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                contractContent.style.display = contractContent.style.display === 'none' ? 'block' : 'none';
+            });
+            
+            // Symbol dropdown
+            const symbolBtn = document.getElementById('symbol-dropdown-btn');
+            const symbolContent = document.getElementById('symbol-dropdown-content');
+            
+            symbolBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                symbolContent.style.display = symbolContent.style.display === 'none' ? 'block' : 'none';
+            });
+            
+            // Day dropdown
+            const dayBtn = document.getElementById('day-dropdown-btn');
+            const dayContent = document.getElementById('day-dropdown-content');
+            
+            dayBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                dayContent.style.display = dayContent.style.display === 'none' ? 'block' : 'none';
+            });
+            
+            // Monitor dropdown
+            const monitorBtn = document.getElementById('monitor-dropdown-btn');
+            const monitorContent = document.getElementById('monitor-dropdown-content');
+            
+            monitorBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                monitorContent.style.display = monitorContent.style.display === 'none' ? 'block' : 'none';
+            });
+            
+            // Close dropdowns when clicking outside
+            document.addEventListener('click', () => {
+                contractContent.style.display = 'none';
+                symbolContent.style.display = 'none';
+                dayContent.style.display = 'none';
+                monitorContent.style.display = 'none';
+            });
+            
+            // Contract "Select All" functionality
+            document.getElementById('contract-all').addEventListener('change', function() {
+                const contractCheckboxes = document.querySelectorAll('#contract-dropdown-content input[type="checkbox"]:not(#contract-all)');
+                contractCheckboxes.forEach(checkbox => {
+                    checkbox.checked = this.checked;
+                });
+                applyFilters();
+            });
+            
+            // Symbol "Select All" functionality
+            document.getElementById('symbol-all').addEventListener('change', function() {
+                const symbolCheckboxes = document.querySelectorAll('#symbol-dropdown-content input[type="checkbox"]:not(#symbol-all)');
+                symbolCheckboxes.forEach(checkbox => {
+                    checkbox.checked = this.checked;
+                });
+                applyFilters();
+            });
+            
+            // Day "Select All" functionality
+            document.getElementById('day-all').addEventListener('change', function() {
+                const dayCheckboxes = document.querySelectorAll('#day-dropdown-content input[type="checkbox"]:not(#day-all)');
+                dayCheckboxes.forEach(checkbox => {
+                    checkbox.checked = this.checked;
+                });
+                applyFilters();
+            });
+            
+            // Monitor "Select All" functionality (will be set up when monitors are loaded)
+        }
+        
+        // Initialize dropdowns
+        setupDropdowns();
+
+        // Load monitor options from API
+        async function loadMonitorOptions() {
+            try {
+                const response = await fetch('/api/trades/monitors?user_id=user_0001');
+                const data = await response.json();
+                
+                if (data.status === 'ok' && data.monitors) {
+                    const monitorDropdownContent = document.getElementById('monitor-dropdown-content');
+                    
+                    // Clear existing options except "Select All"
+                    const existingOptions = monitorDropdownContent.querySelectorAll('label:not(:first-child)');
+                    existingOptions.forEach(option => option.remove());
+                    
+                    // Add monitor options
+                    data.monitors.forEach(monitor => {
+                        const label = document.createElement('label');
+                        label.style.cssText = 'display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;';
+                        
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.id = `monitor-${monitor.name.replace(/[^a-zA-Z0-9]/g, '-')}`;
+                        checkbox.style.cssText = 'width: 14px; height: 14px;';
+                        checkbox.checked = true; // Default to checked
+                        
+                        // Add data-monitor-id attribute for matching with dashboard monitor IDs
+                        checkbox.setAttribute('data-monitor-id', monitor.name);
+                        
+                        const text = document.createElement('span');
+                        text.textContent = monitor.name;
+                        
+                        label.appendChild(checkbox);
+                        label.appendChild(text);
+                        monitorDropdownContent.appendChild(label);
+                        
+                        // Add event listener for this checkbox
+                        checkbox.addEventListener('change', () => {
+                            applyFilters();
+                        });
+                    });
+                    
+                    // Update monitor "Select All" functionality
+                    const monitorAllCheckbox = document.getElementById('monitor-all');
+                    if (monitorAllCheckbox) {
+                        monitorAllCheckbox.addEventListener('change', function() {
+                            const monitorCheckboxes = document.querySelectorAll('#monitor-dropdown-content input[type="checkbox"]:not(#monitor-all)');
+                            monitorCheckboxes.forEach(checkbox => {
+                                checkbox.checked = this.checked;
+                            });
+                            applyFilters();
+                        });
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading monitor options:', error);
+            }
+        }
+
+        // Load monitor options on page load
+        loadMonitorOptions();
 
         // Add sort functionality to table headers
         document.querySelectorAll('#trade-log-table th[data-key]').forEach(th => {
@@ -632,6 +1378,7 @@
         });
 
         // Initial load
+        updateDateRangeDisplay(); // Populate date inputs
         fetchAllTrades();
 
         // Auto-refresh every 30 seconds
