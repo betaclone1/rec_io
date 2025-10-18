@@ -7,9 +7,10 @@ HYBRID APPROACH:
 1. Initial sync on startup (one-time polling cycle)
 2. WebSocket subscription to market_positions channel
 3. When position change detected → trigger full polling cycle
-4. No interval polling - only poll when we know something changed
+4. Periodic polling every 5 minutes to ensure data freshness
+5. Hourly balance checks on the hour + daily 1AM balance check
 
-This dramatically reduces API calls while maintaining full functionality.
+This balances responsiveness with data freshness and API efficiency.
 """
 
 import sys
@@ -245,7 +246,7 @@ def generate_kalshi_signature(method, full_path, timestamp, key_path):
         message,
         padding.PSS(
             mgf=padding.MGF1(hashes.SHA256()),
-            salt_length=padding.PSS.DIGEST_LENGTH
+            salt_length=padding.PSS.MAX_LENGTH
         ),
         hashes.SHA256()
     )
@@ -402,7 +403,8 @@ def sync_balance():
         response.raise_for_status()
         data = response.json()
         balance_amount = data.get('balance')
-        print(f"[{datetime.now()}] ✅ Balance: {balance_amount}")
+        portfolio_value_raw = data.get('portfolio_value')  # Raw value from Kalshi API
+        print(f"[{datetime.now()}] ✅ Balance: {balance_amount}, Portfolio Value (raw): {portfolio_value_raw}")
         
         # Write to PostgreSQL only
         try:
@@ -458,18 +460,19 @@ def sync_balance():
                             bankroll_current = prev_bankroll
                     
                     cursor.execute("""
-                        INSERT INTO users.account_balance_0001 (balance, exposure, positions, portfolio, bankroll_current, timestamp)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                    """, (balance_amount, total_exposure, positions_value, portfolio_value, bankroll_current, current_timestamp))
+                        INSERT INTO users.account_balance_0001 (balance, exposure, positions, portfolio, bankroll_current, portfolio_value, timestamp)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """, (balance_amount, total_exposure, positions_value, portfolio_value, bankroll_current, portfolio_value_raw, current_timestamp))
                     pg_conn.commit()
-                    print(f"💾 Balance ({balance_amount}), exposure ({total_exposure}), positions ({positions_value}), portfolio ({portfolio_value}) written to PostgreSQL users.account_balance_0001")
+                    print(f"💾 Balance ({balance_amount}), exposure ({total_exposure}), positions ({positions_value}), portfolio ({portfolio_value}), portfolio_value_raw ({portfolio_value_raw}) written to PostgreSQL users.account_balance_0001")
                     
                     # Notify frontend of account balance change
                     notify_frontend_db_change("account_balance", {
                         "balance": balance_amount,
                         "exposure": total_exposure,
                         "positions": positions_value,
-                        "portfolio": portfolio_value
+                        "portfolio": portfolio_value,
+                        "portfolio_value_raw": portfolio_value_raw
                     })
                     
                     # Notify monitor_manager of bankroll update
@@ -1496,9 +1499,23 @@ class KalshiWebSocketSync:
         except Exception as e:
             print(f"[{datetime.now(EST)}] ❌ Error storing event lifecycle: {e}")
     
+    async def periodic_polling_task(self):
+        """Periodic polling task that runs every 5 minutes"""
+        while True:
+            try:
+                await asyncio.sleep(300)  # 5 minutes = 300 seconds
+                print(f"[{datetime.now(EST)}] ⏰ 5-minute periodic polling triggered...")
+                await self.trigger_full_polling_cycle()
+            except Exception as e:
+                print(f"[{datetime.now(EST)}] ❌ Error in periodic polling task: {e}")
+    
     async def run_websocket(self):
-        """Main WebSocket run loop - Hybrid approach: WebSocket triggers polling"""
+        """Main WebSocket run loop - Hybrid approach: WebSocket triggers + periodic polling"""
         print(f"[{datetime.now(EST)}] 🔌 Starting Kalshi Hybrid WebSocket/Polling Sync...")
+        
+        # Start periodic polling task in the background
+        periodic_task = asyncio.create_task(self.periodic_polling_task())
+        print(f"[{datetime.now(EST)}] ⏰ Started 5-minute periodic polling task")
         
         while True:
             try:
@@ -1516,7 +1533,8 @@ class KalshiWebSocketSync:
                 
                 print(f"[{datetime.now(EST)}] 🎧 Listening for market position notifications...")
                 print(f"[{datetime.now(EST)}] 💡 Position changes will trigger full polling cycle!")
-                print(f"[{datetime.now(EST)}] 🚀 HYBRID MODE: WebSocket triggers → Polling updates all DBs!")
+                print(f"[{datetime.now(EST)}] ⏰ Periodic polling every 5 minutes!")
+                print(f"[{datetime.now(EST)}] 🚀 HYBRID MODE: WebSocket triggers + 5-min polling → Polling updates all DBs!")
                 
                 # Listen for messages
                 async for message in self.websocket:
@@ -1579,8 +1597,8 @@ def main():
     sync_balance()  # Update balance LAST so it can reference latest positions data
     
     print("✅ Initial baseline sync complete.")
-    print("🚀 Starting hybrid mode: WebSocket triggers → Polling updates all DBs!")
-    print("💡 No more interval polling - only poll when position changes detected!")
+    print("🚀 Starting hybrid mode: WebSocket triggers + 5-min polling → Updates all DBs!")
+    print("💡 Polling triggers: WebSocket position changes + every 5 minutes")
     print("📅 Daily balance check scheduled for 1AM EST")
     print("📅 Hourly balance checks scheduled every hour on the hour")
     

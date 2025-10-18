@@ -389,9 +389,15 @@
 
   <!-- Analysis Panel -->
   <div class="panel-container" style="width: 100%; margin-bottom: 10px;">
-    <div class="panel-header" style="cursor: pointer; display: flex; align-items: center; padding-bottom: 0px;" onclick="toggleAnalysisPanel()">
-      <span>Analysis</span>
-      <span id="analysis-expand-icon" style="font-size: 8px; transition: transform 0.3s ease; margin-left: 8px; transform: rotate(180deg);">▼</span>
+    <div class="panel-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 0px;" onclick="toggleAnalysisPanel()">
+      <div style="display: flex; align-items: flex-start;">
+        <span>Analysis</span>
+        <span id="analysis-expand-icon" style="font-size: 8px; transition: transform 0.3s ease; margin-left: 8px; transform: rotate(180deg);">▼</span>
+      </div>
+      <select id="chart-view-selector" style="background-color: #2d3748; color: white; border: 1px solid #4a5568; border-radius: 4px; padding: 4px 8px; font-size: 12px;" onclick="event.stopPropagation();">
+        <option value="pnl">PnL</option>
+        <option value="ret">Ret %</option>
+      </select>
     </div>
     <div id="analysis-content" style="height: 250px; overflow: hidden; transition: height 0.3s ease;">
       <div style=" padding: 20px; height: 240px;">
@@ -418,6 +424,10 @@
                     <span id="trades-per-period-label" style="font-size: 14px; color: #ccc;">Trades/Period:</span>
                     <span id="trades-per-period" style="font-size: 14px; color: white; font-weight: bold;">0</span>
                   </div>
+                  <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                    <span id="avg-ret-per-period-label" style="font-size: 14px; color: #ccc;">Avg Ret %/Period:</span>
+                    <span id="avg-ret-per-period" style="font-size: 14px; color: white; font-weight: bold;">0.00%</span>
+                  </div>
                   <div style="display: flex; justify-content: space-between;">
                     <span id="avg-pnl-per-period-label" style="font-size: 14px; color: #ccc;">Avg PnL/Period:</span>
                     <span id="avg-pnl-per-period" style="font-size: 14px; color: white; font-weight: bold;">$0.00</span>
@@ -438,9 +448,14 @@
   </div>
 
   <div class="panel-container" style="display: flex; flex-direction: column;">
-    <div class="panel-header" style="cursor: pointer; display: flex; align-items: center; padding-bottom: 0px;" onclick="toggleResultsPanel()">
-      <span>Results</span>
-      <span id="results-expand-icon" style="font-size: 8px; transition: transform 0.1s ease; margin-left: 8px;">▼</span>
+    <div class="panel-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; padding-bottom: 0px;" onclick="toggleResultsPanel()">
+      <div style="display: flex; align-items: center;">
+        <span>Results</span>
+        <span id="results-expand-icon" style="font-size: 8px; transition: transform 0.1s ease; margin-left: 8px;">▼</span>
+      </div>
+      <button id="export-csv-btn" style="background-color: #2d3748; color: white; border: 1px solid #4a5568; border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer;" onclick="event.stopPropagation(); exportToCSV();" onmouseover="this.style.backgroundColor='#4a5568'" onmouseout="this.style.backgroundColor='#2d3748'">
+        Export CSV
+      </button>
     </div>
     <div id="results-content" style="height: 0; overflow: hidden; transition: height 0.1s ease;">
       <div style="height: 10px; background-color: #323c4e;"></div>
@@ -1462,6 +1477,13 @@
           analysisIntervalSelect.value = data.analysis_interval;
         }
         
+        // Apply chart view setting
+        const chartViewSelector = document.getElementById('chart-view-selector');
+        if (chartViewSelector && data.chart_view) {
+          chartViewSelector.value = data.chart_view;
+          currentChartView = data.chart_view;
+        }
+        
         // Update date range display
         await updateDateRangeDisplay();
       } catch (error) {
@@ -1661,8 +1683,14 @@
               // Add data-monitor-id attribute for matching with dashboard monitor IDs
               checkbox.setAttribute('data-monitor-id', monitor.name);
               
-              // Create text node and append it
-              const textNode = document.createTextNode(monitor.name);
+              // Create text node and append it - format as "Monitor " + last 5 digits
+              let displayName = "Monitor ";
+              if (monitor.name && monitor.name.length >= 5) {
+                displayName += monitor.name.slice(-5);
+              } else {
+                displayName += monitor.name || "";
+              }
+              const textNode = document.createTextNode(displayName);
               
               label.appendChild(checkbox);
               label.appendChild(textNode);
@@ -2053,6 +2081,19 @@
         analysisIntervalSelect.addEventListener('change', handleAnalysisIntervalChange);
       }
       
+      // Set up chart view selector event listener using event delegation
+      document.addEventListener('change', function(event) {
+        if (event.target && event.target.id === 'chart-view-selector') {
+          currentChartView = event.target.value;
+          // Save the preference
+          savePreferences();
+          // Re-render the chart with the new view type
+          const analysisIntervalSelect = document.getElementById('analysis-time-interval');
+          const interval = analysisIntervalSelect ? analysisIntervalSelect.value : 'daily';
+          updateAnalysisDisplay(interval);
+        }
+      });
+      
       // Handle window resize for responsive chart
       window.addEventListener('resize', () => {
         if (document.getElementById('analysis-content').style.height !== '0px') {
@@ -2139,6 +2180,7 @@
         strategy_test: strategyTest ? strategyTest.checked : true,
         ...monitorPreferences, // Add monitor preferences
         analysis_interval: analysisIntervalSelect ? analysisIntervalSelect.value : 'daily',
+        chart_view: currentChartView,
         sort_key: currentSort.key,
         sort_asc: currentSort.asc,
         page_size: 50,
@@ -2164,6 +2206,65 @@
       .catch(error => {
         console.error('Error saving preferences:', error);
       });
+    }
+
+    // CSV Export Function
+    function exportToCSV() {
+      try {
+        // Get the current filtered trades
+        const table = document.getElementById('trade-log-table');
+        if (!table) {
+          console.error('Trade table not found');
+          return;
+        }
+
+        const rows = table.querySelectorAll('tbody tr');
+        if (rows.length === 0) {
+          alert('No data to export');
+          return;
+        }
+
+        // Get headers from the table
+        const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+        
+        // Create CSV content
+        let csvContent = headers.join(',') + '\n';
+        
+        rows.forEach(row => {
+          const cells = Array.from(row.querySelectorAll('td'));
+          const rowData = cells.map(cell => {
+            let cellText = cell.textContent.trim();
+            // Escape commas and quotes in CSV
+            if (cellText.includes(',') || cellText.includes('"') || cellText.includes('\n')) {
+              cellText = '"' + cellText.replace(/"/g, '""') + '"';
+            }
+            return cellText;
+          });
+          csvContent += rowData.join(',') + '\n';
+        });
+
+        // Create and download the file
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        const url = URL.createObjectURL(blob);
+        link.setAttribute('href', url);
+        
+        // Generate filename with current date
+        const now = new Date();
+        const dateStr = now.toISOString().split('T')[0]; // YYYY-MM-DD format
+        const timeStr = now.toTimeString().split(' ')[0].replace(/:/g, '-'); // HH-MM-SS format
+        link.setAttribute('download', `trade_history_${dateStr}_${timeStr}.csv`);
+        
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        
+        console.log('CSV export completed');
+      } catch (error) {
+        console.error('Error exporting CSV:', error);
+        alert('Error exporting CSV: ' + error.message);
+      }
     }
 
     // Analysis Panel Toggle Function
@@ -2385,6 +2486,7 @@
         totalPeriods: periods.length,
         totalTrades: 0,
         totalPnL: 0,
+        totalRetPct: 0,
         periodData: []
       };
       
@@ -2395,13 +2497,20 @@
           return sum + pnl;
         }, 0);
         
+        const periodRetPct = trades.reduce((sum, trade) => {
+          const retPct = Number(trade.ret_pct) || 0;
+          return sum + retPct;
+        }, 0);
+        
         stats.totalTrades += trades.length;
         stats.totalPnL += periodPnL;
+        stats.totalRetPct += periodRetPct;
         
         stats.periodData.push({
           period: period,
           trades: trades.length,
-          pnl: periodPnL
+          pnl: periodPnL,
+          retPct: periodRetPct
         });
       });
       
@@ -2414,48 +2523,60 @@
       const stats = calculatePeriodStats(groups);
       
       // Update labels based on interval
-      let periodLabel, tradesLabel, pnlLabel;
+      let periodLabel, tradesLabel, retLabel, pnlLabel;
       switch (interval) {
         case 'annual':
           periodLabel = 'Total Years';
           tradesLabel = 'Trades/Year';
+          retLabel = 'Avg Ret %/Year';
           pnlLabel = 'Avg PnL/Year';
           break;
         case 'monthly':
           periodLabel = 'Total Months';
           tradesLabel = 'Trades/Month';
+          retLabel = 'Avg Ret %/Month';
           pnlLabel = 'Avg PnL/Month';
           break;
         case 'weekly':
           periodLabel = 'Total Weeks';
           tradesLabel = 'Trades/Week';
+          retLabel = 'Avg Ret %/Week';
           pnlLabel = 'Avg PnL/Week';
           break;
         case 'daily':
           periodLabel = 'Total Days';
           tradesLabel = 'Trades/Day';
+          retLabel = 'Avg Ret %/Day';
           pnlLabel = 'Avg PnL/Day';
           break;
         case 'hourly':
           periodLabel = 'Total Hours';
           tradesLabel = 'Trades/Hour';
+          retLabel = 'Avg Ret %/Hour';
           pnlLabel = 'Avg PnL/Hour';
           break;
         default:
           periodLabel = 'Total Periods';
           tradesLabel = 'Trades/Period';
+          retLabel = 'Avg Ret %/Period';
           pnlLabel = 'Avg PnL/Period';
       }
       
       // Update label text
       document.getElementById('total-periods-label').textContent = periodLabel + ':';
       document.getElementById('trades-per-period-label').textContent = tradesLabel + ':';
+      document.getElementById('avg-ret-per-period-label').textContent = retLabel + ':';
       document.getElementById('avg-pnl-per-period-label').textContent = pnlLabel + ':';
       
       // Update averages
       document.getElementById('total-periods').textContent = stats.totalPeriods;
       document.getElementById('trades-per-period').textContent = stats.totalPeriods > 0 ? 
         (stats.totalTrades / stats.totalPeriods).toFixed(1) : '0';
+      
+      const avgRetPct = stats.totalPeriods > 0 ? stats.totalRetPct / stats.totalPeriods : 0;
+      const avgRetPctElement = document.getElementById('avg-ret-per-period');
+      avgRetPctElement.textContent = `${avgRetPct.toFixed(2)}%`;
+      avgRetPctElement.style.color = avgRetPct >= 0 ? '#28a745' : '#dc3545';
       
       const avgPnL = stats.totalPeriods > 0 ? stats.totalPnL / stats.totalPeriods : 0;
       const avgPnLElement = document.getElementById('avg-pnl-per-period');
@@ -2464,18 +2585,21 @@
       
       // Check if data has actually changed before updating chart
       const currentData = JSON.stringify(stats.periodData);
-      if (currentData !== previousAnalysisData || interval !== previousAnalysisInterval) {
+      if (currentData !== previousAnalysisData || interval !== previousAnalysisInterval || currentChartView !== previousChartView) {
         previousAnalysisData = currentData;
         previousAnalysisInterval = interval;
-        renderAnalysisChart(stats.periodData, interval);
+        previousChartView = currentChartView;
+        renderAnalysisChart(stats.periodData, interval, currentChartView);
       }
     }
 
     // Chart.js chart instance
     let pnlChart = null;
+    let currentChartView = 'pnl'; // Track current chart view type
+    let previousChartView = 'pnl'; // Track previous chart view type for change detection
     
     // Function to render the bar chart using Chart.js
-    function renderAnalysisChart(periodData, interval) {
+    function renderAnalysisChart(periodData, interval, viewType = 'pnl') {
       const canvas = document.getElementById('pnl-chart');
       
       // Destroy existing chart if it exists
@@ -2518,7 +2642,7 @@
         return label;
       });
       
-      const data = periodData.map(data => data.pnl);
+      const data = periodData.map(data => viewType === 'ret' ? data.retPct : data.pnl);
       
       // Check if all values are positive or all values are negative
       const allPositive = data.every(value => value >= 0);
@@ -2580,7 +2704,7 @@
             
             // Only draw if the tick is within the chart area
             if (y >= chartArea.top && y <= chartArea.bottom) {
-              const label = '$' + Math.round(tick.value);
+              const label = viewType === 'ret' ? Math.round(tick.value) + '%' : '$' + Math.round(tick.value);
               ctx.fillText(label, chartArea.left + 5, y + 3);
             }
           });
@@ -2595,7 +2719,7 @@
         data: {
           labels: labels,
           datasets: [{
-            label: 'PnL',
+            label: viewType === 'ret' ? 'Ret %' : 'PnL',
             data: data,
             backgroundColor: data.map(value => value >= 0 ? '#28a745' : '#dc3545'),
             borderColor: data.map(value => value >= 0 ? '#28a745' : '#dc3545'),
@@ -2678,7 +2802,7 @@
                   return label;
                 },
                 label: function(context) {
-                  return `$${context.parsed.y.toFixed(2)}`;
+                  return viewType === 'ret' ? `${context.parsed.y.toFixed(2)}%` : `$${context.parsed.y.toFixed(2)}`;
                 }
               }
             }

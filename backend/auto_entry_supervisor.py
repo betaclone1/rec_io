@@ -1355,6 +1355,33 @@ def get_position_size():
         if conn:
             conn.close()
 
+def get_loss_prevention_state():
+    """Get loss_prevention state from monitor-specific configuration"""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
+            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+        )
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT loss_prevention FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+            result = cursor.fetchone()
+            if result:
+                loss_prevention = result[0]
+                log(f"[AUTO ENTRY] Loss prevention state loaded from monitor {MONITOR_ID}: {loss_prevention}")
+                return loss_prevention
+            else:
+                log(f"[AUTO ENTRY] No monitor configuration found for monitor {MONITOR_ID}")
+                return "off"  # Default to off if not found
+    except Exception as e:
+        log(f"[AUTO ENTRY] Error loading loss_prevention from monitor {MONITOR_ID}: {e}")
+        return "off"  # Default to off on error
+    finally:
+        if conn:
+            conn.close()
+
 def get_trade_strategy():
     """Get trade strategy from monitor-specific configuration"""
     try:
@@ -1432,6 +1459,14 @@ def trigger_auto_entry_trade(strike_data):
         if position_size is None:
             log(f"[AUTO ENTRY] ❌ Cannot trigger trade - no valid position size found")
             return False
+        
+        # Check loss prevention state and override position size if needed
+        loss_prevention = get_loss_prevention_state()
+        if loss_prevention == "one_contract":
+            log(f"[AUTO ENTRY] 🛡️ Loss prevention active - overriding position size from {position_size} to 1 contract")
+            position_size = 1
+        else:
+            log(f"[AUTO ENTRY] Loss prevention is '{loss_prevention}' - using configured position size: {position_size}")
         
         # Get bankroll allotment from monitor configuration
         bankroll_allotment = get_bankroll_allotment()

@@ -320,6 +320,32 @@
       color: #ffffff;
     }
 
+    /* Loss Prevention Status Badge */
+    .loss-prevention-status {
+      font-size: 12px;
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 4px;
+      text-align: center;
+      width: fit-content;
+      letter-spacing: 0.5px;
+      border: 2px solid #e53e3e;
+      background-color: transparent;
+      color: #e53e3e;
+      margin-right: 8px;
+    }
+
+    .list-view .loss-prevention-status {
+      min-width: 70px;
+      margin-right: 8px;
+      transform: translateY(0px);
+    }
+
+    .tile-view .loss-prevention-status {
+      transform: translateY(30px);
+      margin-right: 8px;
+    }
+
     /* Monitor Stats */
     .monitor-stats {
       display: grid;
@@ -1030,19 +1056,7 @@
       initializeSortable();
       initializeTooltips();
 
-      // STEP 5.5: Auto-refresh monitor breakdowns every 10 seconds
-      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
-        if (window.__monitorBreakdownRefreshTimer) {
-          clearInterval(window.__monitorBreakdownRefreshTimer);
-        }
-        window.__monitorBreakdownRefreshTimer = setInterval(() => {
-          try {
-            window.monitorHistoryDisplay.refresh(currentView);
-          } catch (e) {
-            console.error('Auto-refresh error:', e);
-          }
-        }, 10000);
-      }
+      // STEP 5.5: Monitor breakdown refresh removed
       
       // Connect to WebSocket after everything is loaded
       connectWebSocket();
@@ -1051,6 +1065,75 @@
     // Monitors data - will be loaded from API
     let monitors = [];
 
+    // Function to update only stat values without re-rendering tiles
+    function updateMonitorStatValues(oldMonitors, newMonitors) {
+      // Find all monitor tiles on the page
+      const monitorTiles = document.querySelectorAll('.monitor-tile[data-monitor-id]');
+      
+      monitorTiles.forEach(tile => {
+        const monitorId = tile.getAttribute('data-monitor-id');
+        const newMonitor = newMonitors.find(m => m.id === monitorId);
+        
+        if (newMonitor) {
+          // Update win streak
+          const winStreakElement = tile.querySelector('.stat-win-streak');
+          if (winStreakElement) {
+            winStreakElement.textContent = newMonitor.win_streak || 0;
+          }
+          
+          // Update W/L
+          const winLossElement = tile.querySelector('.stat-win-loss');
+          if (winLossElement) {
+            winLossElement.textContent = newMonitor.winRate || '0%';
+          }
+          
+          // Update Ret%
+          const retPctElement = tile.querySelector('.stat-ret-pct');
+          if (retPctElement) {
+            retPctElement.textContent = newMonitor.return || '0%';
+          }
+          
+          // Update PnL
+          const pnlElement = tile.querySelector('.stat-pnl');
+          if (pnlElement) {
+            pnlElement.textContent = newMonitor.pnl || '$0';
+          }
+          
+          // Update uptime
+          const uptimeElement = tile.querySelector('.monitor-uptime');
+          if (uptimeElement) {
+            uptimeElement.textContent = newMonitor.uptime || '0d 0h 0m';
+          }
+          
+          // Update auto trade status
+          const statusElement = tile.querySelector('.monitor-status');
+          if (statusElement) {
+            const status = newMonitor.auto_trade_status;
+            statusElement.textContent = getStatusText(status, newMonitor.id);
+            statusElement.className = `monitor-status ${getStatusClass(status)}`;
+          }
+          
+          // Update loss prevention badge
+          const statusParent = statusElement ? statusElement.parentElement : null;
+          if (statusParent) {
+            const existingLossPreventionBadge = statusParent.querySelector('.loss-prevention-status');
+            if (newMonitor.loss_prevention && newMonitor.loss_prevention !== 'none' && newMonitor.loss_prevention !== 'off') {
+              if (!existingLossPreventionBadge) {
+                const lossPreventionBadge = document.createElement('div');
+                lossPreventionBadge.className = 'loss-prevention-status';
+                lossPreventionBadge.textContent = 'LOSS PREVENTION';
+                statusParent.insertBefore(lossPreventionBadge, statusElement);
+              }
+            } else {
+              if (existingLossPreventionBadge) {
+                existingLossPreventionBadge.remove();
+              }
+            }
+          }
+        }
+      });
+    }
+
     // Helper function to get monitor stat value (calculated or default)
     function getMonitorStatValue(monitor, statType, defaultValue) {
       // Check if monitor history display has calculated values
@@ -1058,8 +1141,8 @@
         const stats = window.monitorHistoryDisplay.getMonitorStats(monitor.id);
         if (stats) {
           switch (statType) {
-            case 'trades':
-              return stats.trades.toLocaleString();
+            case 'win_streak':
+              return stats.win_streak || 0;
             case 'win_loss':
               return `${stats.win_loss}%`;
             case 'ret_pct':
@@ -1071,7 +1154,20 @@
           }
         }
       }
-      return defaultValue;
+      
+      // Fallback to direct monitor data from API
+      switch (statType) {
+        case 'win_streak':
+          return monitor.win_streak || 0;
+        case 'win_loss':
+          return monitor.winRate || defaultValue;
+        case 'ret_pct':
+          return monitor.return || defaultValue;
+        case 'pnl':
+          return monitor.pnl || defaultValue;
+        default:
+          return defaultValue;
+      }
     }
 
     // Create monitor tile HTML
@@ -1107,11 +1203,12 @@
               </div>
               <div class="monitor-strategy">${monitor.strategy}</div>
             </div>
+            ${monitor.loss_prevention && monitor.loss_prevention !== 'none' && monitor.loss_prevention !== 'off' ? '<div class="loss-prevention-status">LOSS PREVENTION</div>' : ''}
             <div class="monitor-status ${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'active' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'inactive' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'disabled' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'paused' : ''}">${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'ACTIVE' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'INACTIVE' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'DISABLED' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'PAUSED' : monitor.auto_trade_status}</div>
             <div class="monitor-stats">
               <div style="text-align: center; min-width: 45px;">
-                <div class="stat-value stat-trades">${getMonitorStatValue(monitor, 'trades', 0)}</div>
-                <div class="stat-label">Trades</div>
+                <div class="stat-value stat-win-streak">${monitor.win_streak || 0}</div>
+                <div class="stat-label">Win Streak</div>
               </div>
               <div style="text-align: center; min-width: 45px;">
                 <div class="stat-value stat-win-loss">${getMonitorStatValue(monitor, 'win_loss', '0%')}</div>
@@ -1178,13 +1275,16 @@
                   <span class="auto-trade-label">AUTO TRADE</span>
                   <div class="auto-trade-toggle ${monitor.autoTrade ? 'active' : ''} ${monitor.status === 'inactive' ? 'disabled' : ''}" ${monitor.status !== 'inactive' ? `onclick="toggleAutoTrade('${monitor.id}')"` : ''}></div>
                 </div>
-                <div class="monitor-status ${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'active' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'inactive' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'disabled' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'paused' : ''}">${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'ACTIVE' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'INACTIVE' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'DISABLED' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'PAUSED' : monitor.auto_trade_status}</div>
+                <div style="display: flex; align-items: center;">
+                  ${monitor.loss_prevention && monitor.loss_prevention !== 'none' && monitor.loss_prevention !== 'off' ? '<div class="loss-prevention-status">LOSS PREVENTION</div>' : ''}
+                  <div class="monitor-status ${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'active' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'inactive' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'disabled' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'paused' : ''}">${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'ACTIVE' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'INACTIVE' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'DISABLED' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'PAUSED' : monitor.auto_trade_status}</div>
+                </div>
               </div>
             </div>
             <div class="monitor-stats">
               <div class="stat-panel">
-                <div class="stat-value stat-trades">${getMonitorStatValue(monitor, 'trades', 0)}</div>
-                <div class="stat-label">Trades</div>
+                <div class="stat-value stat-win-streak">${monitor.win_streak || 0}</div>
+                <div class="stat-label">Win Streak</div>
               </div>
               <div class="stat-panel">
                 <div class="stat-value stat-win-loss">${getMonitorStatValue(monitor, 'win_loss', '0%')}</div>
@@ -1213,6 +1313,15 @@
         
         if (data.status === 'ok') {
           monitors = data.monitors;
+          
+          // Initialize cooldown timers from API data
+          monitors.forEach(monitor => {
+            if (monitor.cooldown_timer && monitor.cooldown_timer > 0) {
+              cooldownTimers.set(monitor.id, monitor.cooldown_timer);
+              console.log(`Initialized cooldown timer for ${monitor.id}: ${monitor.cooldown_timer}s`);
+            }
+          });
+          
           console.log(`Loaded ${data.count} monitors from API`);
         } else {
           console.error('Failed to load monitors:', data.message);
@@ -1270,6 +1379,17 @@
         }
         
         grid.innerHTML = visibleMonitors.map((monitor, index) => createMonitorTile(monitor, index)).join('');
+        
+        // Update status displays to show cooldown timers if available
+        visibleMonitors.forEach(monitor => {
+          if ((monitor.auto_trade_status === 'PAUSED' || monitor.auto_trade_status === 'paused') && cooldownTimers.has(monitor.id)) {
+            const statusElement = document.querySelector(`[data-monitor-id="${monitor.id}"] .monitor-status`);
+            if (statusElement) {
+              statusElement.textContent = getStatusText(monitor.auto_trade_status, monitor.id);
+              console.log(`Updated initial timer display for ${monitor.id}`);
+            }
+          }
+        });
         
         // Add cross-highlighting event listeners to monitor tiles
         addMonitorTileHighlighting();
@@ -1362,8 +1482,8 @@
               return a.symbol.localeCompare(b.symbol);
             case 'strategy':
               return a.strategy.localeCompare(b.strategy);
-            case 'trades':
-              return b.trades - a.trades; // Descending order
+            case 'win_streak':
+              return (b.win_streak || 0) - (a.win_streak || 0); // Descending order
             case 'winRate':
               return parseFloat(b.winRate) - parseFloat(a.winRate); // Descending order
             case 'return':
@@ -3430,11 +3550,19 @@
     // TODO: Re-enable allocation data refresh when ready
     // setInterval(loadAllocationData, 30000);
     
-    // Refresh monitor statistics every 30 seconds
-    setInterval(() => {
-      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
-        console.log('Dashboard: Auto-refreshing monitor statistics...');
-        window.monitorHistoryDisplay.refresh(currentView);
+    // Refresh monitor data every 30 seconds (reload from database)
+    setInterval(async () => {
+      try {
+        console.log('Dashboard: Refreshing monitor data from database...');
+        const oldMonitors = [...monitors]; // Keep reference to old data
+        await loadMonitors();
+        applyCurrentSort();
+        
+        // Only update stat values, don't re-render entire tiles
+        updateMonitorStatValues(oldMonitors, monitors);
+        console.log('Dashboard: Monitor stat values refreshed');
+      } catch (e) {
+        console.error('Error refreshing monitor data:', e);
       }
     }, 30000);
 
@@ -4139,6 +4267,9 @@
     // WebSocket connection for real-time updates
     let ws = null;
 
+    // Store cooldown timers for each monitor
+    const cooldownTimers = new Map();
+
     // Helper function to get CSS class for auto trade status
     function getStatusClass(status) {
       const statusLower = status.toLowerCase();
@@ -4147,6 +4278,26 @@
       if (statusLower === 'disabled') return 'disabled';
       if (statusLower === 'paused') return 'paused';
       return ''; // Default no class
+    }
+
+    // Helper function to format cooldown timer as MM:SS
+    function formatCooldownTimer(seconds) {
+      if (!seconds || seconds <= 0) return '';
+      const minutes = Math.floor(seconds / 60);
+      const secs = seconds % 60;
+      return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    // Helper function to get status text with optional timer
+    function getStatusText(status, monitorId) {
+      const statusUpper = status.toUpperCase();
+      if (statusUpper === 'PAUSED') {
+        const timer = cooldownTimers.get(monitorId);
+        if (timer && timer > 0) {
+          return formatCooldownTimer(timer);
+        }
+      }
+      return statusUpper;
     }
 
     function connectWebSocket() {
@@ -4211,6 +4362,28 @@
             });
           }
           
+          // Handle cooldown timer changes
+          if (data.type === 'cooldown_timer_change') {
+            console.log('Cooldown timer change received:', data);
+            
+            const monitorId = data.data.monitor_id;
+            const cooldownTimer = data.data.cooldown_timer;
+            
+            // Store the cooldown timer value
+            cooldownTimers.set(monitorId, cooldownTimer);
+            console.log(`Stored cooldown timer for ${monitorId}: ${cooldownTimer}s`);
+            
+            // Update the display if monitor is currently PAUSED
+            const monitor = monitors.find(m => m.id === monitorId);
+            if (monitor && (monitor.auto_trade_status === 'PAUSED' || monitor.auto_trade_status === 'paused')) {
+              const statusElement = document.querySelector(`[data-monitor-id="${monitorId}"] .monitor-status`);
+              if (statusElement) {
+                statusElement.textContent = getStatusText('PAUSED', monitorId);
+                console.log(`Updated timer display for ${monitorId}`);
+              }
+            }
+          }
+          
           // Handle auto trade status changes from auto_entry_supervisor
           if (data.type === 'auto_trade_status_change') {
             console.log('Auto trade status change received:', data);
@@ -4222,12 +4395,17 @@
             if (monitor) {
               monitor.auto_trade_status = data.data.auto_trade_status;
               
+              // Clear cooldown timer if status is not PAUSED
+              if (data.data.auto_trade_status.toUpperCase() !== 'PAUSED') {
+                cooldownTimers.delete(data.data.monitor_id);
+              }
+              
               // Update the visual status indicator
               const statusElement = document.querySelector(`[data-monitor-id="${data.data.monitor_id}"] .monitor-status`);
               if (statusElement) {
                 // Update the CSS classes and text content
                 statusElement.className = `monitor-status ${getStatusClass(data.data.auto_trade_status)}`;
-                statusElement.textContent = data.data.auto_trade_status.toUpperCase();
+                statusElement.textContent = getStatusText(data.data.auto_trade_status, data.data.monitor_id);
               }
               
               console.log(`Updated monitor ${data.data.monitor_id} auto trade status to: ${data.data.auto_trade_status}`);
