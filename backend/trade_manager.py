@@ -1012,6 +1012,8 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
     # Notify monitor_manager when trade is closed
     if status == 'closed':
         notify_monitor_manager_trade_closed(trade_id, status)
+        # Update win_streak for the monitor
+        update_monitor_win_streak(trade_id)
 
 def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbol_close=None, win_loss=None, pnl=None, close_method=None, fees=None):
     """Update trade status in PostgreSQL database only."""
@@ -1135,6 +1137,167 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
     # Notify monitor_manager when a trade is closed
     if status == 'closed':
         notify_monitor_manager_trade_closed(trade_id, status)
+        # Update win_streak for the monitor
+        update_monitor_win_streak(trade_id)
+
+def update_monitor_win_streak(trade_id: int) -> None:
+    """Update the win_streak for a monitor based on the trade result.
+    
+    CYCLE LOGIC: Any cycle (settlement hour) with a loss results in win_streak=0.
+    Wins only count if the entire cycle has no losses.
+    """
+    try:
+        pg_conn = get_postgresql_connection()
+        if not pg_conn:
+            log(f"⚠️ Cannot connect to database to update win_streak")
+            return
+        
+        # Get the monitor, contract, and win_loss for this trade
+        with pg_conn.cursor() as cursor:
+            cursor.execute("SELECT monitor, win_loss, contract, ticker FROM users.trades_0001 WHERE id = %s", (trade_id,))
+            trade_row = cursor.fetchone()
+        
+        if not trade_row or not trade_row[0]:
+            pg_conn.close()
+            return
+        
+        monitor = trade_row[0]
+        win_loss = trade_row[1]
+        contract = trade_row[2]
+        ticker = trade_row[3]
+        
+        # Extract monitor ID from monitor identifier (e.g., "mon_0001_10002" -> "10002")
+        if monitor and monitor.startswith('mon_'):
+            parts = monitor.split('_')
+            if len(parts) >= 3:
+                monitor_id = parts[2]  # Get the monitor ID (10002)
+                user_number = parts[1]  # Get the user number (0001)
+            else:
+                pg_conn.close()
+                return
+        else:
+            pg_conn.close()
+            return
+        
+        # CYCLE-BASED WIN STREAK LOGIC:
+        # A cycle is defined by the contract (settlement hour).
+        # If ANY trade in a cycle is a loss, the entire cycle doesn't count toward win_streak.
+        # We need to check if we've already processed this cycle to avoid double-counting.
+        
+        # First, check if we've already processed this cycle (using ticker as cycle identifier)
+        # Extract the settlement hour from ticker (e.g., KXBTCD-25OCT1314 means Oct 13, 14:00)
+        cycle_id = None
+        if ticker and '-' in ticker:
+            # Extract the date-hour portion (everything before the last hyphen)
+            parts = ticker.rsplit('-', 1)
+            if len(parts) >= 1:
+                cycle_id = parts[0]  # e.g., "KXBTCD-25OCT1314"
+        
+        if not cycle_id:
+            # Fallback to contract if ticker parsing fails
+            cycle_id = contract
+        
+        # Check if we've already processed this cycle for this monitor
+        with pg_conn.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT last_processed_cycle FROM users.monitor_list_{user_number}
+                WHERE id = %s
+            """, (monitor_id,))
+            result = cursor.fetchone()
+            last_processed_cycle = result[0] if result and result[0] else None
+        
+        if last_processed_cycle == cycle_id:
+            # Already processed this cycle, skip to avoid double-counting
+            log(f"⏭️  Skipping win_streak update for {monitor} - cycle {cycle_id} already processed")
+            pg_conn.close()
+            return
+        
+        # Check if there are ANY pending trades in this cycle (expired but not yet settled)
+        with pg_conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT COUNT(*) 
+                FROM users.trades_0001 
+                WHERE monitor = %s 
+                AND ticker LIKE %s
+                AND status = 'expired'
+            """, (monitor, f"{cycle_id}%"))
+            pending_count = cursor.fetchone()[0]
+        
+        if pending_count > 0:
+            # There are still unsettled trades in this cycle - skip for now
+            # They will trigger this function again when they settle
+            log(f"⏭️  Waiting for {pending_count} pending trades in cycle {cycle_id} for {monitor} to settle")
+            pg_conn.close()
+            return
+        
+        # Get all trades from this cycle for this monitor
+        with pg_conn.cursor() as cursor:
+            # Use ticker pattern to find all trades from the same cycle
+            # Note: We use ONLY ticker (not contract) because contract is too generic
+            # (e.g., "BTC 4pm" matches multiple days, but "KXBTCD-25OCT1316" is unique to one hour)
+            cursor.execute("""
+                SELECT id, win_loss, contract, ticker 
+                FROM users.trades_0001 
+                WHERE monitor = %s 
+                AND status = 'closed'
+                AND ticker LIKE %s
+                ORDER BY id ASC
+            """, (monitor, f"{cycle_id}%"))
+            cycle_trades = cursor.fetchall()
+        
+        if not cycle_trades:
+            pg_conn.close()
+            return
+        
+        # Check if ANY trade in this cycle is a loss
+        has_loss = any(trade[1] == 'L' for trade in cycle_trades)
+        win_count = sum(1 for trade in cycle_trades if trade[1] == 'W')
+        
+        # Get the win_streak_threshold from the database for this monitor
+        with pg_conn.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT win_streak_threshold FROM users.monitor_list_{user_number}
+                WHERE id = %s
+            """, (monitor_id,))
+            threshold_row = cursor.fetchone()
+            win_streak_threshold = threshold_row[0] if threshold_row and threshold_row[0] is not None else 22
+        
+        # Update win_streak based on cycle result
+        with pg_conn.cursor() as cursor:
+            if has_loss:
+                # Any loss in the cycle means win_streak = 0 for this cycle
+                cursor.execute(f"""
+                    UPDATE users.monitor_list_{user_number}
+                    SET win_streak = 0,
+                        loss_prevention = 'one_contract',
+                        last_processed_cycle = %s
+                    WHERE id = %s
+                """, (cycle_id, monitor_id))
+                log(f"🔄 Cycle {cycle_id} for {monitor} had a loss - win_streak reset to 0 (trades: {len(cycle_trades)})")
+            else:
+                # All wins in the cycle - increment win_streak by the number of wins
+                cursor.execute(f"""
+                    UPDATE users.monitor_list_{user_number}
+                    SET win_streak = win_streak + %s,
+                        loss_prevention = CASE 
+                            WHEN win_streak + %s >= %s THEN 'off'
+                            ELSE 'one_contract'
+                        END,
+                        last_processed_cycle = %s
+                    WHERE id = %s
+                """, (win_count, win_count, win_streak_threshold, cycle_id, monitor_id))
+                log(f"📈 Cycle {cycle_id} for {monitor} all wins - win_streak +{win_count} (trades: {len(cycle_trades)}, threshold: {win_streak_threshold})")
+            
+            pg_conn.commit()
+        
+        pg_conn.close()
+        
+    except Exception as e:
+        log(f"⚠️ Error updating win_streak for trade {trade_id}: {e}")
+        try:
+            pg_conn.close()
+        except:
+            pass
 
 # ---------- API ENDPOINTS ----------------------------------------------------
 
@@ -1395,6 +1558,21 @@ async def update_trade_status_api(request: Request):
             # Mark as close_failed instead of error
             update_trade_status(id, "close_failed")
             
+            # Update notes with error message
+            note_text = f"Auto Stop Fail - {error_message}"
+            pg_conn = get_postgresql_connection()
+            if pg_conn:
+                try:
+                    with pg_conn.cursor() as cursor:
+                        cursor.execute("UPDATE users.trades_0001 SET notes = %s WHERE id = %s", (note_text, id))
+                        pg_conn.commit()
+                        log(f"UPDATED NOTES: {note_text}")
+                    pg_conn.close()
+                except Exception as e:
+                    log(f"ERROR UPDATING NOTES: {e}")
+                    if pg_conn:
+                        pg_conn.close()
+            
             # Notify active trade supervisor about close failure
             notify_active_trade_supervisor_direct(id, ticket_id, "close_failed")
             
@@ -1560,11 +1738,11 @@ def check_expired_trades():
         # Step 1: Delete trades with status ERROR
         delete_error_trades()
         
-        # Step 2: Check for open and closing trades to mark as expired
+        # Step 2: Check for open, closing, and close_failed trades to mark as expired
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
-                cursor.execute("SELECT id, ticker, symbol FROM users.trades_0001 WHERE status IN ('open', 'closing')")
+                cursor.execute("SELECT id, ticker, symbol FROM users.trades_0001 WHERE status IN ('open', 'closing', 'close_failed')")
                 active_trades = cursor.fetchall()
         else:
             active_trades = []
@@ -1609,10 +1787,10 @@ def check_expired_trades():
                                 closed_at = %s, 
                                 symbol_close = %s,
                                 close_method = 'expired'
-                            WHERE id = %s AND status IN ('open', 'closing')
+                            WHERE id = %s AND status IN ('open', 'closing', 'close_failed')
                         """, (closed_at, symbol_close, trade_id))
                     pg_conn.commit()
-                    print(f"💾 Expired trades update written to PostgreSQL users.trades_0001 for {len(active_trades)} trades (open and closing)")
+                    print(f"💾 Expired trades update written to PostgreSQL users.trades_0001 for {len(active_trades)} trades (open, closing, and close_failed)")
                 pg_conn.close()
             else:
                 print(f"⚠️ Skipping PostgreSQL expired trades update - no connection available")
@@ -1741,6 +1919,10 @@ def poll_settlements_for_matches(expired_tickers):
                                     """, (sell_price, 'W' if sell_price > 0 else 'L', pnl, ret_pct, trade_id))
                                     pg_conn_update.commit()
                                     print(f"💾 Settlement update for trade {trade_id}: PnL={pnl}, ret_pct={ret_pct}")
+                                    
+                                    # Update win_streak for the monitor
+                                    update_monitor_win_streak(trade_id)
+                                    
                                 pg_conn_update.close()
                             else:
                                 print(f"⚠️ Skipping PostgreSQL settlement update for trade {trade_id} - no connection available")
@@ -1764,6 +1946,32 @@ def poll_settlements_for_matches(expired_tickers):
             
         except Exception as e:
             time.sleep(2)
+
+def check_expired_trades_for_settlements():
+    """Check every 10 minutes for expired trades that now have settlements available"""
+    try:
+        pg_conn = get_postgresql_connection()
+        if not pg_conn:
+            return
+        
+        # Get all expired trades
+        with pg_conn.cursor() as cursor:
+            cursor.execute("SELECT ticker FROM users.trades_0001 WHERE status = 'expired'")
+            expired_trades = cursor.fetchall()
+        
+        pg_conn.close()
+        
+        if not expired_trades:
+            return
+        
+        expired_tickers = [trade[0] for trade in expired_trades]
+        log(f"[5-MIN CHECK] Found {len(expired_tickers)} expired trades, checking for settlements")
+        
+        # Run settlement polling for expired trades
+        poll_settlements_for_matches(expired_tickers)
+        
+    except Exception as e:
+        log(f"[5-MIN CHECK] Error: {e}")
 
 def notify_monitor_manager_trade_closed(trade_id: int, status: str) -> None:
     """Notify monitor_manager when a trade is closed to update monitor statistics"""
@@ -1862,6 +2070,7 @@ def notify_monitor_manager_trades_closed_by_ticker(ticker: str, status: str) -> 
 
 _scheduler = BackgroundScheduler(timezone=ZoneInfo("America/New_York"))
 _scheduler.add_job(check_expired_trades, CronTrigger(minute=0, second=0), max_instances=1, coalesce=True)
+_scheduler.add_job(check_expired_trades_for_settlements, CronTrigger(minute="*/5", second=0), max_instances=1, coalesce=True)
 
 from fastapi import FastAPI
 

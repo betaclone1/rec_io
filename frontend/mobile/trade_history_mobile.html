@@ -57,6 +57,68 @@
             font-size: 12px;
         }
 
+        /* Toggle Switch Styles */
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 40px;
+            height: 20px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #4a5568;
+            transition: .4s;
+            border-radius: 20px;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 16px;
+            width: 16px;
+            left: 2px;
+            bottom: 2px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .toggle-slider {
+            background-color: #007bff;
+        }
+
+        input:checked + .toggle-slider:before {
+            transform: translateX(20px);
+        }
+
+        /* Hide elements when % Mode is ON */
+        .percent-mode .pnl-panel {
+            display: none !important;
+        }
+
+        /* Show Avg % panel when % Mode is ON */
+        .percent-mode .avg-percent-panel {
+            display: block !important;
+        }
+
+        .percent-mode .position-column,
+        .percent-mode .fees-column,
+        .percent-mode .pnl-column {
+            display: none !important;
+        }
+
         /* Summary Section */
         .summary-section {
             margin-bottom: 10px;
@@ -202,6 +264,13 @@
                     <div style="display: flex; align-items: center; gap: 5px;">
                         <label style="font-size: 12px; color: #ccc; align: center;"> to </label>
                         <input type="date" id="end-date" style="width: 100px; padding: 4px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; font-family: inherit;">
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 8px; margin-left: 15px;">
+                        <label style="font-size: 12px; color: #ccc;">% Mode</label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="percent-mode-toggle">
+                            <span class="toggle-slider"></span>
+                        </label>
                     </div>
                 </div>
             </div>
@@ -393,20 +462,32 @@
         <div class="summary-section">
             <div class="summary-grid">
                 <div class="summary-item">
+                    <div class="summary-label">Ret %</div>
+                    <div class="summary-value" id="ret-percentage">0.00%</div>
+                </div>
+                <div class="summary-item pnl-panel">
+                    <div class="summary-label">PnL</div>
+                    <div class="summary-value" id="total-pnl">$0.00</div>
+                </div>
+                <div class="summary-item avg-percent-panel" style="display: none;">
+                    <div class="summary-label">Avg %</div>
+                    <div class="summary-value" id="avg-percent">0.00%</div>
+                </div>
+                <div class="summary-item">
                     <div class="summary-label">Trades</div>
                     <div class="summary-value" id="trade-count">0</div>
                 </div>
                 <div class="summary-item">
-                    <div class="summary-label">PnL</div>
-                    <div class="summary-value" id="total-pnl">$0.00</div>
+                    <div class="summary-label">W/L %</div>
+                    <div class="summary-value" id="win-loss-percentage">0%</div>
+                </div>
+                <div class="summary-item">
+                    <div class="summary-label">Avg Buy</div>
+                    <div class="summary-value" id="avg-buy">0.00</div>
                 </div>
                 <div class="summary-item">
                     <div class="summary-label">Avg Prob</div>
                     <div class="summary-value" id="avg-prob">0.00</div>
-                </div>
-                <div class="summary-item">
-                    <div class="summary-label">W/L %</div>
-                    <div class="summary-value" id="win-loss-percentage">0%</div>
                 </div>
             </div>
         </div>
@@ -429,18 +510,19 @@
                         <th data-key="diff">Diff</th>
                         <th data-key="buy_price">Buy</th>
                         <th data-key="sell_price">Sell</th>
-                        <th data-key="position">Position</th>
-                        <th data-key="fees">Fees</th>
-                        <th data-key="pnl">PnL</th>
+                        <th data-key="position" class="position-column">Position</th>
+                        <th data-key="fees" class="fees-column">Fees</th>
+                        <th data-key="pnl" class="pnl-column">PnL</th>
+                        <th data-key="ret_pct">Ret</th>
                         <th data-key="closed_at">Closed</th>
                         <th data-key="symbol_open">Symbol Open</th>
                         <th data-key="symbol_close">Symbol Close</th>
-                        <th data-key="momentum">Mom</th>
+                        <th data-key="momentum_percentile">Mom</th>
                         <th data-key="win_loss">W/L</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <tr><td colspan="22">Loading...</td></tr>
+                    <tr><td colspan="23">Loading...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -655,12 +737,18 @@
             const avgProbEl = document.getElementById('avg-prob');
             const winLossEl = document.getElementById('win-loss-percentage');
             const totalPnlEl = document.getElementById('total-pnl');
+            const retPercentageEl = document.getElementById('ret-percentage');
+            const avgBuyEl = document.getElementById('avg-buy');
+            const avgPercentEl = document.getElementById('avg-percent');
             
             if (!Array.isArray(trades) || trades.length === 0) {
                 tradeCountEl.textContent = '0';
                 avgProbEl.textContent = '0.00';
                 winLossEl.textContent = '0%';
                 totalPnlEl.textContent = '$0.00';
+                retPercentageEl.textContent = '0.00%';
+                avgBuyEl.textContent = '0.00';
+                avgPercentEl.textContent = '0.00%';
                 return;
             }
             
@@ -697,6 +785,38 @@
             
             const winPercentage = totalTrades > 0 ? ((winCount / totalTrades) * 100) : 0;
             
+            // Calculate average buy price
+            let totalBuy = 0;
+            let buyCount = 0;
+            trades.forEach(trade => {
+                if (trade.buy_price !== null && trade.buy_price !== undefined && trade.buy_price !== '') {
+                    const buyPrice = Number(trade.buy_price);
+                    if (!isNaN(buyPrice)) {
+                        totalBuy += buyPrice;
+                        buyCount++;
+                    }
+                }
+            });
+            const avgBuy = buyCount > 0 ? (totalBuy / buyCount) : 0;
+            
+            // Calculate Ret %: sum of all ret_pct values from filtered results
+            let totalRetPct = 0;
+            let retPctCount = 0;
+            trades.forEach(trade => {
+                if (trade.ret_pct !== null && trade.ret_pct !== undefined && trade.ret_pct !== '') {
+                    const retPct = Number(trade.ret_pct);
+                    if (!isNaN(retPct)) {
+                        totalRetPct += retPct;
+                        retPctCount++;
+                    }
+                }
+            });
+            const retValue = retPctCount > 0 ? totalRetPct : 0;
+            const retPercentage = retValue.toFixed(2) + '%';
+            
+            // Calculate average of all Ret % values
+            const avgRetPercent = retPctCount > 0 ? (totalRetPct / retPctCount) : 0;
+            
             // Calculate total PnL
             let totalPnlDisplay = 0;
             trades.forEach(trade => {
@@ -712,7 +832,28 @@
             tradeCountEl.textContent = tradeCount.toString();
             avgProbEl.textContent = `${avgProb.toFixed(1)}%`;
             winLossEl.textContent = `${winPercentage.toFixed(1)}%`;
+            avgBuyEl.textContent = `${avgBuy.toFixed(2)}`;
+            retPercentageEl.textContent = retPercentage;
+            avgPercentEl.textContent = `${avgRetPercent.toFixed(2)}%`;
             totalPnlEl.textContent = `$${totalPnlDisplay.toFixed(2)}`;
+            
+            // Color coding for Ret %
+            if (retValue > 0) {
+                retPercentageEl.style.color = '#28a745'; // Green for positive
+            } else if (retValue < 0) {
+                retPercentageEl.style.color = '#dc3545'; // Red for negative
+            } else {
+                retPercentageEl.style.color = 'white'; // White for zero
+            }
+            
+            // Color coding for Avg %
+            if (avgRetPercent > 0) {
+                avgPercentEl.style.color = '#28a745'; // Green for positive
+            } else if (avgRetPercent < 0) {
+                avgPercentEl.style.color = '#dc3545'; // Red for negative
+            } else {
+                avgPercentEl.style.color = 'white'; // White for zero
+            }
             
             // Color coding for PnL
             if (totalPnlDisplay > 0) {
@@ -728,7 +869,9 @@
             const tbody = document.querySelector('#trade-log-table tbody');
             tbody.innerHTML = '';
             if (!Array.isArray(tradesToRender) || tradesToRender.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="22">No trades found.</td></tr>';
+                const isPercentMode = document.body.classList.contains('percent-mode');
+                const colSpan = isPercentMode ? 20 : 23; // 3 fewer columns when % Mode is ON
+                tbody.innerHTML = `<tr><td colspan="${colSpan}">No trades found.</td></tr>`;
                 updateSummary(tradesToRender); // Update summary even when no trades
                 return;
             }
@@ -752,6 +895,9 @@
                     if (isNaN(num)) return val;
                     return (num > 0 ? '+' : '') + Math.round(num);
                 }
+                // Check if % Mode is enabled
+                const isPercentMode = document.body.classList.contains('percent-mode');
+                
                 tr.innerHTML = `
                     <td>${trade.id !== null ? trade.id : ''}</td>
                     <td>${trade.status !== null ? trade.status : ''}</td>
@@ -766,13 +912,14 @@
                     <td>${plusSign(trade.diff)}</td>
                     <td>${trade.buy_price !== null ? Number(trade.buy_price).toFixed(2) : ''}</td>
                     <td>${trade.sell_price !== null ? Number(trade.sell_price).toFixed(2) : ''}</td>
-                    <td>${trade.position !== null ? trade.position : ''}</td>
-                    <td>${trade.fees !== null ? Number(trade.fees).toFixed(2) : ''}</td>
-                    <td>${trade.pnl !== null && trade.pnl !== undefined && trade.pnl !== '' ? Number(trade.pnl).toFixed(2) : ''}</td>
+                    ${!isPercentMode ? `<td>${trade.position !== null ? trade.position : ''}</td>` : ''}
+                    ${!isPercentMode ? `<td>${trade.fees !== null ? Number(trade.fees).toFixed(2) : ''}</td>` : ''}
+                    ${!isPercentMode ? `<td>${trade.pnl !== null && trade.pnl !== undefined && trade.pnl !== '' ? Number(trade.pnl).toFixed(2) : ''}</td>` : ''}
+                    <td>${trade.ret_pct !== null && trade.ret_pct !== undefined && trade.ret_pct !== '' ? Number(trade.ret_pct).toFixed(2) : ''}</td>
                     <td>${trade.closed_at !== null ? trade.closed_at : ''}</td>
                     <td>${trade.symbol_open !== null ? '$' + Math.round(trade.symbol_open).toLocaleString() : ''}</td>
                     <td>${trade.symbol_close !== null ? '$' + Math.round(trade.symbol_close).toLocaleString() : ''}</td>
-                    <td>${plusSign(trade.momentum)}</td>
+                    <td>${trade.momentum_percentile !== null && trade.momentum_percentile !== undefined ? Math.round(Number(trade.momentum_percentile)) : ''}</td>
                     <td>${plusSign(trade.win_loss)}</td>
                 `;
                 tbody.appendChild(tr);
@@ -1047,7 +1194,9 @@
                 throw new Error('Port configuration failed to load after multiple attempts');
             } catch (error) {
                 const tbody = document.querySelector('#trade-log-table tbody');
-                tbody.innerHTML = `<tr><td colspan="22" style="color:red;">Failed to load trades: ${error.message}</td></tr>`;
+                const isPercentMode = document.body.classList.contains('percent-mode');
+                const colSpan = isPercentMode ? 20 : 23; // 3 fewer columns when % Mode is ON
+                tbody.innerHTML = `<tr><td colspan="${colSpan}" style="color:red;">Failed to load trades: ${error.message}</td></tr>`;
                 console.error('Error fetching trades:', error);
             }
         }
@@ -1372,17 +1521,114 @@
         // Load monitor options on page load
         loadMonitorOptions();
 
-        // Add sort functionality to table headers
-        document.querySelectorAll('#trade-log-table th[data-key]').forEach(th => {
-            th.addEventListener('click', () => sortTrades(th.dataset.key));
+
+        // % Mode toggle functionality
+        function togglePercentMode() {
+            const toggle = document.getElementById('percent-mode-toggle');
+            const body = document.body;
+            
+            if (toggle.checked) {
+                body.classList.add('percent-mode');
+            } else {
+                body.classList.remove('percent-mode');
+            }
+            
+            // Save the preference
+            savePercentModePreference(toggle.checked);
+            
+            // Re-render the table to show/hide columns based on new mode
+            renderTrades(filteredTrades);
+        }
+
+        // Save % Mode preference to database
+        async function savePercentModePreference(pctMode) {
+            try {
+                const response = await fetch('/api/set_trade_history_preferences', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        pct_mode: pctMode
+                    })
+                });
+                
+                if (response.ok) {
+                    console.log('✅ % Mode preference saved:', pctMode);
+                } else {
+                    console.error('❌ Failed to save % Mode preference');
+                }
+            } catch (error) {
+                console.error('❌ Error saving % Mode preference:', error);
+            }
+        }
+
+        // Load % Mode preference from database
+        async function loadPercentModePreference() {
+            try {
+                console.log('🔄 Loading % Mode preference...');
+                const response = await fetch('/api/get_trade_history_preferences');
+                console.log('📡 API response status:', response.status);
+                
+                if (response.ok) {
+                    const preferences = await response.json();
+                    console.log('📋 Loaded preferences:', preferences);
+                    const pctMode = preferences.pct_mode || false;
+                    console.log('🎯 Extracted pct_mode:', pctMode);
+                    
+                    // Set the toggle state
+                    const toggle = document.getElementById('percent-mode-toggle');
+                    console.log('🔘 Toggle element found:', !!toggle);
+                    
+                    if (toggle) {
+                        toggle.checked = pctMode;
+                        console.log('✅ Toggle set to:', pctMode);
+                        
+                        // Apply the mode to the body
+                        const body = document.body;
+                        if (pctMode) {
+                            body.classList.add('percent-mode');
+                            console.log('✅ Added percent-mode class to body');
+                        } else {
+                            body.classList.remove('percent-mode');
+                            console.log('✅ Removed percent-mode class from body');
+                        }
+                        
+                        console.log('✅ % Mode preference loaded and applied:', pctMode);
+                    } else {
+                        console.error('❌ Toggle element not found!');
+                    }
+                } else {
+                    console.error('❌ Failed to load % Mode preference, status:', response.status);
+                }
+            } catch (error) {
+                console.error('❌ Error loading % Mode preference:', error);
+            }
+        }
+
+        // Initialize when DOM is loaded
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('Mobile trade history initialized');
+            
+            // Add event listener for % Mode toggle
+            const percentModeToggle = document.getElementById('percent-mode-toggle');
+            if (percentModeToggle) {
+                percentModeToggle.addEventListener('change', togglePercentMode);
+            }
+            
+            // Add sort functionality to table headers
+            document.querySelectorAll('#trade-log-table th[data-key]').forEach(th => {
+                th.addEventListener('click', () => sortTrades(th.dataset.key));
+            });
+            
+            // Initial load
+            updateDateRangeDisplay(); // Populate date inputs
+            loadPercentModePreference(); // Load % Mode preference
+            fetchAllTrades();
+
+            // Auto-refresh every 30 seconds
+            setInterval(fetchAllTrades, 10000); // Reduced from 30 seconds to 10 seconds for more responsive updates
         });
-
-        // Initial load
-        updateDateRangeDisplay(); // Populate date inputs
-        fetchAllTrades();
-
-        // Auto-refresh every 30 seconds
-        setInterval(fetchAllTrades, 10000); // Reduced from 30 seconds to 10 seconds for more responsive updates
         
         // Add WebSocket connection for real-time trade updates
         function setupTradeHistoryWebSocket() {

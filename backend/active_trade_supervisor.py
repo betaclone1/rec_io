@@ -417,6 +417,29 @@ def get_momentum_percentile_from_postgresql(symbol="BTC"):
         log(f"[MOMENTUM SPIKE] Error getting momentum percentile from PostgreSQL: {e}")
         return None
 
+def get_momentum_5s_avg_from_postgresql(symbol="BTC"):
+    """Get current momentum_5s_avg directly from PostgreSQL for the specified symbol."""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT momentum_5s_avg FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result and result[0] is not None:
+            return float(result[0])
+        else:
+            return None
+    except Exception as e:
+        log(f"[MOMENTUM SPIKE] Error getting momentum_5s_avg from PostgreSQL: {e}")
+        return None
+
 def broadcast_active_trades_change():
     """Broadcast active trades change via WebSocket to main app"""
     try:
@@ -1653,8 +1676,8 @@ def start_monitoring_loop():
                     
                     # Only proceed if momentum spike is enabled
                     if momentum_spike_enabled:
-                        # Get current momentum percentile directly from PostgreSQL
-                        current_momentum = get_momentum_percentile_from_postgresql("BTC")
+                        # Get current momentum (use 5s average from live price log to smooth noise)
+                        current_momentum = get_momentum_5s_avg_from_postgresql("BTC")
                         
                         if current_momentum is not None:
                             # Check for momentum spike conditions
@@ -1664,53 +1687,79 @@ def start_monitoring_loop():
                                 log(f"[MOMENTUM SPIKE] 🚨 POSITIVE SPIKE DETECTED: {current_momentum:.2f} >= +{momentum_spike_threshold}")
                                 log(f"[MOMENTUM SPIKE] Closing all NO trades due to positive momentum spike")
                                 
-                                for trade in active_trades:
-                                    if (trade.get('status') == 'active' and 
-                                        trade.get('side', '').upper() in ['N', 'NO'] and
-                                        trade.get('trade_id') not in auto_stop_triggered_trades):
-                                        
-                                        trade_id = trade.get('trade_id')
-                                        log(f"[MOMENTUM SPIKE] Triggering close for NO trade {trade_id} (momentum: {current_momentum:.2f})")
-                                        
-                                        # Cancel any pending verification period for this trade
-                                        if trade_id in verification_pending_trades:
-                                            log(f"[MOMENTUM SPIKE] Cancelling verification period for trade {trade_id} due to momentum spike")
-                                            del verification_pending_trades[trade_id]
-                                        
-                                        if trigger_auto_stop_close(trade):
-                                            auto_stop_triggered_trades.add(trade_id)
-                                            momentum_spike_triggered = True
-                                        else:
-                                            log(f"[MOMENTUM SPIKE] ❌ Auto stop failed for trade {trade_id}, will retry on next check")
+                                # Refresh active trades just before triggering closes
+                                conn = get_db_connection()
+                                cursor = conn.cursor()
+                                active_trades_table = get_monitor_active_trades_table()
+                                cursor.execute(f"SELECT * FROM users.{active_trades_table} WHERE status = 'active'")
+                                columns = [desc[0] for desc in cursor.description]
+                                refreshed_active_trades = [dict(zip(columns, row)) for row in cursor.fetchall()]
+                                conn.close()
+                                
+                                # Filter eligible NO trades once and iterate deterministically
+                                eligible_trades = [t for t in refreshed_active_trades 
+                                                   if t.get('status') == 'active' 
+                                                   and t.get('side', '').upper() in ['N', 'NO']
+                                                   and t.get('trade_id') not in auto_stop_triggered_trades]
+                                
+                                successful_closes = 0
+                                for trade in eligible_trades:
+                                    trade_id = trade.get('trade_id')
+                                    log(f"[MOMENTUM SPIKE] Triggering close for NO trade {trade_id} (momentum: {current_momentum:.2f})")
+                                    
+                                    # Cancel any pending verification period for this trade
+                                    if trade_id in verification_pending_trades:
+                                        log(f"[MOMENTUM SPIKE] Cancelling verification period for trade {trade_id} due to momentum spike")
+                                        del verification_pending_trades[trade_id]
+                                    
+                                    if trigger_auto_stop_close(trade):
+                                        auto_stop_triggered_trades.add(trade_id)
+                                        momentum_spike_triggered = True
+                                        successful_closes += 1
+                                    else:
+                                        log(f"[MOMENTUM SPIKE] ❌ Auto stop failed for trade {trade_id}, will retry on next check")
                                 
                                 if momentum_spike_triggered:
-                                    log(f"[MOMENTUM SPIKE] ✅ Closed {len([t for t in active_trades if t.get('side', '').upper() in ['N', 'NO'] and t.get('status') == 'active'])} NO trades due to positive momentum spike")
+                                    log(f"[MOMENTUM SPIKE] ✅ Closed {successful_closes} NO trades due to positive momentum spike")
                                     
                             elif current_momentum <= -momentum_spike_threshold:  # Negative spike - close all YES trades
                                 log(f"[MOMENTUM SPIKE] 🚨 NEGATIVE SPIKE DETECTED: {current_momentum:.2f} <= -{momentum_spike_threshold}")
                                 log(f"[MOMENTUM SPIKE] Closing all YES trades due to negative momentum spike")
                                 
-                                for trade in active_trades:
-                                    if (trade.get('status') == 'active' and 
-                                        trade.get('side', '').upper() in ['Y', 'YES'] and
-                                        trade.get('trade_id') not in auto_stop_triggered_trades):
-                                        
-                                        trade_id = trade.get('trade_id')
-                                        log(f"[MOMENTUM SPIKE] Triggering close for YES trade {trade_id} (momentum: {current_momentum:.2f})")
-                                        
-                                        # Cancel any pending verification period for this trade
-                                        if trade_id in verification_pending_trades:
-                                            log(f"[MOMENTUM SPIKE] Cancelling verification period for trade {trade_id} due to momentum spike")
-                                            del verification_pending_trades[trade_id]
-                                        
-                                        if trigger_auto_stop_close(trade):
-                                            auto_stop_triggered_trades.add(trade_id)
-                                            momentum_spike_triggered = True
-                                        else:
-                                            log(f"[MOMENTUM SPIKE] ❌ Auto stop failed for trade {trade_id}, will retry on next check")
+                                # Refresh active trades just before triggering closes
+                                conn = get_db_connection()
+                                cursor = conn.cursor()
+                                active_trades_table = get_monitor_active_trades_table()
+                                cursor.execute(f"SELECT * FROM users.{active_trades_table} WHERE status = 'active'")
+                                columns = [desc[0] for desc in cursor.description]
+                                refreshed_active_trades = [dict(zip(columns, row)) for row in cursor.fetchall()]
+                                conn.close()
+                                
+                                # Filter eligible YES trades once and iterate deterministically
+                                eligible_trades = [t for t in refreshed_active_trades 
+                                                   if t.get('status') == 'active' 
+                                                   and t.get('side', '').upper() in ['Y', 'YES']
+                                                   and t.get('trade_id') not in auto_stop_triggered_trades]
+                                
+                                successful_closes = 0
+                                for trade in eligible_trades:
+                                    trade_id = trade.get('trade_id')
+                                    log(f"[MOMENTUM SPIKE] Triggering close for YES trade {trade_id} (momentum: {current_momentum:.2f})")
+                                    
+                                    # Cancel any pending verification period for this trade
+                                    if trade_id in verification_pending_trades:
+                                        log(f"[MOMENTUM SPIKE] Cancelling verification period for trade {trade_id} due to momentum spike")
+                                        del verification_pending_trades[trade_id]
+                                    
+                                    if trigger_auto_stop_close(trade):
+                                        auto_stop_triggered_trades.add(trade_id)
+                                        momentum_spike_triggered = True
+                                        successful_closes += 1
+                                    else:
+                                        log(f"[MOMENTUM SPIKE] ❌ Auto stop failed for trade {trade_id}, will retry on next check")
                                 
                                 if momentum_spike_triggered:
-                                    log(f"[MOMENTUM SPIKE] ✅ Closed {len([t for t in active_trades if t.get('side', '').upper() in ['Y', 'YES'] and t.get('status') == 'active'])} YES trades due to negative momentum spike")
+                                    log(f"[MOMENTUM SPIKE] ✅ Closed {successful_closes} YES trades due to negative momentum spike")
                                 
                                 # Log momentum monitoring (every 30 seconds to reduce noise)
                                 if not hasattr(monitoring_worker, 'last_momentum_log') or current_time - monitoring_worker.last_momentum_log > 30:

@@ -24,6 +24,9 @@ CREATE TABLE users.monitors_list_XXXX (
     pnl DECIMAL(10,2) DEFAULT 0.00,
     bankroll_allotment DECIMAL(5,1) DEFAULT 0.0,
     status VARCHAR(20) DEFAULT 'active',
+    win_streak INTEGER DEFAULT 0,
+    win_streak_threshold INTEGER DEFAULT 22,
+    loss_prevention VARCHAR(50) DEFAULT 'none',
     created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
@@ -62,6 +65,9 @@ This means:
 | `pnl` | DECIMAL(10,2) | Profit/loss in dollars | 0.00 |
 | `bankroll_allotment` | DECIMAL(5,1) | Percentage of bankroll allocated | 0.0 |
 | `status` | VARCHAR(20) | Monitor status | 'active' |
+| `win_streak` | INTEGER | Current consecutive win streak | 0 |
+| `win_streak_threshold` | INTEGER | Win streak threshold for loss prevention toggle | 22 |
+| `loss_prevention` | VARCHAR(50) | Loss prevention strategy | 'none' |
 | `created` | TIMESTAMP | Creation timestamp | CURRENT_TIMESTAMP |
 
 ## Status Values

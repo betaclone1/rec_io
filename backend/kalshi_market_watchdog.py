@@ -165,31 +165,18 @@ def get_current_event_ticker(symbol):
         # Financial format: KXINXU-25SEP11H1400
         current_ticker = f"{ticker_prefix}-{year_str}{month_str}{day_str}H{hour_str}00"
 
-    # Skip retrying if last attempt already failed this ticker
-    if last_failed_ticker != current_ticker:
-        data = fetch_event_json(current_ticker)
-        if data and "markets" in data:
-            return current_ticker, data
-        else:
-            last_failed_ticker = current_ticker
-
-    # Try next hour
-    test_time = now + timedelta(hours=2)
-    year_str = test_time.strftime("%y")
-    month_str = test_time.strftime("%b").upper()
-    day_str = test_time.strftime("%d")
-    hour_str = test_time.strftime("%H")
-    
-    if format_type == 'crypto':
-        next_ticker = f"{ticker_prefix}-{year_str}{month_str}{day_str}{hour_str}"
-    else:
-        next_ticker = f"{ticker_prefix}-{year_str}{month_str}{day_str}H{hour_str}00"
-
-    data = fetch_event_json(next_ticker)
+    # Try to fetch the current market data
+    data = fetch_event_json(current_ticker)
     if data and "markets" in data:
-        return next_ticker, data
-
-    return None, None
+        # Reset failed ticker tracker on success
+        last_failed_ticker = None
+        return current_ticker, data
+    else:
+        # Log the failure but don't try alternative markets
+        if last_failed_ticker != current_ticker:
+            print(f"[{datetime.now(EST)}] ⚠️ Failed to fetch market data for {current_ticker}")
+            last_failed_ticker = current_ticker
+        return None, None
 
 def get_current_symbol_price(symbol):
     """Get current price for the symbol from live price tables"""
@@ -430,7 +417,9 @@ def main():
                 # Update previous event ticker
                 previous_event_ticker = event_ticker
             else:
-                print(f"[{datetime.now(EST)}] ⚠️ No active event found")
+                # No market data available - this could be due to API issues or market transition
+                # Don't update previous_event_ticker to avoid false market changes
+                print(f"[{datetime.now(EST)}] ⚠️ No active event found - continuing with last known market")
             
             time.sleep(POLL_INTERVAL_SECONDS)
             

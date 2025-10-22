@@ -118,6 +118,10 @@ def init_database():
                 bankroll_allotment DECIMAL(5,1) DEFAULT 0.0,
                 status VARCHAR(20) DEFAULT 'active',
                 dashboard_order INTEGER DEFAULT 0,
+                win_streak INTEGER DEFAULT 0,
+                win_streak_threshold INTEGER DEFAULT 22,
+                loss_prevention VARCHAR(50) DEFAULT 'none',
+                last_processed_cycle VARCHAR(100),
                 created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)

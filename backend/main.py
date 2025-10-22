@@ -105,7 +105,7 @@ def get_trade_history_preferences_postgresql():
                        symbol_btc, symbol_eth, symbol_spy, symbol_ndx, symbol_usd_eur,
                        strategy_hourly_htc, strategy_momentum_scalp, strategy_test,
                        day_sunday, day_monday, day_tuesday, day_wednesday, day_thursday, day_friday, day_saturday,
-                       analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp
+                       analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp, chart_view, pct_mode
                 FROM users.trade_history_preferences_0001 WHERE id = 1
             """)
             result = cursor.fetchone()
@@ -152,7 +152,9 @@ def get_trade_history_preferences_postgresql():
                     "sort_key": result[36],
                     "sort_asc": result[37],
                     "page_size": result[38],
-                    "last_search_timestamp": result[39]
+                    "last_search_timestamp": result[39],
+                    "chart_view": result[40],
+                    "pct_mode": result[41]
                 }
             else:
                 return {
@@ -195,7 +197,8 @@ def get_trade_history_preferences_postgresql():
                     "sort_key": None,
                     "sort_asc": True,
                     "page_size": 50,
-                    "last_search_timestamp": int(time.time())
+                    "last_search_timestamp": int(time.time()),
+                    "chart_view": "pnl"
                 }
     except Exception as e:
         print(f"[PostgreSQL Error] Failed to get trade history preferences: {e}")
@@ -232,7 +235,8 @@ def get_trade_history_preferences_postgresql():
             "sort_key": None,
             "sort_asc": True,
             "page_size": 50,
-            "last_search_timestamp": int(time.time())
+            "last_search_timestamp": int(time.time()),
+            "chart_view": "pnl"
         }
 
 def update_trade_history_preferences_postgresql(**kwargs):
@@ -2439,7 +2443,8 @@ def load_trade_history_preferences():
             "sort_key": None,
             "sort_asc": True,
             "page_size": 50,
-            "last_search_timestamp": time.time()
+            "last_search_timestamp": time.time(),
+            "pct_mode": False
         }
 
 def save_trade_history_preferences(preferences):
@@ -2490,6 +2495,14 @@ def save_trade_history_preferences(preferences):
         # Analysis interval
         if "analysis_interval" in preferences:
             update_data["analysis_interval"] = str(preferences["analysis_interval"])
+        
+        # Chart view
+        if "chart_view" in preferences:
+            update_data["chart_view"] = str(preferences["chart_view"])
+        
+        # Percent mode
+        if "pct_mode" in preferences:
+            update_data["pct_mode"] = bool(preferences["pct_mode"])
         
         if "sort_key" in preferences:
             update_data["sort_key"] = preferences["sort_key"]
@@ -4713,7 +4726,10 @@ async def get_monitors(user_id: str = "user_0001"):
                     bankroll_allotment_pct,
                     status,
                     dashboard_order,
-                    created
+                    win_streak,
+                    loss_prevention,
+                    created,
+                    cooldown_timer
                 FROM users.monitor_list_{user_number}
                 WHERE status != 'ARCHIVED'
                 ORDER BY dashboard_order, id
@@ -4726,7 +4742,7 @@ async def get_monitors(user_id: str = "user_0001"):
         # Transform database results to frontend format
         monitors = []
         for row in results:
-            monitor_id, name, symbol, strategy, auto_trade, auto_trade_status, trades, win_loss, ret_pct, pnl, bankroll_allotment_pct, status, dashboard_order, created = row
+            monitor_id, name, symbol, strategy, auto_trade, auto_trade_status, trades, win_loss, ret_pct, pnl, bankroll_allotment_pct, status, dashboard_order, win_streak, loss_prevention, created, cooldown_timer = row
             
             # Calculate uptime from created timestamp
             from datetime import datetime
@@ -4763,7 +4779,10 @@ async def get_monitors(user_id: str = "user_0001"):
                 "name": name,  # Use exact database value
                 "bankroll_allotment": bankroll_allotment_pct,
                 "auto_trade_status": auto_trade_status,
-                "dashboard_order": dashboard_order or 0
+                "dashboard_order": dashboard_order or 0,
+                "win_streak": win_streak or 0,
+                "loss_prevention": loss_prevention,
+                "cooldown_timer": cooldown_timer or 0
             }
             monitors.append(formatted_monitor)
         
