@@ -986,11 +986,11 @@
               </div>
             </div>
             <div class="view-buttons">
-              <button onclick="setChartView('1d')" class="view-btn active">1d</button>
-              <button onclick="setChartView('1w')" class="view-btn">1w</button>
-              <button onclick="setChartView('1m')" class="view-btn">1m</button>
-              <button onclick="setChartView('1y')" class="view-btn">1y</button>
-              <button onclick="setChartView('all')" class="view-btn">All</button>
+              <button data-view="1d" class="view-btn active">1d</button>
+              <button data-view="1w" class="view-btn">1w</button>
+              <button data-view="1m" class="view-btn">1m</button>
+              <button data-view="1y" class="view-btn">1y</button>
+              <button data-view="all" class="view-btn">All</button>
             </div>
           </div>
         </div>
@@ -1187,6 +1187,14 @@
       initializeTooltips();
 
       // STEP 5.5: Monitor breakdown refresh removed
+      
+      // Add event listeners for chart view buttons
+      document.querySelectorAll('.view-btn[data-view]').forEach(button => {
+        button.addEventListener('click', function() {
+          const view = this.getAttribute('data-view');
+          setChartView(view);
+        });
+      });
       
       // Connect to WebSocket after everything is loaded
       console.log('Dashboard: All monitors loaded, now connecting to WebSocket...');
@@ -2310,7 +2318,7 @@
             btn.classList.remove('active');
           });
           
-          const activeButton = document.querySelector(`.view-btn[onclick*="${currentView}"]`);
+          const activeButton = document.querySelector(`.view-btn[data-view="${currentView}"]`);
           if (activeButton) {
             activeButton.classList.add('active');
           }
@@ -2411,8 +2419,8 @@
       }
 
       // Get first and last values in the filtered data
-      const firstValue = (filteredData[0].portfolio || 0) / 100; // Convert to dollars
-      const lastValue = (filteredData[filteredData.length - 1].portfolio || 0) / 100; // Convert to dollars
+      const firstValue = filteredData[0].portfolio || 0; // Portfolio values are already in dollars
+      const lastValue = filteredData[filteredData.length - 1].portfolio || 0; // Portfolio values are already in dollars
       
       const change = lastValue - firstValue;
       const percentChange = firstValue !== 0 ? (change / firstValue) * 100 : 0;
@@ -2428,18 +2436,27 @@
     }
 
     function setChartView(view) {
+      console.log('setChartView called with view:', view);
+      console.log('Current allHistoryData length:', allHistoryData.length);
+      
       currentView = view;
       
       // Update button styles
       document.querySelectorAll('.view-btn').forEach(btn => {
         btn.classList.remove('active');
       });
-      event.target.classList.add('active');
+      
+      // Find and activate the correct button
+      const targetButton = document.querySelector(`button[data-view="${view}"]`);
+      if (targetButton) {
+        targetButton.classList.add('active');
+      }
       
       // Save preferences to database
       saveDashboardPreferences();
       
       // Re-render chart with new view
+      console.log('About to re-render chart with view:', currentView);
       renderPortfolioChart(allHistoryData);
       
       // Update the change indicator
@@ -2490,14 +2507,21 @@
 
     async function loadPortfolioHistory() {
       try {
-        const response = await fetch(`${window.location.origin}/api/account/balance/history?mode=${GLOBAL_ACCOUNT_MODE}&limit=10000`);
+        const response = await fetch(`${window.location.origin}/api/portfolio/history?period=1y`);
         
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
         
         const data = await response.json();
-        const history = data.history || [];
+        const history = data.data || []; // The portfolio/history endpoint returns data in 'data' field
+        
+        console.log('Portfolio history loaded:', history.length, 'data points');
+        if (history.length > 0) {
+          console.log('First data point:', history[0]);
+          console.log('Last data point:', history[history.length - 1]);
+          console.log('Date range:', new Date(history[0].timestamp), 'to', new Date(history[history.length - 1].timestamp));
+        }
         
         if (history.length > 0) {
           allHistoryData = history; // Store all history data
@@ -2529,6 +2553,8 @@
     }
 
     function renderPortfolioChart(history) {
+      console.log('renderPortfolioChart called with history length:', history.length, 'currentView:', currentView);
+      
       const ctx = document.getElementById('portfolio-chart');
       
       // Destroy existing chart if it exists
@@ -2538,6 +2564,7 @@
       
       // Filter data based on current view
       const filteredData = filterDataByView(history, currentView);
+      console.log('After filtering, filteredData length:', filteredData.length);
       
       // Prepare data for chart with appropriate labels
       const labels = filteredData.map(item => {
@@ -2545,11 +2572,16 @@
         return formatLabel(date, currentView);
       });
       
-      const portfolioData = filteredData.map(item => (item.portfolio || 0) / 100); // Convert to dollars
+      const portfolioData = filteredData.map(item => item.portfolio || 0); // Portfolio values are already in dollars
       
       // Apply moving average for smoothing
       const smoothingWindow = currentView === '1d' ? 4 : 60; // Less smoothing for 1d view
       const smoothedPortfolioData = applyMovingAverage(portfolioData, smoothingWindow);
+      
+      // Ensure the last value is the actual current value (not smoothed)
+      if (smoothedPortfolioData.length > 0 && portfolioData.length > 0) {
+        smoothedPortfolioData[smoothedPortfolioData.length - 1] = portfolioData[portfolioData.length - 1];
+      }
       
       // Custom plugin to add X-axis label at the rightmost point
       const customPlugin = {
@@ -2717,7 +2749,7 @@
           labels: labels,
           datasets: [{
             label: 'Portfolio Value ($)',
-            data: smoothedPortfolioData, // Use smoothed data here
+            data: smoothedPortfolioData, // Use smoothed portfolio values with actual current value
             borderColor: '#4a9eff',
             backgroundColor: 'rgba(74, 158, 255, 0.1)',
             borderWidth: 2,
@@ -2802,6 +2834,10 @@
     }
 
     function filterDataByView(data, view) {
+      if (!data || data.length === 0) {
+        return [];
+      }
+      
       const now = new Date();
       let startDate;
       
@@ -2841,19 +2877,20 @@
             }
             return quarterHourlyData;
           }
+          // If no data, fall through to generic filter
           break;
         case '1w':
-          // Previous 7 days
+          // Previous 7 days from current time
           startDate = new Date(now);
           startDate.setDate(startDate.getDate() - 7);
           break;
         case '1m':
-          // Previous 30 days
+          // Previous 30 days from current time
           startDate = new Date(now);
           startDate.setDate(startDate.getDate() - 30);
           break;
         case '1y':
-          // Previous 365 days
+          // Previous 365 days from current time
           startDate = new Date(now);
           startDate.setDate(startDate.getDate() - 365);
           break;
@@ -2862,10 +2899,21 @@
           return data; // Return all data
       }
       
-      return data.filter(item => {
-        const itemDate = new Date(item.timestamp);
-        return itemDate >= startDate;
-      });
+      // Filter data based on startDate for all cases except 'all'
+      if (startDate) {
+        console.log(`Filtering data for view: ${view}, startDate: ${startDate.toISOString()}, current time: ${now.toISOString()}, total data points: ${data.length}`);
+        const filtered = data.filter(item => {
+          const itemDate = new Date(item.timestamp);
+          return itemDate >= startDate;
+        });
+        console.log(`Filtered data points: ${filtered.length}`);
+        if (filtered.length > 0) {
+          console.log(`First filtered point: ${filtered[0].timestamp}, Last filtered point: ${filtered[filtered.length - 1].timestamp}`);
+        }
+        return filtered;
+      }
+      
+      return data; // Fallback
     }
 
     function formatLabel(date, view) {
