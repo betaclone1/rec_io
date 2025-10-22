@@ -51,7 +51,7 @@ class AnalyticsGUI:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(1, weight=1)
-        main_frame.rowconfigure(3, weight=1)
+        main_frame.rowconfigure(5, weight=1)  # Make the logs section expandable, not control
         
         # Title
         title_label = ttk.Label(main_frame, text="🚀 Analytics Updater", font=("Arial", 16, "bold"))
@@ -119,15 +119,19 @@ class AnalyticsGUI:
         ttk.Button(step_button_frame, text="Lookup Tables Only", command=self.select_lookup_only).pack(side=tk.LEFT)
         
         # Control buttons - organized into logical groups
-        control_frame = ttk.Frame(main_frame)
-        control_frame.grid(row=3, column=0, columnspan=2, pady=(0, 10))
+        control_frame = ttk.Frame(main_frame, height=120)  # Fixed height
+        control_frame.grid(row=3, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
+        control_frame.grid_propagate(False)  # Prevent the frame from shrinking
         
-        # Primary action buttons (left side)
+        # Primary action buttons
         primary_frame = ttk.LabelFrame(control_frame, text="Primary Actions", padding="5")
-        primary_frame.pack(side=tk.LEFT, padx=(0, 15))
+        primary_frame.pack(anchor=tk.W, pady=(0, 10))
         
         self.start_button = ttk.Button(primary_frame, text="🚀 Start Update", command=self.start_update)
         self.start_button.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.sync_button = ttk.Button(primary_frame, text="☁️ Sync to Production", command=self.sync_to_production)
+        self.sync_button.pack(side=tk.LEFT, padx=(0, 5))
         
         self.pause_button = ttk.Button(primary_frame, text="⏸️ Pause", command=self.pause_update, state=tk.DISABLED)
         self.pause_button.pack(side=tk.LEFT, padx=(0, 5))
@@ -138,9 +142,9 @@ class AnalyticsGUI:
         self.stop_button = ttk.Button(primary_frame, text="⏹️ Stop", command=self.stop_update, state=tk.DISABLED)
         self.stop_button.pack(side=tk.LEFT)
         
-        # Management buttons (right side)
+        # Management buttons (below primary actions)
         management_frame = ttk.LabelFrame(control_frame, text="Management", padding="5")
-        management_frame.pack(side=tk.LEFT, padx=(0, 15))
+        management_frame.pack(anchor=tk.W)
         
         ttk.Button(management_frame, text="🔄 Reset Progress", command=self.reset_progress).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(management_frame, text="🗑️ Clear Logs", command=self.clear_logs).pack(side=tk.LEFT, padx=(0, 5))
@@ -617,6 +621,144 @@ class AnalyticsGUI:
             messagebox.showinfo("Export", f"Logs exported to: {filename}")
         except Exception as e:
             messagebox.showerror("Export Error", f"Failed to export logs: {str(e)}")
+    
+    def sync_to_production(self):
+        """Sync local analytics and historical_data schemas to production server"""
+        
+        # Confirmation dialog
+        response = messagebox.askyesno(
+            "Sync to Production",
+            "⚠️ WARNING ⚠️\n\n"
+            "This will:\n"
+            "1. DROP analytics and historical_data schemas on PRODUCTION\n"
+            "2. Replace them with your LOCAL data\n\n"
+            "Production server: 137.184.224.94\n\n"
+            "Are you absolutely sure you want to continue?"
+        )
+        
+        if not response:
+            return
+        
+        # Double confirmation
+        response2 = messagebox.askyesno(
+            "Final Confirmation",
+            "This action CANNOT be undone.\n\n"
+            "Continue with production sync?"
+        )
+        
+        if not response2:
+            return
+        
+        self.add_log("☁️ Starting production sync...")
+        self.status_var.set("Syncing to production...")
+        
+        # Run sync in a separate thread
+        thread = threading.Thread(target=self._execute_production_sync)
+        thread.daemon = True
+        thread.start()
+    
+    def _execute_production_sync(self):
+        """Execute the production sync operation"""
+        try:
+            prod_host = "137.184.224.94"
+            
+            # Step 1: Drop existing schemas on production
+            self.add_log("📋 Step 1/3: Dropping production schemas...")
+            drop_cmd = [
+                'psql',
+                '-U', 'rec_io_user',
+                '-h', prod_host,
+                '-d', 'rec_io_db',
+                '-c', 'DROP SCHEMA IF EXISTS analytics CASCADE; DROP SCHEMA IF EXISTS historical_data CASCADE;'
+            ]
+            
+            env = os.environ.copy()
+            env['PGPASSWORD'] = 'rec_io_password'
+            
+            result = subprocess.run(drop_cmd, capture_output=True, text=True, env=env)
+            
+            if result.returncode != 0:
+                self.add_log(f"❌ Failed to drop schemas: {result.stderr}")
+                self.status_var.set("Sync failed")
+                messagebox.showerror("Sync Error", f"Failed to drop schemas:\n{result.stderr}")
+                return
+            
+            self.add_log("✅ Production schemas dropped")
+            
+            # Step 2: Dump local schemas
+            self.add_log("📋 Step 2/3: Dumping local schemas...")
+            
+            # Step 3: Pipe dump to production
+            self.add_log("📋 Step 3/3: Copying data to production...")
+            self.add_log("⏳ This may take several minutes...")
+            
+            dump_cmd = [
+                'pg_dump',
+                '-U', 'rec_io_user',
+                '-h', 'localhost',
+                '-d', 'rec_io_db',
+                '-n', 'analytics',
+                '-n', 'historical_data',
+                '--no-owner',
+                '--no-acl'
+            ]
+            
+            restore_cmd = [
+                'psql',
+                '-U', 'rec_io_user',
+                '-h', prod_host,
+                '-d', 'rec_io_db',
+                '-q'
+            ]
+            
+            # Execute dump | restore pipeline
+            dump_process = subprocess.Popen(dump_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+            restore_process = subprocess.Popen(restore_cmd, stdin=dump_process.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+            dump_process.stdout.close()
+            
+            restore_output, restore_error = restore_process.communicate()
+            dump_error = dump_process.stderr.read()
+            
+            if restore_process.returncode != 0:
+                error_msg = restore_error.decode() if restore_error else "Unknown error"
+                self.add_log(f"❌ Failed to restore to production: {error_msg}")
+                self.status_var.set("Sync failed")
+                messagebox.showerror("Sync Error", f"Failed to restore:\n{error_msg}")
+                return
+            
+            if dump_process.returncode != 0:
+                error_msg = dump_error.decode() if dump_error else "Unknown error"
+                self.add_log(f"❌ Failed to dump local data: {error_msg}")
+                self.status_var.set("Sync failed")
+                messagebox.showerror("Sync Error", f"Failed to dump:\n{error_msg}")
+                return
+            
+            self.add_log("✅ Data copied to production")
+            
+            # Verify the sync
+            self.add_log("📋 Verifying sync...")
+            verify_cmd = [
+                'psql',
+                '-U', 'rec_io_user',
+                '-h', prod_host,
+                '-d', 'rec_io_db',
+                '-c', "SELECT 'btc_price_history' as table, COUNT(*) as rows FROM historical_data.btc_price_history;"
+            ]
+            
+            result = subprocess.run(verify_cmd, capture_output=True, text=True, env=env)
+            
+            if result.returncode == 0 and result.stdout:
+                self.add_log("✅ Verification successful")
+                self.add_log(result.stdout.strip())
+            
+            self.add_log("🎉 Production sync completed successfully!")
+            self.status_var.set("Sync completed")
+            messagebox.showinfo("Sync Complete", "Production schemas synced successfully!")
+            
+        except Exception as e:
+            self.add_log(f"❌ Sync error: {str(e)}")
+            self.status_var.set("Sync error")
+            messagebox.showerror("Sync Error", f"An error occurred:\n{str(e)}")
 
     def cleanup_orphaned_processes(self):
         """
