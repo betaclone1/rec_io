@@ -18,14 +18,14 @@ def print_header():
     print()
 
 def print_symbols():
-    symbols = ['btc', 'eth', 'sol', 'ada', 'dot', 'link', 'uni', 'matic', 'avax', 'atom']
+    symbols = ['btc', 'eth', 'xrp', 'sol', 'ada', 'dot', 'link', 'uni', 'matic', 'avax', 'atom']
     print("Available symbols:")
     for i, symbol in enumerate(symbols):
         print(f"  {i+1:2d}. {symbol.upper()}")
     print()
 
 def get_symbol_selection():
-    symbols = ['btc', 'eth', 'sol', 'ada', 'dot', 'link', 'uni', 'matic', 'avax', 'atom']
+    symbols = ['btc', 'eth', 'xrp', 'sol', 'ada', 'dot', 'link', 'uni', 'matic', 'avax', 'atom']
     
     print("Select symbols to process:")
     print("  - Enter numbers separated by spaces (e.g., '1 2 3' for BTC, ETH, SOL)")
@@ -42,7 +42,7 @@ def get_symbol_selection():
         elif choice == 'all':
             return symbols
         elif choice == 'popular':
-            return ['btc', 'eth', 'sol']
+            return ['btc', 'eth', 'xrp']
         else:
             try:
                 indices = [int(x) - 1 for x in choice.split()]

@@ -66,7 +66,7 @@ class AnalyticsGUI:
         symbol_checkbox_frame.pack(fill=tk.X, pady=(0, 10))
         
         self.symbol_vars = {}
-        symbols = ['btc', 'eth', 'spx', 'ndx']
+        symbols = ['btc', 'eth', 'xrp', 'spx', 'ndx']
         
         for i, symbol in enumerate(symbols):
             var = tk.BooleanVar()
@@ -200,6 +200,7 @@ class AnalyticsGUI:
         # Initialize - all symbols selected by default
         self.symbol_vars['btc'].set(True)
         self.symbol_vars['eth'].set(True)
+        self.symbol_vars['xrp'].set(True)
         self.symbol_vars['spx'].set(True)
         self.symbol_vars['ndx'].set(True)
         self.select_all_steps()  # Select all steps by default
@@ -219,6 +220,7 @@ class AnalyticsGUI:
         self.select_none()
         self.symbol_vars['btc'].set(True)
         self.symbol_vars['eth'].set(True)
+        self.symbol_vars['xrp'].set(True)
         self.symbol_vars['spx'].set(True)
         self.symbol_vars['ndx'].set(True)
     

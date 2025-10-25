@@ -13,6 +13,13 @@ exchange = ccxt.coinbase({'enableRateLimit': True})
 timeframe = '1m'
 limit = 1000  # max per fetch
 
+def get_exchange_for_symbol(symbol: str):
+    """
+    Get the appropriate exchange for a given symbol.
+    Use Coinbase for all crypto symbols (including XRP).
+    """
+    return ccxt.coinbase({'enableRateLimit': True})
+
 # East Coast timezone for storing timestamps
 EAST_COAST_TZ = pytz.timezone('America/New_York')
 
@@ -229,6 +236,10 @@ def _perform_incremental_update_pg(symbol: str, table_name: str) -> Tuple[str, i
     """Perform incremental update: fetch from last timestamp to current time, rolling window."""
     print(f"Performing incremental update for {symbol} in table {table_name}...")
     
+    # Get the appropriate exchange for this symbol
+    symbol_exchange = get_exchange_for_symbol(symbol)
+    print(f"Using exchange: {symbol_exchange.name} for {symbol}")
+    
     # Get the latest timestamp in existing data
     latest_timestamp = get_latest_timestamp_from_db(symbol.split('/')[0])
     if not latest_timestamp:
@@ -241,13 +252,13 @@ def _perform_incremental_update_pg(symbol: str, table_name: str) -> Tuple[str, i
     print(f"Fetching from: {start_time}")
     
     # Fetch new data from start_time to present
-    since = exchange.parse8601(start_time.strftime('%Y-%m-%dT%H:%M:%SZ'))
-    current_time = exchange.milliseconds()
+    since = symbol_exchange.parse8601(start_time.strftime('%Y-%m-%dT%H:%M:%SZ'))
+    current_time = symbol_exchange.milliseconds()
     
     new_bars = []
     while since < current_time:
         try:
-            bars = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
+            bars = symbol_exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
             if not bars:
                 print("No more new data returned.")
                 break
@@ -256,7 +267,7 @@ def _perform_incremental_update_pg(symbol: str, table_name: str) -> Tuple[str, i
             new_bars.extend(bars)
             since = bars[-1][0] + 60 * 1000  # move 1m past last timestamp
 
-            time.sleep(exchange.rateLimit / 1000)  # respect rate limit
+            time.sleep(symbol_exchange.rateLimit / 1000)  # respect rate limit
         except Exception as e:
             print("Error encountered, retrying in 5 seconds:", e)
             time.sleep(5)
@@ -344,7 +355,7 @@ def _perform_rolling_update_pg(symbol: str, table_name: str) -> Tuple[str, int]:
     new_bars = []
     while since < current_time:
         try:
-            bars = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
+            bars = symbol_exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
             if not bars:
                 print("No more new data returned.")
                 break
@@ -353,7 +364,7 @@ def _perform_rolling_update_pg(symbol: str, table_name: str) -> Tuple[str, int]:
             new_bars.extend(bars)
             since = bars[-1][0] + 60 * 1000  # move 1m past last timestamp
 
-            time.sleep(exchange.rateLimit / 1000)  # respect rate limit
+            time.sleep(symbol_exchange.rateLimit / 1000)  # respect rate limit
         except Exception as e:
             print("Error encountered, retrying in 5 seconds:", e)
             time.sleep(5)
@@ -431,17 +442,21 @@ def _perform_full_download_pg(symbol: str, table_name: str) -> Tuple[str, int]:
     """Perform full 5-year download to PostgreSQL."""
     print(f"Performing full 5-year download for {symbol} to table {table_name}...")
     
+    # Get the appropriate exchange for this symbol
+    symbol_exchange = get_exchange_for_symbol(symbol)
+    print(f"Using exchange: {symbol_exchange.name} for {symbol}")
+    
     # Start 5 years ago from now, UTC-aware
     five_years_ago = datetime.now(timezone.utc) - timedelta(days=5 * 365)
-    since = exchange.parse8601(five_years_ago.strftime('%Y-%m-%dT%H:%M:%SZ'))
+    since = symbol_exchange.parse8601(five_years_ago.strftime('%Y-%m-%dT%H:%M:%SZ'))
     print(f"Starting full download from {five_years_ago.strftime('%Y-%m-%d %H:%M:%S')} to present...")
     
     all_bars = []
-    current_time = exchange.milliseconds()
+    current_time = symbol_exchange.milliseconds()
     
     while since < current_time:
         try:
-            bars = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
+            bars = symbol_exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
             if not bars:
                 print("No more data returned. Exiting.")
                 break
@@ -454,7 +469,7 @@ def _perform_full_download_pg(symbol: str, table_name: str) -> Tuple[str, int]:
                 latest_dt = pd.to_datetime(all_bars[-1][0], unit='ms')
                 print(f"Progress: {len(all_bars):,} rows — up to {latest_dt}")
 
-            time.sleep(exchange.rateLimit / 1000)  # respect rate limit
+            time.sleep(symbol_exchange.rateLimit / 1000)  # respect rate limit
         except Exception as e:
             print("Error encountered, retrying in 5 seconds:", e)
             time.sleep(5)
