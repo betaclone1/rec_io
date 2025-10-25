@@ -403,8 +403,9 @@ def sync_balance():
         response.raise_for_status()
         data = response.json()
         balance_amount = data.get('balance')
-        portfolio_value_raw = data.get('portfolio_value')  # Raw value from Kalshi API
-        print(f"[{datetime.now()}] ✅ Balance: {balance_amount}, Portfolio Value (raw): {portfolio_value_raw}")
+        portfolio_value_raw = data.get('portfolio_value')  # Current value of open positions from Kalshi API
+        total_portfolio_value = balance_amount + portfolio_value_raw  # Total portfolio = cash + positions
+        print(f"[{datetime.now()}] ✅ Balance (cash): {balance_amount}, Open Positions Value: {portfolio_value_raw}, Total Portfolio: {total_portfolio_value}")
         
         # Write to PostgreSQL only
         try:
@@ -430,19 +431,9 @@ def sync_balance():
                     prev_portfolio = prev_result[0] if prev_result else None
                     prev_bankroll = prev_result[1] if prev_result else None
                     
-                    # Calculate portfolio and positions values
-                    if total_exposure == 0:
-                        # No exposure = all cash, portfolio equals balance
-                        portfolio_value = int(balance_amount)
-                        positions_value = 0
-                    else:
-                        # Has exposure = maintain previous portfolio value
-                        if prev_portfolio is not None:
-                            portfolio_value = prev_portfolio
-                        else:
-                            # First entry with exposure - use balance as portfolio
-                            portfolio_value = int(balance_amount)
-                        positions_value = portfolio_value - int(balance_amount)
+                    # Use Kalshi's correct portfolio calculation: balance + portfolio_value
+                    portfolio_value = int(total_portfolio_value)  # Total portfolio from Kalshi API
+                    positions_value = int(portfolio_value_raw)    # Open positions value from Kalshi API
                     
                     # Calculate bankroll_current based on portfolio performance
                     if prev_bankroll is None:
@@ -464,7 +455,7 @@ def sync_balance():
                         VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """, (balance_amount, total_exposure, positions_value, portfolio_value, bankroll_current, portfolio_value_raw, current_timestamp))
                     pg_conn.commit()
-                    print(f"💾 Balance ({balance_amount}), exposure ({total_exposure}), positions ({positions_value}), portfolio ({portfolio_value}), portfolio_value_raw ({portfolio_value_raw}) written to PostgreSQL users.account_balance_0001")
+                    print(f"💾 Balance (cash: {balance_amount}), Open Positions ({positions_value}), Total Portfolio ({portfolio_value}), Kalshi Portfolio Value ({portfolio_value_raw}) written to PostgreSQL users.account_balance_0001")
                     
                     # Notify frontend of account balance change
                     notify_frontend_db_change("account_balance", {
@@ -472,7 +463,8 @@ def sync_balance():
                         "exposure": total_exposure,
                         "positions": positions_value,
                         "portfolio": portfolio_value,
-                        "portfolio_value_raw": portfolio_value_raw
+                        "portfolio_value_raw": portfolio_value_raw,
+                        "total_portfolio": total_portfolio_value
                     })
                     
                     # Notify monitor_manager of bankroll update

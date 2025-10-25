@@ -2947,35 +2947,48 @@
     }
 
     function formatTooltipTitle(date, view) {
+      // Format in Eastern Time to match database timestamps
+      const options = { 
+        timeZone: 'America/New_York',
+        hour12: false 
+      };
+      
       switch (view) {
         case '1d':
           return date.toLocaleDateString('en-US', { 
+            ...options,
             weekday: 'long', 
             year: 'numeric', 
             month: 'long', 
             day: 'numeric' 
           }) + ' ' + date.toLocaleTimeString('en-US', { 
+            ...options,
             hour: '2-digit', 
             minute: '2-digit' 
           });
         case '1w':
           return date.toLocaleDateString('en-US', { 
+            ...options,
             month: 'short', 
             day: 'numeric' 
           }) + ' ' + date.toLocaleTimeString('en-US', { 
+            ...options,
             hour: '2-digit', 
             minute: '2-digit' 
           });
         case '1m':
           return date.toLocaleDateString('en-US', { 
+            ...options,
             month: 'short', 
             day: 'numeric' 
           }) + ' ' + date.toLocaleTimeString('en-US', { 
+            ...options,
             hour: '2-digit', 
             minute: '2-digit' 
           });
         case '1y':
           return date.toLocaleDateString('en-US', { 
+            ...options,
             weekday: 'long', 
             year: 'numeric', 
             month: 'long', 
@@ -2984,6 +2997,7 @@
         case 'all':
         default:
           return date.toLocaleDateString('en-US', { 
+            ...options,
             weekday: 'long', 
             year: 'numeric', 
             month: 'long', 
