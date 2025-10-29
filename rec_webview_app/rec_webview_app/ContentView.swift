@@ -16,12 +16,28 @@ struct WebView: UIViewRepresentable {
         configuration.preferences.javaScriptEnabled = true
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         
+        // Additional webview input compatibility settings
+        configuration.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
+        configuration.preferences.setValue(true, forKey: "allowUniversalAccessFromFileURLs")
+        configuration.suppressesIncrementalRendering = false
+        configuration.allowsAirPlayForMediaPlayback = false
+        
         let webView = WKWebView(frame: .zero, configuration: configuration)
         // REMOVED: Cache clearing code that was wiping authentication cookies
         webView.navigationDelegate = context.coordinator
         webView.scrollView.bounces = false
         webView.scrollView.isScrollEnabled = false
         webView.translatesAutoresizingMaskIntoConstraints = false
+        
+        // Webview input compatibility fixes
+        webView.isOpaque = false
+        webView.backgroundColor = UIColor.clear
+        webView.scrollView.keyboardDismissMode = .onDrag
+        webView.allowsBackForwardNavigationGestures = false
+        
+        // Enable text selection and interaction
+        webView.allowsLinkPreview = false
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
         
         print("🔧 WebView configured for URL: \(url.absoluteString)")
         return webView

@@ -27,6 +27,12 @@
       align-items: center;
       justify-content: flex-end;
       overflow: hidden;
+      /* Webview compatibility */
+      -webkit-text-size-adjust: 100%;
+      -webkit-touch-callout: default;
+      -webkit-user-select: none;
+      user-select: none;
+      touch-action: manipulation;
     }
     
     .login-container {
@@ -68,6 +74,10 @@
       flex-direction: column;
       gap: 8px;
       position: relative;
+      /* Webview compatibility */
+      -webkit-touch-callout: default;
+      touch-action: manipulation;
+      z-index: 5;
     }
     
     .form-label {
@@ -86,11 +96,24 @@
       font-size: 16px;
       font-family: inherit;
       transition: background-color 0.2s ease;
+      /* Webview compatibility fixes */
+      -webkit-appearance: none;
+      -webkit-user-select: text;
+      -webkit-touch-callout: default;
+      -webkit-tap-highlight-color: rgba(0, 0, 0, 0.1);
+      touch-action: manipulation;
+      user-select: text;
+      pointer-events: auto;
+      position: relative;
+      z-index: 10;
     }
     
     .form-input:focus {
       outline: none;
       background-color: #f0f0f0;
+      /* Ensure focus works in webview */
+      -webkit-tap-highlight-color: rgba(0, 0, 0, 0.2);
+      transform: translateZ(0);
     }
     
     .form-input::placeholder {
@@ -198,6 +221,41 @@
 
   <script>
     let authCheckInProgress = false;
+    
+    // Webview compatibility fixes
+    document.addEventListener('DOMContentLoaded', function() {
+      // Ensure inputs are focusable in webview
+      const inputs = document.querySelectorAll('.form-input');
+      inputs.forEach(input => {
+        // Force input to be focusable
+        input.setAttribute('tabindex', '0');
+        
+        // Add touch event handlers for better webview compatibility
+        input.addEventListener('touchstart', function(e) {
+          e.stopPropagation();
+          this.focus();
+        }, { passive: true });
+        
+        input.addEventListener('touchend', function(e) {
+          e.stopPropagation();
+          this.focus();
+        }, { passive: true });
+        
+        // Prevent zoom on focus (iOS webview)
+        input.addEventListener('focus', function() {
+          if (window.visualViewport) {
+            window.visualViewport.scale = 1;
+          }
+        });
+      });
+      
+      // Ensure form is interactive
+      const form = document.getElementById('loginForm');
+      if (form) {
+        form.style.pointerEvents = 'auto';
+        form.style.touchAction = 'manipulation';
+      }
+    });
 
     // Check if we're already authenticated
     function checkAuthStatus() {
