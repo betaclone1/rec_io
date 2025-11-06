@@ -2663,7 +2663,7 @@ async def get_auto_entry_settings(monitor_id: str = None):
                        spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
                        current_probability, min_ttc_seconds, momentum_spike_enabled, 
                        momentum_spike_threshold, verification_period_enabled, verification_period_seconds,
-                       min_volume
+                       min_volume, win_streak_threshold
                 FROM users.monitor_list_0001 WHERE id = %s
             """, (monitor_id,))
             result = cursor.fetchone()
@@ -2688,7 +2688,8 @@ async def get_auto_entry_settings(monitor_id: str = None):
                     "momentum_spike_threshold": result[13],
                     "verification_period_enabled": result[14],
                     "verification_period_seconds": result[15],
-                    "min_volume": result[16]
+                    "min_volume": result[16],
+                    "win_streak_threshold": result[17]
                 }
             else:
                 return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
@@ -2749,6 +2750,9 @@ async def set_auto_entry_settings(request: Request):
             if "allow_re_entry" in data:
                 update_fields.append("allow_re_entry = %s")
                 update_values.append(bool(data["allow_re_entry"]))
+            if "win_streak_threshold" in data:
+                update_fields.append("win_streak_threshold = %s")
+                update_values.append(int(data["win_streak_threshold"]))
             if "spike_alert_enabled" in data:
                 update_fields.append("spike_alert_enabled = %s")
                 update_values.append(bool(data["spike_alert_enabled"]))
@@ -2797,7 +2801,7 @@ async def set_auto_entry_settings(request: Request):
                            spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
                            current_probability, min_ttc_seconds, momentum_spike_enabled, 
                            momentum_spike_threshold, verification_period_enabled, verification_period_seconds,
-                           min_volume
+                           min_volume, win_streak_threshold
                     FROM users.monitor_list_0001 WHERE id = %s
                 """, (monitor_id,))
                 updated_result = cursor.fetchone()
@@ -2819,7 +2823,8 @@ async def set_auto_entry_settings(request: Request):
                         "momentum_spike_threshold": updated_result[12],
                         "verification_period_enabled": updated_result[13],
                         "verification_period_seconds": updated_result[14],
-                        "min_volume": updated_result[15]
+                        "min_volume": updated_result[15],
+                        "win_streak_threshold": updated_result[16]
                     }
                     conn.commit()
                     conn.close()

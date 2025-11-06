@@ -1372,7 +1372,7 @@
                   src="/images/icons/panel_settings.png" 
                   alt="Monitor Settings" 
                   title="Monitor Settings" 
-                  onclick="console.log('Monitor Settings icon clicked for ${monitor.id}');"
+                  onclick="openUnifiedAutoTradeSettings('${monitor.id}')"
                 />
                 <div class="auto-trade-label">AUTO TRADE</div>
                 <div class="auto-trade-toggle ${monitor.autoTrade ? 'active' : ''} ${monitor.status === 'inactive' ? 'disabled' : ''}" ${monitor.status !== 'inactive' ? `onclick="toggleAutoTrade('${monitor.id}')"` : ''}></div>
@@ -1410,7 +1410,7 @@
                     src="/images/icons/panel_settings.png" 
                     alt="Monitor Settings" 
                     title="Monitor Settings" 
-                    onclick="console.log('Monitor Settings icon clicked for ${monitor.id}');"
+                    onclick="openUnifiedAutoTradeSettings('${monitor.id}')"
                   />
                   <span class="auto-trade-label">AUTO TRADE</span>
                   <div class="auto-trade-toggle ${monitor.autoTrade ? 'active' : ''} ${monitor.status === 'inactive' ? 'disabled' : ''}" ${monitor.status !== 'inactive' ? `onclick="toggleAutoTrade('${monitor.id}')"` : ''}></div>
@@ -4533,6 +4533,403 @@
     }
 
 
+  </script>
+
+  <!-- Unified Auto Trade Settings Modal (focus on correct ID normalization and data load) -->
+  <div id="unifiedAutoTradeModal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:10000; overflow-y:auto;">
+    <style>
+      /* Prevent overflow and enforce uniform slider widths */
+      #unifiedAutoTradeModal .value-bubble-container { padding-right: 48px; padding-left: 8px; box-sizing: border-box; width: 100%; min-width: 0; }
+      #unifiedAutoTradeModal .value-bubble-container input[type="range"] { width: 100%; box-sizing: border-box; display:block; margin: 0; }
+    </style>
+    <div id="unifiedAutoTradeDim" style="position:absolute; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.4);"></div>
+    <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border-radius:8px; min-width:420px; box-shadow:0 4px 32px rgba(0,0,0,0.25); padding:20px; display:flex; flex-direction:column; max-height:80vh; overflow:auto;">
+      <div style="font-size:16px; font-weight:600; margin-bottom:16px; color:#222;">Auto Trade Settings</div>
+      <div style="flex:1 1 auto; display:flex; flex-direction:column; justify-content:flex-start; align-items:stretch; overflow-y:auto; min-height:0;">
+        <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Auto Entry</div>
+        <!-- Auto Entry (exact UI from trade_monitor) -->
+        <label for="autoEntryMinVolumeSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Volume:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="autoEntryMinVolumeSlider" min="0" max="2000" step="25" value="1000" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="autoEntryMinVolumeValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <label for="autoEntryProbabilitySlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Win Probability:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="autoEntryProbabilitySlider" min="0" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="autoEntrySliderValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <label for="autoEntryDifferentialSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Differential:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
+          <input type="range" id="autoEntryDifferentialSlider" min="-10" max="10" step="0.25" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="autoEntryDifferentialValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <label for="autoEntryMaxDifferentialSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Maximum Differential:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
+          <input type="range" id="autoEntryMaxDifferentialSlider" min="0" max="20" step="0.25" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="autoEntryMaxDifferentialValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <label for="autoEntryAllowReEntry" style="font-size:14px; color:#333;margin-top:12px; margin-bottom:12px; font-weight:500;">Allow Re-Entry:</label>
+        <div style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="checkbox" id="autoEntryAllowReEntry" style=" width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
+          <span style="font-size:13px; color:#666;">Allow re-entry on the same strike</span>
+        </div>
+
+        <label for="autoEntryWinStreakThresholdSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Loss Prevention Win Streak Threshold:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
+          <input type="range" id="autoEntryWinStreakThresholdSlider" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="autoEntryWinStreakThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0;">
+
+        <!-- Spike Alert Settings (Entry) -->
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="checkbox" id="spikeAlertEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
+          <span style="font-size:13px; color:#666;">Pause auto entry during market spikes</span>
+        </div>
+
+        <label for="spikeAlertMomentumSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Spike Level (±):</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="spikeAlertMomentumSlider" min="50" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="spikeAlertMomentumValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <label for="spikeAlertCooldownSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Level (±):</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="spikeAlertCooldownSlider" min="50" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="spikeAlertCooldownValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <label for="spikeAlertTimeSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Time (minutes):</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
+          <input type="range" id="spikeAlertTimeSlider" min="0" max="180" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="spikeAlertTimeValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0;">
+        <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Auto Stop</div>
+
+        <!-- Auto Stop (subset: value bubble for probability, momentum, verification) -->
+        <label for="autoStopProbabilitySlider" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Current Win Probability:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="autoStopProbabilitySlider" min="0" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="sliderValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <div style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="checkbox" id="momentumSpikeEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
+          <span style="font-size:13px; color:#666;">Auto-close trades during momentum spikes</span>
+        </div>
+
+        <label for="momentumSpikeThresholdSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Spike Threshold (±):</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
+          <input type="range" id="momentumSpikeThresholdSlider" min="10" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="momentumSpikeThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <div style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="checkbox" id="verificationPeriodEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
+          <span style="font-size:13px; color:#666;">Enable verification period before auto-stop</span>
+        </div>
+
+        <label for="verificationPeriodSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Verification Duration (seconds):</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
+          <input type="range" id="verificationPeriodSlider" min="5" max="60" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="verificationPeriodValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+      </div>
+      <div style="display:flex; gap:12px; justify-content:flex-end; align-items:center; margin-top:16px;">
+        <button id="unifiedAutoTradeCancel" style="padding:8px 16px; border-radius:4px; border:1px solid #ddd; background:#f8f9fa; color:#333; font-size:13px; cursor:pointer; font-weight:500;" onmouseover="this.style.background='#e9ecef'" onmouseout="this.style.background='#f8f9fa'">Cancel</button>
+        <button id="unifiedAutoTradeSave" style="padding:8px 16px; border-radius:4px; border:none; background:#007bff; color:white; font-size:13px; cursor:pointer; font-weight:500;" onmouseover="this.style.background='#0056b3'" onmouseout="this.style.background='#007bff'">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Normalize monitor id from tile to DB id the API expects
+    function normalizeMonitorIdForApi(monitorId){
+      // formats like mon_0001_10002 -> 10002
+      if (typeof monitorId === 'string' && monitorId.startsWith('mon_')){
+        const parts = monitorId.split('_');
+        return parts[2];
+      }
+      return monitorId;
+    }
+
+    // Simple value syncing for the modal (text labels)
+    function bindValue(id, outId, fmt){
+      const el = document.getElementById(id); const out = document.getElementById(outId);
+      if (!el || !out) return;
+      const update = () => out.textContent = fmt ? fmt(el.value) : el.value;
+      el.addEventListener('input', update); update();
+    }
+
+    // Prefetch settings once monitors load
+    let dashboardSettingsCache = {};
+    (function addPrefetch(){
+      const originalLoad = loadMonitors;
+      loadMonitors = async function(){
+        await originalLoad();
+        if (Array.isArray(monitors)){
+          monitors.forEach(async m => {
+            if (!m || !m.id || m.id === 'NEW_MONITOR') return;
+            const id = normalizeMonitorIdForApi(m.id);
+            try{
+              const r = await fetch('/api/get_auto_entry_settings?monitor_id=' + id);
+              const j = await r.json();
+              if (j && j.status !== 'error') dashboardSettingsCache[m.id] = j;
+            }catch(e){ /* ignore */ }
+          });
+        }
+      }
+    })();
+
+    // UI value-bubble update functions (same behavior as trade_monitor)
+    function updateAutoEntrySliderDisplay(value){
+      const display = document.getElementById('autoEntrySliderValueDisplay');
+      const slider = document.getElementById('autoEntryProbabilitySlider');
+      if (!display || !slider) return;
+      display.textContent = value + '%';
+      const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+      const percent = (value - min) / (max - min);
+      const offset = percent * (slider.offsetWidth - 16) + 8;
+      display.style.left = offset + 'px';
+    }
+    function updateAutoEntryDifferentialDisplay(value){
+      const display = document.getElementById('autoEntryDifferentialValueDisplay');
+      const slider = document.getElementById('autoEntryDifferentialSlider');
+      if (!display || !slider) return;
+      const v = parseFloat(value);
+      display.textContent = v >= 0 ? `+${v.toFixed(2)}` : v.toFixed(2);
+      const min = parseFloat(slider.min), max = parseFloat(slider.max);
+      const percent = (v - min) / (max - min);
+      const offset = percent * (slider.offsetWidth - 16) + 8;
+      display.style.left = offset + 'px';
+    }
+    function updateAutoEntryMaxDifferentialDisplay(value){
+      const display = document.getElementById('autoEntryMaxDifferentialValueDisplay');
+      const slider = document.getElementById('autoEntryMaxDifferentialSlider');
+      if (!display || !slider) return;
+      const v = parseFloat(value);
+      display.textContent = v.toFixed(2);
+      const min = parseFloat(slider.min), max = parseFloat(slider.max);
+      const percent = (v - min) / (max - min);
+      const offset = percent * (slider.offsetWidth - 16) + 8;
+      display.style.left = offset + 'px';
+    }
+    function updateAutoEntryMinVolumeDisplay(value){
+      const display = document.getElementById('autoEntryMinVolumeValueDisplay');
+      const slider = document.getElementById('autoEntryMinVolumeSlider');
+      if (!display || !slider) return;
+      const v = Math.max(25, parseInt(value, 10));
+      display.textContent = v;
+      const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+      const percent = (value - min) / (max - min);
+      const offset = percent * (slider.offsetWidth - 16) + 8;
+      display.style.left = offset + 'px';
+    }
+    function updateAutoEntryWinStreakThresholdDisplay(value){
+      const display = document.getElementById('autoEntryWinStreakThresholdValueDisplay');
+      const slider = document.getElementById('autoEntryWinStreakThresholdSlider');
+      if (!display || !slider) return;
+      const v = parseInt(value, 10);
+      display.textContent = v;
+      const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+      const percent = (v - min) / (max - min);
+      const offset = percent * (slider.offsetWidth - 16) + 8;
+      display.style.left = offset + 'px';
+    }
+    function updateSpikeAlertMomentumDisplay(value){
+      const display = document.getElementById('spikeAlertMomentumValueDisplay');
+      const slider = document.getElementById('spikeAlertMomentumSlider');
+      if (!display || !slider) return;
+      display.textContent = `±${value}`;
+      const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+      const percent = (value - min) / (max - min);
+      display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
+    }
+    function updateSpikeAlertCooldownDisplay(value){
+      const display = document.getElementById('spikeAlertCooldownValueDisplay');
+      const slider = document.getElementById('spikeAlertCooldownSlider');
+      if (!display || !slider) return;
+      display.textContent = `±${value}`;
+      const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+      const percent = (value - min) / (max - min);
+      display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
+    }
+    function updateSpikeAlertTimeDisplay(value){
+      const display = document.getElementById('spikeAlertTimeValueDisplay');
+      const slider = document.getElementById('spikeAlertTimeSlider');
+      if (!display || !slider) return;
+      display.textContent = `${value} min`;
+      const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+      const percent = (value - min) / (max - min);
+      display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
+    }
+    function updateSliderDisplay(value){
+      const display = document.getElementById('sliderValueDisplay');
+      const slider = document.getElementById('autoStopProbabilitySlider');
+      if (!display || !slider) return;
+      display.textContent = value + '%';
+      const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+      const percent = (value - min) / (max - min);
+      display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
+    }
+    function updateMomentumSpikeThresholdDisplay(value){
+      const display = document.getElementById('momentumSpikeThresholdValueDisplay');
+      const slider = document.getElementById('momentumSpikeThresholdSlider');
+      if (!display || !slider) return;
+      display.textContent = `±${value}`;
+      const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+      const percent = (value - min) / (max - min);
+      display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
+    }
+    function updateVerificationPeriodDisplay(value){
+      const display = document.getElementById('verificationPeriodValueDisplay');
+      const slider = document.getElementById('verificationPeriodSlider');
+      if (!display || !slider) return;
+      display.textContent = value;
+      const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+      const percent = (value - min) / (max - min);
+      display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
+    }
+
+    function openUnifiedAutoTradeSettings(tileId){
+      const apiId = normalizeMonitorIdForApi(tileId);
+      const modal = document.getElementById('unifiedAutoTradeModal');
+      const dim = document.getElementById('unifiedAutoTradeDim');
+      modal.style.display = 'block';
+      document.body.style.overflow = 'hidden';
+
+      const populate = (data) => {
+        const setVal = (id,v) => { const el=document.getElementById(id); if (el!=null && v!=null) el.value=v; };
+        const setChk = (id,v) => { const el=document.getElementById(id); if (el) el.checked=!!v; };
+        // Auto Entry
+        setVal('autoEntryMinVolumeSlider', data.min_volume ?? 1000);
+        setVal('autoEntryProbabilitySlider', data.min_probability ?? 25);
+        setVal('autoEntryDifferentialSlider', data.min_differential ?? 0);
+        setVal('autoEntryMaxDifferentialSlider', data.max_differential ?? 0);
+        setChk('autoEntryAllowReEntry', data.allow_re_entry ?? false);
+        setVal('autoEntryWinStreakThresholdSlider', data.win_streak_threshold ?? 22);
+        // Spike Pause (entry)
+        setChk('spikeAlertEnabled', data.spike_alert_enabled ?? true);
+        setVal('spikeAlertMomentumSlider', data.spike_alert_momentum_threshold ?? 60);
+        setVal('spikeAlertCooldownSlider', data.spike_alert_cooldown_threshold ?? 55);
+        setVal('spikeAlertTimeSlider', data.spike_alert_cooldown_minutes ?? 15);
+        // Auto Stop
+        setVal('autoStopProbabilitySlider', data.current_probability ?? 40);
+        setChk('momentumSpikeEnabled', data.momentum_spike_enabled ?? true);
+        setVal('momentumSpikeThresholdSlider', data.momentum_spike_threshold ?? 35);
+        setChk('verificationPeriodEnabled', data.verification_period_enabled ?? false);
+        setVal('verificationPeriodSlider', data.verification_period_seconds ?? 15);
+        // Bubble positions
+        updateAutoEntryMinVolumeDisplay(document.getElementById('autoEntryMinVolumeSlider').value);
+        updateAutoEntrySliderDisplay(document.getElementById('autoEntryProbabilitySlider').value);
+        updateAutoEntryDifferentialDisplay(document.getElementById('autoEntryDifferentialSlider').value);
+        updateAutoEntryMaxDifferentialDisplay(document.getElementById('autoEntryMaxDifferentialSlider').value);
+        updateAutoEntryWinStreakThresholdDisplay(document.getElementById('autoEntryWinStreakThresholdSlider').value);
+        updateSpikeAlertMomentumDisplay(document.getElementById('spikeAlertMomentumSlider').value);
+        updateSpikeAlertCooldownDisplay(document.getElementById('spikeAlertCooldownSlider').value);
+        updateSpikeAlertTimeDisplay(document.getElementById('spikeAlertTimeSlider').value);
+        updateSliderDisplay(document.getElementById('autoStopProbabilitySlider').value);
+        updateMomentumSpikeThresholdDisplay(document.getElementById('momentumSpikeThresholdSlider').value);
+        updateVerificationPeriodDisplay(document.getElementById('verificationPeriodSlider').value);
+
+        // Wire input listeners so sliders update values as in trade_monitor
+        const pairs = [
+          ['autoEntryMinVolumeSlider', updateAutoEntryMinVolumeDisplay],
+          ['autoEntryProbabilitySlider', updateAutoEntrySliderDisplay],
+          ['autoEntryDifferentialSlider', updateAutoEntryDifferentialDisplay],
+          ['autoEntryMaxDifferentialSlider', updateAutoEntryMaxDifferentialDisplay],
+          ['autoEntryWinStreakThresholdSlider', updateAutoEntryWinStreakThresholdDisplay],
+          ['spikeAlertMomentumSlider', updateSpikeAlertMomentumDisplay],
+          ['spikeAlertCooldownSlider', updateSpikeAlertCooldownDisplay],
+          ['spikeAlertTimeSlider', updateSpikeAlertTimeDisplay],
+          ['autoStopProbabilitySlider', updateSliderDisplay],
+          ['momentumSpikeThresholdSlider', updateMomentumSpikeThresholdDisplay],
+          ['verificationPeriodSlider', updateVerificationPeriodDisplay]
+        ];
+        pairs.forEach(([id, fn]) => {
+          const el = document.getElementById(id);
+          if (el && !el._dashUnifiedWired) {
+            el._dashUnifiedWired = true;
+            el.addEventListener('input', function(){ fn(this.value); });
+          }
+        });
+      };
+
+      const cached = dashboardSettingsCache[tileId];
+      if (cached) {
+        populate(cached);
+      } else {
+        fetch('/api/get_auto_entry_settings?monitor_id=' + apiId)
+          .then(r=>r.json()).then(j=>{ if (j&&j.status!=='error'){ dashboardSettingsCache[tileId]=j; populate(j);} });
+      }
+
+      // Save
+      const saveBtn = document.getElementById('unifiedAutoTradeSave');
+      saveBtn.onclick = async function(){
+        const payload = {
+          monitor_id: apiId,
+          min_volume: parseInt(document.getElementById('autoEntryMinVolumeSlider').value,10),
+          min_probability: parseInt(document.getElementById('autoEntryProbabilitySlider').value,10),
+          min_differential: parseFloat(document.getElementById('autoEntryDifferentialSlider').value),
+          max_differential: (function(){ const v=parseFloat(document.getElementById('autoEntryMaxDifferentialSlider').value); return isNaN(v)||v<=0? null:v; })(),
+          allow_re_entry: document.getElementById('autoEntryAllowReEntry').checked,
+          win_streak_threshold: parseInt(document.getElementById('autoEntryWinStreakThresholdSlider').value,10),
+          current_probability: parseInt(document.getElementById('autoStopProbabilitySlider').value,10),
+          min_ttc_seconds: parseInt(document.getElementById('autoStopMinTTCInput') ? document.getElementById('autoStopMinTTCInput').value : '60',10),
+          momentum_spike_enabled: document.getElementById('momentumSpikeEnabled').checked,
+          momentum_spike_threshold: parseInt(document.getElementById('momentumSpikeThresholdSlider').value,10),
+          verification_period_enabled: document.getElementById('verificationPeriodEnabled').checked,
+          verification_period_seconds: parseInt(document.getElementById('verificationPeriodSlider').value,10)
+        };
+        try{
+          const resp = await fetch('/api/set_auto_entry_settings', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+          const j = await resp.json();
+          if (j && j.status !== 'error') {
+            dashboardSettingsCache[tileId] = { ...dashboardSettingsCache[tileId], ...payload };
+            closeUnifiedAutoTradeSettings();
+          }
+        }catch(e){ console.error('Save failed', e); }
+      };
+
+      // Close handlers
+      document.getElementById('unifiedAutoTradeCancel').onclick = closeUnifiedAutoTradeSettings;
+      dim.onclick = closeUnifiedAutoTradeSettings;
+
+      // Keyboard shortcuts: ENTER saves, ESC closes
+      const unifiedKeyHandler = function(e){
+        if (modal.style.display !== 'block') return;
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const btn = document.getElementById('unifiedAutoTradeSave');
+          if (btn) btn.click();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          closeUnifiedAutoTradeSettings();
+        }
+      };
+      // avoid duplicate listeners
+      if (!modal._keydownHandler) {
+        document.addEventListener('keydown', unifiedKeyHandler);
+        modal._keydownHandler = unifiedKeyHandler;
+      }
+    }
+
+    function closeUnifiedAutoTradeSettings(){
+      const modal = document.getElementById('unifiedAutoTradeModal');
+      modal.style.display = 'none';
+      document.body.style.overflow = 'auto';
+      if (modal._keydownHandler) {
+        document.removeEventListener('keydown', modal._keydownHandler);
+        delete modal._keydownHandler;
+      }
+    }
   </script>
 
   <!-- Archive Confirmation Modal -->

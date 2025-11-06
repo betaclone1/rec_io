@@ -1240,7 +1240,7 @@
                   src="/images/icons/panel_settings.png" 
                   alt="Monitor Settings" 
                   title="Monitor Settings" 
-                  onclick="console.log('Monitor Settings icon clicked for ${monitor.id}');"
+                  onclick="openMobileUnifiedAutoTradeSettings('${monitor.id}')"
                 />
                 <div class="auto-trade-label">AUTO TRADE</div>
                 <div class="auto-trade-toggle ${monitor.autoTrade ? 'active' : ''} ${monitor.status === 'inactive' ? 'disabled' : ''}" ${monitor.status !== 'inactive' ? `onclick="toggleAutoTrade('${monitor.id}')"` : ''}></div>
@@ -1278,7 +1278,7 @@
                     src="/images/icons/panel_settings.png" 
                     alt="Monitor Settings" 
                     title="Monitor Settings" 
-                    onclick="console.log('Monitor Settings icon clicked for ${monitor.id}');"
+                    onclick="openMobileUnifiedAutoTradeSettings('${monitor.id}')"
                   />
                   <span class="auto-trade-label">AUTO TRADE</span>
                   <div class="auto-trade-toggle ${monitor.autoTrade ? 'active' : ''} ${monitor.status === 'inactive' ? 'disabled' : ''}" ${monitor.status !== 'inactive' ? `onclick="toggleAutoTrade('${monitor.id}')"` : ''}></div>
@@ -4463,6 +4463,206 @@
 
   </script>
 
+  <script>
+    // Normalize tile monitor id to numeric API id
+    function mobileNormalizeMonitorId(monitorId){
+      if (typeof monitorId === 'string' && monitorId.startsWith('mon_')) {
+        const parts = monitorId.split('_');
+        return parts[2];
+      }
+      return monitorId;
+    }
+
+    async function mobileFetchSettings(apiId){
+      try{
+        const r = await fetch('/api/get_auto_entry_settings?monitor_id=' + apiId);
+        const j = await r.json();
+        if (j && j.status !== 'error') return j;
+      }catch(e){}
+      return null;
+    }
+
+    function openMobileUnifiedAutoTradeSettings(tileId){
+      const apiId = mobileNormalizeMonitorId(tileId);
+      const modal = document.getElementById('mobileUnifiedAutoTradeModal');
+      const dim = document.getElementById('mobileUnifiedAutoTradeDim');
+      modal.style.display = 'flex';
+
+      mobileFetchSettings(apiId).then(data => {
+        if (!data) return;
+        const setVal = (id,v)=>{const el=document.getElementById(id); if(el&&v!=null) el.value=v;};
+        const setChk = (id,v)=>{const el=document.getElementById(id); if(el) el.checked=!!v;};
+        // Auto Entry
+        setVal('m_autoEntryMinVolume', data.min_volume ?? 1000);
+        setVal('m_autoEntryProb', data.min_probability ?? 25);
+        setVal('m_autoEntryDiff', data.min_differential ?? 0);
+        setVal('m_autoEntryMaxDiff', data.max_differential ?? 0);
+        setChk('m_allowRe', data.allow_re_entry ?? false);
+        setVal('m_winStreak', data.win_streak_threshold ?? 22);
+        // Spike pause
+        setChk('m_spikeEnabled', data.spike_alert_enabled ?? true);
+        setVal('m_spikeMomentum', data.spike_alert_momentum_threshold ?? 60);
+        setVal('m_spikeCooldown', data.spike_alert_cooldown_threshold ?? 55);
+        setVal('m_spikeTime', data.spike_alert_cooldown_minutes ?? 15);
+        // Auto Stop
+        setVal('m_stopProb', data.current_probability ?? 40);
+        setChk('m_momentumEnabled', data.momentum_spike_enabled ?? true);
+        setVal('m_momentumThreshold', data.momentum_spike_threshold ?? 35);
+        setChk('m_verifyEnabled', data.verification_period_enabled ?? false);
+        setVal('m_verifySeconds', data.verification_period_seconds ?? 15);
+        // Display text values
+        document.getElementById('m_minVolVal').textContent = document.getElementById('m_autoEntryMinVolume').value;
+        document.getElementById('m_probVal').textContent = document.getElementById('m_autoEntryProb').value + '%';
+        document.getElementById('m_diffVal').textContent = (parseFloat(document.getElementById('m_autoEntryDiff').value)||0).toFixed(2);
+        document.getElementById('m_maxDiffVal').textContent = (parseFloat(document.getElementById('m_autoEntryMaxDiff').value)||0).toFixed(2);
+        document.getElementById('m_winStreakVal').textContent = document.getElementById('m_winStreak').value;
+        document.getElementById('m_spikeMomentumVal').textContent = '±' + document.getElementById('m_spikeMomentum').value;
+        document.getElementById('m_spikeCooldownVal').textContent = '±' + document.getElementById('m_spikeCooldown').value;
+        document.getElementById('m_spikeTimeVal').textContent = document.getElementById('m_spikeTime').value + ' min';
+        document.getElementById('m_stopProbVal').textContent = document.getElementById('m_stopProb').value + '%';
+        document.getElementById('m_momentumThresholdVal').textContent = '±' + document.getElementById('m_momentumThreshold').value;
+        document.getElementById('m_verifySecondsVal').textContent = document.getElementById('m_verifySeconds').value + 's';
+
+        // Save handler (idempotent)
+        const saveBtn = document.getElementById('m_unifiedSave');
+        saveBtn.onclick = async function(){
+          const payload = {
+            monitor_id: apiId,
+            min_volume: parseInt(document.getElementById('m_autoEntryMinVolume').value,10),
+            min_probability: parseInt(document.getElementById('m_autoEntryProb').value,10),
+            min_differential: parseFloat(document.getElementById('m_autoEntryDiff').value),
+            max_differential: (function(){const v=parseFloat(document.getElementById('m_autoEntryMaxDiff').value);return isNaN(v)||v<=0?null:v;})(),
+            allow_re_entry: document.getElementById('m_allowRe').checked,
+            win_streak_threshold: parseInt(document.getElementById('m_winStreak').value,10),
+            spike_alert_enabled: document.getElementById('m_spikeEnabled').checked,
+            spike_alert_momentum_threshold: parseInt(document.getElementById('m_spikeMomentum').value,10),
+            spike_alert_cooldown_threshold: parseInt(document.getElementById('m_spikeCooldown').value,10),
+            spike_alert_cooldown_minutes: parseInt(document.getElementById('m_spikeTime').value,10),
+            current_probability: parseInt(document.getElementById('m_stopProb').value,10),
+            min_ttc_seconds: parseInt(document.getElementById('m_minTTC').value,10),
+            momentum_spike_enabled: document.getElementById('m_momentumEnabled').checked,
+            momentum_spike_threshold: parseInt(document.getElementById('m_momentumThreshold').value,10),
+            verification_period_enabled: document.getElementById('m_verifyEnabled').checked,
+            verification_period_seconds: parseInt(document.getElementById('m_verifySeconds').value,10)
+          };
+          try{
+            const resp = await fetch('/api/set_auto_entry_settings', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+            const j = await resp.json();
+            if (j && j.status !== 'error') hideMobileUnifiedAutoTradeSettings();
+          }catch(e){}
+        };
+
+        // Enter / Esc
+        const keyHandler = function(e){
+          if (modal.style.display !== 'flex') return;
+          if (e.key === 'Enter') { e.preventDefault(); document.getElementById('m_unifiedSave').click(); }
+          else if (e.key === 'Escape') { e.preventDefault(); hideMobileUnifiedAutoTradeSettings(); }
+        };
+        if (!modal._keyHandler){ document.addEventListener('keydown', keyHandler); modal._keyHandler = keyHandler; }
+
+      });
+
+      dim.onclick = hideMobileUnifiedAutoTradeSettings;
+      document.getElementById('m_unifiedCancel').onclick = hideMobileUnifiedAutoTradeSettings;
+    }
+
+    function hideMobileUnifiedAutoTradeSettings(){
+      const modal = document.getElementById('mobileUnifiedAutoTradeModal');
+      modal.style.display = 'none';
+      if (modal._keyHandler){ document.removeEventListener('keydown', modal._keyHandler); delete modal._keyHandler; }
+    }
+
+    // Defensive: delegate tap/click on settings gear to open modal, even if inline onclick fails
+    document.addEventListener('click', function(ev){
+      const icon = ev.target.closest('img.monitor-settings-icon');
+      if (!icon) return;
+      const tile = icon.closest('.monitor-tile');
+      if (!tile) return;
+      const monId = tile.getAttribute('data-monitor-id');
+      if (monId && typeof openMobileUnifiedAutoTradeSettings === 'function') {
+        ev.preventDefault();
+        openMobileUnifiedAutoTradeSettings(monId);
+      }
+    }, true);
+    document.addEventListener('touchend', function(ev){
+      const icon = ev.target.closest('img.monitor-settings-icon');
+      if (!icon) return;
+      const tile = icon.closest('.monitor-tile');
+      if (!tile) return;
+      const monId = tile.getAttribute('data-monitor-id');
+      if (monId && typeof openMobileUnifiedAutoTradeSettings === 'function') {
+        ev.preventDefault();
+        openMobileUnifiedAutoTradeSettings(monId);
+      }
+    }, { passive:false, capture:true });
+  </script>
+
+  <!-- Mobile Unified Auto Trade Settings Modal -->
+  <div id="mobileUnifiedAutoTradeModal" class="modal-overlay" style="display:none;">
+    <div class="modal-content" style="max-width: 420px; width: 92%;">
+      <div class="modal-header"><h3>Auto Trade Settings</h3></div>
+      <div class="modal-body">
+        <div class="form-group"><label><input type="checkbox" id="m_allowRe" /> Allow re-entry on the same strike</label></div>
+        <div class="form-group"><label>Loss Prevention Win Streak Threshold:</label>
+          <input type="range" id="m_winStreak" min="0" max="30" step="1" value="22" oninput="document.getElementById('m_winStreakVal').textContent=this.value">
+          <div class="modal-keyboard-hint">Value: <span id="m_winStreakVal">22</span></div>
+        </div>
+        <hr>
+        <div class="form-group"><label><input type="checkbox" id="m_spikeEnabled" /> Pause auto entry during market spikes</label></div>
+        <div class="form-group"><label>Momentum Spike Level (±):</label>
+          <input type="range" id="m_spikeMomentum" min="50" max="100" value="60" oninput="document.getElementById('m_spikeMomentumVal').textContent='±'+this.value">
+          <div class="modal-keyboard-hint">Value: <span id="m_spikeMomentumVal">±60</span></div>
+        </div>
+        <div class="form-group"><label>Cooldown Level (±):</label>
+          <input type="range" id="m_spikeCooldown" min="50" max="100" value="55" oninput="document.getElementById('m_spikeCooldownVal').textContent='±'+this.value">
+          <div class="modal-keyboard-hint">Value: <span id="m_spikeCooldownVal">±55</span></div>
+        </div>
+        <div class="form-group"><label>Cooldown Time (minutes):</label>
+          <input type="range" id="m_spikeTime" min="0" max="180" value="15" oninput="document.getElementById('m_spikeTimeVal').textContent=this.value+' min'">
+          <div class="modal-keyboard-hint">Value: <span id="m_spikeTimeVal">15 min</span></div>
+        </div>
+        <hr>
+        <div style="font-weight:600; margin-bottom:8px;">Auto Stop</div>
+        <div class="form-group"><label>Current Win Probability:</label>
+          <input type="range" id="m_stopProb" min="0" max="100" value="40" oninput="document.getElementById('m_stopProbVal').textContent=this.value+'%';">
+          <div class="modal-keyboard-hint">Value: <span id="m_stopProbVal">40%</span></div>
+        </div>
+        <div class="form-group"><label><input type="checkbox" id="m_momentumEnabled" /> Auto-close trades during momentum spikes</label></div>
+        <div class="form-group"><label>Momentum Spike Threshold (±):</label>
+          <input type="range" id="m_momentumThreshold" min="10" max="100" value="35" oninput="document.getElementById('m_momentumThresholdVal').textContent='±'+this.value;">
+          <div class="modal-keyboard-hint">Value: <span id="m_momentumThresholdVal">±35</span></div>
+        </div>
+        <div class="form-group"><label><input type="checkbox" id="m_verifyEnabled" /> Enable verification period</label></div>
+        <div class="form-group"><label>Verification Duration (sec):</label>
+          <input type="range" id="m_verifySeconds" min="5" max="60" value="15" oninput="document.getElementById('m_verifySecondsVal').textContent=this.value+'s';">
+          <div class="modal-keyboard-hint">Value: <span id="m_verifySecondsVal">15s</span></div>
+        </div>
+        <hr>
+        <div style="font-weight:600; margin-bottom:8px;">Auto Entry</div>
+        <div class="form-group"><label>Minimum Volume:</label>
+          <input type="range" id="m_autoEntryMinVolume" min="0" max="2000" step="25" value="1000" oninput="document.getElementById('m_minVolVal').textContent=this.value;">
+          <div class="modal-keyboard-hint">Value: <span id="m_minVolVal">1000</span></div>
+        </div>
+        <div class="form-group"><label>Minimum Win Probability:</label>
+          <input type="range" id="m_autoEntryProb" min="0" max="100" value="25" oninput="document.getElementById('m_probVal').textContent=this.value+'%';">
+          <div class="modal-keyboard-hint">Value: <span id="m_probVal">25%</span></div>
+        </div>
+        <div class="form-group"><label>Minimum Differential:</label>
+          <input type="range" id="m_autoEntryDiff" min="-10" max="10" step="0.25" value="0" oninput="document.getElementById('m_diffVal').textContent=(parseFloat(this.value)||0).toFixed(2);">
+          <div class="modal-keyboard-hint">Value: <span id="m_diffVal">0.00</span></div>
+        </div>
+        <div class="form-group"><label>Maximum Differential:</label>
+          <input type="range" id="m_autoEntryMaxDiff" min="0" max="20" step="0.25" value="0" oninput="document.getElementById('m_maxDiffVal').textContent=(parseFloat(this.value)||0).toFixed(2);">
+          <div class="modal-keyboard-hint">Value: <span id="m_maxDiffVal">0.00</span></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="m_unifiedCancel" class="modal-btn modal-btn-cancel">Cancel</button>
+        <button id="m_unifiedSave" class="modal-btn modal-btn-confirm" style="background:#3182ce;">Save</button>
+      </div>
+    </div>
+    <div id="mobileUnifiedAutoTradeDim" style="display:none;"></div>
+  </div>
   <!-- Archive Confirmation Modal -->
   <div id="archiveModal" class="modal-overlay" style="display: none;">
     <div class="modal-content">

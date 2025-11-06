@@ -1736,12 +1736,12 @@ document.addEventListener('DOMContentLoaded', () => {
       <!-- Modal for Auto Stop Settings -->
       <div id="autoStopSettingsModal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:10000;">
         <div id="autoStopSettingsDim" style="position:absolute; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.4);"></div>
-        <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border-radius:8px; min-width:400px; min-height:200px; box-shadow:0 4px 32px rgba(0,0,0,0.25); padding:20px; display:flex; flex-direction:column; align-items:stretch;">
+        <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border-radius:8px; min-width:400px; min-height:200px; max-height:80vh; overflow-y:auto; box-shadow:0 4px 32px rgba(0,0,0,0.25); padding:20px; display:flex; flex-direction:column; align-items:stretch;">
           <div id="autoStopSettingsHeader" style="font-size:16px; font-weight:500; margin-bottom:24px; color:#222; letter-spacing:0.2px; text-align:left;">Auto Stop Settings</div>
           
 
           
-          <div style="flex:1 1 auto; display:flex; flex-direction:column; justify-content:center; align-items:stretch;">
+          <div style="flex:1 1 auto; display:flex; flex-direction:column; justify-content:flex-start; align-items:stretch; overflow-y:auto; min-height:0;">
             <label for="autoStopProbabilitySlider" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Current Win Probability:</label>
             <div style="position:relative; margin-bottom:24px; width:100%;">
               <input type="range" id="autoStopProbabilitySlider" min="0" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
@@ -1793,14 +1793,14 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
       </div>
       <!-- Modal for Auto Entry Settings -->
-      <div id="autoEntrySettingsModal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:10000;">
+      <div id="autoEntrySettingsModal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:10000; overflow-y:auto;">
         <div id="autoEntrySettingsDim" style="position:absolute; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.4);"></div>
-        <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border-radius:8px; min-width:400px; min-height:200px; box-shadow:0 4px 32px rgba(0,0,0,0.25); padding:20px; display:flex; flex-direction:column; align-items:stretch;">
+        <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border-radius:8px; min-width:400px; min-height:200px; height:80vh; overflow-y:auto; box-sizing:border-box; box-shadow:0 4px 32px rgba(0,0,0,0.25); padding:20px; display:flex; flex-direction:column; align-items:stretch;">
           <div id="autoEntrySettingsHeader" style="font-size:16px; font-weight:500; margin-bottom:24px; color:#222; letter-spacing:0.2px; text-align:left;">Auto Entry Settings</div>
           
 
           
-          <div style="flex:1 1 auto; display:flex; flex-direction:column; justify-content:center; align-items:stretch;">
+          <div style="flex:1 1 auto; display:flex; flex-direction:column; justify-content:flex-start; align-items:stretch; overflow-y:auto; min-height:0;">
             <label for="timeWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Time Window:</label>
             <div style="position:relative; margin-bottom:24px; width:100%;">
               <!-- Time Window Slider Container -->
@@ -1847,6 +1847,12 @@ document.addEventListener('DOMContentLoaded', () => {
             <div style="position:relative; margin-bottom:24px; width:100%;">
               <input type="checkbox" id="autoEntryAllowReEntry" style=" width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
               <span style="font-size:13px; color:#666;">Allow re-entry on the same strike</span>
+            </div>
+            
+            <label for="autoEntryWinStreakThresholdSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Win Streak Threshold:</label>
+            <div style="position:relative; margin-bottom:8px; width:100%;">
+              <input type="range" id="autoEntryWinStreakThresholdSlider" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+              <div id="autoEntryWinStreakThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
             </div>
             
             <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0;">
@@ -4132,10 +4138,13 @@ document.addEventListener('DOMContentLoaded', function() {
   const autoEntryMaxDifferentialValueDisplay = document.getElementById('autoEntryMaxDifferentialValueDisplay');
   const autoEntryMinVolumeSlider = document.getElementById('autoEntryMinVolumeSlider');
   const autoEntryMinVolumeValueDisplay = document.getElementById('autoEntryMinVolumeValueDisplay');
+  const autoEntryWinStreakThresholdSlider = document.getElementById('autoEntryWinStreakThresholdSlider');
+  const autoEntryWinStreakThresholdValueDisplay = document.getElementById('autoEntryWinStreakThresholdValueDisplay');
   let lastSavedAutoEntryProbability = 25;
   let lastSavedAutoEntryDifferential = 0;
   let lastSavedAutoEntryMaxDifferential = null;
   let lastSavedAutoEntryMinVolume = 1000;
+  let lastSavedAutoEntryWinStreakThreshold = 22;
 
   // Debug logging
   console.log('Auto Entry Settings - DOMContentLoaded fired');
@@ -4214,6 +4223,21 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   }
 
+  function updateAutoEntryWinStreakThresholdDisplay(value) {
+    if (autoEntryWinStreakThresholdValueDisplay && autoEntryWinStreakThresholdSlider) {
+      autoEntryWinStreakThresholdValueDisplay.textContent = value;
+      // Calculate thumb position in px
+      const min = parseInt(autoEntryWinStreakThresholdSlider.min, 10);
+      const max = parseInt(autoEntryWinStreakThresholdSlider.max, 10);
+      const percent = (value - min) / (max - min);
+      const sliderWidth = autoEntryWinStreakThresholdSlider.offsetWidth;
+      // 16px is approx thumb width, adjust as needed
+      const thumbWidth = 16;
+      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
+      autoEntryWinStreakThresholdValueDisplay.style.left = `${offset}px`;
+    }
+  }
+
   function updateSpikeAlertMomentumDisplay(value) {
     const display = document.getElementById('spikeAlertMomentumValueDisplay');
     const slider = document.getElementById('spikeAlertMomentumSlider');
@@ -4266,7 +4290,7 @@ document.addEventListener('DOMContentLoaded', function() {
     try {
       if (!currentMonitorId) {
         console.log('⚠️ No monitor selected, cannot fetch auto entry settings');
-        return { min_probability: 25, min_differential: 0, allow_re_entry: false };
+        return { min_probability: 25, min_differential: 0, allow_re_entry: false, win_streak_threshold: 22 };
       }
       
       const resp = await fetch(window.location.origin + '/api/get_auto_entry_settings?monitor_id=' + currentMonitorId);
@@ -4274,19 +4298,20 @@ document.addEventListener('DOMContentLoaded', function() {
         const data = await resp.json();
         if (data.status === 'error') {
           console.error('Error fetching auto entry settings:', data.message);
-          return { min_probability: 25, min_differential: 0, max_differential: null, allow_re_entry: false };
+          return { min_probability: 25, min_differential: 0, max_differential: null, allow_re_entry: false, win_streak_threshold: 22 };
         }
         return {
           min_probability: data.min_probability ?? 25,
           min_differential: data.min_differential ?? 0,
           max_differential: data.max_differential ?? null,
-          allow_re_entry: data.allow_re_entry ?? false
+          allow_re_entry: data.allow_re_entry ?? false,
+          win_streak_threshold: data.win_streak_threshold ?? 22
         };
       }
     } catch (error) {
       console.error('Error in fetchAutoEntrySettings:', error);
     }
-    return { min_probability: 25, min_differential: 0, max_differential: null, allow_re_entry: false };
+    return { min_probability: 25, min_differential: 0, max_differential: null, allow_re_entry: false, win_streak_threshold: 22 };
   }
 
   function showAutoEntrySettingsModal() {
@@ -4310,12 +4335,15 @@ document.addEventListener('DOMContentLoaded', function() {
         lastSavedAutoEntryProbability = settings.min_probability;
         lastSavedAutoEntryDifferential = settings.min_differential;
         lastSavedAutoEntryMaxDifferential = settings.max_differential;
+        lastSavedAutoEntryWinStreakThreshold = settings.win_streak_threshold;
         autoEntryProbabilitySlider.value = settings.min_probability;
         autoEntryDifferentialSlider.value = settings.min_differential;
         autoEntryMaxDifferentialSlider.value = settings.max_differential || 0;
+        autoEntryWinStreakThresholdSlider.value = settings.win_streak_threshold;
         updateAutoEntrySliderDisplay(settings.min_probability);
         updateAutoEntryDifferentialDisplay(settings.min_differential);
         updateAutoEntryMaxDifferentialDisplay(settings.max_differential || 0);
+        updateAutoEntryWinStreakThresholdDisplay(settings.win_streak_threshold);
         
         // Set the allow re-entry checkbox
         const allowReEntryCheckbox = document.getElementById('autoEntryAllowReEntry');
@@ -4467,6 +4495,7 @@ document.addEventListener('DOMContentLoaded', function() {
       const newDifferential = parseFloat(autoEntryDifferentialSlider.value);
       const newMaxDifferential = parseFloat(autoEntryMaxDifferentialSlider.value);
       const newMinVolume = Math.max(25, parseInt(autoEntryMinVolumeSlider.value, 10));
+      const newWinStreakThreshold = parseInt(autoEntryWinStreakThresholdSlider.value, 10);
       
       if (!isNaN(newProb) && !isNaN(newDifferential) && !isNaN(newMinVolume)) {
         try {
@@ -4502,6 +4531,7 @@ document.addEventListener('DOMContentLoaded', function() {
               min_time: minTimeSeconds,
               max_time: maxTimeSeconds,
               allow_re_entry: allowReEntry,
+              win_streak_threshold: newWinStreakThreshold,
               spike_alert_enabled: spikeAlertEnabled,
               spike_alert_momentum_threshold: spikeAlertMomentum,
               spike_alert_cooldown_threshold: spikeAlertCooldown,
@@ -4520,6 +4550,7 @@ document.addEventListener('DOMContentLoaded', function() {
             lastSavedAutoEntryDifferential = newDifferential;
             lastSavedAutoEntryMaxDifferential = newMaxDifferential > 0 ? newMaxDifferential : null;
             lastSavedAutoEntryMinVolume = newMinVolume;
+            lastSavedAutoEntryWinStreakThreshold = newWinStreakThreshold;
             
             // Update global min_volume for frontend filtering
             window.currentMonitorMinVolume = newMinVolume;
@@ -4586,6 +4617,18 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     // Initial position
     updateAutoEntryMaxDifferentialDisplay(autoEntryMaxDifferentialSlider.value);
+  }
+  
+  if (autoEntryWinStreakThresholdSlider && autoEntryWinStreakThresholdValueDisplay) {
+    autoEntryWinStreakThresholdSlider.addEventListener('input', function() {
+      updateAutoEntryWinStreakThresholdDisplay(this.value);
+    });
+    // On resize, keep value display in sync
+    window.addEventListener('resize', function() {
+      updateAutoEntryWinStreakThresholdDisplay(autoEntryWinStreakThresholdSlider.value);
+    });
+    // Initial position
+    updateAutoEntryWinStreakThresholdDisplay(autoEntryWinStreakThresholdSlider.value);
   }
   
   // Spike Alert Slider Event Listeners
