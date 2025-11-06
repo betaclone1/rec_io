@@ -95,6 +95,7 @@ class AnalyticsGUI:
             ("1. Update Price Logs", "update_price_logs"),
             ("2. Generate Momentum", "generate_momentum"),
             ("3. Generate Profiles", "generate_profiles"),
+            ("3b. Generate Volatility Profiles", "generate_volatility_profile"),
             ("4. Assign Percentiles", "assign_percentiles"),
             ("5. Verify Data", "verify_data"),
             ("6. Archive Fingerprints", "archive_fingerprints"),

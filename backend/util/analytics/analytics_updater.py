@@ -215,6 +215,34 @@ def generate_momentum_profiles(logger, symbols):
     logger.info(f"Profile generation completed for {len(processed_symbols)} symbols")
     return processed_symbols
 
+def generate_volatility_profile(logger, symbols, asof: str = None):
+    """Generate 168-row volatility baseline profile per symbol (analytics schema)."""
+    logger.info("📊 Step 3b: Generating volatility baseline profiles")
+    from datetime import datetime as _dt
+    asof_date = asof or _dt.utcnow().strftime("%Y%m%d")
+    script_path = os.path.join(os.path.dirname(__file__), "pipelines", "volatility_profile.py")
+    successful = []
+    for symbol in symbols:
+        try:
+            logger.info(f"🔧 Volatility profile for {symbol.upper()} as of {asof_date}")
+            cmd = [sys.executable, script_path, "--symbol", symbol.upper(), "--asof", asof_date]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            while True:
+                line = proc.stdout.readline()
+                if line == '' and proc.poll() is not None:
+                    break
+                if line:
+                    logger.info(f"VOL: {line.strip()}")
+            rc = proc.poll()
+            if rc != 0:
+                raise RuntimeError(f"volatility_profile.py exit code {rc}")
+            successful.append(symbol)
+        except Exception as e:
+            logger.error(f"❌ Volatility profile failed for {symbol.upper()}: {e}")
+            continue
+    logger.info(f"✅ Volatility profiles completed for {len(successful)} symbols")
+    return successful
+
 def assign_momentum_percentiles(logger, symbols, weekday_filter=False):
     """Step 4: Assign momentum percentiles to price history tables."""
     logger.info("📊 Step 4: Assigning momentum percentiles to price history tables")
@@ -830,6 +858,7 @@ def main():
         "update_price_logs",
         "generate_momentum", 
         "generate_profiles",
+        "generate_volatility_profile",
         "assign_percentiles",
         "verify_data",
         "archive_fingerprints",
@@ -898,6 +927,14 @@ def main():
         else:
             logger.info("⏭️ Skipping Step 3: Profile generation")
             results['profile_symbols'] = results['momentum_symbols']
+
+        # Step 3b: Generate volatility baseline profiles
+        if "generate_volatility_profile" in steps_to_run:
+            step_start = log_step(logger, "Volatility profile generation")
+            _ = generate_volatility_profile(logger, results['profile_symbols'])
+            log_step(logger, "Volatility profile generation", step_start)
+        else:
+            logger.info("⏭️ Skipping Step 3b: Volatility profile generation")
         
         # Step 4: Assign momentum percentiles
         if "assign_percentiles" in steps_to_run:
