@@ -3721,12 +3721,31 @@
       try {
         console.log('Dashboard: Refreshing monitor data from database...');
         const oldMonitors = [...monitors]; // Keep reference to old data
+        const oldMonitorIds = oldMonitors.map(m => m.id).filter(id => id !== 'NEW_MONITOR');
+        
         await loadMonitors();
         applyCurrentSort();
         
-        // Only update stat values, don't re-render entire tiles
-        updateMonitorStatValues(oldMonitors, monitors);
-        console.log('Dashboard: Monitor stat values refreshed');
+        // Filter out NEW_MONITOR and archived monitors for comparison
+        const newVisibleMonitors = monitors.filter(m => m.status !== 'archived' && m.id !== 'NEW_MONITOR');
+        const newMonitorIds = newVisibleMonitors.map(m => m.id);
+        
+        // Check for structural changes: additions, removals, or order changes
+        const hasAdditions = newMonitorIds.some(id => !oldMonitorIds.includes(id));
+        const hasRemovals = oldMonitorIds.some(id => !newMonitorIds.includes(id));
+        const hasOrderChange = oldMonitorIds.length === newMonitorIds.length && 
+                              oldMonitorIds.some((id, index) => newMonitorIds[index] !== id);
+        
+        if (hasAdditions || hasRemovals || hasOrderChange) {
+          // Structural changes detected - re-render all tiles
+          console.log('Dashboard: Structural changes detected, re-rendering monitor tiles...');
+          initializeMonitors();
+          initializeSortable();
+        } else {
+          // Only values changed - update stat values without re-rendering
+          updateMonitorStatValues(oldMonitors, monitors);
+          console.log('Dashboard: Monitor stat values refreshed');
+        }
       } catch (e) {
         console.error('Error refreshing monitor data:', e);
       }
@@ -4548,6 +4567,23 @@
       <div style="flex:1 1 auto; display:flex; flex-direction:column; justify-content:flex-start; align-items:stretch; overflow-y:auto; min-height:0;">
         <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Auto Entry</div>
         <!-- Auto Entry (exact UI from trade_monitor) -->
+        <label for="timeWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Time Window:</label>
+        <div style="position:relative; margin-bottom:24px; width:100%;">
+          <!-- Time Window Slider Container -->
+          <div id="timeWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:8px;">
+            <!-- Min Time Handle -->
+            <div id="minTimeHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Max Time Handle -->
+            <div id="maxTimeHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Selected Range -->
+            <div id="timeWindowRange" style="position:absolute; top:0; height:6px; background:#007bff; border-radius:3px; z-index:5;"></div>
+            <!-- Min Time Display -->
+            <div id="timeWindowMinDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+            <!-- Max Time Display -->
+            <div id="timeWindowMaxDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+          </div>
+        </div>
+
         <label for="autoEntryMinVolumeSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Volume:</label>
         <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
           <input type="range" id="autoEntryMinVolumeSlider" min="0" max="2000" step="25" value="1000" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
@@ -4620,6 +4656,16 @@
           <div id="sliderValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
         </div>
 
+        <label for="autoStopMinTTCInput" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Minimum Time to Close:</label>
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 24px;">
+          <div style="display: flex; align-items: center; border: 1px solid #ddd; border-radius: 4px; background: white;">
+            <button id="autoStopMinTTCDown" style="padding: 8px 12px; border: none; background: #f8f9fa; cursor: pointer; border-right: 1px solid #ddd; border-radius: 4px 0 0 4px; font-size:12px;" onmouseover="this.style.background='#e9ecef'" onmouseout="this.style.background='#f8f9fa'">▼</button>
+            <span id="autoStopMinTTCDisplay" style="padding: 8px 16px; font-size: 13px; color: #333; min-width: 60px; text-align: center; font-weight:500;">Loading...</span>
+            <button id="autoStopMinTTCUp" style="padding: 8px 12px; border: none; background: #f8f9fa; cursor: pointer; border-left: 1px solid #ddd; border-radius: 0 4px 4px 0; font-size:12px;" onmouseover="this.style.background='#e9ecef'" onmouseout="this.style.background='#f8f9fa'">▲</button>
+          </div>
+          <input type="hidden" id="autoStopMinTTCInput" value="60" />
+        </div>
+
         <div style="position:relative; margin-bottom:24px; width:100%;">
           <input type="checkbox" id="momentumSpikeEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
           <span style="font-size:13px; color:#666;">Auto-close trades during momentum spikes</span>
@@ -4666,6 +4712,130 @@
       if (!el || !out) return;
       const update = () => out.textContent = fmt ? fmt(el.value) : el.value;
       el.addEventListener('input', update); update();
+    }
+
+    // Helper function to format seconds as MM:SS
+    function formatSecondsToMMSS(seconds) {
+      const m = Math.floor(seconds / 60);
+      const s = seconds % 60;
+      return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    }
+
+    // Time Window Slider Variables and Functions
+    let dashboardTimeWindowSliderWidth = 0;
+    let dashboardMinTimeSeconds = 0;
+    let dashboardMaxTimeSeconds = 3600;
+    let dashboardIsDragging = false;
+    let dashboardCurrentHandle = null;
+
+    // Initialize Time Window slider
+    function initDashboardTimeWindowSlider() {
+      const container = document.getElementById('timeWindowSliderContainer');
+      if (!container) return;
+      dashboardTimeWindowSliderWidth = container.offsetWidth;
+      updateDashboardTimeWindowSlider();
+    }
+
+    // Update Time Window slider positions and range
+    function updateDashboardTimeWindowSlider() {
+      if (!dashboardTimeWindowSliderWidth) return;
+      
+      const minHandle = document.getElementById('minTimeHandle');
+      const maxHandle = document.getElementById('maxTimeHandle');
+      const range = document.getElementById('timeWindowRange');
+      const minDisplay = document.getElementById('timeWindowMinDisplay');
+      const maxDisplay = document.getElementById('timeWindowMaxDisplay');
+      
+      if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
+      
+      const minPercent = (dashboardMinTimeSeconds / 3600) * 100;
+      const maxPercent = (dashboardMaxTimeSeconds / 3600) * 100;
+      
+      minHandle.style.left = `${minPercent}%`;
+      maxHandle.style.left = `${maxPercent}%`;
+      
+      range.style.left = `${minPercent}%`;
+      range.style.width = `${maxPercent - minPercent}%`;
+      
+      minDisplay.textContent = formatSecondsToMMSS(dashboardMinTimeSeconds);
+      maxDisplay.textContent = formatSecondsToMMSS(dashboardMaxTimeSeconds);
+      
+      minDisplay.style.left = `${minPercent}%`;
+      maxDisplay.style.left = `${maxPercent}%`;
+    }
+
+    // Handle mouse events for Time Window slider
+    function handleDashboardTimeWindowMouseDown(e) {
+      dashboardIsDragging = true;
+      dashboardCurrentHandle = e.target;
+      document.addEventListener('mousemove', handleDashboardTimeWindowMouseMove);
+      document.addEventListener('mouseup', handleDashboardTimeWindowMouseUp);
+      e.preventDefault();
+    }
+
+    function handleDashboardTimeWindowMouseMove(e) {
+      if (!dashboardIsDragging || !dashboardCurrentHandle) return;
+      
+      const container = document.getElementById('timeWindowSliderContainer');
+      if (!container) return;
+      
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
+      
+      // Map percentage to 15-second intervals (0-3600 seconds)
+      const intervalIndex = Math.round((percent / 100) * 240);
+      const snappedSeconds = Math.max(0, Math.min(3600, intervalIndex * 15));
+      
+      const minHandle = document.getElementById('minTimeHandle');
+      const maxHandle = document.getElementById('maxTimeHandle');
+      
+      if (dashboardCurrentHandle === minHandle) {
+        if (snappedSeconds >= dashboardMaxTimeSeconds) return;
+        dashboardMinTimeSeconds = snappedSeconds;
+      } else if (dashboardCurrentHandle === maxHandle) {
+        if (snappedSeconds <= dashboardMinTimeSeconds) return;
+        dashboardMaxTimeSeconds = snappedSeconds;
+      }
+      
+      updateDashboardTimeWindowSlider();
+    }
+
+    function handleDashboardTimeWindowMouseUp() {
+      dashboardIsDragging = false;
+      dashboardCurrentHandle = null;
+      document.removeEventListener('mousemove', handleDashboardTimeWindowMouseMove);
+      document.removeEventListener('mouseup', handleDashboardTimeWindowMouseUp);
+    }
+
+    // Minimum Time to Close Controls
+    function setupDashboardMinTTCControls() {
+      const minTTCDisplay = document.getElementById('autoStopMinTTCDisplay');
+      const minTTCInput = document.getElementById('autoStopMinTTCInput');
+      const minTTCUp = document.getElementById('autoStopMinTTCUp');
+      const minTTCDown = document.getElementById('autoStopMinTTCDown');
+      
+      if (minTTCDisplay && minTTCInput && minTTCUp && minTTCDown) {
+        if (!minTTCUp._dashWired) {
+          minTTCUp._dashWired = true;
+          minTTCUp.addEventListener('click', function() {
+            const currentVal = parseInt(minTTCInput.value, 10) || 0;
+            const newVal = currentVal + 15;
+            minTTCInput.value = newVal;
+            minTTCDisplay.textContent = formatSecondsToMMSS(newVal);
+          });
+        }
+        
+        if (!minTTCDown._dashWired) {
+          minTTCDown._dashWired = true;
+          minTTCDown.addEventListener('click', function() {
+            const currentVal = parseInt(minTTCInput.value, 10) || 0;
+            const newVal = Math.max(0, currentVal - 30);
+            minTTCInput.value = newVal;
+            minTTCDisplay.textContent = formatSecondsToMMSS(newVal);
+          });
+        }
+      }
     }
 
     // Prefetch settings once monitors load
@@ -4809,6 +4979,13 @@
         const setVal = (id,v) => { const el=document.getElementById(id); if (el!=null && v!=null) el.value=v; };
         const setChk = (id,v) => { const el=document.getElementById(id); if (el) el.checked=!!v; };
         // Auto Entry
+        // Time Window
+        dashboardMinTimeSeconds = data.min_time !== undefined ? data.min_time : 0;
+        dashboardMaxTimeSeconds = data.max_time !== undefined ? data.max_time : 3600;
+        setTimeout(() => {
+          initDashboardTimeWindowSlider();
+        }, 100);
+        // Other Auto Entry settings
         setVal('autoEntryMinVolumeSlider', data.min_volume ?? 1000);
         setVal('autoEntryProbabilitySlider', data.min_probability ?? 25);
         setVal('autoEntryDifferentialSlider', data.min_differential ?? 0);
@@ -4822,6 +4999,13 @@
         setVal('spikeAlertTimeSlider', data.spike_alert_cooldown_minutes ?? 15);
         // Auto Stop
         setVal('autoStopProbabilitySlider', data.current_probability ?? 40);
+        // Minimum Time to Close
+        const minTTC = data.min_ttc_seconds !== undefined ? data.min_ttc_seconds : 60;
+        const minTTCInput = document.getElementById('autoStopMinTTCInput');
+        const minTTCDisplay = document.getElementById('autoStopMinTTCDisplay');
+        if (minTTCInput) minTTCInput.value = minTTC;
+        if (minTTCDisplay) minTTCDisplay.textContent = formatSecondsToMMSS(minTTC);
+        // Other Auto Stop settings
         setChk('momentumSpikeEnabled', data.momentum_spike_enabled ?? true);
         setVal('momentumSpikeThresholdSlider', data.momentum_spike_threshold ?? 35);
         setChk('verificationPeriodEnabled', data.verification_period_enabled ?? false);
@@ -4838,6 +5022,21 @@
         updateSliderDisplay(document.getElementById('autoStopProbabilitySlider').value);
         updateMomentumSpikeThresholdDisplay(document.getElementById('momentumSpikeThresholdSlider').value);
         updateVerificationPeriodDisplay(document.getElementById('verificationPeriodSlider').value);
+
+        // Setup Min TTC controls
+        setupDashboardMinTTCControls();
+
+        // Wire up Time Window slider handles
+        const minHandle = document.getElementById('minTimeHandle');
+        const maxHandle = document.getElementById('maxTimeHandle');
+        if (minHandle && !minHandle._dashWired) {
+          minHandle._dashWired = true;
+          minHandle.addEventListener('mousedown', handleDashboardTimeWindowMouseDown);
+        }
+        if (maxHandle && !maxHandle._dashWired) {
+          maxHandle._dashWired = true;
+          maxHandle.addEventListener('mousedown', handleDashboardTimeWindowMouseDown);
+        }
 
         // Wire input listeners so sliders update values as in trade_monitor
         const pairs = [
@@ -4875,6 +5074,8 @@
       saveBtn.onclick = async function(){
         const payload = {
           monitor_id: apiId,
+          min_time: dashboardMinTimeSeconds,
+          max_time: dashboardMaxTimeSeconds,
           min_volume: parseInt(document.getElementById('autoEntryMinVolumeSlider').value,10),
           min_probability: parseInt(document.getElementById('autoEntryProbabilitySlider').value,10),
           min_differential: parseFloat(document.getElementById('autoEntryDifferentialSlider').value),
