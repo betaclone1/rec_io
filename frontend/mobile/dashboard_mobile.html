@@ -1083,28 +1083,33 @@
         const newMonitor = newMonitors.find(m => m.id === monitorId);
         
         if (newMonitor) {
+          const winStreakValue = getMonitorStatValue(newMonitor, 'win_streak', newMonitor.win_streak || 0);
+          const winLossValue = getMonitorStatValue(newMonitor, 'win_loss', newMonitor.winRate || '0%');
+          const retPctValue = getMonitorStatValue(newMonitor, 'ret_pct', newMonitor.return || '0%');
+          const pnlValue = getMonitorStatValue(newMonitor, 'pnl', newMonitor.pnl || '$0');
+
           // Update win streak
           const winStreakElement = tile.querySelector('.stat-win-streak');
           if (winStreakElement) {
-            winStreakElement.textContent = newMonitor.win_streak || 0;
+            winStreakElement.textContent = winStreakValue;
           }
           
           // Update W/L
           const winLossElement = tile.querySelector('.stat-win-loss');
           if (winLossElement) {
-            winLossElement.textContent = newMonitor.winRate || '0%';
+            winLossElement.textContent = winLossValue;
           }
           
           // Update Ret%
           const retPctElement = tile.querySelector('.stat-ret-pct');
           if (retPctElement) {
-            retPctElement.textContent = newMonitor.return || '0%';
+            retPctElement.textContent = retPctValue;
           }
           
           // Update PnL
           const pnlElement = tile.querySelector('.stat-pnl');
           if (pnlElement) {
-            pnlElement.textContent = newMonitor.pnl || '$0';
+            pnlElement.textContent = pnlValue;
           }
           
           // Update uptime
