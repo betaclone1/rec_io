@@ -1,0 +1,3620 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Trade Monitor Mobile</title>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../styles/global.css?v=1.0.1">
+    
+    <!-- Preload ALL critical images -->
+    <link rel="preload" href="../images/icons/panel_settings.png" as="image" type="image/png">
+    <script src="../js/live-data.js"></script>
+    <script src="../js/globals.js?v=1"></script>
+    <script>
+        // Mobile-specific port configuration
+        function getActiveTradeSupervisorUrl(endpoint = '') {
+            // For mobile, use the same host as the current page with the active trade supervisor port
+            const host = window.location.origin;
+            return `${host.replace(/:\d+/, ':8007')}${endpoint}`;
+        }
+    </script>
+
+    <script src="../js/trade-execution-controller.js"></script>
+    <script src="../js/active-trade-supervisor_panel.js"></script>
+    
+
+    
+    <style>
+        /* Mobile-specific styles */
+        /* Body styling inherited from global.css */
+        body {
+            margin: 0;
+            padding: 0;
+            -webkit-text-size-adjust: 100%;
+        }
+
+        .mobile-container {
+            max-width: 100vw;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+
+        .mobile-panel {
+            background-color: #323c4e;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            padding: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        }
+
+        .mobile-panel-header {
+            font-size: 12px;
+            font-weight: bold;
+            color: #c4c4c4;
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        /* Price Display */
+        .price-display {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0px 0;
+        }
+
+        .price-info {
+            flex: 1;
+            text-align: left;
+        }
+
+        .current-price {
+            font-size: 22px;
+            font-weight: bold;
+            color: white;
+            margin-bottom: 4px;
+        }
+
+        .price-change {
+            font-size: 10px;
+            color: #c4c4c4;
+        }
+
+        .momentum-info {
+            text-align: right;
+            min-width: 80px;
+        }
+
+        .momentum-label {
+            font-size: 10px;
+            color: #c4c4c4;
+            margin-bottom: 2px;
+        }
+
+        .momentum-score {
+            font-size: 16px;
+            font-weight: bold;
+            color: white;
+        }
+
+        /* Control Toggles */
+        .control-toggles {
+            display: flex;
+            gap: 16px;
+            margin: 12px 0;
+        }
+
+        .toggle-group {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .toggle-label {
+            font-size: 12px;
+            color: #ccc;
+        }
+
+        .mobile-toggle {
+            width: 44px;
+            height: 24px;
+            background-color: #444;
+            border-radius: 12px;
+            position: relative;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .mobile-toggle.active {
+            background-color: #007bff;
+        }
+
+        .mobile-toggle::after {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 20px;
+            height: 20px;
+            background-color: white;
+            border-radius: 50%;
+            transition: transform 0.2s;
+        }
+
+        .mobile-toggle.active::after {
+            transform: translateX(20px);
+        }
+
+        .mobile-toggle.loading {
+            opacity: 0.7;
+            pointer-events: none;
+        }
+
+        .mobile-toggle.loading::after {
+            background-color: #ccc;
+        }
+
+        /* Active Trades */
+        .active-trades-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+
+        .active-trades-table th {
+            background-color: #1e2733;
+            padding: 8px 4px;
+            text-align: center;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .active-trades-table td {
+            padding: 6px 4px;
+            text-align: center;
+            border-bottom: 1px solid #444;
+        }
+
+        .close-btn {
+            background-color: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 4px 8px;
+            font-size: 10px;
+            cursor: pointer;
+        }
+
+        /* Strike Table */
+        .strike-table-mobile {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+        }
+
+        .strike-table-mobile th {
+            background-color: #1e2733;
+            padding: 6px 2px;
+            text-align: center;
+            font-size: 10px;
+            font-weight: 600;
+        }
+
+        .strike-table-mobile td {
+            padding: 4px 2px;
+            text-align: center;
+            border: 1px solid #444;
+        }
+
+        /* Active Trade Supervisor Table */
+        .active-trade-supervisor-table-mobile {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+        }
+
+        .active-trade-supervisor-table-mobile th {
+            background-color: #1e2733;
+            padding: 6px 2px;
+            text-align: center;
+            font-size: 10px;
+            font-weight: 600;
+        }
+
+        .active-trade-supervisor-table-mobile td {
+            padding: 4px 2px;
+            text-align: center;
+            border: 1px solid #444;
+        }
+
+        /* Unified price button styling for both market and active trade supervisor */
+        .price-box-mobile {
+            display: inline-block;
+            padding: 4px 6px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: bold;
+            cursor: pointer;
+            border: 1px solid #ccc;
+            min-width: 40px;
+            text-align: center;
+            background-color: transparent;
+            transition: background-color 0.2s ease;
+        }
+
+        .price-box-mobile:hover {
+            background-color: rgba(0, 0, 0, 0.1);
+        }
+
+        .price-box-mobile.disabled {
+            opacity: 0.3;
+            pointer-events: none;
+        }
+
+        /* Close button styling - identical to price buttons */
+        .close-btn-mobile {
+            display: inline-block;
+            padding: 4px 6px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: bold;
+            cursor: pointer;
+            border: 1px solid #ccc;
+            min-width: 40px;
+            text-align: center;
+            background-color: transparent;
+            transition: background-color 0.2s ease;
+            color: white;
+        }
+
+        .close-btn-mobile:hover {
+            background-color: rgba(0, 0, 0, 0.1);
+        }
+
+        .close-btn-mobile.disabled {
+            opacity: 0.3;
+            pointer-events: none;
+        }
+
+        /* Spanner row styling (exact match from desktop trade monitor) */
+        tr.spanner-row td {
+            background-color: #535668 !important;
+            color: #c0c0c0 !important;
+            text-align: center !important;
+            font-size: 12px !important;
+            font-style: italic !important;
+            height: 25px !important;
+            padding: 2px 4px !important;
+        }
+
+        /* Risk-based color formatting (same as main trade monitor) */
+        .ultra-safe { background-color: #58b558 !important; }
+        .safe { background-color: #7ec27e !important; }
+        .caution { background-color: #c5ab50 !important; }
+        .high-risk { background-color: #a07777 !important; }
+        .danger-stop { background-color: #ec3434 !important; }
+
+        /* Blue background for closing trades */
+        .active-trade-supervisor-table-mobile tr.closing-trade {
+            background-color: #1e3a8a !important;
+        }
+        .active-trade-supervisor-table-mobile tr.closing-trade td {
+            background-color: #1e3a8a !important;
+            color: #ffffff !important;
+        }
+
+        /* Active Trade Indicator for Strike Table */
+        .strike-table-mobile td.has-active-trade {
+            background-color: #1a2a1a !important; /* Very subtle green tint */
+            border-left: 3px solid #45d34a !important; /* Green left border */
+        }
+
+        /* Multiplier Button Styles */
+        .multiplier-btn {
+            background-color: transparent;
+            border: 1px solid #ccc;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.3s ease, color 0.3s ease;
+            font-size: 10px;
+        }
+        .multiplier-btn.active {
+            background-color: #007bff;
+            border-color: #0056b3;
+            color: white;
+            font-weight: bold;
+            box-shadow: 0 0 6px rgba(0, 123, 255, 0.7);
+        }
+        .multiplier-btn:hover:not(.active) {
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            color: #888;
+            padding: 20px;
+            font-size: 14px;
+        }
+
+        /* Top Row Layout */
+        .top-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            gap: 12px;
+        }
+
+        .market-title {
+            flex: 1;
+            padding: 8px;
+            background-color: #323c4e;
+            border-radius: 6px;
+            color: white;
+            font-size: 14px;
+            font-weight: bold;
+            text-align: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* TTC Clock */
+        .ttc-clock {
+            background-color: #323c4e;
+            border-radius: 6px;
+            padding: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            color: white;
+            min-width: 60px;
+            text-align: center;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .ttc-clock.urgent {
+            background-color: #dc3545;
+            animation: pulse 1s infinite;
+            padding: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            min-width: 60px;
+            text-align: center;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .ttc-clock.warning {
+            background-color: #ffc107;
+            color: #000;
+            padding: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            min-width: 60px;
+            text-align: center;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .ttc-clock.normal {
+            background-color: #28a745;
+            padding: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            min-width: 60px;
+            text-align: center;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
+        }
+
+        /* Responsive adjustments */
+        @media (max-width: 375px) {
+            .mobile-container {
+                padding: 8px;
+            }
+            
+            .top-row {
+                gap: 8px;
+            }
+            
+            .market-title {
+                font-size: 12px;
+                padding: 6px;
+            }
+            
+            .ttc-clock {
+                font-size: 10px;
+                padding: 6px;
+                min-width: 50px;
+            }
+            
+            .ttc-clock.urgent,
+            .ttc-clock.warning,
+            .ttc-clock.normal {
+                padding: 6px;
+                font-size: 10px;
+                min-width: 50px;
+            }
+            
+            .current-price {
+                font-size: 18px;
+              
+            }
+            
+            .price-change {
+                font-size: 9px;
+                padding-top: 10px;
+            }
+            
+            .momentum-score {
+                font-size: 14px;
+            }
+            
+            .momentum-label {
+                font-size: 9px;
+            }
+            
+            .strike-table-mobile {
+                font-size: 10px;
+            }
+            
+            .strike-table-mobile th,
+            .strike-table-mobile td {
+                padding: 3px 1px;
+            }
+        }
+
+        /* Mobile Settings Modal Toggle Styles */
+        .mobile-toggle::after {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 20px;
+            height: 20px;
+            background-color: white;
+            border-radius: 50%;
+            transition: transform 0.2s;
+        }
+
+        .mobile-toggle.active {
+            background-color: #007bff;
+        }
+
+        .mobile-toggle.active::after {
+            transform: translateX(20px);
+        }
+    </style>
+</head>
+<body>
+    <div class="mobile-container">
+        <!-- Top Row: Market Title, Automated Trading Indicator, and TTC Clock -->
+        <div class="top-row">
+            <div class="market-title">BTC Price Today</div>
+            <div id="autoEntryIndicator" style="display: none; align-items: center; gap: 4px; padding: 8px; color: white; border-radius: 6px; font-size: 12px; font-weight: bold; background-color: #323c4e; justify-content: center;">
+                <div style="width: 8px; height: 8px; background: #00ff2f; border-radius: 50%;"></div>
+                <span>AUTO ON</span>
+            </div>
+            <div class="ttc-clock" id="ttc-clock">--:--</div>
+        </div>
+        
+
+
+        <!-- Price and Momentum Panel -->
+        <div class="mobile-panel">
+      
+            <div class="price-display">
+                <div class="price-info">
+                    <div class="current-price" id="btc-price-value">$—</div>
+                </div>
+                <div id="chart-toggle" style="margin: 0; text-align: left; cursor: pointer; color: #c4c4c4; font-size: 8px; user-select: none; min-width: 160px;" onclick="toggleChart()">
+                    CHART ▼
+                </div>
+                <div class="momentum-info" style=" text-align: center; align-self: flex-end;">
+                    <div class="momentum-label">Momentum</div>
+                    <div class="momentum-score" id="momentum-score-display">—</div>
+                </div>
+            </div>
+            
+            <!-- TradingView Chart -->
+            <div id="tradingview_12345" style="width: 100%; height: 300px; margin-top: 5px;"></div>
+        </div>
+
+        <!-- Control Toggles -->
+        <div class="mobile-panel">
+            <div class="mobile-panel-header">
+                <div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <div class="toggle-group" style="margin: 0;">
+                            <div class="mobile-toggle" id="mobileAutoTradeToggle"></div>
+                            <span class="toggle-label" style="font-size: 10px;">AUTO<br>TRADE</span>
+                        </div>
+                    </div>
+                    
+                    <div style="display: flex; align-items: center; gap: 20px;">
+                        <div style="display: flex; flex-direction: column; align-items: flex-end;">
+                            <div style="font-size: 11px; color: #ccc;">Bankroll:</div>
+                            <div id="bankroll-value" style="font-size: 13px; color: #fff; font-weight: 600;">$0.00</div>
+                        </div>
+                        
+                        <div style="display: flex; flex-direction: column; align-items: flex-end;">
+                            <div id="total-position-value" style="font-size: 13px; color: #fff; font-weight: 600;">0</div>
+                            <div style="font-size: 11px; color: #ccc;">contracts</div>
+                        </div>
+                        
+                        <img 
+                            id="mobileSettingsIcon"
+                            src="../images/icons/panel_settings.png" 
+                            alt="Trading Settings" 
+                            title="Trading Settings" 
+                            style="width: 20px; height: 20px; opacity: 0.7; transition: opacity 0.2s; cursor: pointer;"
+                            onmouseover="this.style.opacity='1'" 
+                            onmouseout="this.style.opacity='0.7'"
+                        />
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Active Trade Supervisor Panel -->
+        <div class="mobile-panel">
+            <div class="mobile-panel-header">
+                <span>Active Trade Supervisor</span>
+            </div>
+            <table id="active-trade-supervisor-table" class="active-trade-supervisor-table-mobile">
+                <thead>
+                    <tr>
+                        <th>Strike</th>
+                        <th>Side</th>
+                        <th>Buy</th>
+                        <th>Pos</th>
+                        <th>Buffer</th>
+                        <th>Prob</th>
+                        <th>Close</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td colspan="7" class="empty-state">Loading...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Strike Table -->
+        <div class="mobile-panel">
+            <div class="mobile-panel-header">
+                <span></span>
+            </div>
+            <table id="strike-table" class="strike-table-mobile">
+                <thead>
+                    <tr>
+                        <th>STRIKE</th>
+                        <th>BUFFER</th>
+                        <th>%</th>
+                        <th>Prob</th>
+                        <th>YES</th>
+                        <th>NO</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td colspan="6" class="empty-state">Loading...</td>
+                    </tr>
+                </tbody>
+            </table>
+            <div style="display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding: 8px 0;">
+                <span style="font-size: 10px; color: #ccc;">+/-</span>
+                <div class="mobile-toggle" id="plusMinusToggle"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Mobile Settings Modal -->
+    <div id="mobileSettingsModal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:1000;">
+        <div id="mobileSettingsDim" style="position:absolute; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.6);"></div>
+        <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border-radius:12px; width:81vw; max-width:360px; max-height:80vh; overflow-y:auto; box-shadow:0 8px 32px rgba(0,0,0,0.3); padding:20px; display:flex; flex-direction:column;">
+            <div style="font-size:18px; font-weight:600; margin-bottom:20px; color:#222; text-align:center;">Trading Settings</div>
+            
+            <!-- Auto Entry Settings Section -->
+            <div style="margin-bottom:24px;">
+                <div style="font-size:16px; font-weight:600; color:#333; margin-bottom:16px; border-bottom:1px solid #eee; padding-bottom:8px;">Auto Entry Settings</div>
+                
+                <!-- Time Window -->
+                <div style="margin-bottom:16px;">
+                    <label style="font-size:14px; color:#333; margin-bottom:8px; display:block; font-weight:500;">Time Window:</label>
+                    <div style="position:relative; width:100%;">
+                        <div id="mobileTimeWindowSliderContainer" style="position:relative; width:100%; height:8px; background:#e0e0e0; border-radius:4px; margin-top:8px;">
+                            <div id="mobileMinTimeHandle" style="position:absolute; top:-6px; width:20px; height:20px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);"></div>
+                            <div id="mobileMaxTimeHandle" style="position:absolute; top:-6px; width:20px; height:20px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);"></div>
+                            <div id="mobileTimeWindowRange" style="position:absolute; top:0; height:8px; background:#007bff; border-radius:4px; z-index:5;"></div>
+                            <div id="mobileTimeWindowMinDisplay" style="position:absolute; top:-40px; left:0; font-size:12px; color:#222; background:white; padding:6px 10px; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0; font-weight:500;">00:00</div>
+                            <div id="mobileTimeWindowMaxDisplay" style="position:absolute; top:-40px; left:0; font-size:12px; color:#222; background:white; padding:6px 10px; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0; font-weight:500;">60:00</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Minimum Win Probability -->
+                <div style="margin-bottom:16px;">
+                    <label style="font-size:14px; color:#333; margin-bottom:8px; display:block; font-weight:500;">Minimum Win Probability:</label>
+                    <div style="position:relative; width:100%;">
+                        <input type="range" id="mobileAutoEntryProbabilitySlider" min="0" max="100" value="25" style="width:100%; height:8px; background:#e0e0e0; border-radius:4px; outline:none;" />
+                        <div id="mobileAutoEntrySliderValueDisplay" style="position:absolute; top:-40px; left:0; font-size:12px; color:#222; background:white; padding:6px 10px; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0; font-weight:500;">25%</div>
+                    </div>
+                </div>
+                
+                <!-- Minimum Differential -->
+                <div style="margin-bottom:16px;">
+                    <label style="font-size:14px; color:#333; margin-bottom:8px; display:block; font-weight:500;">Minimum Differential:</label>
+                    <div style="position:relative; width:100%;">
+                        <input type="range" id="mobileAutoEntryDifferentialSlider" min="-10" max="10" step="0.25" value="0" style="width:100%; height:8px; background:#e0e0e0; border-radius:4px; outline:none;" />
+                        <div id="mobileAutoEntryDifferentialValueDisplay" style="position:absolute; top:-40px; left:0; font-size:12px; color:#222; background:white; padding:6px 10px; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0; font-weight:500;">0</div>
+                    </div>
+                </div>
+                
+                <!-- Allow Re-Entry -->
+                <div style="margin-bottom:16px;">
+                    <label style="font-size:14px; color:#333; margin-bottom:8px; display:block; font-weight:500;">Allow Re-Entry:</label>
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <input type="checkbox" id="mobileAutoEntryAllowReEntry" style="width:18px; height:18px; accent-color:#007bff;" />
+                        <span style="font-size:13px; color:#666;">Allow re-entry on the same strike</span>
+                    </div>
+                </div>
+                
+                <!-- Spike Alert Settings -->
+                <div style="margin-bottom:16px;">
+                    <div style="display:flex; align-items:center; margin-bottom:8px;">
+                        <input type="checkbox" id="mobileSpikeAlertEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
+                        <span style="font-size:13px; color:#666;">Enable spike alerts for momentum detection</span>
+                    </div>
+                    <label style="font-size:14px; color:#333; margin-bottom:8px; display:block; font-weight:500;">Momentum Spike Level (±):</label>
+                    <div style="position:relative; width:100%;">
+                        <input type="range" id="mobileSpikeAlertMomentumSlider" min="0" max="100" value="40" style="width:100%; height:8px; background:#e0e0e0; border-radius:4px; outline:none;" />
+                        <div id="mobileSpikeAlertMomentumValueDisplay" style="position:absolute; top:-40px; left:0; font-size:12px; color:#222; background:white; padding:6px 10px; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0; font-weight:500;">±40</div>
+                    </div>
+                    <label style="font-size:14px; color:#333; margin-bottom:8px; display:block; font-weight:500;">Cooldown Level (±):</label>
+                    <div style="position:relative; width:100%;">
+                        <input type="range" id="mobileSpikeAlertCooldownSlider" min="0" max="50" value="30" style="width:100%; height:8px; background:#e0e0e0; border-radius:4px; outline:none;" />
+                        <div id="mobileSpikeAlertCooldownValueDisplay" style="position:absolute; top:-40px; left:0; font-size:12px; color:#222; background:white; padding:6px 10px; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0; font-weight:500;">±30</div>
+                    </div>
+                    <label style="font-size:14px; color:#333; margin-bottom:8px; display:block; font-weight:500;">Cooldown Time (minutes):</label>
+                    <div style="position:relative; width:100%;">
+                        <input type="range" id="mobileSpikeAlertTimeSlider" min="0" max="180" value="15" style="width:100%; height:8px; background:#e0e0e0; border-radius:4px; outline:none;" />
+                        <div id="mobileSpikeAlertTimeValueDisplay" style="position:absolute; top:-40px; left:0; font-size:12px; color:#222; background:white; padding:6px 10px; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0; font-weight:500;">15m</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Auto Stop Settings Section -->
+            <div style="margin-bottom:24px;">
+                <div style="font-size:16px; font-weight:600; color:#333; margin-bottom:16px; border-bottom:1px solid #eee; padding-bottom:8px;">Auto Stop Settings</div>
+                
+                <!-- Current Win Probability -->
+                <div style="margin-bottom:16px;">
+                    <label style="font-size:14px; color:#333; margin-bottom:8px; display:block; font-weight:500;">Current Win Probability:</label>
+                    <div style="position:relative; width:100%;">
+                        <input type="range" id="mobileAutoStopProbabilitySlider" min="0" max="100" value="25" style="width:100%; height:8px; background:#e0e0e0; border-radius:4px; outline:none;" />
+                        <div id="mobileAutoStopSliderValueDisplay" style="position:absolute; top:-40px; left:0; font-size:12px; color:#222; background:white; padding:6px 10px; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0; font-weight:500;">25%</div>
+                    </div>
+                </div>
+                
+                <!-- Minimum Time to Close -->
+                <div style="margin-bottom:16px;">
+                    <label style="font-size:14px; color:#333; margin-bottom:8px; display:block; font-weight:500;">Minimum Time to Close:</label>
+                    <div style="display:flex; align-items:center; gap:10px;">
+                        <div style="display:flex; align-items:center; border:1px solid #ddd; border-radius:6px; background:white;">
+                            <button id="mobileAutoStopMinTTCDown" style="padding:10px 14px; border:none; background:#f8f9fa; cursor:pointer; border-right:1px solid #ddd; border-radius:6px 0 0 6px; font-size:14px;">▼</button>
+                            <span id="mobileAutoStopMinTTCDisplay" style="padding:10px 18px; font-size:14px; color:#333; min-width:70px; text-align:center; font-weight:500;">01:00</span>
+                            <button id="mobileAutoStopMinTTCUp" style="padding:10px 14px; border:none; background:#f8f9fa; cursor:pointer; border-left:1px solid #ddd; border-radius:0 6px 6px 0; font-size:14px;">▲</button>
+                        </div>
+                        <input type="hidden" id="mobileAutoStopMinTTCInput" value="60" />
+                    </div>
+                </div>
+                
+                <!-- Momentum Spike Settings -->
+                <div style="margin-bottom:16px;">
+                    <div style="display:flex; align-items:center; margin-bottom:8px;">
+                        <input type="checkbox" id="mobileMomentumSpikeEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
+                        <span style="font-size:13px; color:#666;">Auto-close trades during momentum spikes</span>
+                    </div>
+                    <label style="font-size:14px; color:#333; margin-bottom:8px; display:block; font-weight:500;">Momentum Spike Threshold (±):</label>
+                    <div style="position:relative; width:100%;">
+                        <input type="range" id="mobileMomentumSpikeThresholdSlider" min="10" max="100" value="35" style="width:100%; height:8px; background:#e0e0e0; border-radius:4px; outline:none;" />
+                        <div id="mobileMomentumSpikeThresholdValueDisplay" style="position:absolute; top:-40px; left:0; font-size:12px; color:#222; background:white; padding:6px 10px; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0; font-weight:500;">±35</div>
+                    </div>
+                </div>
+                
+                <!-- Verification Period Settings -->
+                <div style="margin-bottom:16px;">
+                    <div style="display:flex; align-items:center; margin-bottom:8px;">
+                        <input type="checkbox" id="mobileVerificationPeriodEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
+                        <span style="font-size:13px; color:#666;">Enable verification period before auto-stop</span>
+                    </div>
+                    <label style="font-size:14px; color:#333; margin-bottom:8px; display:block; font-weight:500;">Verification Duration (seconds):</label>
+                    <div style="position:relative; width:100%;">
+                        <input type="range" id="mobileVerificationPeriodSlider" min="5" max="60" value="15" style="width:100%; height:8px; background:#e0e0e0; border-radius:4px; outline:none;" />
+                        <div id="mobileVerificationPeriodValueDisplay" style="position:absolute; top:-40px; left:0; font-size:12px; color:#222; background:white; padding:6px 10px; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0; font-weight:500;">15s</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Position Sizing Settings Section -->
+            <div style="margin-bottom:24px;">
+                <div style="font-size:16px; font-weight:600; color:#333; margin-bottom:16px; border-bottom:1px solid #eee; padding-bottom:8px;">Position Sizing</div>
+                
+                <!-- Position Type Toggle -->
+                <div style="margin-bottom:16px;">
+                    <label style="font-size:14px; color:#333; margin-bottom:8px; display:block; font-weight:500;">Position Type:</label>
+                    <div style="display:flex; align-items:center; gap:8px; background:#f8f9fa; border-radius:6px; padding:8px;">
+                        <button id="mobilePositionTypePercent" class="mobile-position-type-btn active" data-type="percent" style="flex:1; padding:8px 12px; border:1px solid #ddd; background:white; border-radius:4px; font-size:13px; cursor:pointer; font-weight:500;">Percentage</button>
+                        <button id="mobilePositionTypeContracts" class="mobile-position-type-btn" data-type="contracts" style="flex:1; padding:8px 12px; border:1px solid #ddd; background:#f8f9fa; border-radius:4px; font-size:13px; cursor:pointer; font-weight:500;">Contracts</button>
+                    </div>
+                </div>
+                
+                <!-- Position Size Input -->
+                <div style="margin-bottom:16px;">
+                    <label style="font-size:14px; color:#333; margin-bottom:8px; display:block; font-weight:500;">Position Size:</label>
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <input type="number" id="mobilePositionSize" min="1" max="100" value="20" style="flex:1; padding:10px 12px; border:1px solid #ddd; border-radius:6px; font-size:14px; background:white;" />
+                        <span id="mobilePositionSizeLabel" style="font-size:14px; color:#666; font-weight:500; min-width:60px;">%</span>
+                    </div>
+                </div>
+                
+                <!-- Multiplier Buttons -->
+                <div style="margin-bottom:16px;">
+                    <label style="font-size:14px; color:#333; margin-bottom:8px; display:block; font-weight:500;">Multiplier:</label>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                        <button class="mobile-multiplier-btn active" data-multiplier="1" style="padding:8px 12px; border:1px solid #007bff; background:#007bff; color:white; border-radius:4px; font-size:13px; cursor:pointer; font-weight:500;">1x</button>
+                        <button class="mobile-multiplier-btn" data-multiplier="2" style="padding:8px 12px; border:1px solid #ddd; background:white; color:#333; border-radius:4px; font-size:13px; cursor:pointer; font-weight:500;">2x</button>
+                        <button class="mobile-multiplier-btn" data-multiplier="3" style="padding:8px 12px; border:1px solid #ddd; background:white; color:#333; border-radius:4px; font-size:13px; cursor:pointer; font-weight:500;">3x</button>
+                        <button class="mobile-multiplier-btn" data-multiplier="4" style="padding:8px 12px; border:1px solid #ddd; background:white; color:#333; border-radius:4px; font-size:13px; cursor:pointer; font-weight:500;">4x</button>
+                        <button class="mobile-multiplier-btn" data-multiplier="5" style="padding:8px 12px; border:1px solid #ddd; background:white; color:#333; border-radius:4px; font-size:13px; cursor:pointer; font-weight:500;">5x</button>
+                    </div>
+                </div>
+                
+                <!-- Total Position Display -->
+                <div style="margin-bottom:16px;">
+                    <label style="font-size:14px; color:#333; margin-bottom:8px; display:block; font-weight:500;">Total Position:</label>
+                    <div style="background:#f8f9fa; border:1px solid #ddd; border-radius:6px; padding:12px; text-align:center;">
+                        <div id="mobileTotalPositionDisplay" style="font-size:16px; font-weight:600; color:#333;">0 contracts</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Action Buttons -->
+            <div style="display:flex; gap:12px; justify-content:center; align-items:center; margin-top:20px;">
+                <button id="mobileSettingsCancel" style="padding:12px 24px; border-radius:6px; border:1px solid #ddd; background:#f8f9fa; color:#333; font-size:14px; cursor:pointer; font-weight:500; flex:1;">Cancel</button>
+                <button id="mobileSettingsSave" style="padding:12px 24px; border-radius:6px; border:none; background:#007bff; color:white; font-size:14px; cursor:pointer; font-weight:500; flex:1;">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Wait for port configuration to be ready (same as desktop version)
+        async function waitForPortConfig() {
+            let attempts = 0;
+            const maxAttempts = 50; // 5 seconds with 100ms intervals
+            
+            while (attempts < maxAttempts) {
+                try {
+                    // Check if port configuration is loaded
+                    if (typeof getActiveTradeSupervisorUrl === 'function') {
+                        // Test if the function works
+                        getActiveTradeSupervisorUrl('/test');
+                        console.log('[MOBILE] Port configuration loaded successfully');
+                        return true;
+                    }
+                } catch (error) {
+                    // Port config not ready yet
+                }
+                
+                await new Promise(resolve => setTimeout(resolve, 100));
+                attempts++;
+            }
+            
+            throw new Error('Port configuration not loaded after 5 seconds - system cannot function without universal port management');
+        }
+
+        // Mobile-specific initialization
+        document.addEventListener('DOMContentLoaded', async function() {
+            console.log('Mobile trade monitor initialized');
+            
+            // Wait for port configuration to be ready
+            await waitForPortConfig();
+            
+            // Initialize toggle controls
+            initializeMobileToggles();
+            
+            // Initialize position controls
+            initializePositionControls();
+            
+            // Initialize WebSocket for real-time updates
+            initializeWebSocket();
+            
+            // Start TTC clock
+            startTTCClock();
+            
+            // Initial data fetches (BTC price and TTC now come from strike table data)
+            // Momentum score still fetched from core data initially
+            fetch(window.location.origin + '/core').then(response => response.json()).then(data => {
+                // Update momentum score
+                if (data.weighted_momentum_score !== undefined) {
+                    const momentumEl = document.getElementById('momentum-score-display');
+                    if (momentumEl) {
+                        const score = data.weighted_momentum_score;
+                        const formatted = score >= 0 ? `+${(score * 100).toFixed(0)}` : `${(score * 100).toFixed(0)}`;
+                        momentumEl.textContent = formatted;
+                    }
+                }
+            }).catch(console.error);
+            
+
+            
+            // Initial BTC price changes fetch
+            fetch(window.location.origin + '/btc_price_changes').then(response => response.json()).then(data => {
+                // Update price change displays
+                if ('change1h' in data) {
+                    const el = document.getElementById('change-1h');
+                    if (el) {
+                        const num = parseFloat(data.change1h);
+                        if (!isNaN(num)) {
+                            const triangle = num >= 0 ? " ▲" : " ▼";
+                            el.textContent = `${Math.abs(num).toFixed(2)}%${triangle}`;
+                            el.style.color = "#fff";
+                            el.style.backgroundColor = num >= 0 ? "#28a745" : "#dc3545";
+                            el.style.padding = "2px 6px";
+                            el.style.borderRadius = "4px";
+                            el.style.display = "inline-block";
+                        }
+                    }
+                }
+                if ('change3h' in data) {
+                    const el = document.getElementById('change-3h');
+                    if (el) {
+                        const num = parseFloat(data.change3h);
+                        if (!isNaN(num)) {
+                            const triangle = num >= 0 ? " ▲" : " ▼";
+                            el.textContent = `${Math.abs(num).toFixed(2)}%${triangle}`;
+                            el.style.color = "#fff";
+                            el.style.backgroundColor = num >= 0 ? "#28a745" : "#dc3545";
+                            el.style.padding = "2px 6px";
+                            el.style.borderRadius = "4px";
+                            el.style.display = "inline-block";
+                        }
+                    }
+                }
+                if ('change1d' in data) {
+                    const el = document.getElementById('change-1d');
+                    if (el) {
+                        const num = parseFloat(data.change1d);
+                        if (!isNaN(num)) {
+                            const triangle = num >= 0 ? " ▲" : " ▼";
+                            el.textContent = `${Math.abs(num).toFixed(2)}%${triangle}`;
+                            el.style.color = "#fff";
+                            el.style.backgroundColor = num >= 0 ? "#28a745" : "#dc3545";
+                            el.style.padding = "2px 6px";
+                            el.style.borderRadius = "4px";
+                            el.style.display = "inline-block";
+                        }
+                    }
+                }
+            }).catch(console.error);
+            
+            // Start data polling
+            startMobileDataPolling();
+            // Start Active Trade Supervisor polling
+            startActiveTradeSupervisorPolling();
+            
+            // Fetch initial auto entry indicator status
+            fetchInitialAutoEntryIndicator();
+            
+
+        });
+
+        function initializeMobileToggles() {
+            // Auto Trade Toggle (hardcoded to monitor 10002)
+            const mobileAutoTradeToggle = document.getElementById('mobileAutoTradeToggle');
+            if (mobileAutoTradeToggle) {
+                mobileAutoTradeToggle.addEventListener('click', async function() {
+                    const enabled = !this.classList.contains('active');
+                    
+                    // Prevent multiple clicks during request
+                    if (this.classList.contains('loading')) return;
+                    
+                    // Add loading state
+                    this.classList.add('loading');
+                    
+                    // Immediate visual feedback
+                    this.classList.toggle('active');
+                    
+                    try {
+                        // Hardcoded to monitor 10002 as requested
+                        const formattedMonitorId = 'MON_0001_10002';
+                        
+                        const response = await fetch('/api/monitor/toggle-auto-trade', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ 
+                                monitor_id: formattedMonitorId, 
+                                auto_trade: enabled 
+                            })
+                        });
+                        
+                        const data = await response.json();
+                        if (data.status === 'ok') {
+                            console.log('Successfully updated auto trade in database');
+                        } else {
+                            // Revert if failed
+                            this.classList.toggle('active');
+                            console.error('Failed to update auto trade:', data.message);
+                            alert(`Failed to update auto trade: ${data.message}`);
+                        }
+                    } catch (error) {
+                        // Revert if failed
+                        this.classList.toggle('active');
+                        console.error('Error updating auto trade:', error);
+                        alert(`Error updating auto trade: ${error.message}`);
+                    } finally {
+                        // Remove loading state
+                        this.classList.remove('loading');
+                    }
+                });
+            }
+
+            // Plus/Minus Toggle (local only, defaults to ON)
+            const plusMinusToggle = document.getElementById('plusMinusToggle');
+            if (plusMinusToggle) {
+                plusMinusToggle.addEventListener('click', function() {
+                    const enabled = !this.classList.contains('active');
+                    
+                    // Immediate visual feedback
+                    this.classList.toggle('active');
+                    
+                    // Update strike table (local only)
+                    if (window.StrikeTable && window.StrikeTable.setDiffMode) {
+                        window.StrikeTable.setDiffMode(enabled);
+                    }
+                });
+            }
+
+            // Load initial toggle states
+            loadToggleStates();
+        }
+
+        // WebSocket connection for real-time updates
+        function initializeWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${protocol}//${window.location.host}/ws/preferences`);
+            
+            ws.onopen = function() {
+                console.log('WebSocket connected for preferences');
+            };
+            
+            ws.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    updateTogglesFromWebSocket(data);
+                } catch (error) {
+                    console.error('Error parsing WebSocket message:', error);
+                }
+            };
+            
+            ws.onclose = function() {
+                console.log('WebSocket disconnected, attempting to reconnect...');
+                setTimeout(initializeWebSocket, 1000);
+            };
+            
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        function updateTogglesFromWebSocket(data) {
+            // === Auto Trade Status Change ===
+            if (data.type === 'auto_trade_status_change') {
+                // Check if this is for our hardcoded monitor mon_0001_10002
+                if (data.data.monitor_id === 'mon_0001_10002') {
+                    const statusData = {
+                        status: data.data.auto_trade_status,
+                        enabled: data.data.auto_trade_status === 'ACTIVE' || data.data.auto_trade_status === 'INACTIVE',
+                        cooldown_timer: latestCooldownTimer // Include the stored cooldown timer value
+                    };
+                    
+                    console.log('📊 Updating display with WebSocket data:', statusData);
+                    
+                    // Clear cooldown timer if status is not PAUSED
+                    if (data.data.auto_trade_status !== 'PAUSED') {
+                        latestCooldownTimer = 0;
+                        console.log('🧹 Cleared cooldown timer (status is not PAUSED)');
+                    }
+                    
+                    updateAutoEntryIndicator(statusData);
+                    console.log('✅ Display updated successfully');
+                }
+                return; // Don't process other WebSocket messages for this type
+            }
+            
+            // === Cooldown Timer Change ===
+            if (data.type === 'cooldown_timer_change') {
+                console.log('Cooldown timer change received in trade monitor (mobile):', data);
+                
+                // Check if this is for our hardcoded monitor mon_0001_10002
+                if (data.data.monitor_id === 'mon_0001_10002') {
+                    console.log('🔄 Cooldown timer change affects current monitor, storing timer value...');
+                    
+                    // Store the latest cooldown timer value (don't update display yet)
+                    latestCooldownTimer = data.data.cooldown_timer;
+                    console.log('📊 Stored cooldown timer value:', latestCooldownTimer);
+                    
+                    // Only update display if we already have a PAUSED status
+                    // The status message will handle the actual display update
+                } else {
+                    console.log('⚠️ Cooldown timer change for different monitor:', data.data.monitor_id);
+                }
+                
+                return; // Don't process other WebSocket messages for this type
+            }
+            
+            // === Legacy Auto Entry Indicator Change (fallback) ===
+            if (data.type === 'auto_entry_indicator_change') {
+                console.log('🔔 Legacy auto entry indicator change:', data.data);
+                updateAutoEntryIndicator(data.data);
+                return; // Don't process other WebSocket messages for this type
+            }
+            
+            // === Active Trades Change ===
+            if (data.type === 'active_trades_change') {
+                console.log('🔔 Active trades change:', data.data);
+                updateActiveTradeIndicators(data.data.active_trades);
+                return; // Don't process other WebSocket messages for this type
+            }
+
+            // Momentum now consolidated in strike table - no separate WebSocket handler needed
+            
+            // Update Auto Trade toggle (hardcoded to monitor 10002)
+            const mobileAutoTradeToggle = document.getElementById('mobileAutoTradeToggle');
+            if (mobileAutoTradeToggle && data.auto_trade !== undefined) {
+                mobileAutoTradeToggle.classList.toggle('active', data.auto_trade);
+            }
+            
+            // Diff mode is local only - no WebSocket updates needed
+            
+            // Position variables are now loaded from monitor_list
+            
+            updatePositionDisplay();
+        }
+
+        function startTTCClock() {
+            // TTC is now handled by the strike table data polling
+            // No separate TTC polling needed
+        }
+
+        async function loadToggleStates() {
+            try {
+                // Load auto trade state for monitor 10002 (hardcoded as requested)
+                const monitorResponse = await fetch('/api/monitor/10002?user_id=user_0001');
+                const monitorData = await monitorResponse.json();
+                
+                // Set Auto Trade toggle
+                const mobileAutoTradeToggle = document.getElementById('mobileAutoTradeToggle');
+                if (mobileAutoTradeToggle && monitorData.status === 'ok' && monitorData.monitor) {
+                    mobileAutoTradeToggle.classList.remove('active');
+                    if (monitorData.monitor.auto_trade === true) {
+                        mobileAutoTradeToggle.classList.add('active');
+                    }
+                }
+                
+                // Set Plus/Minus toggle (defaults to ON, local only)
+                const plusMinusToggle = document.getElementById('plusMinusToggle');
+                if (plusMinusToggle) {
+                    plusMinusToggle.classList.remove('active');
+                    plusMinusToggle.classList.add('active'); // Always ON by default
+                }
+                
+                // Position variables are now loaded from monitor_list, not trade_preferences
+                
+                await updatePositionDisplay();
+            } catch (error) {
+                console.error('Error loading toggle states:', error);
+            }
+        }
+
+        async function updatePositionDisplay() {
+            try {
+                const [preferencesResponse, bankrollResponse, totalPositionResponse] = await Promise.all([
+                    fetch(window.location.origin + '/api/get_preferences'),
+                    fetch(window.location.origin + '/api/account/balance'),
+                    fetch(window.location.origin + '/api/total_position')
+                ]);
+                
+                const preferences = await preferencesResponse.json();
+                const bankrollData = await bankrollResponse.json();
+                const totalPositionData = await totalPositionResponse.json();
+                
+                const bankrollValue = document.getElementById('bankroll-value');
+                if (bankrollValue && bankrollData.bankroll_current !== undefined) {
+                    const bankrollInDollars = bankrollData.bankroll_current / 100;
+                    bankrollValue.textContent = '$' + Number(bankrollInDollars).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                }
+                
+                // Get total_position directly from the simple endpoint
+                const totalPositionValue = document.getElementById('total-position-value');
+                if (totalPositionValue && totalPositionData.total_position !== undefined) {
+                    totalPositionValue.textContent = totalPositionData.total_position;
+                }
+                
+            } catch (error) {
+                console.error('Error updating position display:', error);
+            }
+        }
+
+        function initializePositionControls() {
+            const positionInput = document.getElementById('position-size');
+            const multiplierButtons = document.querySelectorAll('.multiplier-btn');
+            
+            // Position size input handler
+            if (positionInput) {
+                positionInput.addEventListener('change', async function() {
+                    const value = parseInt(this.value, 10) || 100;
+                    console.log('Position size changed to:', value);
+                    
+                    try {
+                        // Send position variable update to monitor_manager
+                        if (currentMonitorId) {
+                            const positionType = document.getElementById('toggle-percent')?.style.backgroundColor === 'rgb(0, 123, 255)' ? 'percent' : 'contracts';
+                            const activeMultiplier = Array.from(multiplierButtons).find(btn => btn.classList.contains('active'));
+                            const multiplier = activeMultiplier ? parseFloat(activeMultiplier.dataset.multiplier) : 1.0;
+                            
+                            // Get monitor_manager port dynamically
+                            const portResponse = await fetch('/api/ports');
+                            const portInfo = await portResponse.json();
+                            const monitorManagerPort = portInfo.ports.monitor_manager;
+                            const response = await fetch(`http://localhost:${monitorManagerPort}/api/update_monitor_position`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    monitor_id: currentMonitorId,
+                                    position_size: value,
+                                    position_type: positionType,
+                                    multiplier: multiplier
+                                })
+                            });
+                            
+                            if (response.ok) {
+                                console.log('Monitor position updated successfully');
+                                // Position display will be updated by monitor_manager WebSocket notification
+                            } else {
+                                const errorText = await response.text();
+                                console.error('Failed to update monitor position:', errorText);
+                                alert(`Failed to update monitor position: ${response.status} ${response.statusText}`);
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error updating monitor position:', error);
+                    }
+                });
+            }
+            
+            // Multiplier button handlers
+            multiplierButtons.forEach(btn => {
+                btn.addEventListener('click', async function() {
+                    const multiplier = parseInt(this.dataset.multiplier, 10);
+                    console.log('Multiplier button clicked:', multiplier);
+                    
+                    // Update UI
+                    multiplierButtons.forEach(b => b.classList.remove('active'));
+                    this.classList.add('active');
+                    updatePositionDisplay();
+                    
+                    try {
+                        // Send position variable update to monitor_manager
+                        if (currentMonitorId) {
+                            const positionSize = parseInt(document.getElementById('position-size').value || 1);
+                            const positionType = document.getElementById('toggle-percent')?.style.backgroundColor === 'rgb(0, 123, 255)' ? 'percent' : 'contracts';
+                            
+                            // Get monitor_manager port dynamically
+                            const portResponse = await fetch('/api/ports');
+                            const portInfo = await portResponse.json();
+                            const monitorManagerPort = portInfo.ports.monitor_manager;
+                            const response = await fetch(`http://localhost:${monitorManagerPort}/api/update_monitor_position`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    monitor_id: currentMonitorId,
+                                    position_size: positionSize,
+                                    position_type: positionType,
+                                    multiplier: multiplier
+                                })
+                            });
+                            
+                            if (response.ok) {
+                                console.log('Monitor position updated successfully');
+                                // Position display will be updated by monitor_manager WebSocket notification
+                            } else {
+                                const errorText = await response.text();
+                                console.error('Failed to update monitor position:', errorText);
+                                alert(`Failed to update monitor position: ${response.status} ${response.statusText}`);
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error updating monitor position:', error);
+                    }
+                });
+            });
+        }
+
+        function startMobileDataPolling() {
+            // Poll for strike table data (includes BTC price, TTC, and momentum)
+            setInterval(async () => {
+                try {
+                    // Fetch strike table data (includes BTC price, TTC, and market title)
+                    const strikeResponse = await fetch(window.location.origin + '/api/strike_tables/btc');
+                    if (strikeResponse.ok) {
+                        const strikeData = await strikeResponse.json();
+                        
+                        // Update market title
+                        const marketTitleEl = document.querySelector('.market-title');
+                        if (marketTitleEl) {
+                            // Extract time from market_title (same logic as main trade monitor)
+                            const marketTitle = strikeData.market_title || '';
+                            
+                            // Try new format first: "BTC price on Aug 25 at 5pm"
+                            let timeMatch = marketTitle.match(/at\s+(\d{1,2}(?:am|pm))$/i);
+                            let timeStr = '11pm'; // default
+                            
+                            if (timeMatch) {
+                                timeStr = timeMatch[1].trim();
+                            } else {
+                                // Fallback to old format: "Bitcoin price on Jul 22, 2025 at 3pm EDT?"
+                                timeMatch = marketTitle.match(/at\s+(.+?)\s+(?:EDT|EST)\?/i);
+                                if (timeMatch) {
+                                    timeStr = timeMatch[1].trim();
+                                }
+                            }
+                            
+                            // Format as "<symbol> price today at <time>?" (same as main trade monitor)
+                            const symbol = strikeData.symbol || 'BTC';
+                            const formattedTitle = `${symbol} price today at ${timeStr}?`;
+                            
+                            marketTitleEl.textContent = formattedTitle;
+                        }
+                        
+                        // Update BTC price display from strike table data
+                        if (strikeData.current_price !== undefined) {
+                            const price = Number(strikeData.current_price);
+                            const priceEl = document.getElementById('btc-price-value');
+                            if (priceEl) {
+                                priceEl.textContent = `$${price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                            }
+                        }
+                        
+                        // Update TTC clock from strike table data
+                        if (strikeData.ttc !== undefined) {
+                            const ttcClock = document.getElementById('ttc-clock');
+                            if (ttcClock) {
+                                const formatTTC = (seconds) => {
+                                    if (seconds === null || seconds === undefined || isNaN(seconds)) {
+                                        return '--:--';
+                                    }
+                                    
+                                    const totalMinutes = Math.floor(seconds / 60);
+                                    const remainingSeconds = seconds % 60;
+                                    
+                                    if (totalMinutes >= 60) {
+                                        const hours = Math.floor(totalMinutes / 60);
+                                        const minutes = totalMinutes % 60;
+                                        return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+                                    } else {
+                                        return `${totalMinutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+                                    }
+                                };
+                                
+                                ttcClock.textContent = formatTTC(strikeData.ttc);
+                                
+                                // Apply color coding
+                                ttcClock.style.backgroundColor = '';
+                                ttcClock.style.color = '';
+                                ttcClock.style.borderRadius = '';
+                                ttcClock.style.padding = '';
+                                
+                                if (strikeData.ttc >= 0 && strikeData.ttc <= 180) {
+                                    ttcClock.style.backgroundColor = '#d2372b';
+                                    ttcClock.style.color = '#fff';
+                                    ttcClock.style.borderRadius = '6px';
+                                    ttcClock.style.padding = '8px';
+                                } else if (strikeData.ttc <= 300) {
+                                    ttcClock.style.backgroundColor = '#ffc107';
+                                    ttcClock.style.color = '#fff';
+                                    ttcClock.style.borderRadius = '6px';
+                                    ttcClock.style.padding = '8px';
+                                } else if (strikeData.ttc <= 720) {
+                                    ttcClock.style.backgroundColor = '#45d34a';
+                                    ttcClock.style.color = '#fff';
+                                    ttcClock.style.borderRadius = '6px';
+                                    ttcClock.style.padding = '8px';
+                                } else if (strikeData.ttc <= 900) {
+                                    ttcClock.style.backgroundColor = '#45d34a';
+                                    ttcClock.style.color = '#fff';
+                                    ttcClock.style.borderRadius = '6px';
+                                    ttcClock.style.padding = '8px';
+                                }
+                            }
+                        }
+                        
+                        // Update momentum score from consolidated strike table data
+                        
+                        // Auto trade status is handled by WebSocket, no periodic refresh needed
+                        if (strikeData.momentum && strikeData.momentum.weighted_score !== undefined) {
+                            const momentumEl = document.getElementById('momentum-score-display');
+                            if (momentumEl) {
+                                const score = strikeData.momentum.weighted_score;
+                                const formatted = score >= 0 ? `+${(score * 100).toFixed(0)}` : `${(score * 100).toFixed(0)}`;
+                                momentumEl.textContent = formatted;
+                            }
+                        }
+                        
+                        // Update fingerprint display from consolidated strike table data
+                        if (strikeData.fingerprint) {
+                            const fingerprintEl = document.getElementById('fingerprint-display');
+                            if (fingerprintEl) {
+                                fingerprintEl.textContent = `Fingerprint: ${strikeData.fingerprint}`;
+                            }
+                        }
+                    }
+                    
+                    // Update strike table
+                    await updateMobileStrikeTable();
+                    
+                } catch (error) {
+                    console.error('Error in mobile data polling:', error);
+                }
+            }, 1000); // Poll every second (same as main trade monitor)
+
+            // Force redraw strike table every 30 seconds
+            setInterval(async () => {
+                try {
+                    console.log('Force redrawing mobile strike table...');
+                    // Clear the strike rows map to force a complete rebuild
+                    mobileStrikeRowsMap.clear();
+                    // Trigger a full strike table update
+                    await updateMobileStrikeTable();
+                } catch (error) {
+                    console.error('Error in force redraw:', error);
+                }
+            }, 30000); // Force redraw every 30 seconds
+
+            // Mobile monitor doesn't have price change display elements - no polling needed
+
+            // Toggle states are now handled by WebSocket - no polling needed
+
+            // Auto trade status polling (backup to WebSocket, every 30 seconds)
+            setInterval(async () => {
+                try {
+                    fetchInitialAutoEntryIndicator();
+                } catch (error) {
+                    // Silent error handling
+                }
+            }, 30000); // Every 30 seconds
+
+
+        }
+
+
+
+        // Mobile Strike Table - Using same efficient logic as desktop
+        let mobileStrikeRowsMap = new Map(); // Track row elements like desktop version
+        
+        // Initialize mobile strike table once (like desktop)
+        function initializeMobileStrikeTable(basePrice) {
+            const strikeTableBody = document.querySelector('#strike-table tbody');
+            if (!strikeTableBody) return;
+            
+            // Clear existing table
+            strikeTableBody.innerHTML = '';
+            mobileStrikeRowsMap.clear();
+            
+            // Build strikes around current price (4 above, 4 below)
+            const strikes = [];
+            for (let i = -4; i <= 4; i++) {
+                strikes.push(basePrice + (i * 250));
+            }
+            
+            strikes.forEach((strike, idx) => {
+                const row = document.createElement('tr');
+                
+                // Strike cell
+                const strikeTd = document.createElement('td');
+                strikeTd.textContent = '$' + strike.toLocaleString();
+                row.appendChild(strikeTd);
+                
+                // Buffer cell
+                const bufferTd = document.createElement('td');
+                row.appendChild(bufferTd);
+                
+                // Buffer % cell
+                const bufferPctTd = document.createElement('td');
+                row.appendChild(bufferPctTd);
+                
+                // Probability cell
+                const probTd = document.createElement('td');
+                row.appendChild(probTd);
+                
+                // Yes button cell and span
+                const yesTd = document.createElement('td');
+                const yesSpan = document.createElement('span');
+                yesTd.appendChild(yesSpan);
+                row.appendChild(yesTd);
+                
+                // No button cell and span
+                const noTd = document.createElement('td');
+                const noSpan = document.createElement('span');
+                noTd.appendChild(noSpan);
+                row.appendChild(noTd);
+                
+                strikeTableBody.appendChild(row);
+                
+                // Store row references (like desktop version)
+                mobileStrikeRowsMap.set(strike, {
+                    row,
+                    bufferTd,
+                    bufferPctTd,
+                    probTd,
+                    yesSpan,
+                    noSpan
+                });
+            });
+            
+            // Add spanner row
+            const spannerRow = createMobileSpannerRow();
+            strikeTableBody.appendChild(spannerRow);
+        }
+        
+        // Create spanner row for mobile
+        function createMobileSpannerRow() {
+            const spannerRow = document.createElement('tr');
+            spannerRow.className = 'spanner-row';
+            const spannerTd = document.createElement('td');
+            spannerTd.colSpan = 6;
+            spannerTd.textContent = 'Loading...';
+            spannerRow.appendChild(spannerTd);
+            return spannerRow;
+        }
+        
+        // Update mobile strike table efficiently (like desktop)
+        async function updateMobileStrikeTable() {
+            try {
+                const response = await fetch(window.location.origin + '/api/strike_tables/btc');
+                if (!response.ok) return;
+                
+                const data = await response.json();
+                if (!data.strikes) return;
+                
+                const currentPrice = data.current_price || 0;
+                const currentPriceFloat = parseFloat(currentPrice);
+                
+                // Initialize table if needed
+                if (mobileStrikeRowsMap.size === 0) {
+                    const base = Math.round(currentPriceFloat / 250) * 250;
+                    initializeMobileStrikeTable(base);
+                }
+                
+                // Update each strike row with data (like desktop)
+                mobileStrikeRowsMap.forEach((cells, strike) => {
+                    const { row, bufferTd, bufferPctTd, probTd, yesSpan, noSpan } = cells;
+                    
+                    // Find matching strike data
+                    const strikeData = data.strikes.find(s => parseFloat(s.strike) === strike);
+                    
+                    if (strikeData) {
+                        // Update buffer
+                        const buffer = strikeData.buffer ? Math.round(strikeData.buffer).toLocaleString() : '—';
+                        bufferTd.textContent = buffer;
+                        
+                        // Update buffer %
+                        const bufferPct = strikeData.buffer_pct ? strikeData.buffer_pct.toFixed(2) : '—';
+                        bufferPctTd.textContent = bufferPct;
+                        
+                        // Update probability
+                        const probability = strikeData.probability ? strikeData.probability.toFixed(1) : '—';
+                        probTd.textContent = probability;
+                        
+                        // Risk-based color formatting
+                        const prob = strikeData.probability;
+                        if (prob) {
+                            row.classList.remove('ultra-safe', 'safe', 'caution', 'high-risk', 'danger-stop');
+                            let riskClass = '';
+                            if (prob >= 98) riskClass = 'ultra-safe';
+                            else if (prob >= 95) riskClass = 'safe';
+                            else if (prob >= 80) riskClass = 'caution';
+                            else riskClass = 'high-risk';
+                            row.classList.add(riskClass);
+                        }
+                        
+                        // Update Yes/No buttons
+                        const yesAsk = strikeData.yes_ask;
+                        const noAsk = strikeData.no_ask;
+                        const volume = strikeData.volume;
+                        
+                        // Check if DIFF MODE is enabled
+                        const plusMinusToggle = document.getElementById('plusMinusToggle');
+                        const isDiffMode = plusMinusToggle && plusMinusToggle.classList.contains('active');
+                        
+                        // Determine display values
+                        let yesPrice = '—';
+                        let noPrice = '—';
+                        
+                        if (yesAsk && yesAsk !== '—' && yesAsk !== 0) {
+                            if (isDiffMode && strikeData.yes_diff !== null && strikeData.yes_diff !== undefined) {
+                                yesPrice = strikeData.yes_diff > 0 ? `+${Math.round(strikeData.yes_diff)}` : `${Math.round(strikeData.yes_diff)}`;
+                            } else {
+                                yesPrice = yesAsk.toString();
+                            }
+                        }
+                        
+                        if (noAsk && noAsk !== '—' && noAsk !== 0) {
+                            if (isDiffMode && strikeData.no_diff !== null && strikeData.no_diff !== undefined) {
+                                noPrice = strikeData.no_diff > 0 ? `+${Math.round(strikeData.no_diff)}` : `${Math.round(strikeData.no_diff)}`;
+                            } else {
+                                noPrice = noAsk.toString();
+                            }
+                        }
+                        
+                        // Apply enable/disable logic
+                        const volumeNum = parseInt(volume) || 0;
+                        const volumeOk = volumeNum >= 1000;
+                        const yesPriceOk = yesAsk && yesAsk <= 98;
+                        const noPriceOk = noAsk && noAsk <= 98;
+                        const isAboveMoneyLine = strike > currentPriceFloat;
+                        
+                        let yesEnabled = false;
+                        let noEnabled = false;
+                        
+                        if (volumeOk) {
+                            if (isAboveMoneyLine) {
+                                noEnabled = noPriceOk;
+                                yesEnabled = false;
+                            } else {
+                                yesEnabled = yesPriceOk;
+                                noEnabled = false;
+                            }
+                        }
+                        
+                        // Update button classes and content
+                        yesSpan.className = yesEnabled ? 'price-box-mobile' : 'price-box-mobile disabled';
+                        noSpan.className = noEnabled ? 'price-box-mobile' : 'price-box-mobile disabled';
+                        yesSpan.textContent = yesPrice;
+                        noSpan.textContent = noPrice;
+                        
+                        // Set data attributes (SAME AS DESKTOP)
+                        const ticker = strikeData.ticker || 'BTC-USD'; // Get ticker from strike data
+                        
+                        // Set data-ticker on the YES/NO cell's parent td (for reference, if needed)
+                        if (yesSpan.parentElement && ticker) {
+                            yesSpan.parentElement.setAttribute('data-ticker', ticker);
+                        }
+                        if (noSpan.parentElement && ticker) {
+                            noSpan.parentElement.setAttribute('data-ticker', ticker);
+                        }
+                        
+                        // Also set data-ticker directly on spanEl for easier access in openTrade
+                        if (ticker) {
+                            yesSpan.setAttribute('data-ticker', ticker);
+                            noSpan.setAttribute('data-ticker', ticker);
+                        }
+                        
+                        // Set data-strike and data-side for easier retrieval in openTrade
+                        yesSpan.setAttribute('data-strike', strike);
+                        noSpan.setAttribute('data-strike', strike);
+                        yesSpan.setAttribute('data-side', 'Y');
+                        noSpan.setAttribute('data-side', 'N');
+                        
+                        // Store the actual ask price for trade execution (not the display value)
+                        if (yesAsk && yesAsk !== '—' && yesAsk !== 0) {
+                            yesSpan.setAttribute('data-ask-price', yesAsk);
+                        } else {
+                            yesSpan.removeAttribute('data-ask-price');
+                        }
+                        
+                        if (noAsk && noAsk !== '—' && noAsk !== 0) {
+                            noSpan.setAttribute('data-ask-price', noAsk);
+                        } else {
+                            noSpan.removeAttribute('data-ask-price');
+                        }
+                        
+                        // Add click handlers
+                        if (yesEnabled) {
+                            yesSpan.onclick = () => handleStrikeTableButtonClick(yesSpan);
+                        } else {
+                            yesSpan.onclick = null;
+                        }
+                        
+                        if (noEnabled) {
+                            noSpan.onclick = () => handleStrikeTableButtonClick(noSpan);
+                        } else {
+                            noSpan.onclick = null;
+                        }
+                        
+                        // Update position indicator
+                        const strikeCell = row.querySelector('td:first-child');
+                        if (strikeCell) {
+                            updatePositionIndicator(strikeCell, strike);
+                        }
+                    } else {
+                        // No data for this strike, show placeholders
+                        bufferTd.textContent = '—';
+                        bufferPctTd.textContent = '—';
+                        probTd.textContent = '—';
+                        yesSpan.textContent = '—';
+                        noSpan.textContent = '—';
+                        yesSpan.className = 'price-box-mobile disabled';
+                        noSpan.className = 'price-box-mobile disabled';
+                    }
+                });
+                
+                // Update spanner row with current price and momentum
+                updateMobileSpannerRow(currentPriceFloat);
+                
+            } catch (error) {
+                console.error('Error updating mobile strike table:', error);
+            }
+        }
+        
+        // Update spanner row with current price and momentum
+        function updateMobileSpannerRow(currentPrice) {
+            const spannerRow = document.querySelector('#strike-table tbody .spanner-row');
+            if (!spannerRow) return;
+            
+            const spannerTd = spannerRow.querySelector('td');
+            if (!spannerTd) return;
+            
+            // Get momentum score for arrows
+            const momentumEl = document.getElementById('momentum-score-display');
+            let momentumScore = 0;
+            if (momentumEl && momentumEl.textContent) {
+                const val = parseFloat(momentumEl.textContent.replace(/[^\d\.\-]/g, ''));
+                momentumScore = isNaN(val) ? 0 : val;
+            }
+            
+            // Create momentum arrows
+            const svgDown = `<svg width="16" height="16" style="vertical-align:middle;" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 2v12M8 14l4-4M8 14l-4-4" stroke="#45d34a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+            const svgUp = `<svg width="16" height="16" style="vertical-align:middle;" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 14V2M8 2l4 4M8 2l-4 4" stroke="#dc3545" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+            
+            let arrowBlock = '';
+            const absMomentum = Math.abs(momentumScore);
+            if (absMomentum < 5) {
+                arrowBlock = '-';
+            } else if (absMomentum < 10) {
+                arrowBlock = momentumScore > 0 ? svgDown : svgUp;
+            } else if (absMomentum < 20) {
+                arrowBlock = (momentumScore > 0 ? svgDown : svgUp).repeat(2);
+            } else {
+                arrowBlock = (momentumScore > 0 ? svgDown : svgUp).repeat(3);
+            }
+            
+            spannerTd.innerHTML = `<span style="margin:0 12px;display:inline-block;">${arrowBlock}</span>Current Price: $${Math.round(currentPrice).toLocaleString()}<span style="margin:0 12px;display:inline-block;">${arrowBlock}</span>`;
+            
+            // Position spanner row correctly
+            const allRows = Array.from(document.querySelector('#strike-table tbody').children).filter(row => !row.classList.contains('spanner-row'));
+            let insertIndex = allRows.length;
+            
+            for (let i = 0; i < allRows.length; i++) {
+                const row = allRows[i];
+                const strikeCell = row.querySelector('td');
+                if (strikeCell && strikeCell.textContent) {
+                    const strikeText = strikeCell.textContent.replace(/[\$,]/g, '');
+                    const strike = parseFloat(strikeText);
+                    if (!isNaN(strike) && currentPrice < strike) {
+                        insertIndex = i;
+                        break;
+                    }
+                }
+            }
+            
+            // Remove spanner row from current position and insert at correct position
+            if (spannerRow.parentNode) {
+                spannerRow.remove();
+            }
+            
+            if (insertIndex < allRows.length) {
+                document.querySelector('#strike-table tbody').insertBefore(spannerRow, allRows[insertIndex]);
+            } else {
+                document.querySelector('#strike-table tbody').appendChild(spannerRow);
+            }
+        }
+
+        // Trade execution functions
+        function openTrade(element, strike, side, price) {
+            if (element.disabled) return;
+            
+            element.disabled = true;
+            
+            // Visual feedback
+            element.style.backgroundColor = '#007bff';
+            element.style.color = 'white';
+            
+            setTimeout(() => {
+                element.style.backgroundColor = '';
+                element.style.color = '';
+                element.disabled = false;
+            }, 500);
+            
+            // Execute trade
+            fetch(window.location.origin + '/api/trigger_trade', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    strike: strike,
+                    side: side,
+                    price: price,
+                    type: 'market'
+                })
+            }).catch(console.error);
+        }
+
+        // === EXACT SAME TRADE EXECUTION AS DESKTOP ===
+        // This replicates the desktop strike table button behavior exactly
+        
+        async function prepareTradeData(target) {
+            
+
+            
+            if (target?.disabled) {
+                return null;
+            }
+            
+            // Get the actual ask price from data attribute (not the display text)
+            const askPrice = target?.dataset?.askPrice;
+            
+            let buy_price = 0;
+            if (askPrice) {
+                // Convert from cents to dollars (e.g., "96" becomes 0.96)
+                buy_price = parseFloat(askPrice) / 100;
+            }
+            
+            // Get total_position from database instead of manual calculation
+            let position = null;
+            try {
+                const response = await fetch(window.location.origin + '/api/get_preferences');
+                if (response.ok) {
+                    const data = await response.json();
+                    position = data.total_position || 1;
+                } else {
+                    console.error('Failed to get total_position from database');
+                    position = 1; // Fallback
+                }
+            } catch (error) {
+                console.error('Error fetching total_position:', error);
+                position = 1; // Fallback
+            }
+            
+            // Get strike and side from button context
+            let strike = null;
+            let side = null;
+            let row = target.closest('tr');
+            
+            if (row) {
+                const strikeCell = row.querySelector('td');
+                if (strikeCell) {
+                    strike = parseFloat(strikeCell.textContent.replace(/\$|,/g, ''));
+                }
+                
+                // Determine side based on which button was clicked
+                if (target.classList.contains('yes-button') || target.textContent.includes('YES')) {
+                    side = 'Y';
+                } else if (target.classList.contains('no-button') || target.textContent.includes('NO')) {
+                    side = 'N';
+                } else {
+                    // Fallback: determine from button position in row
+                    const cells = row.querySelectorAll('td');
+                    if (cells.length >= 6) {
+                        const yesCell = cells[4]; // YES column
+                        const noCell = cells[5];  // NO column
+                        if (target.closest('td') === yesCell) {
+                            side = 'Y';
+                        } else if (target.closest('td') === noCell) {
+                            side = 'N';
+                        }
+                    }
+                }
+            }
+            
+            if (!strike || !side) {
+                console.error('Could not determine strike or side from button context');
+                return null;
+            }
+            
+            // Get ticker from strike table data (SAME AS DESKTOP)
+            let kalshiTicker = null;
+            if (strike) {
+                // Get ticker from the strike table data for this specific strike
+                const strikeFormatted = '$' + Number(strike).toLocaleString();
+                const strikeTableRows = document.querySelectorAll('#strike-table tbody tr');
+                
+                for (const row of strikeTableRows) {
+                    const firstTd = row.querySelector('td');
+                    if (!firstTd) continue;
+                    const firstTdText = firstTd.textContent.trim();
+                    
+                    if (firstTdText === strikeFormatted) {
+                        // Get ticker from the button's data attribute
+                        const yesButton = row.querySelector('.price-box-mobile:not(.disabled)');
+                        if (yesButton && yesButton.dataset.ticker) {
+                            kalshiTicker = yesButton.dataset.ticker;
+                        } else {
+                            const noButton = row.querySelector('.price-box-mobile:not(.disabled)');
+                            if (noButton && noButton.dataset.ticker) {
+                                kalshiTicker = noButton.dataset.ticker;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            
+            // Fallback to default if no ticker found
+            if (!kalshiTicker) {
+                kalshiTicker = 'BTC-USD';
+            }
+            
+            // Get contract name from ticker (SAME AS DESKTOP)
+            let contract = '';
+            if (kalshiTicker) {
+                const tickerMain = kalshiTicker.split('-T')[0];
+                const hourMatch = tickerMain.match(/(\d{2})$/);
+                if (hourMatch) {
+                    const hour = parseInt(hourMatch[1], 10);
+                    const ampm = hour >= 12 ? 'pm' : 'am';
+                    const displayHour = hour === 0 ? 12 : (hour > 12 ? hour - 12 : hour);
+                    contract = `BTC ${displayHour}${ampm}`;
+                } else {
+                    contract = kalshiTicker;
+                }
+            }
+            
+            // Get current BTC price
+            const symbol_open = typeof getCurrentBTCTickerPrice === 'function' ? getCurrentBTCTickerPrice() : null;
+            
+            // Get momentum from consolidated strike table data
+            let momentum = null;
+            try {
+                const strikeResponse = await fetch(window.location.origin + '/api/strike_tables/btc');
+                if (strikeResponse.ok) {
+                    const strikeData = await strikeResponse.json();
+                    if (strikeData.momentum && strikeData.momentum.weighted_score !== undefined) {
+                        momentum = strikeData.momentum.weighted_score;
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to fetch momentum from strike table:', error);
+            }
+            
+            // Get probability from the strike table
+            let prob = null;
+            if (strike) {
+                const strikeFormatted = '$' + Number(strike).toLocaleString();
+                const strikeTableRows = document.querySelectorAll('#strike-table tbody tr');
+                
+                for (const row of strikeTableRows) {
+                    const firstTd = row.querySelector('td');
+                    if (!firstTd) continue;
+                    const firstTdText = firstTd.textContent.trim();
+                    
+                    if (firstTdText === strikeFormatted) {
+                        const tds = row.querySelectorAll('td');
+                        if (tds.length > 3) {
+                            const probText = tds[3].textContent.trim(); // Prob column
+                            if (probText && probText !== '—') {
+                                prob = probText;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            
+            if (!prob) {
+                console.error('Could not determine probability for strike:', strike);
+                return null;
+            }
+            
+            const tradeData = {
+                symbol: 'BTC',
+                contract: contract,
+                strike: `$${Number(strike).toLocaleString()}`,
+                side: side,
+                ticker: kalshiTicker,
+                buy_price: buy_price,
+                position: position,
+                symbol_open: symbol_open,
+                momentum: momentum,
+                prob: prob,
+                trade_strategy: "Hourly HTC",
+                entry_method: "manual",
+                monitor: `mon_0001_${currentMonitorId}`
+            };
+            
+            return tradeData;
+        }
+        
+        // === EXACT SAME BUTTON CLICK HANDLER AS DESKTOP ===
+        async function handleStrikeTableButtonClick(spanEl) {
+            try {
+                const tradeData = await prepareTradeData(spanEl); // Use the same function as desktop
+                
+                if (!tradeData) {
+                    console.error('Missing trade data for strike table button after prepareTradeData');
+                    return;
+                }
+                
+                // Call the EXACT SAME endpoint as desktop
+                const response = await fetch(window.location.origin + '/api/trigger_open_trade', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        strike: tradeData.strike,
+                        side: tradeData.side,
+                        ticker: tradeData.ticker,
+                        buy_price: tradeData.buy_price,
+                        prob: tradeData.prob,
+                        symbol_open: tradeData.symbol_open,
+                        momentum: tradeData.momentum,
+                        contract: tradeData.contract,
+                        symbol: tradeData.symbol,
+                        position: tradeData.position,
+                        trade_strategy: tradeData.trade_strategy,
+                        monitor: tradeData.monitor
+                    })
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log('Strike table trade initiated successfully:', result);
+                    
+                    // Refresh panels to show new trade (same as desktop)
+                    if (typeof fetchAndRenderActiveTradeSupervisorTrades === 'function') {
+                        fetchAndRenderActiveTradeSupervisorTrades();
+                    }
+                } else {
+                    console.error('Strike table trade initiation failed:', response.status);
+                }
+            } catch (error) {
+                console.error('Error initiating strike table trade:', error);
+            }
+        }
+
+        // === UPDATED CLOSE TRADE FUNCTION FOR MOBILE ===
+        async function closeActiveTrade(tradeId, ticketId) {
+            try {
+                console.log('[ACTIVE TRADE SUPERVISOR] Attempting to close trade:', tradeId);
+                
+
+                
+                // Get current BTC price for sell price (same as desktop)
+                const currentPrice = typeof getCurrentBTCTickerPrice === 'function' ? getCurrentBTCTickerPrice() : 0.5;
+                console.log('[ACTIVE TRADE SUPERVISOR] Current price for close:', currentPrice);
+                
+                // Use the EXACT SAME endpoint as desktop
+                const response = await fetch(window.location.origin + '/api/trigger_close_trade', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        trade_id: tradeId,
+                        sell_price: currentPrice
+                    })
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log('[ACTIVE TRADE SUPERVISOR] Close trade completed successfully:', result);
+                    
+                    // Refresh panels (same as desktop)
+                    if (typeof fetchAndRenderActiveTradeSupervisorTrades === 'function') {
+                        fetchAndRenderActiveTradeSupervisorTrades();
+                    }
+                } else {
+                    console.error('[ACTIVE TRADE SUPERVISOR] Close trade failed:', response.status);
+                }
+            } catch (error) {
+                console.error(`[ACTIVE TRADE SUPERVISOR] Error closing trade ${tradeId}:`, error);
+            }
+        }
+
+        // Active Trade Supervisor functionality
+        let activeTradeSupervisorRowsMap = new Map();
+
+        // Active Trade Indicator for Strike Table
+        let lastActiveTrades = new Set(); // Track last known active trades to avoid unnecessary updates
+        
+        // Separate function to update only position indicators without redrawing table
+        async function updatePositionIndicatorsOnly() {
+            try {
+                // Fetch active trades from the active_trade_supervisor API endpoint
+                const tradesRes = await fetch(window.location.origin + '/api/active_trades', { cache: 'no-store' });
+                if (!tradesRes.ok) return;
+                
+                const data = await tradesRes.json();
+                const activeTrades = data.active_trades || [];
+                
+                // Create a set of current active trade strikes
+                const currentActiveStrikes = new Set();
+                activeTrades.forEach(trade => {
+                    const tradeStrike = parseFloat(trade.strike.replace(/[^\d.-]/g, ''));
+                    currentActiveStrikes.add(tradeStrike);
+                });
+                
+                // Check if active trades have changed
+                const tradesChanged = !setsAreEqual(lastActiveTrades, currentActiveStrikes);
+                if (!tradesChanged) return; // No change, skip update
+                
+                // Update all strike cells
+                const strikeCells = document.querySelectorAll('#strike-table tbody tr td:first-child');
+                strikeCells.forEach(cell => {
+                    const strikeText = cell.textContent.replace(/[\$,]/g, '');
+                    const strike = parseFloat(strikeText);
+                    if (!isNaN(strike)) {
+                        const hasPosition = currentActiveStrikes.has(strike);
+                        const currentlyHasIndicator = cell.classList.contains('has-active-trade');
+                        
+                        if (hasPosition !== currentlyHasIndicator) {
+                            if (hasPosition) {
+                                cell.classList.add('has-active-trade');
+                            } else {
+                                cell.classList.remove('has-active-trade');
+                            }
+                        }
+                    }
+                });
+                
+                // Update last known state
+                lastActiveTrades = currentActiveStrikes;
+            } catch (e) {
+                console.error('Error updating position indicators:', e);
+            }
+        }
+        
+        // Helper function to compare sets
+        function setsAreEqual(set1, set2) {
+            if (set1.size !== set2.size) return false;
+            for (const item of set1) {
+                if (!set2.has(item)) return false;
+            }
+            return true;
+        }
+        
+        async function updatePositionIndicator(strikeCell, strike) {
+            try {
+                // Fetch active trades from the active_trade_supervisor API endpoint
+                const tradesRes = await fetch(window.location.origin + '/api/active_trades', { cache: 'no-store' });
+                if (!tradesRes.ok) return;
+                
+                const data = await tradesRes.json();
+                const activeTrades = data.active_trades || [];
+                
+                // Create a set of current active trade strikes for comparison
+                const currentActiveStrikes = new Set();
+                activeTrades.forEach(trade => {
+                    const tradeStrike = parseFloat(trade.strike.replace(/[^\d.-]/g, ''));
+                    currentActiveStrikes.add(tradeStrike);
+                });
+                
+                // Check if any active trade has this strike
+                const hasPosition = currentActiveStrikes.has(strike);
+                
+                // Only update if the state has actually changed
+                const currentlyHasIndicator = strikeCell.classList.contains('has-active-trade');
+                if (hasPosition !== currentlyHasIndicator) {
+                    if (hasPosition) {
+                        strikeCell.classList.add('has-active-trade');
+                    } else {
+                        strikeCell.classList.remove('has-active-trade');
+                    }
+                }
+                
+                // Update last known state
+                lastActiveTrades = currentActiveStrikes;
+            } catch (e) {
+                strikeCell.classList.remove('has-active-trade');
+            }
+        }
+
+        // Helper function to insert rows in sorted position (same as desktop)
+        function insertRowInSortedPosition(tableBody, newRow, newStrike) {
+            const allRows = Array.from(tableBody.children);
+            let insertIndex = allRows.length; // default to end
+            
+            for (let i = 0; i < allRows.length; i++) {
+                const row = allRows[i];
+                if (row.classList.contains('spanner-row')) continue;
+                
+                const strikeCell = row.querySelector('td');
+                if (strikeCell) {
+                    const strike = parseFloat(strikeCell.textContent.replace(/[\$,]/g, ''));
+                    if (newStrike < strike) {
+                        insertIndex = i;
+                        break;
+                    }
+                }
+            }
+            
+            if (insertIndex === allRows.length) {
+                tableBody.appendChild(newRow);
+            } else {
+                tableBody.insertBefore(newRow, allRows[insertIndex]);
+            }
+        }
+
+        async function fetchAndRenderActiveTradeSupervisorTrades() {
+            try {
+                // Get the active trade supervisor service URL using universal port management
+                const activeTradeSupervisorUrl = getActiveTradeSupervisorUrl('/api/active_trades');
+                
+                // Fetch active trades from the supervisor service
+                const response = await fetch(activeTradeSupervisorUrl, { cache: 'no-store' });
+                
+                if (!response.ok) {
+                    console.error('[ACTIVE TRADE SUPERVISOR] Failed to fetch active trades:', response.status);
+                    return;
+                }
+                
+                const data = await response.json();
+                
+                if (!data.active_trades || !Array.isArray(data.active_trades)) {
+                    console.error('[ACTIVE TRADE SUPERVISOR] Invalid data format:', data);
+                    return;
+                }
+                
+                // Render the trades
+                renderActiveTradeSupervisorTrades(data.active_trades);
+                
+            } catch (error) {
+                console.error('[ACTIVE TRADE SUPERVISOR] Error fetching trades:', error);
+            }
+        }
+
+        function renderActiveTradeSupervisorTrades(activeTrades) {
+            const tableBody = document.querySelector('#active-trade-supervisor-table tbody');
+            const panelContainer = document.querySelector('#active-trade-supervisor-table').closest('.mobile-panel');
+            
+            if (!tableBody) {
+                console.error('[ACTIVE TRADE SUPERVISOR] Table body not found!');
+                return;
+            }
+            
+            // Hide the entire panel if there are no active trades
+            if (!activeTrades || activeTrades.length === 0) {
+                if (panelContainer) {
+                    panelContainer.style.display = 'none';
+                }
+                return;
+            } else {
+                // Show the panel if there are active trades
+                if (panelContainer) {
+                    panelContainer.style.display = 'block';
+                }
+            }
+            
+            // Clear any existing "Loading..." or empty state rows first
+            const loadingRows = tableBody.querySelectorAll('tr');
+            loadingRows.forEach(row => {
+                const firstCell = row.querySelector('td');
+                if (firstCell && (firstCell.textContent === 'Loading...' || firstCell.textContent === 'No active trades')) {
+                    row.remove();
+                }
+            });
+            
+            // Sort trades by strike price in ascending order
+            activeTrades.sort((a, b) => {
+                const strikeA = parseFloat(a.strike.toString().replace(/[\$,]/g, ''));
+                const strikeB = parseFloat(b.strike.toString().replace(/[\$,]/g, ''));
+                return strikeA - strikeB;
+            });
+            
+            // Remove rows for trades that no longer exist
+            const activeTradeIds = new Set(activeTrades.map(trade => trade.trade_id));
+            
+            for (const [tradeId, rowObj] of activeTradeSupervisorRowsMap.entries()) {
+                if (!activeTradeIds.has(tradeId)) {
+                    if (rowObj.tr && rowObj.tr.parentNode === tableBody) {
+                        tableBody.removeChild(rowObj.tr);
+                    }
+                    activeTradeSupervisorRowsMap.delete(tradeId);
+                }
+            }
+
+            // Remove all existing spanner rows before rendering trade rows
+            tableBody.querySelectorAll('.spanner-row').forEach(row => row.remove());
+
+            // Render each active trade
+            activeTrades.forEach((trade, idx) => {
+                const tradeId = trade.trade_id;
+                
+                // Check if we already have a row for this trade
+                let rowObj = activeTradeSupervisorRowsMap.get(tradeId);
+                
+                if (!rowObj) {
+                    const row = document.createElement("tr");
+                    
+                    // Strike
+                    const strikeCell = document.createElement("td");
+                    strikeCell.textContent = trade.strike;
+                    row.appendChild(strikeCell);
+                    
+                    // Side
+                    const sideCell = document.createElement("td");
+                    sideCell.textContent = trade.side;
+                    row.appendChild(sideCell);
+                    
+                    // Buy (price)
+                    const priceCell = document.createElement("td");
+                    priceCell.textContent = (typeof trade.buy_price === "number")
+                        ? trade.buy_price.toFixed(2)
+                        : trade.buy_price;
+                    row.appendChild(priceCell);
+                    
+                    // Position
+                    const posCell = document.createElement("td");
+                    posCell.textContent = trade.position ?? "";
+                    row.appendChild(posCell);
+                    
+                    // Buffer (from PostgreSQL)
+                    const bufferCell = document.createElement("td");
+                    if (trade.buffer_from_entry !== null) {
+                        const buffer = trade.buffer_from_entry;
+                        bufferCell.textContent = buffer.toLocaleString(undefined, {maximumFractionDigits: 0});
+                        
+                        // Apply risk color classes based on probability
+                        if (trade.current_probability !== null && trade.current_probability !== undefined) {
+                            const prob = trade.current_probability;
+                            if (prob >= 95) row.classList.add('ultra-safe');
+                            else if (prob >= 80) row.classList.add('safe');
+                            else if (prob >= 50) row.classList.add('caution');
+                            else if (prob >= 25) row.classList.add('high-risk');
+                            else row.classList.add('danger-stop');
+                        }
+                    } else {
+                        bufferCell.textContent = "N/A";
+                    }
+                    row.appendChild(bufferCell);
+                    
+                    // Probability (from PostgreSQL)
+                    const probCell = document.createElement("td");
+                    if (trade.current_probability !== null) {
+                        probCell.textContent = trade.current_probability.toFixed(1);
+                    } else {
+                        probCell.textContent = "N/A";
+                    }
+                    row.appendChild(probCell);
+                    
+                    // Close button with PnL display - using same styling as price buttons
+                    const closeCell = document.createElement("td");
+                    closeCell.style.textAlign = "center";
+                    const closeSpan = document.createElement("span");
+                    closeSpan.className = "close-btn-mobile";
+                    closeSpan.dataset.tradeId = trade.trade_id;
+                    closeSpan.dataset.action = "close";
+                    closeSpan.style.cursor = "pointer";
+                    closeSpan.onclick = () => closeActiveTrade(trade.trade_id, trade.ticket_id);
+                    
+                    // Display PnL if available, otherwise show "Close"
+                    if (trade.current_pnl !== null && trade.current_pnl !== undefined) {
+                        const pnl = parseFloat(trade.current_pnl);
+                        if (!isNaN(pnl)) {
+                            // Format PnL with white text
+                            const pnlText = pnl >= 0 ? `+${pnl.toFixed(2)}` : pnl.toFixed(2);
+                            closeSpan.textContent = pnlText;
+                            closeSpan.style.color = "white";
+                        } else {
+                            closeSpan.textContent = "Close";
+                            closeSpan.style.color = "white";
+                        }
+                    } else {
+                        closeSpan.textContent = "Close";
+                        closeSpan.style.color = "white";
+                    }
+                    
+                    closeCell.appendChild(closeSpan);
+                    row.appendChild(closeCell);
+                    
+                    // Store the row object
+                    rowObj = { tr: row };
+                    activeTradeSupervisorRowsMap.set(tradeId, rowObj);
+                    
+                    // Apply status-based styling
+                    if (trade.status === 'closing') {
+                        row.classList.add('closing-trade');
+                    }
+                    
+                    // Add the row to the table in sorted position
+                    const newStrike = parseFloat(trade.strike.toString().replace(/[\$,]/g, ''));
+                    insertRowInSortedPosition(tableBody, row, newStrike);
+                } else {
+                    // Update existing row with new data
+                    const row = rowObj.tr;
+                    const cells = row.querySelectorAll('td');
+                    
+                    // Update buffer
+                    if (cells.length > 4 && trade.buffer_from_entry !== null) {
+                        const buffer = trade.buffer_from_entry;
+                        cells[4].textContent = buffer.toLocaleString(undefined, {maximumFractionDigits: 0});
+                        
+                        // Update risk color classes based on probability
+                        row.classList.remove('ultra-safe', 'safe', 'caution', 'high-risk', 'danger-stop');
+                        if (trade.current_probability !== null && trade.current_probability !== undefined) {
+                            const prob = trade.current_probability;
+                            if (prob >= 95) row.classList.add('ultra-safe');
+                            else if (prob >= 80) row.classList.add('safe');
+                            else if (prob >= 50) row.classList.add('caution');
+                            else if (prob >= 25) row.classList.add('high-risk');
+                            else row.classList.add('danger-stop');
+                        }
+                    }
+                    
+                    // Update probability
+                    if (cells.length > 5 && trade.current_probability !== null) {
+                        cells[5].textContent = trade.current_probability.toFixed(1);
+                    }
+                    
+                    // Update status-based styling
+                    row.classList.remove('closing-trade');
+                    if (trade.status === 'closing') {
+                        row.classList.add('closing-trade');
+                    }
+                    
+                    // Update PnL on close button
+                    if (cells.length > 6 && trade.current_pnl !== null && trade.current_pnl !== undefined) {
+                        const closeButton = cells[6].querySelector('.close-btn-mobile');
+                        if (closeButton) {
+                            const pnl = parseFloat(trade.current_pnl);
+                            if (!isNaN(pnl)) {
+                                const pnlText = pnl >= 0 ? `+${pnl.toFixed(2)}` : pnl.toFixed(2);
+                                closeButton.textContent = pnlText;
+                                closeButton.style.color = "white";
+                            } else {
+                                closeButton.textContent = "Close";
+                                closeButton.style.color = "white";
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Add spanner row logic for current price display
+            if (activeTrades.length > 0) {
+                // There are active trades - add current price spanner row
+                // Try to get current BTC price, with fallback
+                let currentBTCPrice = null;
+                
+                // Try to get current price from the market strike table's spanner row
+                const marketSpannerRow = document.querySelector('#strike-table .spanner-row');
+                if (marketSpannerRow) {
+                    const spannerText = marketSpannerRow.textContent;
+                    const priceMatch = spannerText.match(/Current Price: \$([\d,]+)/);
+                    if (priceMatch) {
+                        currentBTCPrice = parseFloat(priceMatch[1].replace(/,/g, ''));
+                    }
+                }
+                
+                // If we don't have a current price, try to get it from the first trade's strike as a fallback
+                if (currentBTCPrice === null || currentBTCPrice === "" || isNaN(currentBTCPrice)) {
+                    if (activeTrades.length > 0 && activeTrades[0].strike) {
+                        // Use the first trade's strike as a rough estimate
+                        currentBTCPrice = parseFloat(activeTrades[0].strike.toString().replace(/[\$,]/g, ''));
+                    }
+                }
+                
+                if (currentBTCPrice !== null && currentBTCPrice !== "" && !isNaN(currentBTCPrice)) {
+                    const spannerRow = createActiveTradeSupervisorSpannerRow(currentBTCPrice);
+                    
+                    // Find the correct position to insert the spanner row
+                    const allRows = Array.from(tableBody.children);
+                    let insertIndex = allRows.length; // default to end
+                    
+                    for (let i = 0; i < allRows.length; i++) {
+                        const row = allRows[i];
+                        if (row.classList.contains('spanner-row')) continue;
+                        const strikeCell = row.querySelector('td');
+                        if (strikeCell) {
+                            const strike = parseFloat(strikeCell.textContent.replace(/[\$,]/g, ''));
+                            if (currentBTCPrice < strike) {
+                                insertIndex = i;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (insertIndex < allRows.length) {
+                        tableBody.insertBefore(spannerRow, allRows[insertIndex]);
+                    } else {
+                        tableBody.appendChild(spannerRow);
+                    }
+                }
+            }
+        }
+
+        function startActiveTradeSupervisorPolling() {
+            // Initial load
+            fetchAndRenderActiveTradeSupervisorTrades();
+            
+            // Set up periodic refresh (every 1 second - same as desktop)
+            setInterval(() => {
+                fetchAndRenderActiveTradeSupervisorTrades();
+            }, 1000);
+        }
+
+        // Spanner Row Helper for Active Trade Supervisor
+        function createActiveTradeSupervisorSpannerRow(currentPrice) {
+            const spannerRow = document.createElement("tr");
+            spannerRow.className = "spanner-row";
+            const spannerTd = document.createElement("td");
+            spannerTd.colSpan = 7; // Match the number of columns in active trade supervisor table
+            
+            // SVGs for straight arrows (no margin)
+            const svgDown = `<svg width="16" height="16" style="vertical-align:middle;" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 2v12M8 14l4-4M8 14l-4-4" stroke="#45d34a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+            const svgUp = `<svg width="16" height="16" style="vertical-align:middle;" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 14V2M8 2l4 4M8 2l-4 4" stroke="#dc3545" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+            
+            // Helper to get current momentum score from DOM
+            function getCurrentMomentumScoreForArrow() {
+                const el = document.getElementById('momentum-score-display');
+                if (el && el.textContent) {
+                    const val = parseFloat(el.textContent.replace(/[^\d\.\-]/g, ''));
+                    return isNaN(val) ? 0 : val;
+                }
+                return 0;
+            }
+            
+            let momentumScore = getCurrentMomentumScoreForArrow();
+            let arrowBlock = '';
+            const absMomentum = Math.abs(momentumScore);
+            if (absMomentum < 5) {
+                arrowBlock = '-';
+            } else if (absMomentum < 10) {
+                arrowBlock = momentumScore > 0 ? svgDown : svgUp;
+            } else if (absMomentum < 20) {
+                arrowBlock = (momentumScore > 0 ? svgDown : svgUp).repeat(2);
+            } else {
+                arrowBlock = (momentumScore > 0 ? svgDown : svgUp).repeat(3);
+            }
+            
+            spannerTd.innerHTML = `<span style="margin:0 12px;display:inline-block;">${arrowBlock}</span>Current Price: $${Math.round(currentPrice).toLocaleString()}<span style="margin:0 12px;display:inline-block;">${arrowBlock}</span>`;
+            spannerRow.appendChild(spannerTd);
+            return spannerRow;
+        }
+
+        // === HELPER FUNCTIONS (SAME AS DESKTOP) ===
+        
+        // Get current BTC price for trade execution
+        function getCurrentBTCTickerPrice() {
+            const priceEl = document.getElementById('btc-price-value');
+            if (priceEl && priceEl.textContent) {
+                const priceText = priceEl.textContent.replace(/[\$,]/g, '');
+                const price = parseFloat(priceText);
+                return isNaN(price) ? 0.5 : price;
+            }
+            return 0.5; // Fallback price
+        }
+        
+
+        
+
+
+        // === AUTO ENTRY INDICATOR FUNCTIONS ===
+        
+        // WebSocket connection for real-time auto entry status updates
+        let autoEntryWebSocket = null;
+        
+        // Store latest cooldown timer value to combine with status updates
+        let latestCooldownTimer = 0;
+        
+        // Connect to WebSocket for auto entry indicator updates
+        function connectAutoEntryWebSocket() {
+            try {
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${protocol}//${window.location.host}/ws/preferences`;
+                
+                autoEntryWebSocket = new WebSocket(wsUrl);
+                
+                autoEntryWebSocket.onopen = function() {
+                    console.log('🔌 Auto entry WebSocket connected (mobile)');
+                };
+                
+                autoEntryWebSocket.onmessage = function(event) {
+                    try {
+                        const message = JSON.parse(event.data);
+                        if (message.type === 'auto_entry_indicator_change') {
+                            console.log('📡 Received auto entry indicator update (mobile):', message.data);
+                            updateAutoEntryIndicator(message.data);
+                        }
+                    } catch (error) {
+                        console.error('Error parsing WebSocket message (mobile):', error);
+                    }
+                };
+                
+                autoEntryWebSocket.onclose = function() {
+                    console.log('🔌 Auto entry WebSocket disconnected (mobile), reconnecting...');
+                    setTimeout(connectAutoEntryWebSocket, 1000);
+                };
+                
+                autoEntryWebSocket.onerror = function(error) {
+                    console.error('🔌 Auto entry WebSocket error (mobile):', error);
+                };
+                
+            } catch (error) {
+                console.error('Error connecting to auto entry WebSocket (mobile):', error);
+            }
+        }
+        
+        // TEMPORARY: Hardcoded mobile solution for monitor 0001_10002
+        async function fetchInitialAutoEntryIndicator() {
+            try {
+                const response = await fetch(window.location.origin + '/api/monitors?user_id=user_0001');
+                if (!response.ok) throw new Error('Failed to fetch monitors');
+                const data = await response.json();
+                
+                // Find monitor mon_0001_10002 (full ID like desktop version)
+                const monitor = data.monitors.find(m => m.id === 'mon_0001_10002');
+                if (monitor) {
+                    const statusData = {
+                        status: monitor.auto_trade_status || 'DISABLED',
+                        enabled: monitor.auto_trade_status === 'ACTIVE'
+                    };
+                    updateAutoEntryIndicator(statusData);
+                } else {
+                    updateAutoEntryIndicator({ status: 'DISABLED', enabled: false });
+                }
+            } catch (error) {
+                updateAutoEntryIndicator({ status: 'DISABLED', enabled: false });
+            }
+        }
+        
+        // Update the auto entry indicator display
+        function updateAutoEntryIndicator(data) {
+            const indicator = document.getElementById('autoEntryIndicator');
+            if (!indicator) {
+                return;
+            }
+            
+            // Get the indicator elements
+            const indicatorDot = indicator.querySelector('div');
+            const indicatorText = indicator.querySelector('span');
+            
+            // Always show the indicator (mobile version)
+            indicator.style.display = 'flex';
+            
+            // Handle both old and new endpoint responses
+            let status = 'UNKNOWN';
+            
+            if (data.status) {
+                // New endpoint response: {"status": "DISABLED"}
+                status = data.status;
+            } else if (data.enabled !== undefined) {
+                // Old endpoint response: complex object with enabled field
+                if (data.enabled && data.scanning_active) {
+                    status = 'ACTIVE';
+                } else if (data.enabled && !data.scanning_active) {
+                    status = 'INACTIVE';
+                } else {
+                    status = 'DISABLED';
+                }
+            }
+            
+            // Set colors and text based on status (no background colors)
+            switch (status) {
+                case 'ACTIVE':
+                    indicator.style.display = 'flex';
+                    indicator.style.backgroundColor = ''; // No background
+                    indicator.style.border = '';
+                    if (indicatorDot) {
+                        indicatorDot.style.background = '#00ff2f'; // Green dot
+                    }
+                    if (indicatorText) {
+                        indicatorText.textContent = 'Auto ON';
+                    }
+                    break;
+                    
+                case 'INACTIVE':
+                    indicator.style.display = 'flex';
+                    indicator.style.backgroundColor = ''; // No background
+                    indicator.style.border = '';
+                    if (indicatorDot) {
+                        indicatorDot.style.background = '#ffc107'; // Yellow dot
+                    }
+                    if (indicatorText) {
+                        indicatorText.textContent = 'Auto OFF';
+                    }
+                    break;
+                    
+                case 'DISABLED':
+                    indicator.style.display = 'flex'; // Always show on mobile
+                    indicator.style.backgroundColor = ''; // No background
+                    indicator.style.border = '';
+                    if (indicatorDot) {
+                        indicatorDot.style.background = '#6c757d'; // Gray dot
+                    }
+                    if (indicatorText) {
+                        indicatorText.textContent = 'Auto DISABLED';
+                    }
+                    break;
+                    
+                case 'PAUSED':
+                    indicator.style.display = 'flex';
+                    indicator.style.backgroundColor = ''; // No background
+                    indicator.style.border = '';
+                    if (indicatorDot) {
+                        indicatorDot.style.background = '#ff6b6b'; // Red dot
+                    }
+                    if (indicatorText) {
+                        // Display cooldown timer if available
+                        const cooldownTimer = data.cooldown_timer || 0;
+                        if (cooldownTimer > 0) {
+                            const minutes = Math.floor(cooldownTimer / 60);
+                            const seconds = cooldownTimer % 60;
+                            const timeString = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+                            indicatorText.textContent = `PAUSED (${timeString})`;
+                        } else {
+                            indicatorText.textContent = 'PAUSED';
+                        }
+                    }
+                    break;
+                    
+                default:
+                    indicator.style.display = 'flex';
+                    indicator.style.backgroundColor = ''; // No background
+                    indicator.style.border = '';
+                    if (indicatorDot) {
+                        indicatorDot.style.background = '#6c757d'; // Gray dot
+                    }
+                    if (indicatorText) {
+                        indicatorText.textContent = `Auto ${status}`;
+                    }
+                    break;
+            }
+        }
+        
+        // Update active trade indicators based on WebSocket data
+        function updateActiveTradeIndicators(activeTrades) {
+            try {
+                // Create a set of current active trade strikes
+                const currentActiveStrikes = new Set();
+                activeTrades.forEach(trade => {
+                    const tradeStrike = parseFloat(trade.strike.replace(/[^\d.-]/g, ''));
+                    currentActiveStrikes.add(tradeStrike);
+                });
+                
+                // Update all strike cells
+                const strikeCells = document.querySelectorAll('#strike-table tbody tr td:first-child');
+                strikeCells.forEach(cell => {
+                    const strikeText = cell.textContent.replace(/[\$,]/g, '');
+                    const strike = parseFloat(strikeText);
+                    if (!isNaN(strike)) {
+                        const hasPosition = currentActiveStrikes.has(strike);
+                        const currentlyHasIndicator = cell.classList.contains('has-active-trade');
+                        
+                        if (hasPosition !== currentlyHasIndicator) {
+                            if (hasPosition) {
+                                cell.classList.add('has-active-trade');
+                            } else {
+                                cell.classList.remove('has-active-trade');
+                            }
+                        }
+                    }
+                });
+                
+                // Update last known state
+                lastActiveTrades = currentActiveStrikes;
+            } catch (e) {
+                console.error('Error updating active trade indicators:', e);
+            }
+        }
+        
+        // Initialize auto entry indicator when page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            // Fetch initial state
+            fetchInitialAutoEntryIndicator();
+            
+            // Connect to WebSocket for real-time updates
+            connectAutoEntryWebSocket();
+            
+            // Fetch initial active trades
+            fetchInitialActiveTrades();
+            
+            // Set up auto-refresh for Auto Trade status indicator every 10 seconds
+            setInterval(() => {
+                console.log('🔄 Auto-refreshing Auto Trade status indicator (mobile)');
+                fetchInitialAutoEntryIndicator();
+            }, 10000); // 10 seconds
+        });
+        
+        // Fetch initial active trades state
+        async function fetchInitialActiveTrades() {
+            try {
+                const response = await fetch(window.location.origin + '/trades', { cache: 'no-store' });
+                if (!response.ok) throw new Error('Failed to fetch active trades');
+                const trades = await response.json();
+                const activeTrades = trades.filter(trade => 
+                    trade.status !== "closed" && 
+                    trade.status !== "expired" &&
+                    trade.status !== "error"
+                );
+                
+                updateActiveTradeIndicators(activeTrades);
+            } catch (error) {
+                console.error('Error fetching initial active trades:', error);
+            }
+        }
+
+        // Set up WebSocket connection for database change notifications
+        setupDatabaseChangeListener();
+        
+        // WebSocket connection for real-time database change notifications
+        let dbChangeWebSocket = null;
+        
+        function setupDatabaseChangeListener() {
+            if (dbChangeWebSocket && dbChangeWebSocket.readyState === WebSocket.OPEN) {
+                console.log("[MOBILE WEBSOCKET] Already connected");
+                return; // Already connected
+            }
+
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/db_changes`;
+            console.log("[MOBILE WEBSOCKET] Connecting to:", wsUrl);
+            
+            dbChangeWebSocket = new WebSocket(wsUrl);
+            
+            dbChangeWebSocket.onopen = function() {
+                console.log("[MOBILE WEBSOCKET] ✅ Connection opened successfully");
+            };
+            
+            dbChangeWebSocket.onmessage = function(event) {
+                try {
+                    console.log("[MOBILE WEBSOCKET] Received message:", event.data);
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'db_change' && data.database === 'trades') {
+                        console.log("[MOBILE WEBSOCKET] ✅ Trades DB change detected, updating mobile strike table");
+                        // Update mobile strike table when trades table changes
+                        if (typeof updateMobileStrikeTable === 'function') {
+                            updateMobileStrikeTable();
+                        }
+                    }
+                } catch (error) {
+                    console.error("[MOBILE WEBSOCKET] Error processing message:", error);
+                }
+            };
+            
+            dbChangeWebSocket.onclose = function(event) {
+                console.log("[MOBILE WEBSOCKET] ❌ Connection closed:", event.code, event.reason);
+                // Try to reconnect after 5 seconds
+                setTimeout(() => {
+                    console.log("[MOBILE WEBSOCKET] Attempting to reconnect...");
+                    setupDatabaseChangeListener();
+                }, 5000);
+            };
+            
+            dbChangeWebSocket.onerror = function(error) {
+                console.error("[MOBILE WEBSOCKET] ❌ Connection error:", error);
+            };
+        }
+        
+        // Mobile iframe coordination message handling
+        window.addEventListener('message', function(event) {
+            if (event.data && event.data.type === 'refresh_data') {
+                console.log('📱 Trade monitor mobile received refresh request');
+                // Trigger immediate data refresh
+                if (typeof updateMobileStrikeTable === 'function') {
+                    updateMobileStrikeTable();
+                }
+                // Notify parent of data update
+                window.parent.postMessage({
+                    type: 'data_updated',
+                    source: 'trade_monitor_mobile',
+                    timestamp: Date.now()
+                }, '*');
+            }
+        });
+    </script>
+
+    <!-- Mobile Settings Modal JavaScript -->
+    <script>
+        // Mobile Settings Modal Variables
+        let mobileMinTimeSeconds = 0;
+        let mobileMaxTimeSeconds = 3600;
+        let mobileSliderWidth = 0;
+        let mobileIsDragging = false;
+        let mobileCurrentHandle = null;
+        let mobileLastSavedAutoEntryProbability = 25;
+        let mobileLastSavedAutoEntryDifferential = 0;
+        let mobileLastSavedAutoStopProbability = 25;
+        let mobileLastSavedAutoStopMinTTC = 60;
+        let mobileLastSavedAutoEntryMinTime = 0;
+        let mobileLastSavedAutoEntryMaxTime = 3600;
+        let mobileLastSavedAutoEntryAllowReEntry = false;
+        let mobileLastSavedMomentumSpikeEnabled = true;
+        let mobileLastSavedMomentumSpikeThreshold = 35;
+        let mobileLastSavedVerificationPeriodEnabled = false;
+        let mobileLastSavedVerificationPeriodSeconds = 15;
+        let mobileLastSavedSpikeAlertEnabled = true;
+        let mobileLastSavedSpikeAlertMomentum = 40;
+        let mobileLastSavedSpikeAlertCooldown = 30;
+        let mobileLastSavedSpikeAlertTime = 15;
+
+        // Initialize mobile settings functionality
+        document.addEventListener('DOMContentLoaded', function() {
+            const mobileSettingsIcon = document.getElementById('mobileSettingsIcon');
+            const mobileSettingsModal = document.getElementById('mobileSettingsModal');
+            const mobileSettingsDim = document.getElementById('mobileSettingsDim');
+            const mobileSettingsCancel = document.getElementById('mobileSettingsCancel');
+            const mobileSettingsSave = document.getElementById('mobileSettingsSave');
+
+            // Mobile Settings Icon Click Handler
+            if (mobileSettingsIcon) {
+                mobileSettingsIcon.addEventListener('click', showMobileSettingsModal);
+            }
+
+            // Mobile Settings Modal Event Handlers
+            if (mobileSettingsCancel) {
+                mobileSettingsCancel.addEventListener('click', hideMobileSettingsModal);
+            }
+
+            if (mobileSettingsSave) {
+                mobileSettingsSave.addEventListener('click', saveMobileSettings);
+            }
+
+            if (mobileSettingsDim) {
+                mobileSettingsDim.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                });
+            }
+
+            // Initialize slider event listeners
+            initializeMobileSliderEventListeners();
+        });
+
+        // Show Mobile Settings Modal
+        function showMobileSettingsModal() {
+            const modal = document.getElementById('mobileSettingsModal');
+            if (modal) {
+                modal.style.display = 'block';
+                document.body.style.overflow = 'hidden';
+                
+                // Load current settings
+                loadMobileSettings();
+                
+                // Initialize time window slider
+                setTimeout(() => {
+                    initMobileTimeWindowSlider();
+                }, 100);
+                
+                // Initialize position sizing controls
+                initializeMobilePositionControls();
+            }
+        }
+
+        // Hide Mobile Settings Modal
+        function hideMobileSettingsModal() {
+            const modal = document.getElementById('mobileSettingsModal');
+            if (modal) {
+                modal.style.display = 'none';
+                document.body.style.overflow = '';
+            }
+        }
+
+        // Load Mobile Settings from API
+        async function loadMobileSettings() {
+            try {
+                // Load main preferences (auto_entry, auto_stop, etc.)
+                const preferencesResponse = await fetch(window.location.origin + '/api/get_preferences');
+                if (preferencesResponse.ok) {
+                    const preferences = await preferencesResponse.json();
+                    
+                    // Update main toggle states (only the ones on the main page)
+                    const mobileAutoTradeToggle = document.getElementById('mobileAutoTradeToggle');
+                    
+                    if (mobileAutoTradeToggle) {
+                        // Load auto trade state for monitor 10002 (hardcoded as requested)
+                        try {
+                            const monitorResponse = await fetch('/api/monitor/10002?user_id=user_0001');
+                            const monitorData = await monitorResponse.json();
+                            if (monitorData.status === 'ok' && monitorData.monitor) {
+                                mobileAutoTradeToggle.classList.toggle('active', monitorData.monitor.auto_trade === true);
+                            }
+                        } catch (error) {
+                            console.error('Error loading auto trade state:', error);
+                        }
+                    }
+                }
+                
+                // Load Auto Entry Settings from unified endpoint (hardcoded to monitor 10002)
+                const autoEntryResponse = await fetch(window.location.origin + '/api/get_auto_entry_settings?monitor_id=10002');
+                if (autoEntryResponse.ok) {
+                    const autoEntryData = await autoEntryResponse.json();
+                    
+                    mobileLastSavedAutoEntryProbability = autoEntryData.min_probability ?? 25;
+                    mobileLastSavedAutoEntryDifferential = autoEntryData.min_differential ?? 0;
+                    mobileLastSavedAutoEntryMinTime = autoEntryData.min_time ?? 0;
+                    mobileLastSavedAutoEntryMaxTime = autoEntryData.max_time ?? 3600;
+                    mobileLastSavedAutoEntryAllowReEntry = autoEntryData.allow_re_entry ?? false;
+                    
+                    // Set slider values
+                    const probSlider = document.getElementById('mobileAutoEntryProbabilitySlider');
+                    const diffSlider = document.getElementById('mobileAutoEntryDifferentialSlider');
+                    const allowReEntryCheckbox = document.getElementById('mobileAutoEntryAllowReEntry');
+                    
+                    if (probSlider) {
+                        probSlider.value = mobileLastSavedAutoEntryProbability;
+                        updateMobileAutoEntrySliderDisplay(mobileLastSavedAutoEntryProbability);
+                    }
+                    
+                    if (diffSlider) {
+                        diffSlider.value = mobileLastSavedAutoEntryDifferential;
+                        updateMobileAutoEntryDifferentialDisplay(mobileLastSavedAutoEntryDifferential);
+                    }
+                    
+                    if (allowReEntryCheckbox) {
+                        allowReEntryCheckbox.checked = mobileLastSavedAutoEntryAllowReEntry;
+                    }
+                    
+                    // Set time window values
+                    mobileMinTimeSeconds = mobileLastSavedAutoEntryMinTime;
+                    mobileMaxTimeSeconds = mobileLastSavedAutoEntryMaxTime;
+                }
+                
+                // Load Auto Stop Settings from unified endpoint (hardcoded to monitor 10002)
+                const autoStopResponse = await fetch(window.location.origin + '/api/get_auto_entry_settings?monitor_id=10002');
+                if (autoStopResponse.ok) {
+                    const autoStopData = await autoStopResponse.json();
+                    
+                    mobileLastSavedAutoStopProbability = autoStopData.current_probability ?? 25;
+                    mobileLastSavedAutoStopMinTTC = autoStopData.min_ttc_seconds ?? 60;
+                    
+                    // Set slider values
+                    const stopProbSlider = document.getElementById('mobileAutoStopProbabilitySlider');
+                    const minTTCInput = document.getElementById('mobileAutoStopMinTTCInput');
+                    const minTTCDisplay = document.getElementById('mobileAutoStopMinTTCDisplay');
+                    
+                    if (stopProbSlider) {
+                        stopProbSlider.value = mobileLastSavedAutoStopProbability;
+                        updateMobileAutoStopSliderDisplay(mobileLastSavedAutoStopProbability);
+                    }
+                    
+                    if (minTTCInput && minTTCDisplay) {
+                        minTTCInput.value = mobileLastSavedAutoStopMinTTC;
+                        minTTCDisplay.textContent = formatSecondsToMMSS(mobileLastSavedAutoStopMinTTC);
+                    }
+                    
+                    // Load momentum spike and verification period settings
+                    mobileLastSavedMomentumSpikeEnabled = autoStopData.momentum_spike_enabled ?? true;
+                    mobileLastSavedMomentumSpikeThreshold = autoStopData.momentum_spike_threshold ?? 35;
+                    mobileLastSavedVerificationPeriodEnabled = autoStopData.verification_period_enabled ?? false;
+                    mobileLastSavedVerificationPeriodSeconds = autoStopData.verification_period_seconds ?? 15;
+                    
+                    // Set momentum spike controls
+                    const momentumSpikeEnabledCheckbox = document.getElementById('mobileMomentumSpikeEnabled');
+                    const momentumSpikeThresholdSlider = document.getElementById('mobileMomentumSpikeThresholdSlider');
+                    
+                    if (momentumSpikeEnabledCheckbox) {
+                        momentumSpikeEnabledCheckbox.checked = mobileLastSavedMomentumSpikeEnabled;
+                        updateMobileMomentumSpikeThresholdDisplay(mobileLastSavedMomentumSpikeThreshold);
+                    }
+                    
+                    if (momentumSpikeThresholdSlider) {
+                        momentumSpikeThresholdSlider.value = mobileLastSavedMomentumSpikeThreshold;
+                        updateMobileMomentumSpikeThresholdDisplay(mobileLastSavedMomentumSpikeThreshold);
+                    }
+                    
+                    // Set verification period controls
+                    const verificationPeriodEnabledCheckbox = document.getElementById('mobileVerificationPeriodEnabled');
+                    const verificationPeriodSlider = document.getElementById('mobileVerificationPeriodSlider');
+                    
+                    if (verificationPeriodEnabledCheckbox) {
+                        verificationPeriodEnabledCheckbox.checked = mobileLastSavedVerificationPeriodEnabled;
+                    }
+                    
+                    if (verificationPeriodSlider) {
+                        verificationPeriodSlider.value = mobileLastSavedVerificationPeriodSeconds;
+                        updateMobileVerificationPeriodDisplay(mobileLastSavedVerificationPeriodSeconds);
+                    }
+                }
+                
+                // Load Spike Alert Settings (from auto entry settings)
+                const spikeAlertResponse = await fetch(window.location.origin + '/api/get_auto_entry_settings');
+                if (spikeAlertResponse.ok) {
+                    const spikeAlertData = await spikeAlertResponse.json();
+                    
+                    mobileLastSavedSpikeAlertEnabled = spikeAlertData.spike_alert_enabled ?? true;
+                    mobileLastSavedSpikeAlertMomentum = spikeAlertData.spike_alert_momentum_threshold ?? 40;
+                    mobileLastSavedSpikeAlertCooldown = spikeAlertData.spike_alert_cooldown_threshold ?? 30;
+                    mobileLastSavedSpikeAlertTime = spikeAlertData.spike_alert_cooldown_minutes ?? 15;
+                    
+                    // Set spike alert controls
+                    const spikeAlertEnabledCheckbox = document.getElementById('mobileSpikeAlertEnabled');
+                    const spikeAlertMomentumSlider = document.getElementById('mobileSpikeAlertMomentumSlider');
+                    const spikeAlertCooldownSlider = document.getElementById('mobileSpikeAlertCooldownSlider');
+                    const spikeAlertTimeSlider = document.getElementById('mobileSpikeAlertTimeSlider');
+                    
+                    if (spikeAlertEnabledCheckbox) {
+                        spikeAlertEnabledCheckbox.checked = mobileLastSavedSpikeAlertEnabled;
+                    }
+                    
+                    if (spikeAlertMomentumSlider) {
+                        spikeAlertMomentumSlider.value = mobileLastSavedSpikeAlertMomentum;
+                        updateMobileSpikeAlertMomentumDisplay(mobileLastSavedSpikeAlertMomentum);
+                    }
+                    
+                    if (spikeAlertCooldownSlider) {
+                        spikeAlertCooldownSlider.value = mobileLastSavedSpikeAlertCooldown;
+                        updateMobileSpikeAlertCooldownDisplay(mobileLastSavedSpikeAlertCooldown);
+                    }
+                    
+                    if (spikeAlertTimeSlider) {
+                        spikeAlertTimeSlider.value = mobileLastSavedSpikeAlertTime;
+                        updateMobileSpikeAlertTimeDisplay(mobileLastSavedSpikeAlertTime);
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading mobile settings:', error);
+            }
+        }
+
+        // Save Mobile Settings
+        async function saveMobileSettings() {
+            try {
+                const probSlider = document.getElementById('mobileAutoEntryProbabilitySlider');
+                const diffSlider = document.getElementById('mobileAutoEntryDifferentialSlider');
+                const allowReEntryCheckbox = document.getElementById('mobileAutoEntryAllowReEntry');
+                const stopProbSlider = document.getElementById('mobileAutoStopProbabilitySlider');
+                const minTTCInput = document.getElementById('mobileAutoStopMinTTCInput');
+                
+                // Get new auto-stop settings
+                const momentumSpikeEnabledCheckbox = document.getElementById('mobileMomentumSpikeEnabled');
+                const momentumSpikeThresholdSlider = document.getElementById('mobileMomentumSpikeThresholdSlider');
+                const verificationPeriodEnabledCheckbox = document.getElementById('mobileVerificationPeriodEnabled');
+                const verificationPeriodSlider = document.getElementById('mobileVerificationPeriodSlider');
+                
+                // Get new spike alert settings
+                const spikeAlertEnabledCheckbox = document.getElementById('mobileSpikeAlertEnabled');
+                const spikeAlertMomentumSlider = document.getElementById('mobileSpikeAlertMomentumSlider');
+                const spikeAlertCooldownSlider = document.getElementById('mobileSpikeAlertCooldownSlider');
+                const spikeAlertTimeSlider = document.getElementById('mobileSpikeAlertTimeSlider');
+                
+                const newProb = parseInt(probSlider.value, 10);
+                const newDifferential = parseFloat(diffSlider.value);
+                const allowReEntry = allowReEntryCheckbox ? allowReEntryCheckbox.checked : false;
+                const newStopProb = parseInt(stopProbSlider.value, 10);
+                const newMinTTC = parseInt(minTTCInput.value, 10);
+                const newMomentumSpikeEnabled = momentumSpikeEnabledCheckbox ? momentumSpikeEnabledCheckbox.checked : true;
+                const newMomentumSpikeThreshold = momentumSpikeThresholdSlider ? parseInt(momentumSpikeThresholdSlider.value) : 35;
+                const newVerificationPeriodEnabled = verificationPeriodEnabledCheckbox ? verificationPeriodEnabledCheckbox.checked : false;
+                const newVerificationPeriodSeconds = verificationPeriodSlider ? parseInt(verificationPeriodSlider.value) : 15;
+                const newSpikeAlertEnabled = spikeAlertEnabledCheckbox ? spikeAlertEnabledCheckbox.checked : true;
+                const newSpikeAlertMomentum = spikeAlertMomentumSlider ? parseInt(spikeAlertMomentumSlider.value) : 40;
+                const newSpikeAlertCooldown = spikeAlertCooldownSlider ? parseInt(spikeAlertCooldownSlider.value) : 30;
+                const newSpikeAlertTime = spikeAlertTimeSlider ? parseInt(spikeAlertTimeSlider.value) : 15;
+                
+                if (!isNaN(newProb) && !isNaN(newDifferential) && !isNaN(newStopProb) && !isNaN(newMinTTC)) {
+                    // Save Auto Entry Settings using unified endpoint (hardcoded to monitor 10002)
+                    const autoEntryResponse = await fetch(window.location.origin + '/api/set_auto_entry_settings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            monitor_id: 10002,
+                            min_probability: newProb,
+                            min_differential: newDifferential,
+                            min_ttc_seconds: 60,
+                            min_time: mobileMinTimeSeconds,
+                            max_time: mobileMaxTimeSeconds,
+                            allow_re_entry: allowReEntry,
+                            spike_alert_enabled: newSpikeAlertEnabled,
+                            spike_alert_momentum_threshold: newSpikeAlertMomentum,
+                            spike_alert_cooldown_threshold: newSpikeAlertCooldown,
+                            spike_alert_cooldown_minutes: newSpikeAlertTime
+                        })
+                    });
+                    
+                    // Save Auto Stop Settings using unified endpoint (hardcoded to monitor 10002)
+                    const autoStopResponse = await fetch(window.location.origin + '/api/set_auto_entry_settings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            monitor_id: 10002,
+                            current_probability: newStopProb,
+                            min_ttc_seconds: newMinTTC,
+                            momentum_spike_enabled: newMomentumSpikeEnabled,
+                            momentum_spike_threshold: newMomentumSpikeThreshold,
+                            verification_period_enabled: newVerificationPeriodEnabled,
+                            verification_period_seconds: newVerificationPeriodSeconds
+                        })
+                    });
+                    
+                    if (autoEntryResponse.ok && autoStopResponse.ok) {
+                        // Update last saved values
+                        mobileLastSavedAutoEntryProbability = newProb;
+                        mobileLastSavedAutoEntryDifferential = newDifferential;
+                        mobileLastSavedAutoStopProbability = newStopProb;
+                        mobileLastSavedAutoStopMinTTC = newMinTTC;
+                        mobileLastSavedAutoEntryMinTime = mobileMinTimeSeconds;
+                        mobileLastSavedAutoEntryMaxTime = mobileMaxTimeSeconds;
+                        mobileLastSavedAutoEntryAllowReEntry = allowReEntry;
+                        mobileLastSavedMomentumSpikeEnabled = newMomentumSpikeEnabled;
+                        mobileLastSavedMomentumSpikeThreshold = newMomentumSpikeThreshold;
+                        mobileLastSavedVerificationPeriodEnabled = newVerificationPeriodEnabled;
+                        mobileLastSavedVerificationPeriodSeconds = newVerificationPeriodSeconds;
+                        mobileLastSavedSpikeAlertEnabled = newSpikeAlertEnabled;
+                        mobileLastSavedSpikeAlertMomentum = newSpikeAlertMomentum;
+                        mobileLastSavedSpikeAlertCooldown = newSpikeAlertCooldown;
+                        mobileLastSavedSpikeAlertTime = newSpikeAlertTime;
+                        
+                        // Save Position Sizing Settings
+                        const positionSizeInput = document.getElementById('mobilePositionSize');
+                        const percentBtn = document.getElementById('mobilePositionTypePercent');
+                        const multiplierButtons = document.querySelectorAll('.mobile-multiplier-btn');
+                        
+                        if (positionSizeInput && percentBtn && multiplierButtons.length > 0) {
+                            const positionSize = parseInt(positionSizeInput.value, 10) || 20;
+                            const positionType = percentBtn.classList.contains('active') ? 'percent' : 'contracts';
+                            const activeMultiplier = Array.from(multiplierButtons).find(btn => btn.classList.contains('active'));
+                            const multiplier = activeMultiplier ? parseInt(activeMultiplier.dataset.multiplier, 10) : 1;
+                            
+                            // Send position variable update to monitor_manager
+                            if (currentMonitorId) {
+                                // Get monitor_manager port dynamically
+                                const portResponse = await fetch('/api/ports');
+                                const portInfo = await portResponse.json();
+                                const monitorManagerPort = portInfo.ports.monitor_manager;
+                                await fetch(`http://localhost:${monitorManagerPort}/api/update_monitor_position`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        monitor_id: currentMonitorId,
+                                        position_size: positionSize,
+                                        position_type: positionType,
+                                        multiplier: multiplier
+                                    })
+                                });
+                            }
+                        }
+                        
+                        // Update the main display
+                        await updatePositionDisplay();
+                        
+                        hideMobileSettingsModal();
+                    } else {
+                        console.error('Failed to save mobile settings');
+                    }
+                }
+            } catch (error) {
+                console.error('Error saving mobile settings:', error);
+            }
+        }
+
+        // Mobile Slider Display Functions
+        function updateMobileAutoEntrySliderDisplay(value) {
+            const display = document.getElementById('mobileAutoEntrySliderValueDisplay');
+            if (display) {
+                display.textContent = value + '%';
+                updateSliderDisplayPosition(display, value, 0, 100);
+            }
+        }
+
+        function updateMobileAutoEntryDifferentialDisplay(value) {
+            const display = document.getElementById('mobileAutoEntryDifferentialValueDisplay');
+            if (display) {
+                const floatValue = parseFloat(value);
+                const displayValue = floatValue >= 0 ? `+${floatValue.toFixed(2)}` : floatValue.toFixed(2);
+                display.textContent = displayValue;
+                updateSliderDisplayPosition(display, floatValue, -10, 10);
+            }
+        }
+
+        function updateMobileAutoStopSliderDisplay(value) {
+            const display = document.getElementById('mobileAutoStopSliderValueDisplay');
+            if (display) {
+                display.textContent = value + '%';
+                updateSliderDisplayPosition(display, value, 0, 100);
+            }
+        }
+
+        function updateMobileMomentumSpikeThresholdDisplay(value) {
+            const display = document.getElementById('mobileMomentumSpikeThresholdValueDisplay');
+            if (display) {
+                display.textContent = `±${value}`;
+                updateSliderDisplayPosition(display, value, 10, 100);
+            }
+        }
+
+        function updateMobileVerificationPeriodDisplay(value) {
+            const display = document.getElementById('mobileVerificationPeriodValueDisplay');
+            if (display) {
+                display.textContent = `${value}s`;
+                updateSliderDisplayPosition(display, value, 5, 60);
+            }
+        }
+
+        function updateMobileSpikeAlertMomentumDisplay(value) {
+            const display = document.getElementById('mobileSpikeAlertMomentumValueDisplay');
+            if (display) {
+                display.textContent = `±${value}`;
+                updateSliderDisplayPosition(display, value, 0, 100);
+            }
+        }
+
+        function updateMobileSpikeAlertCooldownDisplay(value) {
+            const display = document.getElementById('mobileSpikeAlertCooldownValueDisplay');
+            if (display) {
+                display.textContent = `±${value}`;
+                updateSliderDisplayPosition(display, value, 0, 50);
+            }
+        }
+
+        function updateMobileSpikeAlertTimeDisplay(value) {
+            const display = document.getElementById('mobileSpikeAlertTimeValueDisplay');
+            if (display) {
+                display.textContent = `${value}m`;
+                updateSliderDisplayPosition(display, value, 0, 180);
+            }
+        }
+
+        function updateSliderDisplayPosition(displayElement, value, min, max) {
+            const percent = (value - min) / (max - min);
+            const slider = displayElement.previousElementSibling;
+            if (slider) {
+                const sliderWidth = slider.offsetWidth;
+                const thumbWidth = 20; // Approximate thumb width
+                const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
+                displayElement.style.left = `${offset}px`;
+            }
+        }
+
+        // Mobile Time Window Slider Functions
+        function initMobileTimeWindowSlider() {
+            const container = document.getElementById('mobileTimeWindowSliderContainer');
+            if (!container) return;
+            
+            mobileSliderWidth = container.offsetWidth;
+            updateMobileTimeWindowSlider();
+        }
+
+        function updateMobileTimeWindowSlider() {
+            if (!mobileSliderWidth) return;
+            
+            const minPercent = (mobileMinTimeSeconds / 3600) * 100;
+            const maxPercent = (mobileMaxTimeSeconds / 3600) * 100;
+            
+            const minHandle = document.getElementById('mobileMinTimeHandle');
+            const maxHandle = document.getElementById('mobileMaxTimeHandle');
+            const range = document.getElementById('mobileTimeWindowRange');
+            const minDisplay = document.getElementById('mobileTimeWindowMinDisplay');
+            const maxDisplay = document.getElementById('mobileTimeWindowMaxDisplay');
+            
+            if (minHandle) minHandle.style.left = `${minPercent}%`;
+            if (maxHandle) maxHandle.style.left = `${maxPercent}%`;
+            if (range) {
+                range.style.left = `${minPercent}%`;
+                range.style.width = `${maxPercent - minPercent}%`;
+            }
+            if (minDisplay) {
+                minDisplay.textContent = formatSecondsToMMSS(mobileMinTimeSeconds);
+                minDisplay.style.left = `${minPercent}%`;
+            }
+            if (maxDisplay) {
+                maxDisplay.textContent = formatSecondsToMMSS(mobileMaxTimeSeconds);
+                maxDisplay.style.left = `${maxPercent}%`;
+            }
+        }
+
+        // Mobile Touch Event Handlers for Time Window Slider
+        function handleMobileTouchStart(e) {
+            mobileIsDragging = true;
+            mobileCurrentHandle = e.target;
+            document.addEventListener('touchmove', handleMobileTouchMove, { passive: false });
+            document.addEventListener('touchend', handleMobileTouchEnd);
+            e.preventDefault();
+        }
+
+        function handleMobileTouchMove(e) {
+            if (!mobileIsDragging || !mobileCurrentHandle) return;
+            
+            const container = document.getElementById('mobileTimeWindowSliderContainer');
+            const rect = container.getBoundingClientRect();
+            const touch = e.touches[0];
+            const x = touch.clientX - rect.left;
+            const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
+            
+            // Map percentage to 15-second intervals
+            const intervalIndex = Math.round((percent / 100) * 240);
+            const snappedSeconds = Math.max(0, Math.min(3600, intervalIndex * 15));
+            
+            if (mobileCurrentHandle.id === 'mobileMinTimeHandle') {
+                if (snappedSeconds >= mobileMaxTimeSeconds) return;
+                mobileMinTimeSeconds = snappedSeconds;
+            } else if (mobileCurrentHandle.id === 'mobileMaxTimeHandle') {
+                if (snappedSeconds <= mobileMinTimeSeconds) return;
+                mobileMaxTimeSeconds = snappedSeconds;
+            }
+            
+            updateMobileTimeWindowSlider();
+        }
+
+        function handleMobileTouchEnd() {
+            mobileIsDragging = false;
+            mobileCurrentHandle = null;
+            document.removeEventListener('touchmove', handleMobileTouchMove);
+            document.removeEventListener('touchend', handleMobileTouchEnd);
+        }
+
+        // Initialize Mobile Slider Event Listeners
+        function initializeMobileSliderEventListeners() {
+            // Auto Entry Probability Slider
+            const probSlider = document.getElementById('mobileAutoEntryProbabilitySlider');
+            if (probSlider) {
+                probSlider.addEventListener('input', function() {
+                    updateMobileAutoEntrySliderDisplay(this.value);
+                });
+            }
+
+            // Auto Entry Differential Slider
+            const diffSlider = document.getElementById('mobileAutoEntryDifferentialSlider');
+            if (diffSlider) {
+                diffSlider.addEventListener('input', function() {
+                    updateMobileAutoEntryDifferentialDisplay(this.value);
+                });
+            }
+
+            // Auto Stop Probability Slider
+            const stopProbSlider = document.getElementById('mobileAutoStopProbabilitySlider');
+            if (stopProbSlider) {
+                stopProbSlider.addEventListener('input', function() {
+                    updateMobileAutoStopSliderDisplay(this.value);
+                });
+            }
+
+            // Momentum Spike Threshold Slider
+            const momentumSpikeThresholdSlider = document.getElementById('mobileMomentumSpikeThresholdSlider');
+            if (momentumSpikeThresholdSlider) {
+                momentumSpikeThresholdSlider.addEventListener('input', function() {
+                    updateMobileMomentumSpikeThresholdDisplay(this.value);
+                });
+            }
+
+            // Verification Period Slider
+            const verificationPeriodSlider = document.getElementById('mobileVerificationPeriodSlider');
+            if (verificationPeriodSlider) {
+                verificationPeriodSlider.addEventListener('input', function() {
+                    updateMobileVerificationPeriodDisplay(this.value);
+                });
+            }
+
+            // Spike Alert Momentum Slider
+            const spikeAlertMomentumSlider = document.getElementById('mobileSpikeAlertMomentumSlider');
+            if (spikeAlertMomentumSlider) {
+                spikeAlertMomentumSlider.addEventListener('input', function() {
+                    updateMobileSpikeAlertMomentumDisplay(this.value);
+                });
+            }
+
+            // Spike Alert Cooldown Slider
+            const spikeAlertCooldownSlider = document.getElementById('mobileSpikeAlertCooldownSlider');
+            if (spikeAlertCooldownSlider) {
+                spikeAlertCooldownSlider.addEventListener('input', function() {
+                    updateMobileSpikeAlertCooldownDisplay(this.value);
+                });
+            }
+
+            // Spike Alert Time Slider
+            const spikeAlertTimeSlider = document.getElementById('mobileSpikeAlertTimeSlider');
+            if (spikeAlertTimeSlider) {
+                spikeAlertTimeSlider.addEventListener('input', function() {
+                    updateMobileSpikeAlertTimeDisplay(this.value);
+                });
+            }
+
+            // Auto Stop Min TTC Controls
+            const minTTCUp = document.getElementById('mobileAutoStopMinTTCUp');
+            const minTTCDown = document.getElementById('mobileAutoStopMinTTCDown');
+            const minTTCInput = document.getElementById('mobileAutoStopMinTTCInput');
+            const minTTCDisplay = document.getElementById('mobileAutoStopMinTTCDisplay');
+
+            if (minTTCUp) {
+                minTTCUp.addEventListener('click', function() {
+                    const currentVal = parseInt(minTTCInput.value, 10) || 0;
+                    const newVal = currentVal + 15;
+                    minTTCInput.value = newVal;
+                    minTTCDisplay.textContent = formatSecondsToMMSS(newVal);
+                });
+            }
+
+            if (minTTCDown) {
+                minTTCDown.addEventListener('click', function() {
+                    const currentVal = parseInt(minTTCInput.value, 10) || 0;
+                    const newVal = Math.max(0, currentVal - 30);
+                    minTTCInput.value = newVal;
+                    minTTCDisplay.textContent = formatSecondsToMMSS(newVal);
+                });
+            }
+
+            // Time Window Slider Touch Events
+            const minHandle = document.getElementById('mobileMinTimeHandle');
+            const maxHandle = document.getElementById('mobileMaxTimeHandle');
+
+            if (minHandle) {
+                minHandle.addEventListener('touchstart', handleMobileTouchStart);
+            }
+            if (maxHandle) {
+                maxHandle.addEventListener('touchstart', handleMobileTouchStart);
+            }
+        }
+
+        // Utility function for formatting seconds to MM:SS
+        function formatSecondsToMMSS(seconds) {
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = seconds % 60;
+            return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+        }
+
+        // Chart toggle functionality
+        function toggleChart() {
+            const chartContainer = document.getElementById('tradingview_12345');
+            const chartToggle = document.getElementById('chart-toggle');
+            
+            if (chartContainer.style.display === 'none') {
+                // Show chart
+                chartContainer.style.display = 'block';
+                chartToggle.innerHTML = 'CHART ▼';
+            } else {
+                // Hide chart
+                chartContainer.style.display = 'none';
+                chartToggle.innerHTML = 'CHART ▶';
+            }
+        }
+
+        // Initialize Mobile Position Controls
+        async function initializeMobilePositionControls() {
+            try {
+                // Position variables are now loaded from monitor_list, not trade_preferences
+                // Position controls will be initialized when monitor is selected
+                
+                // Add event listeners
+                addMobilePositionEventListeners();
+                
+            } catch (error) {
+                console.error('Error initializing mobile position controls:', error);
+            }
+        }
+
+        // Add Mobile Position Event Listeners
+        function addMobilePositionEventListeners() {
+            // Position type toggle
+            const percentBtn = document.getElementById('mobilePositionTypePercent');
+            const contractsBtn = document.getElementById('mobilePositionTypeContracts');
+            
+            if (percentBtn) {
+                percentBtn.addEventListener('click', function() {
+                    setMobilePositionType('percent');
+                });
+            }
+            
+            if (contractsBtn) {
+                contractsBtn.addEventListener('click', function() {
+                    setMobilePositionType('contracts');
+                });
+            }
+            
+            // Position size input
+            const positionSizeInput = document.getElementById('mobilePositionSize');
+            if (positionSizeInput) {
+                positionSizeInput.addEventListener('input', updateMobileTotalPositionDisplay);
+            }
+            
+            // Multiplier buttons
+            const multiplierButtons = document.querySelectorAll('.mobile-multiplier-btn');
+            multiplierButtons.forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const multiplier = parseInt(this.dataset.multiplier, 10);
+                    setMobileMultiplier(multiplier);
+                });
+            });
+        }
+
+        // Set Mobile Position Type
+        function setMobilePositionType(type) {
+            const percentBtn = document.getElementById('mobilePositionTypePercent');
+            const contractsBtn = document.getElementById('mobilePositionTypeContracts');
+            const positionSizeLabel = document.getElementById('mobilePositionSizeLabel');
+            
+            if (percentBtn && contractsBtn) {
+                percentBtn.classList.toggle('active', type === 'percent');
+                contractsBtn.classList.toggle('active', type === 'contracts');
+                percentBtn.style.background = type === 'percent' ? '#007bff' : 'white';
+                percentBtn.style.color = type === 'percent' ? 'white' : '#333';
+                contractsBtn.style.background = type === 'contracts' ? '#007bff' : 'white';
+                contractsBtn.style.color = type === 'contracts' ? 'white' : '#333';
+            }
+            
+            if (positionSizeLabel) {
+                positionSizeLabel.textContent = type === 'percent' ? '%' : 'C';
+            }
+            
+            updateMobileTotalPositionDisplay();
+        }
+
+        // Set Mobile Multiplier
+        function setMobileMultiplier(multiplier) {
+            const multiplierButtons = document.querySelectorAll('.mobile-multiplier-btn');
+            
+            multiplierButtons.forEach(btn => {
+                const btnMultiplier = parseInt(btn.dataset.multiplier, 10);
+                const isActive = btnMultiplier === multiplier;
+                btn.classList.toggle('active', isActive);
+                btn.style.background = isActive ? '#007bff' : 'white';
+                btn.style.color = isActive ? 'white' : '#333';
+                btn.style.borderColor = isActive ? '#007bff' : '#ddd';
+            });
+            
+            updateMobileTotalPositionDisplay();
+        }
+
+        // Update Mobile Total Position Display
+        function updateMobileTotalPositionDisplay() {
+            const positionSizeInput = document.getElementById('mobilePositionSize');
+            const multiplierButtons = document.querySelectorAll('.mobile-multiplier-btn');
+            const totalPositionDisplay = document.getElementById('mobileTotalPositionDisplay');
+            const percentBtn = document.getElementById('mobilePositionTypePercent');
+            
+            if (positionSizeInput && totalPositionDisplay) {
+                const baseValue = parseInt(positionSizeInput.value, 10) || 0;
+                const activeMultiplier = Array.from(multiplierButtons).find(btn => btn.classList.contains('active'));
+                const multiplier = activeMultiplier ? parseInt(activeMultiplier.dataset.multiplier, 10) : 1;
+                const total = baseValue * multiplier;
+                
+                const isPercent = percentBtn && percentBtn.classList.contains('active');
+                totalPositionDisplay.textContent = isPercent ? `${total}%` : `${total} contracts`;
+            }
+        }
+    </script>
+
+    <!-- TradingView Chart Widget -->
+    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+    <script type="text/javascript">
+        new TradingView.widget({
+            "width": "100%",
+            "height": "300",
+            "symbol": "COINBASE:BTCUSD",
+            "interval": "1",
+            "timezone": "Etc/UTC",
+            "theme": "dark",
+            "style": "1",
+            "locale": "en",
+            "toolbar_bg": "#f1f3f6",
+            "scalesProperties.textColor": "#FFFFFF",
+            "backgroundColor": "#1e2733",
+            "enable_publishing": false,
+            "hide_top_toolbar": true,
+            "hide_legend": true,
+            "save_image": false,
+            "disabled_features": ["volume_force_overlay", "create_volume_indicator_by_default"],
+            "studies": [],
+            "container_id": "tradingview_12345"
+        });
+    </script>
+</body>
+</html> 
