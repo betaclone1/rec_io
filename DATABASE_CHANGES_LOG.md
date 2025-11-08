@@ -83,6 +83,7 @@ with get_db_connection() as conn:
   - `backend/active_trade_supervisor.py` (schema creation and monitoring logic) - APPLIED
   - `frontend/tabs/trade_monitor.html` (display updates) - PENDING
 - **Status**: APPLIED
+- **Production Deployment**: APPLIED (2025-01-27, host 137.184.224.94)
 
 ---
 
@@ -155,6 +156,7 @@ with get_db_connection() as conn:
   - `backend/active_trade_supervisor.py` (schema creation and monitoring logic) - APPLIED
   - `frontend/tabs/trade_monitor.html` (display updates) - PENDING
 - **Status**: APPLIED
+- **Production Deployment**: APPLIED (2025-01-27, host 137.184.224.94)
 
 ---
 
@@ -238,6 +240,7 @@ with get_db_connection() as conn:
 - **Files Modified**: 
   - `backend/trade_manager.py` (schema creation) - APPLIED
 - **Status**: APPLIED
+- **Production Deployment**: APPLIED (2025-01-27, host 137.184.224.94)
 - **Note**: Existing trades will have NULL values for these columns until they are populated by future monitoring logic
 
 ---
@@ -335,6 +338,7 @@ with get_db_connection() as conn:
   - `backend/active_trade_supervisor.py` (settings retrieval) - PENDING
   - `frontend/tabs/trade_monitor.html` (UI for settings) - PENDING
 - **Status**: APPLIED
+- **Production Deployment**: APPLIED (2025-01-27, host 137.184.224.94)
 - **Note**: 
   - Reuses existing `min_volume`, `total_position`, and `bankroll_allotment` fields
   - Loss prevention does not apply to Momentum Scalp strategy
@@ -434,6 +438,7 @@ with get_db_connection() as conn:
 - **Files Modified**: 
   - `backend/monitor_manager.py` (get_strategy_default_settings function) - PENDING
 - **Status**: APPLIED
+- **Production Deployment**: APPLIED (2025-01-27, host 137.184.224.94)
 - **Note**: 
   - These columns store default values for the Momentum Scalp strategy in the strategy_list table
   - Individual monitors can override these defaults via their monitor_list settings
