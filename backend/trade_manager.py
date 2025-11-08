@@ -3,7 +3,7 @@ import threading
 import time
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 import re
 import requests
@@ -19,6 +19,84 @@ from backend.util.paths import get_project_root, get_trade_history_dir, get_logs
 from backend.account_mode import get_account_mode
 from backend.util.paths import get_accounts_data_dir
 from backend.symbol_price_watchdog import calculate_momentum_percentile
+
+EST_ZONE = ZoneInfo("America/New_York")
+CONTRACT_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2})(am|pm)$", re.IGNORECASE)
+
+
+def _normalize_trade_date(value):
+    """Best-effort conversion of stored trade date into an aware datetime in EST."""
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, date):
+        dt = datetime.combine(value, datetime.min.time())
+    else:
+        value_str = str(value).strip()
+        if not value_str:
+            return None
+
+        if value_str.endswith("Z"):
+            value_str = value_str[:-1] + "+00:00"
+
+        dt = None
+        parse_attempts = (
+            lambda v: datetime.fromisoformat(v),
+            lambda v: datetime.strptime(v, "%Y-%m-%d"),
+            lambda v: datetime.strptime(v, "%Y-%m-%d %H:%M:%S"),
+            lambda v: datetime.strptime(v, "%m/%d/%Y"),
+        )
+        for attempt in parse_attempts:
+            try:
+                dt = attempt(value_str)
+                break
+            except ValueError:
+                continue
+        if dt is None:
+            return None
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=EST_ZONE)
+    else:
+        dt = dt.astimezone(EST_ZONE)
+
+    return dt
+
+
+def _extract_hour_idx(contract):
+    """Parse contract string into hour_idx following EST rules."""
+    if not contract:
+        return None
+
+    match = CONTRACT_HOUR_PATTERN.match(contract.strip())
+    if not match:
+        return None
+
+    hour_raw = int(match.group(1))
+    mer = match.group(2).lower()
+
+    if mer == "am":
+        return 24 if hour_raw == 12 else hour_raw
+
+    if hour_raw == 12:
+        return 12
+
+    return hour_raw + 12
+
+
+def _compute_weekly_cycle(trade_date, hour_idx):
+    """Compute 1-168 weekly cycle bucket; returns None when inputs unavailable."""
+    if hour_idx is None:
+        return None
+
+    normalized_date = _normalize_trade_date(trade_date)
+    if normalized_date is None:
+        return None
+
+    postgres_dow = (normalized_date.weekday() + 1) % 7  # Sunday=0 … Saturday=6
+    return (postgres_dow * 24) + hour_idx
 # Function to get momentum data from PostgreSQL (replacement for archived unified_production_coordinator)
 def get_momentum_data_from_postgresql(symbol):
     """Get current momentum data directly from PostgreSQL for the specified symbol."""
@@ -127,7 +205,11 @@ def insert_trade(trade):
         momentum_percentile_for_db = None
         momentum_5s_avg_for_db = None
     
-    contract_name = truncate_contract_name(trade.get('contract'), symbol)
+    contract_original = trade.get('contract')
+    contract_name = truncate_contract_name(contract_original, symbol)
+
+    hour_idx_for_db = _extract_hour_idx(contract_original)
+    weekly_cycle_for_db = _compute_weekly_cycle(trade.get('date'), hour_idx_for_db)
     
     # Write to PostgreSQL only
     try:
@@ -140,8 +222,9 @@ def insert_trade(trade):
                         contract, strike, side, prob, diff, buy_price, position,
                         sell_price, closed_at, fees, pnl, symbol_open, symbol_close,
                         momentum, volatility, win_loss, ticker, ticket_id, market_id,
-                        momentum_percentile, momentum_5s_avg, entry_method, close_method, monitor, bankroll
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        momentum_percentile, momentum_5s_avg, entry_method, close_method, monitor, bankroll,
+                        hour_idx, weekly_cycle
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """, (
                     trade.get('status', 'pending'), trade['date'], trade['time'], 
@@ -151,7 +234,9 @@ def insert_trade(trade):
                     None, None, symbol_open, None, momentum_for_db, trade.get('volatility'),
                     None, trade.get('ticker'), trade.get('ticket_id'), trade.get('market_id', f'{symbol}-USD'),
                     momentum_percentile_for_db, momentum_5s_avg_for_db, trade.get('entry_method', 'manual'), trade.get('close_method'),
-                    trade.get('monitor'), trade.get('bankroll_allotment_total')  # Monitor must be specified - no fallback
+                    trade.get('monitor'),  # Monitor must be specified - no fallback
+                    trade.get('bankroll_allotment_total'),
+                    hour_idx_for_db, weekly_cycle_for_db
                 ))
                 last_id = cursor.fetchone()[0]
                 pg_conn.commit()

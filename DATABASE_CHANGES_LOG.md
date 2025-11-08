@@ -14,6 +14,92 @@ This document tracks all PostgreSQL database modifications made to the trading s
 
 ## Change History
 
+### 2025-11-08 - Trades Weekly Cycle Backfill
+- **Change Type**: SCHEMA_ADDITION | DATA_MIGRATION | INDEX_CREATION
+- **Description**: Added `hour_idx` and `weekly_cycle` buckets to `users.trades_0001` and backfilled using EST calendar rules to support monitor performance tracking.
+- **SQL Commands**:
+```sql
+BEGIN;
+SET search_path TO users, public;
+
+ALTER TABLE trades_0001 ADD COLUMN IF NOT EXISTS hour_idx SMALLINT;
+ALTER TABLE trades_0001 ADD COLUMN IF NOT EXISTS weekly_cycle SMALLINT;
+
+WITH parsed AS (
+    SELECT
+        id,
+        REGEXP_REPLACE(contract, '.*\s([0-9]{1,2})(am|pm)$', '\1')::INT AS h_raw,
+        LOWER(REGEXP_REPLACE(contract, '.*\s([0-9]{1,2})(am|pm)$', '\2')) AS mer
+    FROM trades_0001
+),
+hcalc AS (
+    SELECT
+        t.id,
+        CASE
+            WHEN p.mer = 'am' AND p.h_raw = 12 THEN 24
+            WHEN p.mer = 'am' THEN p.h_raw
+            WHEN p.mer = 'pm' AND p.h_raw = 12 THEN 12
+            ELSE p.h_raw + 12
+        END AS hour_idx
+    FROM trades_0001 t
+    JOIN parsed p USING (id)
+),
+dcalc AS (
+    SELECT
+        t.id,
+        h.hour_idx,
+        EXTRACT(DOW FROM t.date::timestamp) AS dow
+    FROM trades_0001 t
+    JOIN hcalc h USING (id)
+)
+UPDATE trades_0001 t
+SET hour_idx = d.hour_idx,
+    weekly_cycle = (d.dow::INT * 24) + d.hour_idx
+FROM dcalc d
+WHERE t.id = d.id;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relname = 'trades_0001_weekly_cycle_idx'
+          AND n.nspname = current_schema()
+    ) THEN
+        EXECUTE 'CREATE INDEX trades_0001_weekly_cycle_idx ON trades_0001(weekly_cycle)';
+    END IF;
+END$$;
+
+-- Sanity checks
+SELECT MIN(weekly_cycle) AS min_cycle,
+       MAX(weekly_cycle) AS max_cycle,
+       COUNT(*) FILTER (WHERE weekly_cycle IS NULL) AS null_cycles
+FROM trades_0001;
+
+SELECT weekly_cycle, COUNT(*) AS trades
+FROM trades_0001
+GROUP BY weekly_cycle
+ORDER BY weekly_cycle
+LIMIT 30;
+
+SELECT id, date, contract, hour_idx, weekly_cycle
+FROM trades_0001
+ORDER BY date, weekly_cycle
+LIMIT 50;
+
+COMMIT;
+```
+- **Files Modified**:
+  - `users.trades_0001` (schema)
+  - `trades_0001_weekly_cycle_idx` (index)
+- **Status**: VERIFIED
+- **Notes**:
+  - `weekly_cycle` is 1–168 (Sunday 1am through Saturday midnight bucketed as 24). Unparsable contracts remain `NULL`.
+  - `hour_idx` is retained for debugging joins and verification; drop only after upstream adoption.
+  - Re-run is idempotent; index creation wrapped in `DO` block guard.
+- **Production Deployment**: VERIFIED (2025-11-08, host 137.184.224.94). Full table replaced with local verified copy; backup snapshot stored at `/Users/ericwais1/rec_io_local/2_5/prod_trades_0001_backup_20251108.sql`.
+
 ### 2025-01-27 - High Price Tracking for Trailing Stops
 - **Change Type**: SCHEMA_ADDITION
 - **Description**: Add high_price column to active_trades tables for trailing stop functionality
