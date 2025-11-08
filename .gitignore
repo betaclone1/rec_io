@@ -152,3 +152,4 @@ DIGITAL_OCEAN_CREDENTIALS.md
 backend/supervisord.conf
 backend/core/config/MASTER_PORT_MANIFEST.json
 backend/core/config/MASTER_PORT_MANIFEST.json
+backend/core/config/MASTER_PORT_MANIFEST.json

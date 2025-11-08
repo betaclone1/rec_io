@@ -512,8 +512,11 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                         else:
                             log_event(ticket_id, f"MANAGER: Bankroll is zero or None for trade {id}, cannot calculate ret_pct")
                         
-                        # Update trade status to closed with all calculated values including ret_pct
-                        update_trade_status_with_ret_pct(id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, total_fees, ret_pct)
+                        # Get high_price and low_price from active_trades before it's removed
+                        high_price, low_price = get_high_low_prices_from_active_trades(id)
+                        
+                        # Update trade status to closed with all calculated values including ret_pct and high/low prices
+                        update_trade_status_with_ret_pct(id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, total_fees, ret_pct, high_price, low_price)
                         
                         log_event(ticket_id, f"MANAGER: CLOSE TRADE CONFIRMED - PnL: ${pnl}, W/L: {win_loss}, Fees: ${total_fees}")
                         log(f"CLOSE TRADE CONFIRMED: {expected_ticker}, PnL=${pnl}, W/L={win_loss}")
@@ -547,6 +550,76 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
         return
 
 # ---------- UTILITY FUNCTIONS ----------------------------------------------------
+
+def get_high_low_prices_from_active_trades(trade_id: int) -> tuple:
+    """
+    Get high_price and low_price from active_trades table before trade is removed.
+    
+    Args:
+        trade_id: The trade ID
+        
+    Returns:
+        tuple: (high_price, low_price) or (None, None) if not found
+    """
+    try:
+        # Get monitor identifier from trades table
+        pg_conn = get_postgresql_connection()
+        if not pg_conn:
+            return (None, None)
+        
+        with pg_conn.cursor() as cursor:
+            cursor.execute("SELECT monitor FROM users.trades_0001 WHERE id = %s", (trade_id,))
+            monitor_row = cursor.fetchone()
+        pg_conn.close()
+        
+        if not monitor_row or not monitor_row[0]:
+            log(f"⚠️ No monitor found for trade {trade_id}, cannot get high/low prices")
+            return (None, None)
+        
+        monitor_identifier = monitor_row[0]
+        
+        # Extract user number and monitor ID from monitor identifier (e.g., "mon_0001_10002" -> "0001", "10002")
+        if monitor_identifier.startswith('mon_'):
+            monitor_suffix = monitor_identifier[4:]  # Remove "mon_" prefix
+            parts = monitor_suffix.split('_')
+            if len(parts) == 2:
+                user_number = parts[0]
+                monitor_id = parts[1]
+            else:
+                log(f"⚠️ Invalid monitor identifier format: {monitor_identifier}")
+                return (None, None)
+        else:
+            log(f"⚠️ Monitor identifier doesn't start with 'mon_': {monitor_identifier}")
+            return (None, None)
+        
+        # Construct active_trades table name
+        active_trades_table = f"active_trades_{user_number}_{monitor_id}"
+        
+        # Query active_trades table for high_price and low_price
+        pg_conn = get_postgresql_connection()
+        if not pg_conn:
+            return (None, None)
+        
+        with pg_conn.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT high_price, low_price
+                FROM users.{active_trades_table}
+                WHERE trade_id = %s
+            """, (trade_id,))
+            price_row = cursor.fetchone()
+        pg_conn.close()
+        
+        if price_row:
+            high_price, low_price = price_row
+            log(f"📊 Retrieved high_price={high_price}, low_price={low_price} for trade {trade_id}")
+            return (high_price, low_price)
+        else:
+            log(f"⚠️ Trade {trade_id} not found in active_trades table {active_trades_table}")
+            return (None, None)
+            
+    except Exception as e:
+        log(f"❌ Error getting high/low prices from active_trades for trade {trade_id}: {e}")
+        return (None, None)
 
 def log(msg):
     """Log messages with timestamp"""
@@ -764,7 +837,9 @@ def init_trades_db():
                     entry_method TEXT DEFAULT 'manual',
                     close_method TEXT,
                     order_id_open TEXT,
-                    order_id_close TEXT
+                    order_id_close TEXT,
+                    high_price DECIMAL(10,4),
+                    low_price DECIMAL(10,4)
                 )
             """)
             
@@ -891,7 +966,7 @@ init_trades_db()
 
 
 
-def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_price=None, symbol_close=None, win_loss=None, pnl=None, close_method=None, fees=None, ret_pct=None):
+def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_price=None, symbol_close=None, win_loss=None, pnl=None, close_method=None, fees=None, ret_pct=None, high_price=None, low_price=None):
     """Update trade status in PostgreSQL database with ret_pct calculation."""
     if status == 'closed':
         if closed_at is None:
@@ -936,9 +1011,9 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                 if status == 'closed':
                     cursor.execute("""
                         UPDATE users.trades_0001 
-                        SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, ret_pct = %s 
+                        SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, ret_pct = %s, high_price = %s, low_price = %s
                         WHERE id = %s
-                    """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, ret_pct, trade_id))
+                    """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, ret_pct, high_price, low_price, trade_id))
                 else:
                     cursor.execute("""
                         UPDATE users.trades_0001 
@@ -1781,14 +1856,20 @@ def check_expired_trades():
                 with pg_conn.cursor() as cursor:
                     for trade_id, ticker, symbol in active_trades:
                         symbol_close = symbol_prices.get(symbol)
+                        
+                        # Get high_price and low_price from active_trades before it's removed
+                        high_price, low_price = get_high_low_prices_from_active_trades(trade_id)
+                        
                         cursor.execute("""
                             UPDATE users.trades_0001 
                             SET status = 'expired', 
                                 closed_at = %s, 
                                 symbol_close = %s,
-                                close_method = 'expired'
+                                close_method = 'expired',
+                                high_price = %s,
+                                low_price = %s
                             WHERE id = %s AND status IN ('open', 'closing', 'close_failed')
-                        """, (closed_at, symbol_close, trade_id))
+                        """, (closed_at, symbol_close, high_price, low_price, trade_id))
                     pg_conn.commit()
                     print(f"💾 Expired trades update written to PostgreSQL users.trades_0001 for {len(active_trades)} trades (open, closing, and close_failed)")
                 pg_conn.close()
@@ -1904,6 +1985,7 @@ def poll_settlements_for_matches(expired_tickers):
                                 print(f"⚠️ Bankroll is zero or None for trade {trade_id}, cannot calculate ret_pct")
                         
                         # Update this specific trade
+                        # Note: high_price and low_price are already set during expiration, preserve them
                         try:
                             pg_conn_update = get_postgresql_connection()
                             if pg_conn_update:

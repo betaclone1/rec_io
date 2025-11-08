@@ -70,6 +70,8 @@ def create_monitor_active_trades_table():
                     time_since_entry INTEGER,
                     current_close_price DECIMAL(10,4),
                     current_pnl VARCHAR(20),
+                    high_price DECIMAL(10,4),
+                    low_price DECIMAL(10,4),
                     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -656,6 +658,7 @@ def add_new_active_trade(trade_id: int, ticket_id: str) -> bool:
          momentum, prob, fees, diff) = row
         
         # Insert into active trades database
+        # Initialize high_price and low_price to buy_price for active trades
         conn = get_db_connection()
         cursor = conn.cursor()
         active_trades_table = get_monitor_active_trades_table()
@@ -663,12 +666,12 @@ def add_new_active_trade(trade_id: int, ticket_id: str) -> bool:
             INSERT INTO users.{active_trades_table} (
                 trade_id, ticket_id, date, time, strike, side, buy_price, position,
                 contract, ticker, symbol, market, trade_strategy, symbol_open,
-                momentum, prob, fees, diff
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                momentum, prob, fees, diff, high_price, low_price
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             trade_id, ticket_id, date, time, strike, side, buy_price, position,
             contract, ticker, symbol, market, trade_strategy, symbol_open,
-            momentum, prob, fees, diff
+            momentum, prob, fees, diff, buy_price, buy_price
         ))
         
         conn.commit()
@@ -847,6 +850,7 @@ def confirm_pending_trade(trade_id: int, ticket_id: str) -> bool:
          momentum, prob, fees, diff) = row
         
         # Update the pending trade in active_trades.db to 'active' status
+        # Initialize high_price and low_price to buy_price when trade becomes active
         conn = get_db_connection()
         cursor = conn.cursor()
         active_trades_table = get_monitor_active_trades_table()
@@ -856,9 +860,11 @@ def confirm_pending_trade(trade_id: int, ticket_id: str) -> bool:
                 buy_price = %s,
                 position = %s,
                 fees = %s,
-                diff = %s
+                diff = %s,
+                high_price = %s,
+                low_price = %s
             WHERE trade_id = %s AND status = 'pending'
-        """, (buy_price, position, fees, diff, trade_id))
+        """, (buy_price, position, fees, diff, buy_price, buy_price, trade_id))
         
         if cursor.rowcount == 0:
             log(f"No pending trade found in active_trades.db for trade_id {trade_id}")
@@ -1339,7 +1345,7 @@ def update_active_trade_monitoring_data():
         cursor = conn.cursor()
         active_trades_table = get_monitor_active_trades_table()
         cursor.execute(f"""
-            SELECT id, trade_id, buy_price, prob, time, date, strike, side, momentum, ticker, symbol
+            SELECT id, trade_id, buy_price, prob, time, date, strike, side, momentum, ticker, symbol, high_price, low_price
             FROM users.{active_trades_table} 
             WHERE status = 'active'
         """)
@@ -1349,7 +1355,7 @@ def update_active_trade_monitoring_data():
         if not active_trades:
             return
         
-        for (active_id, trade_id, buy_price, prob, time_str, date_str, strike, side, momentum, ticker, symbol) in active_trades:
+        for (active_id, trade_id, buy_price, prob, time_str, date_str, strike, side, momentum, ticker, symbol, current_high_price, current_low_price) in active_trades:
             try:
                 # Parse strike price - handle currency formatting
                 strike_clean = str(strike).replace('$', '').replace(',', '')
@@ -1422,6 +1428,25 @@ def update_active_trade_monitoring_data():
                 pnl = 1 - current_market_price - buy_price_float
                 pnl_formatted = f"{pnl:.2f}"  # Format as "0.15" or "-0.08"
                 
+                # Convert current_market_price (sell price) to position value for high/low tracking
+                # current_market_price is the opposite side's ask (what you can sell for)
+                # Position value = 1 - sell_price (the value of the position you own)
+                # Example: If you bought YES at $0.90 and sell price is $0.10, position value = $1.00 - $0.10 = $0.90
+                position_value = 1 - current_market_price
+                
+                # Compare and determine new high_price and low_price
+                # If high_price or low_price is NULL (shouldn't happen for active trades, but handle gracefully),
+                # initialize to buy_price. Otherwise compare with position_value
+                if current_high_price is None:
+                    current_high_price = buy_price_float
+                if current_low_price is None:
+                    current_low_price = buy_price_float
+                
+                # high_price should be the maximum of current_high_price and position_value
+                new_high_price = max(float(current_high_price), position_value)
+                # low_price should be the minimum of current_low_price and position_value
+                new_low_price = min(float(current_low_price), position_value)
+                
                 # Update the monitoring data
                 conn = get_db_connection()
                 cursor = conn.cursor()
@@ -1433,9 +1458,11 @@ def update_active_trade_monitoring_data():
                         time_since_entry = %s,
                         current_close_price = %s,
                         current_pnl = %s,
+                        high_price = %s,
+                        low_price = %s,
                         last_updated = CURRENT_TIMESTAMP
                     WHERE id = %s
-                """, (current_symbol_price, current_probability, buffer_from_strike, time_since_entry, current_market_price, pnl_formatted, active_id))
+                """, (current_symbol_price, current_probability, buffer_from_strike, time_since_entry, current_market_price, pnl_formatted, new_high_price, new_low_price, active_id))
                 conn.commit()
                 conn.close()
                 

@@ -115,6 +115,10 @@
     "0001_10018": {
       "auto_entry_supervisor": 8049,
       "active_trade_supervisor": 8050
+    },
+    "0001_10019": {
+      "auto_entry_supervisor": 8009,
+      "active_trade_supervisor": 8007
     }
   },
   "notes": {
