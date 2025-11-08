@@ -1214,32 +1214,28 @@
         const newMonitor = newMonitors.find(m => m.id === monitorId);
         
         if (newMonitor) {
-          const winStreakValue = getMonitorStatValue(newMonitor, 'win_streak', newMonitor.win_streak || 0);
-          const winLossValue = getMonitorStatValue(newMonitor, 'win_loss', newMonitor.winRate || '0%');
-          const retPctValue = getMonitorStatValue(newMonitor, 'ret_pct', newMonitor.return || '0%');
-          const pnlValue = getMonitorStatValue(newMonitor, 'pnl', newMonitor.pnl || '$0');
+          const winStreakValue = getMonitorStatValue(newMonitor, 'win_streak', newMonitor.win_streak);
+          const winLossValue = getMonitorStatValue(newMonitor, 'win_loss', newMonitor.winRate);
+          const retPctValue = getMonitorStatValue(newMonitor, 'ret_pct', newMonitor.return);
+          const pnlValue = getMonitorStatValue(newMonitor, 'pnl', newMonitor.pnl);
 
-          // Update win streak
           const winStreakElement = tile.querySelector('.stat-win-streak');
-          if (winStreakElement) {
+          if (winStreakElement && winStreakValue !== undefined && winStreakValue !== null && winStreakValue !== '') {
             winStreakElement.textContent = winStreakValue;
           }
-          
-          // Update W/L
+
           const winLossElement = tile.querySelector('.stat-win-loss');
-          if (winLossElement) {
+          if (winLossElement && winLossValue !== undefined && winLossValue !== null && winLossValue !== '') {
             winLossElement.textContent = winLossValue;
           }
-          
-          // Update Ret%
+
           const retPctElement = tile.querySelector('.stat-ret-pct');
-          if (retPctElement) {
+          if (retPctElement && retPctValue !== undefined && retPctValue !== null && retPctValue !== '') {
             retPctElement.textContent = retPctValue;
           }
-          
-          // Update PnL
+
           const pnlElement = tile.querySelector('.stat-pnl');
-          if (pnlElement) {
+          if (pnlElement && pnlValue !== undefined && pnlValue !== null && pnlValue !== '') {
             pnlElement.textContent = pnlValue;
           }
           
@@ -1286,15 +1282,21 @@
         if (stats) {
           switch (statType) {
             case 'win_streak':
-              return stats.win_streak || 0;
+              if (stats.win_streak !== undefined && stats.win_streak !== null) return stats.win_streak;
+              break;
             case 'win_loss':
-              return `${stats.win_loss}%`;
+              if (stats.win_loss !== undefined && stats.win_loss !== null) return `${stats.win_loss}%`;
+              break;
             case 'ret_pct':
-              return `${stats.ret_pct}%`;
+              if (stats.ret_pct !== undefined && stats.ret_pct !== null) return `${stats.ret_pct}%`;
+              break;
             case 'pnl':
-              const pnlValue = Math.round(stats.pnl);
-              const formattedPnl = pnlValue.toLocaleString();
-              return pnlValue >= 0 ? `$${formattedPnl}` : `-$${Math.abs(pnlValue).toLocaleString()}`;
+              if (stats.pnl !== undefined && stats.pnl !== null) {
+                const pnlValue = Math.round(stats.pnl);
+                const formattedPnl = pnlValue.toLocaleString();
+                return pnlValue >= 0 ? `$${formattedPnl}` : `-$${Math.abs(pnlValue).toLocaleString()}`;
+              }
+              break;
           }
         }
       }
@@ -1303,13 +1305,13 @@
       switch (statType) {
         case 'win_streak':
           console.log(`[DEBUG] Monitor ${monitor.id} win_streak:`, monitor.win_streak);
-          return monitor.win_streak || 0;
+          return (monitor.win_streak !== undefined && monitor.win_streak !== null) ? monitor.win_streak : undefined;
         case 'win_loss':
-          return monitor.winRate || defaultValue;
+          return (monitor.winRate !== undefined && monitor.winRate !== null) ? monitor.winRate : defaultValue;
         case 'ret_pct':
-          return monitor.return || defaultValue;
+          return (monitor.return !== undefined && monitor.return !== null) ? monitor.return : defaultValue;
         case 'pnl':
-          return monitor.pnl || defaultValue;
+          return (monitor.pnl !== undefined && monitor.pnl !== null) ? monitor.pnl : defaultValue;
         default:
           return defaultValue;
       }
