@@ -1,4 +1,3 @@
-
 import threading
 import time
 import os
@@ -8,7 +7,9 @@ from zoneinfo import ZoneInfo
 import re
 import requests
 import psycopg2
+from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
+from typing import Optional
 
 # Import the universal centralized port system
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -22,6 +23,40 @@ from backend.symbol_price_watchdog import calculate_momentum_percentile
 
 EST_ZONE = ZoneInfo("America/New_York")
 CONTRACT_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2})(am|pm)$", re.IGNORECASE)
+MONITOR_KEY_PATTERN = re.compile(r"^mon_(\d+?)_(\d+)$", re.IGNORECASE)
+
+
+def _fetch_monitor_state(pg_conn, monitor_key):
+    """Fetch loss_prevention and multiplier from monitor_list table based on monitor_key."""
+    if not monitor_key or not pg_conn:
+        return None
+    
+    try:
+        # Parse monitor key (e.g., "mon_0001_10002" -> user_number="0001", monitor_id="10002")
+        match = MONITOR_KEY_PATTERN.match(str(monitor_key))
+        if not match:
+            return None
+        
+        user_number = match.group(1)
+        monitor_id = match.group(2)
+        
+        with pg_conn.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT loss_prevention, multiplier
+                FROM users.monitor_list_{user_number}
+                WHERE id = %s
+            """, (monitor_id,))
+            row = cursor.fetchone()
+            
+            if row:
+                return {
+                    'loss_prevention': row[0],
+                    'multiplier': row[1]
+                }
+        return None
+    except Exception as e:
+        print(f"⚠️ Error fetching monitor state for {monitor_key}: {e}")
+        return None
 
 
 def _normalize_trade_date(value):
@@ -84,6 +119,19 @@ def _extract_hour_idx(contract):
         return 12
 
     return hour_raw + 12
+
+
+def _normalize_boolean_flag(value):
+    """Normalize various boolean-like values to a proper boolean."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in ('true', '1', 'yes', 'on', 'one_contract')
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return False
 
 
 def _compute_weekly_cycle(trade_date, hour_idx):
@@ -216,6 +264,50 @@ def insert_trade(trade):
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
+                monitor_key = trade.get('monitor')
+                
+                # Fetch monitor state once if monitor_key is provided
+                monitor_state = None
+                if monitor_key:
+                    monitor_state = _fetch_monitor_state(pg_conn, monitor_key)
+                
+                # Handle loss_prevention
+                trade_loss_prevention = trade.get('loss_prevention')
+                if trade_loss_prevention is not None:
+                    # Trade explicitly provided loss_prevention (boolean: True = one_contract mode)
+                    loss_prevention_flag = _normalize_boolean_flag(trade_loss_prevention)
+                else:
+                    # Trade didn't provide loss_prevention, fetch from monitor state
+                    if monitor_state and monitor_state.get('loss_prevention') is not None:
+                        # Monitor stores loss_prevention as string ("one_contract", "off", etc.)
+                        # Convert to boolean: True if "one_contract", False otherwise
+                        monitor_loss_prevention = monitor_state.get('loss_prevention')
+                        if isinstance(monitor_loss_prevention, str):
+                            loss_prevention_flag = monitor_loss_prevention == "one_contract"
+                        else:
+                            loss_prevention_flag = _normalize_boolean_flag(monitor_loss_prevention)
+                    else:
+                        loss_prevention_flag = False
+                
+                # Handle multiplier
+                multiplier_for_db = trade.get('multiplier')
+                if multiplier_for_db is not None:
+                    try:
+                        multiplier_for_db = float(multiplier_for_db)
+                    except (TypeError, ValueError):
+                        multiplier_for_db = None
+                
+                # If multiplier not provided in trade, try to get from monitor state
+                if multiplier_for_db is None and monitor_state and monitor_state.get('multiplier') is not None:
+                    try:
+                        multiplier_for_db = float(monitor_state['multiplier'])
+                    except (TypeError, ValueError):
+                        multiplier_for_db = None
+                
+                # Default multiplier to 1.0 if still None
+                if multiplier_for_db is None:
+                    multiplier_for_db = 1.0
+
                 cursor.execute("""
                     INSERT INTO users.trades_0001 (
                         status, date, time, symbol, market, trade_strategy,
@@ -223,8 +315,8 @@ def insert_trade(trade):
                         sell_price, closed_at, fees, pnl, symbol_open, symbol_close,
                         momentum, volatility, win_loss, ticker, ticket_id, market_id,
                         momentum_percentile, momentum_5s_avg, entry_method, close_method, monitor, bankroll,
-                        hour_idx, weekly_cycle
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        hour_idx, weekly_cycle, loss_prevention, multiplier
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """, (
                     trade.get('status', 'pending'), trade['date'], trade['time'], 
@@ -234,9 +326,11 @@ def insert_trade(trade):
                     None, None, symbol_open, None, momentum_for_db, trade.get('volatility'),
                     None, trade.get('ticker'), trade.get('ticket_id'), trade.get('market_id', f'{symbol}-USD'),
                     momentum_percentile_for_db, momentum_5s_avg_for_db, trade.get('entry_method', 'manual'), trade.get('close_method'),
-                    trade.get('monitor'),  # Monitor must be specified - no fallback
+                    monitor_key,  # Monitor must be specified - no fallback
                     trade.get('bankroll_allotment_total'),
-                    hour_idx_for_db, weekly_cycle_for_db
+                    hour_idx_for_db, weekly_cycle_for_db,
+                    loss_prevention_flag,
+                    multiplier_for_db
                 ))
                 last_id = cursor.fetchone()[0]
                 pg_conn.commit()
@@ -711,6 +805,381 @@ def log(msg):
     timestamp = datetime.now(ZoneInfo("America/New_York")).strftime("%H:%M:%S")
     print(f"[TRADE_MANAGER {timestamp}] {msg}", flush=True)
 
+
+def _split_monitor_identifier(monitor_key: str):
+    """Return (user_id, monitor_id) tuple parsed from monitor key like mon_0001_10002."""
+    if not monitor_key:
+        return None
+
+    match = MONITOR_KEY_PATTERN.match(monitor_key)
+    if match:
+        return match.group(1), match.group(2)
+
+    parts = monitor_key.split("_")
+    if len(parts) >= 3 and parts[0].lower() == "mon":
+        return parts[1], parts[2]
+
+    return None
+
+
+def _lookup_monitor_symbol(conn, user_id: str, monitor_key: str) -> str:
+    """Best-effort lookup of the symbol tied to a monitor."""
+    symbol = None
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                sql.SQL("SELECT symbol FROM {}.{} WHERE name = %s LIMIT 1").format(
+                    sql.Identifier("users"),
+                    sql.Identifier(f"monitor_list_{user_id}")
+                ),
+                (monitor_key,)
+            )
+            row = cursor.fetchone()
+            if row and row[0]:
+                symbol = row[0]
+    except Exception:
+        # Table might not exist for every user; fall back silently.
+        symbol = None
+
+    if not symbol:
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT symbol
+                    FROM users.trades_0001
+                    WHERE monitor = %s AND symbol IS NOT NULL
+                    ORDER BY created_at DESC NULLS LAST, id DESC
+                    LIMIT 1
+                    """,
+                    (monitor_key,)
+                )
+                row = cursor.fetchone()
+                if row and row[0]:
+                    symbol = row[0]
+        except Exception:
+            symbol = None
+
+    return symbol if symbol else "UNKNOWN"
+
+
+def refresh_monitor_cycle_performance_for_monitor(
+    monitor_key: str,
+    *,
+    window_days: int = 84,
+    weekly_cycle: Optional[int] = None
+) -> None:
+    """Recompute the monitor_cycle_performance table for a monitor."""
+    monitor_parts = _split_monitor_identifier(monitor_key)
+    if not monitor_parts:
+        log(f"⚠️ Cannot refresh performance table for unknown monitor format: {monitor_key}")
+        return
+
+    user_id, monitor_id = monitor_parts
+    table_name = f"monitor_cycle_performance_{user_id}_{monitor_id}"
+    index_name = f"{table_name}_winrate_idx"
+    table_ref = f"users.{table_name}"
+    interval_literal = f"{window_days} days"
+
+    conn = get_postgresql_connection()
+    if not conn:
+        log(f"⚠️ Skipping performance refresh for {monitor_key} - no database connection")
+        return
+
+    try:
+        is_archived = False
+        with conn.cursor() as cursor:
+            try:
+                cursor.execute(
+                    f"SELECT status FROM users.monitor_list_{user_id} WHERE name = %s LIMIT 1",
+                    (monitor_key,)
+                )
+                status_row = cursor.fetchone()
+                if status_row and status_row[0] and str(status_row[0]).upper() == "ARCHIVED":
+                    is_archived = True
+            except Exception:
+                pass
+
+        if is_archived:
+            log(f"ℹ️ Skipping performance refresh for archived monitor {monitor_key}")
+            return
+
+        symbol_label = _lookup_monitor_symbol(conn, user_id, monitor_key) or "UNKNOWN"
+
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {table_ref} (
+                    weekly_cycle            SMALLINT PRIMARY KEY,
+                    day_name                TEXT,
+                    contract_hour           TEXT,
+                    trade_count             INT      NOT NULL DEFAULT 0,
+                    win_count               INT      NOT NULL DEFAULT 0,
+                    win_rate_pct            NUMERIC(5,2),
+                    avg_collateral_exposure INT,
+                    median_exposure         INT,
+                    max_exposure            INT,
+                    max_pct_exposure        NUMERIC(10,2) NOT NULL DEFAULT 0,
+                    performance_modifier    NUMERIC(10,2) NOT NULL DEFAULT 0,
+                    window_start            TIMESTAMPTZ,
+                    window_end              TIMESTAMPTZ,
+                    last_updated            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            cursor.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS {index_name}
+                ON {table_ref} (win_rate_pct DESC NULLS LAST)
+                """
+            )
+            cursor.execute(
+                f"""
+                INSERT INTO {table_ref} (weekly_cycle)
+                SELECT gs
+                FROM generate_series(1, 168) AS gs
+                ON CONFLICT (weekly_cycle) DO NOTHING
+                """
+            )
+        conn.commit()
+
+        weekly_cycle_filter = weekly_cycle
+        if weekly_cycle_filter is not None:
+            with conn.cursor() as cursor:
+                cursor.execute(f"SELECT COUNT(*) FROM {table_ref}")
+                row = cursor.fetchone()
+                if not row or row[0] < 168:
+                    weekly_cycle_filter = None
+
+        update_query = f"""
+            WITH params AS (
+                SELECT
+                    NOW()::timestamptz AS now_ts,
+                    (NOW()::date - %s::interval)::timestamptz AS win_start
+            ),
+            trades_norm AS (
+                SELECT
+                    t.side,
+                    t.win_loss,
+                    t.status,
+                    t.hour_idx,
+                    t.weekly_cycle,
+                    (t.date || ' ' || COALESCE(NULLIF(t.time, ''), '00:00:00'))::timestamptz AS trade_ts
+                FROM users.trades_0001 t
+                CROSS JOIN params p
+                WHERE t.monitor = %s
+                  AND (t.date || ' ' || COALESCE(NULLIF(t.time, ''), '00:00:00'))::timestamptz BETWEEN p.win_start AND p.now_ts
+                  AND t.weekly_cycle BETWEEN 1 AND 168
+            ),
+            cycle_counts AS (
+                SELECT
+                    tn.trade_ts::date AS trade_date,
+                    tn.hour_idx,
+                    tn.weekly_cycle,
+                    SUM(CASE WHEN LOWER(COALESCE(tn.side::text, '')) IN ('y','yes') THEN 1 ELSE 0 END) AS yes_cnt,
+                    SUM(CASE WHEN LOWER(COALESCE(tn.side::text, '')) IN ('n','no') THEN 1 ELSE 0 END) AS no_cnt,
+                    SUM(CASE WHEN LOWER(COALESCE(tn.win_loss::text, tn.status::text)) IN ('w','win','1','true','yes','won') THEN 1 ELSE 0 END) AS wins,
+                    COUNT(*) AS trades
+                FROM trades_norm tn
+                GROUP BY tn.trade_ts::date, tn.hour_idx, tn.weekly_cycle
+            ),
+            cycle_exposure AS (
+                SELECT
+                    weekly_cycle,
+                    GREATEST(yes_cnt, no_cnt) AS exposure,
+                    wins,
+                    trades
+                FROM cycle_counts
+            ),
+            hour_agg AS (
+                SELECT
+                    weekly_cycle,
+                    SUM(trades) AS trade_count,
+                    SUM(wins)   AS win_count,
+                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY exposure) AS median_exposure,
+                    MAX(exposure) AS max_exposure,
+                    AVG(exposure) AS avg_exposure_float
+                FROM cycle_exposure
+                GROUP BY weekly_cycle
+            ),
+            all_cycles AS (
+                SELECT
+                    gs AS weekly_cycle,
+                    CASE ((gs - 1) / 24)
+                        WHEN 0 THEN 'Sunday'
+                        WHEN 1 THEN 'Monday'
+                        WHEN 2 THEN 'Tuesday'
+                        WHEN 3 THEN 'Wednesday'
+                        WHEN 4 THEN 'Thursday'
+                        WHEN 5 THEN 'Friday'
+                        WHEN 6 THEN 'Saturday'
+                    END AS day_name,
+            CASE (MOD(gs - 1, 24) + 1)
+                        WHEN 24 THEN '12am'
+                        WHEN 12 THEN '12pm'
+                        WHEN 13 THEN '1pm'
+                        WHEN 14 THEN '2pm'
+                        WHEN 15 THEN '3pm'
+                        WHEN 16 THEN '4pm'
+                        WHEN 17 THEN '5pm'
+                        WHEN 18 THEN '6pm'
+                        WHEN 19 THEN '7pm'
+                        WHEN 20 THEN '8pm'
+                        WHEN 21 THEN '9pm'
+                        WHEN 22 THEN '10pm'
+                        WHEN 23 THEN '11pm'
+                ELSE (MOD(gs - 1, 24) + 1)::text || 'am'
+                    END AS hour_label,
+                    COALESCE(ha.trade_count, 0) AS trade_count,
+                    COALESCE(ha.win_count, 0) AS win_count,
+                    CASE WHEN COALESCE(ha.trade_count, 0) > 0
+                        THEN ROUND(100.0 * ha.win_count::numeric / ha.trade_count::numeric, 2)
+                        ELSE 0
+                    END AS win_rate_pct,
+                    COALESCE(ROUND(ha.avg_exposure_float)::int, 0) AS avg_collateral_exposure,
+                    COALESCE(ROUND(ha.median_exposure)::int, 0) AS median_exposure,
+                    COALESCE(ha.max_exposure::int, 0) AS max_exposure
+                FROM generate_series(1, 168) AS gs
+                LEFT JOIN hour_agg ha ON ha.weekly_cycle = gs
+                WHERE (%s) IS NULL OR gs = %s
+            ),
+            metrics AS (
+                SELECT
+                    ac.weekly_cycle,
+                    ac.day_name,
+                    %s || ' ' || ac.hour_label AS contract_hour,
+                    ac.trade_count,
+                    ac.win_count,
+                    ac.win_rate_pct,
+                    ac.avg_collateral_exposure,
+                    ac.median_exposure,
+                    ac.max_exposure,
+                    CASE
+                        WHEN ac.avg_collateral_exposure IS NULL OR ac.avg_collateral_exposure = 0 THEN 0.25
+                        WHEN ac.avg_collateral_exposure = 1 THEN 0.50
+                        ELSE ROUND(1.0 / NULLIF(ac.avg_collateral_exposure::numeric, 0), 2)
+                    END AS max_pct_exposure,
+                    CASE
+                        WHEN ac.trade_count = 0 THEN 1.00
+                        WHEN ac.win_rate_pct < 90 THEN 0.00
+                        WHEN ac.win_rate_pct >= 90 AND ac.win_rate_pct < 95 THEN 0.50
+                        WHEN ac.trade_count < 10 AND ac.win_rate_pct > 95 THEN 1.00
+                        WHEN ac.trade_count BETWEEN 10 AND 19 AND ac.win_rate_pct = 100 THEN 1.50
+                        WHEN ac.trade_count > 20 AND ac.win_rate_pct = 100 THEN 2.00
+                        ELSE 1.00
+                    END AS performance_modifier,
+                    p.win_start AS window_start,
+                    p.now_ts AS window_end
+                FROM all_cycles ac
+                CROSS JOIN params p
+            )
+            UPDATE {table_ref} dst
+            SET
+                day_name = m.day_name,
+                contract_hour = m.contract_hour,
+                trade_count = m.trade_count,
+                win_count = m.win_count,
+                win_rate_pct = m.win_rate_pct,
+                avg_collateral_exposure = m.avg_collateral_exposure,
+                median_exposure = m.median_exposure,
+                max_exposure = m.max_exposure,
+                max_pct_exposure = m.max_pct_exposure,
+                performance_modifier = m.performance_modifier,
+                window_start = m.window_start,
+                window_end = m.window_end,
+                last_updated = NOW()
+            FROM metrics m
+            WHERE dst.weekly_cycle = m.weekly_cycle
+        """
+
+        params = (
+            interval_literal,
+            monitor_key,
+            weekly_cycle_filter,
+            weekly_cycle_filter,
+            symbol_label
+        )
+
+        with conn.cursor() as cursor:
+            cursor.execute(update_query, params)
+
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        log(f"⚠️ Failed to refresh performance table for {monitor_key}: {exc}")
+    finally:
+        conn.close()
+
+
+def refresh_monitor_cycle_performance_for_trade(trade_id: int, *, window_days: int = 84) -> None:
+    """Update the monitor-cycle table row associated with a newly closed trade."""
+    conn = get_postgresql_connection()
+    if not conn:
+        log(f"⚠️ Skipping performance refresh for trade {trade_id} - no database connection")
+        return
+
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT monitor, weekly_cycle FROM users.trades_0001 WHERE id = %s",
+                (trade_id,)
+            )
+            row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            log(f"⚠️ Trade {trade_id} not found when refreshing performance table")
+            return
+
+        monitor_key, weekly_cycle = row
+        if not monitor_key or weekly_cycle is None:
+            log(f"⚠️ Trade {trade_id} missing monitor or weekly_cycle for performance update")
+            return
+
+        refresh_monitor_cycle_performance_for_monitor(
+            monitor_key,
+            window_days=window_days,
+            weekly_cycle=weekly_cycle
+        )
+    except Exception as exc:
+        log(f"⚠️ Failed to refresh performance for trade {trade_id}: {exc}")
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def refresh_all_monitor_cycle_performance(window_days: int = 84) -> None:
+    """Refresh all monitor performance tables for the rolling window."""
+    conn = get_postgresql_connection()
+    if not conn:
+        log("⚠️ Skipping daily performance refresh - no database connection")
+        return
+
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT DISTINCT monitor FROM users.trades_0001 WHERE monitor IS NOT NULL"
+            )
+            monitors = [row[0] for row in cursor.fetchall()]
+        conn.close()
+
+        if not monitors:
+            log("ℹ️ No monitors found for performance refresh")
+            return
+
+        for monitor_key in monitors:
+            refresh_monitor_cycle_performance_for_monitor(
+                monitor_key,
+                window_days=window_days
+            )
+    except Exception as exc:
+        log(f"⚠️ Failed to refresh all monitor performance tables: {exc}")
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 from backend.util.trade_logger import log_trade_event
 
 def log_event(ticket_id, message):
@@ -924,7 +1393,9 @@ def init_trades_db():
                     order_id_open TEXT,
                     order_id_close TEXT,
                     high_price DECIMAL(10,4),
-                    low_price DECIMAL(10,4)
+                    low_price DECIMAL(10,4),
+                    loss_prevention BOOLEAN DEFAULT FALSE,
+                    multiplier DECIMAL(10,2)
                 )
             """)
             
@@ -1171,6 +1642,7 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
     
     # Notify monitor_manager when trade is closed
     if status == 'closed':
+        refresh_monitor_cycle_performance_for_trade(trade_id)
         notify_monitor_manager_trade_closed(trade_id, status)
         # Update win_streak for the monitor
         update_monitor_win_streak(trade_id)
@@ -1296,6 +1768,7 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
 
     # Notify monitor_manager when a trade is closed
     if status == 'closed':
+        refresh_monitor_cycle_performance_for_trade(trade_id)
         notify_monitor_manager_trade_closed(trade_id, status)
         # Update win_streak for the monitor
         update_monitor_win_streak(trade_id)
@@ -1623,6 +2096,12 @@ async def add_trade(request: Request):
     # Ensure the trade is inserted with 'pending' status
     data['status'] = 'pending'
     trade_id = insert_trade(data)
+    
+    if trade_id is None:
+        log(f"❌ Failed to insert trade to database - cannot notify active trade supervisor")
+        log_event(data["ticket_id"], "MANAGER: SENT TO EXECUTOR — DATABASE INSERT FAILED")
+        return {"error": "Failed to insert trade to database", "id": None}
+    
     log_event(data["ticket_id"], "MANAGER: SENT TO EXECUTOR — CONFIRMED")
     
     # Notify active trade supervisor about the new pending trade
@@ -2089,6 +2568,7 @@ def poll_settlements_for_matches(expired_tickers):
                                     
                                     # Update win_streak for the monitor
                                     update_monitor_win_streak(trade_id)
+                                    refresh_monitor_cycle_performance_for_trade(trade_id)
                                     
                                 pg_conn_update.close()
                             else:
@@ -2224,6 +2704,7 @@ def notify_monitor_manager_trades_closed_by_ticker(ticker: str, status: str) -> 
                         log(f"✅ Notified monitor_manager about bulk trade closure for ticker {ticker}, monitor {monitor}")
                     else:
                         log(f"⚠️ monitor_manager bulk notification failed for ticker {ticker}, monitor {monitor}: {response.status_code}")
+                    refresh_monitor_cycle_performance_for_monitor(monitor)
                 except Exception as e:
                     log(f"⚠️ Error notifying monitor_manager about bulk trade closure for ticker {ticker}, monitor {monitor}: {e}")
         else:
@@ -2238,6 +2719,12 @@ def notify_monitor_manager_trades_closed_by_ticker(ticker: str, status: str) -> 
 _scheduler = BackgroundScheduler(timezone=ZoneInfo("America/New_York"))
 _scheduler.add_job(check_expired_trades, CronTrigger(minute=0, second=0), max_instances=1, coalesce=True)
 _scheduler.add_job(check_expired_trades_for_settlements, CronTrigger(minute="*/5", second=0), max_instances=1, coalesce=True)
+_scheduler.add_job(
+    refresh_all_monitor_cycle_performance,
+    CronTrigger(hour=3, minute=15, second=0),
+    max_instances=1,
+    coalesce=True
+)
 
 from fastapi import FastAPI
 
@@ -2250,6 +2737,11 @@ async def lifespan(app: FastAPI):
     """Start APScheduler when FastAPI app starts"""
     try:
         _scheduler.start()
+        threading.Thread(
+            target=refresh_all_monitor_cycle_performance,
+            kwargs={"window_days": 84},
+            daemon=True
+        ).start()
     except Exception as e:
         pass
     yield

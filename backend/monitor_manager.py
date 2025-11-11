@@ -15,12 +15,13 @@ This is the starting point - will expand to handle:
 """
 
 import psycopg2
+from psycopg2 import sql
 import json
 import requests
 import subprocess
 import sys
 import os
-from datetime import datetime, time as dt_time
+from datetime import datetime, time as dt_time, timedelta, timezone
 from typing import Dict, Any, Optional, List
 from flask import Flask, request, jsonify
 from backend.core.unified_config import UnifiedConfigManager
@@ -460,23 +461,39 @@ environment={env_vars}
                     
                     # Update total_position for all monitors
                     cursor.execute("""
-                        SELECT position_size, position_type, multiplier 
+                        SELECT position_size, position_type, multiplier, current_max_pct_exposure 
                         FROM users.monitor_list_0001 
                         WHERE id = %s
                     """, (monitor_id,))
                     
                     pos_result = cursor.fetchone()
                     if pos_result:
-                        position_size, position_type, multiplier = pos_result
+                        position_size, position_type, multiplier, current_max_pct_exposure = pos_result
+                        multiplier_value = float(multiplier or 0)
+                        max_pct_cap = None
+                        try:
+                            if current_max_pct_exposure is not None:
+                                max_pct_cap = float(current_max_pct_exposure)
+                        except (TypeError, ValueError):
+                            max_pct_cap = None
                         
-                        if position_type == 'percent':
+                        if multiplier_value == 0:
+                            new_total_position = 1
+                        elif position_type == 'percent':
                             # For percent: round((position_size * allotment_dollars / 100) * multiplier)
                             allotment_dollars = allotment_total_cents / 100
-                            new_total_position = int(round((position_size * allotment_dollars / 100) * float(multiplier)))
+                            base_pct = (position_size or 0) / 100.0
+                            effective_pct = base_pct * multiplier_value
+                            if max_pct_cap is not None and max_pct_cap > 0:
+                                effective_pct = min(effective_pct, max_pct_cap)
+                            new_total_position = int(round(allotment_dollars * effective_pct))
+                            if new_total_position < 1:
+                                new_total_position = 1
                         else:
                             # For contracts: position_size * multiplier
-                            new_total_position = int(position_size * float(multiplier))
+                            new_total_position = int(position_size * multiplier_value)
                         
+                        # Update total_position in monitor table
                         cursor.execute("""
                             UPDATE users.monitor_list_0001 
                             SET total_position = %s 
@@ -488,12 +505,13 @@ environment={env_vars}
                             import requests
                             requests.post('http://localhost:3000/api/broadcast_monitor_total_position', json={
                                 'monitor_id': monitor_id,
-                                'total_position': new_total_position
+                                'total_position': new_total_position,
+                                'multiplier': multiplier_value
                             }, timeout=1)
                         except Exception as e:
                             self.log_event("WEBSOCKET_ERROR", f"Failed to send total_position update notification: {str(e)}")
-                    
-                    updated_count += 1
+                        
+                        updated_count += 1
                 
                 conn.commit()
                 
@@ -593,7 +611,7 @@ environment={env_vars}
                 # Get current monitor settings for calculation
                 fetch_start = time.time()
                 cursor.execute("""
-                    SELECT position_size, position_type, multiplier, bankroll_allotment_total 
+                    SELECT position_size, position_type, multiplier, bankroll_allotment_total, current_max_pct_exposure 
                     FROM users.monitor_list_0001 
                     WHERE id = %s
                 """, (monitor_id,))
@@ -603,19 +621,34 @@ environment={env_vars}
                 if not result:
                     return {"status": "error", "message": "Failed to retrieve monitor settings"}
                 
-                position_size, position_type, multiplier, bankroll_allotment_total = result
+                position_size, position_type, multiplier, bankroll_allotment_total, current_max_pct_exposure = result
                 
-                # Calculate new total_position
-                if position_type == 'percent':
+                multiplier_value = float(multiplier or 0)
+                max_pct_cap = None
+                try:
+                    if current_max_pct_exposure is not None:
+                        max_pct_cap = float(current_max_pct_exposure)
+                except (TypeError, ValueError):
+                    max_pct_cap = None
+                
+                if multiplier_value == 0:
+                    new_total_position = 1
+                elif position_type == 'percent':
                     # For percent: round((position_size * allotment_dollars / 100) * multiplier)
                     if bankroll_allotment_total is not None:
                         allotment_dollars = bankroll_allotment_total / 100
-                        new_total_position = int(round((position_size * allotment_dollars / 100) * float(multiplier)))
+                        base_pct = (position_size or 0) / 100.0
+                        effective_pct = base_pct * multiplier_value
+                        if max_pct_cap is not None and max_pct_cap > 0:
+                            effective_pct = min(effective_pct, max_pct_cap)
+                        new_total_position = int(round(allotment_dollars * effective_pct))
+                        if new_total_position < 1:
+                            new_total_position = 1
                     else:
-                        new_total_position = 0  # No bankroll allotment
+                        new_total_position = 1  # Default minimum position when allotment is missing
                 else:
                     # For contracts: position_size * multiplier
-                    new_total_position = int(position_size * float(multiplier))
+                    new_total_position = int(position_size * multiplier_value)
                 
                 # Update total_position
                 total_update_start = time.time()
@@ -635,7 +668,8 @@ environment={env_vars}
                     import requests
                     requests.post('http://localhost:3000/api/broadcast_monitor_total_position', json={
                         'monitor_id': monitor_id,
-                        'total_position': new_total_position
+                        'total_position': new_total_position,
+                        'multiplier': multiplier_value
                     }, timeout=1)
                 except Exception as e:
                     self.log_event("WEBSOCKET_ERROR", f"Failed to send total_position update notification: {str(e)}")
@@ -668,7 +702,7 @@ environment={env_vars}
             with conn.cursor() as cursor:
                 # Get all active monitors
                 cursor.execute("""
-                    SELECT id, name, position_size, position_type, multiplier, bankroll_allotment_total 
+                    SELECT id, name, position_size, position_type, multiplier, bankroll_allotment_total, current_max_pct_exposure 
                     FROM users.monitor_list_0001 
                     WHERE status = 'active'
                 """)
@@ -676,22 +710,37 @@ environment={env_vars}
                 monitors = cursor.fetchall()
                 updated_count = 0
                 
-                for monitor_id, monitor_name, position_size, position_type, multiplier, bankroll_allotment_total in monitors:
+                for monitor_id, monitor_name, position_size, position_type, multiplier, bankroll_allotment_total, current_max_pct_exposure in monitors:
                     if position_size is None or position_type is None or multiplier is None:
                         continue
                     
-                    # Calculate new total_position based on current settings
-                    if position_type == 'percent':
+                    multiplier_value = float(multiplier or 0)
+                    max_pct_cap = None
+                    try:
+                        if current_max_pct_exposure is not None:
+                            max_pct_cap = float(current_max_pct_exposure)
+                    except (TypeError, ValueError):
+                        max_pct_cap = None
+                    
+                    if multiplier_value == 0:
+                        new_total_position = 1
+                    elif position_type == 'percent':
                         # For percent: round((position_size * allotment_dollars / 100) * multiplier)
                         if bankroll_allotment_total is not None:
                             allotment_dollars = bankroll_allotment_total / 100
-                            new_total_position = int(round((position_size * allotment_dollars / 100) * float(multiplier)))
+                            base_pct = (position_size or 0) / 100.0
+                            effective_pct = base_pct * multiplier_value
+                            if max_pct_cap is not None and max_pct_cap > 0:
+                                effective_pct = min(effective_pct, max_pct_cap)
+                            new_total_position = int(round(allotment_dollars * effective_pct))
+                            if new_total_position < 1:
+                                new_total_position = 1
                         else:
                             # If no bankroll allotment, skip this monitor
                             continue
                     else:
                         # For contracts: position_size * multiplier
-                        new_total_position = int(position_size * float(multiplier))
+                        new_total_position = int(position_size * multiplier_value)
                     
                     # Update total_position in monitor table
                     cursor.execute("""
@@ -705,7 +754,8 @@ environment={env_vars}
                         import requests
                         requests.post('http://localhost:3000/api/broadcast_monitor_total_position', json={
                             'monitor_id': monitor_id,
-                            'total_position': new_total_position
+                            'total_position': new_total_position,
+                            'multiplier': multiplier_value
                         }, timeout=1)
                     except Exception as e:
                         self.log_event("WEBSOCKET_ERROR", f"Failed to send total_position update notification: {str(e)}")
@@ -1168,6 +1218,17 @@ def bankroll_updated():
     """Endpoint called by kalshi_account_sync when bankroll changes"""
     return jsonify(monitor_manager.handle_bankroll_update())
 
+@app.route('/api/sync_bankroll_allotments', methods=['POST'])
+def sync_bankroll_allotments():
+    """Manually trigger bankroll allotment sync - updates bankroll_allotment_total for all active monitors"""
+    try:
+        print("[MONITOR_MANAGER] Manual bankroll allotment sync requested")
+        result = monitor_manager.handle_bankroll_update()
+        return jsonify(result)
+    except Exception as e:
+        print(f"[MONITOR_MANAGER] Error in manual bankroll allotment sync: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route('/api/update_monitor_position', methods=['POST'])
 def update_monitor_position_variables():
     """Update monitor position variables and recalculate total_position"""
@@ -1337,6 +1398,138 @@ def get_strategy_default_settings(strategy_name, user_number="0001"):
         print(f"[STRATEGY DEFAULTS] Error getting strategy defaults for '{strategy_name}': {e}")
         return {}
 
+def _format_hour_label(hour_index: int) -> str:
+    """Return time label matching contract_hour formatting."""
+    if hour_index == 24:
+        return "12am"
+    if hour_index == 12:
+        return "12pm"
+    if hour_index > 12:
+        return f"{hour_index - 12}pm"
+    return f"{hour_index}am"
+
+
+def initialize_monitor_performance_table(
+    cursor,
+    user_number: str,
+    monitor_id: int,
+    symbol: Optional[str],
+    window_days: int = 84,
+) -> None:
+    """Create and seed the monitor_cycle_performance table for a new monitor."""
+    table_name = f"monitor_cycle_performance_{user_number}_{monitor_id}"
+    table_identifier = sql.SQL("{}.{}").format(
+        sql.Identifier("users"),
+        sql.Identifier(table_name)
+    )
+    index_name = f"{table_name}_winrate_idx"
+
+    cursor.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {} (
+                weekly_cycle            SMALLINT PRIMARY KEY,
+                day_name                TEXT,
+                contract_hour           TEXT,
+                trade_count             INT      NOT NULL DEFAULT 0,
+                win_count               INT      NOT NULL DEFAULT 0,
+                win_rate_pct            NUMERIC(5,2),
+                avg_collateral_exposure INT,
+                median_exposure         INT,
+                max_exposure            INT,
+                max_pct_exposure        NUMERIC(10,2) NOT NULL DEFAULT 0,
+                performance_modifier    NUMERIC(10,2) NOT NULL DEFAULT 0,
+                window_start            TIMESTAMPTZ,
+                window_end              TIMESTAMPTZ,
+                last_updated            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        ).format(table_identifier)
+    )
+
+    cursor.execute(
+        sql.SQL(
+            "CREATE INDEX IF NOT EXISTS {} ON {} (win_rate_pct DESC NULLS LAST)"
+        ).format(
+            sql.Identifier(index_name),
+            table_identifier
+        )
+    )
+
+    cursor.execute(
+        sql.SQL("SELECT COUNT(*) FROM {}").format(table_identifier)
+    )
+    existing_count = cursor.fetchone()[0] or 0
+    if existing_count >= 168:
+        return
+
+    symbol_label = (symbol or "UNKNOWN").upper()
+    window_end = datetime.now(timezone.utc)
+    window_start = window_end - timedelta(days=window_days)
+    last_updated = window_end
+
+    insert_sql = sql.SQL(
+        """
+        INSERT INTO {} (
+            weekly_cycle,
+            day_name,
+            contract_hour,
+            trade_count,
+            win_count,
+            win_rate_pct,
+            avg_collateral_exposure,
+            median_exposure,
+            max_exposure,
+            max_pct_exposure,
+            performance_modifier,
+            window_start,
+            window_end,
+            last_updated
+        )
+        VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+        )
+        ON CONFLICT (weekly_cycle) DO NOTHING
+        """
+    ).format(table_identifier)
+
+    day_names = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+    ]
+
+    for weekly_cycle in range(1, 169):
+        day_index = (weekly_cycle - 1) // 24
+        day_name = day_names[day_index]
+        hour_index = ((weekly_cycle - 1) % 24) + 1
+        hour_label = _format_hour_label(hour_index)
+        contract_hour = f"{symbol_label} {hour_label}"
+
+        cursor.execute(
+            insert_sql,
+            (
+                weekly_cycle,
+                day_name,
+                contract_hour,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0.25,
+                1.00,
+                window_start,
+                window_end,
+                last_updated,
+            ),
+        )
+
 @app.route('/api/monitor/create', methods=['POST'])
 def create_monitor():
     """Create a new monitor - business logic handled here"""
@@ -1386,13 +1579,16 @@ def create_monitor():
             
             # Calculate total_position based on position settings
             position_type = 'percent'  # Default position type for new monitors
-            if position_type == 'percent':
+            multiplier_value = float(multiplier or 0)
+            if multiplier_value == 0:
+                total_position = 1
+            elif position_type == 'percent':
                 # For percent: round((position_size * allotment_dollars / 100) * multiplier)
                 allotment_dollars = bankroll_allotment_total / 100
-                total_position = int(round((position_size * allotment_dollars / 100) * float(multiplier)))
+                total_position = int(round((position_size * allotment_dollars / 100) * multiplier_value))
             else:
                 # For contracts: position_size * multiplier
-                total_position = int(position_size * float(multiplier))
+                total_position = int(position_size * multiplier_value)
             
             # Let PostgreSQL handle the ID automatically with SERIAL
             cursor.execute(f"""
@@ -1452,6 +1648,8 @@ def create_monitor():
                 SET name = %s
                 WHERE id = %s
             """, (monitor_name, monitor_id))
+
+            initialize_monitor_performance_table(cursor, user_number, monitor_id, symbol)
             
         conn.commit()
         conn.close()

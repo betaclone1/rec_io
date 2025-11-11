@@ -19,6 +19,7 @@ import requests
 import random
 import sys
 import signal
+import re
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional, Any
@@ -128,6 +129,277 @@ MONITOR_ID = MONITOR_IDENTIFIER.split('_')[1]
 
 print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] 🚀 Monitor-aware supervisor starting")
 print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] User: {USER_NUMBER}, Monitor: {MONITOR_ID}")
+
+_LAST_MONITOR_STATE = {
+    "contract": None,
+    "weekly_cycle": None,
+    "modifier": None,
+    "max_pct_exposure": None,
+    "applied_multiplier": None,
+}
+
+MARKET_TITLE_TODAY_PATTERN = re.compile(r"price today at\s+(\d{1,2})\s*(am|pm)", re.IGNORECASE)
+MARKET_TITLE_DATE_PATTERN = re.compile(r"price on\s+([A-Za-z]{3})\s+(\d{1,2})\s+at\s+(\d{1,2})\s*(am|pm)", re.IGNORECASE)
+
+
+def _format_time_label(hour_24: int) -> str:
+    if hour_24 == 0:
+        return "12am"
+    if hour_24 == 12:
+        return "12pm"
+    if hour_24 > 12:
+        return f"{hour_24 - 12}pm"
+    return f"{hour_24}am"
+
+
+def _hour_label_to_hour24(hour_value: int, period: str) -> int:
+    period = period.lower()
+    if period == "am":
+        return 0 if hour_value == 12 else hour_value
+    # pm
+    return 12 if hour_value == 12 else hour_value + 12
+
+
+def _resolve_event_time(symbol: str, market_title: Optional[str], event_ticker: Optional[str]) -> tuple[Optional[str], Optional[int]]:
+    """Return (contract_label, hour_24) if we can parse a time from the market metadata."""
+    now_est = datetime.now(ZoneInfo("America/New_York"))
+    time_hour_24 = None
+
+    title = market_title or ""
+
+    match = MARKET_TITLE_DATE_PATTERN.search(title)
+    if match:
+        _, _, hour_str, period = match.groups()
+        try:
+            hour_val = int(hour_str)
+            time_hour_24 = _hour_label_to_hour24(hour_val, period)
+        except Exception:
+            time_hour_24 = None
+
+    if time_hour_24 is None:
+        match_today = MARKET_TITLE_TODAY_PATTERN.search(title)
+        if match_today:
+            hour_str, period = match_today.groups()
+            try:
+                hour_val = int(hour_str)
+                time_hour_24 = _hour_label_to_hour24(hour_val, period)
+            except Exception:
+                time_hour_24 = None
+
+    if time_hour_24 is None and event_ticker:
+        parts = event_ticker.split("-")
+        if len(parts) >= 2:
+            dt_part = parts[-1]
+            if len(dt_part) >= 7:
+                hour_part = dt_part[-2:]
+                try:
+                    hour_val = int(hour_part)
+                    time_hour_24 = hour_val
+                except Exception:
+                    time_hour_24 = None
+
+    if time_hour_24 is None:
+        return None, None
+
+    contract_label = f"{symbol.upper()} {_format_time_label(time_hour_24)}"
+    return contract_label, time_hour_24
+
+
+def _compute_weekly_cycle(hour_24: Optional[int], reference_dt: Optional[datetime] = None) -> Optional[int]:
+    if hour_24 is None:
+        return None
+    ref = reference_dt or datetime.now(ZoneInfo("America/New_York"))
+    ref_est = ref.astimezone(ZoneInfo("America/New_York"))
+    hour_idx = 24 if hour_24 == 0 else hour_24
+    day_index = (ref_est.weekday() + 1) % 7
+    weekly_cycle = day_index * 24 + hour_idx
+    if weekly_cycle < 1 or weekly_cycle > 168:
+        return None
+    return weekly_cycle
+
+
+def _fetch_performance_modifier(weekly_cycle: int) -> float:
+    try:
+        import psycopg2
+        from psycopg2 import sql
+
+        conn = psycopg2.connect(
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
+            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+        )
+        table_identifier = sql.SQL("{}.{}").format(
+            sql.Identifier("users"),
+            sql.Identifier(f"monitor_cycle_performance_{USER_NUMBER}_{MONITOR_ID}")
+        )
+        with conn.cursor() as cursor:
+            cursor.execute(
+                    sql.SQL("SELECT performance_modifier FROM {} WHERE weekly_cycle = %s").format(table_identifier),
+                (weekly_cycle,)
+            )
+            row = cursor.fetchone()
+        conn.close()
+        if row and row[0] is not None:
+            return round(float(row[0]), 2)
+    except Exception as e:
+        log(f"[AUTO ENTRY] ⚠️ Unable to load performance modifier for weekly cycle {weekly_cycle}: {e}")
+    return 1.00
+
+
+def _fetch_max_pct_exposure(weekly_cycle: int) -> float:
+    try:
+        import psycopg2
+        from psycopg2 import sql
+
+        conn = psycopg2.connect(
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
+            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+        )
+        table_identifier = sql.SQL("{}.{}").format(
+            sql.Identifier("users"),
+            sql.Identifier(f"monitor_cycle_performance_{USER_NUMBER}_{MONITOR_ID}")
+        )
+        with conn.cursor() as cursor:
+            cursor.execute(
+                sql.SQL("SELECT max_pct_exposure FROM {} WHERE weekly_cycle = %s").format(table_identifier),
+                (weekly_cycle,)
+            )
+            row = cursor.fetchone()
+        conn.close()
+        if row and row[0] is not None:
+            return round(float(row[0]), 2)
+    except Exception as e:
+        log(f"[AUTO ENTRY] ⚠️ Unable to load max_pct_exposure for weekly cycle {weekly_cycle}: {e}")
+    return 0.25
+
+
+def _apply_performance_based_multiplier(multiplier_value: float, position_size: Optional[int], position_type: Optional[str]) -> None:
+    """Apply performance-based multiplier by reusing monitor_manager position update endpoint."""
+    if multiplier_value is None:
+        return
+
+    try:
+        position_size_val = int(position_size) if position_size is not None else 1
+        position_type_val = (position_type or "contracts").lower()
+        port = get_port("main")
+        url = f"http://localhost:{port}/api/update_monitor_position"
+        monitor_id_value = int(MONITOR_ID)
+        payload = {
+            "monitor_id": monitor_id_value,
+            "position_size": position_size_val,
+            "position_type": position_type_val,
+            "multiplier": float(multiplier_value),
+        }
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code != 200:
+            log(f"[AUTO ENTRY] ⚠️ Failed to apply performance-based multiplier {multiplier_value} (status {response.status_code}): {response.text}")
+        else:
+            _LAST_MONITOR_STATE["applied_multiplier"] = float(multiplier_value)
+    except Exception as exc:
+        log(f"[AUTO ENTRY] ⚠️ Error applying performance-based multiplier {multiplier_value}: {exc}")
+
+
+def update_monitor_current_state(strike_table_data: Dict[str, Any]) -> None:
+    """Update monitor_list with the current contract, weekly cycle, and performance modifier."""
+    symbol = (strike_table_data or {}).get("symbol") or MONITOR_SYMBOL or "BTC"
+    market_title = (strike_table_data or {}).get("market_title")
+    event_ticker = (strike_table_data or {}).get("event_ticker")
+
+    contract_label, hour_24 = _resolve_event_time(symbol, market_title, event_ticker)
+    if not contract_label or hour_24 is None:
+        return
+
+    weekly_cycle = _compute_weekly_cycle(hour_24)
+    if weekly_cycle is None:
+        return
+
+    performance_modifier = _fetch_performance_modifier(weekly_cycle)
+    max_pct_exposure = _fetch_max_pct_exposure(weekly_cycle)
+    position_size = None
+    position_type = None
+    performance_based_allocation = False
+    existing_multiplier = None
+
+    try:
+        import psycopg2
+
+        conn = psycopg2.connect(
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
+            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+        )
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT performance_based_allocation, position_size, position_type, multiplier
+                FROM users.monitor_list_{USER_NUMBER}
+                WHERE id = %s
+                """,
+                (MONITOR_ID,)
+            )
+            settings_row = cursor.fetchone()
+            if settings_row:
+                performance_based_allocation = bool(settings_row[0])
+                position_size = settings_row[1]
+                position_type = settings_row[2]
+                existing_multiplier = settings_row[3]
+                if existing_multiplier is not None:
+                    try:
+                        _LAST_MONITOR_STATE["applied_multiplier"] = float(existing_multiplier)
+                    except (TypeError, ValueError):
+                        pass
+
+            cursor.execute(
+                f"""
+                UPDATE users.monitor_list_{USER_NUMBER}
+                SET current_contract = %s,
+                    current_weekly_cycle = %s,
+                    current_performance_modifier = %s,
+                    current_max_pct_exposure = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (contract_label, weekly_cycle, performance_modifier,
+                 max_pct_exposure, MONITOR_ID)
+            )
+        conn.commit()
+        conn.close()
+
+        _LAST_MONITOR_STATE["contract"] = contract_label
+        _LAST_MONITOR_STATE["weekly_cycle"] = weekly_cycle
+        _LAST_MONITOR_STATE["modifier"] = performance_modifier
+        _LAST_MONITOR_STATE["max_pct_exposure"] = max_pct_exposure
+
+        if performance_based_allocation:
+            new_multiplier = round(float(performance_modifier), 2)
+            current_applied = _LAST_MONITOR_STATE.get("applied_multiplier")
+            existing_multiplier_value = None
+            try:
+                if existing_multiplier is not None:
+                    existing_multiplier_value = float(existing_multiplier)
+            except (TypeError, ValueError):
+                existing_multiplier_value = None
+
+            needs_update = False
+            if existing_multiplier_value is None:
+                needs_update = True
+            elif abs(existing_multiplier_value - new_multiplier) > 0.0009:
+                needs_update = True
+            elif current_applied is None or abs(current_applied - new_multiplier) > 0.0009:
+                needs_update = True
+
+            if needs_update:
+                _apply_performance_based_multiplier(new_multiplier, position_size, position_type)
+            else:
+                _LAST_MONITOR_STATE["applied_multiplier"] = new_multiplier
+    except Exception as e:
+        log(f"[AUTO ENTRY] ⚠️ Unable to update monitor current state: {e}")
+    except Exception as e:
+        log(f"[AUTO ENTRY] ⚠️ Unable to update monitor current state: {e}")
 
 # Get symbol for this monitor
 def get_monitor_symbol():
@@ -1355,6 +1627,33 @@ def get_position_size():
         if conn:
             conn.close()
 
+def get_current_multiplier():
+    """Get current multiplier value for this monitor."""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
+            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+        )
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT multiplier FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+            result = cursor.fetchone()
+            if result and result[0] is not None:
+                multiplier_value = float(result[0])
+                log(f"[AUTO ENTRY] Multiplier loaded from monitor {MONITOR_ID}: {multiplier_value}")
+                return multiplier_value
+            else:
+                log(f"[AUTO ENTRY] No multiplier found for monitor {MONITOR_ID} - defaulting to 1.0")
+                return 1.0
+    except Exception as e:
+        log(f"[AUTO ENTRY] Error loading multiplier from monitor {MONITOR_ID}: {e}")
+        return 1.0
+    finally:
+        if conn:
+            conn.close()
+
 def get_loss_prevention_state():
     """Get loss_prevention state from monitor-specific configuration"""
     try:
@@ -1521,16 +1820,15 @@ def trigger_auto_entry_trade(strike_data):
             "strike": strike_data.get("strike"),
             "side": converted_side,
             "ticker": strike_data.get("ticker"),
+            "prob": strike_data.get("probability"),
+            "diff": strike_data.get("diff"),
             "buy_price": strike_data.get("buy_price"),
             "position": position_size,
-            "symbol_open": symbol_open,
-            "symbol_close": None,
-            "momentum": None,  # Will be filled by trade_manager
-            "prob": strike_data.get("probability"),
-            "win_loss": None,
-            "entry_method": "auto",
-            "monitor": f"mon_0001_{MONITOR_ID}",  # Add monitor identifier
-            "bankroll_allotment_total": bankroll_allotment
+            "monitor": f"mon_0001_{MONITOR_ID}",
+            "bankroll_allotment_total": bankroll_allotment,
+            "entry_method": "auto_entry",
+            "loss_prevention": loss_prevention == "one_contract",
+            "multiplier": get_current_multiplier()
         }
         
         log(f"[AUTO ENTRY] 📤 Sending trade to trade_manager: {trade_payload}")
@@ -1667,9 +1965,11 @@ def check_auto_entry_conditions():
         
         # Check spike alert conditions first
         check_spike_alert_conditions()
-        
 
-        
+        strike_table_data = get_master_strike_table_data()
+        if strike_table_data:
+            update_monitor_current_state(strike_table_data)
+
         # Check if AUTO TRADE is enabled for this monitor
         auto_trade_enabled = is_auto_trade_enabled()
         
@@ -1746,8 +2046,6 @@ def check_auto_entry_conditions():
             log(f"[AUTO ENTRY] ⏸️ SPIKE ALERT ACTIVE - Skipping all trade processing")
             return
         
-        # Get strike table data directly
-        strike_table_data = get_master_strike_table_data()
         if not strike_table_data or "strikes" not in strike_table_data:
             return
         

@@ -17,6 +17,7 @@ import pytz
 import requests
 import sqlite3
 import psycopg2
+from psycopg2 import sql
 from typing import List, Optional, Dict
 import fcntl
 from datetime import datetime, timezone
@@ -2663,7 +2664,7 @@ async def get_auto_entry_settings(monitor_id: str = None):
                        spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
                        current_probability, min_ttc_seconds, momentum_spike_enabled, 
                        momentum_spike_threshold, verification_period_enabled, verification_period_seconds,
-                       min_volume, win_streak_threshold
+                       min_volume, win_streak_threshold, performance_based_allocation
                 FROM users.monitor_list_0001 WHERE id = %s
             """, (monitor_id,))
             result = cursor.fetchone()
@@ -2689,7 +2690,8 @@ async def get_auto_entry_settings(monitor_id: str = None):
                     "verification_period_enabled": result[14],
                     "verification_period_seconds": result[15],
                     "min_volume": result[16],
-                    "win_streak_threshold": result[17]
+                    "win_streak_threshold": result[17],
+                    "performance_based_allocation": result[18]
                 }
             else:
                 return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
@@ -2785,6 +2787,9 @@ async def set_auto_entry_settings(request: Request):
             if "verification_period_seconds" in data:
                 update_fields.append("verification_period_seconds = %s")
                 update_values.append(int(data["verification_period_seconds"]))
+            if "performance_based_allocation" in data:
+                update_fields.append("performance_based_allocation = %s")
+                update_values.append(bool(data["performance_based_allocation"]))
             
             if update_fields:
                 # Update the monitor in monitor_list table
@@ -2801,7 +2806,7 @@ async def set_auto_entry_settings(request: Request):
                            spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
                            current_probability, min_ttc_seconds, momentum_spike_enabled, 
                            momentum_spike_threshold, verification_period_enabled, verification_period_seconds,
-                           min_volume, win_streak_threshold
+                           min_volume, win_streak_threshold, performance_based_allocation
                     FROM users.monitor_list_0001 WHERE id = %s
                 """, (monitor_id,))
                 updated_result = cursor.fetchone()
@@ -2824,7 +2829,8 @@ async def set_auto_entry_settings(request: Request):
                         "verification_period_enabled": updated_result[13],
                         "verification_period_seconds": updated_result[14],
                         "min_volume": updated_result[15],
-                        "win_streak_threshold": updated_result[16]
+                        "win_streak_threshold": updated_result[16],
+                        "performance_based_allocation": updated_result[17]
                     }
                     conn.commit()
                     conn.close()
@@ -4734,7 +4740,12 @@ async def get_monitors(user_id: str = "user_0001"):
                     win_streak,
                     loss_prevention,
                     created,
-                    cooldown_timer
+                    cooldown_timer,
+                    current_contract,
+                    current_weekly_cycle,
+                    current_performance_modifier,
+                    current_max_pct_exposure,
+                    performance_based_allocation
                 FROM users.monitor_list_{user_number}
                 WHERE status != 'ARCHIVED'
                 ORDER BY dashboard_order, id
@@ -4747,7 +4758,30 @@ async def get_monitors(user_id: str = "user_0001"):
         # Transform database results to frontend format
         monitors = []
         for row in results:
-            monitor_id, name, symbol, strategy, auto_trade, auto_trade_status, trades, win_loss, ret_pct, pnl, bankroll_allotment_pct, status, dashboard_order, win_streak, loss_prevention, created, cooldown_timer = row
+            (
+                monitor_id,
+                name,
+                symbol,
+                strategy,
+                auto_trade,
+                auto_trade_status,
+                trades,
+                win_loss,
+                ret_pct,
+                pnl,
+                bankroll_allotment_pct,
+                status,
+                dashboard_order,
+                win_streak,
+                loss_prevention,
+                created,
+                cooldown_timer,
+                current_contract,
+                current_weekly_cycle,
+                current_performance_modifier,
+                current_max_pct_exposure,
+                performance_based_allocation,
+            ) = row
             
             # Calculate uptime from created timestamp
             from datetime import datetime
@@ -4787,7 +4821,12 @@ async def get_monitors(user_id: str = "user_0001"):
                 "dashboard_order": dashboard_order or 0,
                 "win_streak": win_streak or 0,
                 "loss_prevention": loss_prevention,
-                "cooldown_timer": cooldown_timer or 0
+                "cooldown_timer": cooldown_timer or 0,
+                "current_contract": current_contract,
+                "current_weekly_cycle": current_weekly_cycle,
+                "current_performance_modifier": current_performance_modifier,
+                "current_max_pct_exposure": current_max_pct_exposure,
+                "performance_based_allocation": performance_based_allocation,
             }
             monitors.append(formatted_monitor)
         
@@ -5288,23 +5327,38 @@ async def update_monitors_allocation(request: dict):
                 # CRITICAL: Recalculate total_position after allotment change
                 # Get current monitor settings for calculation
                 cursor.execute(f"""
-                    SELECT position_size, position_type, multiplier 
+                    SELECT position_size, position_type, multiplier, current_max_pct_exposure 
                     FROM users.monitor_list_{user_number} 
                     WHERE id = %s
                 """, (monitor_id,))
                 
                 pos_result = cursor.fetchone()
                 if pos_result:
-                    position_size, position_type, multiplier = pos_result
+                    position_size, position_type, multiplier, current_max_pct_exposure = pos_result
                     
-                    # Calculate new total_position based on updated allotment
-                    if position_type == 'percent':
+                    multiplier_value = float(multiplier or 0)
+                    max_pct_cap = None
+                    try:
+                        if current_max_pct_exposure is not None:
+                            max_pct_cap = float(current_max_pct_exposure)
+                    except (TypeError, ValueError):
+                        max_pct_cap = None
+                    
+                    if multiplier_value == 0:
+                        new_total_position = 1
+                    elif position_type == 'percent':
                         # For percent: round((position_size * allotment_dollars / 100) * multiplier)
                         allotment_dollars = new_dollar_amount_cents / 100
-                        new_total_position = int(round((position_size * allotment_dollars / 100) * float(multiplier)))
+                        base_pct = (position_size or 0) / 100.0
+                        effective_pct = base_pct * multiplier_value
+                        if max_pct_cap is not None and max_pct_cap > 0:
+                            effective_pct = min(effective_pct, max_pct_cap)
+                        new_total_position = int(round(allotment_dollars * effective_pct))
+                        if new_total_position < 1:
+                            new_total_position = 1
                     else:
                         # For contracts: position_size * multiplier
-                        new_total_position = int(position_size * float(multiplier))
+                        new_total_position = int(position_size * multiplier_value)
                     
                     # Update total_position
                     cursor.execute(f"""
@@ -5320,7 +5374,8 @@ async def update_monitors_allocation(request: dict):
                         import requests
                         requests.post('http://localhost:3000/api/broadcast_monitor_total_position', json={
                             'monitor_id': monitor_id,
-                            'total_position': new_total_position
+                            'total_position': new_total_position,
+                            'multiplier': multiplier_value
                         }, timeout=1)
                     except Exception as e:
                         print(f"Failed to send total_position update notification: {str(e)}")
@@ -5486,7 +5541,7 @@ async def update_monitor_position(request: Request):
         position_type = data.get("position_type")
         multiplier = data.get("multiplier")
         
-        if not all([monitor_id, position_size, position_type, multiplier]):
+        if monitor_id is None or position_size is None or position_type is None or multiplier is None:
             return {"error": "Missing required fields"}
         
         print(f"[PROXY] Forwarding to monitor_manager: {data}")
@@ -5561,6 +5616,31 @@ async def archive_monitor(request: dict):
                 SET status = 'ARCHIVED'
                 WHERE id = %s
             """, (db_monitor_id,))
+
+            performance_table = f"monitor_cycle_performance_{user_number}_{db_monitor_id}"
+            cursor.execute(
+                "SELECT to_regclass(%s)",
+                (f"users.{performance_table}",)
+            )
+            table_exists = cursor.fetchone()[0]
+
+            if table_exists:
+                cursor.execute("CREATE SCHEMA IF NOT EXISTS archive")
+                cursor.execute(
+                    "SELECT to_regclass(%s)",
+                    (f"archive.{performance_table}",)
+                )
+                archived_exists = cursor.fetchone()[0]
+                if archived_exists:
+                    cursor.execute(
+                        sql.SQL("DROP TABLE {}.{}")
+                        .format(sql.Identifier("archive"), sql.Identifier(performance_table))
+                    )
+
+                cursor.execute(
+                    sql.SQL("ALTER TABLE {}.{} SET SCHEMA archive")
+                    .format(sql.Identifier("users"), sql.Identifier(performance_table))
+                )
             
         conn.commit()
         conn.close()

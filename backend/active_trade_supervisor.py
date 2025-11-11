@@ -394,7 +394,7 @@ def sync_and_monitor():
 def log(message: str):
     """Log messages with timestamp"""
     timestamp = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[ACTIVE_TRADE_SUPERVISOR {timestamp}] {message}")
+    print(f"[ACTIVE_TRADE_SUPERVISOR {timestamp}] {message}", flush=True)
 
 def get_momentum_percentile_from_postgresql(symbol="BTC"):
     """Get current momentum percentile directly from PostgreSQL for the specified symbol."""
@@ -1547,6 +1547,15 @@ def start_monitoring_loop():
                 # Update monitoring data
                 update_active_trade_monitoring_data()
                 
+                # Refetch active_trades after update to get fresh current_probability values for auto-stop
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                active_trades_table = get_monitor_active_trades_table()
+                cursor.execute(f"SELECT * FROM users.{active_trades_table} WHERE status = 'active'")
+                columns = [desc[0] for desc in cursor.description]
+                active_trades = [dict(zip(columns, row)) for row in cursor.fetchall()]
+                conn.close()
+                
                 # Log monitoring status every 60 seconds
                 current_time = time.time()
                 if not hasattr(monitoring_worker, 'last_status_log') or current_time - monitoring_worker.last_status_log > 60:
@@ -1704,7 +1713,7 @@ def start_monitoring_loop():
                     # Only proceed if momentum spike is enabled
                     if momentum_spike_enabled:
                         # Get current momentum (use 5s average from live price log to smooth noise)
-                        current_momentum = get_momentum_5s_avg_from_postgresql("BTC")
+                        current_momentum = get_momentum_5s_avg_from_postgresql(get_current_monitor_symbol())
                         
                         if current_momentum is not None:
                             # Check for momentum spike conditions
@@ -2123,6 +2132,27 @@ def trigger_auto_stop_close(trade):
             log(f"[AUTO STOP] Failed to trigger close for trade {trade['trade_id']}: {resp.status_code} {resp.text}")
             return False
     except Exception as e:
+        # Check if this is a timeout exception
+        is_timeout = 'timeout' in str(e).lower() or 'timed out' in str(e).lower()
+        
+        if is_timeout:
+            # For timeout exceptions, check if the trade status changed to "closing" or "closed"
+            # This indicates the request was processed even though the response timed out
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                active_trades_table = get_monitor_active_trades_table()
+                cursor.execute(f"SELECT status FROM users.{active_trades_table} WHERE trade_id = %s", (trade['trade_id'],))
+                result = cursor.fetchone()
+                conn.close()
+                
+                if result and result[0] in ['closing', 'closed']:
+                    # Trade status changed, so the close request was processed successfully
+                    log(f"[AUTO STOP] ⚠️ Request timeout for trade {trade['trade_id']}, but trade status is '{result[0]}' - treating as success")
+                    return True
+            except Exception as db_check_error:
+                log(f"[AUTO STOP] ⚠️ Timeout for trade {trade['trade_id']}, but could not verify status: {db_check_error}")
+        
         log(f"[AUTO STOP] Exception posting close for trade {trade['trade_id']}: {e}")
         return False
 

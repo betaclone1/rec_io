@@ -77,6 +77,11 @@ CREATE TABLE IF NOT EXISTS users.monitor_list_${user_number} (
             win_streak_threshold INTEGER DEFAULT 22,
             loss_prevention VARCHAR(50) DEFAULT 'none',
             last_processed_cycle VARCHAR(100),
+            current_contract VARCHAR(255),
+            current_weekly_cycle SMALLINT,
+            current_performance_modifier NUMERIC(10,2) DEFAULT 1.00,
+            current_max_pct_exposure NUMERIC(10,2) DEFAULT 0.25,
+            performance_based_allocation BOOLEAN NOT NULL DEFAULT FALSE,
             created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         

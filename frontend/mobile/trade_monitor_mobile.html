@@ -393,10 +393,12 @@
     background-color: transparent;
     border: 1px solid #ccc;
     color: white;
-    padding: 6px 12px;
+    padding: 4px 10px;
     border-radius: 4px;
     cursor: pointer;
     transition: background-color 0.3s ease, color 0.3s ease;
+    min-width: 48px;
+    text-align: center;
   }
   .multiplier-btn.active {
     background-color: #007bff; /* bright blue */
@@ -892,7 +894,7 @@ function hideAutoEntrySettingsModal() {
         </div>
         <!-- Position Size Picker -->
         <div style="margin-bottom: 12px;">
-          <div style="font-weight: bold; margin-bottom: 6px; font-size: 0.9rem;">Position Size: <span id="position-display" style="margin-left: 10px; updateupdatefont-weight: normal; color: #ccc;">100 contracts</span></div>
+          <div style="font-weight: bold; margin-bottom: 6px; font-size: 0.9rem;">Position Size: <span id="position-display" style="margin-left: 10px; font-weight: normal; color: #ccc;">100 contracts</span></div>
           <div id="positionSizeSelector" style="display: flex; align-items: center; gap: 10px;">
             <input type="number" id="position-size" min="1" style="width: 60px; padding: 4px 6px; text-align: right; font-size: 1rem; border-radius: 4px; border: 1px solid #ccc; height: 28px; box-sizing: border-box;" />
             <div style="display: flex; flex-direction: column; gap: 2px;">
@@ -900,8 +902,10 @@ function hideAutoEntrySettingsModal() {
               <button id="toggle-contracts" style="height: 15px; padding: 2px 6px; box-sizing: border-box; font-size: 9px; background-color: transparent; border: 1px solid #ccc; color: white; border-radius: 4px; cursor: pointer;" onclick="togglePositionType('contracts')">C</button>
             </div>
             <div>
+              <button class="multiplier-btn" data-multiplier="0" style="height: 28px; padding: 4px 8px; box-sizing: border-box; width: 32px;">1c</button>
               <button class="multiplier-btn" data-multiplier="0.5" style="height: 28px; padding: 4px 8px; box-sizing: border-box; width: 32px;">½</button>
               <button class="multiplier-btn" data-multiplier="1" style="height: 28px; padding: 4px 8px; box-sizing: border-box; width: 32px;">1</button>
+              <button class="multiplier-btn" data-multiplier="1.5" style="height: 28px; padding: 4px 8px; box-sizing: border-box; width: 32px;">1.5</button>
               <button class="multiplier-btn" data-multiplier="2" style="height: 28px; padding: 4px 8px; box-sizing: border-box; width: 32px;">2</button>
             </div>
           </div>
@@ -1130,6 +1134,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
   
   let currentMultiplier = null;
+  window.currentMultiplier = null;
+  
+  function applyMultiplierSelection(multiplierValue) {
+    const parsed = multiplierValue !== undefined && multiplierValue !== null ? parseFloat(multiplierValue) : NaN;
+    multiplierButtons.forEach(btn => {
+      btn.classList.remove('active');
+      if (!Number.isNaN(parsed) && parseFloat(btn.dataset.multiplier) === parsed) {
+        btn.classList.add('active');
+      }
+    });
+    if (!Number.isNaN(parsed)) {
+      currentMultiplier = parsed;
+      window.currentMultiplier = parsed;
+    }
+  }
+  window.applyMultiplierSelection = applyMultiplierSelection;
   // Remove: let ignoreWsUpdates = false; (now global)
   
   // Define ignoreWsUpdates globally
@@ -1456,10 +1476,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // === Monitor Total Position Update Notification ===
       if (data.type === 'monitor_total_position_updated') {
-        // Update position display if this is the current monitor
-        if (data.monitor_id == currentMonitorId) {
+        const messageMonitorId = data.monitor_id != null ? data.monitor_id.toString() : null;
+        const currentIdNormalized = currentMonitorId ? currentMonitorId.toString().split('_').pop() : null;
+        if (messageMonitorId && currentIdNormalized && messageMonitorId === currentIdNormalized) {
           console.log('WebSocket notification received:', data, new Date().toISOString());
           updatePositionDisplay(data.total_position);
+          if (window.applyMultiplierSelection) {
+            const multiplierFromMessage = data.multiplier;
+            if (multiplierFromMessage !== undefined && multiplierFromMessage !== null) {
+              window.applyMultiplierSelection(multiplierFromMessage);
+            } else {
+              const numericId = parseInt(currentIdNormalized, 10);
+              if (!Number.isNaN(numericId)) {
+                fetch(`/api/monitor/${numericId}?user_id=user_0001`)
+                  .then(resp => resp.json())
+                  .then(respData => {
+                    if (respData && respData.status === 'ok' && respData.monitor) {
+                      window.applyMultiplierSelection(respData.monitor.multiplier);
+                    }
+                  })
+                  .catch(err => console.error('Error refreshing multiplier display (mobile):', err));
+              }
+            }
+          }
         }
         return; // Don't process other WebSocket messages for this type
       }
@@ -1688,6 +1727,7 @@ document.addEventListener('DOMContentLoaded', () => {
       multiplierButtons.forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       currentMultiplier = parseFloat(btn.dataset.multiplier);
+      window.currentMultiplier = currentMultiplier;
       
       sendPositionUpdateToMonitorManager();
     });
@@ -1885,6 +1925,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 <input type="range" id="spikeAlertTimeSlider" min="0" max="180" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
                 <div id="spikeAlertTimeValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
               </div>
+
+              <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0 16px 0;">
+
+              <div style="position:relative; margin:0; width:100%; display:flex; align-items:center;">
+                <input type="checkbox" id="autoEntryPerformanceBasedAllocation" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
+                <span style="font-size:14px; color:#111; font-weight:500;">Enable performance-based allocation</span>
+              </div>
+
+              <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 16px 0 24px 0;">
             
           </div>
           <div style="display:flex; gap:12px; justify-content:flex-end; align-items:center; margin-top:20px;">
@@ -4184,13 +4233,14 @@ document.addEventListener('DOMContentLoaded', function() {
           min_differential: data.min_differential ?? 0,
           max_differential: data.max_differential ?? null,
           allow_re_entry: data.allow_re_entry ?? false,
-          win_streak_threshold: data.win_streak_threshold ?? 22
+          win_streak_threshold: data.win_streak_threshold ?? 22,
+          performance_based_allocation: data.performance_based_allocation ?? false
         };
       }
     } catch (error) {
       console.error('Error in fetchAutoEntrySettings:', error);
     }
-    return { min_probability: 25, min_differential: 0, max_differential: null, allow_re_entry: false, win_streak_threshold: 22 };
+    return { min_probability: 25, min_differential: 0, max_differential: null, allow_re_entry: false, win_streak_threshold: 22, performance_based_allocation: false };
   }
 
   function showAutoEntrySettingsModal() {
@@ -4229,6 +4279,12 @@ document.addEventListener('DOMContentLoaded', function() {
         if (allowReEntryCheckbox) {
           allowReEntryCheckbox.checked = settings.allow_re_entry;
           window.lastSavedAutoEntryAllowReEntry = settings.allow_re_entry;
+        }
+
+        const perfAllocCheckbox = document.getElementById('autoEntryPerformanceBasedAllocation');
+        if (perfAllocCheckbox) {
+          perfAllocCheckbox.checked = settings.performance_based_allocation ?? false;
+          window.lastSavedPerformanceBasedAllocation = settings.performance_based_allocation ?? false;
         }
       });
       // Fetch all settings
@@ -4294,6 +4350,13 @@ document.addEventListener('DOMContentLoaded', function() {
           updateSpikeAlertTimeDisplay(spikeAlertTime);
           window.lastSavedSpikeAlertTime = spikeAlertTime;
         }
+
+        const perfAllocCheckbox = document.getElementById('autoEntryPerformanceBasedAllocation');
+        if (perfAllocCheckbox) {
+          const perfEnabled = data.performance_based_allocation !== undefined ? data.performance_based_allocation : false;
+          perfAllocCheckbox.checked = perfEnabled;
+          window.lastSavedPerformanceBasedAllocation = perfEnabled;
+        }
       });
     }
   }
@@ -4340,6 +4403,11 @@ document.addEventListener('DOMContentLoaded', function() {
         allowReEntryCheckbox.checked = window.lastSavedAutoEntryAllowReEntry;
       }
       
+      const perfAllocCheckbox = document.getElementById('autoEntryPerformanceBasedAllocation');
+      if (perfAllocCheckbox && window.lastSavedPerformanceBasedAllocation !== undefined) {
+        perfAllocCheckbox.checked = window.lastSavedPerformanceBasedAllocation;
+      }
+      
       // Reset spike alert settings to last saved values
       const spikeAlertEnabledCheckbox = document.getElementById('spikeAlertEnabled');
       const spikeAlertMomentumSlider = document.getElementById('spikeAlertMomentumSlider');
@@ -4380,6 +4448,8 @@ document.addEventListener('DOMContentLoaded', function() {
         try {
           const allowReEntryCheckbox = document.getElementById('autoEntryAllowReEntry');
           const allowReEntry = allowReEntryCheckbox ? allowReEntryCheckbox.checked : false;
+          const perfAllocCheckbox = document.getElementById('autoEntryPerformanceBasedAllocation');
+          const performanceBasedAllocation = perfAllocCheckbox ? perfAllocCheckbox.checked : false;
           
           // Get spike alert settings
           const spikeAlertEnabledCheckbox = document.getElementById('spikeAlertEnabled');
@@ -4414,7 +4484,8 @@ document.addEventListener('DOMContentLoaded', function() {
               spike_alert_enabled: spikeAlertEnabled,
               spike_alert_momentum_threshold: spikeAlertMomentum,
               spike_alert_cooldown_threshold: spikeAlertCooldown,
-              spike_alert_cooldown_minutes: spikeAlertTime
+              spike_alert_cooldown_minutes: spikeAlertTime,
+              performance_based_allocation: performanceBasedAllocation
             })
           });
           
@@ -4436,6 +4507,7 @@ document.addEventListener('DOMContentLoaded', function() {
             window.lastSavedAutoEntryMinTime = minTimeSeconds;
             window.lastSavedAutoEntryMaxTime = maxTimeSeconds;
             window.lastSavedAutoEntryAllowReEntry = allowReEntry;
+            window.lastSavedPerformanceBasedAllocation = performanceBasedAllocation;
             window.lastSavedSpikeAlertEnabled = spikeAlertEnabled;
             window.lastSavedSpikeAlertMomentum = spikeAlertMomentum;
             window.lastSavedSpikeAlertCooldown = spikeAlertCooldown;
@@ -5495,16 +5567,19 @@ document.addEventListener('DOMContentLoaded', () => {
           }
           
           // Update multiplier buttons and global variable
-          const multiplierButtons = document.querySelectorAll('.multiplier-btn');
-          multiplierButtons.forEach(btn => {
-            btn.classList.remove('active');
-            if (parseFloat(btn.dataset.multiplier) === monitor.multiplier) {
-              btn.classList.add('active');
-            }
-          });
-          
-          // Update global currentMultiplier variable
-          currentMultiplier = monitor.multiplier;
+          if (window.applyMultiplierSelection) {
+            window.applyMultiplierSelection(monitor.multiplier);
+          } else {
+            const multiplierButtons = document.querySelectorAll('.multiplier-btn');
+            multiplierButtons.forEach(btn => {
+              btn.classList.remove('active');
+              if (parseFloat(btn.dataset.multiplier) === monitor.multiplier) {
+                btn.classList.add('active');
+              }
+            });
+            currentMultiplier = monitor.multiplier;
+            window.currentMultiplier = monitor.multiplier;
+          }
           
           // Update position type buttons
           const percentBtn = document.getElementById('toggle-percent');

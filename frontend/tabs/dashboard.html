@@ -316,8 +316,8 @@
       color: #ffffff;
     }
 
-    /* Loss Prevention Status Badge */
-    .loss-prevention-status {
+    /* Allocation Status Badge */
+    .allocation-status-badge {
       font-size: 12px;
       font-weight: 600;
       padding: 2px 6px;
@@ -325,19 +325,39 @@
       text-align: center;
       width: fit-content;
       letter-spacing: 0.5px;
-      border: 2px solid #e53e3e;
       background-color: transparent;
-      color: #e53e3e;
+      border: 2px solid transparent;
+      color: #1a202c;
       margin-right: 8px;
     }
 
-    .list-view .loss-prevention-status {
+    .allocation-status-badge.lp {
+      border-color: #e53e3e;
+      color: #e53e3e;
+    }
+
+    .allocation-status-badge.alloc-green {
+      border-color: #48bb78;
+      color: #48bb78;
+    }
+
+    .allocation-status-badge.alloc-yellow {
+      border-color: #dcb610;
+      color: #dcb610;
+    }
+
+    .allocation-status-badge.alloc-orange {
+      border-color: #ed8936;
+      color: #ed8936;
+    }
+
+    .list-view .allocation-status-badge {
       min-width: 70px;
       margin-right: 8px;
       transform: translateY(0px);
     }
 
-    .tile-view .loss-prevention-status {
+    .tile-view .allocation-status-badge {
       transform: translateY(30px);
       margin-right: 8px;
     }
@@ -1253,21 +1273,23 @@
             statusElement.className = `monitor-status ${getStatusClass(status)}`;
           }
           
-          // Update loss prevention badge
+          // Update allocation status badge
           const statusParent = statusElement ? statusElement.parentElement : null;
           if (statusParent) {
-            const existingLossPreventionBadge = statusParent.querySelector('.loss-prevention-status');
-            if (newMonitor.loss_prevention && newMonitor.loss_prevention !== 'none' && newMonitor.loss_prevention !== 'off') {
-              if (!existingLossPreventionBadge) {
-                const lossPreventionBadge = document.createElement('div');
-                lossPreventionBadge.className = 'loss-prevention-status';
-                lossPreventionBadge.textContent = 'LP';
-                statusParent.insertBefore(lossPreventionBadge, statusElement);
+            const badgeState = resolveAllocationBadgeState(newMonitor);
+            const existingBadge = statusParent.querySelector('.allocation-status-badge');
+            if (badgeState.visible) {
+              if (!existingBadge) {
+                const badge = document.createElement('div');
+                badge.className = badgeState.className;
+                badge.textContent = badgeState.text;
+                statusParent.insertBefore(badge, statusElement);
+              } else {
+                existingBadge.className = badgeState.className;
+                existingBadge.textContent = badgeState.text;
               }
-            } else {
-              if (existingLossPreventionBadge) {
-                existingLossPreventionBadge.remove();
-              }
+            } else if (existingBadge) {
+              existingBadge.remove();
             }
           }
         }
@@ -1317,6 +1339,77 @@
       }
     }
 
+    function isTruthyFlag(value) {
+      if (typeof value === 'boolean') return value;
+      if (typeof value === 'number') return value !== 0;
+      if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        return ['true', 't', '1', 'yes', 'y', 'on'].includes(normalized);
+      }
+      return false;
+    }
+
+    function resolveAllocationBadgeState(monitor) {
+      const lossPreventionValue = monitor.loss_prevention ?? monitor.lossPrevention ?? monitor.loss_prevention_mode ?? monitor.lossPreventionMode;
+      const lossPreventionActive = lossPreventionValue && lossPreventionValue !== 'none' && lossPreventionValue !== 'off';
+      if (lossPreventionActive) {
+        return { visible: true, text: 'LP', className: 'allocation-status-badge lp' };
+      }
+
+      const performanceAllocationFlag = monitor.performance_based_allocation ?? monitor.performanceBasedAllocation ?? monitor.performance_allocation ?? monitor.performanceAllocation;
+
+      if (!isTruthyFlag(performanceAllocationFlag)) {
+        return { visible: false };
+      }
+
+      const modifierSource =
+        monitor.current_performance_modifier ??
+        monitor.currentPerformanceModifier ??
+        monitor.performance_modifier ??
+        monitor.performanceModifier ??
+        monitor.allocation_modifier ??
+        monitor.allocationModifier;
+      const modifier = parseFloat(modifierSource);
+
+      if (!Number.isFinite(modifier)) {
+        return { visible: false };
+      }
+
+      const normalized = Math.round(modifier * 100) / 100;
+      const isClose = (target) => Math.abs(normalized - target) < 0.001;
+
+      if (isClose(0)) {
+        return { visible: true, text: '1c', className: 'allocation-status-badge alloc-orange' };
+      }
+
+      if (isClose(0.5)) {
+        return { visible: true, text: '½x', className: 'allocation-status-badge alloc-yellow' };
+      }
+
+      if (isClose(1)) {
+        return { visible: false };
+      }
+
+      if (isClose(1.5)) {
+        return { visible: true, text: '1.5x', className: 'allocation-status-badge alloc-green' };
+      }
+
+      if (isClose(2)) {
+        return { visible: true, text: '2x', className: 'allocation-status-badge alloc-green' };
+      }
+
+      const formatted = normalized % 1 === 0 ? `${normalized.toFixed(0)}x` : `${normalized.toFixed(2)}x`;
+      return { visible: true, text: formatted, className: 'allocation-status-badge alloc-green' };
+    }
+
+    function getAllocationBadgeMarkup(monitor) {
+      const badge = resolveAllocationBadgeState(monitor);
+      if (!badge.visible) {
+        return '';
+      }
+      return `<div class="${badge.className}">${badge.text}</div>`;
+    }
+
     // Create monitor tile HTML
     function createMonitorTile(monitor, index) {
       const isListView = currentViewMode === 'list';
@@ -1350,7 +1443,7 @@
               </div>
               <div class="monitor-strategy">${monitor.strategy}</div>
             </div>
-            ${monitor.loss_prevention && monitor.loss_prevention !== 'none' && monitor.loss_prevention !== 'off' ? '<div class="loss-prevention-status">LP</div>' : ''}
+            ${getAllocationBadgeMarkup(monitor)}
             <div class="monitor-status ${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'active' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'inactive' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'disabled' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'paused' : ''}">${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'ACTIVE' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'INACTIVE' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'DISABLED' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'PAUSED' : monitor.auto_trade_status}</div>
             <div class="monitor-stats">
               <div style="text-align: center; min-width: 45px;">
@@ -1423,7 +1516,7 @@
                   <div class="auto-trade-toggle ${monitor.autoTrade ? 'active' : ''} ${monitor.status === 'inactive' ? 'disabled' : ''}" ${monitor.status !== 'inactive' ? `onclick="toggleAutoTrade('${monitor.id}')"` : ''}></div>
                 </div>
                 <div style="display: flex; align-items: center;">
-                  ${monitor.loss_prevention && monitor.loss_prevention !== 'none' && monitor.loss_prevention !== 'off' ? '<div class="loss-prevention-status">LP</div>' : ''}
+                  ${getAllocationBadgeMarkup(monitor)}
                   <div class="monitor-status ${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'active' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'inactive' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'disabled' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'paused' : ''}">${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'ACTIVE' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'INACTIVE' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'DISABLED' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'PAUSED' : monitor.auto_trade_status}</div>
                 </div>
               </div>
@@ -4653,7 +4746,14 @@
           <div id="spikeAlertTimeValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
         </div>
 
-        <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0;">
+        <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0 16px 0;">
+
+        <div style="position:relative; margin:0; width:100%; display:flex; align-items:center;">
+          <input type="checkbox" id="performanceBasedAllocation" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
+          <span style="font-size:14px; color:#111; font-weight:500;">Enable performance-based allocation</span>
+        </div>
+
+        <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 16px 0 24px 0;">
         <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Auto Stop</div>
 
         <!-- Auto Stop (subset: value bubble for probability, momentum, verification) -->
@@ -5017,6 +5117,7 @@
         setVal('momentumSpikeThresholdSlider', data.momentum_spike_threshold ?? 35);
         setChk('verificationPeriodEnabled', data.verification_period_enabled ?? false);
         setVal('verificationPeriodSlider', data.verification_period_seconds ?? 15);
+        setChk('performanceBasedAllocation', data.performance_based_allocation ?? false);
         // Bubble positions
         updateAutoEntryMinVolumeDisplay(document.getElementById('autoEntryMinVolumeSlider').value);
         updateAutoEntrySliderDisplay(document.getElementById('autoEntryProbabilitySlider').value);
@@ -5094,7 +5195,8 @@
           momentum_spike_enabled: document.getElementById('momentumSpikeEnabled').checked,
           momentum_spike_threshold: parseInt(document.getElementById('momentumSpikeThresholdSlider').value,10),
           verification_period_enabled: document.getElementById('verificationPeriodEnabled').checked,
-          verification_period_seconds: parseInt(document.getElementById('verificationPeriodSlider').value,10)
+          verification_period_seconds: parseInt(document.getElementById('verificationPeriodSlider').value,10),
+          performance_based_allocation: document.getElementById('performanceBasedAllocation').checked
         };
         try{
           const resp = await fetch('/api/set_auto_entry_settings', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});

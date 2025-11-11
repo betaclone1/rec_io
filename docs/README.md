@@ -27,6 +27,21 @@ This directory contains comprehensive documentation for the REC.IO trading syste
 
 ---
 
+## ⚖️ **Performance-Based Allocation (PBA)**
+
+Performance-Based Allocation dynamically scales each monitor's exposure according to historical cycle performance while honoring liquidity constraints.
+
+- **Cycle Analytics:** `monitor_cycle_performance_<user>_<monitor>` tables capture trade counts, win rates, and average/max exposure for all 168 hours per week.
+- **Modifiers:** `current_performance_modifier` mirrors the multiplier the user would pick manually. Auto Entry Supervisor (AES) updates it every cycle once `performance_based_allocation` is enabled.
+- **Exposure Guardrail:** `current_max_pct_exposure` reflects the typical leg count for the active cycle. Monitor manager caps the effective bankroll percentage at the lesser of `position_size * modifier` and this max, ensuring enough capital for all legs.
+- **Automation Flow:**
+  - AES populates `current_*` fields each cycle.
+  - If `performance_based_allocation` is true, AES calls `/api/update_monitor_position` with the modifier. Monitor manager recomputes `total_position`, applying the exposure cap.
+  - All multiplier/total changes broadcast to the frontend; dashboard badges and trade monitor buttons update live.
+- **Fail-Safe:** When performance degrades, modifiers drop toward zero and the exposure cap forces small positions, hedging drawdowns until performance improves.
+
+---
+
 ## 📚 **Documentation Index**
 
 ### **Core Documentation**

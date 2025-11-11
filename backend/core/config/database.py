@@ -57,15 +57,70 @@ def init_database():
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users.trades_0001 (
                 id SERIAL PRIMARY KEY,
-                user_id VARCHAR(50) NOT NULL,
-                symbol VARCHAR(20) NOT NULL,
-                side VARCHAR(10) NOT NULL,
-                quantity DECIMAL(20,8),
-                price DECIMAL(20,8),
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                status VARCHAR(20),
-                test_filter BOOLEAN DEFAULT FALSE
+                status VARCHAR(50) DEFAULT 'pending',
+                date DATE,
+                time TIME,
+                symbol VARCHAR(50),
+                market VARCHAR(50),
+                trade_strategy VARCHAR(100),
+                contract VARCHAR(255),
+                strike VARCHAR(50),
+                side VARCHAR(10),
+                prob DECIMAL(10,4),
+                diff VARCHAR(50),
+                buy_price DECIMAL(10,4),
+                position INTEGER,
+                sell_price DECIMAL(10,4),
+                closed_at TIMESTAMP,
+                fees DECIMAL(10,4),
+                pnl DECIMAL(10,4),
+                symbol_open DECIMAL(10,4),
+                symbol_close DECIMAL(10,4),
+                momentum INTEGER,
+                volatility DECIMAL(10,4),
+                win_loss VARCHAR(10),
+                ticker VARCHAR(100),
+                ticket_id VARCHAR(100) UNIQUE,
+                market_id VARCHAR(100),
+                momentum_percentile DECIMAL(10,4),
+                entry_method VARCHAR(50),
+                close_method VARCHAR(50),
+                bankroll DECIMAL(12,2),
+                monitor VARCHAR(50),
+                hour_idx INTEGER,
+                weekly_cycle INTEGER,
+                order_id_open TEXT,
+                order_id_close TEXT,
+                high_price DECIMAL(10,4),
+                low_price DECIMAL(10,4),
+                loss_prevention BOOLEAN DEFAULT FALSE,
+                multiplier DECIMAL(10,2)
             );
+        """)
+
+        # Ensure new columns exist for legacy databases
+        cursor.execute("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'loss_prevention'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN loss_prevention BOOLEAN DEFAULT FALSE;
+                END IF;
+
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'multiplier'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN multiplier DECIMAL(10,2);
+                END IF;
+            END
+            $$;
         """)
         
         cursor.execute("""
@@ -122,6 +177,11 @@ def init_database():
                 win_streak_threshold INTEGER DEFAULT 22,
                 loss_prevention VARCHAR(50) DEFAULT 'none',
                 last_processed_cycle VARCHAR(100),
+                current_contract TEXT,
+                current_weekly_cycle SMALLINT,
+                current_performance_modifier NUMERIC(10,2) DEFAULT 1.00,
+                current_max_pct_exposure NUMERIC(10,2) DEFAULT 0.25,
+                performance_based_allocation BOOLEAN NOT NULL DEFAULT FALSE,
                 created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)

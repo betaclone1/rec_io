@@ -183,7 +183,7 @@
       flex-direction: column;
       gap: 4px;
       position: relative;
-      pointer-events: none;
+      pointer-events: auto;
     }
     
     /* Disable all hover effects on monitor tiles */
@@ -320,8 +320,8 @@
       color: #ffffff;
     }
 
-    /* Loss Prevention Status Badge */
-    .loss-prevention-status {
+    /* Allocation Status Badge */
+    .allocation-status-badge {
       font-size: 12px;
       font-weight: 600;
       padding: 2px 6px;
@@ -329,19 +329,39 @@
       text-align: center;
       width: fit-content;
       letter-spacing: 0.5px;
-      border: 2px solid #e53e3e;
       background-color: transparent;
-      color: #e53e3e;
+      border: 2px solid transparent;
+      color: #1a202c;
       margin-right: 8px;
     }
 
-    .list-view .loss-prevention-status {
+    .allocation-status-badge.lp {
+      border-color: #e53e3e;
+      color: #e53e3e;
+    }
+
+    .allocation-status-badge.alloc-green {
+      border-color: #48bb78;
+      color: #48bb78;
+    }
+
+    .allocation-status-badge.alloc-yellow {
+      border-color: #dcb610;
+      color: #dcb610;
+    }
+
+    .allocation-status-badge.alloc-orange {
+      border-color: #ed8936;
+      color: #ed8936;
+    }
+
+    .list-view .allocation-status-badge {
       min-width: 70px;
       margin-right: 8px;
       transform: translateY(0px);
     }
 
-    .tile-view .loss-prevention-status {
+    .tile-view .allocation-status-badge {
       transform: translateY(30px);
       margin-right: 8px;
     }
@@ -515,6 +535,7 @@
       display: flex;
       align-items: center;
       gap: 7px;
+      pointer-events: auto;
     }
 
     .monitor-icon {
@@ -819,6 +840,9 @@
       width: 90%;
       box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
       border: 1px solid #4a5568;
+      display: flex;
+      flex-direction: column;
+      max-height: 80vh;
     }
 
     .modal-header {
@@ -838,6 +862,8 @@
     .modal-body {
       padding: 20px;
       color: #e2e8f0;
+      overflow-y: auto;
+      flex: 1 1 auto;
     }
 
     .modal-body p {
@@ -851,6 +877,65 @@
       font-size: 12px;
       font-style: italic;
       margin-top: 8px;
+    }
+
+    .mobile-modal-section {
+      padding: 16px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .mobile-modal-section:first-of-type {
+      padding-top: 0;
+    }
+
+    .mobile-modal-section:last-of-type {
+      border-bottom: none;
+    }
+
+    .mobile-section-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: #f7fafc;
+      margin-bottom: 12px;
+    }
+
+    .mobile-checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+      color: #e2e8f0;
+      margin-bottom: 12px;
+    }
+
+    .mobile-checkbox-row input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      accent-color: #3182ce;
+    }
+
+    .mobile-range-group {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+
+    .mobile-range-group label {
+      font-size: 14px;
+      font-weight: 500;
+      color: #f7fafc;
+    }
+
+    .mobile-range-group input[type="range"] {
+      width: 100%;
+      accent-color: #3182ce;
+    }
+
+    .mobile-range-value {
+      font-size: 12px;
+      color: #cbd5f5;
+      text-align: right;
     }
 
     .modal-keyboard-hint {
@@ -1053,7 +1138,6 @@
       // STEP 5: NOW render everything with correct values
       applyCurrentSort();
       initializeMonitors();
-      initializeSortable();
       initializeTooltips();
 
       // STEP 5.5: Monitor breakdown refresh removed
@@ -1126,21 +1210,23 @@
             statusElement.className = `monitor-status ${getStatusClass(status)}`;
           }
           
-          // Update loss prevention badge
+          // Update allocation status badge
           const statusParent = statusElement ? statusElement.parentElement : null;
           if (statusParent) {
-            const existingLossPreventionBadge = statusParent.querySelector('.loss-prevention-status');
-            if (newMonitor.loss_prevention && newMonitor.loss_prevention !== 'none' && newMonitor.loss_prevention !== 'off') {
-              if (!existingLossPreventionBadge) {
-                const lossPreventionBadge = document.createElement('div');
-                lossPreventionBadge.className = 'loss-prevention-status';
-                lossPreventionBadge.textContent = 'LOSS PREVENTION';
-                statusParent.insertBefore(lossPreventionBadge, statusElement);
+            const badgeState = resolveAllocationBadgeState(newMonitor);
+            const existingBadge = statusParent.querySelector('.allocation-status-badge');
+            if (badgeState.visible) {
+              if (!existingBadge) {
+                const badge = document.createElement('div');
+                badge.className = badgeState.className;
+                badge.textContent = badgeState.text;
+                statusParent.insertBefore(badge, statusElement);
+              } else {
+                existingBadge.className = badgeState.className;
+                existingBadge.textContent = badgeState.text;
               }
-            } else {
-              if (existingLossPreventionBadge) {
-                existingLossPreventionBadge.remove();
-              }
+            } else if (existingBadge) {
+              existingBadge.remove();
             }
           }
         }
@@ -1222,7 +1308,7 @@
               </div>
               <div class="monitor-strategy">${monitor.strategy}</div>
             </div>
-            ${monitor.loss_prevention && monitor.loss_prevention !== 'none' && monitor.loss_prevention !== 'off' ? '<div class="loss-prevention-status">LOSS PREVENTION</div>' : ''}
+            ${getAllocationBadgeMarkup(monitor)}
             <div class="monitor-status ${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'active' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'inactive' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'disabled' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'paused' : ''}">${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'ACTIVE' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'INACTIVE' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'DISABLED' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'PAUSED' : monitor.auto_trade_status}</div>
             <div class="monitor-stats">
               <div style="text-align: center; min-width: 45px;">
@@ -1295,7 +1381,7 @@
                   <div class="auto-trade-toggle ${monitor.autoTrade ? 'active' : ''} ${monitor.status === 'inactive' ? 'disabled' : ''}" ${monitor.status !== 'inactive' ? `onclick="toggleAutoTrade('${monitor.id}')"` : ''}></div>
                 </div>
                 <div style="display: flex; align-items: center;">
-                  ${monitor.loss_prevention && monitor.loss_prevention !== 'none' && monitor.loss_prevention !== 'off' ? '<div class="loss-prevention-status">LOSS PREVENTION</div>' : ''}
+                  ${getAllocationBadgeMarkup(monitor)}
                   <div class="monitor-status ${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'active' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'inactive' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'disabled' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'paused' : ''}">${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'ACTIVE' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'INACTIVE' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'DISABLED' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'PAUSED' : monitor.auto_trade_status}</div>
                 </div>
               </div>
@@ -4471,6 +4557,84 @@
       };
     }
 
+    function isTruthyFlag(value) {
+      if (typeof value === 'boolean') return value;
+      if (typeof value === 'number') return value !== 0;
+      if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        return ['true', 't', '1', 'yes', 'y', 'on'].includes(normalized);
+      }
+      return false;
+    }
+
+    function resolveAllocationBadgeState(monitor) {
+      const lossPreventionValue =
+        monitor.loss_prevention ??
+        monitor.lossPrevention ??
+        monitor.loss_prevention_mode ??
+        monitor.lossPreventionMode;
+      const lossPreventionActive = lossPreventionValue && lossPreventionValue !== 'none' && lossPreventionValue !== 'off';
+      if (lossPreventionActive) {
+        return { visible: true, text: 'LP', className: 'allocation-status-badge lp' };
+      }
+
+      const performanceAllocationFlag =
+        monitor.performance_based_allocation ??
+        monitor.performanceBasedAllocation ??
+        monitor.performance_allocation ??
+        monitor.performanceAllocation;
+
+      if (!isTruthyFlag(performanceAllocationFlag)) {
+        return { visible: false };
+      }
+
+      const modifierSource =
+        monitor.current_performance_modifier ??
+        monitor.currentPerformanceModifier ??
+        monitor.performance_modifier ??
+        monitor.performanceModifier ??
+        monitor.allocation_modifier ??
+        monitor.allocationModifier;
+      const modifier = parseFloat(modifierSource);
+
+      if (!Number.isFinite(modifier)) {
+        return { visible: false };
+      }
+
+      const normalized = Math.round(modifier * 100) / 100;
+      const isClose = (target) => Math.abs(normalized - target) < 0.001;
+
+      if (isClose(0)) {
+        return { visible: true, text: '1c', className: 'allocation-status-badge alloc-orange' };
+      }
+
+      if (isClose(0.5)) {
+        return { visible: true, text: '½x', className: 'allocation-status-badge alloc-yellow' };
+      }
+
+      if (isClose(1)) {
+        return { visible: false };
+      }
+
+      if (isClose(1.5)) {
+        return { visible: true, text: '1.5x', className: 'allocation-status-badge alloc-green' };
+      }
+
+      if (isClose(2)) {
+        return { visible: true, text: '2x', className: 'allocation-status-badge alloc-green' };
+      }
+
+      const formatted = normalized % 1 === 0 ? `${normalized.toFixed(0)}x` : `${normalized.toFixed(2)}x`;
+      return { visible: true, text: formatted, className: 'allocation-status-badge alloc-green' };
+    }
+
+    function getAllocationBadgeMarkup(monitor) {
+      const badge = resolveAllocationBadgeState(monitor);
+      if (!badge.visible) {
+        return '';
+      }
+      return `<div class="${badge.className}">${badge.text}</div>`;
+    }
 
   </script>
 
@@ -4497,7 +4661,9 @@
       const apiId = mobileNormalizeMonitorId(tileId);
       const modal = document.getElementById('mobileUnifiedAutoTradeModal');
       const dim = document.getElementById('mobileUnifiedAutoTradeDim');
-      modal.style.display = 'flex';
+      modal.style.display = 'block';
+      if (dim) dim.style.display = 'block';
+      document.body.style.overflow = 'hidden';
 
       mobileFetchSettings(apiId).then(data => {
         if (!data) return;
@@ -4515,6 +4681,7 @@
         setVal('m_spikeMomentum', data.spike_alert_momentum_threshold ?? 60);
         setVal('m_spikeCooldown', data.spike_alert_cooldown_threshold ?? 55);
         setVal('m_spikeTime', data.spike_alert_cooldown_minutes ?? 15);
+        setChk('m_perfAlloc', data.performance_based_allocation ?? false);
         // Auto Stop
         setVal('m_stopProb', data.current_probability ?? 40);
         setChk('m_momentumEnabled', data.momentum_spike_enabled ?? true);
@@ -4549,12 +4716,15 @@
             spike_alert_momentum_threshold: parseInt(document.getElementById('m_spikeMomentum').value,10),
             spike_alert_cooldown_threshold: parseInt(document.getElementById('m_spikeCooldown').value,10),
             spike_alert_cooldown_minutes: parseInt(document.getElementById('m_spikeTime').value,10),
+            performance_based_allocation: document.getElementById('m_perfAlloc').checked,
             current_probability: parseInt(document.getElementById('m_stopProb').value,10),
             min_ttc_seconds: parseInt(document.getElementById('m_minTTC').value,10),
             momentum_spike_enabled: document.getElementById('m_momentumEnabled').checked,
             momentum_spike_threshold: parseInt(document.getElementById('m_momentumThreshold').value,10),
             verification_period_enabled: document.getElementById('m_verifyEnabled').checked,
-            verification_period_seconds: parseInt(document.getElementById('m_verifySeconds').value,10)
+            verification_period_seconds: parseInt(document.getElementById('m_verifySeconds').value,10),
+            min_time: mobileMinTimeSeconds,
+            max_time: mobileMaxTimeSeconds
           };
           try{
             const resp = await fetch('/api/set_auto_entry_settings', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
@@ -4565,7 +4735,7 @@
 
         // Enter / Esc
         const keyHandler = function(e){
-          if (modal.style.display !== 'flex') return;
+          if (modal.style.display === 'none') return;
           if (e.key === 'Enter') { e.preventDefault(); document.getElementById('m_unifiedSave').click(); }
           else if (e.key === 'Escape') { e.preventDefault(); hideMobileUnifiedAutoTradeSettings(); }
         };
@@ -4580,6 +4750,9 @@
     function hideMobileUnifiedAutoTradeSettings(){
       const modal = document.getElementById('mobileUnifiedAutoTradeModal');
       modal.style.display = 'none';
+      const dim = document.getElementById('mobileUnifiedAutoTradeDim');
+      if (dim) dim.style.display = 'none';
+      document.body.style.overflow = 'auto';
       if (modal._keyHandler){ document.removeEventListener('keydown', modal._keyHandler); delete modal._keyHandler; }
     }
 
@@ -4595,86 +4768,154 @@
         openMobileUnifiedAutoTradeSettings(monId);
       }
     }, true);
-    document.addEventListener('touchend', function(ev){
-      const icon = ev.target.closest('img.monitor-settings-icon');
+    document.addEventListener('touchend', function(event) {
+      const icon = event.target.closest('img.monitor-settings-icon');
       if (!icon) return;
       const tile = icon.closest('.monitor-tile');
       if (!tile) return;
       const monId = tile.getAttribute('data-monitor-id');
       if (monId && typeof openMobileUnifiedAutoTradeSettings === 'function') {
-        ev.preventDefault();
+        event.preventDefault();
         openMobileUnifiedAutoTradeSettings(monId);
       }
-    }, { passive:false, capture:true });
+    }, { passive: false, capture: true });
   </script>
 
   <!-- Mobile Unified Auto Trade Settings Modal -->
-  <div id="mobileUnifiedAutoTradeModal" class="modal-overlay" style="display:none;">
-    <div class="modal-content" style="max-width: 420px; width: 92%;">
-      <div class="modal-header"><h3>Auto Trade Settings</h3></div>
-      <div class="modal-body">
-        <div class="form-group"><label><input type="checkbox" id="m_allowRe" /> Allow re-entry on the same strike</label></div>
-        <div class="form-group"><label>Loss Prevention Win Streak Threshold:</label>
-          <input type="range" id="m_winStreak" min="0" max="30" step="1" value="22" oninput="document.getElementById('m_winStreakVal').textContent=this.value">
-          <div class="modal-keyboard-hint">Value: <span id="m_winStreakVal">22</span></div>
+  <div id="mobileUnifiedAutoTradeModal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:10000; overflow-y:auto;">
+    <div id="mobileUnifiedAutoTradeDim" style="position:absolute; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.4);"></div>
+    <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border-radius:8px; min-width:360px; width:92%; max-width:440px; box-shadow:0 4px 32px rgba(0,0,0,0.25); padding:20px; display:flex; flex-direction:column; max-height:80vh; overflow:auto;">
+      <div style="font-size:16px; font-weight:600; margin-bottom:16px; color:#222;">Auto Trade Settings</div>
+      <div style="flex:1 1 auto; display:flex; flex-direction:column; justify-content:flex-start; align-items:stretch; overflow-y:auto; min-height:0;">
+        <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Auto Entry</div>
+        <label for="m_timeWindowSliderContainer" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Time Window:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+          <div id="m_timeWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:8px; box-sizing:border-box;">
+            <div id="m_minTimeHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <div id="m_maxTimeHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <div id="m_timeWindowRange" style="position:absolute; top:0; height:6px; background:#007bff; border-radius:3px; z-index:5;"></div>
+            <div id="m_timeWindowMinDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">00:00</div>
+            <div id="m_timeWindowMaxDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">01:00</div>
+          </div>
         </div>
-        <hr>
-        <div class="form-group"><label><input type="checkbox" id="m_spikeEnabled" /> Pause auto entry during market spikes</label></div>
-        <div class="form-group"><label>Momentum Spike Level (±):</label>
-          <input type="range" id="m_spikeMomentum" min="50" max="100" value="60" oninput="document.getElementById('m_spikeMomentumVal').textContent='±'+this.value">
-          <div class="modal-keyboard-hint">Value: <span id="m_spikeMomentumVal">±60</span></div>
+
+        <label for="m_autoEntryMinVolume" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Volume:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+          <input type="range" id="m_autoEntryMinVolume" min="0" max="2000" step="25" value="1000" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+          <div id="m_minVolVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">1000</div>
         </div>
-        <div class="form-group"><label>Cooldown Level (±):</label>
-          <input type="range" id="m_spikeCooldown" min="50" max="100" value="55" oninput="document.getElementById('m_spikeCooldownVal').textContent='±'+this.value">
-          <div class="modal-keyboard-hint">Value: <span id="m_spikeCooldownVal">±55</span></div>
+
+        <label for="m_autoEntryProb" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Win Probability:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+          <input type="range" id="m_autoEntryProb" min="0" max="100" value="25" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+          <div id="m_probVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">25%</div>
         </div>
-        <div class="form-group"><label>Cooldown Time (minutes):</label>
-          <input type="range" id="m_spikeTime" min="0" max="180" value="15" oninput="document.getElementById('m_spikeTimeVal').textContent=this.value+' min'">
-          <div class="modal-keyboard-hint">Value: <span id="m_spikeTimeVal">15 min</span></div>
+
+        <label for="m_autoEntryDiff" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Differential:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+          <input type="range" id="m_autoEntryDiff" min="-10" max="10" step="0.25" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+          <div id="m_diffVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">+0.00</div>
         </div>
-        <hr>
-        <div style="font-weight:600; margin-bottom:8px;">Auto Stop</div>
-        <div class="form-group"><label>Current Win Probability:</label>
-          <input type="range" id="m_stopProb" min="0" max="100" value="40" oninput="document.getElementById('m_stopProbVal').textContent=this.value+'%';">
-          <div class="modal-keyboard-hint">Value: <span id="m_stopProbVal">40%</span></div>
+
+        <label for="m_autoEntryMaxDiff" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Maximum Differential:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+          <input type="range" id="m_autoEntryMaxDiff" min="0" max="20" step="0.25" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+          <div id="m_maxDiffVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.00</div>
         </div>
-        <div class="form-group"><label><input type="checkbox" id="m_momentumEnabled" /> Auto-close trades during momentum spikes</label></div>
-        <div class="form-group"><label>Momentum Spike Threshold (±):</label>
-          <input type="range" id="m_momentumThreshold" min="10" max="100" value="35" oninput="document.getElementById('m_momentumThresholdVal').textContent='±'+this.value;">
-          <div class="modal-keyboard-hint">Value: <span id="m_momentumThresholdVal">±35</span></div>
+
+        <label for="m_allowRe" style="font-size:14px; color:#333; margin-top:12px; margin-bottom:12px; font-weight:500;">Allow Re-Entry:</label>
+        <div style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="checkbox" id="m_allowRe" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;">
+          <span style="font-size:13px; color:#666;">Allow re-entry on the same strike</span>
         </div>
-        <div class="form-group"><label><input type="checkbox" id="m_verifyEnabled" /> Enable verification period</label></div>
-        <div class="form-group"><label>Verification Duration (sec):</label>
-          <input type="range" id="m_verifySeconds" min="5" max="60" value="15" oninput="document.getElementById('m_verifySecondsVal').textContent=this.value+'s';">
-          <div class="modal-keyboard-hint">Value: <span id="m_verifySecondsVal">15s</span></div>
+
+        <label for="m_winStreak" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Loss Prevention Win Streak Threshold:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+          <input type="range" id="m_winStreak" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+          <div id="m_winStreakVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">22</div>
         </div>
-        <hr>
-        <div style="font-weight:600; margin-bottom:8px;">Auto Entry</div>
-        <div class="form-group"><label>Minimum Volume:</label>
-          <input type="range" id="m_autoEntryMinVolume" min="0" max="2000" step="25" value="1000" oninput="document.getElementById('m_minVolVal').textContent=this.value;">
-          <div class="modal-keyboard-hint">Value: <span id="m_minVolVal">1000</span></div>
+
+        <hr style="border:none; border-top:1px solid #e0e0e0; margin:24px 0;">
+
+        <div style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="checkbox" id="m_spikeEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;">
+          <span style="font-size:13px; color:#666;">Pause auto entry during market spikes</span>
         </div>
-        <div class="form-group"><label>Minimum Win Probability:</label>
-          <input type="range" id="m_autoEntryProb" min="0" max="100" value="25" oninput="document.getElementById('m_probVal').textContent=this.value+'%';">
-          <div class="modal-keyboard-hint">Value: <span id="m_probVal">25%</span></div>
+
+        <label for="m_spikeMomentum" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Spike Level (±):</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+          <input type="range" id="m_spikeMomentum" min="50" max="100" value="60" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+          <div id="m_spikeMomentumVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">±60</div>
         </div>
-        <div class="form-group"><label>Minimum Differential:</label>
-          <input type="range" id="m_autoEntryDiff" min="-10" max="10" step="0.25" value="0" oninput="document.getElementById('m_diffVal').textContent=(parseFloat(this.value)||0).toFixed(2);">
-          <div class="modal-keyboard-hint">Value: <span id="m_diffVal">0.00</span></div>
+
+        <label for="m_spikeCooldown" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Level (±):</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+          <input type="range" id="m_spikeCooldown" min="50" max="100" value="55" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+          <div id="m_spikeCooldownVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">±55</div>
         </div>
-        <div class="form-group"><label>Maximum Differential:</label>
-          <input type="range" id="m_autoEntryMaxDiff" min="0" max="20" step="0.25" value="0" oninput="document.getElementById('m_maxDiffVal').textContent=(parseFloat(this.value)||0).toFixed(2);">
-          <div class="modal-keyboard-hint">Value: <span id="m_maxDiffVal">0.00</span></div>
+
+        <label for="m_spikeTime" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Time (minutes):</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+          <input type="range" id="m_spikeTime" min="0" max="180" value="15" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+          <div id="m_spikeTimeVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">15 min</div>
+        </div>
+
+        <hr style="border:none; border-top:1px solid #e0e0e0; margin:24px 0 16px 0;">
+
+        <div style="position:relative; margin:0; width:100%; display:flex; align-items:center;">
+          <input type="checkbox" id="m_perfAlloc" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;">
+          <span style="font-size:14px; color:#111; font-weight:500;">Enable performance-based allocation</span>
+        </div>
+
+        <hr style="border:none; border-top:1px solid #e0e0e0; margin:16px 0 24px 0;">
+
+        <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Auto Stop</div>
+
+        <label for="m_stopProb" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Current Win Probability:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+          <input type="range" id="m_stopProb" min="0" max="100" value="40" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+          <div id="m_stopProbVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">40%</div>
+        </div>
+
+        <label for="m_minTTC" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Minimum Time to Close:</label>
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:24px;">
+          <div style="display:flex; align-items:center; border:1px solid #ddd; border-radius:4px; background:#f8f9fa;">
+            <button id="m_minTTCDown" style="padding:8px 12px; border:none; background:#f8f9fa; cursor:pointer; border-right:1px solid #ddd; border-radius:4px 0 0 4px; font-size:12px; color:#333;">▼</button>
+            <span id="m_minTTCDisplay" style="padding:8px 16px; font-size:13px; color:#333; min-width:60px; text-align:center; font-weight:500;">01:00</span>
+            <button id="m_minTTCUp" style="padding:8px 12px; border:none; background:#f8f9fa; cursor:pointer; border-left:1px solid #ddd; border-radius:0 4px 4px 0; font-size:12px; color:#333;">▲</button>
+          </div>
+          <input type="hidden" id="m_minTTC" value="60">
+        </div>
+
+        <div style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="checkbox" id="m_momentumEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;">
+          <span style="font-size:13px; color:#666;">Auto-close trades during momentum spikes</span>
+        </div>
+
+        <label for="m_momentumThreshold" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Spike Threshold (±):</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+          <input type="range" id="m_momentumThreshold" min="10" max="100" value="35" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+          <div id="m_momentumThresholdVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">±35</div>
+        </div>
+
+        <div style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="checkbox" id="m_verifyEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;">
+          <span style="font-size:13px; color:#666;">Enable verification period before auto-stop</span>
+        </div>
+
+        <label for="m_verifySeconds" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Verification Duration (seconds):</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+          <input type="range" id="m_verifySeconds" min="5" max="60" value="15" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+          <div id="m_verifySecondsVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">15s</div>
         </div>
       </div>
-      <div class="modal-footer">
-        <button id="m_unifiedCancel" class="modal-btn modal-btn-cancel">Cancel</button>
-        <button id="m_unifiedSave" class="modal-btn modal-btn-confirm" style="background:#3182ce;">Save</button>
+      <div style="display:flex; gap:12px; justify-content:flex-end; align-items:center; margin-top:16px;">
+        <button id="m_unifiedCancel" style="padding:8px 16px; border-radius:4px; border:1px solid #ddd; background:#f8f9fa; color:#333; font-size:13px; cursor:pointer; font-weight:500;" onmouseover="this.style.background='#e9ecef'" onmouseout="this.style.background='#f8f9fa'">Cancel</button>
+        <button id="m_unifiedSave" style="padding:8px 16px; border-radius:4px; border:none; background:#007bff; color:white; font-size:13px; cursor:pointer; font-weight:500;" onmouseover="this.style.background='#0056b3'" onmouseout="this.style.background='#007bff'">Save</button>
       </div>
     </div>
-    <div id="mobileUnifiedAutoTradeDim" style="display:none;"></div>
   </div>
-  <!-- Archive Confirmation Modal -->
+<!-- Archive Confirmation Modal -->
   <div id="archiveModal" class="modal-overlay" style="display: none;">
     <div class="modal-content">
       <div class="modal-header">
@@ -4729,5 +4970,343 @@
       </div>
     </div>
   </div>
+
+  <script>
+    (function(){
+      const state = {
+        minTimeSeconds: 0,
+        maxTimeSeconds: 3600,
+        sliderInitialized: false,
+        currentHandle: null,
+        sliderBindingsInitialized: false
+      };
+
+      function formatSecondsToMMSS(seconds) {
+        const total = Math.max(0, Math.round(seconds || 0));
+        const minutes = Math.floor(total / 60);
+        const secs = total % 60;
+        return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+      }
+
+      function updateTimeWindowSlider() {
+        const minHandle = document.getElementById('m_minTimeHandle');
+        const maxHandle = document.getElementById('m_maxTimeHandle');
+        const range = document.getElementById('m_timeWindowRange');
+        const minDisplay = document.getElementById('m_timeWindowMinDisplay');
+        const maxDisplay = document.getElementById('m_timeWindowMaxDisplay');
+        if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
+
+        const minPercent = (state.minTimeSeconds / 3600) * 100;
+        const maxPercent = (state.maxTimeSeconds / 3600) * 100;
+
+        minHandle.style.left = `${minPercent}%`;
+        maxHandle.style.left = `${maxPercent}%`;
+        range.style.left = `${minPercent}%`;
+        range.style.width = `${Math.max(0, maxPercent - minPercent)}%`;
+
+        minDisplay.textContent = formatSecondsToMMSS(state.minTimeSeconds);
+        maxDisplay.textContent = formatSecondsToMMSS(state.maxTimeSeconds);
+        minDisplay.style.left = `${minPercent}%`;
+        maxDisplay.style.left = `${maxPercent}%`;
+      }
+
+      function handlePointerMove(clientX) {
+        const container = document.getElementById('m_timeWindowSliderContainer');
+        if (!container || state.currentHandle === null) return;
+        const rect = container.getBoundingClientRect();
+        if (rect.width === 0) return;
+
+        const clamped = Math.max(rect.left, Math.min(rect.right, clientX));
+        const percent = ((clamped - rect.left) / rect.width) * 100;
+        const intervalIndex = Math.round((percent / 100) * 240);
+        const snappedSeconds = Math.max(0, Math.min(3600, intervalIndex * 15));
+
+        if (state.currentHandle === 'min') {
+          if (snappedSeconds < state.maxTimeSeconds) state.minTimeSeconds = snappedSeconds;
+        } else if (state.currentHandle === 'max') {
+          if (snappedSeconds > state.minTimeSeconds) state.maxTimeSeconds = snappedSeconds;
+        }
+
+        updateTimeWindowSlider();
+      }
+
+      function handleMouseMove(event) {
+        event.preventDefault();
+        handlePointerMove(event.clientX);
+      }
+
+      function handleMouseUp() {
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
+        state.currentHandle = null;
+      }
+
+      function handleTouchMove(event) {
+        if (!event.touches || event.touches.length === 0) return;
+        event.preventDefault();
+        handlePointerMove(event.touches[0].clientX);
+      }
+
+      function handleTouchEnd() {
+        document.removeEventListener('touchmove', handleTouchMove);
+        document.removeEventListener('touchend', handleTouchEnd);
+        state.currentHandle = null;
+      }
+
+      function ensureTimeSliderHandlers() {
+        if (state.sliderInitialized) return;
+        const minHandle = document.getElementById('m_minTimeHandle');
+        const maxHandle = document.getElementById('m_maxTimeHandle');
+        if (!minHandle || !maxHandle) return;
+
+        const beginMouseDrag = (handle) => (event) => {
+          event.preventDefault();
+          state.currentHandle = handle;
+          document.addEventListener('mousemove', handleMouseMove);
+          document.addEventListener('mouseup', handleMouseUp);
+        };
+
+        const beginTouchDrag = (handle) => (event) => {
+          event.preventDefault();
+          state.currentHandle = handle;
+          document.addEventListener('touchmove', handleTouchMove, { passive: false });
+          document.addEventListener('touchend', handleTouchEnd);
+        };
+
+        minHandle.addEventListener('mousedown', beginMouseDrag('min'));
+        maxHandle.addEventListener('mousedown', beginMouseDrag('max'));
+        minHandle.addEventListener('touchstart', beginTouchDrag('min'), { passive: false });
+        maxHandle.addEventListener('touchstart', beginTouchDrag('max'), { passive: false });
+
+        state.sliderInitialized = true;
+      }
+
+      function positionBubble(input, bubble, formatter) {
+        if (!input || !bubble) return;
+        const min = parseFloat(input.min ?? 0);
+        const max = parseFloat(input.max ?? 100);
+        let value = parseFloat(input.value);
+        if (!Number.isFinite(value)) value = min;
+        const clamped = Math.min(max, Math.max(min, value));
+        bubble.textContent = formatter(clamped, input);
+        const offset = max === min ? 0 : ((clamped - min) / (max - min)) * (input.offsetWidth - 16) + 8;
+        bubble.style.left = `${offset}px`;
+      }
+
+      function bindSlider(inputId, bubbleId, formatter) {
+        const input = document.getElementById(inputId);
+        const bubble = document.getElementById(bubbleId);
+        if (!input || !bubble) return;
+
+        const update = () => positionBubble(input, bubble, formatter);
+
+        if (!input._mobileBound) {
+          input.addEventListener('input', update);
+          window.addEventListener('resize', update);
+          input._mobileBound = true;
+        }
+
+        update();
+      }
+
+      function refreshSliderDisplays() {
+        bindSlider('m_autoEntryMinVolume', 'm_minVolVal', (value) => Math.round(Math.max(0, value)).toString());
+        bindSlider('m_autoEntryProb', 'm_probVal', (value) => `${Math.round(value)}%`);
+        bindSlider('m_autoEntryDiff', 'm_diffVal', (value) => {
+          const num = parseFloat(value || 0).toFixed(2);
+          return num >= 0 ? `+${num}` : num;
+        });
+        bindSlider('m_autoEntryMaxDiff', 'm_maxDiffVal', (value) => parseFloat(value || 0).toFixed(2));
+        bindSlider('m_winStreak', 'm_winStreakVal', (value) => Math.round(value).toString());
+        bindSlider('m_spikeMomentum', 'm_spikeMomentumVal', (value) => `±${Math.round(value)}`);
+        bindSlider('m_spikeCooldown', 'm_spikeCooldownVal', (value) => `±${Math.round(value)}`);
+        bindSlider('m_spikeTime', 'm_spikeTimeVal', (value) => `${Math.round(value)} min`);
+        bindSlider('m_stopProb', 'm_stopProbVal', (value) => `${Math.round(value)}%`);
+        bindSlider('m_momentumThreshold', 'm_momentumThresholdVal', (value) => `±${Math.round(value)}`);
+        bindSlider('m_verifySeconds', 'm_verifySecondsVal', (value) => `${Math.round(value)}s`);
+      }
+
+      function ensureSliderBindings() {
+        if (state.sliderBindingsInitialized) return;
+
+        const minTTCDisplay = document.getElementById('m_minTTCDisplay');
+        const minTTCInput = document.getElementById('m_minTTC');
+        const minTTCUp = document.getElementById('m_minTTCUp');
+        const minTTCDown = document.getElementById('m_minTTCDown');
+
+        const updateMinTTC = () => {
+          if (!minTTCDisplay || !minTTCInput) return;
+          minTTCDisplay.textContent = formatSecondsToMMSS(parseInt(minTTCInput.value, 10) || 0);
+        };
+
+        if (minTTCInput && !minTTCInput._mobileBound) {
+          minTTCInput.addEventListener('input', updateMinTTC);
+          minTTCInput._mobileBound = true;
+        }
+
+        if (minTTCUp && !minTTCUp._mobileBound) {
+          minTTCUp.addEventListener('click', () => {
+            if (!minTTCInput) return;
+            const current = parseInt(minTTCInput.value, 10) || 0;
+            minTTCInput.value = current + 15;
+            updateMinTTC();
+          });
+          minTTCUp._mobileBound = true;
+        }
+
+        if (minTTCDown && !minTTCDown._mobileBound) {
+          minTTCDown.addEventListener('click', () => {
+            if (!minTTCInput) return;
+            const current = parseInt(minTTCInput.value, 10) || 0;
+            minTTCInput.value = Math.max(0, current - 30);
+            updateMinTTC();
+          });
+          minTTCDown._mobileBound = true;
+        }
+
+        updateMinTTC();
+        state.sliderBindingsInitialized = true;
+      }
+
+      window.addEventListener('resize', updateTimeWindowSlider);
+
+      async function openModal(tileId) {
+        const apiId = mobileNormalizeMonitorId(tileId);
+        const modal = document.getElementById('mobileUnifiedAutoTradeModal');
+        const dim = document.getElementById('mobileUnifiedAutoTradeDim');
+
+        modal.style.display = 'block';
+        if (dim) dim.style.display = 'block';
+        document.body.style.overflow = 'hidden';
+
+        const data = await mobileFetchSettings(apiId);
+        if (!data) return;
+
+        const setVal = (id, value) => {
+          const el = document.getElementById(id);
+          if (el && value !== undefined && value !== null) el.value = value;
+        };
+        const setChk = (id, value) => {
+          const el = document.getElementById(id);
+          if (el) el.checked = !!value;
+        };
+
+        setVal('m_autoEntryMinVolume', data.min_volume ?? 1000);
+        setVal('m_autoEntryProb', data.min_probability ?? 25);
+        setVal('m_autoEntryDiff', data.min_differential ?? 0);
+        setVal('m_autoEntryMaxDiff', data.max_differential ?? 0);
+        setChk('m_allowRe', data.allow_re_entry ?? false);
+        setVal('m_winStreak', data.win_streak_threshold ?? 22);
+
+        setChk('m_spikeEnabled', data.spike_alert_enabled ?? true);
+        setVal('m_spikeMomentum', data.spike_alert_momentum_threshold ?? 60);
+        setVal('m_spikeCooldown', data.spike_alert_cooldown_threshold ?? 55);
+        setVal('m_spikeTime', data.spike_alert_cooldown_minutes ?? 15);
+        setChk('m_perfAlloc', data.performance_based_allocation ?? false);
+
+        setVal('m_stopProb', data.current_probability ?? 40);
+        setChk('m_momentumEnabled', data.momentum_spike_enabled ?? true);
+        setVal('m_momentumThreshold', data.momentum_spike_threshold ?? 35);
+        setChk('m_verifyEnabled', data.verification_period_enabled ?? false);
+        setVal('m_verifySeconds', data.verification_period_seconds ?? 15);
+
+        const minTTCSeconds = data.min_ttc_seconds ?? 60;
+        const minTTCInput = document.getElementById('m_minTTC');
+        if (minTTCInput) minTTCInput.value = minTTCSeconds;
+        const minTTCDisplay = document.getElementById('m_minTTCDisplay');
+        if (minTTCDisplay) minTTCDisplay.textContent = formatSecondsToMMSS(minTTCSeconds);
+
+        state.minTimeSeconds = Number.isFinite(Number(data.min_time)) ? Number(data.min_time) : 0;
+        state.maxTimeSeconds = Number.isFinite(Number(data.max_time)) ? Number(data.max_time) : 3600;
+        state.minTimeSeconds = Math.max(0, Math.min(3600, Math.round(state.minTimeSeconds / 15) * 15));
+        state.maxTimeSeconds = Math.max(0, Math.min(3600, Math.round(state.maxTimeSeconds / 15) * 15));
+        if (state.maxTimeSeconds <= state.minTimeSeconds) {
+          state.maxTimeSeconds = Math.min(3600, state.minTimeSeconds + 900);
+        }
+
+        ensureSliderBindings();
+        refreshSliderDisplays();
+        updateTimeWindowSlider();
+        requestAnimationFrame(ensureTimeSliderHandlers);
+
+        const saveBtn = document.getElementById('m_unifiedSave');
+        if (saveBtn) {
+          saveBtn.onclick = async function() {
+            const payload = {
+              monitor_id: apiId,
+              min_volume: parseInt(document.getElementById('m_autoEntryMinVolume').value, 10),
+              min_probability: parseInt(document.getElementById('m_autoEntryProb').value, 10),
+              min_differential: parseFloat(document.getElementById('m_autoEntryDiff').value),
+              max_differential: (function() {
+                const v = parseFloat(document.getElementById('m_autoEntryMaxDiff').value);
+                return Number.isFinite(v) && v > 0 ? v : null;
+              })(),
+              allow_re_entry: document.getElementById('m_allowRe').checked,
+              win_streak_threshold: parseInt(document.getElementById('m_winStreak').value, 10),
+              spike_alert_enabled: document.getElementById('m_spikeEnabled').checked,
+              spike_alert_momentum_threshold: parseInt(document.getElementById('m_spikeMomentum').value, 10),
+              spike_alert_cooldown_threshold: parseInt(document.getElementById('m_spikeCooldown').value, 10),
+              spike_alert_cooldown_minutes: parseInt(document.getElementById('m_spikeTime').value, 10),
+              performance_based_allocation: document.getElementById('m_perfAlloc').checked,
+              current_probability: parseInt(document.getElementById('m_stopProb').value, 10),
+              min_ttc_seconds: parseInt(document.getElementById('m_minTTC').value, 10),
+              momentum_spike_enabled: document.getElementById('m_momentumEnabled').checked,
+              momentum_spike_threshold: parseInt(document.getElementById('m_momentumThreshold').value, 10),
+              verification_period_enabled: document.getElementById('m_verifyEnabled').checked,
+              verification_period_seconds: parseInt(document.getElementById('m_verifySeconds').value, 10),
+              min_time: state.minTimeSeconds,
+              max_time: state.maxTimeSeconds
+            };
+
+            try {
+              const response = await fetch('/api/set_auto_entry_settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+              });
+              const json = await response.json();
+              if (json && json.status !== 'error') {
+                hideModal();
+              }
+            } catch (error) {
+              console.error('Failed to save mobile auto entry settings:', error);
+            }
+          };
+        }
+
+        const keyHandler = function(event) {
+          if (modal.style.display === 'none') return;
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            const save = document.getElementById('m_unifiedSave');
+            if (save) save.click();
+          } else if (event.key === 'Escape') {
+            event.preventDefault();
+            hideModal();
+          }
+        };
+
+        if (!modal._keyHandler) {
+          document.addEventListener('keydown', keyHandler);
+          modal._keyHandler = keyHandler;
+        }
+      }
+
+      function hideModal() {
+        const modal = document.getElementById('mobileUnifiedAutoTradeModal');
+        const dim = document.getElementById('mobileUnifiedAutoTradeDim');
+        modal.style.display = 'none';
+        if (dim) dim.style.display = 'none';
+        document.body.style.overflow = 'auto';
+        if (modal._keyHandler) {
+          document.removeEventListener('keydown', modal._keyHandler);
+          delete modal._keyHandler;
+        }
+      }
+
+      window.openMobileUnifiedAutoTradeSettings = openModal;
+      window.hideMobileUnifiedAutoTradeSettings = hideModal;
+    })();
+  </script>
 </body>
 </html>
