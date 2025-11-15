@@ -537,7 +537,7 @@ def save_auto_entry_state_to_db(state):
     try:
         import psycopg2
         conn = psycopg2.connect(
-            host='137.184.224.94',  # PRODUCTION SERVER
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
             database=os.getenv('POSTGRES_DB', 'rec_io_db'),
             user=os.getenv('POSTGRES_USER', 'rec_io_user'),
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
@@ -556,7 +556,7 @@ def load_auto_entry_state_from_db():
     try:
         import psycopg2
         conn = psycopg2.connect(
-            host='137.184.224.94',  # PRODUCTION SERVER
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
             database=os.getenv('POSTGRES_DB', 'rec_io_db'),
             user=os.getenv('POSTGRES_USER', 'rec_io_user'),
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
@@ -911,7 +911,7 @@ def start_cooldown_period_in_db():
     try:
         import psycopg2
         conn = psycopg2.connect(
-            host='137.184.224.94',  # PRODUCTION SERVER
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
             database=os.getenv('POSTGRES_DB', 'rec_io_db'),
             user=os.getenv('POSTGRES_USER', 'rec_io_user'),
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
@@ -934,7 +934,7 @@ def reset_cooldown_period_in_db():
     try:
         import psycopg2
         conn = psycopg2.connect(
-            host='137.184.224.94',  # PRODUCTION SERVER
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
             database=os.getenv('POSTGRES_DB', 'rec_io_db'),
             user=os.getenv('POSTGRES_USER', 'rec_io_user'),
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
@@ -958,7 +958,7 @@ def update_cooldown_timer_in_db(seconds):
     try:
         import psycopg2
         conn = psycopg2.connect(
-            host='137.184.224.94',  # PRODUCTION SERVER
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
             database=os.getenv('POSTGRES_DB', 'rec_io_db'),
             user=os.getenv('POSTGRES_USER', 'rec_io_user'),
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
