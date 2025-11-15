@@ -92,8 +92,15 @@ def ensure_port_config_exists():
             },
             "port_ranges": {
                 "safe_range_start": 8000,
-                "safe_range_end": 8100,
-                "description": "Safe port range avoiding macOS system services"
+                "safe_range_end": 9000,
+                "description": "Safe port range avoiding system services. Supports up to ~500 monitors (monitor ID 10500) with current allocation scheme"
+            },
+            "monitor_process_ports": {
+                "start_port": 8013,
+                "description": "Dynamic port range for monitor-specific processes",
+                "auto_entry_supervisor_offset": 0,
+                "active_trade_supervisor_offset": 1,
+                "note": "Port calculation: start_port + ((monitor_id - 10000) * 2) + service_offset. Each monitor uses 2 consecutive ports."
             },
             "notes": {
                 "avoid_ports": [5000, 7000, 9000, 10000],
@@ -160,6 +167,7 @@ def list_all_ports() -> Dict[str, int]:
 def get_monitor_port(service_name: str, monitor_identifier: str) -> int:
     """
     Get port for a specific monitor instance.
+    Scalable port assignment that works for dozens of monitors on any server.
     
     Args:
         service_name: Either 'active_trade_supervisor' or 'auto_entry_supervisor'
@@ -177,6 +185,10 @@ def get_monitor_port(service_name: str, monitor_identifier: str) -> int:
         # Get port range configuration
         port_range = manifest.get("monitor_process_ports", {})
         start_port = port_range.get("start_port", 8013)
+        
+        # Get safe port range from port_ranges (server-agnostic maximum)
+        port_ranges = manifest.get("port_ranges", {})
+        safe_range_end = port_ranges.get("safe_range_end", 65535)  # Use system max if not specified
         
         # Parse monitor identifier (e.g., "0001_10009")
         if '_' not in monitor_identifier:
@@ -210,18 +222,28 @@ def get_monitor_port(service_name: str, monitor_identifier: str) -> int:
         # Calculate final port: start_port + (offset * 2) + service_offset
         # Monitor 10002 (offset=2): 8013 + (2*2) + 0 = 8013, 8013 + (2*2) + 1 = 8014
         # Monitor 10009 (offset=9): 8013 + (9*2) + 0 = 8031, 8013 + (9*2) + 1 = 8032
+        # Monitor 10019 (offset=19): 8013 + (19*2) + 1 = 8052
+        # Monitor 10020 (offset=20): 8013 + (20*2) + 1 = 8054
         final_port = start_port + (port_offset * 2) + service_offset
         
-        # Validate port is within range
-        end_port = port_range.get("end_port", 8020)
-        if final_port > end_port:
-            raise ValueError(f"Port {final_port} exceeds monitor port range (max: {end_port})")
+        # Validate port is within safe system range (server-agnostic)
+        if final_port > safe_range_end:
+            raise ValueError(
+                f"Port {final_port} exceeds safe port range (max: {safe_range_end}). "
+                f"Monitor ID {monitor_id} is too high for current port allocation scheme. "
+                f"Consider adjusting start_port or safe_range_end in manifest."
+            )
+        
+        # Warn if approaching safe range limit (for monitoring/debugging)
+        if final_port > safe_range_end - 100:
+            print(f"[PORT_CONFIG] Warning: Port {final_port} is approaching safe range limit ({safe_range_end})")
         
         return final_port
         
     except Exception as e:
         print(f"[PORT_CONFIG] Error calculating monitor port for {service_name} {monitor_identifier}: {e}")
-        # Fallback to centralized port
+        # Fallback to centralized port (should not happen in normal operation)
+        print(f"[PORT_CONFIG] Falling back to centralized port for {service_name}")
         return get_port(service_name)
 
 def get_monitor_service_url(service_name: str, monitor_identifier: str, endpoint: str = "") -> str:
