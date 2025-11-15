@@ -2664,7 +2664,8 @@ async def get_auto_entry_settings(monitor_id: str = None):
                        spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
                        current_probability, min_ttc_seconds, momentum_spike_enabled, 
                        momentum_spike_threshold, verification_period_enabled, verification_period_seconds,
-                       min_volume, win_streak_threshold, performance_based_allocation
+                       min_volume, win_streak_threshold, performance_based_allocation,
+                       momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target
                 FROM users.monitor_list_0001 WHERE id = %s
             """, (monitor_id,))
             result = cursor.fetchone()
@@ -2691,7 +2692,10 @@ async def get_auto_entry_settings(monitor_id: str = None):
                     "verification_period_seconds": result[15],
                     "min_volume": result[16],
                     "win_streak_threshold": result[17],
-                    "performance_based_allocation": result[18]
+                    "performance_based_allocation": result[18],
+                    "momentum_scalp_entry_threshold": float(result[19]) if result[19] is not None else None,
+                    "momentum_scalp_trailing_stop_amount": float(result[20]) if result[20] is not None else None,
+                    "momentum_scalp_profit_target": float(result[21]) if result[21] is not None else None
                 }
             else:
                 return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
@@ -2791,6 +2795,17 @@ async def set_auto_entry_settings(request: Request):
                 update_fields.append("performance_based_allocation = %s")
                 update_values.append(bool(data["performance_based_allocation"]))
             
+            # Momentum Scalp specific parameters
+            if "momentum_scalp_entry_threshold" in data:
+                update_fields.append("momentum_scalp_entry_threshold = %s")
+                update_values.append(float(data["momentum_scalp_entry_threshold"]))
+            if "momentum_scalp_trailing_stop_amount" in data:
+                update_fields.append("momentum_scalp_trailing_stop_amount = %s")
+                update_values.append(float(data["momentum_scalp_trailing_stop_amount"]))
+            if "momentum_scalp_profit_target" in data:
+                update_fields.append("momentum_scalp_profit_target = %s")
+                update_values.append(float(data["momentum_scalp_profit_target"]))
+            
             if update_fields:
                 # Update the monitor in monitor_list table
                 query = f"UPDATE users.monitor_list_0001 SET {', '.join(update_fields)} WHERE id = %s"
@@ -2806,7 +2821,8 @@ async def set_auto_entry_settings(request: Request):
                            spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
                            current_probability, min_ttc_seconds, momentum_spike_enabled, 
                            momentum_spike_threshold, verification_period_enabled, verification_period_seconds,
-                           min_volume, win_streak_threshold, performance_based_allocation
+                           min_volume, win_streak_threshold, performance_based_allocation,
+                           momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target
                     FROM users.monitor_list_0001 WHERE id = %s
                 """, (monitor_id,))
                 updated_result = cursor.fetchone()
@@ -2830,7 +2846,10 @@ async def set_auto_entry_settings(request: Request):
                         "verification_period_seconds": updated_result[14],
                         "min_volume": updated_result[15],
                         "win_streak_threshold": updated_result[16],
-                        "performance_based_allocation": updated_result[17]
+                        "performance_based_allocation": updated_result[17],
+                        "momentum_scalp_entry_threshold": float(updated_result[18]) if updated_result[18] is not None else None,
+                        "momentum_scalp_trailing_stop_amount": float(updated_result[19]) if updated_result[19] is not None else None,
+                        "momentum_scalp_profit_target": float(updated_result[20]) if updated_result[20] is not None else None
                     }
                     conn.commit()
                     conn.close()
