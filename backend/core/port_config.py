@@ -240,11 +240,91 @@ def get_monitor_port(service_name: str, monitor_identifier: str) -> int:
         
         return final_port
         
+    except (json.JSONDecodeError, IOError) as e:
+        # Manifest is corrupted or unreadable - try to recreate it
+        print(f"[PORT_CONFIG] Error reading manifest (may be corrupted): {e}")
+        print(f"[PORT_CONFIG] Attempting to recreate manifest from defaults...")
+        
+        # Backup corrupted manifest if it exists
+        if os.path.exists(PORT_CONFIG_FILE):
+            import shutil
+            from datetime import datetime
+            backup_path = f"{PORT_CONFIG_FILE}.corrupted_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            try:
+                shutil.copy2(PORT_CONFIG_FILE, backup_path)
+                print(f"[PORT_CONFIG] Backed up corrupted manifest to: {backup_path}")
+            except Exception as backup_error:
+                print(f"[PORT_CONFIG] Warning: Could not backup corrupted manifest: {backup_error}")
+        
+        # Recreate manifest - ensure_port_config_exists() only creates if missing,
+        # so we need to remove the corrupted file first
+        try:
+            if os.path.exists(PORT_CONFIG_FILE):
+                os.remove(PORT_CONFIG_FILE)
+            ensure_port_config_exists()
+            # Now try to read the recreated manifest
+            with open(PORT_CONFIG_FILE, 'r') as f:
+                manifest = json.load(f)
+            
+            # Extract configuration from recreated manifest
+            port_range = manifest.get("monitor_process_ports", {})
+            start_port = port_range.get("start_port", 8013)
+            
+            if service_name == "active_trade_supervisor":
+                service_offset = port_range.get("active_trade_supervisor_offset", 1)
+            elif service_name == "auto_entry_supervisor":
+                service_offset = port_range.get("auto_entry_supervisor_offset", 0)
+            else:
+                raise ValueError(f"Unknown monitor service: {service_name}")
+            
+            # Parse monitor identifier
+            if '_' not in monitor_identifier:
+                raise ValueError(f"Invalid monitor identifier format: {monitor_identifier}")
+            
+            user_number, monitor_id = monitor_identifier.split('_')
+            try:
+                monitor_num = int(monitor_id)
+                port_offset = monitor_num - 10000
+            except ValueError:
+                raise ValueError(f"Invalid monitor ID format: {monitor_id}")
+            
+            final_port = start_port + (port_offset * 2) + service_offset
+            print(f"[PORT_CONFIG] Successfully recreated manifest and calculated port {final_port}")
+            return final_port
+            
+        except Exception as recreate_error:
+            # If recreation fails, use the same defaults from ensure_port_config_exists()
+            print(f"[PORT_CONFIG] Could not recreate manifest: {recreate_error}")
+            print(f"[PORT_CONFIG] Using defaults matching ensure_port_config_exists() configuration")
+            
+            # These defaults match what ensure_port_config_exists() creates
+            start_port = 8013
+            if service_name == "active_trade_supervisor":
+                service_offset = 1
+            elif service_name == "auto_entry_supervisor":
+                service_offset = 0
+            else:
+                raise ValueError(f"Unknown monitor service: {service_name}")
+            
+            # Parse monitor identifier
+            if '_' not in monitor_identifier:
+                raise ValueError(f"Invalid monitor identifier format: {monitor_identifier}")
+            
+            user_number, monitor_id = monitor_identifier.split('_')
+            try:
+                monitor_num = int(monitor_id)
+                port_offset = monitor_num - 10000
+            except ValueError:
+                raise ValueError(f"Invalid monitor ID format: {monitor_id}")
+            
+            final_port = start_port + (port_offset * 2) + service_offset
+            print(f"[PORT_CONFIG] Calculated port {final_port} using system defaults")
+            return final_port
+    
     except Exception as e:
-        print(f"[PORT_CONFIG] Error calculating monitor port for {service_name} {monitor_identifier}: {e}")
-        # Fallback to centralized port (should not happen in normal operation)
-        print(f"[PORT_CONFIG] Falling back to centralized port for {service_name}")
-        return get_port(service_name)
+        # Any other exception - this should not happen in normal operation
+        print(f"[PORT_CONFIG] Unexpected error calculating monitor port: {e}")
+        raise
 
 def get_monitor_service_url(service_name: str, monitor_identifier: str, endpoint: str = "") -> str:
     """Get full URL for monitor-specific service."""
