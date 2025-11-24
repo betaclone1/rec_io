@@ -700,14 +700,25 @@ async function showUnifiedAutoTradeSettingsModal() {
   // Update modal title with strategy name and show/hide strategy sections
   const strategyPicker = document.getElementById('trade-strategy-picker');
   const currentStrategy = strategyPicker ? strategyPicker.value : '';
-  const isMomentumScalp = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
+  const isMomentumScalp = currentStrategy && (currentStrategy.toUpperCase().includes('MOMENTUM SCALP') || currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL'));
+  const isMomentumReversal = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL');
   
   const modalTitle = document.getElementById('unifiedAutoTradeModalTitle');
+  const msStrategyLabel = document.getElementById('msStrategyLabel');
   if (modalTitle) {
     if (currentStrategy) {
       modalTitle.textContent = `Auto Trade Settings - ${currentStrategy}`;
     } else {
       modalTitle.textContent = 'Auto Trade Settings';
+    }
+  }
+  
+  // Update Momentum Scalp/Reversal label
+  if (msStrategyLabel) {
+    if (isMomentumReversal) {
+      msStrategyLabel.textContent = 'Momentum Reversal';
+    } else {
+      msStrategyLabel.textContent = 'Momentum Scalp';
     }
   }
   
@@ -743,19 +754,93 @@ async function showUnifiedAutoTradeSettingsModal() {
     // Determine which strategy section to populate
     const strategyPicker = document.getElementById('trade-strategy-picker');
     const currentStrategy = strategyPicker ? strategyPicker.value : '';
-    const isMomentumScalp = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
+    const isMomentumScalp = currentStrategy && (currentStrategy.toUpperCase().includes('MOMENTUM SCALP') || currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL'));
+    const isMomentumReversal = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL');
     
     // Common settings (both strategies)
     minTimeSeconds = data.min_time !== undefined ? data.min_time : 0;
     maxTimeSeconds = data.max_time !== undefined ? data.max_time : 3600;
     
+    // Probability window (both strategies)
+    minProbability = data.min_probability !== undefined ? parseFloat(data.min_probability) : 95.00;
+    maxProbability = data.max_probability !== undefined ? parseFloat(data.max_probability) : 100.00;
+    
+    // Enforce minimum separation (0.5%) when loading from database
+    const MIN_SEPARATION = 0.5;
+    if (maxProbability - minProbability < MIN_SEPARATION) {
+      // If too close, adjust max to maintain minimum separation
+      if (maxProbability < 100) {
+        maxProbability = parseFloat((minProbability + MIN_SEPARATION).toFixed(1));
+      } else {
+        // If max is at 100, adjust min down
+        minProbability = parseFloat((maxProbability - MIN_SEPARATION).toFixed(1));
+      }
+    }
+    
     if (isMomentumScalp) {
       // MOMENTUM SCALP settings
       setVal('msAutoEntryMinVolumeSlider', data.min_volume ?? 1000);
-      setVal('msAutoEntryProbabilitySlider', data.min_probability ?? 25);
+      setVal('msAutoEntryWinStreakThresholdSlider', data.win_streak_threshold ?? 22);
+      const msLossPreventionToggle = document.getElementById('msAutoEntryLossPreventionToggle');
+      const msWinStreakSlider = document.getElementById('msAutoEntryWinStreakThresholdSlider');
+      const msWinStreakValueDisplay = document.getElementById('msAutoEntryWinStreakThresholdValueDisplay');
+      if (msLossPreventionToggle) {
+        msLossPreventionToggle.checked = data.loss_prevention_toggle !== undefined ? data.loss_prevention_toggle : true;
+        // Enable/disable slider based on checkbox state
+        if (msWinStreakSlider) {
+          msWinStreakSlider.disabled = !msLossPreventionToggle.checked;
+          msWinStreakSlider.style.opacity = msLossPreventionToggle.checked ? '1' : '0.5';
+          msWinStreakSlider.style.cursor = msLossPreventionToggle.checked ? 'pointer' : 'not-allowed';
+        }
+        // Hide/show value bubble based on checkbox state
+        if (msWinStreakValueDisplay) {
+          msWinStreakValueDisplay.style.display = msLossPreventionToggle.checked ? 'block' : 'none';
+        }
+        // Add event listener to update slider state when checkbox changes
+        msLossPreventionToggle.addEventListener('change', function() {
+          if (msWinStreakSlider) {
+            msWinStreakSlider.disabled = !this.checked;
+            msWinStreakSlider.style.opacity = this.checked ? '1' : '0.5';
+            msWinStreakSlider.style.cursor = this.checked ? 'pointer' : 'not-allowed';
+          }
+          if (msWinStreakValueDisplay) {
+            msWinStreakValueDisplay.style.display = this.checked ? 'block' : 'none';
+          }
+        });
+      }
+      
+      // Ask window (min_ask and max_ask)
+      msMinAsk = data.min_ask !== undefined ? parseFloat(data.min_ask) : 0.0000;
+      msMaxAsk = data.max_ask !== undefined ? parseFloat(data.max_ask) : 0.9800;
+      
+      // Enforce minimum separation (0.01 = 1 cent) when loading from database
+      const MIN_ASK_SEPARATION = 0.01;
+      if (msMaxAsk - msMinAsk < MIN_ASK_SEPARATION) {
+        // If too close, adjust max to maintain minimum separation
+        if (msMaxAsk < 1.0) {
+          msMaxAsk = parseFloat((msMinAsk + MIN_ASK_SEPARATION).toFixed(4));
+        } else {
+          // If max is at 1.0, adjust min down
+          msMinAsk = parseFloat((msMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
+        }
+      }
       
       // Momentum Threshold: stored as absolute value (0-100)
       setVal('msMomentumScalpEntryThresholdSlider', data.momentum_scalp_entry_threshold ?? 35);
+      
+      // Max Price Spread: convert from database (0.0000-0.2000) to slider (0-20)
+      const maxPriceSpread = data.max_price_spread !== undefined ? parseFloat(data.max_price_spread) : 0.0300;
+      const maxPriceSpreadSliderValue = (maxPriceSpread * 100).toFixed(1); // Convert 0.0300 to 3.0
+      setVal('msMaxPriceSpreadSlider', maxPriceSpreadSliderValue);
+      // Initialize value display
+      const msMaxPriceSpreadValueDisplay = document.getElementById('msMaxPriceSpreadValueDisplay');
+      const msMaxPriceSpreadSlider = document.getElementById('msMaxPriceSpreadSlider');
+      if (msMaxPriceSpreadValueDisplay && msMaxPriceSpreadSlider) {
+        msMaxPriceSpreadValueDisplay.textContent = maxPriceSpreadSliderValue;
+        const min = parseFloat(msMaxPriceSpreadSlider.min), max = parseFloat(msMaxPriceSpreadSlider.max);
+        const percent = (parseFloat(maxPriceSpreadSliderValue) - min) / (max - min);
+        msMaxPriceSpreadValueDisplay.style.left = (percent * (msMaxPriceSpreadSlider.offsetWidth - 16) + 8) + 'px';
+      }
       
       // Auto Stop
       const msMinTTC = data.min_ttc_seconds !== undefined ? data.min_ttc_seconds : 60;
@@ -771,18 +856,44 @@ async function showUnifiedAutoTradeSettingsModal() {
       const trailingStopSliderValue = Math.round(trailingStop * 100);
       setVal('msMomentumScalpTrailingStopSlider', trailingStopSliderValue);
       
-      // Profit Target: convert from decimal (0.50-1.00) to slider value (50-100)
-      const profitTarget = data.momentum_scalp_profit_target ?? 0.99;
+      // Profit Target: convert from decimal (0.01-0.50) to slider value (1-50)
+      const profitTarget = data.momentum_scalp_profit_target ?? 0.10;
       const profitTargetSliderValue = Math.round(profitTarget * 100);
       setVal('msMomentumScalpProfitTargetSlider', profitTargetSliderValue);
     } else {
       // HOURLY HTC settings
       setVal('autoEntryMinVolumeSlider', data.min_volume ?? 1000);
-      setVal('autoEntryProbabilitySlider', data.min_probability ?? 25);
       setVal('autoEntryDifferentialSlider', data.min_differential ?? 0);
       setVal('autoEntryMaxDifferentialSlider', data.max_differential ?? 0);
       setChk('autoEntryAllowReEntry', data.allow_re_entry ?? false);
       setVal('autoEntryWinStreakThresholdSlider', data.win_streak_threshold ?? 22);
+      const lossPreventionToggle = document.getElementById('autoEntryLossPreventionToggle');
+      const winStreakSlider = document.getElementById('autoEntryWinStreakThresholdSlider');
+      const winStreakValueDisplay = document.getElementById('autoEntryWinStreakThresholdValueDisplay');
+      if (lossPreventionToggle) {
+        lossPreventionToggle.checked = data.loss_prevention_toggle !== undefined ? data.loss_prevention_toggle : true;
+        // Enable/disable slider based on checkbox state
+        if (winStreakSlider) {
+          winStreakSlider.disabled = !lossPreventionToggle.checked;
+          winStreakSlider.style.opacity = lossPreventionToggle.checked ? '1' : '0.5';
+          winStreakSlider.style.cursor = lossPreventionToggle.checked ? 'pointer' : 'not-allowed';
+        }
+        // Hide/show value bubble based on checkbox state
+        if (winStreakValueDisplay) {
+          winStreakValueDisplay.style.display = lossPreventionToggle.checked ? 'block' : 'none';
+        }
+        // Add event listener to update slider state when checkbox changes
+        lossPreventionToggle.addEventListener('change', function() {
+          if (winStreakSlider) {
+            winStreakSlider.disabled = !this.checked;
+            winStreakSlider.style.opacity = this.checked ? '1' : '0.5';
+            winStreakSlider.style.cursor = this.checked ? 'pointer' : 'not-allowed';
+          }
+          if (winStreakValueDisplay) {
+            winStreakValueDisplay.style.display = this.checked ? 'block' : 'none';
+          }
+        });
+      }
       
       // Spike Alert settings
       setChk('spikeAlertEnabled', data.spike_alert_enabled ?? true);
@@ -812,12 +923,13 @@ async function showUnifiedAutoTradeSettingsModal() {
       // Determine which strategy section to update
       const strategyPicker = document.getElementById('trade-strategy-picker');
       const currentStrategy = strategyPicker ? strategyPicker.value : '';
-      const isMomentumScalp = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
+      const isMomentumScalp = currentStrategy && (currentStrategy.toUpperCase().includes('MOMENTUM SCALP') || currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL'));
+    const isMomentumReversal = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL');
       
       if (isMomentumScalp) {
         // MOMENTUM SCALP value bubbles
         const msMinVolumeSlider = document.getElementById('msAutoEntryMinVolumeSlider');
-        const msProbSlider = document.getElementById('msAutoEntryProbabilitySlider');
+        const msWinStreakSlider = document.getElementById('msAutoEntryWinStreakThresholdSlider');
         const msEntryThresholdSlider = document.getElementById('msMomentumScalpEntryThresholdSlider');
         const msTrailingStopSlider = document.getElementById('msMomentumScalpTrailingStopSlider');
         const msProfitTargetSlider = document.getElementById('msMomentumScalpProfitTargetSlider');
@@ -825,8 +937,8 @@ async function showUnifiedAutoTradeSettingsModal() {
         if (msMinVolumeSlider && typeof updateMSAutoEntryMinVolumeDisplay === 'function') {
           updateMSAutoEntryMinVolumeDisplay(msMinVolumeSlider.value);
         }
-        if (msProbSlider && typeof updateMSAutoEntryProbabilityDisplay === 'function') {
-          updateMSAutoEntryProbabilityDisplay(msProbSlider.value);
+        if (msWinStreakSlider && typeof updateMSAutoEntryWinStreakThresholdDisplay === 'function') {
+          updateMSAutoEntryWinStreakThresholdDisplay(msWinStreakSlider.value);
         }
         if (msEntryThresholdSlider && typeof updateMSMomentumThresholdDisplay === 'function') {
           updateMSMomentumThresholdDisplay(msEntryThresholdSlider.value);
@@ -843,6 +955,11 @@ async function showUnifiedAutoTradeSettingsModal() {
           initMSTimeWindowSlider();
         }
         
+        // Initialize MS ask window slider
+        if (typeof initMSAskWindowSlider === 'function') {
+          initMSAskWindowSlider();
+        }
+        
         // Setup MS Min TTC controls
         if (typeof setupMSMinTTCControls === 'function') {
           setupMSMinTTCControls();
@@ -850,16 +967,12 @@ async function showUnifiedAutoTradeSettingsModal() {
       } else {
         // HOURLY HTC value bubbles
         const minVolumeSlider = document.getElementById('autoEntryMinVolumeSlider');
-        const probSlider = document.getElementById('autoEntryProbabilitySlider');
         const diffSlider = document.getElementById('autoEntryDifferentialSlider');
         const maxDiffSlider = document.getElementById('autoEntryMaxDifferentialSlider');
         const winStreakSlider = document.getElementById('autoEntryWinStreakThresholdSlider');
         
         if (minVolumeSlider && typeof updateAutoEntryMinVolumeDisplay === 'function') {
           updateAutoEntryMinVolumeDisplay(minVolumeSlider.value);
-        }
-        if (probSlider && typeof updateAutoEntrySliderDisplay === 'function') {
-          updateAutoEntrySliderDisplay(probSlider.value);
         }
         if (diffSlider && typeof updateAutoEntryDifferentialDisplay === 'function') {
           updateAutoEntryDifferentialDisplay(diffSlider.value);
@@ -904,6 +1017,11 @@ async function showUnifiedAutoTradeSettingsModal() {
         // Initialize time window slider
         if (typeof initTimeWindowSlider === 'function') {
           initTimeWindowSlider();
+        }
+        
+        // Initialize probability window slider
+        if (typeof initProbabilityWindowSlider === 'function') {
+          initProbabilityWindowSlider();
         }
         
         // Setup Min TTC controls
@@ -964,7 +1082,8 @@ async function showUnifiedAutoTradeSettingsModal() {
       // Determine which strategy is active
       const strategyPicker = document.getElementById('trade-strategy-picker');
       const currentStrategy = strategyPicker ? strategyPicker.value : '';
-      const isMomentumScalp = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
+      const isMomentumScalp = currentStrategy && (currentStrategy.toUpperCase().includes('MOMENTUM SCALP') || currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL'));
+    const isMomentumReversal = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL');
       
       const payload = {
         monitor_id: window.currentMonitorId,
@@ -975,7 +1094,6 @@ async function showUnifiedAutoTradeSettingsModal() {
       if (isMomentumScalp) {
         // MOMENTUM SCALP specific fields
         const msMinVolumeSlider = document.getElementById('msAutoEntryMinVolumeSlider');
-        const msProbabilitySlider = document.getElementById('msAutoEntryProbabilitySlider');
         const msMomentumThresholdSlider = document.getElementById('msMomentumScalpEntryThresholdSlider');
         const msMinTTCInput = document.getElementById('msAutoStopMinTTCInput');
         const msTrailingStopSlider = document.getElementById('msMomentumScalpTrailingStopSlider');
@@ -984,8 +1102,14 @@ async function showUnifiedAutoTradeSettingsModal() {
         if (msMinVolumeSlider) {
           payload.min_volume = parseInt(msMinVolumeSlider.value, 10);
         }
-        if (msProbabilitySlider) {
-          payload.min_probability = parseInt(msProbabilitySlider.value, 10);
+        // Use ask window values (ensure they're floats with 4 decimal places)
+        payload.min_ask = parseFloat(parseFloat(msMinAsk).toFixed(4));
+        payload.max_ask = parseFloat(parseFloat(msMaxAsk).toFixed(4));
+        // Max Price Spread: convert from slider (0-20) to database (0.0000-0.2000)
+        const maxPriceSpreadSlider = document.getElementById('msMaxPriceSpreadSlider');
+        if (maxPriceSpreadSlider) {
+          const sliderValue = parseFloat(maxPriceSpreadSlider.value);
+          payload.max_price_spread = parseFloat((sliderValue / 100).toFixed(4)); // Convert 3.0 to 0.0300
         }
         if (msMomentumThresholdSlider) {
           payload.momentum_scalp_entry_threshold = parseInt(msMomentumThresholdSlider.value, 10);
@@ -1001,14 +1125,28 @@ async function showUnifiedAutoTradeSettingsModal() {
           // Convert from slider value (50-100) to decimal (0.50-1.00)
           payload.momentum_scalp_profit_target = parseFloat(msProfitTargetSlider.value) / 100;
         }
+        const msWinStreakSlider = document.getElementById('msAutoEntryWinStreakThresholdSlider');
+        if (msWinStreakSlider) {
+          payload.win_streak_threshold = parseInt(msWinStreakSlider.value, 10);
+        }
+        const msLossPreventionToggle = document.getElementById('msAutoEntryLossPreventionToggle');
+        if (msLossPreventionToggle) {
+          payload.loss_prevention_toggle = msLossPreventionToggle.checked;
+        }
       } else {
         // HOURLY HTC specific fields
         payload.min_volume = parseInt(document.getElementById('autoEntryMinVolumeSlider').value, 10);
-        payload.min_probability = parseInt(document.getElementById('autoEntryProbabilitySlider').value, 10);
+        // Use probability window values (ensure they're floats with 1 decimal)
+        payload.min_probability = parseFloat(parseFloat(minProbability).toFixed(1));
+        payload.max_probability = parseFloat(parseFloat(maxProbability).toFixed(1));
         payload.min_differential = parseFloat(document.getElementById('autoEntryDifferentialSlider').value);
         payload.max_differential = (function() { const v = parseFloat(document.getElementById('autoEntryMaxDifferentialSlider').value); return isNaN(v) || v <= 0 ? null : v; })();
         payload.allow_re_entry = document.getElementById('autoEntryAllowReEntry').checked;
         payload.win_streak_threshold = parseInt(document.getElementById('autoEntryWinStreakThresholdSlider').value, 10);
+        const lossPreventionToggle = document.getElementById('autoEntryLossPreventionToggle');
+        if (lossPreventionToggle) {
+          payload.loss_prevention_toggle = lossPreventionToggle.checked;
+        }
         payload.current_probability = parseInt(document.getElementById('autoStopProbabilitySlider').value, 10);
         payload.min_ttc_seconds = parseInt(document.getElementById('autoStopMinTTCInput') ? document.getElementById('autoStopMinTTCInput').value : '60', 10);
         payload.momentum_spike_enabled = document.getElementById('momentumSpikeEnabled').checked;
@@ -1814,8 +1952,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         // Also refresh the Trade History panel to show any status changes
-        if (typeof fetchAndRenderTrades === 'function') {
-          fetchAndRenderTrades();
+        if (typeof fetchAndRenderTradeHistory === 'function') {
+          fetchAndRenderTradeHistory();
         }
         
         return; // Don't process other WebSocket messages for this type
@@ -2061,10 +2199,21 @@ document.addEventListener('DOMContentLoaded', () => {
               <div id="autoEntryMinVolumeValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
             </div>
             
-            <label for="autoEntryProbabilitySlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Win Probability:</label>
-            <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
-              <input type="range" id="autoEntryProbabilitySlider" min="0" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
-              <div id="autoEntrySliderValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+            <label for="probabilityWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Win Probability Window:</label>
+            <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-top:4px; padding-bottom:28px;">
+              <!-- Probability Window Slider Container -->
+              <div id="probabilityWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:0px; box-sizing: border-box;">
+                <!-- Min Probability Handle -->
+                <div id="minProbabilityHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+                <!-- Max Probability Handle -->
+                <div id="maxProbabilityHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+                <!-- Selected Range -->
+                <div id="probabilityWindowRange" style="position:absolute; top:0; height:6px; background:#007bff; border-radius:3px; z-index:5;"></div>
+                <!-- Min Probability Display (BELOW slider) -->
+                <div id="probabilityWindowMinDisplay" style="position:absolute; top:16px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+                <!-- Max Probability Display (ABOVE slider) -->
+                <div id="probabilityWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+              </div>
             </div>
             
             <label for="autoEntryDifferentialSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Differential:</label>
@@ -2085,7 +2234,7 @@ document.addEventListener('DOMContentLoaded', () => {
               <span style="font-size:13px; color:#666;">Allow re-entry on the same strike</span>
             </div>
             
-            <label for="autoEntryWinStreakThresholdSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Loss Prevention Win Streak Threshold:</label>
+            <label for="autoEntryWinStreakThresholdSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Loss Prevention Win Streak Threshold: <input type="checkbox" id="autoEntryLossPreventionToggle" style="margin-left:8px; vertical-align:middle;" /></label>
             <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
               <input type="range" id="autoEntryWinStreakThresholdSlider" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
               <div id="autoEntryWinStreakThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
@@ -2171,7 +2320,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <div id="msStrategySection" style="display: none;">
             <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Auto Entry</div>
             <!-- Auto Entry -->
-            <label for="msTimeWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Scalp Time Window:</label>
+            <label for="msTimeWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;"><span id="msStrategyLabel">Momentum Scalp</span> Time Window:</label>
             <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
               <!-- Time Window Slider Container -->
               <div id="msTimeWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:8px; box-sizing: border-box;">
@@ -2200,10 +2349,33 @@ document.addEventListener('DOMContentLoaded', () => {
               <div id="msAutoEntryMinVolumeValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
             </div>
             
-            <label for="msAutoEntryProbabilitySlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Win Probability:</label>
+            <label for="msAskWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Current Ask:</label>
+            <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-top:4px; padding-bottom:28px;">
+              <!-- Momentum Scalp Ask Window Slider Container -->
+              <div id="msAskWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:0px; box-sizing: border-box;">
+                <!-- Min Ask Handle -->
+                <div id="msMinAskHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+                <!-- Max Ask Handle -->
+                <div id="msMaxAskHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+                <!-- Selected Range -->
+                <div id="msAskWindowRange" style="position:absolute; top:0; height:6px; background:#007bff; border-radius:3px; z-index:5;"></div>
+                <!-- Min Ask Display (BELOW slider) -->
+                <div id="msAskWindowMinDisplay" style="position:absolute; top:16px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+                <!-- Max Ask Display (ABOVE slider) -->
+                <div id="msAskWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+              </div>
+            </div>
+            
+            <label for="msMaxPriceSpreadSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Max Price Spread:</label>
             <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
-              <input type="range" id="msAutoEntryProbabilitySlider" min="0" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
-              <div id="msAutoEntrySliderValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+              <input type="range" id="msMaxPriceSpreadSlider" min="0" max="20" step="0.1" value="3" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+              <div id="msMaxPriceSpreadValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+            </div>
+            
+            <label for="msAutoEntryWinStreakThresholdSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Loss Prevention Win Streak Threshold: <input type="checkbox" id="msAutoEntryLossPreventionToggle" style="margin-left:8px; vertical-align:middle;" /></label>
+            <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
+              <input type="range" id="msAutoEntryWinStreakThresholdSlider" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+              <div id="msAutoEntryWinStreakThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
             </div>
             
             <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0;">
@@ -2228,7 +2400,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             <label for="msMomentumScalpProfitTargetSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Profit Target:</label>
             <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
-              <input type="range" id="msMomentumScalpProfitTargetSlider" min="50" max="100" step="1" value="99" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+              <input type="range" id="msMomentumScalpProfitTargetSlider" min="1" max="50" step="1" value="10" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
               <div id="msMomentumScalpProfitTargetValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
             </div>
             </div>
@@ -4620,6 +4792,21 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   }
 
+  function updateMSAutoEntryWinStreakThresholdDisplay(value) {
+    const display = document.getElementById('msAutoEntryWinStreakThresholdValueDisplay');
+    const slider = document.getElementById('msAutoEntryWinStreakThresholdSlider');
+    if (display && slider) {
+      display.textContent = value;
+      const min = parseInt(slider.min, 10);
+      const max = parseInt(slider.max, 10);
+      const percent = (value - min) / (max - min);
+      const sliderWidth = slider.offsetWidth;
+      const thumbWidth = 16;
+      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
+      display.style.left = `${offset}px`;
+    }
+  }
+
   function updateMSMomentumThresholdDisplay(value) {
     const display = document.getElementById('msMomentumScalpEntryThresholdValueDisplay');
     const slider = document.getElementById('msMomentumScalpEntryThresholdSlider');
@@ -4656,7 +4843,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const display = document.getElementById('msMomentumScalpProfitTargetValueDisplay');
     const slider = document.getElementById('msMomentumScalpProfitTargetSlider');
     if (display && slider) {
-      // Convert from slider value (50-100) to decimal (0.50-1.00) for display
+      // Convert from slider value (1-50) to decimal (0.01-0.50) for display
       const dollars = (parseFloat(value) / 100).toFixed(2);
       display.textContent = dollars;
       const min = parseInt(slider.min, 10);
@@ -5120,6 +5307,7 @@ document.addEventListener('DOMContentLoaded', function() {
   // MOMENTUM SCALP Slider Event Listeners
   const msAutoEntryMinVolumeSlider = document.getElementById('msAutoEntryMinVolumeSlider');
   const msAutoEntryProbabilitySlider = document.getElementById('msAutoEntryProbabilitySlider');
+  const msAutoEntryWinStreakThresholdSlider = document.getElementById('msAutoEntryWinStreakThresholdSlider');
   const msMomentumScalpEntryThresholdSlider = document.getElementById('msMomentumScalpEntryThresholdSlider');
   const msMomentumScalpTrailingStopSlider = document.getElementById('msMomentumScalpTrailingStopSlider');
   const msMomentumScalpProfitTargetSlider = document.getElementById('msMomentumScalpProfitTargetSlider');
@@ -5150,7 +5338,33 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
   
+  if (msAutoEntryWinStreakThresholdSlider) {
+    msAutoEntryWinStreakThresholdSlider.addEventListener('input', function() {
+      if (typeof updateMSAutoEntryWinStreakThresholdDisplay === 'function') {
+        updateMSAutoEntryWinStreakThresholdDisplay(this.value);
+      }
+    });
+    window.addEventListener('resize', function() {
+      if (typeof updateMSAutoEntryWinStreakThresholdDisplay === 'function') {
+        updateMSAutoEntryWinStreakThresholdDisplay(msAutoEntryWinStreakThresholdSlider.value);
+      }
+    });
+  }
+  
   if (msMomentumScalpEntryThresholdSlider) {
+    // Max Price Spread slider value display
+    const msMaxPriceSpreadSlider = document.getElementById('msMaxPriceSpreadSlider');
+    const msMaxPriceSpreadValueDisplay = document.getElementById('msMaxPriceSpreadValueDisplay');
+    if (msMaxPriceSpreadSlider && msMaxPriceSpreadValueDisplay) {
+      msMaxPriceSpreadSlider.addEventListener('input', function() {
+        const value = parseFloat(this.value);
+        msMaxPriceSpreadValueDisplay.textContent = value.toFixed(1);
+        const rect = this.getBoundingClientRect();
+        const percent = ((value - parseFloat(this.min)) / (parseFloat(this.max) - parseFloat(this.min))) * 100;
+        msMaxPriceSpreadValueDisplay.style.left = `${percent}%`;
+      });
+    }
+    
     msMomentumScalpEntryThresholdSlider.addEventListener('input', function() {
       if (typeof updateMSMomentumThresholdDisplay === 'function') {
         updateMSMomentumThresholdDisplay(this.value);
@@ -5240,6 +5454,13 @@ let sliderWidth = 0;
 let minTimeSeconds = 0;
 let maxTimeSeconds = 3600;
 
+// Probability Window Slider (Hourly HTC)
+let probIsDragging = false;
+let probCurrentHandle = null;
+let probSliderWidth = 0;
+let minProbability = 95.00;
+let maxProbability = 100.00;
+
 // Initialize slider
 function initTimeWindowSlider() {
   if (!timeWindowSliderContainer) return;
@@ -5326,6 +5547,235 @@ if (minTimeHandle && maxTimeHandle) {
 // Initialize slider when modal is shown
 function initTimeWindowSliderOnShow() {
   setTimeout(initTimeWindowSlider, 100);
+}
+
+// PROBABILITY WINDOW SLIDER (Hourly HTC)
+const probabilityWindowSliderContainer = document.getElementById('probabilityWindowSliderContainer');
+const minProbabilityHandle = document.getElementById('minProbabilityHandle');
+const maxProbabilityHandle = document.getElementById('maxProbabilityHandle');
+const probabilityWindowRange = document.getElementById('probabilityWindowRange');
+const probabilityWindowMinDisplay = document.getElementById('probabilityWindowMinDisplay');
+const probabilityWindowMaxDisplay = document.getElementById('probabilityWindowMaxDisplay');
+
+// Initialize probability window slider
+function initProbabilityWindowSlider() {
+  if (!probabilityWindowSliderContainer) return;
+  probSliderWidth = probabilityWindowSliderContainer.offsetWidth;
+  updateProbabilityWindowSlider();
+}
+
+// Update probability window slider positions and range
+function updateProbabilityWindowSlider() {
+  if (!probSliderWidth) return;
+  
+  // Enforce minimum separation (0.5%)
+  const MIN_SEPARATION = 0.5;
+  if (maxProbability - minProbability < MIN_SEPARATION) {
+    // If too close, adjust max to maintain minimum separation
+    if (maxProbability < 100) {
+      maxProbability = parseFloat((minProbability + MIN_SEPARATION).toFixed(1));
+    } else {
+      // If max is at 100, adjust min down
+      minProbability = parseFloat((maxProbability - MIN_SEPARATION).toFixed(1));
+    }
+  }
+  
+  const minPercent = (minProbability / 100) * 100;
+  const maxPercent = (maxProbability / 100) * 100;
+  
+  if (minProbabilityHandle) minProbabilityHandle.style.left = `${minPercent}%`;
+  if (maxProbabilityHandle) maxProbabilityHandle.style.left = `${maxPercent}%`;
+  
+  if (probabilityWindowRange) {
+    probabilityWindowRange.style.left = `${minPercent}%`;
+    probabilityWindowRange.style.width = `${maxPercent - minPercent}%`;
+  }
+  
+  if (probabilityWindowMinDisplay) {
+    probabilityWindowMinDisplay.textContent = minProbability.toFixed(1) + '%';
+    probabilityWindowMinDisplay.style.left = `${minPercent}%`;
+  }
+  if (probabilityWindowMaxDisplay) {
+    probabilityWindowMaxDisplay.textContent = maxProbability.toFixed(1) + '%';
+    probabilityWindowMaxDisplay.style.left = `${maxPercent}%`;
+  }
+}
+
+// Handle mouse events for probability window slider
+function handleProbMouseDown(e) {
+  probIsDragging = true;
+  probCurrentHandle = e.target;
+  document.addEventListener('mousemove', handleProbMouseMove);
+  document.addEventListener('mouseup', handleProbMouseUp);
+  e.preventDefault();
+}
+
+function handleProbMouseMove(e) {
+  if (!probIsDragging || !probCurrentHandle) return;
+  
+  const rect = probabilityWindowSliderContainer.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
+  const probability = parseFloat((Math.round(percent * 10) / 10).toFixed(1)); // Round to 1 decimal place and ensure float
+  
+  const MIN_SEPARATION = 0.5; // Minimum separation between min and max (0.5%)
+  
+  if (probCurrentHandle === minProbabilityHandle) {
+    // Ensure min doesn't get too close to max
+    if (probability >= maxProbability - MIN_SEPARATION) {
+      minProbability = parseFloat((maxProbability - MIN_SEPARATION).toFixed(1));
+    } else {
+      minProbability = probability;
+    }
+  } else if (probCurrentHandle === maxProbabilityHandle) {
+    // Ensure max doesn't get too close to min
+    if (probability <= minProbability + MIN_SEPARATION) {
+      maxProbability = parseFloat((minProbability + MIN_SEPARATION).toFixed(1));
+    } else {
+      maxProbability = probability;
+    }
+  }
+  
+  updateProbabilityWindowSlider();
+}
+
+function handleProbMouseUp() {
+  probIsDragging = false;
+  probCurrentHandle = null;
+  document.removeEventListener('mousemove', handleProbMouseMove);
+  document.removeEventListener('mouseup', handleProbMouseUp);
+}
+
+// Add event listeners for probability window slider
+if (minProbabilityHandle && maxProbabilityHandle) {
+  minProbabilityHandle.addEventListener('mousedown', handleProbMouseDown);
+  maxProbabilityHandle.addEventListener('mousedown', handleProbMouseDown);
+}
+
+// MOMENTUM SCALP Probability Window Slider
+let msAskIsDragging = false;
+let msAskCurrentHandle = null;
+let msAskSliderWidth = 0;
+let msMinAsk = 0.0000;
+let msMaxAsk = 0.9800;
+
+function initMSAskWindowSlider() {
+  const msAskWindowSliderContainer = document.getElementById('msAskWindowSliderContainer');
+  if (!msAskWindowSliderContainer) return;
+  msAskSliderWidth = msAskWindowSliderContainer.offsetWidth;
+  updateMSAskWindowSlider();
+  
+  // Set up event listeners if not already set up
+  const msMinAskHandle = document.getElementById('msMinAskHandle');
+  const msMaxAskHandle = document.getElementById('msMaxAskHandle');
+  if (msMinAskHandle && !msMinAskHandle._wired) {
+    msMinAskHandle._wired = true;
+    msMinAskHandle.addEventListener('mousedown', msHandleAskMouseDown);
+    msMinAskHandle.addEventListener('touchstart', msHandleAskMouseDown);
+  }
+  if (msMaxAskHandle && !msMaxAskHandle._wired) {
+    msMaxAskHandle._wired = true;
+    msMaxAskHandle.addEventListener('mousedown', msHandleAskMouseDown);
+    msMaxAskHandle.addEventListener('touchstart', msHandleAskMouseDown);
+  }
+}
+
+function updateMSAskWindowSlider() {
+  if (!msAskSliderWidth) return;
+  
+  // Enforce minimum separation (0.01 = 1 cent)
+  const MIN_SEPARATION = 0.01;
+  if (msMaxAsk - msMinAsk < MIN_SEPARATION) {
+    // If too close, adjust max to maintain minimum separation
+    if (msMaxAsk < 1.0) {
+      msMaxAsk = parseFloat((msMinAsk + MIN_SEPARATION).toFixed(4));
+    } else {
+      // If max is at 1.0, adjust min down
+      msMinAsk = parseFloat((msMaxAsk - MIN_SEPARATION).toFixed(4));
+    }
+  }
+  
+  const msMinAskHandle = document.getElementById('msMinAskHandle');
+  const msMaxAskHandle = document.getElementById('msMaxAskHandle');
+  const msAskWindowRange = document.getElementById('msAskWindowRange');
+  const msAskWindowMinDisplay = document.getElementById('msAskWindowMinDisplay');
+  const msAskWindowMaxDisplay = document.getElementById('msAskWindowMaxDisplay');
+  
+  // Convert ask prices (0.0000-1.0000) to percentages (0-100)
+  const minPercent = (msMinAsk / 1.0) * 100;
+  const maxPercent = (msMaxAsk / 1.0) * 100;
+  
+  if (msMinAskHandle) msMinAskHandle.style.left = `${minPercent}%`;
+  if (msMaxAskHandle) msMaxAskHandle.style.left = `${maxPercent}%`;
+  
+  if (msAskWindowRange) {
+    msAskWindowRange.style.left = `${minPercent}%`;
+    msAskWindowRange.style.width = `${maxPercent - minPercent}%`;
+  }
+  
+  if (msAskWindowMinDisplay) {
+    msAskWindowMinDisplay.textContent = msMinAsk.toFixed(4);
+    msAskWindowMinDisplay.style.left = `${minPercent}%`;
+  }
+  if (msAskWindowMaxDisplay) {
+    msAskWindowMaxDisplay.textContent = msMaxAsk.toFixed(4);
+    msAskWindowMaxDisplay.style.left = `${maxPercent}%`;
+  }
+}
+
+function msHandleAskMouseDown(e) {
+  msAskIsDragging = true;
+  msAskCurrentHandle = e.target;
+  document.addEventListener('mousemove', msHandleAskMouseMove);
+  document.addEventListener('mouseup', msHandleAskMouseUp);
+  document.addEventListener('touchmove', msHandleAskMouseMove);
+  document.addEventListener('touchend', msHandleAskMouseUp);
+  e.preventDefault();
+}
+
+function msHandleAskMouseMove(e) {
+  if (!msAskIsDragging || !msAskCurrentHandle) return;
+  
+  const msAskWindowSliderContainer = document.getElementById('msAskWindowSliderContainer');
+  if (!msAskWindowSliderContainer) return;
+  
+  const rect = msAskWindowSliderContainer.getBoundingClientRect();
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const x = clientX - rect.left;
+  const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
+  // Convert percent (0-100) to ask price (0.0000-1.0000) with 4 decimal places
+  const askPrice = parseFloat((percent / 100).toFixed(4));
+  
+  const MIN_SEPARATION = 0.01; // Minimum separation between min and max (0.01 = 1 cent)
+  const msMinAskHandle = document.getElementById('msMinAskHandle');
+  const msMaxAskHandle = document.getElementById('msMaxAskHandle');
+  
+  if (msAskCurrentHandle === msMinAskHandle) {
+    // Ensure min doesn't get too close to max
+    if (askPrice >= msMaxAsk - MIN_SEPARATION) {
+      msMinAsk = parseFloat((msMaxAsk - MIN_SEPARATION).toFixed(4));
+    } else {
+      msMinAsk = askPrice;
+    }
+  } else if (msAskCurrentHandle === msMaxAskHandle) {
+    // Ensure max doesn't get too close to min
+    if (askPrice <= msMinAsk + MIN_SEPARATION) {
+      msMaxAsk = parseFloat((msMinAsk + MIN_SEPARATION).toFixed(4));
+    } else {
+      msMaxAsk = askPrice;
+    }
+  }
+  
+  updateMSAskWindowSlider();
+}
+
+function msHandleAskMouseUp() {
+  msAskIsDragging = false;
+  msAskCurrentHandle = null;
+  document.removeEventListener('mousemove', msHandleAskMouseMove);
+  document.removeEventListener('mouseup', msHandleAskMouseUp);
+  document.removeEventListener('touchmove', msHandleAskMouseMove);
+  document.removeEventListener('touchend', msHandleAskMouseUp);
 }
 
 // MOMENTUM SCALP Time Window Slider

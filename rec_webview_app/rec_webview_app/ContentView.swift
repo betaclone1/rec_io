@@ -1,7 +1,6 @@
 import SwiftUI
 import WebKit
 import SafariServices
-import SafariServices
 
 struct WebView: UIViewRepresentable {
     let url: URL
@@ -17,8 +16,6 @@ struct WebView: UIViewRepresentable {
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         
         // Additional webview input compatibility settings
-        configuration.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
-        configuration.preferences.setValue(true, forKey: "allowUniversalAccessFromFileURLs")
         configuration.suppressesIncrementalRendering = false
         configuration.allowsAirPlayForMediaPlayback = false
         
@@ -31,13 +28,15 @@ struct WebView: UIViewRepresentable {
         
         // Webview input compatibility fixes
         webView.isOpaque = false
-        webView.backgroundColor = UIColor.clear
+        webView.backgroundColor = UIColor.black
         webView.scrollView.keyboardDismissMode = .onDrag
         webView.allowsBackForwardNavigationGestures = false
         
         // Enable text selection and interaction
         webView.allowsLinkPreview = false
         webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.scrollView.contentInset = .zero
+        webView.scrollView.scrollIndicatorInsets = .zero
         
         print("🔧 WebView configured for URL: \(url.absoluteString)")
         return webView
@@ -76,6 +75,31 @@ struct WebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             print("✅ Finished loading URL: \(webView.url?.absoluteString ?? "unknown")")
+            
+            // Inject CSS/JS to remove extra bottom padding inside the page so the in-page menu can sit at the true bottom.
+            let js = """
+            (function() {
+                try {
+                    var html = document.documentElement;
+                    var body = document.body;
+                    if (!html || !body) { return; }
+                    html.style.margin = '0';
+                    html.style.padding = '0';
+                    body.style.margin = '0';
+                    body.style.paddingBottom = '0';
+                    body.style.marginBottom = '0';
+                } catch (e) {
+                    console.log('rec_webview_app: CSS inject error', e);
+                }
+            })();
+            """
+            webView.evaluateJavaScript(js) { result, error in
+                if let error = error {
+                    print("❌ JS injection error: \(error.localizedDescription)")
+                } else {
+                    print("🔧 JS injection applied to remove bottom padding.")
+                }
+            }
         }
         
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
@@ -87,8 +111,7 @@ struct WebView: UIViewRepresentable {
 
 struct ContentView: View {
     var body: some View {
-        WebView(url: resolvedURL)
-            .ignoresSafeArea()
+        WebView(url: resolvedURL).ignoresSafeArea(.container, edges: [.bottom]).background(Color.black)
     }
 
     private var resolvedURL: URL {
@@ -105,4 +128,3 @@ struct ContentView: View {
         return URL(string: urlString)!
     }
 }
-

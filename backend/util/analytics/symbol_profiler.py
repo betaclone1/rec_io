@@ -52,6 +52,7 @@ class SymbolProfiler:
         self.source_table = f"historical_data.{self.symbol}_price_history"
         self.momentum_profile_table = f"analytics.{self.symbol}_momentum_profile"
         self.price_profile_table = f"analytics.{self.symbol}_price_profile"
+        self.volatility_profile_table = f"analytics.{self.symbol}_volatility_profile"
         
         logger.info(f"✅ Initialized symbol profiler for {self.symbol.upper()}")
     
@@ -642,10 +643,32 @@ class SymbolProfiler:
                 conn.commit()
                 logger.info(f"✅ Added momentum_percentile column")
             
+            # Get the latest momentum profile table (with date suffix)
+            from datetime import datetime
+            date_str = datetime.now().strftime("%Y%m%d")
+            profile_table = f"{self.momentum_profile_table}_{date_str}"
+            
+            # Check if profile table exists, if not try to find the most recent one
+            cursor.execute(f"""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'analytics' 
+                AND table_name LIKE '{self.symbol}_momentum_profile_%'
+                ORDER BY table_name DESC
+                LIMIT 1
+            """)
+            
+            profile_result = cursor.fetchone()
+            if profile_result:
+                profile_table = f"analytics.{profile_result[0]}"
+            else:
+                # Try without date suffix as fallback
+                profile_table = self.momentum_profile_table
+            
             # Load momentum profile data for percentile mapping
             cursor.execute(f"""
                 SELECT percentile, momentum_value
-                FROM {self.momentum_profile_table}
+                FROM {profile_table}
                 ORDER BY percentile
             """)
             
@@ -659,12 +682,11 @@ class SymbolProfiler:
                 percentile, momentum_value = row
                 percentile_mapping[momentum_value] = percentile
             
-            # Get rows that need momentum_percentile assignment
+            # Get ALL rows that need momentum_percentile assignment (overwrite all, not just NULLs)
             query = f"""
                 SELECT timestamp, momentum
                 FROM {self.source_table}
-                WHERE momentum IS NOT NULL 
-                AND momentum_percentile IS NULL
+                WHERE momentum IS NOT NULL
             """
             
             params = []
@@ -688,7 +710,20 @@ class SymbolProfiler:
                 logger.info(f"ℹ️ No rows need momentum_percentile assignment for {self.symbol.upper()}")
                 return 0
             
-            logger.info(f"📊 Found {len(rows_to_update)} rows needing momentum_percentile assignment")
+            logger.info(f"📊 Found {len(rows_to_update)} rows for momentum_percentile assignment")
+            
+            # First, set all momentum_percentile to NULL to ensure clean overwrite
+            update_query = f"UPDATE {self.source_table} SET momentum_percentile = NULL WHERE momentum IS NOT NULL"
+            if start_date or end_date:
+                update_query += " AND"
+                if start_date:
+                    update_query += " timestamp >= %s"
+                if end_date:
+                    if start_date:
+                        update_query += " AND"
+                    update_query += " timestamp <= %s"
+            cursor.execute(update_query, params)
+            logger.info(f"📊 Cleared existing momentum_percentile values for {cursor.rowcount} rows")
             
             # Process rows in batches
             batch_size = 1000
@@ -729,6 +764,457 @@ class SymbolProfiler:
             
         except Exception as e:
             logger.error(f"❌ Error assigning momentum percentiles: {e}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    def load_volatility_data(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
+        """
+        Load volatility data from the historical price table.
+        
+        Args:
+            start_date: Optional start date filter (YYYY-MM-DD)
+            end_date: Optional end date filter (YYYY-MM-DD)
+            
+        Returns:
+            DataFrame with timestamp and volatility data
+        """
+        conn = self.get_postgresql_connection()
+        if not conn:
+            raise Exception("Failed to connect to PostgreSQL")
+        
+        try:
+            cursor = conn.cursor()
+            
+            # Check if volatility column exists
+            cursor.execute(f"""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_schema = 'historical_data' 
+                AND table_name = '{self.symbol}_price_history' 
+                AND column_name = 'volatility'
+            """)
+            
+            if not cursor.fetchone():
+                logger.warning(f"⚠️ Volatility column does not exist in {self.source_table}")
+                return pd.DataFrame()
+            
+            # Build query with optional date filters
+            query = f"""
+                SELECT timestamp, volatility
+                FROM {self.source_table}
+                WHERE volatility IS NOT NULL
+            """
+            
+            params = []
+            if start_date or end_date:
+                query += " AND"
+                if start_date:
+                    query += " timestamp >= %s"
+                    params.append(start_date)
+                if end_date:
+                    if start_date:
+                        query += " AND"
+                    query += " timestamp <= %s"
+                    params.append(end_date)
+            
+            query += " ORDER BY timestamp"
+            
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            
+            if not rows:
+                logger.warning(f"⚠️ No volatility data found for {self.symbol}")
+                return pd.DataFrame()
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(rows, columns=['timestamp', 'volatility'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df['volatility'] = df['volatility'].astype(float)
+            
+            logger.info(f"📊 Loaded {len(df)} volatility records from {self.symbol} table")
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error loading volatility data: {e}")
+            return pd.DataFrame()
+        finally:
+            conn.close()
+    
+    def calculate_volatility_percentile_profile(self, df: pd.DataFrame, weights: np.ndarray) -> pd.DataFrame:
+        """
+        Calculate percentile-based volatility profile.
+        Uses positive percentiles (0.5 to 99.5) since volatility is always positive.
+        
+        Args:
+            df: DataFrame with volatility data
+            weights: Array of time weights
+            
+        Returns:
+            DataFrame with percentile profile
+        """
+        volatility_values = df['volatility'].values
+        
+        # Calculate weighted statistics
+        weighted_mean = np.average(volatility_values, weights=weights)
+        weighted_std = np.sqrt(np.average((volatility_values - weighted_mean)**2, weights=weights))
+        
+        # Calculate percentiles (0.5th to 99.5th percentile in 0.5 increments)
+        raw_percentiles = np.arange(0.5, 100, 0.5)  # 0.5, 1.0, 1.5, ..., 99.5
+        
+        # Calculate weighted percentiles
+        weighted_percentiles = []
+        for p in raw_percentiles:
+            # Use weighted quantile calculation
+            sorted_indices = np.argsort(volatility_values)
+            sorted_weights = weights[sorted_indices]
+            sorted_values = volatility_values[sorted_indices]
+            
+            # Calculate cumulative weights
+            cumsum_weights = np.cumsum(sorted_weights)
+            
+            # Find the index where cumulative weight reaches the percentile
+            target_weight = p / 100.0
+            idx = np.searchsorted(cumsum_weights, target_weight)
+            
+            if idx >= len(sorted_values):
+                percentile_value = sorted_values[-1]
+            else:
+                percentile_value = sorted_values[idx]
+            
+            weighted_percentiles.append(percentile_value)
+        
+        # For volatility, use positive percentiles (0.5 to 99.5)
+        # No centering transformation needed
+        
+        # Create profile DataFrame
+        profile_df = pd.DataFrame({
+            'percentile': raw_percentiles,  # Positive percentiles (0.5 to 99.5)
+            'volatility_value': weighted_percentiles,
+            'deviation_from_mean': [p - weighted_mean for p in weighted_percentiles],
+            'z_score': [(p - weighted_mean) / weighted_std for p in weighted_percentiles]
+        })
+        
+        # Add summary statistics
+        profile_df['weighted_mean'] = weighted_mean
+        profile_df['weighted_std'] = weighted_std
+        
+        logger.info(f"📈 Calculated volatility percentile profile: mean={weighted_mean:.6f}, std={weighted_std:.6f}")
+        return profile_df
+    
+    def create_volatility_profile_table(self):
+        """Create the volatility profile table in the analytics schema."""
+        conn = self.get_postgresql_connection()
+        if not conn:
+            raise Exception("Failed to connect to PostgreSQL")
+        
+        try:
+            cursor = conn.cursor()
+            
+            # Get current date for table name
+            from datetime import datetime
+            date_str = datetime.now().strftime("%Y%m%d")
+            table_name = f"{self.volatility_profile_table}_{date_str}"
+            
+            # Create the profile table
+            create_table_sql = f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                percentile NUMERIC(5,1) PRIMARY KEY,
+                volatility_value NUMERIC(15,6) NOT NULL,
+                deviation_from_mean NUMERIC(15,6) NOT NULL,
+                z_score NUMERIC(15,6) NOT NULL,
+                weighted_mean NUMERIC(15,6) NOT NULL,
+                weighted_std NUMERIC(15,6) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+            
+            cursor.execute(create_table_sql)
+            conn.commit()
+            
+            logger.info(f"✅ Created/verified table: {table_name}")
+            return table_name
+            
+        except Exception as e:
+            logger.error(f"❌ Error creating volatility profile table: {e}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    def insert_volatility_profile_data(self, profile_df: pd.DataFrame, table_name: str):
+        """Insert the calculated volatility profile data into the database."""
+        conn = self.get_postgresql_connection()
+        if not conn:
+            raise Exception("Failed to connect to PostgreSQL")
+        
+        try:
+            cursor = conn.cursor()
+            
+            # Clear existing data
+            cursor.execute(f"DELETE FROM {table_name}")
+            logger.info(f"Cleared existing data from {table_name}")
+            
+            # Insert new profile data
+            inserted_count = 0
+            for idx, row in profile_df.iterrows():
+                try:
+                    # Convert values to proper types
+                    percentile = float(row['percentile'])
+                    volatility_value = float(row['volatility_value'])
+                    deviation_from_mean = float(row['deviation_from_mean'])
+                    z_score = float(row['z_score'])
+                    weighted_mean = float(row['weighted_mean'])
+                    weighted_std = float(row['weighted_std'])
+                    
+                    cursor.execute(f"""
+                        INSERT INTO {table_name} 
+                        (percentile, volatility_value, deviation_from_mean, z_score, weighted_mean, weighted_std)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    """, (percentile, volatility_value, deviation_from_mean, z_score, weighted_mean, weighted_std))
+                    
+                    inserted_count += 1
+                    
+                    # Log progress every 50 records
+                    if inserted_count % 50 == 0:
+                        logger.info(f"Inserted {inserted_count} records...")
+                        
+                except Exception as row_error:
+                    logger.error(f"❌ Error inserting row {idx}: {row_error}")
+                    logger.error(f"Row data: {row.to_dict()}")
+                    continue
+            
+            conn.commit()
+            logger.info(f"✅ Inserted {inserted_count} volatility profile records into {table_name}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error inserting volatility profile data: {e}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    
+    def generate_volatility_profile(self, start_date: str = None, end_date: str = None):
+        """
+        Generate the complete volatility profile.
+        
+        Args:
+            start_date: Optional start date filter (YYYY-MM-DD)
+            end_date: Optional end date filter (YYYY-MM-DD)
+        """
+        logger.info(f"🚀 Starting volatility profile generation for {self.symbol.upper()}")
+        
+        try:
+            # Load volatility data
+            df = self.load_volatility_data(start_date, end_date)
+            
+            if df.empty:
+                raise Exception(f"No volatility data found for {self.symbol}")
+            
+            # Calculate time weights
+            weights = self.calculate_time_weights(df)
+            
+            # Calculate percentile profile
+            profile_df = self.calculate_volatility_percentile_profile(df, weights)
+            
+            # Create table if needed
+            table_name = self.create_volatility_profile_table()
+            
+            # Insert profile data
+            self.insert_volatility_profile_data(profile_df, table_name)
+            
+            # Log summary statistics
+            logger.info(f"📊 Volatility Profile Summary:")
+            logger.info(f"   - Total records analyzed: {len(df)}")
+            logger.info(f"   - Date range: {df['timestamp'].min()} to {df['timestamp'].max()}")
+            logger.info(f"   - Volatility range: {df['volatility'].min():.6f} to {df['volatility'].max():.6f}")
+            logger.info(f"   - Weighted mean: {profile_df['weighted_mean'].iloc[0]:.6f}")
+            logger.info(f"   - Weighted std: {profile_df['weighted_std'].iloc[0]:.6f}")
+            logger.info(f"   - Percentiles calculated: 0.5 to 99.5 (0.5 increments)")
+            
+            return profile_df
+            
+        except Exception as e:
+            logger.error(f"❌ Error generating volatility profile: {e}")
+            raise
+    
+    def assign_volatility_percentiles(self, start_date: str = None, end_date: str = None):
+        """
+        Assign volatility percentile values to ALL rows in the master price table.
+        OVERWRITES all existing volatility_percentile values (not just NULLs).
+        
+        Args:
+            start_date: Optional start date filter (YYYY-MM-DD)
+            end_date: Optional end date filter (YYYY-MM-DD)
+        """
+        logger.info(f"🚀 Starting volatility percentile assignment for {self.symbol.upper()}")
+        
+        conn = self.get_postgresql_connection()
+        if not conn:
+            raise Exception("Failed to connect to PostgreSQL")
+        
+        try:
+            cursor = conn.cursor()
+            
+            # First, check if volatility_percentile column exists, create if not
+            cursor.execute(f"""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_schema = 'historical_data' 
+                AND table_name = '{self.symbol}_price_history' 
+                AND column_name = 'volatility_percentile'
+            """)
+            
+            if not cursor.fetchone():
+                logger.info(f"📊 Adding volatility_percentile column to {self.source_table}")
+                cursor.execute(f"""
+                    ALTER TABLE {self.source_table} 
+                    ADD COLUMN volatility_percentile DECIMAL(5,1)
+                """)
+                conn.commit()
+                logger.info(f"✅ Added volatility_percentile column")
+            
+            # Get the latest volatility profile table
+            from datetime import datetime
+            date_str = datetime.now().strftime("%Y%m%d")
+            profile_table = f"{self.volatility_profile_table}_{date_str}"
+            
+            # Check if profile table exists, if not try to find the most recent one
+            cursor.execute(f"""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'analytics' 
+                AND table_name LIKE '{self.symbol}_volatility_profile_%'
+                ORDER BY table_name DESC
+                LIMIT 1
+            """)
+            
+            profile_result = cursor.fetchone()
+            if profile_result:
+                profile_table = f"analytics.{profile_result[0]}"
+            else:
+                raise Exception(f"No volatility profile table found for {self.symbol}")
+            
+            # Load volatility profile data for percentile mapping
+            cursor.execute(f"""
+                SELECT percentile, volatility_value
+                FROM {profile_table}
+                ORDER BY percentile
+            """)
+            
+            profile_data = cursor.fetchall()
+            if not profile_data:
+                raise Exception(f"No volatility profile data found in {profile_table}")
+            
+            # Create percentile mapping dictionary
+            percentile_mapping = {}
+            for row in profile_data:
+                percentile, volatility_value = row
+                percentile_mapping[volatility_value] = percentile
+            
+            # Get ALL rows that need volatility_percentile assignment (overwrite all, not just NULLs)
+            query = f"""
+                SELECT timestamp, volatility
+                FROM {self.source_table}
+                WHERE volatility IS NOT NULL
+            """
+            
+            params = []
+            if start_date or end_date:
+                query += " AND"
+                if start_date:
+                    query += " timestamp >= %s"
+                    params.append(start_date)
+                if end_date:
+                    if start_date:
+                        query += " AND"
+                    query += " timestamp <= %s"
+                    params.append(end_date)
+            
+            query += " ORDER BY timestamp"
+            
+            cursor.execute(query, params)
+            rows_to_update = cursor.fetchall()
+            
+            if not rows_to_update:
+                logger.info(f"ℹ️ No rows need volatility_percentile assignment for {self.symbol.upper()}")
+                return 0
+            
+            logger.info(f"📊 Found {len(rows_to_update)} rows for volatility_percentile assignment")
+            
+            # First, set all volatility_percentile to NULL to ensure clean overwrite
+            update_query = f"UPDATE {self.source_table} SET volatility_percentile = NULL WHERE volatility IS NOT NULL"
+            if start_date or end_date:
+                update_query += " AND"
+                if start_date:
+                    update_query += " timestamp >= %s"
+                if end_date:
+                    if start_date:
+                        update_query += " AND"
+                    update_query += " timestamp <= %s"
+            cursor.execute(update_query, params)
+            logger.info(f"📊 Cleared existing volatility_percentile values for {cursor.rowcount} rows")
+            
+            # Process rows in batches
+            batch_size = 1000
+            total_updated = 0
+            
+            for i in range(0, len(rows_to_update), batch_size):
+                batch = rows_to_update[i:i + batch_size]
+                
+                # Find the closest volatility value in the profile for each row using linear interpolation
+                updates = []
+                for timestamp, volatility in batch:
+                    if volatility is None:
+                        continue
+                    
+                    # Use linear interpolation to find percentile
+                    sorted_profile = sorted(percentile_mapping.items())
+                    volatility_values = [v for v, _ in sorted_profile]
+                    percentiles = [p for _, p in sorted_profile]
+                    
+                    # Find where this volatility value fits
+                    if volatility <= volatility_values[0]:
+                        assigned_percentile = percentiles[0]
+                    elif volatility >= volatility_values[-1]:
+                        assigned_percentile = percentiles[-1]
+                    else:
+                        # Linear interpolation
+                        for j in range(len(volatility_values) - 1):
+                            if volatility_values[j] <= volatility <= volatility_values[j + 1]:
+                                v0, v1 = volatility_values[j], volatility_values[j + 1]
+                                p0, p1 = percentiles[j], percentiles[j + 1]
+                                # Interpolate
+                                t = (volatility - v0) / (v1 - v0)
+                                assigned_percentile = p0 + t * (p1 - p0)
+                                break
+                        else:
+                            assigned_percentile = percentiles[-1]
+                    
+                    updates.append((assigned_percentile, timestamp))
+                
+                # Update the batch
+                if updates:
+                    cursor.executemany(f"""
+                        UPDATE {self.source_table} 
+                        SET volatility_percentile = %s 
+                        WHERE timestamp = %s
+                    """, updates)
+                    
+                    batch_updated = len(updates)
+                    total_updated += batch_updated
+                    
+                    logger.info(f"📊 Updated batch {i//batch_size + 1}: {batch_updated} rows")
+            
+            conn.commit()
+            logger.info(f"✅ Successfully assigned volatility_percentile to {total_updated} rows")
+            
+            return total_updated
+            
+        except Exception as e:
+            logger.error(f"❌ Error assigning volatility percentiles: {e}")
             conn.rollback()
             raise
         finally:

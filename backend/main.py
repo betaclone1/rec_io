@@ -2659,13 +2659,14 @@ async def get_auto_entry_settings(monitor_id: str = None):
         with conn.cursor() as cursor:
             # Get settings directly from monitor_list table
             cursor.execute("""
-                SELECT min_probability, min_differential, max_differential, min_time, max_time, allow_re_entry,
+                SELECT min_probability, max_probability, min_differential, max_differential, min_time, max_time, allow_re_entry,
                        spike_alert_enabled, spike_alert_momentum_threshold, 
                        spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
                        current_probability, min_ttc_seconds, momentum_spike_enabled, 
                        momentum_spike_threshold, verification_period_enabled, verification_period_seconds,
                        min_volume, win_streak_threshold, performance_based_allocation,
-                       momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target
+                       momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target,
+                       min_ask, max_ask, loss_prevention_toggle, max_price_spread
                 FROM users.monitor_list_0001 WHERE id = %s
             """, (monitor_id,))
             result = cursor.fetchone()
@@ -2674,28 +2675,33 @@ async def get_auto_entry_settings(monitor_id: str = None):
             
             if result:
                 return {
-                    "min_probability": result[0],
-                    "min_differential": float(result[1]) if result[1] else 0.25,
-                    "max_differential": float(result[2]) if result[2] is not None else None,
-                    "min_time": result[3],
-                    "max_time": result[4],
-                    "allow_re_entry": result[5],
-                    "spike_alert_enabled": result[6],
-                    "spike_alert_momentum_threshold": result[7],
-                    "spike_alert_cooldown_threshold": result[8],
-                    "spike_alert_cooldown_minutes": result[9],
-                    "current_probability": result[10],
-                    "min_ttc_seconds": result[11],
-                    "momentum_spike_enabled": result[12],
-                    "momentum_spike_threshold": result[13],
-                    "verification_period_enabled": result[14],
-                    "verification_period_seconds": result[15],
-                    "min_volume": result[16],
-                    "win_streak_threshold": result[17],
-                    "performance_based_allocation": result[18],
-                    "momentum_scalp_entry_threshold": float(result[19]) if result[19] is not None else None,
-                    "momentum_scalp_trailing_stop_amount": float(result[20]) if result[20] is not None else None,
-                    "momentum_scalp_profit_target": float(result[21]) if result[21] is not None else None
+                    "min_probability": float(result[0]) if result[0] is not None else 95.00,
+                    "max_probability": float(result[1]) if result[1] is not None else 100.00,
+                    "min_differential": float(result[2]) if result[2] else 0.25,
+                    "max_differential": float(result[3]) if result[3] is not None else None,
+                    "min_time": result[4],
+                    "max_time": result[5],
+                    "allow_re_entry": result[6],
+                    "spike_alert_enabled": result[7],
+                    "spike_alert_momentum_threshold": result[8],
+                    "spike_alert_cooldown_threshold": result[9],
+                    "spike_alert_cooldown_minutes": result[10],
+                    "current_probability": result[11],
+                    "min_ttc_seconds": result[12],
+                    "momentum_spike_enabled": result[13],
+                    "momentum_spike_threshold": result[14],
+                    "verification_period_enabled": result[15],
+                    "verification_period_seconds": result[16],
+                    "min_volume": result[17],
+                    "win_streak_threshold": result[18],
+                    "performance_based_allocation": result[19],
+                    "momentum_scalp_entry_threshold": float(result[20]) if result[20] is not None else None,
+                    "momentum_scalp_trailing_stop_amount": float(result[21]) if result[21] is not None else None,
+                    "momentum_scalp_profit_target": float(result[22]) if result[22] is not None else None,
+                    "min_ask": float(result[23]) if result[23] is not None else 0.0000,
+                    "max_ask": float(result[24]) if result[24] is not None else 0.9800,
+                    "loss_prevention_toggle": bool(result[25]) if result[25] is not None else True,
+                    "max_price_spread": float(result[26]) if result[26] is not None else 0.0300
                 }
             else:
                 return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
@@ -2737,7 +2743,10 @@ async def set_auto_entry_settings(request: Request):
             # Auto entry parameters
             if "min_probability" in data:
                 update_fields.append("min_probability = %s")
-                update_values.append(int(data["min_probability"]))
+                update_values.append(float(data["min_probability"]))
+            if "max_probability" in data:
+                update_fields.append("max_probability = %s")
+                update_values.append(float(data["max_probability"]))
             if "min_differential" in data:
                 update_fields.append("min_differential = %s")
                 update_values.append(float(data["min_differential"]))
@@ -2805,6 +2814,18 @@ async def set_auto_entry_settings(request: Request):
             if "momentum_scalp_profit_target" in data:
                 update_fields.append("momentum_scalp_profit_target = %s")
                 update_values.append(float(data["momentum_scalp_profit_target"]))
+            if "min_ask" in data:
+                update_fields.append("min_ask = %s")
+                update_values.append(float(data["min_ask"]))
+            if "max_ask" in data:
+                update_fields.append("max_ask = %s")
+                update_values.append(float(data["max_ask"]))
+            if "loss_prevention_toggle" in data:
+                update_fields.append("loss_prevention_toggle = %s")
+                update_values.append(bool(data["loss_prevention_toggle"]))
+            if "max_price_spread" in data:
+                update_fields.append("max_price_spread = %s")
+                update_values.append(float(data["max_price_spread"]))
             
             if update_fields:
                 # Update the monitor in monitor_list table

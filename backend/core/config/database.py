@@ -77,7 +77,7 @@ def init_database():
                 symbol_open DECIMAL(10,4),
                 symbol_close DECIMAL(10,4),
                 momentum INTEGER,
-                volatility DECIMAL(10,4),
+                volatility_percentile NUMERIC(5,1),
                 win_loss VARCHAR(10),
                 ticker VARCHAR(100),
                 ticket_id VARCHAR(100) UNIQUE,
@@ -94,7 +94,8 @@ def init_database():
                 high_price DECIMAL(10,4),
                 low_price DECIMAL(10,4),
                 loss_prevention BOOLEAN DEFAULT FALSE,
-                multiplier DECIMAL(10,2)
+                multiplier DECIMAL(10,2),
+                price_spread DECIMAL(6,4)
             );
         """)
 
@@ -118,6 +119,41 @@ def init_database():
                       AND column_name = 'multiplier'
                 ) THEN
                     ALTER TABLE users.trades_0001 ADD COLUMN multiplier DECIMAL(10,2);
+                END IF;
+
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'price_spread'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN price_spread DECIMAL(6,4);
+                END IF;
+
+                -- Migrate from volatility to volatility_percentile
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'volatility'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'volatility_percentile'
+                ) THEN
+                    ALTER TABLE users.trades_0001 DROP COLUMN volatility;
+                    ALTER TABLE users.trades_0001 ADD COLUMN volatility_percentile NUMERIC(5,1);
+                END IF;
+
+                -- Ensure volatility_percentile exists (for new databases)
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'volatility_percentile'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN volatility_percentile NUMERIC(5,1);
                 END IF;
             END
             $$;
@@ -176,12 +212,14 @@ def init_database():
                 win_streak INTEGER DEFAULT 0,
                 win_streak_threshold INTEGER DEFAULT 22,
                 loss_prevention VARCHAR(50) DEFAULT 'none',
+                loss_prevention_toggle BOOLEAN DEFAULT TRUE,
                 last_processed_cycle VARCHAR(100),
                 current_contract TEXT,
                 current_weekly_cycle SMALLINT,
                 current_performance_modifier NUMERIC(10,2) DEFAULT 1.00,
                 current_max_pct_exposure NUMERIC(10,2) DEFAULT 0.25,
                 performance_based_allocation BOOLEAN NOT NULL DEFAULT FALSE,
+                max_price_spread NUMERIC(6,4) DEFAULT 0.0300,
                 created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
@@ -356,6 +394,33 @@ def init_database():
                 momentum DECIMAL(10,4),
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             );
+        """)
+        
+        # Ensure loss_prevention_toggle column exists for monitor_list_0001
+        cursor.execute("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'monitor_list_0001'
+                      AND column_name = 'loss_prevention_toggle'
+                ) THEN
+                    ALTER TABLE users.monitor_list_0001 ADD COLUMN loss_prevention_toggle BOOLEAN DEFAULT TRUE;
+                    UPDATE users.monitor_list_0001 SET loss_prevention_toggle = TRUE WHERE loss_prevention_toggle IS NULL;
+                END IF;
+
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'monitor_list_0001'
+                      AND column_name = 'max_price_spread'
+                ) THEN
+                    ALTER TABLE users.monitor_list_0001 ADD COLUMN max_price_spread NUMERIC(6,4) DEFAULT 0.0300;
+                    UPDATE users.monitor_list_0001 SET max_price_spread = 0.0300 WHERE max_price_spread IS NULL;
+                END IF;
+            END
+            $$;
         """)
         
         # Grant privileges

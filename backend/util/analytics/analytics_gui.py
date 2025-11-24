@@ -94,9 +94,11 @@ class AnalyticsGUI:
         steps = [
             ("1. Update Price Logs", "update_price_logs"),
             ("2. Generate Momentum", "generate_momentum"),
+            ("2b. Generate Volatility", "generate_volatility"),
             ("3. Generate Profiles", "generate_profiles"),
-            ("3b. Generate Volatility Profiles", "generate_volatility_profile"),
+            ("3b. Generate Volatility Profiles", "generate_volatility_profiles"),
             ("4. Assign Percentiles", "assign_percentiles"),
+            ("4b. Assign Volatility Percentiles", "assign_volatility_percentiles"),
             ("5. Verify Data", "verify_data"),
             ("6. Archive Fingerprints", "archive_fingerprints"),
             ("7. Generate Fingerprints", "generate_fingerprints"),

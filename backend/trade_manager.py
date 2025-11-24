@@ -145,6 +145,69 @@ def _compute_weekly_cycle(trade_date, hour_idx):
 
     postgres_dow = (normalized_date.weekday() + 1) % 7  # Sunday=0 … Saturday=6
     return (postgres_dow * 24) + hour_idx
+
+def _get_price_spread_from_strike_table(symbol, ticker, side):
+    """Get the price spread for a given ticker and side from the strike table.
+    
+    Args:
+        symbol: The symbol (e.g., 'BTC', 'ETH')
+        ticker: The ticker string (e.g., 'BTC-12345-Y')
+        side: The side ('Y' or 'N', or 'yes' or 'no')
+    
+    Returns:
+        float or None: The price spread (4 decimal places) or None if not found
+    """
+    if not symbol or not ticker or not side:
+        return None
+    
+    try:
+        pg_conn = get_postgresql_connection()
+        if not pg_conn:
+            return None
+        
+        symbol_lower = symbol.lower()
+        
+        # Normalize side: 'Y' or 'yes' -> 'yes', 'N' or 'no' -> 'no'
+        normalized_side = side.upper()
+        if normalized_side == 'Y':
+            side_column = 'yes_price_spread'
+        elif normalized_side == 'N':
+            side_column = 'no_price_spread'
+        else:
+            # Try lowercase
+            normalized_side = side.lower()
+            if normalized_side == 'yes':
+                side_column = 'yes_price_spread'
+            elif normalized_side == 'no':
+                side_column = 'no_price_spread'
+            else:
+                return None
+        
+        # Use sql.Identifier for safe column and table name construction
+        with pg_conn.cursor() as cursor:
+            query = sql.SQL("""
+                SELECT {}
+                FROM live_data.{}
+                WHERE ticker = %s
+                ORDER BY created_at DESC
+                LIMIT 1
+            """).format(
+                sql.Identifier(side_column),
+                sql.Identifier(f'strike_table_{symbol_lower}')
+            )
+            cursor.execute(query, (ticker,))
+            
+            result = cursor.fetchone()
+            pg_conn.close()
+            
+            if result and result[0] is not None:
+                return float(result[0])
+            else:
+                return None
+    except Exception as e:
+        if pg_conn:
+            pg_conn.close()
+        return None
 # Function to get momentum data from PostgreSQL (replacement for archived unified_production_coordinator)
 def get_momentum_data_from_postgresql(symbol):
     """Get current momentum data directly from PostgreSQL for the specified symbol."""
@@ -307,30 +370,38 @@ def insert_trade(trade):
                 # Default multiplier to 1.0 if still None
                 if multiplier_for_db is None:
                     multiplier_for_db = 1.0
+                
+                # Get price spread from strike table
+                ticker = trade.get('ticker')
+                side = trade.get('side')
+                price_spread = None
+                if ticker and side:
+                    price_spread = _get_price_spread_from_strike_table(symbol, ticker, side)
 
                 cursor.execute("""
                     INSERT INTO users.trades_0001 (
                         status, date, time, symbol, market, trade_strategy,
                         contract, strike, side, prob, diff, buy_price, position,
                         sell_price, closed_at, fees, pnl, symbol_open, symbol_close,
-                        momentum, volatility, win_loss, ticker, ticket_id, market_id,
+                        momentum, volatility_percentile, win_loss, ticker, ticket_id, market_id,
                         momentum_percentile, momentum_5s_avg, entry_method, close_method, monitor, bankroll,
-                        hour_idx, weekly_cycle, loss_prevention, multiplier
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        hour_idx, weekly_cycle, loss_prevention, multiplier, price_spread
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """, (
                     trade.get('status', 'pending'), trade['date'], trade['time'], 
                     symbol, trade.get('market', 'Kalshi'), trade.get('trade_strategy', 'Hourly HTC'),
                     contract_name, trade['strike'], trade['side'], trade.get('prob'),
                     trade.get('diff'), trade['buy_price'], trade['position'], None, None,
-                    None, None, symbol_open, None, momentum_for_db, trade.get('volatility'),
+                    None, None, symbol_open, None, momentum_for_db, trade.get('volatility_percentile'),
                     None, trade.get('ticker'), trade.get('ticket_id'), trade.get('market_id', f'{symbol}-USD'),
                     momentum_percentile_for_db, momentum_5s_avg_for_db, trade.get('entry_method', 'manual'), trade.get('close_method'),
                     monitor_key,  # Monitor must be specified - no fallback
                     trade.get('bankroll_allotment_total'),
                     hour_idx_for_db, weekly_cycle_for_db,
                     loss_prevention_flag,
-                    multiplier_for_db
+                    multiplier_for_db,
+                    price_spread
                 ))
                 last_id = cursor.fetchone()[0]
                 pg_conn.commit()
@@ -1382,7 +1453,7 @@ def init_trades_db():
                     symbol_open REAL,
                     symbol_close REAL,
                     momentum REAL,
-                    volatility REAL,
+                    volatility_percentile REAL,
                     win_loss TEXT,
                     ticker TEXT,
                     ticket_id TEXT,
@@ -1886,39 +1957,62 @@ def update_monitor_win_streak(trade_id: int) -> None:
         has_loss = any(trade[1] == 'L' for trade in cycle_trades)
         win_count = sum(1 for trade in cycle_trades if trade[1] == 'W')
         
-        # Get the win_streak_threshold from the database for this monitor
+        # Get the win_streak_threshold and loss_prevention_toggle from the database for this monitor
         with pg_conn.cursor() as cursor:
             cursor.execute(f"""
-                SELECT win_streak_threshold FROM users.monitor_list_{user_number}
+                SELECT win_streak_threshold, loss_prevention_toggle FROM users.monitor_list_{user_number}
                 WHERE id = %s
             """, (monitor_id,))
-            threshold_row = cursor.fetchone()
-            win_streak_threshold = threshold_row[0] if threshold_row and threshold_row[0] is not None else 22
+            config_row = cursor.fetchone()
+            win_streak_threshold = config_row[0] if config_row and config_row[0] is not None else 22
+            loss_prevention_toggle = config_row[1] if config_row and config_row[1] is not None else True
         
         # Update win_streak based on cycle result
         with pg_conn.cursor() as cursor:
             if has_loss:
                 # Any loss in the cycle means win_streak = 0 for this cycle
-                cursor.execute(f"""
-                    UPDATE users.monitor_list_{user_number}
-                    SET win_streak = 0,
-                        loss_prevention = 'one_contract',
-                        last_processed_cycle = %s
-                    WHERE id = %s
-                """, (cycle_id, monitor_id))
+                if loss_prevention_toggle:
+                    # If toggle is TRUE, update loss_prevention based on win streak
+                    cursor.execute(f"""
+                        UPDATE users.monitor_list_{user_number}
+                        SET win_streak = 0,
+                            loss_prevention = 'one_contract',
+                            last_processed_cycle = %s
+                        WHERE id = %s
+                    """, (cycle_id, monitor_id))
+                else:
+                    # If toggle is FALSE, always set loss_prevention to 'off'
+                    cursor.execute(f"""
+                        UPDATE users.monitor_list_{user_number}
+                        SET win_streak = 0,
+                            loss_prevention = 'off',
+                            last_processed_cycle = %s
+                        WHERE id = %s
+                    """, (cycle_id, monitor_id))
                 log(f"🔄 Cycle {cycle_id} for {monitor} had a loss - win_streak reset to 0 (trades: {len(cycle_trades)})")
             else:
                 # All wins in the cycle - increment win_streak by the number of wins
-                cursor.execute(f"""
-                    UPDATE users.monitor_list_{user_number}
-                    SET win_streak = win_streak + %s,
-                        loss_prevention = CASE 
-                            WHEN win_streak + %s >= %s THEN 'off'
-                            ELSE 'one_contract'
-                        END,
-                        last_processed_cycle = %s
-                    WHERE id = %s
-                """, (win_count, win_count, win_streak_threshold, cycle_id, monitor_id))
+                if loss_prevention_toggle:
+                    # If toggle is TRUE, update loss_prevention based on win streak threshold
+                    cursor.execute(f"""
+                        UPDATE users.monitor_list_{user_number}
+                        SET win_streak = win_streak + %s,
+                            loss_prevention = CASE 
+                                WHEN win_streak + %s >= %s THEN 'off'
+                                ELSE 'one_contract'
+                            END,
+                            last_processed_cycle = %s
+                        WHERE id = %s
+                    """, (win_count, win_count, win_streak_threshold, cycle_id, monitor_id))
+                else:
+                    # If toggle is FALSE, always set loss_prevention to 'off'
+                    cursor.execute(f"""
+                        UPDATE users.monitor_list_{user_number}
+                        SET win_streak = win_streak + %s,
+                            loss_prevention = 'off',
+                            last_processed_cycle = %s
+                        WHERE id = %s
+                    """, (win_count, cycle_id, monitor_id))
                 log(f"📈 Cycle {cycle_id} for {monitor} all wins - win_streak +{win_count} (trades: {len(cycle_trades)}, threshold: {win_streak_threshold})")
             
             pg_conn.commit()

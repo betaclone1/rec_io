@@ -39,8 +39,34 @@ def create_spx_table(conn):
             close NUMERIC(20,8),
             volume NUMERIC(20,8),
             momentum NUMERIC(10,4),
-            momentum_percentile NUMERIC(5,1)
+            momentum_percentile NUMERIC(5,1),
+            volatility NUMERIC(15,6),
+            volatility_percentile NUMERIC(5,1)
         );
+    """)
+    
+    # Add volatility columns if table exists but columns don't
+    cursor.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_schema = 'historical_data' 
+                AND table_name = 'spx_price_history' 
+                AND column_name = 'volatility'
+            ) THEN
+                ALTER TABLE historical_data.spx_price_history ADD COLUMN volatility NUMERIC(15,6);
+            END IF;
+            
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_schema = 'historical_data' 
+                AND table_name = 'spx_price_history' 
+                AND column_name = 'volatility_percentile'
+            ) THEN
+                ALTER TABLE historical_data.spx_price_history ADD COLUMN volatility_percentile NUMERIC(5,1);
+            END IF;
+        END $$;
     """)
     
     # Create indexes

@@ -11,8 +11,11 @@ import requests
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import argparse
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 import yliveticker
+import numpy as np
+import threading
+import time
 
 # Add the project root to the Python path (permanent scalable fix)
 from backend.util.paths import get_project_root
@@ -73,6 +76,12 @@ POSTGRES_CONFIG = {
 
 # Global momentum profile cache
 MOMENTUM_PROFILES = {}
+
+# Global volatility profile cache
+VOLATILITY_PROFILES = {}
+
+# Global volatility value cache: {symbol: {minute_key: (volatility_value, volatility_percentile)}}
+VOLATILITY_CACHE = {}
 
 def load_momentum_profile(symbol: str) -> Dict[float, float]:
     """Load momentum profile from database and cache it in memory"""
@@ -159,6 +168,93 @@ def calculate_momentum_percentile(symbol: str, momentum_value: float) -> Optiona
     
     for percentile, profile_momentum in profile.items():
         distance = abs(profile_momentum - momentum_value)
+        if distance < min_distance:
+            min_distance = distance
+            closest_percentile = percentile
+    
+    return closest_percentile
+
+def load_volatility_profile(symbol: str) -> Dict[float, float]:
+    """Load volatility profile from database and cache it in memory"""
+    if symbol in VOLATILITY_PROFILES:
+        return VOLATILITY_PROFILES[symbol]
+    
+    try:
+        conn = get_postgres_connection()
+        cursor = conn.cursor()
+        
+        # Find the latest dated volatility profile table for this symbol
+        cursor.execute("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'analytics' 
+            AND table_name LIKE %s
+            ORDER BY table_name DESC
+        """, (f"{symbol.lower()}_volatility_profile_%",))
+        
+        results = cursor.fetchall()
+        if not results:
+            print(f"⚠️ No dated volatility profile found for {symbol}")
+            conn.close()
+            return {}
+        
+        # Use the most recent dated table
+        profile_table = f"analytics.{results[0][0]}"
+        print(f"📊 Using volatility profile: {results[0][0]}")
+        
+        cursor.execute(f"SELECT percentile, volatility_value FROM {profile_table} ORDER BY percentile")
+        
+        profile = {}
+        for row in cursor.fetchall():
+            profile[float(row[0])] = float(row[1])
+        
+        conn.close()
+        VOLATILITY_PROFILES[symbol] = profile
+        print(f"✅ Loaded volatility profile for {symbol}: {len(profile)} percentiles")
+        return profile
+        
+    except Exception as e:
+        print(f"❌ Error loading volatility profile for {symbol}: {e}")
+        return {}
+
+def calculate_volatility_percentile(symbol: str, volatility_value: float) -> Optional[float]:
+    """Calculate interpolated percentile for a given volatility value using the cached profile"""
+    if volatility_value is None:
+        return None
+    
+    profile = VOLATILITY_PROFILES.get(symbol)
+    if not profile:
+        profile = load_volatility_profile(symbol)
+        if not profile:
+            return None
+    
+    # Convert profile to sorted lists for interpolation
+    percentiles = sorted(profile.keys())
+    volatility_values = [profile[p] for p in percentiles]
+    
+    # Handle edge cases
+    if volatility_value <= volatility_values[0]:
+        return percentiles[0]
+    if volatility_value >= volatility_values[-1]:
+        return percentiles[-1]
+    
+    # Find the two percentiles to interpolate between
+    for i in range(len(volatility_values) - 1):
+        if volatility_values[i] <= volatility_value <= volatility_values[i + 1]:
+            p1, p2 = percentiles[i], percentiles[i + 1]
+            v1, v2 = volatility_values[i], volatility_values[i + 1]
+            
+            if v2 == v1:
+                return p1
+            
+            interpolated_percentile = p1 + (p2 - p1) * (volatility_value - v1) / (v2 - v1)
+            return round(interpolated_percentile, 1)
+    
+    # Fallback: return closest percentile
+    closest_percentile = None
+    min_distance = float('inf')
+    for percentile, profile_volatility in profile.items():
+        distance = abs(profile_volatility - volatility_value)
         if distance < min_distance:
             min_distance = distance
             closest_percentile = percentile
@@ -408,6 +504,185 @@ def calculate_native_momentum(symbol: str = 'BTC') -> Dict[str, Any]:
         'current_price': get_current_price_from_db(symbol)
     }
 
+def get_minute_candles_for_volatility(symbol: str) -> list:
+    """
+    Get 1-minute OHLC candles from the last 60 minutes using separate connection.
+    Returns list of dicts with keys: open, high, low, close
+    """
+    try:
+        conn = get_postgres_connection()
+        cursor = conn.cursor()
+        
+        # Get current time in EST
+        now = datetime.now(ZoneInfo("America/New_York"))
+        cutoff_time = now - timedelta(minutes=60)
+        cutoff_str = cutoff_time.strftime("%Y-%m-%dT%H:%M:%S")
+        
+        table_name = SYMBOL_CONFIG[symbol]['table_name']
+        
+        # SQL aggregation - returns 60 rows (one per minute)
+        cursor.execute(f"""
+            SELECT 
+                DATE_TRUNC('minute', timestamp::timestamp)::text as minute,
+                MIN(price) as low,
+                MAX(price) as high,
+                (array_agg(price ORDER BY timestamp))[1] as open,
+                (array_agg(price ORDER BY timestamp DESC))[1] as close
+            FROM live_data.{table_name}
+            WHERE timestamp >= %s
+            GROUP BY DATE_TRUNC('minute', timestamp::timestamp)
+            ORDER BY minute
+        """, (cutoff_str,))
+        
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        candles = []
+        for row in rows:
+            candles.append({
+                'open': float(row[3]),
+                'high': float(row[1]),
+                'low': float(row[2]),
+                'close': float(row[4])
+            })
+        
+        return candles
+        
+    except Exception as e:
+        print(f"⚠️ Error getting minute candles for volatility: {e}")
+        return []
+
+def calculate_native_volatility(symbol: str = 'BTC') -> Optional[float]:
+    """
+    Calculate weighted multi-timeframe volatility using True Range (ATR-based approach).
+    Matches the calculation method in volatility_generator_pg.py
+    """
+    try:
+        # Get last 60 minutes of candles
+        candles = get_minute_candles_for_volatility(symbol)
+        
+        if len(candles) < 59:  # Allow 59 candles (current minute might not be complete)
+            return None
+        
+        # Calculate True Range for each candle
+        tr_values = []
+        for i in range(len(candles)):
+            if i == 0:
+                prev_close = candles[0]['open']
+            else:
+                prev_close = candles[i - 1]['close']
+            
+            high = candles[i]['high']
+            low = candles[i]['low']
+            
+            # True Range formula
+            tr = max(
+                high - low,
+                abs(high - prev_close),
+                abs(low - prev_close)
+            )
+            
+            # Convert to percentage
+            if prev_close > 0:
+                tr_values.append(tr / prev_close)
+        
+        if len(tr_values) < 59:  # Need at least 59 candles (current minute might not be complete)
+            return None
+        
+        # Calculate volatility for each timeframe
+        # Use available data (might be 59 or 60 candles)
+        num_candles = len(tr_values)
+        
+        # 1m volatility (last 1 minute) - just the TR value
+        vol_1m = float(tr_values[-1]) if num_candles >= 1 else 0.0
+        
+        # 5m volatility (last 5 minutes) - standard deviation of TR values
+        if num_candles >= 5:
+            tr_5m = tr_values[-5:]
+            vol_5m = float(np.std(tr_5m)) if len(tr_5m) > 1 else float(tr_5m[0] if tr_5m else 0.0)
+        else:
+            vol_5m = 0.0
+        
+        # 15m volatility (last 15 minutes)
+        if num_candles >= 15:
+            tr_15m = tr_values[-15:]
+            vol_15m = float(np.std(tr_15m)) if len(tr_15m) > 1 else float(tr_15m[0] if tr_15m else 0.0)
+        else:
+            vol_15m = 0.0
+        
+        # 30m volatility (last 30 minutes)
+        if num_candles >= 30:
+            tr_30m = tr_values[-30:]
+            vol_30m = float(np.std(tr_30m)) if len(tr_30m) > 1 else float(tr_30m[0] if tr_30m else 0.0)
+        else:
+            vol_30m = 0.0
+        
+        # 60m volatility (last 60 minutes) - use all available
+        if num_candles >= 59:
+            tr_60m = tr_values[-min(60, num_candles):]
+            vol_60m = float(np.std(tr_60m)) if len(tr_60m) > 1 else float(tr_60m[0] if tr_60m else 0.0)
+        else:
+            vol_60m = 0.0
+        
+        # Weighted average
+        weighted_vol = (
+            vol_1m * 0.40 +
+            vol_5m * 0.30 +
+            vol_15m * 0.15 +
+            vol_30m * 0.10 +
+            vol_60m * 0.05
+        )
+        
+        if np.isnan(weighted_vol):
+            return None
+        
+        # Convert to Python float (not numpy type) to avoid SQL errors
+        return float(round(weighted_vol, 6))
+        
+    except Exception as e:
+        print(f"⚠️ Error calculating volatility: {e}")
+        return None
+
+def get_volatility_for_minute(symbol: str, minute_key: str) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Get volatility value and percentile for a given minute.
+    Calculates synchronously on first tick of new minute, then caches.
+    """
+    # Initialize cache for symbol if needed
+    if symbol not in VOLATILITY_CACHE:
+        VOLATILITY_CACHE[symbol] = {}
+    
+    # Check if we already have this minute cached
+    if minute_key in VOLATILITY_CACHE[symbol]:
+        return VOLATILITY_CACHE[symbol][minute_key]
+    
+    # New minute - calculate it now (synchronously, once per minute)
+    try:
+        volatility_value = calculate_native_volatility(symbol)
+        volatility_percentile = None
+        
+        if volatility_value is not None:
+            try:
+                volatility_percentile = calculate_volatility_percentile(symbol, volatility_value)
+            except Exception as e:
+                print(f"⚠️ Volatility percentile calculation failed for {symbol}: {e}")
+                volatility_percentile = None
+    except Exception as e:
+        print(f"⚠️ Volatility calculation failed for {symbol}: {e}")
+        volatility_value = None
+        volatility_percentile = None
+    
+    # Cache the result (even if None)
+    VOLATILITY_CACHE[symbol][minute_key] = (volatility_value, volatility_percentile)
+    
+    # Keep cache size reasonable (last 2 minutes)
+    if len(VOLATILITY_CACHE[symbol]) > 2:
+        oldest_key = min(VOLATILITY_CACHE[symbol].keys())
+        del VOLATILITY_CACHE[symbol][oldest_key]
+    
+    return (volatility_value, volatility_percentile)
+
 def insert_tick(symbol: str, timestamp: str, price: float):
     """
     Insert symbol price tick with 1-minute average and momentum data into PostgreSQL.
@@ -456,13 +731,17 @@ def insert_tick(symbol: str, timestamp: str, price: float):
         except Exception as e:
             print(f"⚠️ 5s momentum average calculation failed: {e}")
         
+        # Get volatility for current minute (calculated synchronously on first tick of minute)
+        minute_key = timestamp[:16]  # Extract minute key (YYYY-MM-DDTHH:MM)
+        volatility_value, volatility_percentile = get_volatility_for_minute(symbol, minute_key)
+        
         table_name = SYMBOL_CONFIG[symbol]['table_name']
         
-        # Insert the data with all columns including momentum_percentile and momentum_5s_avg
+        # Insert the data with all columns including momentum_percentile, momentum_5s_avg, volatility, and volatility_percentile
         cursor.execute(f'''
             INSERT INTO live_data.{table_name} 
-            (timestamp, price, one_minute_avg, momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg) 
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (timestamp, price, one_minute_avg, momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg, volatility, volatility_percentile) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (timestamp) DO UPDATE SET
                 price = EXCLUDED.price,
                 one_minute_avg = EXCLUDED.one_minute_avg,
@@ -474,7 +753,9 @@ def insert_tick(symbol: str, timestamp: str, price: float):
                 delta_15m = EXCLUDED.delta_15m,
                 delta_30m = EXCLUDED.delta_30m,
                 momentum_percentile = EXCLUDED.momentum_percentile,
-                momentum_5s_avg = EXCLUDED.momentum_5s_avg
+                momentum_5s_avg = EXCLUDED.momentum_5s_avg,
+                volatility = EXCLUDED.volatility,
+                volatility_percentile = EXCLUDED.volatility_percentile
         ''', (
             timestamp, 
             price, 
@@ -487,7 +768,9 @@ def insert_tick(symbol: str, timestamp: str, price: float):
             momentum_data.get('delta_15m'),
             momentum_data.get('delta_30m'),
             momentum_percentile,
-            momentum_5s_avg
+            momentum_5s_avg,
+            volatility_value,
+            volatility_percentile
         ))
         
         # ROLLING WINDOW: Clean up data older than 30 days
@@ -515,9 +798,11 @@ async def log_symbol_price(symbol: str):
     last_logged_second = None
     symbol_config = SYMBOL_CONFIG[symbol]
     
-    # Pre-load momentum profile for this symbol
+    # Pre-load momentum and volatility profiles for this symbol
     print(f"🔄 Pre-loading momentum profile for {symbol}...")
     load_momentum_profile(symbol)
+    print(f"🔄 Pre-loading volatility profile for {symbol}...")
+    load_volatility_profile(symbol)
     
     while True:
         try:
@@ -627,9 +912,11 @@ def handle_yahoo_finance_symbol(symbol: str):
     symbol_config = SYMBOL_CONFIG[symbol]
     last_logged_second = None
     
-    # Pre-load momentum profile for this symbol
+    # Pre-load momentum and volatility profiles for this symbol
     print(f"🔄 Pre-loading momentum profile for {symbol}...")
     load_momentum_profile(symbol)
+    print(f"🔄 Pre-loading volatility profile for {symbol}...")
+    load_volatility_profile(symbol)
     
     def on_new_msg(ws, msg):
         """Handle incoming Yahoo Finance ticker messages"""

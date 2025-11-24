@@ -437,6 +437,10 @@ class StrikeTableGenerator:
                 no_ask DECIMAL(5,2),
                 yes_ask_dollars TEXT,
                 no_ask_dollars TEXT,
+                yes_bid_dollars TEXT,
+                no_bid_dollars TEXT,
+                yes_price_spread NUMERIC(6,4),
+                no_price_spread NUMERIC(6,4),
                 yes_diff DECIMAL(5,2),
                 no_diff DECIMAL(5,2),
                 volume INTEGER,
@@ -449,14 +453,23 @@ class StrikeTableGenerator:
             """
             cursor.execute(strike_table_sql)
             
-            # Add missing momentum_weighted_score column if it doesn't exist
-            try:
-                cursor.execute(f"ALTER TABLE live_data.strike_table_{self.symbol.lower()} ADD COLUMN momentum_weighted_score DECIMAL(5,3);")
-                conn.commit()  # Commit the ALTER TABLE before continuing
-            except psycopg2.ProgrammingError:
-                # Column already exists, ignore error
-                conn.rollback()  # Rollback and continue
-                pass
+            # Add missing columns if they don't exist
+            missing_columns = [
+                ("momentum_weighted_score", "DECIMAL(5,3)"),
+                ("yes_bid_dollars", "TEXT"),
+                ("no_bid_dollars", "TEXT"),
+                ("yes_price_spread", "NUMERIC(6,4)"),
+                ("no_price_spread", "NUMERIC(6,4)")
+            ]
+            
+            for column_name, column_type in missing_columns:
+                try:
+                    cursor.execute(f"ALTER TABLE live_data.strike_table_{self.symbol.lower()} ADD COLUMN {column_name} {column_type};")
+                    conn.commit()  # Commit the ALTER TABLE before continuing
+                except psycopg2.ProgrammingError:
+                    # Column already exists, ignore error
+                    conn.rollback()  # Rollback and continue
+                    pass
             
             # Create index for strike table
             strike_index_sql = f"""
@@ -785,6 +798,8 @@ class StrikeTableGenerator:
                     no_ask = None
                     yes_ask_dollars = None
                     no_ask_dollars = None
+                    yes_bid_dollars = None
+                    no_bid_dollars = None
                     volume = None
                     ticker = None
                     
@@ -798,6 +813,8 @@ class StrikeTableGenerator:
                                 no_ask = market.get("no_ask")
                                 yes_ask_dollars = market.get("yes_ask_dollars")
                                 no_ask_dollars = market.get("no_ask_dollars")
+                                yes_bid_dollars = market.get("yes_bid_dollars")
+                                no_bid_dollars = market.get("no_bid_dollars")
                                 volume = market.get("volume")
                                 ticker = market.get("ticker")
                                 break
@@ -812,6 +829,20 @@ class StrikeTableGenerator:
                     if not yes_ask_dollars or not no_ask_dollars:
                         logger.warning(f"⚠️ Missing _dollars values for strike {strike}, skipping")
                         continue
+                    
+                    # Calculate price spreads (ask_dollars - bid_dollars, always positive)
+                    yes_price_spread = None
+                    no_price_spread = None
+                    if yes_ask_dollars and yes_bid_dollars:
+                        try:
+                            yes_price_spread = max(0, float(yes_ask_dollars) - float(yes_bid_dollars))
+                        except (ValueError, TypeError):
+                            yes_price_spread = None
+                    if no_ask_dollars and no_bid_dollars:
+                        try:
+                            no_price_spread = max(0, float(no_ask_dollars) - float(no_bid_dollars))
+                        except (ValueError, TypeError):
+                            no_price_spread = None
                     
                     yes_ask_cents = float(yes_ask_dollars) * 100
                     no_ask_cents = float(no_ask_dollars) * 100
@@ -835,15 +866,17 @@ class StrikeTableGenerator:
                     INSERT INTO live_data.strike_table_{self.symbol.lower()} 
                     (symbol, current_price, ttc_seconds, broker, event_ticker, market_title,
                      strike_tier, market_status, strike, buffer, buffer_pct, probability,
-                     yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume, ticker, active_side, 
+                     yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
+                     yes_price_spread, no_price_spread, yes_diff, no_diff, volume, ticker, active_side, 
                      momentum_weighted_score, momentum_percentile, timestamp, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
                         self.symbol.upper(), current_price, ttc_seconds, "Kalshi",
                         market_data.get("event_ticker"), market_title,
                         market_data.get("strike_tier"), market_data.get("market_status"),
                         strike, buffer, buffer_pct, probability,
-                        yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_diff, no_diff,
+                        yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
+                        yes_price_spread, no_price_spread, yes_diff, no_diff,
                         volume, ticker, active_side, momentum_score, momentum_percentile,
                         datetime.now(), datetime.now()
                     ))

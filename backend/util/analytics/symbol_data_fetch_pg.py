@@ -252,24 +252,36 @@ def _perform_incremental_update_pg(symbol: str, table_name: str) -> Tuple[str, i
     print(f"Fetching from: {start_time}")
     
     # Fetch new data from start_time to present
-    since = symbol_exchange.parse8601(start_time.strftime('%Y-%m-%dT%H:%M:%SZ'))
+    # Convert East Coast time to UTC for API call
+    start_time_east = EAST_COAST_TZ.localize(start_time)
+    start_time_utc = start_time_east.astimezone(pytz.UTC)
+    since = symbol_exchange.parse8601(start_time_utc.strftime('%Y-%m-%dT%H:%M:%SZ'))
     current_time = symbol_exchange.milliseconds()
     
     new_bars = []
+    consecutive_empty = 0
+    max_consecutive_empty = 20  # Try up to 20 times before giving up
+    
     while since < current_time:
         try:
             bars = symbol_exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
             if not bars:
-                print("No more new data returned.")
-                break
+                consecutive_empty += 1
+                if consecutive_empty >= max_consecutive_empty:
+                    print("No more new data returned after multiple attempts.")
+                    break
+                # Move forward 1 hour and try again (handles cases where API doesn't return data for specific timestamp)
+                since += 60 * 60 * 1000
+                continue
 
+            consecutive_empty = 0  # Reset on successful fetch
             print(f"Fetched {len(bars)} new bars from {pd.to_datetime(bars[0][0], unit='ms')} to {pd.to_datetime(bars[-1][0], unit='ms')}")
             new_bars.extend(bars)
             since = bars[-1][0] + 60 * 1000  # move 1m past last timestamp
 
             time.sleep(symbol_exchange.rateLimit / 1000)  # respect rate limit
         except Exception as e:
-            print("Error encountered, retrying in 5 seconds:", e)
+            print(f"Error encountered, retrying in 5 seconds: {e}")
             time.sleep(5)
             continue
     
@@ -297,8 +309,8 @@ def _perform_incremental_update_pg(symbol: str, table_name: str) -> Tuple[str, i
             try:
                 cursor.execute(f"""
                     INSERT INTO historical_data.{table_name} 
-                    (timestamp, open, high, low, close, volume, momentum, momentum_percentile)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    (timestamp, open, high, low, close, volume, momentum, momentum_percentile, volatility, volatility_percentile)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (timestamp) DO NOTHING
                 """, (
                     row['timestamp'],
@@ -308,12 +320,20 @@ def _perform_incremental_update_pg(symbol: str, table_name: str) -> Tuple[str, i
                     float(row['close']),
                     float(row['volume']),
                     None,  # momentum column
-                    None   # momentum_percentile column
+                    None,  # momentum_percentile column
+                    None,  # volatility column
+                    None   # volatility_percentile column
                 ))
                 rows_added += cursor.rowcount
             except Exception as e:
                 print(f"Error inserting row {row['timestamp']}: {e}")
+                # Rollback to recover from aborted transaction, then continue
+                conn.rollback()
                 continue
+            
+            # Commit every 1000 rows to avoid long transactions
+            if rows_added % 1000 == 0 and rows_added > 0:
+                conn.commit()
         
         conn.commit()
         
@@ -337,6 +357,10 @@ def _perform_rolling_update_pg(symbol: str, table_name: str) -> Tuple[str, int]:
     """Perform rolling update: add latest week, remove oldest week to maintain 5-year window."""
     print(f"Performing rolling update for {symbol} in table {table_name}...")
     
+    # Get the appropriate exchange for this symbol
+    symbol_exchange = get_exchange_for_symbol(symbol)
+    print(f"Using exchange: {symbol_exchange.name} for {symbol}")
+    
     # Get the latest timestamp in existing data
     latest_timestamp = get_latest_timestamp_from_db(symbol.split('/')[0])
     if not latest_timestamp:
@@ -349,8 +373,12 @@ def _perform_rolling_update_pg(symbol: str, table_name: str) -> Tuple[str, int]:
     print(f"5-year window start: {five_years_ago}")
     
     # Fetch new data from latest timestamp to present
-    since = exchange.parse8601((latest_timestamp + timedelta(minutes=1)).strftime('%Y-%m-%dT%H:%M:%SZ'))
-    current_time = exchange.milliseconds()
+    # Convert East Coast time to UTC for API call
+    start_time = latest_timestamp + timedelta(minutes=1)
+    start_time_east = EAST_COAST_TZ.localize(start_time)
+    start_time_utc = start_time_east.astimezone(pytz.UTC)
+    since = symbol_exchange.parse8601(start_time_utc.strftime('%Y-%m-%dT%H:%M:%SZ'))
+    current_time = symbol_exchange.milliseconds()
     
     new_bars = []
     while since < current_time:
@@ -394,8 +422,8 @@ def _perform_rolling_update_pg(symbol: str, table_name: str) -> Tuple[str, int]:
             try:
                 cursor.execute(f"""
                     INSERT INTO historical_data.{table_name} 
-                    (timestamp, open, high, low, close, volume, momentum, momentum_percentile)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    (timestamp, open, high, low, close, volume, momentum, momentum_percentile, volatility, volatility_percentile)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (timestamp) DO NOTHING
                 """, (
                     row['timestamp'],
@@ -405,12 +433,20 @@ def _perform_rolling_update_pg(symbol: str, table_name: str) -> Tuple[str, int]:
                     float(row['close']),
                     float(row['volume']),
                     None,  # momentum column
-                    None   # momentum_percentile column
+                    None,  # momentum_percentile column
+                    None,  # volatility column
+                    None   # volatility_percentile column
                 ))
                 rows_added += cursor.rowcount
             except Exception as e:
                 print(f"Error inserting row {row['timestamp']}: {e}")
+                # Rollback to recover from aborted transaction, then continue
+                conn.rollback()
                 continue
+            
+            # Commit every 1000 rows to avoid long transactions
+            if rows_added % 1000 == 0 and rows_added > 0:
+                conn.commit()
         
         # Remove data older than 5 years
         cursor.execute(f"""
@@ -507,8 +543,8 @@ def _perform_full_download_pg(symbol: str, table_name: str) -> Tuple[str, int]:
                 
                 cursor.execute(f"""
                     INSERT INTO historical_data.{table_name} 
-                    (timestamp, open, high, low, close, volume, momentum, momentum_percentile)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    (timestamp, open, high, low, close, volume, momentum, momentum_percentile, volatility, volatility_percentile)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
                     row['timestamp'],
                     float(row['open']),
@@ -517,7 +553,9 @@ def _perform_full_download_pg(symbol: str, table_name: str) -> Tuple[str, int]:
                     float(row['close']),
                     float(row['volume']),
                     None,  # momentum column
-                    None   # momentum_percentile column
+                    None,  # momentum_percentile column
+                    None,  # volatility column
+                    None   # volatility_percentile column
                 ))
                 rows_inserted += 1
                 
@@ -606,9 +644,35 @@ def create_table_if_not_exists(symbol: str):
                 low NUMERIC(20,8),
                 close NUMERIC(20,8),
                 volume NUMERIC(20,8),
-                momentum NUMERIC(10,2),
-                momentum_percentile NUMERIC(10,2)
+                momentum NUMERIC(10,4),
+                momentum_percentile NUMERIC(5,1),
+                volatility NUMERIC(15,6),
+                volatility_percentile NUMERIC(5,1)
             )
+        """)
+        
+        # Add volatility columns if table exists but columns don't
+        cursor.execute(f"""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_schema = 'historical_data' 
+                    AND table_name = '{table_name}' 
+                    AND column_name = 'volatility'
+                ) THEN
+                    ALTER TABLE historical_data.{table_name} ADD COLUMN volatility NUMERIC(15,6);
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_schema = 'historical_data' 
+                    AND table_name = '{table_name}' 
+                    AND column_name = 'volatility_percentile'
+                ) THEN
+                    ALTER TABLE historical_data.{table_name} ADD COLUMN volatility_percentile NUMERIC(5,1);
+                END IF;
+            END $$;
         """)
         
         # Add comment to document timezone
@@ -716,8 +780,8 @@ def _perform_incremental_update_yahoo_pg(symbol: str, table_name: str) -> Tuple[
             for _, row in new_df.iterrows():
                 cursor.execute(f"""
                     INSERT INTO historical_data.{table_name} 
-                    (timestamp, open, high, low, close, volume, momentum, momentum_percentile)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    (timestamp, open, high, low, close, volume, momentum, momentum_percentile, volatility, volatility_percentile)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (timestamp) DO NOTHING
                 """, (
                     row['timestamp'],
@@ -726,8 +790,10 @@ def _perform_incremental_update_yahoo_pg(symbol: str, table_name: str) -> Tuple[
                     float(row['low']),
                     float(row['close']),
                     float(row['volume']),
-                    None,
-                    None
+                    None,  # momentum
+                    None,  # momentum_percentile
+                    None,  # volatility
+                    None   # volatility_percentile
                 ))
             
             conn.commit()
@@ -816,8 +882,8 @@ def _perform_full_download_yahoo_pg(symbol: str, table_name: str) -> Tuple[str, 
                 for _, row in batch.iterrows():
                     cursor.execute(f"""
                         INSERT INTO historical_data.{table_name} 
-                        (timestamp, open, high, low, close, volume, momentum, momentum_percentile)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        (timestamp, open, high, low, close, volume, momentum, momentum_percentile, volatility, volatility_percentile)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
                         row['timestamp'],
                         float(row['open']),
@@ -825,8 +891,10 @@ def _perform_full_download_yahoo_pg(symbol: str, table_name: str) -> Tuple[str, 
                         float(row['low']),
                         float(row['close']),
                         float(row['volume']),
-                        None,
-                        None
+                        None,  # momentum
+                        None,  # momentum_percentile
+                        None,  # volatility
+                        None   # volatility_percentile
                     ))
                 
                 print(f"Inserted batch {i//batch_size + 1}/{(len(df)-1)//batch_size + 1}")

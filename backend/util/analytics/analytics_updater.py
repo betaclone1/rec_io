@@ -33,6 +33,7 @@ from symbol_data_fetch_pg import update_existing_db
 from momentum_generator_pg import fill_missing_momentum_in_db
 from symbol_profiler import SymbolProfiler
 from fingerprint_archiver import create_archive, find_fingerprint_files
+from volatility_generator_pg import fill_missing_volatility_in_db
 
 def is_weekday_9am_to_12pm(timestamp_str):
     """
@@ -179,6 +180,29 @@ def run_momentum_generation(logger, symbols):
     logger.info(f"Momentum generation completed for {len(processed_symbols)} symbols")
     return processed_symbols
 
+def run_volatility_generation(logger, symbols):
+    """Step 2b: Run volatility generator on master datasets using volatility_generator_pg."""
+    logger.info("📊 Step 2b: Running volatility generation in PostgreSQL")
+    
+    processed_symbols = []
+    for symbol in symbols:
+        try:
+            logger.info(f"Generating volatility for {symbol} in PostgreSQL...")
+            log_table_operation(logger, "PROCESSING", symbol, f"{symbol.lower()}_price_history", "Calculating volatility values")
+            
+            # Run volatility generation in PostgreSQL
+            fill_missing_volatility_in_db(symbol)
+            
+            logger.info(f"✅ {symbol} volatility generation completed")
+            log_table_operation(logger, "COMPLETED", symbol, f"{symbol.lower()}_price_history", "Volatility calculation finished")
+            processed_symbols.append(symbol)
+            
+        except Exception as e:
+            logger.error(f"❌ Error generating volatility for {symbol}: {e}")
+    
+    logger.info(f"Volatility generation completed for {len(processed_symbols)} symbols")
+    return processed_symbols
+
 def generate_momentum_profiles(logger, symbols):
     """Step 3: Generate momentum and price profiles using symbol_profiler."""
     logger.info("📊 Step 3: Generating momentum and price profiles in PostgreSQL")
@@ -215,33 +239,35 @@ def generate_momentum_profiles(logger, symbols):
     logger.info(f"Profile generation completed for {len(processed_symbols)} symbols")
     return processed_symbols
 
-def generate_volatility_profile(logger, symbols, asof: str = None):
-    """Generate 168-row volatility baseline profile per symbol (analytics schema)."""
-    logger.info("📊 Step 3b: Generating volatility baseline profiles")
-    from datetime import datetime as _dt
-    asof_date = asof or _dt.utcnow().strftime("%Y%m%d")
-    script_path = os.path.join(os.path.dirname(__file__), "pipelines", "volatility_profile.py")
-    successful = []
+def generate_volatility_profiles(logger, symbols):
+    """Step 3b: Generate volatility percentile profiles using symbol_profiler."""
+    logger.info("📊 Step 3b: Generating volatility percentile profiles in PostgreSQL")
+    
+    processed_symbols = []
     for symbol in symbols:
         try:
-            logger.info(f"🔧 Volatility profile for {symbol.upper()} as of {asof_date}")
-            cmd = [sys.executable, script_path, "--symbol", symbol.upper(), "--asof", asof_date]
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            while True:
-                line = proc.stdout.readline()
-                if line == '' and proc.poll() is not None:
-                    break
-                if line:
-                    logger.info(f"VOL: {line.strip()}")
-            rc = proc.poll()
-            if rc != 0:
-                raise RuntimeError(f"volatility_profile.py exit code {rc}")
-            successful.append(symbol)
+            logger.info(f"Generating volatility profile for {symbol}...")
+            
+            # Create profiler and generate volatility profile
+            profiler = SymbolProfiler(symbol.lower())
+            
+            # Generate volatility profile
+            from datetime import datetime
+            today = datetime.now().strftime("%Y%m%d")
+            volatility_table = f"{symbol.lower()}_volatility_profile_{today}"
+            
+            log_table_operation(logger, "CREATING", symbol, volatility_table, "Generating volatility profile")
+            profile_df = profiler.generate_volatility_profile()
+            log_table_operation(logger, "COMPLETED", symbol, volatility_table, f"{len(profile_df)} percentile records")
+            
+            logger.info(f"✅ {symbol} volatility profile generated: {len(profile_df)} percentiles")
+            processed_symbols.append(symbol)
+            
         except Exception as e:
-            logger.error(f"❌ Volatility profile failed for {symbol.upper()}: {e}")
-            continue
-    logger.info(f"✅ Volatility profiles completed for {len(successful)} symbols")
-    return successful
+            logger.error(f"❌ Error generating volatility profile for {symbol}: {e}")
+    
+    logger.info(f"Volatility profile generation completed for {len(processed_symbols)} symbols")
+    return processed_symbols
 
 def assign_momentum_percentiles(logger, symbols, weekday_filter=False):
     """Step 4: Assign momentum percentiles to price history tables."""
@@ -274,6 +300,30 @@ def assign_momentum_percentiles(logger, symbols, weekday_filter=False):
             logger.error(f"❌ Error assigning momentum percentiles for {symbol}: {e}")
     
     logger.info(f"Momentum percentile assignment completed for {len(processed_symbols)} symbols")
+    return processed_symbols
+
+def assign_volatility_percentiles(logger, symbols):
+    """Step 4b: Assign volatility percentiles to price history tables."""
+    logger.info("📊 Step 4b: Assigning volatility percentiles to price history tables")
+    
+    processed_symbols = []
+    for symbol in symbols:
+        try:
+            logger.info(f"Assigning volatility percentiles for {symbol}...")
+            
+            # Create profiler instance
+            profiler = SymbolProfiler(symbol.lower())
+            
+            # Assign volatility percentiles (overwrites all existing values)
+            profiler.assign_volatility_percentiles()
+            
+            logger.info(f"✅ {symbol} volatility percentiles assigned successfully")
+            processed_symbols.append(symbol)
+                
+        except Exception as e:
+            logger.error(f"❌ Error assigning volatility percentiles for {symbol}: {e}")
+    
+    logger.info(f"Volatility percentile assignment completed for {len(processed_symbols)} symbols")
     return processed_symbols
 
 def verify_data_completeness(logger, symbols):
@@ -677,22 +727,24 @@ def cleanup_analytics_tables(logger, symbols):
                     logger.info(f"🗑️ Deleting old master table: {table_name}")
                     cursor.execute(f"DROP TABLE analytics.{table_name}")
             
-            # 3. Delete oldest profile tables (momentum and price)
-            for profile_type in ['momentum_profile', 'price_profile']:
+            # 3. Delete oldest profile tables (momentum, price, and volatility) - keep only latest 2
+            for profile_type in ['momentum_profile', 'price_profile', 'volatility_profile']:
                 cursor.execute(f"""
                     SELECT table_name 
                     FROM information_schema.tables 
                     WHERE table_schema = 'analytics' 
                     AND table_name LIKE '{symbol_lower}_{profile_type}_%'
                     ORDER BY table_name ASC
-                    LIMIT 1
                 """)
                 
-                oldest_table = cursor.fetchone()
-                if oldest_table:
-                    table_name = oldest_table[0]
-                    logger.info(f"🗑️ Deleting oldest {profile_type} table: {table_name}")
-                    cursor.execute(f"DROP TABLE analytics.{table_name}")
+                all_profile_tables = [row[0] for row in cursor.fetchall()]
+                
+                # Delete all but the 2 most recent (keep last 2, delete the rest)
+                if len(all_profile_tables) > 2:
+                    tables_to_delete = all_profile_tables[:-2]  # Keep last 2, delete the rest
+                    for table_name in tables_to_delete:
+                        logger.info(f"🗑️ Deleting old {profile_type} table: {table_name}")
+                        cursor.execute(f"DROP TABLE analytics.{table_name}")
             
             conn.commit()
             conn.close()
@@ -856,10 +908,12 @@ def main():
     # Define all available steps
     all_steps = [
         "update_price_logs",
-        "generate_momentum", 
+        "generate_momentum",
+        "generate_volatility",
         "generate_profiles",
-        "generate_volatility_profile",
+        "generate_volatility_profiles",
         "assign_percentiles",
+        "assign_volatility_percentiles",
         "verify_data",
         "archive_fingerprints",
         "generate_fingerprints",
@@ -919,36 +973,55 @@ def main():
             logger.info("⏭️ Skipping Step 2: Momentum generation")
             results['momentum_symbols'] = results['updated_symbols']
         
+        # Step 2b: Run volatility generation
+        if "generate_volatility" in steps_to_run:
+            step_start = log_step(logger, "Volatility generation")
+            results['volatility_symbols'] = run_volatility_generation(logger, results['momentum_symbols'])
+            log_step(logger, "Volatility generation", step_start)
+        else:
+            logger.info("⏭️ Skipping Step 2b: Volatility generation")
+            results['volatility_symbols'] = results['momentum_symbols']
+        
         # Step 3: Generate profiles (momentum + price profiles)
         if "generate_profiles" in steps_to_run:
             step_start = log_step(logger, "Profile generation")
-            results['profile_symbols'] = generate_momentum_profiles(logger, results['momentum_symbols'], args.weekday_filter)
+            results['profile_symbols'] = generate_momentum_profiles(logger, results['volatility_symbols'], args.weekday_filter)
             log_step(logger, "Profile generation", step_start)
         else:
             logger.info("⏭️ Skipping Step 3: Profile generation")
-            results['profile_symbols'] = results['momentum_symbols']
+            results['profile_symbols'] = results['volatility_symbols']
 
-        # Step 3b: Generate volatility baseline profiles
-        if "generate_volatility_profile" in steps_to_run:
+        # Step 3b: Generate volatility percentile profiles
+        if "generate_volatility_profiles" in steps_to_run:
             step_start = log_step(logger, "Volatility profile generation")
-            _ = generate_volatility_profile(logger, results['profile_symbols'])
+            results['volatility_profile_symbols'] = generate_volatility_profiles(logger, results['profile_symbols'])
             log_step(logger, "Volatility profile generation", step_start)
         else:
             logger.info("⏭️ Skipping Step 3b: Volatility profile generation")
+            results['volatility_profile_symbols'] = results['profile_symbols']
         
         # Step 4: Assign momentum percentiles
         if "assign_percentiles" in steps_to_run:
             step_start = log_step(logger, "Momentum percentile assignment")
-            results['percentile_symbols'] = assign_momentum_percentiles(logger, results['profile_symbols'], args.weekday_filter)
+            results['percentile_symbols'] = assign_momentum_percentiles(logger, results['volatility_profile_symbols'], args.weekday_filter)
             log_step(logger, "Momentum percentile assignment", step_start)
         else:
             logger.info("⏭️ Skipping Step 4: Momentum percentile assignment")
-            results['percentile_symbols'] = results['profile_symbols']
+            results['percentile_symbols'] = results['volatility_profile_symbols']
+        
+        # Step 4b: Assign volatility percentiles
+        if "assign_volatility_percentiles" in steps_to_run:
+            step_start = log_step(logger, "Volatility percentile assignment")
+            results['volatility_percentile_symbols'] = assign_volatility_percentiles(logger, results['percentile_symbols'])
+            log_step(logger, "Volatility percentile assignment", step_start)
+        else:
+            logger.info("⏭️ Skipping Step 4b: Volatility percentile assignment")
+            results['volatility_percentile_symbols'] = results['percentile_symbols']
         
         # Step 5: Verify data completeness
         if "verify_data" in steps_to_run:
             step_start = log_step(logger, "Data completeness verification")
-            results['verification_results'] = verify_data_completeness(logger, results['percentile_symbols'])
+            results['verification_results'] = verify_data_completeness(logger, results['volatility_percentile_symbols'])
             log_step(logger, "Data completeness verification", step_start)
         else:
             logger.info("⏭️ Skipping Step 5: Data completeness verification")
@@ -957,7 +1030,7 @@ def main():
         # Step 6: Archive existing fingerprints
         if "archive_fingerprints" in steps_to_run:
             step_start = log_step(logger, "Fingerprint archiving")
-            results['archived_files'] = archive_existing_fingerprints(logger, results['percentile_symbols'])
+            results['archived_files'] = archive_existing_fingerprints(logger, results['volatility_percentile_symbols'])
             log_step(logger, "Fingerprint archiving", step_start)
         else:
             logger.info("⏭️ Skipping Step 6: Fingerprint archiving")
@@ -966,11 +1039,11 @@ def main():
         # Step 7: Generate new fingerprints
         if "generate_fingerprints" in steps_to_run:
             step_start = log_step(logger, "Fingerprint generation")
-            results['generated_symbols'] = generate_new_fingerprints(logger, results['percentile_symbols'], args.weekday_filter)
+            results['generated_symbols'] = generate_new_fingerprints(logger, results['volatility_percentile_symbols'], args.weekday_filter)
             log_step(logger, "Fingerprint generation", step_start)
         else:
             logger.info("⏭️ Skipping Step 7: Fingerprint generation")
-            results['generated_symbols'] = results['percentile_symbols']
+            results['generated_symbols'] = results['volatility_percentile_symbols']
         
         # Step 8: Generate probability lookup tables
         if "generate_lookup_tables" in steps_to_run:
