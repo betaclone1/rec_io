@@ -7,6 +7,81 @@ Update this document whenever schema changes are made during development.
 
 ---
 
+## Updating Your Local Database to Match This Reference
+
+A utility script is available to automatically update your local database schema to match this reference document. This script will:
+
+- ✅ Preserve all existing data
+- ✅ Add missing columns with appropriate defaults
+- ✅ Handle monitor-specific tables (discovers all instances automatically)
+- ✅ Skip type changes to prevent data issues
+
+### Quick Start
+
+**Preview changes (dry run):**
+```bash
+cd /opt/rec_io_server
+python3 scripts/update_db_schema_to_reference.py --dry-run
+```
+
+**Apply migrations:**
+```bash
+cd /opt/rec_io_server
+python3 scripts/update_db_schema_to_reference.py
+```
+
+The script will:
+1. Parse this schema reference document
+2. Compare with your existing database tables
+3. Show you all changes that will be made
+4. Ask for confirmation before applying (unless using `--dry-run`)
+
+### What Gets Updated
+
+- **Missing Columns**: Added with appropriate data types and defaults
+- **Monitor-Specific Tables**: Automatically discovers and updates all instances (e.g., `monitor_list_0001`, `active_trades_0001_10002`, etc.)
+- **Column Types**: Detected but not changed (to preserve data safety)
+- **Constraints & Indexes**: Not modified (preserves existing structure)
+
+### Safety Features
+
+- All existing data is preserved
+- New columns are added as nullable (if no default specified)
+- NOT NULL columns without defaults are added as nullable to prevent data issues
+- Transaction-based execution (rolls back on error)
+- Confirmation prompt before applying changes
+
+### Example Output
+
+```
+📖 Parsing schema reference...
+✅ Parsed 154 table definitions
+
+🔌 Connecting to database...
+🔍 Analyzing database schema...
+📋 Found 2 instance(s) for pattern: users.active_trades_0001_10002
+
+================================================================================
+Found 24 migration(s) to apply
+================================================================================
+
+📋 Table: users.monitor_list_0001
+   6 column(s) to add:
+   • ALTER TABLE users.monitor_list_0001 ADD COLUMN min_ask NUMERIC(6,4) DEFAULT 0.0000
+   ...
+
+⚠️  Ready to apply 24 migration(s)
+Continue? (yes/no): yes
+
+✅ Successfully applied 24 migration(s)
+```
+
+### Documentation
+
+For more details, see: `scripts/README_db_schema_migration.md`
+
+---
+
 ## Schema: `analytics`
 
 ### Table: `analytics.btc_fingerprint_-10`
