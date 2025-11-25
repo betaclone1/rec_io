@@ -2259,17 +2259,20 @@ def check_auto_entry_conditions_hourly_htc():
                     continue
                 
                 # STEP 6: Check max ask price threshold using _dollars values
-                max_ask = settings.get("max_ask", 98)
+                max_ask = settings.get("max_ask", 0.9800)  # Default in dollars
                 yes_ask_dollars = strike.get('yes_ask_dollars')
                 no_ask_dollars = strike.get('no_ask_dollars')
                 if not yes_ask_dollars or not no_ask_dollars:
                     log(f"⚠️ Missing _dollars values for strike {strike.get('strike')}, skipping")
                     continue
-                # Convert _dollars to cents for comparison with max_ask threshold
+                # Convert _dollars to cents for comparison
                 yes_ask_cents = float(yes_ask_dollars) * 100
                 no_ask_cents = float(no_ask_dollars) * 100
                 max_ask_price = max(yes_ask_cents, no_ask_cents)
-                if max_ask_price > max_ask:
+                # Convert max_ask from dollars to cents if it's less than 1 (indicating dollars format)
+                # Otherwise assume it's already in cents (legacy support)
+                max_ask_cents = max_ask * 100 if max_ask < 1 else max_ask
+                if max_ask_price > max_ask_cents:
                     continue
                 
                 # STEP 5: Determine buy price based on active_side using subpenny precision
