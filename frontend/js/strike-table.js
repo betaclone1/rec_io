@@ -809,6 +809,13 @@ function updateYesNoButton(spanEl, strike, side, askPrice, isActive, ticker = nu
   spanEl.setAttribute('data-strike', strike);
   spanEl.setAttribute('data-side', side);
   
+  // Store diff value as data attribute
+  if (diffValue !== null && diffValue !== undefined) {
+    spanEl.setAttribute('data-diff', diffValue);
+  } else {
+    spanEl.removeAttribute('data-diff');
+  }
+  
   // Store the actual ask price for trade execution (not the display value)
   // Use the _dollars value for trade execution (no fallback)
   if (askPriceForTrade && askPriceForTrade !== '—' && askPriceForTrade !== 0) {
@@ -838,6 +845,7 @@ function updateYesNoButton(spanEl, strike, side, askPrice, isActive, ticker = nu
             ticker: tradeData.ticker,
             buy_price: tradeData.buy_price,
             prob: tradeData.prob,
+            diff: tradeData.diff,
             symbol_open: tradeData.symbol_open,
             momentum: tradeData.momentum,
             contract: tradeData.contract,
@@ -845,7 +853,8 @@ function updateYesNoButton(spanEl, strike, side, askPrice, isActive, ticker = nu
             position: tradeData.position,
             trade_strategy: tradeData.trade_strategy,
             monitor: tradeData.monitor,
-            entry_method: tradeData.entry_method
+            entry_method: tradeData.entry_method,
+            paper_trade: tradeData.paper_trade
           })
         });
         

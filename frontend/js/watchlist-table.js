@@ -180,6 +180,14 @@ function updateWatchlistBuyButton(spanEl, strike, side, askPrice, isActive, tick
   }
   spanEl.setAttribute('data-strike', strike);
   spanEl.setAttribute('data-side', side);
+  
+  // Store diff value as data attribute
+  if (diffValue !== null && diffValue !== undefined) {
+    spanEl.setAttribute('data-diff', diffValue);
+  } else {
+    spanEl.removeAttribute('data-diff');
+  }
+  
   if (askPrice && askPrice !== '—' && askPrice !== 0) {
     spanEl.setAttribute('data-ask-price', askPrice);
   } else {
@@ -205,12 +213,14 @@ function updateWatchlistBuyButton(spanEl, strike, side, askPrice, isActive, tick
             ticker: tradeData.ticker,
             buy_price: tradeData.buy_price,
             prob: tradeData.prob,
+            diff: tradeData.diff,
             symbol_open: tradeData.symbol_open,
             momentum: tradeData.momentum,
             contract: tradeData.contract,
             symbol: tradeData.symbol,
             position: tradeData.position,
-            trade_strategy: tradeData.trade_strategy
+            trade_strategy: tradeData.trade_strategy,
+            paper_trade: tradeData.paper_trade
           })
         });
         

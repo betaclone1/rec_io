@@ -2666,7 +2666,7 @@ async def get_auto_entry_settings(monitor_id: str = None):
                        momentum_spike_threshold, verification_period_enabled, verification_period_seconds,
                        min_volume, win_streak_threshold, performance_based_allocation,
                        momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target,
-                       min_ask, max_ask, loss_prevention_toggle, max_price_spread
+                       min_ask, max_ask, loss_prevention_toggle, max_price_spread, prob_adj
                 FROM users.monitor_list_0001 WHERE id = %s
             """, (monitor_id,))
             result = cursor.fetchone()
@@ -2701,7 +2701,8 @@ async def get_auto_entry_settings(monitor_id: str = None):
                     "min_ask": float(result[23]) if result[23] is not None else 0.0000,
                     "max_ask": float(result[24]) if result[24] is not None else 0.9800,
                     "loss_prevention_toggle": bool(result[25]) if result[25] is not None else True,
-                    "max_price_spread": float(result[26]) if result[26] is not None else 0.0300
+                    "max_price_spread": float(result[26]) if result[26] is not None else 0.0300,
+                    "prob_adj": float(result[27]) if result[27] is not None else 5.00
                 }
             else:
                 return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
@@ -2826,6 +2827,9 @@ async def set_auto_entry_settings(request: Request):
             if "max_price_spread" in data:
                 update_fields.append("max_price_spread = %s")
                 update_values.append(float(data["max_price_spread"]))
+            if "prob_adj" in data:
+                update_fields.append("prob_adj = %s")
+                update_values.append(float(data["prob_adj"]))
             
             if update_fields:
                 # Update the monitor in monitor_list table
@@ -2900,8 +2904,9 @@ async def trigger_open_trade(request: Request):
         symbol = data.get("symbol")
         position = data.get("position")
         trade_strategy = data.get("trade_strategy")
+        paper_trade = data.get("paper_trade", False)
         
-        print(f"[TRIGGER OPEN TRADE] Received request: strike={strike}, side={side}, ticker={ticker}, buy_price={buy_price}, prob={prob}, symbol_open={symbol_open}, momentum={momentum}")
+        print(f"[TRIGGER OPEN TRADE] Received request: strike={strike}, side={side}, ticker={ticker}, buy_price={buy_price}, prob={prob}, symbol_open={symbol_open}, momentum={momentum}, paper_trade={paper_trade}")
         
         # Forward the request directly to the trade_manager service
         trade_manager_port = get_port("trade_manager")
@@ -2986,10 +2991,12 @@ async def trigger_open_trade(request: Request):
             "symbol_close": None,
             "momentum": momentum,
             "prob": prob,
+            "diff": data.get("diff"),  # Add diff from request
             "win_loss": None,
             "entry_method": data.get("entry_method", "manual"),
             "monitor": monitor,  # Add monitor field
-            "bankroll_allotment_total": bankroll_allotment_total
+            "bankroll_allotment_total": bankroll_allotment_total,
+            "paper_trade": paper_trade  # Add paper_trade from request
         }
         
         # Send request directly to trade_manager
@@ -4785,7 +4792,8 @@ async def get_monitors(user_id: str = "user_0001"):
                     current_weekly_cycle,
                     current_performance_modifier,
                     current_max_pct_exposure,
-                    performance_based_allocation
+                    performance_based_allocation,
+                    paper_trade
                 FROM users.monitor_list_{user_number}
                 WHERE status != 'ARCHIVED'
                 ORDER BY dashboard_order, id
@@ -4821,6 +4829,7 @@ async def get_monitors(user_id: str = "user_0001"):
                 current_performance_modifier,
                 current_max_pct_exposure,
                 performance_based_allocation,
+                paper_trade,
             ) = row
             
             # Calculate uptime from created timestamp
@@ -4867,6 +4876,7 @@ async def get_monitors(user_id: str = "user_0001"):
                 "current_performance_modifier": current_performance_modifier,
                 "current_max_pct_exposure": current_max_pct_exposure,
                 "performance_based_allocation": performance_based_allocation,
+                "paper_trade": paper_trade or False,
             }
             monitors.append(formatted_monitor)
         
@@ -4995,7 +5005,7 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
         
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade
+            SELECT id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade, paper_trade
             FROM users.monitor_list_{user_number}
             WHERE id = %s AND status = 'active'
         """, (monitor_id,))
@@ -5004,7 +5014,7 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
         conn.close()
         
         if result:
-            monitor_id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade = result
+            monitor_id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade, paper_trade = result
             return {
                 "status": "ok",
                 "monitor": {
@@ -5017,7 +5027,8 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
                     "total_position": total_position,
                     "position_type": position_type,
                     "bankroll_allotment_total": bankroll_allotment_total,
-                    "auto_trade": auto_trade
+                    "auto_trade": auto_trade,
+                    "paper_trade": paper_trade or False
                 }
             }
         else:
@@ -5571,6 +5582,84 @@ async def toggle_auto_trade(request: dict):
         print(f"Error in toggle auto trade: {e}")
         return {"status": "error", "message": str(e)}
 
+@app.post("/api/monitor/toggle-paper-trade")
+async def toggle_paper_trade(request: Request):
+    """Toggle paper_trade boolean value for a specific monitor"""
+    try:
+        # Extract parameters from request body
+        data = await request.json()
+        monitor_id = data.get("monitor_id")
+        paper_trade = data.get("paper_trade")
+        user_id = data.get("user_id", "user_0001")
+        
+        if not monitor_id or paper_trade is None:
+            return {"status": "error", "message": "Missing monitor_id or paper_trade parameter"}
+        
+        # Extract user number and monitor ID from monitor_id
+        # Handle multiple formats: MON_0001_10001, mon_0001_10001, or just 10001
+        if (monitor_id.startswith("MON_") or monitor_id.startswith("mon_")) and "_" in monitor_id:
+            parts = monitor_id.split("_")
+            if len(parts) >= 3:
+                user_number = parts[1]
+                db_monitor_id = parts[2]
+            else:
+                return {"status": "error", "message": "Invalid monitor ID format"}
+        elif monitor_id.isdigit():
+            # Handle numeric ID format (e.g., "10010")
+            user_number = "0001"  # Default user number
+            db_monitor_id = monitor_id
+        else:
+            return {"status": "error", "message": "Invalid monitor ID format"}
+        
+        # Update the database directly
+        try:
+            from backend.core.config.database import get_postgresql_connection
+            conn = get_postgresql_connection()
+            
+            with conn.cursor() as cursor:
+                # Update paper_trade boolean
+                cursor.execute(f"""
+                    UPDATE users.monitor_list_{user_number}
+                    SET paper_trade = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                """, (paper_trade, db_monitor_id))
+                
+                if cursor.rowcount == 0:
+                    conn.close()
+                    return {"status": "error", "message": "Monitor not found"}
+                
+            conn.commit()
+            conn.close()
+            
+            print(f"[MAIN] ✅ Updated monitor {monitor_id} paper_trade to {paper_trade}")
+            
+            # Broadcast the change to all connected WebSocket clients
+            message = {
+                "type": "paper_trade_toggled",
+                "monitor_id": monitor_id,  # Keep original format (MON_0001_10001)
+                "paper_trade": paper_trade
+            }
+            
+            # Send to preferences WebSocket clients
+            for websocket in connected_clients.copy():
+                try:
+                    await websocket.send_text(json.dumps(message))
+                except Exception as e:
+                    print(f"Error sending paper_trade update to WebSocket client: {e}")
+                    connected_clients.discard(websocket)
+            
+            print(f"[MAIN] ✅ Paper trade change broadcasted to {len(connected_clients)} clients")
+            
+            return {"status": "ok", "message": "Paper trade updated successfully"}
+            
+        except Exception as e:
+            print(f"[MAIN] ❌ Error updating database: {e}")
+            return {"status": "error", "message": f"Database error: {str(e)}"}
+            
+    except Exception as e:
+        print(f"[MAIN] ❌ Error toggling paper trade: {e}")
+        return {"status": "error", "message": str(e)}
+
 @app.post("/api/update_monitor_position")
 async def update_monitor_position(request: Request):
     """Proxy endpoint to forward monitor position updates to monitor_manager"""
@@ -5893,6 +5982,7 @@ async def get_strategies(user_id: str = "user_0001"):
             # Insert default strategies
             default_strategies = [
                 'Hourly HTC',
+                'Reverse HTC',
                 'Momentum Scalp',
                 'Test Strategy',
                 'Daily HTC',

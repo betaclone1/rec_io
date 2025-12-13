@@ -331,8 +331,26 @@ def insert_trade(trade):
                 
                 # Fetch monitor state once if monitor_key is provided
                 monitor_state = None
+                cooldown_timer = None
                 if monitor_key:
                     monitor_state = _fetch_monitor_state(pg_conn, monitor_key)
+                    
+                    # Fetch cooldown_timer from monitor_list
+                    try:
+                        match = MONITOR_KEY_PATTERN.match(str(monitor_key))
+                        if match:
+                            user_number = match.group(1)
+                            monitor_id = match.group(2)
+                            cursor.execute(f"""
+                                SELECT cooldown_timer
+                                FROM users.monitor_list_{user_number}
+                                WHERE id = %s
+                            """, (monitor_id,))
+                            cooldown_result = cursor.fetchone()
+                            if cooldown_result and cooldown_result[0] is not None:
+                                cooldown_timer = int(cooldown_result[0])
+                    except Exception as e:
+                        print(f"⚠️ Error fetching cooldown_timer for {monitor_key}: {e}")
                 
                 # Handle loss_prevention
                 trade_loss_prevention = trade.get('loss_prevention')
@@ -378,6 +396,24 @@ def insert_trade(trade):
                 if ticker and side:
                     price_spread = _get_price_spread_from_strike_table(symbol, ticker, side)
 
+                # Get paper_trade value from trade payload, default to False
+                paper_trade = trade.get('paper_trade', False)
+                if isinstance(paper_trade, str):
+                    paper_trade = paper_trade.lower() in ('true', '1', 'yes')
+                elif paper_trade is None:
+                    paper_trade = False
+
+                # Format diff value (add + prefix for positive values, keep negative as-is)
+                diff_value = trade.get('diff')
+                if diff_value is not None:
+                    try:
+                        diff_float = float(diff_value)
+                        diff_formatted = f"+{int(diff_float)}" if diff_float >= 0 else f"{int(diff_float)}"
+                    except (ValueError, TypeError):
+                        diff_formatted = str(diff_value) if diff_value is not None else None
+                else:
+                    diff_formatted = None
+                
                 cursor.execute("""
                     INSERT INTO users.trades_0001 (
                         status, date, time, symbol, market, trade_strategy,
@@ -385,14 +421,14 @@ def insert_trade(trade):
                         sell_price, closed_at, fees, pnl, symbol_open, symbol_close,
                         momentum, volatility_percentile, win_loss, ticker, ticket_id, market_id,
                         momentum_percentile, momentum_5s_avg, entry_method, close_method, monitor, bankroll,
-                        hour_idx, weekly_cycle, loss_prevention, multiplier, price_spread
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        hour_idx, weekly_cycle, loss_prevention, multiplier, price_spread, paper_trade, cooldown_timer
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """, (
                     trade.get('status', 'pending'), trade['date'], trade['time'], 
                     symbol, trade.get('market', 'Kalshi'), trade.get('trade_strategy', 'Hourly HTC'),
                     contract_name, trade['strike'], trade['side'], trade.get('prob'),
-                    trade.get('diff'), trade['buy_price'], trade['position'], None, None,
+                    diff_formatted, trade['buy_price'], trade['position'], None, None,
                     None, None, symbol_open, None, momentum_for_db, trade.get('volatility_percentile'),
                     None, trade.get('ticker'), trade.get('ticket_id'), trade.get('market_id', f'{symbol}-USD'),
                     momentum_percentile_for_db, momentum_5s_avg_for_db, trade.get('entry_method', 'manual'), trade.get('close_method'),
@@ -401,7 +437,9 @@ def insert_trade(trade):
                     hour_idx_for_db, weekly_cycle_for_db,
                     loss_prevention_flag,
                     multiplier_for_db,
-                    price_spread
+                    price_spread,
+                    paper_trade,  # Use paper_trade from trade payload
+                    cooldown_timer  # Cooldown timer from monitor at time of trade creation
                 ))
                 last_id = cursor.fetchone()[0]
                 pg_conn.commit()
@@ -701,18 +739,27 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                         sell_price = None
                         log_event(ticket_id, f"MANAGER: Could not get close order data for sell price calculation")
                     
-                    # Get current symbol price for symbol_close
+                    # Get one_minute_avg from live price log for symbol_close
                     symbol_close = None
                     try:
-                        import requests
-                        main_port = get_port("main_app")
-                        response = requests.get(f"http://localhost:{main_port}/api/{symbol.lower()}_price", timeout=5)
-                        if response.ok:
-                            symbol_data = response.json()
-                            symbol_close = symbol_data.get('price')
-                            log_event(ticket_id, f"MANAGER: Retrieved current symbol price for close: {symbol_close}")
+                        pg_conn_symbol = get_postgresql_connection()
+                        if pg_conn_symbol:
+                            with pg_conn_symbol.cursor() as cursor:
+                                cursor.execute(f"SELECT one_minute_avg FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
+                                result = cursor.fetchone()
+                                if result and result[0] is not None:
+                                    symbol_close = float(result[0])
+                                    log_event(ticket_id, f"MANAGER: Retrieved one_minute_avg for close: {symbol_close}")
+                                else:
+                                    # Fallback to current price if one_minute_avg not available
+                                    cursor.execute(f"SELECT price FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
+                                    fallback_result = cursor.fetchone()
+                                    if fallback_result and fallback_result[0] is not None:
+                                        symbol_close = float(fallback_result[0])
+                                        log_event(ticket_id, f"MANAGER: Using current price as fallback for close: {symbol_close}")
+                            pg_conn_symbol.close()
                     except Exception as e:
-                        log_event(ticket_id, f"MANAGER: Failed to get current symbol price: {e}")
+                        log_event(ticket_id, f"MANAGER: Failed to get one_minute_avg from live price log: {e}")
                     
                     # Get trade data for PnL calculation including existing fees
                     pg_conn_trade = get_postgresql_connection()
@@ -764,6 +811,29 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                         
                         # Get high_price and low_price from active_trades before it's removed
                         high_price, low_price = get_high_low_prices_from_active_trades(id)
+                        
+                        # SECOND FAILSAFE CHECK: Validate that ATS was monitoring correctly
+                        # If high_price == low_price, it means ATS was NOT monitoring (values never changed from initial buy_price)
+                        if high_price is not None and low_price is not None and high_price == low_price:
+                            log_event(ticket_id, f"MANAGER: ⚠️ FAILSAFE DETECTED - high_price == low_price ({high_price}) - ATS monitoring failure!")
+                            log(f"⚠️ FAILSAFE: Trade {id} has high_price == low_price - ATS was not monitoring correctly")
+                            
+                            # Get monitor identifier to notify the specific ATS instance
+                            pg_conn_monitor = get_postgresql_connection()
+                            monitor_identifier = None
+                            if pg_conn_monitor:
+                                with pg_conn_monitor.cursor() as cursor:
+                                    cursor.execute("SELECT monitor FROM users.trades_0001 WHERE id = %s", (id,))
+                                    monitor_row = cursor.fetchone()
+                                    if monitor_row and monitor_row[0]:
+                                        monitor_identifier = monitor_row[0]
+                                pg_conn_monitor.close()
+                            
+                            # Alert the specific ATS instance to restart via monitoring_failure notification
+                            if monitor_identifier:
+                                notify_active_trade_supervisor_direct_with_monitor(id, ticket_id, "monitoring_failure", monitor_identifier)
+                                log_event(ticket_id, f"MANAGER: ⚠️ FAILSAFE: Notified ATS instance {monitor_identifier} of monitoring failure")
+                                log(f"⚠️ FAILSAFE: Triggered ATS restart for monitor {monitor_identifier}")
                         
                         # Update trade status to closed with all calculated values including ret_pct and high/low prices
                         update_trade_status_with_ret_pct(id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, total_fees, ret_pct, high_price, low_price)
@@ -1466,7 +1536,9 @@ def init_trades_db():
                     high_price DECIMAL(10,4),
                     low_price DECIMAL(10,4),
                     loss_prevention BOOLEAN DEFAULT FALSE,
-                    multiplier DECIMAL(10,2)
+                    multiplier DECIMAL(10,2),
+                    paper_trade BOOLEAN DEFAULT FALSE,
+                    cooldown_timer INTEGER
                 )
             """)
             
@@ -1636,11 +1708,28 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
             with pg_conn.cursor() as cursor:
                 # First try to update by ID
                 if status == 'closed':
+                    # IMMUTABILITY RULE: Preserve existing high_price/low_price if trade is already closed
+                    # Check if trade is already closed and has existing values
+                    cursor.execute("SELECT status, high_price, low_price FROM users.trades_0001 WHERE id = %s", (trade_id,))
+                    existing_row = cursor.fetchone()
+                    
+                    # Preserve existing values if trade is already closed and provided values are None
+                    final_high_price = high_price
+                    final_low_price = low_price
+                    if existing_row:
+                        existing_status, existing_high_price, existing_low_price = existing_row
+                        if existing_status == 'closed':
+                            # Trade is already closed - preserve existing values
+                            if high_price is None and existing_high_price is not None:
+                                final_high_price = existing_high_price
+                            if low_price is None and existing_low_price is not None:
+                                final_low_price = existing_low_price
+                    
                     cursor.execute("""
                         UPDATE users.trades_0001 
                         SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, ret_pct = %s, high_price = %s, low_price = %s
                         WHERE id = %s
-                    """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, ret_pct, high_price, low_price, trade_id))
+                    """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, ret_pct, final_high_price, final_low_price, trade_id))
                 else:
                     cursor.execute("""
                         UPDATE users.trades_0001 
@@ -1717,6 +1806,8 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
         notify_monitor_manager_trade_closed(trade_id, status)
         # Update win_streak for the monitor
         update_monitor_win_streak(trade_id)
+        # Check and update cycle metrics if all trades in cycle are closed
+        check_and_update_cycle_metrics(trade_id)
 
 def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbol_close=None, win_loss=None, pnl=None, close_method=None, fees=None):
     """Update trade status in PostgreSQL database only."""
@@ -1843,6 +1934,8 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
         notify_monitor_manager_trade_closed(trade_id, status)
         # Update win_streak for the monitor
         update_monitor_win_streak(trade_id)
+        # Check and update cycle metrics if all trades in cycle are closed
+        check_and_update_cycle_metrics(trade_id)
 
 def update_monitor_win_streak(trade_id: int) -> None:
     """Update the win_streak for a monitor based on the trade result.
@@ -2026,6 +2119,127 @@ def update_monitor_win_streak(trade_id: int) -> None:
         except:
             pass
 
+def check_and_update_cycle_metrics(trade_id: int) -> None:
+    """
+    Check if all trades for a cycle are closed, and if so, update cycle-level metrics.
+    
+    A cycle is defined by monitor + contract + date.
+    Only updates when ALL trades in the cycle have status = 'closed'.
+    Updates cycle_pnl, cycle_ret_pct, and cycle_win_loss for all trades in the cycle.
+    """
+    try:
+        pg_conn = get_postgresql_connection()
+        if not pg_conn:
+            log(f"⚠️ Cannot connect to database to check cycle metrics for trade {trade_id}")
+            return
+        
+        # Step 1: Get cycle info for this trade (monitor, contract, date)
+        with pg_conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT monitor, contract, date 
+                FROM users.trades_0001 
+                WHERE id = %s
+            """, (trade_id,))
+            trade_row = cursor.fetchone()
+        
+        if not trade_row:
+            pg_conn.close()
+            return
+        
+        monitor, contract, trade_date = trade_row
+        
+        # Skip if any required fields are NULL
+        if not monitor or not contract or not trade_date:
+            log(f"⏭️  Skipping cycle metrics for trade {trade_id} - missing monitor, contract, or date")
+            pg_conn.close()
+            return
+        
+        # Step 2: Check if all trades in cycle are closed
+        with pg_conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_trades,
+                    COUNT(CASE WHEN status = 'closed' THEN 1 END) as closed_trades
+                FROM users.trades_0001
+                WHERE monitor = %s 
+                  AND contract = %s 
+                  AND date = %s
+                  AND monitor IS NOT NULL
+                  AND contract IS NOT NULL
+                  AND date IS NOT NULL
+            """, (monitor, contract, trade_date))
+            cycle_check = cursor.fetchone()
+        
+        if not cycle_check:
+            pg_conn.close()
+            return
+        
+        total_trades, closed_trades = cycle_check
+        
+        # If not all trades are closed, skip (wait for more trades to close)
+        if total_trades != closed_trades:
+            log(f"⏭️  Cycle metrics: {closed_trades}/{total_trades} trades closed for cycle {monitor}/{contract}/{trade_date} - waiting for completion")
+            pg_conn.close()
+            return
+        
+        # Step 3: All trades are closed - calculate and update cycle metrics
+        with pg_conn.cursor() as cursor:
+            # Calculate cycle totals
+            cursor.execute("""
+                SELECT 
+                    SUM(pnl) as total_pnl,
+                    SUM(ret_pct) as total_ret_pct
+                FROM users.trades_0001
+                WHERE monitor = %s 
+                  AND contract = %s 
+                  AND date = %s
+                  AND status = 'closed'
+            """, (monitor, contract, trade_date))
+            cycle_stats = cursor.fetchone()
+        
+        if not cycle_stats:
+            pg_conn.close()
+            return
+        
+        total_pnl, total_ret_pct = cycle_stats
+        
+        # Skip if we don't have valid pnl/ret_pct data
+        if total_pnl is None or total_ret_pct is None:
+            log(f"⏭️  Cycle metrics: No valid pnl/ret_pct data for cycle {monitor}/{contract}/{trade_date}")
+            pg_conn.close()
+            return
+        
+        # Calculate cycle_win_loss
+        cycle_win_loss = 'W' if total_pnl > 0 else 'L'
+        
+        # Step 4: Update all trades in the cycle with cycle metrics
+        with pg_conn.cursor() as cursor:
+            cursor.execute("""
+                UPDATE users.trades_0001
+                SET 
+                    cycle_pnl = %s,
+                    cycle_ret_pct = %s,
+                    cycle_win_loss = %s
+                WHERE monitor = %s 
+                  AND contract = %s 
+                  AND date = %s
+                  AND status = 'closed'
+            """, (total_pnl, total_ret_pct, cycle_win_loss, monitor, contract, trade_date))
+            
+            updated_count = cursor.rowcount
+            pg_conn.commit()
+        
+        log(f"✅ Cycle metrics updated for cycle {monitor}/{contract}/{trade_date}: {updated_count} trades, cycle_pnl=${total_pnl:.2f}, cycle_ret_pct={total_ret_pct:.5f}, cycle_win_loss={cycle_win_loss}")
+        
+        pg_conn.close()
+        
+    except Exception as e:
+        log(f"⚠️ Error updating cycle metrics for trade {trade_id}: {e}")
+        try:
+            pg_conn.close()
+        except:
+            pass
+
 # ---------- API ENDPOINTS ----------------------------------------------------
 
 from fastapi import APIRouter, HTTPException, status, Request
@@ -2092,65 +2306,193 @@ async def add_trade(request: Request):
         if trade_id:
             log(f"CLOSING SPECIFIC TRADE ID: {trade_id}")
             
-            # Verify this trade exists and is open
+            # Verify this trade exists and is open, and get paper_trade status
             pg_conn = get_postgresql_connection()
             if pg_conn:
                 with pg_conn.cursor() as cursor:
-                    cursor.execute("SELECT ticker, status FROM users.trades_0001 WHERE id = %s", (trade_id,))
+                    cursor.execute("SELECT ticker, status, paper_trade FROM users.trades_0001 WHERE id = %s", (trade_id,))
                     row = cursor.fetchone()
             else:
                 row = None
             
             if row and row[1] == 'open':
                 verified_ticker = row[0]
-                log(f"VERIFIED OPEN TRADE: ID={trade_id}, TICKER={verified_ticker}")
+                paper_trade = row[2] if len(row) > 2 else False
+                if isinstance(paper_trade, str):
+                    paper_trade = paper_trade.lower() in ('true', '1', 'yes')
+                elif paper_trade is None:
+                    paper_trade = False
                 
-                # IMMEDIATELY send to executor with trade_id
-                try:
-                    import requests
-                    executor_port = get_executor_port()
-                    log(f"SENDING CLOSE TO EXECUTOR")
-                    close_payload = {
-                        "id": trade_id,  # Include trade_id for close orders
-                        "ticker": verified_ticker,  # Use verified ticker from database
-                        "side": data.get("side"),
-                        "count": data.get("count"),
-                        "action": "close",
-                        "type": "market",
-                        "time_in_force": "IOC",
-                        "buy_price": 1.00,  # Set to 100 cents for unlimited close orders
-                        "symbol_close": None,
-                        "intent": "close",
-                        "ticket_id": data.get("ticket_id")  # Include ticket_id for close orders
-                    }
-                    response = requests.post(f"http://localhost:{executor_port}/trigger_trade", json=close_payload, timeout=5)
-                    log(f"EXECUTOR RESPONSE: {response.status_code}")
-                except Exception as e:
-                    log(f"CLOSE EXECUTOR ERROR: {e}")
+                log(f"VERIFIED OPEN TRADE: ID={trade_id}, TICKER={verified_ticker}, PAPER_TRADE={paper_trade}")
                 
-                # Update database status
-                symbol_close = None
-                sell_price = data.get("buy_price")
-                close_method = data.get("close_method", "manual")
+                if paper_trade:
+                    # PAPER TRADE: Skip executor, mark as closing, then immediately finalize
+                    log(f"📝 PAPER TRADE CLOSE: Skipping executor, processing immediately")
+                    
+                    # Get current_close_price from request (sent as "buy_price" in payload)
+                    # Note: Frontend/ATS already calculates sell_price = 1 - current_close_price
+                    # So buy_price in payload is already the final sell_price we should use
+                    sell_price = data.get("buy_price")  # This is already 1 - current_close_price from frontend/ATS
+                    close_method = data.get("close_method", "manual")
+                    ticket_id = data.get("ticket_id")
+                    
+                    # Get symbol from trade to fetch one_minute_avg
+                    symbol = None
+                    try:
+                        pg_conn_symbol = get_postgresql_connection()
+                        if pg_conn_symbol:
+                            with pg_conn_symbol.cursor() as cursor:
+                                cursor.execute("SELECT symbol FROM users.trades_0001 WHERE id = %s", (trade_id,))
+                                result = cursor.fetchone()
+                                if result and result[0]:
+                                    symbol = result[0]
+                            pg_conn_symbol.close()
+                    except Exception as e:
+                        log(f"⚠️ Failed to get symbol for paper trade close: {e}")
+                    
+                    # Get one_minute_avg from live price log for symbol_close
+                    symbol_close = None
+                    if symbol:
+                        try:
+                            pg_conn_symbol = get_postgresql_connection()
+                            if pg_conn_symbol:
+                                with pg_conn_symbol.cursor() as cursor:
+                                    cursor.execute(f"SELECT one_minute_avg FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
+                                    result = cursor.fetchone()
+                                    if result and result[0] is not None:
+                                        symbol_close = float(result[0])
+                                        log(f"📝 PAPER TRADE: Retrieved one_minute_avg for close: {symbol_close}")
+                                    else:
+                                        # Fallback to current price if one_minute_avg not available
+                                        cursor.execute(f"SELECT price FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
+                                        fallback_result = cursor.fetchone()
+                                        if fallback_result and fallback_result[0] is not None:
+                                            symbol_close = float(fallback_result[0])
+                                            log(f"📝 PAPER TRADE: Using current price as fallback: {symbol_close}")
+                                pg_conn_symbol.close()
+                        except Exception as e:
+                            log(f"⚠️ Failed to get one_minute_avg from live price log: {e}")
+                    
+                    # Mark as closing first
+                    try:
+                        pg_conn_closing = get_postgresql_connection()
+                        if pg_conn_closing:
+                            with pg_conn_closing.cursor() as cursor:
+                                cursor.execute("UPDATE users.trades_0001 SET status = 'closing', symbol_close = %s, close_method = %s WHERE id = %s", (symbol_close, close_method, trade_id))
+                                pg_conn_closing.commit()
+                            pg_conn_closing.close()
+                    except Exception as pg_err:
+                        log(f"❌ Failed to update paper trade to closing: {pg_err}")
+                    
+                    # Notify active trade supervisor that it's closing
+                    notify_active_trade_supervisor_direct(trade_id, ticket_id, "closing")
+                    
+                    # Immediately finalize the trade
+                    try:
+                        now_est = datetime.now(ZoneInfo("America/New_York"))
+                        closed_at = now_est.strftime("%H:%M:%S")
+                        
+                        # Get trade data for calculations
+                        pg_conn_trade = get_postgresql_connection()
+                        if pg_conn_trade:
+                            with pg_conn_trade.cursor() as cursor:
+                                cursor.execute("SELECT buy_price, position, bankroll FROM users.trades_0001 WHERE id = %s", (trade_id,))
+                                trade_data = cursor.fetchone()
+                            pg_conn_trade.close()
+                        else:
+                            trade_data = None
+                        
+                        if trade_data and sell_price is not None:
+                            buy_price, position, bankroll = trade_data
+                            
+                            # Calculate PnL (fees = 0.00 for paper trades)
+                            fees = 0.00
+                            buy_value = buy_price * position
+                            sell_value = sell_price * position
+                            pnl = round(sell_value - buy_value - fees, 2)
+                            win_loss = "W" if pnl > 0 else "L" if pnl < 0 else "D"
+                            
+                            # Calculate ret_pct
+                            ret_pct = None
+                            if bankroll is not None and bankroll > 0:
+                                ret_pct = round((pnl / (bankroll / 100.0)) * 100, 5)
+                            
+                            # Get high_price and low_price from active_trades
+                            high_price, low_price = get_high_low_prices_from_active_trades(trade_id)
+                            
+                            # Update trade to closed with all calculated values
+                            update_trade_status_with_ret_pct(trade_id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, fees, ret_pct, high_price, low_price)
+                            
+                            # Set order_id_close to NULL for paper trades
+                            pg_conn_update = get_postgresql_connection()
+                            if pg_conn_update:
+                                with pg_conn_update.cursor() as cursor:
+                                    cursor.execute("UPDATE users.trades_0001 SET order_id_close = NULL WHERE id = %s", (trade_id,))
+                                    pg_conn_update.commit()
+                                pg_conn_update.close()
+                            
+                            log(f"📝 PAPER TRADE CLOSED: Trade {trade_id}, PnL=${pnl}, W/L={win_loss}, Fees=${fees}")
+                            log_event(ticket_id, f"MANAGER: PAPER TRADE CLOSED - PnL: ${pnl}, W/L: {win_loss}, Fees: ${fees}")
+                            
+                            # Notify active trade supervisor that it's closed
+                            notify_active_trade_supervisor_direct(trade_id, ticket_id, "closed")
+                            
+                            # Notify strike table for display update
+                            notify_strike_table_trade_change(trade_id, "closed")
+                        else:
+                            log(f"❌ Failed to finalize paper trade {trade_id}: missing trade data or sell_price")
+                            log_event(ticket_id, f"MANAGER: PAPER TRADE CLOSE FAILED - missing data")
+                    except Exception as e:
+                        log(f"❌ Error finalizing paper trade {trade_id}: {e}")
+                        log_event(ticket_id, f"MANAGER: PAPER TRADE CLOSE ERROR: {e}")
+                else:
+                    # LIVE TRADE: Send to executor as normal
+                    # IMMEDIATELY send to executor with trade_id
+                    try:
+                        import requests
+                        executor_port = get_executor_port()
+                        log(f"SENDING CLOSE TO EXECUTOR")
+                        close_payload = {
+                            "id": trade_id,  # Include trade_id for close orders
+                            "ticker": verified_ticker,  # Use verified ticker from database
+                            "side": data.get("side"),
+                            "count": data.get("count"),
+                            "action": "close",
+                            "type": "market",
+                            "time_in_force": "IOC",
+                            "buy_price": 1.00,  # Set to 100 cents for unlimited close orders
+                            "symbol_close": None,
+                            "intent": "close",
+                            "ticket_id": data.get("ticket_id")  # Include ticket_id for close orders
+                        }
+                        response = requests.post(f"http://localhost:{executor_port}/trigger_trade", json=close_payload, timeout=5)
+                        log(f"EXECUTOR RESPONSE: {response.status_code}")
+                    except Exception as e:
+                        log(f"CLOSE EXECUTOR ERROR: {e}")
                 
-                # Update PostgreSQL
-                try:
-                    pg_conn_update = get_postgresql_connection()
-                    if pg_conn_update:
-                        with pg_conn_update.cursor() as cursor:
-                            cursor.execute("UPDATE users.trades_0001 SET status = 'closing', symbol_close = %s, close_method = %s WHERE id = %s", (symbol_close, close_method, trade_id))
-                            pg_conn_update.commit()
-                            print(f"💾 Manual close trade also marked as 'closing' in PostgreSQL users.trades_0001")
-                        pg_conn_update.close()
-                    else:
-                        print(f"⚠️ Skipping PostgreSQL manual close update - no connection available")
-                except Exception as pg_err:
-                    print(f"❌ Failed to update manual close trade in PostgreSQL: {pg_err}")
-                
-                # Notify active trade supervisor
-                notify_active_trade_supervisor_direct(trade_id, data.get('ticket_id'), "closing")
-                
-                log(f"CLOSE TICKET SENT FOR TRADE {trade_id} - WAITING FOR CONFIRMATION")
+                    # Update database status
+                    symbol_close = None
+                    sell_price = data.get("buy_price")
+                    close_method = data.get("close_method", "manual")
+                    
+                    # Update PostgreSQL
+                    try:
+                        pg_conn_update = get_postgresql_connection()
+                        if pg_conn_update:
+                            with pg_conn_update.cursor() as cursor:
+                                cursor.execute("UPDATE users.trades_0001 SET status = 'closing', symbol_close = %s, close_method = %s WHERE id = %s", (symbol_close, close_method, trade_id))
+                                pg_conn_update.commit()
+                                print(f"💾 Manual close trade also marked as 'closing' in PostgreSQL users.trades_0001")
+                            pg_conn_update.close()
+                        else:
+                            print(f"⚠️ Skipping PostgreSQL manual close update - no connection available")
+                    except Exception as pg_err:
+                        print(f"❌ Failed to update manual close trade in PostgreSQL: {pg_err}")
+                    
+                    # Notify active trade supervisor
+                    notify_active_trade_supervisor_direct(trade_id, data.get('ticket_id'), "closing")
+                    
+                    log(f"CLOSE TICKET SENT FOR TRADE {trade_id} - WAITING FOR CONFIRMATION")
             else:
                 if row:
                     log(f"TRADE {trade_id} EXISTS BUT STATUS IS: {row[1]} (expected: open)")
@@ -2173,16 +2515,65 @@ async def add_trade(request: Request):
     now_est = datetime.now(ZoneInfo("America/New_York"))
     data["time"] = now_est.strftime("%H:%M:%S")
 
-    # IMMEDIATELY send to executor first
-    try:
-        import requests
-        executor_port = get_executor_port()
-        log(f"SENDING TO EXECUTOR")
-        response = requests.post(f"http://localhost:{executor_port}/trigger_trade", json=data, timeout=5)
-        log(f"EXECUTOR RESPONSE: {response.status_code}")
-    except Exception as e:
-        log(f"EXECUTOR ERROR: {e}")
-        log_event(data["ticket_id"], f"EXECUTOR ERROR: {e}")
+    # Check if this is a paper trade
+    paper_trade = data.get('paper_trade', False)
+    if isinstance(paper_trade, str):
+        paper_trade = paper_trade.lower() in ('true', '1', 'yes')
+    elif paper_trade is None:
+        paper_trade = False
+
+    if paper_trade:
+        # PAPER TRADE: Skip executor, create pending trade, then immediately mark as open
+        log(f"📝 PAPER TRADE: Skipping executor, processing immediately")
+        
+        # Insert trade with 'pending' status first
+        data['status'] = 'pending'
+        trade_id = insert_trade(data)
+        
+        if trade_id is None:
+            log(f"❌ Failed to insert paper trade to database")
+            log_event(data.get("ticket_id", "UNKNOWN"), "MANAGER: PAPER TRADE — DATABASE INSERT FAILED")
+            return {"error": "Failed to insert paper trade to database", "id": None}
+        
+        # Notify active trade supervisor about the new pending trade
+        notify_active_trade_supervisor_direct(trade_id, data.get("ticket_id", "PAPER"), "pending")
+        
+        # Immediately mark as open with fees = 0.00, using original buy_price
+        try:
+            pg_conn = get_postgresql_connection()
+            if pg_conn:
+                with pg_conn.cursor() as cursor:
+                    # Update to open status with fees = 0.00, order_id_open = NULL
+                    cursor.execute("""
+                        UPDATE users.trades_0001 
+                        SET status = 'open', 
+                            fees = 0.00, 
+                            order_id_open = NULL
+                        WHERE id = %s
+                    """, (trade_id,))
+                    pg_conn.commit()
+                pg_conn.close()
+        except Exception as e:
+            log(f"⚠️ Failed to update paper trade to open: {e}")
+        
+        log_event(data.get("ticket_id", "UNKNOWN"), "MANAGER: PAPER TRADE — OPENED IMMEDIATELY")
+        
+        # Notify active trade supervisor that trade is now open
+        notify_active_trade_supervisor_direct(trade_id, data.get("ticket_id", "PAPER"), "open")
+        
+        return {"id": trade_id}
+    else:
+        # LIVE TRADE: Send to executor as normal
+        # IMMEDIATELY send to executor first
+        try:
+            import requests
+            executor_port = get_executor_port()
+            log(f"SENDING TO EXECUTOR")
+            response = requests.post(f"http://localhost:{executor_port}/trigger_trade", json=data, timeout=5)
+            log(f"EXECUTOR RESPONSE: {response.status_code}")
+        except Exception as e:
+            log(f"EXECUTOR ERROR: {e}")
+            log_event(data.get("ticket_id", "UNKNOWN"), f"EXECUTOR ERROR: {e}")
 
     # Log immediately after executor call, before heavy database operations
     log(f"TRADE SENT TO EXECUTOR - PROCESSING DATABASE")
@@ -2491,16 +2882,22 @@ def check_expired_trades():
         for trade_id, ticker, symbol in active_trades:
             if symbol not in symbol_prices:
                 try:
-                    # Get price from symbol-specific price log
+                    # Get one_minute_avg from symbol-specific price log
                     pg_conn = get_postgresql_connection()
                     if pg_conn:
                         with pg_conn.cursor() as cursor:
-                            cursor.execute(f"SELECT price FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
+                            cursor.execute(f"SELECT one_minute_avg FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
                             result = cursor.fetchone()
                             if result and result[0] is not None:
                                 symbol_prices[symbol] = float(result[0])
                             else:
-                                symbol_prices[symbol] = None
+                                # Fallback to current price if one_minute_avg not available
+                                cursor.execute(f"SELECT price FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
+                                fallback_result = cursor.fetchone()
+                                if fallback_result and fallback_result[0] is not None:
+                                    symbol_prices[symbol] = float(fallback_result[0])
+                                else:
+                                    symbol_prices[symbol] = None
                         pg_conn.close()
                     else:
                         symbol_prices[symbol] = None
@@ -2515,8 +2912,37 @@ def check_expired_trades():
                     for trade_id, ticker, symbol in active_trades:
                         symbol_close = symbol_prices.get(symbol)
                         
+                        # CRITICAL: Re-check trade status before UPDATE to prevent race condition
+                        # If trade was already closed between SELECT and UPDATE, skip it entirely
+                        cursor.execute("SELECT status, high_price, low_price FROM users.trades_0001 WHERE id = %s", (trade_id,))
+                        status_check = cursor.fetchone()
+                        
+                        if not status_check:
+                            continue  # Trade doesn't exist, skip
+                        
+                        current_status, existing_high_price, existing_low_price = status_check
+                        
+                        # IMMUTABILITY RULE: Never touch already-closed trades
+                        if current_status == 'closed':
+                            log(f"⚠️ EXPIRATION: Skipping trade {trade_id} - already closed (immutability rule)")
+                            continue
+                        
+                        # Only process trades that are still open/closing/close_failed
+                        if current_status not in ('open', 'closing', 'close_failed'):
+                            continue
+                        
                         # Get high_price and low_price from active_trades before it's removed
                         high_price, low_price = get_high_low_prices_from_active_trades(trade_id)
+                        
+                        # PRESERVE EXISTING VALUES: If get_high_low_prices_from_active_trades() returns (None, None),
+                        # but trade already has values, preserve them instead of overwriting with NULL
+                        if high_price is None and existing_high_price is not None:
+                            high_price = existing_high_price
+                            log(f"⚠️ EXPIRATION: Preserving existing high_price={high_price} for trade {trade_id}")
+                        
+                        if low_price is None and existing_low_price is not None:
+                            low_price = existing_low_price
+                            log(f"⚠️ EXPIRATION: Preserving existing low_price={low_price} for trade {trade_id}")
                         
                         cursor.execute("""
                             UPDATE users.trades_0001 
@@ -2538,11 +2964,147 @@ def check_expired_trades():
         
         notify_frontend_trade_change()
         
+        # Separate paper trades from live trades
+        paper_trade_ids = []
+        live_trade_tickers = []
+        
+        try:
+            pg_conn_check = get_postgresql_connection()
+            if pg_conn_check:
+                with pg_conn_check.cursor() as cursor:
+                    for trade_id, ticker, symbol in active_trades:
+                        cursor.execute("SELECT paper_trade FROM users.trades_0001 WHERE id = %s", (trade_id,))
+                        result = cursor.fetchone()
+                        if result and result[0] is True:
+                            paper_trade_ids.append((trade_id, ticker, symbol))
+                        else:
+                            live_trade_tickers.append(ticker)
+                pg_conn_check.close()
+            else:
+                # If we can't check, treat all as live trades
+                for trade_id, ticker, symbol in active_trades:
+                    live_trade_tickers.append(ticker)
+        except Exception as e:
+            log(f"⚠️ Error separating paper/live trades: {e}, treating all as live")
+            for trade_id, ticker, symbol in active_trades:
+                live_trade_tickers.append(ticker)
+        
+        # Notify active_trade_supervisor for all expired trades (both paper and live)
         for trade_id, ticker, symbol in active_trades:
             notify_active_trade_supervisor_direct(trade_id, str(ticker), "expired")
         
-        expired_tickers = [trade[1] for trade in active_trades]
-        poll_settlements_for_matches(expired_tickers)
+        # Process paper trades immediately (manual settlement)
+        if paper_trade_ids:
+            log(f"📝 Processing {len(paper_trade_ids)} expired paper trades")
+            for trade_id, ticker, symbol in paper_trade_ids:
+                pg_conn_paper = None
+                try:
+                    # Get trade data for settlement calculation
+                    pg_conn_paper = get_postgresql_connection()
+                    if not pg_conn_paper:
+                        log(f"⚠️ Cannot connect to PostgreSQL for paper trade {trade_id} settlement")
+                        continue
+                    
+                    with pg_conn_paper.cursor() as cursor:
+                        cursor.execute("""
+                            SELECT strike, side, symbol_close, buy_price, position, bankroll, high_price, low_price
+                            FROM users.trades_0001 
+                            WHERE id = %s AND status = 'expired'
+                        """, (trade_id,))
+                        trade_data = cursor.fetchone()
+                    
+                    if not trade_data:
+                        log(f"⚠️ Paper trade {trade_id} not found or not expired")
+                        continue
+                    
+                    strike, side, symbol_close, buy_price, position, bankroll, high_price, low_price = trade_data
+                    
+                    if symbol_close is None:
+                        log(f"⚠️ Paper trade {trade_id} has no symbol_close, skipping settlement")
+                        continue
+                    
+                    # Clean strike (remove $ and commas)
+                    strike_clean = str(strike).replace('$', '').replace(',', '')
+                    strike_float = float(strike_clean)
+                    symbol_close_float = float(symbol_close)
+                    
+                    # Determine winner/loser based on strike and side
+                    is_winner = False
+                    if side and side.upper() in ('Y', 'YES'):
+                        # YES trade: WINNER if symbol_close >= strike
+                        is_winner = symbol_close_float >= strike_float
+                    elif side and side.upper() in ('N', 'NO'):
+                        # NO trade: WINNER if symbol_close <= strike
+                        is_winner = symbol_close_float <= strike_float
+                    else:
+                        log(f"⚠️ Paper trade {trade_id} has invalid side: {side}")
+                        continue
+                    
+                    # Set sell_price: 1.0000 for winners, 0.0000 for losers
+                    sell_price = 1.0000 if is_winner else 0.0000
+                    fees = 0.00
+                    
+                    # Calculate PnL
+                    pnl = None
+                    if buy_price is not None and position is not None:
+                        buy_value = buy_price * position
+                        sell_value = sell_price * position
+                        pnl = round(sell_value - buy_value - fees, 2)
+                    
+                    # Determine win_loss
+                    win_loss = "W" if is_winner else "L"
+                    
+                    # Calculate ret_pct
+                    ret_pct = None
+                    if bankroll is not None and bankroll > 0 and pnl is not None:
+                        ret_pct = round((pnl / (bankroll / 100.0)) * 100, 5)
+                    
+                    # Finalize the trade
+                    now_est = datetime.now(ZoneInfo("America/New_York"))
+                    closed_at = now_est.strftime("%H:%M:%S")
+                    
+                    update_trade_status_with_ret_pct(
+                        trade_id=trade_id,
+                        status="closed",
+                        closed_at=closed_at,
+                        sell_price=sell_price,
+                        symbol_close=symbol_close,
+                        win_loss=win_loss,
+                        pnl=pnl,
+                        close_method="expired",
+                        fees=fees,
+                        ret_pct=ret_pct,
+                        high_price=high_price,
+                        low_price=low_price
+                    )
+                    
+                    # Set order_id_close to NULL for paper trades
+                    if pg_conn_paper:
+                        with pg_conn_paper.cursor() as cursor:
+                            cursor.execute("UPDATE users.trades_0001 SET order_id_close = NULL WHERE id = %s", (trade_id,))
+                            pg_conn_paper.commit()
+                    
+                    log(f"📝 PAPER TRADE SETTLED: Trade {trade_id}, {ticker}, W/L={win_loss}, PnL=${pnl}, Sell=${sell_price}, SymbolClose=${symbol_close_float}, Strike=${strike_float}")
+                    
+                    # Notify active trade supervisor that it's closed
+                    notify_active_trade_supervisor_direct(trade_id, str(ticker), "closed")
+                    
+                    # Notify strike table for display update
+                    notify_strike_table_trade_change(trade_id, "closed")
+                    
+                except Exception as e:
+                    log(f"❌ Error processing paper trade {trade_id} settlement: {e}")
+                finally:
+                    # Always close the connection if it was opened
+                    if pg_conn_paper:
+                        try:
+                            pg_conn_paper.close()
+                        except:
+                            pass
+        
+        # Process live trades with normal settlement polling
+        if live_trade_tickers:
+            poll_settlements_for_matches(live_trade_tickers)
         
     except Exception as e:
         pass
@@ -2663,6 +3225,8 @@ def poll_settlements_for_matches(expired_tickers):
                                     # Update win_streak for the monitor
                                     update_monitor_win_streak(trade_id)
                                     refresh_monitor_cycle_performance_for_trade(trade_id)
+                                    # Check and update cycle metrics if all trades in cycle are closed
+                                    check_and_update_cycle_metrics(trade_id)
                                     
                                 pg_conn_update.close()
                             else:

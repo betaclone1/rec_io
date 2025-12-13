@@ -198,6 +198,11 @@
       pointer-events: auto !important;
     }
 
+    /* Paper Trading Border */
+    .monitor-tile.paper-trading-active {
+      box-shadow: inset 0 0 0 2px #48bb78;
+    }
+
 
     /* Monitor Name */
     .monitor-name {
@@ -215,10 +220,8 @@
     }
 
     .tile-view .monitor-name {
-      position: absolute;
-      bottom: 16px;
-      right: 16px;
       font-size: 9px;
+      text-align: right;
     }
 
     /* Monitor Controls */
@@ -436,9 +439,79 @@
       justify-content: center;
     }
 
+    /* Monitor Bottom Row for List View */
+    .list-view .monitor-bottom-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 10px;
+    }
+
+    .list-view .monitor-bottom-row .monitor-uptime {
+      margin-right: 0;
+      min-width: auto;
+    }
+
+    .list-view .monitor-bottom-row .monitor-name {
+      margin-left: 0;
+      min-width: auto;
+    }
+
     .tile-view .monitor-uptime {
       text-align: left;
+    }
+
+    /* Monitor Bottom Row */
+    .tile-view .monitor-bottom-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
       margin-top: 10px;
+    }
+
+    .tile-view .monitor-bottom-row .monitor-uptime {
+      margin-top: 0;
+      display: flex;
+      align-items: center;
+    }
+
+    .tile-view .monitor-bottom-row .monitor-name {
+      margin-top: 0;
+      display: flex;
+      align-items: center;
+    }
+
+    /* Paper Trading Button */
+    .paper-trading-button {
+      font-size: 9px;
+      color: #a0aec0;
+      font-weight: 500;
+      letter-spacing: 0.5px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background-color: #444;
+      border: 1px solid #666;
+      text-align: center;
+      min-width: 80px;
+      flex: 0 0 auto;
+      cursor: pointer;
+      transition: background-color 0.2s, border-color 0.2s, color 0.2s;
+    }
+
+    .paper-trading-button:hover {
+      opacity: 0.8;
+    }
+
+    .paper-trading-button.active {
+      background-color: #48bb78;
+      border-color: #48bb78;
+      color: #ffffff;
+    }
+
+    .paper-trading-button.inactive {
+      background-color: #444;
+      border-color: #666;
+      color: #a0aec0;
     }
 
     /* Auto Trade Label */
@@ -1291,8 +1364,9 @@
       
       if (isListView) {
         // List view layout - horizontal data arrangement
+        const isPaperTrading = monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1;
         return `
-          <div class="monitor-tile list-view ${monitor.status === 'inactive' ? 'inactive' : ''}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
+          <div class="monitor-tile list-view ${monitor.status === 'inactive' ? 'inactive' : ''} ${isPaperTrading ? 'paper-trading-active' : ''}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
             <!-- Column 1: Status Light -->
             <div class="status-light list-status-light ${monitor.status === 'active' ? 'active' : 'inactive'}" onclick="toggleMonitorStatus('${monitor.id}', '${monitor.name}', '${monitor.status}')" style="cursor: pointer;" title="${monitor.status === 'active' ? 'Click to deactivate monitor' : 'Click to activate monitor'}"></div>
             
@@ -1328,8 +1402,11 @@
                 <div class="stat-label">PnL</div>
               </div>
             </div>
-            <div class="monitor-uptime">${monitor.uptime}</div>
-            <div class="monitor-name">${monitor.id === 'NEW_MONITOR' ? monitor.name : `Monitor ${monitor.name.slice(-5)}`}</div>
+            <div class="monitor-bottom-row">
+              <div class="monitor-uptime">${monitor.uptime}</div>
+              <div class="paper-trading-button ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'active' : 'inactive'}" onclick="togglePaperTrade('${monitor.id}')" title="Click to toggle paper trading mode">PAPER TRADING</div>
+              <div class="monitor-name">${monitor.id === 'NEW_MONITOR' ? monitor.name : `Monitor ${monitor.name.slice(-5)}`}</div>
+            </div>
             <div class="monitor-controls">
               <div style="display: flex; align-items: center;">
                 <img 
@@ -1347,9 +1424,9 @@
         `;
       } else {
         // Tile view layout - original vertical arrangement
+        const isPaperTrading = monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1;
         return `
-          <div class="monitor-tile tile-view ${monitor.status === 'inactive' ? 'inactive' : ''}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
-            <div class="monitor-name">${monitor.id === 'NEW_MONITOR' ? monitor.name : `Monitor ${monitor.name.slice(-5)}`}</div>
+          <div class="monitor-tile tile-view ${monitor.status === 'inactive' ? 'inactive' : ''} ${isPaperTrading ? 'paper-trading-active' : ''}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
             <div style="display: flex; align-items: flex-start; margin-bottom: 10px;">
               <!-- Column 1: Status Light -->
               <div class="status-light ${monitor.status === 'active' ? 'active' : 'inactive'}" onclick="toggleMonitorStatus('${monitor.id}', '${monitor.name}', '${monitor.status}')" style="cursor: pointer;" title="${monitor.status === 'active' ? 'Click to deactivate monitor' : 'Click to activate monitor'}"></div>
@@ -1404,7 +1481,11 @@
                 <div class="stat-label">PnL</div>
               </div>
             </div>
-            <div class="monitor-uptime">${monitor.uptime}</div>
+            <div class="monitor-bottom-row">
+              <div class="monitor-uptime">${monitor.uptime}</div>
+              <div class="paper-trading-button ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'active' : 'inactive'}" onclick="togglePaperTrade('${monitor.id}')" title="Click to toggle paper trading mode">PAPER TRADING</div>
+              <div class="monitor-name">${monitor.id === 'NEW_MONITOR' ? monitor.name : `Monitor ${monitor.name.slice(-5)}`}</div>
+            </div>
           </div>
         `;
       }
@@ -2286,6 +2367,95 @@
       } else {
         console.error('Monitor not found:', monitorId);
       }
+    }
+
+    function togglePaperTrade(monitorId) {
+      console.log('Paper trading toggle clicked for monitor:', monitorId);
+      
+      // Find the monitor in the data
+      const monitor = monitors.find(m => m.id === monitorId);
+      if (!monitor) {
+        console.error('Monitor not found:', monitorId);
+        return;
+      }
+      
+      // Get current paper_trade value (handle various formats)
+      const currentPaperTrade = monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1;
+      const newPaperTrade = !currentPaperTrade;
+      
+      console.log(`Toggling paper trade from ${currentPaperTrade} to ${newPaperTrade} for ${monitorId}`);
+      
+      // Update the monitor data
+      monitor.paper_trade = newPaperTrade;
+      
+      // Update the visual state of the button
+      const buttonElement = event.target;
+      if (newPaperTrade) {
+        buttonElement.classList.remove('inactive');
+        buttonElement.classList.add('active');
+      } else {
+        buttonElement.classList.remove('active');
+        buttonElement.classList.add('inactive');
+      }
+      
+      // Update the tile border
+      const tileElement = document.querySelector(`[data-monitor-id="${monitorId}"]`);
+      if (tileElement) {
+        if (newPaperTrade) {
+          tileElement.classList.add('paper-trading-active');
+        } else {
+          tileElement.classList.remove('paper-trading-active');
+        }
+      }
+      
+      // Send update to backend
+      // Extract numeric monitor ID from mon_0001_10002 format and convert to MON_0001_10002 format
+      const numericId = monitorId.split('_').pop(); // Extract 10002 from mon_0001_10002
+      const formattedMonitorId = `MON_0001_${numericId}`;
+      
+      console.log('Sending request with formatted monitor ID:', formattedMonitorId);
+      
+      fetch('/api/monitor/toggle-paper-trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          monitor_id: formattedMonitorId, 
+          paper_trade: newPaperTrade 
+        })
+      })
+      .then(response => response.json())
+      .then(data => {
+        if (data.status === 'ok') {
+          console.log('Successfully updated paper trade in database');
+        } else {
+          console.error('Failed to update paper trade:', data.message);
+          // Revert the UI change on error
+          monitor.paper_trade = currentPaperTrade;
+          if (currentPaperTrade) {
+            buttonElement.classList.remove('inactive');
+            buttonElement.classList.add('active');
+            tileElement.classList.add('paper-trading-active');
+          } else {
+            buttonElement.classList.remove('active');
+            buttonElement.classList.add('inactive');
+            tileElement.classList.remove('paper-trading-active');
+          }
+        }
+      })
+      .catch(error => {
+        console.error('Error updating paper trade:', error);
+        // Revert the UI change on error
+        monitor.paper_trade = currentPaperTrade;
+        if (currentPaperTrade) {
+          buttonElement.classList.remove('inactive');
+          buttonElement.classList.add('active');
+          tileElement.classList.add('paper-trading-active');
+        } else {
+          buttonElement.classList.remove('active');
+          buttonElement.classList.add('inactive');
+          tileElement.classList.remove('paper-trading-active');
+        }
+      });
     }
 
     async function loadDashboardPreferences() {
@@ -4420,11 +4590,21 @@
     // Helper function to get status text with optional timer
     function getStatusText(status, monitorId) {
       const statusUpper = status.toUpperCase();
-      if (statusUpper === 'PAUSED') {
-        const timer = cooldownTimers.get(monitorId);
-        if (timer && timer > 0) {
-          return formatCooldownTimer(timer);
+      const timer = cooldownTimers.get(monitorId);
+      
+      // Show cooldown timer if available, regardless of status (for cooldown mode during ACTIVE state)
+      if (timer && timer > 0) {
+        const timerDisplay = formatCooldownTimer(timer);
+        if (statusUpper === 'PAUSED') {
+          return timerDisplay; // For PAUSED, show only timer
+        } else {
+          return `${statusUpper} (${timerDisplay})`; // For ACTIVE/other, show status with timer
         }
+      }
+      
+      // No timer, return status only
+      if (statusUpper === 'PAUSED') {
+        return statusUpper;
       }
       return statusUpper;
     }
@@ -4482,6 +4662,52 @@
               console.log('Available monitor IDs:', monitors.map(m => m.id));
             }
           }
+
+          // Handle paper trade toggle updates
+          if (data.type === 'paper_trade_toggled') {
+            console.log('Paper trade toggle received:', data);
+            
+            // Convert backend format (MON_0001_10002) to frontend format (mon_0001_10002)
+            const backendMonitorId = data.monitor_id; // e.g., MON_0001_10002
+            const frontendMonitorId = backendMonitorId.replace('MON_', 'mon_'); // e.g., mon_0001_10002
+            
+            console.log('Converting monitor ID:', backendMonitorId, '->', frontendMonitorId);
+            
+            // Find the monitor in local data and update it
+            const monitor = monitors.find(m => m.id === frontendMonitorId);
+            if (monitor) {
+              const paperTrade = data.paper_trade === true || data.paper_trade === 'true' || data.paper_trade === 1;
+              monitor.paper_trade = paperTrade;
+              console.log('Updated monitor', frontendMonitorId, 'paper_trade to:', paperTrade);
+              
+              // Update the visual state of the button
+              const buttonElement = document.querySelector(`[data-monitor-id="${frontendMonitorId}"] .paper-trading-button`);
+              const tileElement = document.querySelector(`[data-monitor-id="${frontendMonitorId}"]`);
+              
+              if (buttonElement) {
+                if (paperTrade) {
+                  buttonElement.classList.remove('inactive');
+                  buttonElement.classList.add('active');
+                } else {
+                  buttonElement.classList.remove('active');
+                  buttonElement.classList.add('inactive');
+                }
+                console.log('Updated paper trading button visual state for', frontendMonitorId);
+              }
+              
+              // Update the tile border
+              if (tileElement) {
+                if (paperTrade) {
+                  tileElement.classList.add('paper-trading-active');
+                } else {
+                  tileElement.classList.remove('paper-trading-active');
+                }
+                console.log('Updated paper trading border for', frontendMonitorId);
+              }
+            } else {
+              console.warn('Monitor not found in local data for paper trade update:', frontendMonitorId);
+            }
+          }
           
           // Handle monitor list updates
           if (data.type === 'monitor_list_updated') {
@@ -4498,17 +4724,22 @@
             const monitorId = data.data.monitor_id;
             const cooldownTimer = data.data.cooldown_timer;
             
-            // Store the cooldown timer value
-            cooldownTimers.set(monitorId, cooldownTimer);
-            console.log(`Stored cooldown timer for ${monitorId}: ${cooldownTimer}s`);
+            // Store the cooldown timer value (or remove if timer is 0 or null)
+            if (cooldownTimer && cooldownTimer > 0) {
+              cooldownTimers.set(monitorId, cooldownTimer);
+              console.log(`Stored cooldown timer for ${monitorId}: ${cooldownTimer}s`);
+            } else {
+              cooldownTimers.delete(monitorId);
+              console.log(`Cleared cooldown timer for ${monitorId}`);
+            }
             
-            // Update the display if monitor is currently PAUSED
+            // Update the display for any status (ACTIVE, PAUSED, etc.) if monitor exists
             const monitor = monitors.find(m => m.id === monitorId);
-            if (monitor && (monitor.auto_trade_status === 'PAUSED' || monitor.auto_trade_status === 'paused')) {
+            if (monitor) {
               const statusElement = document.querySelector(`[data-monitor-id="${monitorId}"] .monitor-status`);
               if (statusElement) {
-                statusElement.textContent = getStatusText('PAUSED', monitorId);
-                console.log(`Updated timer display for ${monitorId}`);
+                statusElement.textContent = getStatusText(monitor.auto_trade_status, monitorId);
+                console.log(`Updated timer display for ${monitorId} (status: ${monitor.auto_trade_status})`);
               }
             }
           }
@@ -4524,10 +4755,8 @@
             if (monitor) {
               monitor.auto_trade_status = data.data.auto_trade_status;
               
-              // Clear cooldown timer if status is not PAUSED
-              if (data.data.auto_trade_status.toUpperCase() !== 'PAUSED') {
-                cooldownTimers.delete(data.data.monitor_id);
-              }
+              // Don't clear cooldown timer on status change - let cooldown_timer_change messages handle it
+              // Cooldown can exist during ACTIVE status (for Hourly HTC during spike cooldown)
               
               // Update the visual status indicator
               const statusElement = document.querySelector(`[data-monitor-id="${data.data.monitor_id}"] .monitor-status`);
@@ -4683,6 +4912,8 @@
       // Show/hide strategy sections
       const htcSection = document.getElementById('m_htcStrategySection');
       const msSection = document.getElementById('m_msStrategySection');
+      const probAdjContainer = document.getElementById('m_probAdjContainer');
+      const probAdjLabel = document.getElementById('m_probAdjLabel');
       if (htcSection && msSection) {
         if (isMomentumScalp) {
           htcSection.style.display = 'none';
@@ -4691,6 +4922,14 @@
           htcSection.style.display = 'contents';
           msSection.style.display = 'none';
         }
+      }
+      // Show/hide Probability Adjustment slider (only for Hourly HTC, not Reverse HTC)
+      const isReverseHTC = currentStrategy && currentStrategy.toUpperCase().includes('REVERSE HTC');
+      const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
+      if (probAdjContainer && probAdjLabel) {
+        const displayValue = isHourlyHTC ? 'block' : 'none';
+        probAdjContainer.style.display = displayValue;
+        probAdjLabel.style.display = displayValue;
       }
 
       mobileFetchSettings(apiId).then(data => {
@@ -4756,6 +4995,7 @@
         setVal('m_spikeMomentum', data.spike_alert_momentum_threshold ?? 60);
         setVal('m_spikeCooldown', data.spike_alert_cooldown_threshold ?? 55);
         setVal('m_spikeTime', data.spike_alert_cooldown_minutes ?? 15);
+        setVal('m_probAdjSlider', data.prob_adj ?? 5.00);
         setChk('m_perfAlloc', data.performance_based_allocation ?? false);
         // Auto Stop
         setVal('m_stopProb', data.current_probability ?? 40);
@@ -4772,6 +5012,10 @@
         document.getElementById('m_spikeMomentumVal').textContent = '±' + document.getElementById('m_spikeMomentum').value;
         document.getElementById('m_spikeCooldownVal').textContent = '±' + document.getElementById('m_spikeCooldown').value;
         document.getElementById('m_spikeTimeVal').textContent = document.getElementById('m_spikeTime').value + ' min';
+        const probAdjSlider = document.getElementById('m_probAdjSlider');
+        if (probAdjSlider && document.getElementById('m_probAdjValueDisplay')) {
+          updateProbAdjDisplay(probAdjSlider.value);
+        }
         document.getElementById('m_stopProbVal').textContent = document.getElementById('m_stopProb').value + '%';
         document.getElementById('m_momentumThresholdVal').textContent = '±' + document.getElementById('m_momentumThreshold').value;
         document.getElementById('m_verifySecondsVal').textContent = document.getElementById('m_verifySeconds').value + 's';
@@ -4849,6 +5093,12 @@
             payload.spike_alert_momentum_threshold = parseInt(document.getElementById('m_spikeMomentum').value,10);
             payload.spike_alert_cooldown_threshold = parseInt(document.getElementById('m_spikeCooldown').value,10);
             payload.spike_alert_cooldown_minutes = parseInt(document.getElementById('m_spikeTime').value,10);
+            // Only include prob_adj for Hourly HTC (not Reverse HTC)
+            const isReverseHTC = currentStrategy && currentStrategy.toUpperCase().includes('REVERSE HTC');
+            const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
+            if (isHourlyHTC) {
+              payload.prob_adj = parseFloat(document.getElementById('m_probAdjSlider').value);
+            }
             payload.performance_based_allocation = document.getElementById('m_perfAlloc').checked;
             payload.current_probability = parseInt(document.getElementById('m_stopProb').value,10);
             payload.min_ttc_seconds = parseInt(document.getElementById('m_minTTC').value,10);
@@ -4988,9 +5238,15 @@
         </div>
 
         <label for="m_spikeTime" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Time (minutes):</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
           <input type="range" id="m_spikeTime" min="0" max="180" value="15" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_spikeTimeVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">15 min</div>
+        </div>
+
+        <label id="m_probAdjLabel" for="m_probAdjSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Probability Adjustment (%):</label>
+        <div id="m_probAdjContainer" class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+          <input type="range" id="m_probAdjSlider" min="0" max="20" step="0.5" value="5" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="m_probAdjValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
         </div>
 
         <hr style="border:none; border-top:1px solid #e0e0e0; margin:24px 0 16px 0;">
@@ -5415,6 +5671,21 @@
         update();
       }
 
+      function updateProbAdjDisplay(value) {
+        const display = document.getElementById('m_probAdjValueDisplay');
+        const slider = document.getElementById('m_probAdjSlider');
+        if (display && slider) {
+          display.textContent = `${parseFloat(value).toFixed(1)}%`;
+          const min = parseFloat(slider.min);
+          const max = parseFloat(slider.max);
+          const percent = (parseFloat(value) - min) / (max - min);
+          const sliderWidth = slider.offsetWidth;
+          const thumbWidth = 16;
+          const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
+          display.style.left = `${offset}px`;
+        }
+      }
+
       function refreshSliderDisplays() {
         bindSlider('m_autoEntryMinVolume', 'm_minVolVal', (value) => Math.round(Math.max(0, value)).toString());
         bindSlider('m_autoEntryProb', 'm_probVal', (value) => `${Math.round(value)}%`);
@@ -5427,6 +5698,18 @@
         bindSlider('m_spikeMomentum', 'm_spikeMomentumVal', (value) => `±${Math.round(value)}`);
         bindSlider('m_spikeCooldown', 'm_spikeCooldownVal', (value) => `±${Math.round(value)}`);
         bindSlider('m_spikeTime', 'm_spikeTimeVal', (value) => `${Math.round(value)} min`);
+        // Probability Adjustment slider - use custom handler for percentage display
+        const probAdjSlider = document.getElementById('m_probAdjSlider');
+        if (probAdjSlider && !probAdjSlider._mobileBound) {
+          probAdjSlider.addEventListener('input', function() {
+            updateProbAdjDisplay(this.value);
+          });
+          window.addEventListener('resize', function() {
+            updateProbAdjDisplay(probAdjSlider.value);
+          });
+          probAdjSlider._mobileBound = true;
+          updateProbAdjDisplay(probAdjSlider.value);
+        }
         bindSlider('m_stopProb', 'm_stopProbVal', (value) => `${Math.round(value)}%`);
         bindSlider('m_momentumThreshold', 'm_momentumThresholdVal', (value) => `±${Math.round(value)}`);
         bindSlider('m_verifySeconds', 'm_verifySecondsVal', (value) => `${Math.round(value)}s`);
@@ -5625,6 +5908,7 @@
         setVal('m_spikeMomentum', data.spike_alert_momentum_threshold ?? 60);
         setVal('m_spikeCooldown', data.spike_alert_cooldown_threshold ?? 55);
         setVal('m_spikeTime', data.spike_alert_cooldown_minutes ?? 15);
+        setVal('m_probAdjSlider', data.prob_adj ?? 5.00);
         setChk('m_perfAlloc', data.performance_based_allocation ?? false);
 
         setVal('m_stopProb', data.current_probability ?? 40);

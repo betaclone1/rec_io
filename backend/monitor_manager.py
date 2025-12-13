@@ -1234,12 +1234,26 @@ def update_monitor_position_variables():
     """Update monitor position variables and recalculate total_position"""
     try:
         data = request.get_json()
-        monitor_id = data.get('monitor_id')
+        monitor_id_raw = data.get('monitor_id')
         position_size = data.get('position_size')
         position_type = data.get('position_type')
         multiplier = data.get('multiplier')
         
-        print(f"[MONITOR_MANAGER] Updating monitor {monitor_id} position variables")
+        # Extract numeric monitor ID from format like "mon_0001_10019" or "10019"
+        if isinstance(monitor_id_raw, str) and '_' in monitor_id_raw:
+            # Format: "mon_0001_10019" -> extract "10019"
+            parts = monitor_id_raw.split('_')
+            if len(parts) >= 3:
+                monitor_id = int(parts[-1])  # Get last part (the numeric ID)
+            else:
+                monitor_id = int(monitor_id_raw)
+        else:
+            monitor_id = int(monitor_id_raw) if monitor_id_raw else None
+        
+        if monitor_id is None:
+            return jsonify({'success': False, 'error': 'Invalid monitor_id'}), 400
+        
+        print(f"[MONITOR_MANAGER] Updating monitor {monitor_id} (from {monitor_id_raw}) position variables")
         print(f"[MONITOR_MANAGER] Position size: {position_size}, type: {position_type}, multiplier: {multiplier}")
         
         # Update the monitor_list table with new values

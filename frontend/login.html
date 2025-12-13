@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>rec.io - Login</title>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap" rel="stylesheet">
   <!-- <link rel="stylesheet" href="/styles/global.css"> -->
@@ -76,8 +78,10 @@
       position: relative;
       /* Webview compatibility */
       -webkit-touch-callout: default;
-      touch-action: manipulation;
+      touch-action: auto;
       z-index: 5;
+      /* Ensure form groups don't block interactions */
+      pointer-events: none;
     }
     
     .form-label {
@@ -101,11 +105,15 @@
       -webkit-user-select: text;
       -webkit-touch-callout: default;
       -webkit-tap-highlight-color: rgba(0, 0, 0, 0.1);
-      touch-action: manipulation;
+      /* Use auto instead of manipulation to allow native iOS behavior */
+      touch-action: auto;
       user-select: text;
+      /* Critical: ensure inputs can receive pointer events */
       pointer-events: auto;
       position: relative;
-      z-index: 10;
+      z-index: 100;
+      /* Prevent iOS zoom on focus */
+      font-size: 16px;
     }
     
     .form-input:focus {
@@ -113,7 +121,8 @@
       background-color: #f0f0f0;
       /* Ensure focus works in webview */
       -webkit-tap-highlight-color: rgba(0, 0, 0, 0.2);
-      transform: translateZ(0);
+      /* Remove transform that might cause flashing */
+      /* transform: translateZ(0); */
     }
     
     .form-input::placeholder {
@@ -230,30 +239,40 @@
         // Force input to be focusable
         input.setAttribute('tabindex', '0');
         
-        // Add touch event handlers for better webview compatibility
-        input.addEventListener('touchstart', function(e) {
-          e.stopPropagation();
-          this.focus();
-        }, { passive: true });
+        // Remove conflicting touch handlers - let iOS handle natively
+        // The native iOS behavior works better than custom handlers
         
-        input.addEventListener('touchend', function(e) {
-          e.stopPropagation();
-          this.focus();
-        }, { passive: true });
-        
-        // Prevent zoom on focus (iOS webview)
+        // Prevent zoom on focus (iOS webview) - use meta tag instead
+        // But keep this as fallback
         input.addEventListener('focus', function() {
-          if (window.visualViewport) {
-            window.visualViewport.scale = 1;
-          }
+          // Ensure input is visible and interactive
+          this.style.pointerEvents = 'auto';
+          this.style.zIndex = '100';
+          
+          // Small delay to ensure focus completes
+          setTimeout(() => {
+            if (document.activeElement !== this) {
+              this.focus();
+            }
+          }, 10);
         });
+        
+        // Ensure input stays interactive
+        input.style.pointerEvents = 'auto';
+        input.style.zIndex = '100';
       });
       
       // Ensure form is interactive
       const form = document.getElementById('loginForm');
       if (form) {
         form.style.pointerEvents = 'auto';
-        form.style.touchAction = 'manipulation';
+        form.style.touchAction = 'auto';
+      }
+      
+      // Ensure login container doesn't block
+      const container = document.querySelector('.login-container');
+      if (container) {
+        container.style.pointerEvents = 'auto';
       }
     });
 

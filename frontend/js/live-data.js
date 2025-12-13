@@ -112,6 +112,14 @@ async function fetchBTCPriceChanges() {
 
 // === AUTO ENTRY INDICATOR FUNCTIONS ===
 
+// Helper function to format cooldown timer as MM:SS
+function formatCooldownTimer(seconds) {
+  if (!seconds || seconds <= 0) return '';
+  const minutes = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
+
 // Update the auto entry indicator display
 function updateAutoEntryIndicator(data) {
   const indicator = document.getElementById('autoEntryIndicator');
@@ -124,32 +132,23 @@ function updateAutoEntryIndicator(data) {
   const indicatorDot = indicator.querySelector('div');
   const indicatorText = indicator.querySelector('span');
   
-  // Check for SPIKE ALERT state first
-  if (data.spike_alert_active) {
-    // SPIKE ALERT MODE - Show red indicator
-    indicator.style.display = 'flex';
-    indicator.style.backgroundColor = '#dc3545'; // Red background
-    indicator.style.border = '1px solid #c82333';
-    
-    if (indicatorDot) {
-      indicatorDot.style.background = '#ff6b6b'; // Red dot
-    }
-    
-    if (indicatorText) {
-      const recoveryCountdown = data.spike_alert_recovery_countdown;
-      if (recoveryCountdown !== null && recoveryCountdown > 0) {
-        indicatorText.textContent = `SPIKE ALERT - AUTO TRADING PAUSED (${recoveryCountdown.toFixed(1)}m)`;
-      } else {
-        indicatorText.textContent = 'SPIKE ALERT - AUTO TRADING PAUSED';
-      }
-    }
-    
-    
-    return;
+  // Check for cooldown timer (in seconds) - priority field
+  const cooldownTimer = data.cooldown_timer || (data.cooldown_timer === 0 ? 0 : null);
+  
+  // Fallback to spike_alert_recovery_countdown (in minutes) if cooldown_timer not available
+  let cooldownSeconds = null;
+  if (cooldownTimer !== null && cooldownTimer !== undefined) {
+    cooldownSeconds = cooldownTimer;
+  } else if (data.spike_alert_recovery_countdown !== null && data.spike_alert_recovery_countdown !== undefined) {
+    // Convert minutes to seconds
+    cooldownSeconds = Math.floor(data.spike_alert_recovery_countdown * 60);
   }
   
-  // Use the new scanning_active field as the primary condition
-  // This provides the true system-wide scanning status
+  const hasCooldown = cooldownSeconds !== null && cooldownSeconds > 0;
+  const cooldownDisplay = hasCooldown ? formatCooldownTimer(cooldownSeconds) : '';
+  
+  // Use scanning_active as the primary condition - if scanning is active, monitor is active
+  // (Hourly HTC monitors continue trading during spike cooldown, they're not paused)
   if (data.scanning_active) {
     // Show the indicator when scanning is actually active
     indicator.style.display = 'flex';
@@ -161,15 +160,41 @@ function updateAutoEntryIndicator(data) {
     }
     
     if (indicatorText) {
-      indicatorText.textContent = 'Automated Trading ON';
+      // Show cooldown timer if available (for Hourly HTC during spike cooldown)
+      if (hasCooldown) {
+        indicatorText.textContent = `Automated Trading ON (${cooldownDisplay})`;
+      } else {
+        indicatorText.textContent = 'Automated Trading ON';
+      }
     }
     
-    
-  } else {
-    // Hide the indicator when scanning is not active
-    indicator.style.display = 'none';
-    
+    return;
   }
+  
+  // If not scanning, check if spike alert is active (for Reverse HTC or truly paused monitors)
+  if (data.spike_alert_active || hasCooldown) {
+    // SPIKE ALERT/COOLDOWN MODE - Show red indicator (for monitors that are actually paused)
+    indicator.style.display = 'flex';
+    indicator.style.backgroundColor = '#dc3545'; // Red background
+    indicator.style.border = '1px solid #c82333';
+    
+    if (indicatorDot) {
+      indicatorDot.style.background = '#ff6b6b'; // Red dot
+    }
+    
+    if (indicatorText) {
+      if (hasCooldown) {
+        indicatorText.textContent = `SPIKE ALERT - AUTO TRADING PAUSED (${cooldownDisplay})`;
+      } else {
+        indicatorText.textContent = 'SPIKE ALERT - AUTO TRADING PAUSED';
+      }
+    }
+    
+    return;
+  }
+  
+  // Hide the indicator when scanning is not active and no spike alert/cooldown
+  indicator.style.display = 'none';
 }
 
 // === POLLING SETUP ===

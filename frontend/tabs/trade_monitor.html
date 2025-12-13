@@ -153,7 +153,34 @@
     display: block;
   }
 
+  /* Paper Trading Button */
+  .paper-trading-button {
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid #4a5568;
+    background-color: #2d3748;
+    color: #a0aec0;
+    font-size: 0.63rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-left: 10px;
+  }
 
+  .paper-trading-button.active {
+    background-color: #48bb78;
+    color: white;
+    border-color: #48bb78;
+  }
+
+  .paper-trading-button:hover {
+    opacity: 0.8;
+  }
+
+  /* Paper Trading Active Panel Border */
+  #accountPanel.paper-trading-active,
+  #watchlistPanel.paper-trading-active {
+    box-shadow: inset 0 0 0 2px #48bb78;
+  }
 
 </style>
 <style>
@@ -700,11 +727,11 @@ async function showUnifiedAutoTradeSettingsModal() {
   // Update modal title with strategy name and show/hide strategy sections
   const strategyPicker = document.getElementById('trade-strategy-picker');
   const currentStrategy = strategyPicker ? strategyPicker.value : '';
-  const isMomentumScalp = currentStrategy && (currentStrategy.toUpperCase().includes('MOMENTUM SCALP') || currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL'));
-  const isMomentumReversal = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL');
+  const isMomentumScalp = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
+  const isReverseHTC = currentStrategy && currentStrategy.toUpperCase().includes('REVERSE HTC');
+  const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
   
   const modalTitle = document.getElementById('unifiedAutoTradeModalTitle');
-  const msStrategyLabel = document.getElementById('msStrategyLabel');
   if (modalTitle) {
     if (currentStrategy) {
       modalTitle.textContent = `Auto Trade Settings - ${currentStrategy}`;
@@ -713,18 +740,11 @@ async function showUnifiedAutoTradeSettingsModal() {
     }
   }
   
-  // Update Momentum Scalp/Reversal label
-  if (msStrategyLabel) {
-    if (isMomentumReversal) {
-      msStrategyLabel.textContent = 'Momentum Reversal';
-    } else {
-      msStrategyLabel.textContent = 'Momentum Scalp';
-    }
-  }
-  
   // Show/hide strategy sections
   const htcSection = document.getElementById('htcStrategySection');
   const msSection = document.getElementById('msStrategySection');
+  const probAdjContainer = document.getElementById('probAdjContainer');
+  const probAdjLabel = document.getElementById('probAdjLabel');
   
   if (htcSection && msSection) {
     if (isMomentumScalp) {
@@ -734,6 +754,12 @@ async function showUnifiedAutoTradeSettingsModal() {
       htcSection.style.display = 'contents';
       msSection.style.display = 'none';
     }
+  }
+  // Show/hide Probability Adjustment slider (only for Hourly HTC, not Reverse HTC)
+  if (probAdjContainer && probAdjLabel) {
+    const displayValue = isHourlyHTC ? 'block' : 'none';
+    probAdjContainer.style.display = displayValue;
+    probAdjLabel.style.display = displayValue;
   }
   
   // Function to populate all fields and update value bubbles
@@ -751,52 +777,105 @@ async function showUnifiedAutoTradeSettingsModal() {
       if (el) el.checked = !!v; 
     };
     
-    // Determine which strategy section to populate
-    const strategyPicker = document.getElementById('trade-strategy-picker');
-    const currentStrategy = strategyPicker ? strategyPicker.value : '';
-    const isMomentumScalp = currentStrategy && (currentStrategy.toUpperCase().includes('MOMENTUM SCALP') || currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL'));
-    const isMomentumReversal = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL');
-    
-    // Common settings (both strategies)
+    // Auto Entry settings
     minTimeSeconds = data.min_time !== undefined ? data.min_time : 0;
     maxTimeSeconds = data.max_time !== undefined ? data.max_time : 3600;
     
-    // Probability window (both strategies)
-    minProbability = data.min_probability !== undefined ? parseFloat(data.min_probability) : 95.00;
-    maxProbability = data.max_probability !== undefined ? parseFloat(data.max_probability) : 100.00;
+    // Probability window (for HOURLY HTC)
+    let minProbability = data.min_probability !== undefined ? parseFloat(data.min_probability) : 95.00;
+    let maxProbability = data.max_probability !== undefined ? parseFloat(data.max_probability) : 100.00;
     
     // Enforce minimum separation (0.5%) when loading from database
     const MIN_SEPARATION = 0.5;
     if (maxProbability - minProbability < MIN_SEPARATION) {
-      // If too close, adjust max to maintain minimum separation
       if (maxProbability < 100) {
         maxProbability = parseFloat((minProbability + MIN_SEPARATION).toFixed(1));
       } else {
-        // If max is at 100, adjust min down
         minProbability = parseFloat((maxProbability - MIN_SEPARATION).toFixed(1));
       }
     }
+    window.tradeMonitorMinProbability = minProbability;
+    window.tradeMonitorMaxProbability = maxProbability;
     
+    setVal('autoEntryMinVolumeSlider', data.min_volume ?? 1000);
+    setVal('autoEntryDifferentialSlider', data.min_differential ?? 0);
+    setVal('autoEntryMaxDifferentialSlider', data.max_differential ?? 0);
+    setChk('autoEntryAllowReEntry', data.allow_re_entry ?? false);
+    setVal('autoEntryWinStreakThresholdSlider', data.win_streak_threshold ?? 22);
+    
+    // Loss Prevention Toggle
+    const lossPreventionToggle = document.getElementById('autoEntryLossPreventionToggle');
+    const winStreakSlider = document.getElementById('autoEntryWinStreakThresholdSlider');
+    const winStreakValueDisplay = document.getElementById('autoEntryWinStreakThresholdValueDisplay');
+    if (lossPreventionToggle) {
+      lossPreventionToggle.checked = data.loss_prevention_toggle !== undefined ? data.loss_prevention_toggle : true;
+      if (winStreakSlider) {
+        winStreakSlider.disabled = !lossPreventionToggle.checked;
+        winStreakSlider.style.opacity = lossPreventionToggle.checked ? '1' : '0.5';
+        winStreakSlider.style.cursor = lossPreventionToggle.checked ? 'pointer' : 'not-allowed';
+      }
+      if (winStreakValueDisplay) {
+        winStreakValueDisplay.style.display = lossPreventionToggle.checked ? 'block' : 'none';
+      }
+      lossPreventionToggle.addEventListener('change', function() {
+        if (winStreakSlider) {
+          winStreakSlider.disabled = !this.checked;
+          winStreakSlider.style.opacity = this.checked ? '1' : '0.5';
+          winStreakSlider.style.cursor = this.checked ? 'pointer' : 'not-allowed';
+        }
+        if (winStreakValueDisplay) {
+          winStreakValueDisplay.style.display = this.checked ? 'block' : 'none';
+        }
+      });
+    }
+    
+    // Spike Alert settings
+    setChk('spikeAlertEnabled', data.spike_alert_enabled ?? true);
+    setVal('spikeAlertMomentumSlider', data.spike_alert_momentum_threshold ?? 60);
+    setVal('spikeAlertCooldownSlider', data.spike_alert_cooldown_threshold ?? 55);
+    setVal('spikeAlertTimeSlider', data.spike_alert_cooldown_minutes ?? 15);
+    setVal('probAdjSlider', data.prob_adj ?? 5.00);
+    
+    // Auto Stop settings
+    setVal('autoStopProbabilitySlider', data.current_probability ?? 40);
+    const minTTC = data.min_ttc_seconds !== undefined ? data.min_ttc_seconds : 60;
+    const minTTCInput = document.getElementById('autoStopMinTTCInput');
+    const minTTCDisplay = document.getElementById('autoStopMinTTCDisplay');
+    if (minTTCInput) minTTCInput.value = minTTC;
+    if (minTTCDisplay && typeof formatSecondsToMMSS === 'function') {
+      minTTCDisplay.textContent = formatSecondsToMMSS(minTTC);
+    }
+    
+    setChk('momentumSpikeEnabled', data.momentum_spike_enabled ?? true);
+    setVal('momentumSpikeThresholdSlider', data.momentum_spike_threshold ?? 35);
+    setChk('verificationPeriodEnabled', data.verification_period_enabled ?? false);
+    setVal('verificationPeriodSlider', data.verification_period_seconds ?? 15);
+    setChk('autoEntryPerformanceBasedAllocation', data.performance_based_allocation ?? false);
+    
+    // Handle Momentum Scalp strategy fields
     if (isMomentumScalp) {
-      // MOMENTUM SCALP settings
+      // MS time window uses same min_time/max_time as HTC
+      tradeMonitorMSMinTimeSeconds = data.min_time !== undefined ? data.min_time : 0;
+      tradeMonitorMSMaxTimeSeconds = data.max_time !== undefined ? data.max_time : 3600;
+      
       setVal('msAutoEntryMinVolumeSlider', data.min_volume ?? 1000);
+      setVal('msMomentumScalpEntryThresholdSlider', data.momentum_scalp_entry_threshold ?? 35);
       setVal('msAutoEntryWinStreakThresholdSlider', data.win_streak_threshold ?? 22);
+      
+      // MS Loss Prevention Toggle
       const msLossPreventionToggle = document.getElementById('msAutoEntryLossPreventionToggle');
       const msWinStreakSlider = document.getElementById('msAutoEntryWinStreakThresholdSlider');
       const msWinStreakValueDisplay = document.getElementById('msAutoEntryWinStreakThresholdValueDisplay');
       if (msLossPreventionToggle) {
         msLossPreventionToggle.checked = data.loss_prevention_toggle !== undefined ? data.loss_prevention_toggle : true;
-        // Enable/disable slider based on checkbox state
         if (msWinStreakSlider) {
           msWinStreakSlider.disabled = !msLossPreventionToggle.checked;
           msWinStreakSlider.style.opacity = msLossPreventionToggle.checked ? '1' : '0.5';
           msWinStreakSlider.style.cursor = msLossPreventionToggle.checked ? 'pointer' : 'not-allowed';
         }
-        // Hide/show value bubble based on checkbox state
         if (msWinStreakValueDisplay) {
           msWinStreakValueDisplay.style.display = msLossPreventionToggle.checked ? 'block' : 'none';
         }
-        // Add event listener to update slider state when checkbox changes
         msLossPreventionToggle.addEventListener('change', function() {
           if (msWinStreakSlider) {
             msWinStreakSlider.disabled = !this.checked;
@@ -810,37 +889,21 @@ async function showUnifiedAutoTradeSettingsModal() {
       }
       
       // Ask window (min_ask and max_ask)
-      msMinAsk = data.min_ask !== undefined ? parseFloat(data.min_ask) : 0.0000;
-      msMaxAsk = data.max_ask !== undefined ? parseFloat(data.max_ask) : 0.9800;
-      
-      // Enforce minimum separation (0.01 = 1 cent) when loading from database
+      window.tradeMonitorMSMinAsk = data.min_ask !== undefined ? parseFloat(data.min_ask) : 0.0000;
+      window.tradeMonitorMSMaxAsk = data.max_ask !== undefined ? parseFloat(data.max_ask) : 0.9800;
       const MIN_ASK_SEPARATION = 0.01;
-      if (msMaxAsk - msMinAsk < MIN_ASK_SEPARATION) {
-        // If too close, adjust max to maintain minimum separation
-        if (msMaxAsk < 1.0) {
-          msMaxAsk = parseFloat((msMinAsk + MIN_ASK_SEPARATION).toFixed(4));
+      if (window.tradeMonitorMSMaxAsk - window.tradeMonitorMSMinAsk < MIN_ASK_SEPARATION) {
+        if (window.tradeMonitorMSMaxAsk < 1.0) {
+          window.tradeMonitorMSMaxAsk = parseFloat((window.tradeMonitorMSMinAsk + MIN_ASK_SEPARATION).toFixed(4));
         } else {
-          // If max is at 1.0, adjust min down
-          msMinAsk = parseFloat((msMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
+          window.tradeMonitorMSMinAsk = parseFloat((window.tradeMonitorMSMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
         }
       }
       
-      // Momentum Threshold: stored as absolute value (0-100)
-      setVal('msMomentumScalpEntryThresholdSlider', data.momentum_scalp_entry_threshold ?? 35);
-      
       // Max Price Spread: convert from database (0.0000-0.2000) to slider (0-20)
       const maxPriceSpread = data.max_price_spread !== undefined ? parseFloat(data.max_price_spread) : 0.0300;
-      const maxPriceSpreadSliderValue = (maxPriceSpread * 100).toFixed(1); // Convert 0.0300 to 3.0
+      const maxPriceSpreadSliderValue = (maxPriceSpread * 100).toFixed(1);
       setVal('msMaxPriceSpreadSlider', maxPriceSpreadSliderValue);
-      // Initialize value display
-      const msMaxPriceSpreadValueDisplay = document.getElementById('msMaxPriceSpreadValueDisplay');
-      const msMaxPriceSpreadSlider = document.getElementById('msMaxPriceSpreadSlider');
-      if (msMaxPriceSpreadValueDisplay && msMaxPriceSpreadSlider) {
-        msMaxPriceSpreadValueDisplay.textContent = maxPriceSpreadSliderValue;
-        const min = parseFloat(msMaxPriceSpreadSlider.min), max = parseFloat(msMaxPriceSpreadSlider.max);
-        const percent = (parseFloat(maxPriceSpreadSliderValue) - min) / (max - min);
-        msMaxPriceSpreadValueDisplay.style.left = (percent * (msMaxPriceSpreadSlider.offsetWidth - 16) + 8) + 'px';
-      }
       
       // Auto Stop
       const msMinTTC = data.min_ttc_seconds !== undefined ? data.min_ttc_seconds : 60;
@@ -860,72 +923,10 @@ async function showUnifiedAutoTradeSettingsModal() {
       const profitTarget = data.momentum_scalp_profit_target ?? 0.10;
       const profitTargetSliderValue = Math.round(profitTarget * 100);
       setVal('msMomentumScalpProfitTargetSlider', profitTargetSliderValue);
-    } else {
-      // HOURLY HTC settings
-      setVal('autoEntryMinVolumeSlider', data.min_volume ?? 1000);
-      setVal('autoEntryDifferentialSlider', data.min_differential ?? 0);
-      setVal('autoEntryMaxDifferentialSlider', data.max_differential ?? 0);
-      setChk('autoEntryAllowReEntry', data.allow_re_entry ?? false);
-      setVal('autoEntryWinStreakThresholdSlider', data.win_streak_threshold ?? 22);
-      const lossPreventionToggle = document.getElementById('autoEntryLossPreventionToggle');
-      const winStreakSlider = document.getElementById('autoEntryWinStreakThresholdSlider');
-      const winStreakValueDisplay = document.getElementById('autoEntryWinStreakThresholdValueDisplay');
-      if (lossPreventionToggle) {
-        lossPreventionToggle.checked = data.loss_prevention_toggle !== undefined ? data.loss_prevention_toggle : true;
-        // Enable/disable slider based on checkbox state
-        if (winStreakSlider) {
-          winStreakSlider.disabled = !lossPreventionToggle.checked;
-          winStreakSlider.style.opacity = lossPreventionToggle.checked ? '1' : '0.5';
-          winStreakSlider.style.cursor = lossPreventionToggle.checked ? 'pointer' : 'not-allowed';
-        }
-        // Hide/show value bubble based on checkbox state
-        if (winStreakValueDisplay) {
-          winStreakValueDisplay.style.display = lossPreventionToggle.checked ? 'block' : 'none';
-        }
-        // Add event listener to update slider state when checkbox changes
-        lossPreventionToggle.addEventListener('change', function() {
-          if (winStreakSlider) {
-            winStreakSlider.disabled = !this.checked;
-            winStreakSlider.style.opacity = this.checked ? '1' : '0.5';
-            winStreakSlider.style.cursor = this.checked ? 'pointer' : 'not-allowed';
-          }
-          if (winStreakValueDisplay) {
-            winStreakValueDisplay.style.display = this.checked ? 'block' : 'none';
-          }
-        });
-      }
-      
-      // Spike Alert settings
-      setChk('spikeAlertEnabled', data.spike_alert_enabled ?? true);
-      setVal('spikeAlertMomentumSlider', data.spike_alert_momentum_threshold ?? 60);
-      setVal('spikeAlertCooldownSlider', data.spike_alert_cooldown_threshold ?? 55);
-      setVal('spikeAlertTimeSlider', data.spike_alert_cooldown_minutes ?? 15);
-      
-      // Auto Stop settings
-      setVal('autoStopProbabilitySlider', data.current_probability ?? 40);
-      const minTTC = data.min_ttc_seconds !== undefined ? data.min_ttc_seconds : 60;
-      const minTTCInput = document.getElementById('autoStopMinTTCInput');
-      const minTTCDisplay = document.getElementById('autoStopMinTTCDisplay');
-      if (minTTCInput) minTTCInput.value = minTTC;
-      if (minTTCDisplay && typeof formatSecondsToMMSS === 'function') {
-        minTTCDisplay.textContent = formatSecondsToMMSS(minTTC);
-      }
-      
-      setChk('momentumSpikeEnabled', data.momentum_spike_enabled ?? true);
-      setVal('momentumSpikeThresholdSlider', data.momentum_spike_threshold ?? 35);
-      setChk('verificationPeriodEnabled', data.verification_period_enabled ?? false);
-      setVal('verificationPeriodSlider', data.verification_period_seconds ?? 15);
-      setChk('autoEntryPerformanceBasedAllocation', data.performance_based_allocation ?? false);
     }
     
     // Update all value bubbles after a short delay to ensure modal is rendered and sliders have dimensions
     setTimeout(() => {
-      // Determine which strategy section to update
-      const strategyPicker = document.getElementById('trade-strategy-picker');
-      const currentStrategy = strategyPicker ? strategyPicker.value : '';
-      const isMomentumScalp = currentStrategy && (currentStrategy.toUpperCase().includes('MOMENTUM SCALP') || currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL'));
-    const isMomentumReversal = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL');
-      
       if (isMomentumScalp) {
         // MOMENTUM SCALP value bubbles
         const msMinVolumeSlider = document.getElementById('msAutoEntryMinVolumeSlider');
@@ -933,6 +934,7 @@ async function showUnifiedAutoTradeSettingsModal() {
         const msEntryThresholdSlider = document.getElementById('msMomentumScalpEntryThresholdSlider');
         const msTrailingStopSlider = document.getElementById('msMomentumScalpTrailingStopSlider');
         const msProfitTargetSlider = document.getElementById('msMomentumScalpProfitTargetSlider');
+        const msMaxPriceSpreadSlider = document.getElementById('msMaxPriceSpreadSlider');
         
         if (msMinVolumeSlider && typeof updateMSAutoEntryMinVolumeDisplay === 'function') {
           updateMSAutoEntryMinVolumeDisplay(msMinVolumeSlider.value);
@@ -948,6 +950,15 @@ async function showUnifiedAutoTradeSettingsModal() {
         }
         if (msProfitTargetSlider && typeof updateMSProfitTargetDisplay === 'function') {
           updateMSProfitTargetDisplay(msProfitTargetSlider.value);
+        }
+        if (msMaxPriceSpreadSlider) {
+          const display = document.getElementById('msMaxPriceSpreadValueDisplay');
+          if (display) {
+            display.textContent = parseFloat(msMaxPriceSpreadSlider.value).toFixed(1);
+            const min = parseFloat(msMaxPriceSpreadSlider.min), max = parseFloat(msMaxPriceSpreadSlider.max);
+            const percent = (parseFloat(msMaxPriceSpreadSlider.value) - min) / (max - min);
+            display.style.left = (percent * (msMaxPriceSpreadSlider.offsetWidth - 16) + 8) + 'px';
+          }
         }
         
         // Initialize MS time window slider
@@ -974,6 +985,10 @@ async function showUnifiedAutoTradeSettingsModal() {
         if (minVolumeSlider && typeof updateAutoEntryMinVolumeDisplay === 'function') {
           updateAutoEntryMinVolumeDisplay(minVolumeSlider.value);
         }
+        // Initialize probability window slider
+        if (typeof initProbabilityWindowSlider === 'function') {
+          initProbabilityWindowSlider();
+        }
         if (diffSlider && typeof updateAutoEntryDifferentialDisplay === 'function') {
           updateAutoEntryDifferentialDisplay(diffSlider.value);
         }
@@ -983,51 +998,51 @@ async function showUnifiedAutoTradeSettingsModal() {
         if (winStreakSlider && typeof updateAutoEntryWinStreakThresholdDisplay === 'function') {
           updateAutoEntryWinStreakThresholdDisplay(winStreakSlider.value);
         }
-        
-        // Update Spike Alert value bubbles
-        const spikeMomentumSlider = document.getElementById('spikeAlertMomentumSlider');
-        const spikeCooldownSlider = document.getElementById('spikeAlertCooldownSlider');
-        const spikeTimeSlider = document.getElementById('spikeAlertTimeSlider');
-        
-        if (spikeMomentumSlider && typeof updateSpikeAlertMomentumDisplay === 'function') {
-          updateSpikeAlertMomentumDisplay(spikeMomentumSlider.value);
-        }
-        if (spikeCooldownSlider && typeof updateSpikeAlertCooldownDisplay === 'function') {
-          updateSpikeAlertCooldownDisplay(spikeCooldownSlider.value);
-        }
-        if (spikeTimeSlider && typeof updateSpikeAlertTimeDisplay === 'function') {
-          updateSpikeAlertTimeDisplay(spikeTimeSlider.value);
-        }
-        
-        // Update Auto Stop value bubbles
-        const stopProbSlider = document.getElementById('autoStopProbabilitySlider');
-        const momentumSpikeSlider = document.getElementById('momentumSpikeThresholdSlider');
-        const verificationSlider = document.getElementById('verificationPeriodSlider');
-        
-        if (stopProbSlider && typeof updateSliderDisplay === 'function') {
-          updateSliderDisplay(stopProbSlider.value);
-        }
-        if (momentumSpikeSlider && typeof updateMomentumSpikeThresholdDisplay === 'function') {
-          updateMomentumSpikeThresholdDisplay(momentumSpikeSlider.value);
-        }
-        if (verificationSlider && typeof updateVerificationPeriodDisplay === 'function') {
-          updateVerificationPeriodDisplay(verificationSlider.value);
-        }
-        
-        // Initialize time window slider
-        if (typeof initTimeWindowSlider === 'function') {
-          initTimeWindowSlider();
-        }
-        
-        // Initialize probability window slider
-        if (typeof initProbabilityWindowSlider === 'function') {
-          initProbabilityWindowSlider();
-        }
-        
-        // Setup Min TTC controls
-        if (typeof setupMinTTCControls === 'function') {
-          setupMinTTCControls();
-        }
+      }
+      
+      // Update Spike Alert value bubbles
+      const spikeMomentumSlider = document.getElementById('spikeAlertMomentumSlider');
+      const spikeCooldownSlider = document.getElementById('spikeAlertCooldownSlider');
+      const spikeTimeSlider = document.getElementById('spikeAlertTimeSlider');
+      
+      if (spikeMomentumSlider && typeof updateSpikeAlertMomentumDisplay === 'function') {
+        updateSpikeAlertMomentumDisplay(spikeMomentumSlider.value);
+      }
+      if (spikeCooldownSlider && typeof updateSpikeAlertCooldownDisplay === 'function') {
+        updateSpikeAlertCooldownDisplay(spikeCooldownSlider.value);
+      }
+      if (spikeTimeSlider && typeof updateSpikeAlertTimeDisplay === 'function') {
+        updateSpikeAlertTimeDisplay(spikeTimeSlider.value);
+      }
+      
+      const probAdjSlider = document.getElementById('probAdjSlider');
+      if (probAdjSlider && typeof updateProbAdjDisplay === 'function') {
+        updateProbAdjDisplay(probAdjSlider.value);
+      }
+      
+      // Update Auto Stop value bubbles
+      const stopProbSlider = document.getElementById('autoStopProbabilitySlider');
+      const momentumSpikeSlider = document.getElementById('momentumSpikeThresholdSlider');
+      const verificationSlider = document.getElementById('verificationPeriodSlider');
+      
+      if (stopProbSlider && typeof updateSliderDisplay === 'function') {
+        updateSliderDisplay(stopProbSlider.value);
+      }
+      if (momentumSpikeSlider && typeof updateMomentumSpikeThresholdDisplay === 'function') {
+        updateMomentumSpikeThresholdDisplay(momentumSpikeSlider.value);
+      }
+      if (verificationSlider && typeof updateVerificationPeriodDisplay === 'function') {
+        updateVerificationPeriodDisplay(verificationSlider.value);
+      }
+      
+      // Initialize time window slider
+      if (typeof initTimeWindowSlider === 'function') {
+        initTimeWindowSlider();
+      }
+      
+      // Setup Min TTC controls
+      if (typeof setupMinTTCControls === 'function') {
+        setupMinTTCControls();
       }
     }, 150);
   };
@@ -1079,12 +1094,6 @@ async function showUnifiedAutoTradeSettingsModal() {
   if (saveBtn && !saveBtn._wired) {
     saveBtn._wired = true;
     saveBtn.onclick = async function() {
-      // Determine which strategy is active
-      const strategyPicker = document.getElementById('trade-strategy-picker');
-      const currentStrategy = strategyPicker ? strategyPicker.value : '';
-      const isMomentumScalp = currentStrategy && (currentStrategy.toUpperCase().includes('MOMENTUM SCALP') || currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL'));
-    const isMomentumReversal = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL');
-      
       const payload = {
         monitor_id: window.currentMonitorId,
         min_time: minTimeSeconds,
@@ -1093,23 +1102,26 @@ async function showUnifiedAutoTradeSettingsModal() {
       
       if (isMomentumScalp) {
         // MOMENTUM SCALP specific fields
+        payload.min_time = tradeMonitorMSMinTimeSeconds;
+        payload.max_time = tradeMonitorMSMaxTimeSeconds;
+        
         const msMinVolumeSlider = document.getElementById('msAutoEntryMinVolumeSlider');
         const msMomentumThresholdSlider = document.getElementById('msMomentumScalpEntryThresholdSlider');
         const msMinTTCInput = document.getElementById('msAutoStopMinTTCInput');
         const msTrailingStopSlider = document.getElementById('msMomentumScalpTrailingStopSlider');
         const msProfitTargetSlider = document.getElementById('msMomentumScalpProfitTargetSlider');
+        const msMaxPriceSpreadSlider = document.getElementById('msMaxPriceSpreadSlider');
+        const msWinStreakSlider = document.getElementById('msAutoEntryWinStreakThresholdSlider');
+        const msLossPreventionToggle = document.getElementById('msAutoEntryLossPreventionToggle');
         
         if (msMinVolumeSlider) {
           payload.min_volume = parseInt(msMinVolumeSlider.value, 10);
         }
-        // Use ask window values (ensure they're floats with 4 decimal places)
-        payload.min_ask = parseFloat(parseFloat(msMinAsk).toFixed(4));
-        payload.max_ask = parseFloat(parseFloat(msMaxAsk).toFixed(4));
-        // Max Price Spread: convert from slider (0-20) to database (0.0000-0.2000)
-        const maxPriceSpreadSlider = document.getElementById('msMaxPriceSpreadSlider');
-        if (maxPriceSpreadSlider) {
-          const sliderValue = parseFloat(maxPriceSpreadSlider.value);
-          payload.max_price_spread = parseFloat((sliderValue / 100).toFixed(4)); // Convert 3.0 to 0.0300
+        payload.min_ask = parseFloat(parseFloat(window.tradeMonitorMSMinAsk || 0.0000).toFixed(4));
+        payload.max_ask = parseFloat(parseFloat(window.tradeMonitorMSMaxAsk || 0.9800).toFixed(4));
+        if (msMaxPriceSpreadSlider) {
+          const sliderValue = parseFloat(msMaxPriceSpreadSlider.value);
+          payload.max_price_spread = parseFloat((sliderValue / 100).toFixed(4));
         }
         if (msMomentumThresholdSlider) {
           payload.momentum_scalp_entry_threshold = parseInt(msMomentumThresholdSlider.value, 10);
@@ -1118,27 +1130,22 @@ async function showUnifiedAutoTradeSettingsModal() {
           payload.min_ttc_seconds = parseInt(msMinTTCInput.value, 10);
         }
         if (msTrailingStopSlider) {
-          // Convert from slider value (0-100) to decimal (0.00-1.00)
           payload.momentum_scalp_trailing_stop_amount = parseFloat(msTrailingStopSlider.value) / 100;
         }
         if (msProfitTargetSlider) {
-          // Convert from slider value (50-100) to decimal (0.50-1.00)
           payload.momentum_scalp_profit_target = parseFloat(msProfitTargetSlider.value) / 100;
         }
-        const msWinStreakSlider = document.getElementById('msAutoEntryWinStreakThresholdSlider');
         if (msWinStreakSlider) {
           payload.win_streak_threshold = parseInt(msWinStreakSlider.value, 10);
         }
-        const msLossPreventionToggle = document.getElementById('msAutoEntryLossPreventionToggle');
         if (msLossPreventionToggle) {
           payload.loss_prevention_toggle = msLossPreventionToggle.checked;
         }
       } else {
         // HOURLY HTC specific fields
         payload.min_volume = parseInt(document.getElementById('autoEntryMinVolumeSlider').value, 10);
-        // Use probability window values (ensure they're floats with 1 decimal)
-        payload.min_probability = parseFloat(parseFloat(minProbability).toFixed(1));
-        payload.max_probability = parseFloat(parseFloat(maxProbability).toFixed(1));
+        payload.min_probability = parseFloat(parseFloat(window.tradeMonitorMinProbability || 95.00).toFixed(1));
+        payload.max_probability = parseFloat(parseFloat(window.tradeMonitorMaxProbability || 100.00).toFixed(1));
         payload.min_differential = parseFloat(document.getElementById('autoEntryDifferentialSlider').value);
         payload.max_differential = (function() { const v = parseFloat(document.getElementById('autoEntryMaxDifferentialSlider').value); return isNaN(v) || v <= 0 ? null : v; })();
         payload.allow_re_entry = document.getElementById('autoEntryAllowReEntry').checked;
@@ -1157,6 +1164,10 @@ async function showUnifiedAutoTradeSettingsModal() {
         payload.spike_alert_momentum_threshold = parseInt(document.getElementById('spikeAlertMomentumSlider').value, 10);
         payload.spike_alert_cooldown_threshold = parseInt(document.getElementById('spikeAlertCooldownSlider').value, 10);
         payload.spike_alert_cooldown_minutes = parseInt(document.getElementById('spikeAlertTimeSlider').value, 10);
+        // Only include prob_adj for Hourly HTC (not Reverse HTC)
+        if (isHourlyHTC) {
+          payload.prob_adj = parseFloat(document.getElementById('probAdjSlider').value);
+        }
         payload.performance_based_allocation = document.getElementById('autoEntryPerformanceBasedAllocation').checked;
       }
       
@@ -1228,12 +1239,13 @@ function closeUnifiedAutoTradeSettings() {
 </div>
 
     <div class="column" id="col3" style="padding-right: 0px;">
-      <div class="panel-container" style="height: 50px; min-height: 50px; max-height: 50px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between;">
+      <div class="panel-container" id="accountPanel" style="height: 50px; min-height: 50px; max-height: 50px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between;">
         <div style="display: flex; align-items: center;">
           <select id="account-selector" class="dropdown-picker">
             <option value="live" id="prod-option">Loading...</option>
             <option value="demo" id="demo-option">Loading...</option>
           </select>
+          <button class="paper-trading-button inactive" onclick="togglePaperTrade()" title="Click to toggle paper trading mode">PAPER TRADING</button>
         </div>
         <div style="display: flex; align-items: flex-end; gap: 25px;">
           <div style="display: flex; flex-direction: column; align-items: flex-end;">
@@ -1743,6 +1755,20 @@ document.addEventListener('DOMContentLoaded', () => {
         return; // Don't process other WebSocket messages for this type
       }
 
+      // === Paper Trade Toggle Update ===
+      if (data.type === 'paper_trade_toggled') {
+        console.log('Paper trade toggle received in trade monitor:', data);
+        
+        // Check if this affects the current monitor
+        const messageMonitorId = data.monitor_id ? data.monitor_id.toString() : null;
+        const currentIdNormalized = currentMonitorId ? currentMonitorId.toString().split('_').pop() : null;
+        
+        if (messageMonitorId && currentIdNormalized && messageMonitorId === currentIdNormalized) {
+          updatePaperTradingUI(data.paper_trade);
+        }
+        return; // Don't process other WebSocket messages for this type
+      }
+
       // === Automated Trade Notification ===
       if (data.type === 'automated_trade_triggered') {
 
@@ -1952,8 +1978,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         // Also refresh the Trade History panel to show any status changes
-        if (typeof fetchAndRenderTradeHistory === 'function') {
-          fetchAndRenderTradeHistory();
+        if (typeof fetchAndRenderTrades === 'function') {
+          fetchAndRenderTrades();
         }
         
         return; // Don't process other WebSocket messages for this type
@@ -2245,7 +2271,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <!-- Spike Alert Settings (Entry) -->
             <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
                 <input type="checkbox" id="spikeAlertEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
-                <span style="font-size:13px; color:#666;">Pause auto entry during market spikes</span>
+                <span style="font-size:13px; color:#666;">Monitor for momentum spikes</span>
               </div>
               
               <label for="spikeAlertMomentumSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Spike Level (±):</label>
@@ -2261,10 +2287,16 @@ document.addEventListener('DOMContentLoaded', () => {
               </div>
               
               <label for="spikeAlertTimeSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Time (minutes):</label>
-            <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
+            <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
                 <input type="range" id="spikeAlertTimeSlider" min="0" max="180" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
                 <div id="spikeAlertTimeValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
               </div>
+
+            <label id="probAdjLabel" for="probAdjSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Probability Adjustment (%):</label>
+            <div id="probAdjContainer" class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+              <input type="range" id="probAdjSlider" min="0" max="20" step="0.5" value="5" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+              <div id="probAdjValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+            </div>
 
               <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0 16px 0;">
 
@@ -2320,7 +2352,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <div id="msStrategySection" style="display: none;">
             <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Auto Entry</div>
             <!-- Auto Entry -->
-            <label for="msTimeWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;"><span id="msStrategyLabel">Momentum Scalp</span> Time Window:</label>
+            <label for="msTimeWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Scalp Time Window:</label>
             <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
               <!-- Time Window Slider Container -->
               <div id="msTimeWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:8px; box-sizing: border-box;">
@@ -2400,7 +2432,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             <label for="msMomentumScalpProfitTargetSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Profit Target:</label>
             <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
-              <input type="range" id="msMomentumScalpProfitTargetSlider" min="1" max="50" step="1" value="10" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+              <input type="range" id="msMomentumScalpProfitTargetSlider" min="50" max="100" step="1" value="99" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
               <div id="msMomentumScalpProfitTargetValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
             </div>
             </div>
@@ -4760,102 +4792,6 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   }
 
-  // MOMENTUM SCALP value bubble update functions
-  function updateMSAutoEntryMinVolumeDisplay(value) {
-    const display = document.getElementById('msAutoEntryMinVolumeValueDisplay');
-    const slider = document.getElementById('msAutoEntryMinVolumeSlider');
-    if (display && slider) {
-      const displayValue = Math.max(25, parseInt(value, 10));
-      display.textContent = displayValue;
-      const min = parseInt(slider.min, 10);
-      const max = parseInt(slider.max, 10);
-      const percent = (value - min) / (max - min);
-      const sliderWidth = slider.offsetWidth;
-      const thumbWidth = 16;
-      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-      display.style.left = `${offset}px`;
-    }
-  }
-
-  function updateMSAutoEntryProbabilityDisplay(value) {
-    const display = document.getElementById('msAutoEntrySliderValueDisplay');
-    const slider = document.getElementById('msAutoEntryProbabilitySlider');
-    if (display && slider) {
-      display.textContent = value + '%';
-      const min = parseInt(slider.min, 10);
-      const max = parseInt(slider.max, 10);
-      const percent = (value - min) / (max - min);
-      const sliderWidth = slider.offsetWidth;
-      const thumbWidth = 16;
-      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-      display.style.left = `${offset}px`;
-    }
-  }
-
-  function updateMSAutoEntryWinStreakThresholdDisplay(value) {
-    const display = document.getElementById('msAutoEntryWinStreakThresholdValueDisplay');
-    const slider = document.getElementById('msAutoEntryWinStreakThresholdSlider');
-    if (display && slider) {
-      display.textContent = value;
-      const min = parseInt(slider.min, 10);
-      const max = parseInt(slider.max, 10);
-      const percent = (value - min) / (max - min);
-      const sliderWidth = slider.offsetWidth;
-      const thumbWidth = 16;
-      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-      display.style.left = `${offset}px`;
-    }
-  }
-
-  function updateMSMomentumThresholdDisplay(value) {
-    const display = document.getElementById('msMomentumScalpEntryThresholdValueDisplay');
-    const slider = document.getElementById('msMomentumScalpEntryThresholdSlider');
-    if (display && slider) {
-      display.textContent = `±${value}`;
-      const min = parseInt(slider.min, 10);
-      const max = parseInt(slider.max, 10);
-      const percent = (value - min) / (max - min);
-      const sliderWidth = slider.offsetWidth;
-      const thumbWidth = 16;
-      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-      display.style.left = `${offset}px`;
-    }
-  }
-
-  function updateMSTrailingStopDisplay(value) {
-    const display = document.getElementById('msMomentumScalpTrailingStopValueDisplay');
-    const slider = document.getElementById('msMomentumScalpTrailingStopSlider');
-    if (display && slider) {
-      // Convert from slider value (0-100) to decimal (0.00-1.00) for display
-      const dollars = (parseFloat(value) / 100).toFixed(2);
-      display.textContent = dollars;
-      const min = parseInt(slider.min, 10);
-      const max = parseInt(slider.max, 10);
-      const percent = (value - min) / (max - min);
-      const sliderWidth = slider.offsetWidth;
-      const thumbWidth = 16;
-      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-      display.style.left = `${offset}px`;
-    }
-  }
-
-  function updateMSProfitTargetDisplay(value) {
-    const display = document.getElementById('msMomentumScalpProfitTargetValueDisplay');
-    const slider = document.getElementById('msMomentumScalpProfitTargetSlider');
-    if (display && slider) {
-      // Convert from slider value (1-50) to decimal (0.01-0.50) for display
-      const dollars = (parseFloat(value) / 100).toFixed(2);
-      display.textContent = dollars;
-      const min = parseInt(slider.min, 10);
-      const max = parseInt(slider.max, 10);
-      const percent = (value - min) / (max - min);
-      const sliderWidth = slider.offsetWidth;
-      const thumbWidth = 16;
-      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-      display.style.left = `${offset}px`;
-    }
-  }
-
   function updateSpikeAlertMomentumDisplay(value) {
     const display = document.getElementById('spikeAlertMomentumValueDisplay');
     const slider = document.getElementById('spikeAlertMomentumSlider');
@@ -4897,6 +4833,22 @@ document.addEventListener('DOMContentLoaded', function() {
       const min = parseInt(slider.min, 10);
       const max = parseInt(slider.max, 10);
       const percent = (value - min) / (max - min);
+      const sliderWidth = slider.offsetWidth;
+      const thumbWidth = 16;
+      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
+      display.style.left = `${offset}px`;
+    }
+  }
+  
+  function updateProbAdjDisplay(value) {
+    const display = document.getElementById('probAdjValueDisplay');
+    const slider = document.getElementById('probAdjSlider');
+    if (display && slider) {
+      display.textContent = `${parseFloat(value).toFixed(1)}%`;
+      // Calculate thumb position in px
+      const min = parseFloat(slider.min);
+      const max = parseFloat(slider.max);
+      const percent = (parseFloat(value) - min) / (max - min);
       const sliderWidth = slider.offsetWidth;
       const thumbWidth = 16;
       const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
@@ -5304,105 +5256,15 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
   
-  // MOMENTUM SCALP Slider Event Listeners
-  const msAutoEntryMinVolumeSlider = document.getElementById('msAutoEntryMinVolumeSlider');
-  const msAutoEntryProbabilitySlider = document.getElementById('msAutoEntryProbabilitySlider');
-  const msAutoEntryWinStreakThresholdSlider = document.getElementById('msAutoEntryWinStreakThresholdSlider');
-  const msMomentumScalpEntryThresholdSlider = document.getElementById('msMomentumScalpEntryThresholdSlider');
-  const msMomentumScalpTrailingStopSlider = document.getElementById('msMomentumScalpTrailingStopSlider');
-  const msMomentumScalpProfitTargetSlider = document.getElementById('msMomentumScalpProfitTargetSlider');
-  
-  if (msAutoEntryMinVolumeSlider) {
-    msAutoEntryMinVolumeSlider.addEventListener('input', function() {
-      if (typeof updateMSAutoEntryMinVolumeDisplay === 'function') {
-        updateMSAutoEntryMinVolumeDisplay(this.value);
-      }
+  const probAdjSlider = document.getElementById('probAdjSlider');
+  if (probAdjSlider) {
+    probAdjSlider.addEventListener('input', function() {
+      updateProbAdjDisplay(this.value);
     });
     window.addEventListener('resize', function() {
-      if (typeof updateMSAutoEntryMinVolumeDisplay === 'function') {
-        updateMSAutoEntryMinVolumeDisplay(msAutoEntryMinVolumeSlider.value);
-      }
+      updateProbAdjDisplay(probAdjSlider.value);
     });
   }
-  
-  if (msAutoEntryProbabilitySlider) {
-    msAutoEntryProbabilitySlider.addEventListener('input', function() {
-      if (typeof updateMSAutoEntryProbabilityDisplay === 'function') {
-        updateMSAutoEntryProbabilityDisplay(this.value);
-      }
-    });
-    window.addEventListener('resize', function() {
-      if (typeof updateMSAutoEntryProbabilityDisplay === 'function') {
-        updateMSAutoEntryProbabilityDisplay(msAutoEntryProbabilitySlider.value);
-      }
-    });
-  }
-  
-  if (msAutoEntryWinStreakThresholdSlider) {
-    msAutoEntryWinStreakThresholdSlider.addEventListener('input', function() {
-      if (typeof updateMSAutoEntryWinStreakThresholdDisplay === 'function') {
-        updateMSAutoEntryWinStreakThresholdDisplay(this.value);
-      }
-    });
-    window.addEventListener('resize', function() {
-      if (typeof updateMSAutoEntryWinStreakThresholdDisplay === 'function') {
-        updateMSAutoEntryWinStreakThresholdDisplay(msAutoEntryWinStreakThresholdSlider.value);
-      }
-    });
-  }
-  
-  if (msMomentumScalpEntryThresholdSlider) {
-    // Max Price Spread slider value display
-    const msMaxPriceSpreadSlider = document.getElementById('msMaxPriceSpreadSlider');
-    const msMaxPriceSpreadValueDisplay = document.getElementById('msMaxPriceSpreadValueDisplay');
-    if (msMaxPriceSpreadSlider && msMaxPriceSpreadValueDisplay) {
-      msMaxPriceSpreadSlider.addEventListener('input', function() {
-        const value = parseFloat(this.value);
-        msMaxPriceSpreadValueDisplay.textContent = value.toFixed(1);
-        const rect = this.getBoundingClientRect();
-        const percent = ((value - parseFloat(this.min)) / (parseFloat(this.max) - parseFloat(this.min))) * 100;
-        msMaxPriceSpreadValueDisplay.style.left = `${percent}%`;
-      });
-    }
-    
-    msMomentumScalpEntryThresholdSlider.addEventListener('input', function() {
-      if (typeof updateMSMomentumThresholdDisplay === 'function') {
-        updateMSMomentumThresholdDisplay(this.value);
-      }
-    });
-    window.addEventListener('resize', function() {
-      if (typeof updateMSMomentumThresholdDisplay === 'function') {
-        updateMSMomentumThresholdDisplay(msMomentumScalpEntryThresholdSlider.value);
-      }
-    });
-  }
-  
-  if (msMomentumScalpTrailingStopSlider) {
-    msMomentumScalpTrailingStopSlider.addEventListener('input', function() {
-      if (typeof updateMSTrailingStopDisplay === 'function') {
-        updateMSTrailingStopDisplay(this.value);
-      }
-    });
-    window.addEventListener('resize', function() {
-      if (typeof updateMSTrailingStopDisplay === 'function') {
-        updateMSTrailingStopDisplay(msMomentumScalpTrailingStopSlider.value);
-      }
-    });
-  }
-  
-  if (msMomentumScalpProfitTargetSlider) {
-    msMomentumScalpProfitTargetSlider.addEventListener('input', function() {
-      if (typeof updateMSProfitTargetDisplay === 'function') {
-        updateMSProfitTargetDisplay(this.value);
-      }
-    });
-    window.addEventListener('resize', function() {
-      if (typeof updateMSProfitTargetDisplay === 'function') {
-        updateMSProfitTargetDisplay(msMomentumScalpProfitTargetSlider.value);
-      }
-    });
-  }
-  
   // Remove click-to-close on dimmed area
   if (autoEntrySettingsDim) {
     autoEntrySettingsDim.addEventListener('click', function(e) {
@@ -5453,13 +5315,6 @@ let currentHandle = null;
 let sliderWidth = 0;
 let minTimeSeconds = 0;
 let maxTimeSeconds = 3600;
-
-// Probability Window Slider (Hourly HTC)
-let probIsDragging = false;
-let probCurrentHandle = null;
-let probSliderWidth = 0;
-let minProbability = 95.00;
-let maxProbability = 100.00;
 
 // Initialize slider
 function initTimeWindowSlider() {
@@ -5549,90 +5404,96 @@ function initTimeWindowSliderOnShow() {
   setTimeout(initTimeWindowSlider, 100);
 }
 
-// PROBABILITY WINDOW SLIDER (Hourly HTC)
-const probabilityWindowSliderContainer = document.getElementById('probabilityWindowSliderContainer');
-const minProbabilityHandle = document.getElementById('minProbabilityHandle');
-const maxProbabilityHandle = document.getElementById('maxProbabilityHandle');
-const probabilityWindowRange = document.getElementById('probabilityWindowRange');
-const probabilityWindowMinDisplay = document.getElementById('probabilityWindowMinDisplay');
-const probabilityWindowMaxDisplay = document.getElementById('probabilityWindowMaxDisplay');
+// === PROBABILITY WINDOW SLIDER FUNCTIONS ===
+let tradeMonitorProbSliderWidth = 0;
+let tradeMonitorProbIsDragging = false;
+let tradeMonitorProbCurrentHandle = null;
 
-// Initialize probability window slider
 function initProbabilityWindowSlider() {
-  if (!probabilityWindowSliderContainer) return;
-  probSliderWidth = probabilityWindowSliderContainer.offsetWidth;
+  const container = document.getElementById('probabilityWindowSliderContainer');
+  if (!container) return;
+  tradeMonitorProbSliderWidth = container.offsetWidth;
   updateProbabilityWindowSlider();
+  
+  const minHandle = document.getElementById('minProbabilityHandle');
+  const maxHandle = document.getElementById('maxProbabilityHandle');
+  if (minHandle && !minHandle._wired) {
+    minHandle._wired = true;
+    minHandle.addEventListener('mousedown', handleProbMouseDown);
+  }
+  if (maxHandle && !maxHandle._wired) {
+    maxHandle._wired = true;
+    maxHandle.addEventListener('mousedown', handleProbMouseDown);
+  }
 }
 
-// Update probability window slider positions and range
 function updateProbabilityWindowSlider() {
-  if (!probSliderWidth) return;
+  if (!tradeMonitorProbSliderWidth) return;
   
-  // Enforce minimum separation (0.5%)
   const MIN_SEPARATION = 0.5;
-  if (maxProbability - minProbability < MIN_SEPARATION) {
-    // If too close, adjust max to maintain minimum separation
-    if (maxProbability < 100) {
-      maxProbability = parseFloat((minProbability + MIN_SEPARATION).toFixed(1));
+  if (window.tradeMonitorMaxProbability - window.tradeMonitorMinProbability < MIN_SEPARATION) {
+    if (window.tradeMonitorMaxProbability < 100) {
+      window.tradeMonitorMaxProbability = parseFloat((window.tradeMonitorMinProbability + MIN_SEPARATION).toFixed(1));
     } else {
-      // If max is at 100, adjust min down
-      minProbability = parseFloat((maxProbability - MIN_SEPARATION).toFixed(1));
+      window.tradeMonitorMinProbability = parseFloat((window.tradeMonitorMaxProbability - MIN_SEPARATION).toFixed(1));
     }
   }
   
-  const minPercent = (minProbability / 100) * 100;
-  const maxPercent = (maxProbability / 100) * 100;
+  const minHandle = document.getElementById('minProbabilityHandle');
+  const maxHandle = document.getElementById('maxProbabilityHandle');
+  const range = document.getElementById('probabilityWindowRange');
+  const minDisplay = document.getElementById('probabilityWindowMinDisplay');
+  const maxDisplay = document.getElementById('probabilityWindowMaxDisplay');
   
-  if (minProbabilityHandle) minProbabilityHandle.style.left = `${minPercent}%`;
-  if (maxProbabilityHandle) maxProbabilityHandle.style.left = `${maxPercent}%`;
+  if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
   
-  if (probabilityWindowRange) {
-    probabilityWindowRange.style.left = `${minPercent}%`;
-    probabilityWindowRange.style.width = `${maxPercent - minPercent}%`;
-  }
+  const minPercent = (window.tradeMonitorMinProbability / 100) * 100;
+  const maxPercent = (window.tradeMonitorMaxProbability / 100) * 100;
   
-  if (probabilityWindowMinDisplay) {
-    probabilityWindowMinDisplay.textContent = minProbability.toFixed(1) + '%';
-    probabilityWindowMinDisplay.style.left = `${minPercent}%`;
-  }
-  if (probabilityWindowMaxDisplay) {
-    probabilityWindowMaxDisplay.textContent = maxProbability.toFixed(1) + '%';
-    probabilityWindowMaxDisplay.style.left = `${maxPercent}%`;
-  }
+  minHandle.style.left = `${minPercent}%`;
+  maxHandle.style.left = `${maxPercent}%`;
+  range.style.left = `${minPercent}%`;
+  range.style.width = `${maxPercent - minPercent}%`;
+  minDisplay.textContent = window.tradeMonitorMinProbability.toFixed(1) + '%';
+  maxDisplay.textContent = window.tradeMonitorMaxProbability.toFixed(1) + '%';
+  minDisplay.style.left = `${minPercent}%`;
+  maxDisplay.style.left = `${maxPercent}%`;
 }
 
-// Handle mouse events for probability window slider
 function handleProbMouseDown(e) {
-  probIsDragging = true;
-  probCurrentHandle = e.target;
+  tradeMonitorProbIsDragging = true;
+  tradeMonitorProbCurrentHandle = e.target;
   document.addEventListener('mousemove', handleProbMouseMove);
   document.addEventListener('mouseup', handleProbMouseUp);
   e.preventDefault();
 }
 
 function handleProbMouseMove(e) {
-  if (!probIsDragging || !probCurrentHandle) return;
+  if (!tradeMonitorProbIsDragging || !tradeMonitorProbCurrentHandle) return;
   
-  const rect = probabilityWindowSliderContainer.getBoundingClientRect();
+  const container = document.getElementById('probabilityWindowSliderContainer');
+  if (!container) return;
+  
+  const rect = container.getBoundingClientRect();
   const x = e.clientX - rect.left;
   const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
-  const probability = parseFloat((Math.round(percent * 10) / 10).toFixed(1)); // Round to 1 decimal place and ensure float
+  const probability = parseFloat((Math.round(percent * 10) / 10).toFixed(1));
   
-  const MIN_SEPARATION = 0.5; // Minimum separation between min and max (0.5%)
+  const MIN_SEPARATION = 0.5;
+  const minHandle = document.getElementById('minProbabilityHandle');
+  const maxHandle = document.getElementById('maxProbabilityHandle');
   
-  if (probCurrentHandle === minProbabilityHandle) {
-    // Ensure min doesn't get too close to max
-    if (probability >= maxProbability - MIN_SEPARATION) {
-      minProbability = parseFloat((maxProbability - MIN_SEPARATION).toFixed(1));
+  if (tradeMonitorProbCurrentHandle === minHandle) {
+    if (probability >= window.tradeMonitorMaxProbability - MIN_SEPARATION) {
+      window.tradeMonitorMinProbability = parseFloat((window.tradeMonitorMaxProbability - MIN_SEPARATION).toFixed(1));
     } else {
-      minProbability = probability;
+      window.tradeMonitorMinProbability = probability;
     }
-  } else if (probCurrentHandle === maxProbabilityHandle) {
-    // Ensure max doesn't get too close to min
-    if (probability <= minProbability + MIN_SEPARATION) {
-      maxProbability = parseFloat((minProbability + MIN_SEPARATION).toFixed(1));
+  } else if (tradeMonitorProbCurrentHandle === maxHandle) {
+    if (probability <= window.tradeMonitorMinProbability + MIN_SEPARATION) {
+      window.tradeMonitorMaxProbability = parseFloat((window.tradeMonitorMinProbability + MIN_SEPARATION).toFixed(1));
     } else {
-      maxProbability = probability;
+      window.tradeMonitorMaxProbability = probability;
     }
   }
   
@@ -5640,276 +5501,335 @@ function handleProbMouseMove(e) {
 }
 
 function handleProbMouseUp() {
-  probIsDragging = false;
-  probCurrentHandle = null;
+  tradeMonitorProbIsDragging = false;
+  tradeMonitorProbCurrentHandle = null;
   document.removeEventListener('mousemove', handleProbMouseMove);
   document.removeEventListener('mouseup', handleProbMouseUp);
 }
 
-// Add event listeners for probability window slider
-if (minProbabilityHandle && maxProbabilityHandle) {
-  minProbabilityHandle.addEventListener('mousedown', handleProbMouseDown);
-  maxProbabilityHandle.addEventListener('mousedown', handleProbMouseDown);
-}
-
-// MOMENTUM SCALP Probability Window Slider
-let msAskIsDragging = false;
-let msAskCurrentHandle = null;
-let msAskSliderWidth = 0;
-let msMinAsk = 0.0000;
-let msMaxAsk = 0.9800;
-
-function initMSAskWindowSlider() {
-  const msAskWindowSliderContainer = document.getElementById('msAskWindowSliderContainer');
-  if (!msAskWindowSliderContainer) return;
-  msAskSliderWidth = msAskWindowSliderContainer.offsetWidth;
-  updateMSAskWindowSlider();
-  
-  // Set up event listeners if not already set up
-  const msMinAskHandle = document.getElementById('msMinAskHandle');
-  const msMaxAskHandle = document.getElementById('msMaxAskHandle');
-  if (msMinAskHandle && !msMinAskHandle._wired) {
-    msMinAskHandle._wired = true;
-    msMinAskHandle.addEventListener('mousedown', msHandleAskMouseDown);
-    msMinAskHandle.addEventListener('touchstart', msHandleAskMouseDown);
-  }
-  if (msMaxAskHandle && !msMaxAskHandle._wired) {
-    msMaxAskHandle._wired = true;
-    msMaxAskHandle.addEventListener('mousedown', msHandleAskMouseDown);
-    msMaxAskHandle.addEventListener('touchstart', msHandleAskMouseDown);
-  }
-}
-
-function updateMSAskWindowSlider() {
-  if (!msAskSliderWidth) return;
-  
-  // Enforce minimum separation (0.01 = 1 cent)
-  const MIN_SEPARATION = 0.01;
-  if (msMaxAsk - msMinAsk < MIN_SEPARATION) {
-    // If too close, adjust max to maintain minimum separation
-    if (msMaxAsk < 1.0) {
-      msMaxAsk = parseFloat((msMinAsk + MIN_SEPARATION).toFixed(4));
-    } else {
-      // If max is at 1.0, adjust min down
-      msMinAsk = parseFloat((msMaxAsk - MIN_SEPARATION).toFixed(4));
-    }
-  }
-  
-  const msMinAskHandle = document.getElementById('msMinAskHandle');
-  const msMaxAskHandle = document.getElementById('msMaxAskHandle');
-  const msAskWindowRange = document.getElementById('msAskWindowRange');
-  const msAskWindowMinDisplay = document.getElementById('msAskWindowMinDisplay');
-  const msAskWindowMaxDisplay = document.getElementById('msAskWindowMaxDisplay');
-  
-  // Convert ask prices (0.0000-1.0000) to percentages (0-100)
-  const minPercent = (msMinAsk / 1.0) * 100;
-  const maxPercent = (msMaxAsk / 1.0) * 100;
-  
-  if (msMinAskHandle) msMinAskHandle.style.left = `${minPercent}%`;
-  if (msMaxAskHandle) msMaxAskHandle.style.left = `${maxPercent}%`;
-  
-  if (msAskWindowRange) {
-    msAskWindowRange.style.left = `${minPercent}%`;
-    msAskWindowRange.style.width = `${maxPercent - minPercent}%`;
-  }
-  
-  if (msAskWindowMinDisplay) {
-    msAskWindowMinDisplay.textContent = msMinAsk.toFixed(4);
-    msAskWindowMinDisplay.style.left = `${minPercent}%`;
-  }
-  if (msAskWindowMaxDisplay) {
-    msAskWindowMaxDisplay.textContent = msMaxAsk.toFixed(4);
-    msAskWindowMaxDisplay.style.left = `${maxPercent}%`;
-  }
-}
-
-function msHandleAskMouseDown(e) {
-  msAskIsDragging = true;
-  msAskCurrentHandle = e.target;
-  document.addEventListener('mousemove', msHandleAskMouseMove);
-  document.addEventListener('mouseup', msHandleAskMouseUp);
-  document.addEventListener('touchmove', msHandleAskMouseMove);
-  document.addEventListener('touchend', msHandleAskMouseUp);
-  e.preventDefault();
-}
-
-function msHandleAskMouseMove(e) {
-  if (!msAskIsDragging || !msAskCurrentHandle) return;
-  
-  const msAskWindowSliderContainer = document.getElementById('msAskWindowSliderContainer');
-  if (!msAskWindowSliderContainer) return;
-  
-  const rect = msAskWindowSliderContainer.getBoundingClientRect();
-  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-  const x = clientX - rect.left;
-  const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
-  // Convert percent (0-100) to ask price (0.0000-1.0000) with 4 decimal places
-  const askPrice = parseFloat((percent / 100).toFixed(4));
-  
-  const MIN_SEPARATION = 0.01; // Minimum separation between min and max (0.01 = 1 cent)
-  const msMinAskHandle = document.getElementById('msMinAskHandle');
-  const msMaxAskHandle = document.getElementById('msMaxAskHandle');
-  
-  if (msAskCurrentHandle === msMinAskHandle) {
-    // Ensure min doesn't get too close to max
-    if (askPrice >= msMaxAsk - MIN_SEPARATION) {
-      msMinAsk = parseFloat((msMaxAsk - MIN_SEPARATION).toFixed(4));
-    } else {
-      msMinAsk = askPrice;
-    }
-  } else if (msAskCurrentHandle === msMaxAskHandle) {
-    // Ensure max doesn't get too close to min
-    if (askPrice <= msMinAsk + MIN_SEPARATION) {
-      msMaxAsk = parseFloat((msMinAsk + MIN_SEPARATION).toFixed(4));
-    } else {
-      msMaxAsk = askPrice;
-    }
-  }
-  
-  updateMSAskWindowSlider();
-}
-
-function msHandleAskMouseUp() {
-  msAskIsDragging = false;
-  msAskCurrentHandle = null;
-  document.removeEventListener('mousemove', msHandleAskMouseMove);
-  document.removeEventListener('mouseup', msHandleAskMouseUp);
-  document.removeEventListener('touchmove', msHandleAskMouseMove);
-  document.removeEventListener('touchend', msHandleAskMouseUp);
-}
-
-// MOMENTUM SCALP Time Window Slider
-let msSliderWidth = 0;
-let msMinTimeSeconds = 0;
-let msMaxTimeSeconds = 3600;
-let msIsDragging = false;
-let msCurrentHandle = null;
+// === MOMENTUM SCALP TIME WINDOW SLIDER FUNCTIONS ===
+let tradeMonitorMSSliderWidth = 0;
+let tradeMonitorMSIsDragging = false;
+let tradeMonitorMSCurrentHandle = null;
+let tradeMonitorMSMinTimeSeconds = 0;
+let tradeMonitorMSMaxTimeSeconds = 3600;
 
 function initMSTimeWindowSlider() {
-  const msTimeWindowSliderContainer = document.getElementById('msTimeWindowSliderContainer');
-  if (!msTimeWindowSliderContainer) return;
-  msSliderWidth = msTimeWindowSliderContainer.offsetWidth;
-  msMinTimeSeconds = minTimeSeconds;
-  msMaxTimeSeconds = maxTimeSeconds;
+  const container = document.getElementById('msTimeWindowSliderContainer');
+  if (!container) return;
+  tradeMonitorMSSliderWidth = container.offsetWidth;
+  tradeMonitorMSMinTimeSeconds = minTimeSeconds;
+  tradeMonitorMSMaxTimeSeconds = maxTimeSeconds;
   updateMSTimeWindowSlider();
   
-  // Set up event listeners if not already set up
-  const msMinTimeHandle = document.getElementById('msMinTimeHandle');
-  const msMaxTimeHandle = document.getElementById('msMaxTimeHandle');
-  if (msMinTimeHandle && !msMinTimeHandle._wired) {
-    msMinTimeHandle._wired = true;
-    msMinTimeHandle.addEventListener('mousedown', msHandleMouseDown);
+  const msMinHandle = document.getElementById('msMinTimeHandle');
+  const msMaxHandle = document.getElementById('msMaxTimeHandle');
+  if (msMinHandle && !msMinHandle._wired) {
+    msMinHandle._wired = true;
+    msMinHandle.addEventListener('mousedown', handleMSTimeWindowMouseDown);
   }
-  if (msMaxTimeHandle && !msMaxTimeHandle._wired) {
-    msMaxTimeHandle._wired = true;
-    msMaxTimeHandle.addEventListener('mousedown', msHandleMouseDown);
+  if (msMaxHandle && !msMaxHandle._wired) {
+    msMaxHandle._wired = true;
+    msMaxHandle.addEventListener('mousedown', handleMSTimeWindowMouseDown);
   }
 }
 
 function updateMSTimeWindowSlider() {
-  if (!msSliderWidth) return;
+  if (!tradeMonitorMSSliderWidth) return;
   
-  const msMinTimeHandle = document.getElementById('msMinTimeHandle');
-  const msMaxTimeHandle = document.getElementById('msMaxTimeHandle');
-  const msTimeWindowRange = document.getElementById('msTimeWindowRange');
-  const msTimeWindowMinDisplay = document.getElementById('msTimeWindowMinDisplay');
-  const msTimeWindowMaxDisplay = document.getElementById('msTimeWindowMaxDisplay');
+  const minPercent = (tradeMonitorMSMinTimeSeconds / 3600) * 100;
+  const maxPercent = (tradeMonitorMSMaxTimeSeconds / 3600) * 100;
   
-  const minPercent = (msMinTimeSeconds / 3600) * 100;
-  const maxPercent = (msMaxTimeSeconds / 3600) * 100;
+  const msMinHandle = document.getElementById('msMinTimeHandle');
+  const msMaxHandle = document.getElementById('msMaxTimeHandle');
+  const msRange = document.getElementById('msTimeWindowRange');
+  const msMinDisplay = document.getElementById('msTimeWindowMinDisplay');
+  const msMaxDisplay = document.getElementById('msTimeWindowMaxDisplay');
   
-  if (msMinTimeHandle) msMinTimeHandle.style.left = `${minPercent}%`;
-  if (msMaxTimeHandle) msMaxTimeHandle.style.left = `${maxPercent}%`;
+  if (!msMinHandle || !msMaxHandle || !msRange || !msMinDisplay || !msMaxDisplay) return;
   
-  if (msTimeWindowRange) {
-    msTimeWindowRange.style.left = `${minPercent}%`;
-    msTimeWindowRange.style.width = `${maxPercent - minPercent}%`;
+  msMinHandle.style.left = `${minPercent}%`;
+  msMaxHandle.style.left = `${maxPercent}%`;
+  msRange.style.left = `${minPercent}%`;
+  msRange.style.width = `${maxPercent - minPercent}%`;
+  
+  if (typeof formatSecondsToMMSS === 'function') {
+    msMinDisplay.textContent = formatSecondsToMMSS(tradeMonitorMSMinTimeSeconds);
+    msMaxDisplay.textContent = formatSecondsToMMSS(tradeMonitorMSMaxTimeSeconds);
   }
-  
-  if (msTimeWindowMinDisplay && typeof formatSecondsToMMSS === 'function') {
-    msTimeWindowMinDisplay.textContent = formatSecondsToMMSS(msMinTimeSeconds);
-    msTimeWindowMinDisplay.style.left = `${minPercent}%`;
-  }
-  if (msTimeWindowMaxDisplay && typeof formatSecondsToMMSS === 'function') {
-    msTimeWindowMaxDisplay.textContent = formatSecondsToMMSS(msMaxTimeSeconds);
-    msTimeWindowMaxDisplay.style.left = `${maxPercent}%`;
-  }
+  msMinDisplay.style.left = `${minPercent}%`;
+  msMaxDisplay.style.left = `${maxPercent}%`;
 }
 
-function msHandleMouseDown(e) {
-  msIsDragging = true;
-  msCurrentHandle = e.target;
-  document.addEventListener('mousemove', msHandleMouseMove);
-  document.addEventListener('mouseup', msHandleMouseUp);
+function handleMSTimeWindowMouseDown(e) {
+  tradeMonitorMSIsDragging = true;
+  tradeMonitorMSCurrentHandle = e.target;
+  document.addEventListener('mousemove', handleMSTimeWindowMouseMove);
+  document.addEventListener('mouseup', handleMSTimeWindowMouseUp);
   e.preventDefault();
 }
 
-function msHandleMouseMove(e) {
-  if (!msIsDragging || !msCurrentHandle) return;
+function handleMSTimeWindowMouseMove(e) {
+  if (!tradeMonitorMSIsDragging || !tradeMonitorMSCurrentHandle) return;
   
-  const msTimeWindowSliderContainer = document.getElementById('msTimeWindowSliderContainer');
-  if (!msTimeWindowSliderContainer) return;
+  const container = document.getElementById('msTimeWindowSliderContainer');
+  if (!container) return;
   
-  const rect = msTimeWindowSliderContainer.getBoundingClientRect();
+  const rect = container.getBoundingClientRect();
   const x = e.clientX - rect.left;
   const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
-  
   const intervalIndex = Math.round((percent / 100) * 240);
   const snappedSeconds = Math.max(0, Math.min(3600, intervalIndex * 15));
   
-  const msMinTimeHandle = document.getElementById('msMinTimeHandle');
-  const msMaxTimeHandle = document.getElementById('msMaxTimeHandle');
+  const msMinHandle = document.getElementById('msMinTimeHandle');
+  const msMaxHandle = document.getElementById('msMaxTimeHandle');
   
-  if (msCurrentHandle === msMinTimeHandle) {
-    if (snappedSeconds >= msMaxTimeSeconds) return;
-    msMinTimeSeconds = snappedSeconds;
-    minTimeSeconds = snappedSeconds;
-  } else if (msCurrentHandle === msMaxTimeHandle) {
-    if (snappedSeconds <= msMinTimeSeconds) return;
-    msMaxTimeSeconds = snappedSeconds;
-    maxTimeSeconds = snappedSeconds;
+  if (tradeMonitorMSCurrentHandle === msMinHandle) {
+    if (snappedSeconds >= tradeMonitorMSMaxTimeSeconds - 15) {
+      tradeMonitorMSMinTimeSeconds = Math.max(0, tradeMonitorMSMaxTimeSeconds - 15);
+    } else {
+      tradeMonitorMSMinTimeSeconds = snappedSeconds;
+    }
+  } else if (tradeMonitorMSCurrentHandle === msMaxHandle) {
+    if (snappedSeconds <= tradeMonitorMSMinTimeSeconds + 15) {
+      tradeMonitorMSMaxTimeSeconds = Math.min(3600, tradeMonitorMSMinTimeSeconds + 15);
+    } else {
+      tradeMonitorMSMaxTimeSeconds = snappedSeconds;
+    }
   }
   
+  minTimeSeconds = tradeMonitorMSMinTimeSeconds;
+  maxTimeSeconds = tradeMonitorMSMaxTimeSeconds;
   updateMSTimeWindowSlider();
 }
 
-function msHandleMouseUp() {
-  msIsDragging = false;
-  msCurrentHandle = null;
-  document.removeEventListener('mousemove', msHandleMouseMove);
-  document.removeEventListener('mouseup', msHandleMouseUp);
+function handleMSTimeWindowMouseUp() {
+  tradeMonitorMSIsDragging = false;
+  tradeMonitorMSCurrentHandle = null;
+  document.removeEventListener('mousemove', handleMSTimeWindowMouseMove);
+  document.removeEventListener('mouseup', handleMSTimeWindowMouseUp);
 }
 
-// MOMENTUM SCALP Min TTC Controls
+// === MOMENTUM SCALP ASK WINDOW SLIDER FUNCTIONS ===
+let tradeMonitorMSAskSliderWidth = 0;
+let tradeMonitorMSAskIsDragging = false;
+let tradeMonitorMSAskCurrentHandle = null;
+
+function initMSAskWindowSlider() {
+  const container = document.getElementById('msAskWindowSliderContainer');
+  if (!container) return;
+  tradeMonitorMSAskSliderWidth = container.offsetWidth;
+  updateMSAskWindowSlider();
+  
+  const msMinAskHandle = document.getElementById('msMinAskHandle');
+  const msMaxAskHandle = document.getElementById('msMaxAskHandle');
+  if (msMinAskHandle && !msMinAskHandle._wired) {
+    msMinAskHandle._wired = true;
+    msMinAskHandle.addEventListener('mousedown', handleMSAskMouseDown);
+  }
+  if (msMaxAskHandle && !msMaxAskHandle._wired) {
+    msMaxAskHandle._wired = true;
+    msMaxAskHandle.addEventListener('mousedown', handleMSAskMouseDown);
+  }
+}
+
+function updateMSAskWindowSlider() {
+  if (!tradeMonitorMSAskSliderWidth) return;
+  
+  const MIN_SEPARATION = 0.01;
+  if (window.tradeMonitorMSMaxAsk - window.tradeMonitorMSMinAsk < MIN_SEPARATION) {
+    if (window.tradeMonitorMSMaxAsk < 1.0) {
+      window.tradeMonitorMSMaxAsk = parseFloat((window.tradeMonitorMSMinAsk + MIN_SEPARATION).toFixed(4));
+    } else {
+      window.tradeMonitorMSMinAsk = parseFloat((window.tradeMonitorMSMaxAsk - MIN_SEPARATION).toFixed(4));
+    }
+  }
+  
+  const msMinAskHandle = document.getElementById('msMinAskHandle');
+  const msMaxAskHandle = document.getElementById('msMaxAskHandle');
+  const msRange = document.getElementById('msAskWindowRange');
+  const msMinDisplay = document.getElementById('msAskWindowMinDisplay');
+  const msMaxDisplay = document.getElementById('msAskWindowMaxDisplay');
+  
+  if (!msMinAskHandle || !msMaxAskHandle || !msRange || !msMinDisplay || !msMaxDisplay) return;
+  
+  const minPercent = (window.tradeMonitorMSMinAsk / 1.0) * 100;
+  const maxPercent = (window.tradeMonitorMSMaxAsk / 1.0) * 100;
+  
+  msMinAskHandle.style.left = `${minPercent}%`;
+  msMaxAskHandle.style.left = `${maxPercent}%`;
+  msRange.style.left = `${minPercent}%`;
+  msRange.style.width = `${maxPercent - minPercent}%`;
+  msMinDisplay.textContent = window.tradeMonitorMSMinAsk.toFixed(4);
+  msMaxDisplay.textContent = window.tradeMonitorMSMaxAsk.toFixed(4);
+  msMinDisplay.style.left = `${minPercent}%`;
+  msMaxDisplay.style.left = `${maxPercent}%`;
+}
+
+function handleMSAskMouseDown(e) {
+  tradeMonitorMSAskIsDragging = true;
+  tradeMonitorMSAskCurrentHandle = e.target;
+  document.addEventListener('mousemove', handleMSAskMouseMove);
+  document.addEventListener('mouseup', handleMSAskMouseUp);
+  e.preventDefault();
+}
+
+function handleMSAskMouseMove(e) {
+  if (!tradeMonitorMSAskIsDragging || !tradeMonitorMSAskCurrentHandle) return;
+  
+  const container = document.getElementById('msAskWindowSliderContainer');
+  if (!container) return;
+  
+  const rect = container.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
+  const askPrice = parseFloat((percent / 100).toFixed(4));
+  
+  const MIN_SEPARATION = 0.01;
+  const msMinAskHandle = document.getElementById('msMinAskHandle');
+  const msMaxAskHandle = document.getElementById('msMaxAskHandle');
+  
+  if (tradeMonitorMSAskCurrentHandle === msMinAskHandle) {
+    if (askPrice >= window.tradeMonitorMSMaxAsk - MIN_SEPARATION) {
+      window.tradeMonitorMSMinAsk = parseFloat((window.tradeMonitorMSMaxAsk - MIN_SEPARATION).toFixed(4));
+    } else {
+      window.tradeMonitorMSMinAsk = askPrice;
+    }
+  } else if (tradeMonitorMSAskCurrentHandle === msMaxAskHandle) {
+    if (askPrice <= window.tradeMonitorMSMinAsk + MIN_SEPARATION) {
+      window.tradeMonitorMSMaxAsk = parseFloat((window.tradeMonitorMSMinAsk + MIN_SEPARATION).toFixed(4));
+    } else {
+      window.tradeMonitorMSMaxAsk = askPrice;
+    }
+  }
+  
+  updateMSAskWindowSlider();
+}
+
+function handleMSAskMouseUp() {
+  tradeMonitorMSAskIsDragging = false;
+  tradeMonitorMSAskCurrentHandle = null;
+  document.removeEventListener('mousemove', handleMSAskMouseMove);
+  document.removeEventListener('mouseup', handleMSAskMouseUp);
+}
+
+// === MIN TTC CONTROLS ===
+function setupMinTTCControls() {
+  const minTTCDisplay = document.getElementById('autoStopMinTTCDisplay');
+  const minTTCInput = document.getElementById('autoStopMinTTCInput');
+  const minTTCUp = document.getElementById('autoStopMinTTCUp');
+  const minTTCDown = document.getElementById('autoStopMinTTCDown');
+  
+  if (minTTCDisplay && minTTCInput && minTTCUp && minTTCDown) {
+    if (!minTTCUp._wired) {
+      minTTCUp._wired = true;
+      minTTCUp.addEventListener('click', function() {
+        const currentVal = parseInt(minTTCInput.value, 10) || 0;
+        const newVal = currentVal + 15;
+        minTTCInput.value = newVal;
+        if (typeof formatSecondsToMMSS === 'function') {
+          minTTCDisplay.textContent = formatSecondsToMMSS(newVal);
+        }
+      });
+    }
+    if (!minTTCDown._wired) {
+      minTTCDown._wired = true;
+      minTTCDown.addEventListener('click', function() {
+        const currentVal = parseInt(minTTCInput.value, 10) || 0;
+        const newVal = Math.max(0, currentVal - 30);
+        minTTCInput.value = newVal;
+        if (typeof formatSecondsToMMSS === 'function') {
+          minTTCDisplay.textContent = formatSecondsToMMSS(newVal);
+        }
+      });
+    }
+  }
+}
+
 function setupMSMinTTCControls() {
-  const msMinTTCInput = document.getElementById('msAutoStopMinTTCInput');
   const msMinTTCDisplay = document.getElementById('msAutoStopMinTTCDisplay');
+  const msMinTTCInput = document.getElementById('msAutoStopMinTTCInput');
   const msMinTTCUp = document.getElementById('msAutoStopMinTTCUp');
   const msMinTTCDown = document.getElementById('msAutoStopMinTTCDown');
   
-  if (msMinTTCUp && !msMinTTCUp._wired) {
-    msMinTTCUp._wired = true;
-    msMinTTCUp.addEventListener('click', function() {
-      const currentVal = parseInt(msMinTTCInput.value, 10) || 0;
-      const newVal = currentVal + 15;
-      msMinTTCInput.value = newVal;
-      if (msMinTTCDisplay && typeof formatSecondsToMMSS === 'function') {
-        msMinTTCDisplay.textContent = formatSecondsToMMSS(newVal);
-      }
-    });
+  if (msMinTTCDisplay && msMinTTCInput && msMinTTCUp && msMinTTCDown) {
+    if (!msMinTTCUp._wired) {
+      msMinTTCUp._wired = true;
+      msMinTTCUp.addEventListener('click', function() {
+        const currentVal = parseInt(msMinTTCInput.value, 10) || 0;
+        const newVal = currentVal + 15;
+        msMinTTCInput.value = newVal;
+        if (typeof formatSecondsToMMSS === 'function') {
+          msMinTTCDisplay.textContent = formatSecondsToMMSS(newVal);
+        }
+      });
+    }
+    if (!msMinTTCDown._wired) {
+      msMinTTCDown._wired = true;
+      msMinTTCDown.addEventListener('click', function() {
+        const currentVal = parseInt(msMinTTCInput.value, 10) || 0;
+        const newVal = Math.max(0, currentVal - 30);
+        msMinTTCInput.value = newVal;
+        if (typeof formatSecondsToMMSS === 'function') {
+          msMinTTCDisplay.textContent = formatSecondsToMMSS(newVal);
+        }
+      });
+    }
   }
-  
-  if (msMinTTCDown && !msMinTTCDown._wired) {
-    msMinTTCDown._wired = true;
-    msMinTTCDown.addEventListener('click', function() {
-      const currentVal = parseInt(msMinTTCInput.value, 10) || 0;
-      const newVal = Math.max(0, currentVal - 30);
-      msMinTTCInput.value = newVal;
-      if (msMinTTCDisplay && typeof formatSecondsToMMSS === 'function') {
-        msMinTTCDisplay.textContent = formatSecondsToMMSS(newVal);
-      }
-    });
-  }
+}
+
+// === MOMENTUM SCALP VALUE BUBBLE UPDATE FUNCTIONS ===
+function updateMSAutoEntryMinVolumeDisplay(value) {
+  const display = document.getElementById('msAutoEntryMinVolumeValueDisplay');
+  const slider = document.getElementById('msAutoEntryMinVolumeSlider');
+  if (!display || !slider) return;
+  const v = Math.max(25, parseInt(value, 10));
+  display.textContent = v;
+  const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+  const percent = (value - min) / (max - min);
+  display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
+}
+
+function updateMSAutoEntryWinStreakThresholdDisplay(value) {
+  const display = document.getElementById('msAutoEntryWinStreakThresholdValueDisplay');
+  const slider = document.getElementById('msAutoEntryWinStreakThresholdSlider');
+  if (!display || !slider) return;
+  display.textContent = value;
+  const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+  const percent = (value - min) / (max - min);
+  display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
+}
+
+function updateMSMomentumThresholdDisplay(value) {
+  const display = document.getElementById('msMomentumScalpEntryThresholdValueDisplay');
+  const slider = document.getElementById('msMomentumScalpEntryThresholdSlider');
+  if (!display || !slider) return;
+  display.textContent = `±${value}`;
+  const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+  const percent = (value - min) / (max - min);
+  display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
+}
+
+function updateMSTrailingStopDisplay(value) {
+  const display = document.getElementById('msMomentumScalpTrailingStopValueDisplay');
+  const slider = document.getElementById('msMomentumScalpTrailingStopSlider');
+  if (!display || !slider) return;
+  const dollars = (parseFloat(value) / 100).toFixed(2);
+  display.textContent = dollars;
+  const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+  const percent = (value - min) / (max - min);
+  display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
+}
+
+function updateMSProfitTargetDisplay(value) {
+  const display = document.getElementById('msMomentumScalpProfitTargetValueDisplay');
+  const slider = document.getElementById('msMomentumScalpProfitTargetSlider');
+  if (!display || !slider) return;
+  const dollars = (parseFloat(value) / 100).toFixed(2);
+  display.textContent = dollars;
+  const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+  const percent = (value - min) / (max - min);
+  display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
 }
 
 // === AUTO ENTRY INDICATOR FUNCTIONS ===
@@ -6038,6 +5958,19 @@ function updateAutoEntryIndicator(data) {
         }
     }
     
+    // Helper function to format cooldown timer as MM:SS
+    function formatCooldownTimer(seconds) {
+        if (!seconds || seconds <= 0) return '';
+        const minutes = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+    
+    // Check for cooldown timer (in seconds) - can be present in any status
+    const cooldownTimer = data.cooldown_timer || (data.cooldown_timer === 0 ? 0 : null);
+    const hasCooldown = cooldownTimer !== null && cooldownTimer > 0;
+    const cooldownDisplay = hasCooldown ? formatCooldownTimer(cooldownTimer) : '';
+    
     // Set colors and text based on status (no background colors)
     switch (status) {
         case 'ACTIVE':
@@ -6048,7 +5981,12 @@ function updateAutoEntryIndicator(data) {
                 indicatorDot.style.background = '#00ff2f'; // Green dot
             }
             if (indicatorText) {
-                indicatorText.textContent = 'Auto Trade ACTIVE';
+                // Show cooldown timer if available (for Hourly HTC during spike cooldown)
+                if (hasCooldown) {
+                    indicatorText.textContent = `Auto Trade ACTIVE (${cooldownDisplay})`;
+                } else {
+                    indicatorText.textContent = 'Auto Trade ACTIVE';
+                }
             }
             break;
             
@@ -6662,6 +6600,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Global variable to track current symbol
     let currentSymbol = 'BTC'; // Default to BTC, will be updated when monitor is selected
     
+    // Global variable to track paper trading status
+    let currentPaperTrade = false;
+    window.currentPaperTrade = false;
+    
     // Store latest cooldown timer value to combine with status updates
     let latestCooldownTimer = 0;
     
@@ -6796,7 +6738,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }
           }
           
-
+          // Set paper_trade status
+          if ('paper_trade' in monitor) {
+            const paperTrade = monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1;
+            updatePaperTradingUI(paperTrade);
+          }
           
           // Update position display with monitor's total_position
           updatePositionDisplay(monitor.total_position);
@@ -6816,6 +6762,89 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
     
+    // Paper Trading Functions
+    function updatePaperTradingUI(paperTrade) {
+      currentPaperTrade = paperTrade;
+      window.currentPaperTrade = paperTrade;
+      
+      const button = document.querySelector('.paper-trading-button');
+      if (button) {
+        if (paperTrade) {
+          button.classList.add('active');
+          button.classList.remove('inactive');
+          document.getElementById('accountPanel')?.classList.add('paper-trading-active');
+          document.getElementById('watchlistPanel')?.classList.add('paper-trading-active');
+        } else {
+          button.classList.remove('active');
+          button.classList.add('inactive');
+          document.getElementById('accountPanel')?.classList.remove('paper-trading-active');
+          document.getElementById('watchlistPanel')?.classList.remove('paper-trading-active');
+        }
+      }
+    }
+    window.updatePaperTradingUI = updatePaperTradingUI;
+
+    async function fetchPaperTradeStatus() {
+      try {
+        if (!window.currentMonitorId) {
+          return false;
+        }
+        
+        const response = await fetch(`${window.location.origin}/api/monitors?user_id=user_0001`);
+        const data = await response.json();
+        
+        if (data.status === 'ok' && data.monitors) {
+          const monitor = data.monitors.find(m => m.id === window.currentMonitorId);
+          if (monitor) {
+            const paperTrade = monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1;
+            updatePaperTradingUI(paperTrade);
+            return paperTrade;
+          }
+        }
+        return false;
+      } catch (error) {
+        console.error('Error fetching paper trade status:', error);
+        return false;
+      }
+    }
+    window.fetchPaperTradeStatus = fetchPaperTradeStatus;
+
+    async function togglePaperTrade() {
+      try {
+        if (!window.currentMonitorId) {
+          console.error('No current monitor ID, cannot toggle paper trade');
+          return;
+        }
+        
+        const newPaperTrade = !currentPaperTrade;
+        
+        // Optimistically update UI
+        updatePaperTradingUI(newPaperTrade);
+        
+        // Extract numeric monitor ID from mon_0001_10002 format and convert to MON_0001_10002 format
+        const numericId = window.currentMonitorId.split('_').pop();
+        const formattedMonitorId = `MON_0001_${numericId}`;
+        
+        const response = await fetch('/api/monitor/toggle-paper-trade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            monitor_id: formattedMonitorId,
+            paper_trade: newPaperTrade
+          })
+        });
+        
+        const data = await response.json();
+        if (data.status !== 'ok') {
+          // Revert UI on error
+          updatePaperTradingUI(!newPaperTrade);
+          console.error('Failed to toggle paper trade:', data.message);
+        }
+      } catch (error) {
+        console.error('Error toggling paper trade:', error);
+      }
+    }
+
     // Function to handle monitor picker change
     function handleMonitorChange() {
       const monitorPicker = document.getElementById('monitor-picker');

@@ -9844,6 +9844,8 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `current_max_pct_exposure` | `numeric(10,2)` | YES | 0.25 | |
 | `performance_based_allocation` | `boolean` | NO | false | |
 | `max_price_spread` | `numeric(6,4)` | YES | 0.0300 | |
+| `paper_trade` | `boolean` | YES | false | |
+| `prob_adj` | `numeric(5,2)` | YES | 5.00 | |
 
 #### Constraints
 
@@ -10187,6 +10189,48 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `loss_prevention` | `boolean` | YES | false | |
 | `multiplier` | `numeric(10,2)` | YES | - | |
 | `price_spread` | `numeric(6,4)` | YES | - | |
+| `paper_trade` | `boolean` | YES | false | |
+| `cooldown_timer` | `integer(32)` | YES | - | |
+| `monitor_confirmed` | `boolean` | YES | false | |
+| `cycle_win_loss` | `text` | YES | - | |
+| `cycle_pnl` | `real(24)` | YES | - | |
+| `cycle_ret_pct` | `real(24)` | YES | - | |
+
+**Note on cycle-level columns (`cycle_win_loss`, `cycle_pnl`, `cycle_ret_pct`):**
+These columns store cycle-level metrics grouped by monitor + contract + date combination. For backfilling:
+- `cycle_pnl` = SUM(pnl) for all trades in that monitor+contract+date cycle
+- `cycle_ret_pct` = SUM(ret_pct) for all trades in that monitor+contract+date cycle (simple sum, not recalculated)
+- `cycle_win_loss` = 'W' if cycle_pnl > 0, 'L' otherwise
+
+Example backfill SQL:
+```sql
+WITH cycle_stats AS (
+    SELECT 
+        monitor,
+        contract,
+        date,
+        SUM(pnl) as total_pnl,
+        SUM(ret_pct) as total_ret_pct
+    FROM users.trades_0001
+    WHERE monitor IS NOT NULL 
+      AND contract IS NOT NULL
+      AND date IS NOT NULL
+      AND status IN ('closed', 'expired')
+      AND pnl IS NOT NULL
+      AND ret_pct IS NOT NULL
+    GROUP BY monitor, contract, date
+)
+UPDATE users.trades_0001 t
+SET 
+    cycle_pnl = cs.total_pnl,
+    cycle_ret_pct = cs.total_ret_pct,
+    cycle_win_loss = CASE WHEN cs.total_pnl > 0 THEN 'W' ELSE 'L' END
+FROM cycle_stats cs
+WHERE t.monitor = cs.monitor 
+  AND t.contract = cs.contract
+  AND t.date = cs.date
+  AND t.status IN ('closed', 'expired');
+```
 
 #### Constraints
 

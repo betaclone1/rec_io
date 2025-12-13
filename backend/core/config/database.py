@@ -95,7 +95,13 @@ def init_database():
                 low_price DECIMAL(10,4),
                 loss_prevention BOOLEAN DEFAULT FALSE,
                 multiplier DECIMAL(10,2),
-                price_spread DECIMAL(6,4)
+                price_spread DECIMAL(6,4),
+                paper_trade BOOLEAN DEFAULT FALSE,
+                cooldown_timer INTEGER,
+                monitor_confirmed BOOLEAN DEFAULT FALSE,
+                cycle_win_loss TEXT,
+                cycle_pnl REAL,
+                cycle_ret_pct REAL
             );
         """)
 
@@ -154,6 +160,66 @@ def init_database():
                       AND column_name = 'volatility_percentile'
                 ) THEN
                     ALTER TABLE users.trades_0001 ADD COLUMN volatility_percentile NUMERIC(5,1);
+                END IF;
+
+                -- Add paper_trade column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'paper_trade'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN paper_trade BOOLEAN DEFAULT FALSE;
+                END IF;
+
+                -- Add cooldown_timer column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'cooldown_timer'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN cooldown_timer INTEGER;
+                END IF;
+
+                -- Add monitor_confirmed column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'monitor_confirmed'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN monitor_confirmed BOOLEAN DEFAULT FALSE;
+                END IF;
+
+                -- Add cycle_win_loss column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'cycle_win_loss'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN cycle_win_loss TEXT;
+                END IF;
+
+                -- Add cycle_pnl column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'cycle_pnl'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN cycle_pnl REAL;
+                END IF;
+
+                -- Add cycle_ret_pct column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'cycle_ret_pct'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN cycle_ret_pct REAL;
                 END IF;
             END
             $$;
@@ -220,6 +286,8 @@ def init_database():
                 current_max_pct_exposure NUMERIC(10,2) DEFAULT 0.25,
                 performance_based_allocation BOOLEAN NOT NULL DEFAULT FALSE,
                 max_price_spread NUMERIC(6,4) DEFAULT 0.0300,
+                paper_trade BOOLEAN DEFAULT FALSE,
+                prob_adj NUMERIC(5,2) DEFAULT 5.00,
                 created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
@@ -419,9 +487,67 @@ def init_database():
                     ALTER TABLE users.monitor_list_0001 ADD COLUMN max_price_spread NUMERIC(6,4) DEFAULT 0.0300;
                     UPDATE users.monitor_list_0001 SET max_price_spread = 0.0300 WHERE max_price_spread IS NULL;
                 END IF;
+
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'monitor_list_0001'
+                      AND column_name = 'paper_trade'
+                ) THEN
+                    ALTER TABLE users.monitor_list_0001 ADD COLUMN paper_trade BOOLEAN DEFAULT FALSE;
+                    UPDATE users.monitor_list_0001 SET paper_trade = FALSE WHERE paper_trade IS NULL;
+                END IF;
+
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'monitor_list_0001'
+                      AND column_name = 'prob_adj'
+                ) THEN
+                    ALTER TABLE users.monitor_list_0001 ADD COLUMN prob_adj NUMERIC(5,2) DEFAULT 5.00;
+                    UPDATE users.monitor_list_0001 SET prob_adj = 5.00 WHERE prob_adj IS NULL;
+                END IF;
             END
             $$;
         """)
+        
+        # Add paper_trade column to all monitor_list tables (not just 0001)
+        # Find all monitor_list tables and add the column if it doesn't exist
+        cursor.execute("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'users' 
+            AND table_name LIKE 'monitor_list_%'
+            ORDER BY table_name
+        """)
+        monitor_list_tables = [row[0] for row in cursor.fetchall()]
+        
+        for table_name in monitor_list_tables:
+            cursor.execute(f"""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'users'
+                          AND table_name = '{table_name}'
+                          AND column_name = 'paper_trade'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN paper_trade BOOLEAN DEFAULT FALSE', '{table_name}');
+                        EXECUTE format('UPDATE users.%I SET paper_trade = FALSE WHERE paper_trade IS NULL', '{table_name}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'users'
+                          AND table_name = '{table_name}'
+                          AND column_name = 'prob_adj'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN prob_adj NUMERIC(5,2) DEFAULT 5.00', '{table_name}');
+                        EXECUTE format('UPDATE users.%I SET prob_adj = 5.00 WHERE prob_adj IS NULL', '{table_name}');
+                    END IF;
+                END
+                $$;
+            """)
         
         # Grant privileges
         cursor.execute("GRANT ALL PRIVILEGES ON SCHEMA users TO rec_io_user;")

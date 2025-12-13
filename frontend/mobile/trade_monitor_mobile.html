@@ -181,7 +181,34 @@
     display: block;
   }
 
+  /* Paper Trading Button */
+  .paper-trading-button {
+    padding: 3px 6px;
+    border-radius: 4px;
+    border: 1px solid #4a5568;
+    background-color: #2d3748;
+    color: #a0aec0;
+    font-size: 0.44rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-left: 10px;
+  }
 
+  .paper-trading-button.active {
+    background-color: #48bb78;
+    color: white;
+    border-color: #48bb78;
+  }
+
+  .paper-trading-button:hover {
+    opacity: 0.8;
+  }
+
+  /* Paper Trading Active Panel Border */
+  #accountPanel.paper-trading-active,
+  #watchlistPanel.paper-trading-active {
+    box-shadow: inset 0 0 0 2px #48bb78;
+  }
 
 </style>
 <style>
@@ -535,6 +562,25 @@
           <div id="strikePanelTTC" style="font-size: 27px; font-weight: bold; text-align: right;">&nbsp;</div>
         </div>
       </div>
+      <div class="panel-container" id="accountPanel" style="height: 50px; min-height: 50px; max-height: 50px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between;">
+        <div style="display: flex; align-items: center;">
+          <select id="account-selector" class="dropdown-picker">
+            <option value="live" id="prod-option">Loading...</option>
+            <option value="demo" id="demo-option">Loading...</option>
+          </select>
+          <button class="paper-trading-button inactive" onclick="togglePaperTrade()" title="Click to toggle paper trading mode">PAPER TRADING</button>
+        </div>
+        <div style="display: flex; align-items: flex-end; gap: 25px;">
+          <div style="display: flex; flex-direction: column; align-items: flex-end;">
+            <span style="font-size: 11px; color: #ccc; font-weight: normal; margin-bottom: 0px;">Portfolio</span>
+            <span id="portfolio-balance-1" style="font-weight: bold; color: white; font-size: 14px;">Loading...</span>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: flex-end;">
+            <span style="font-size: 11px; color: #ccc; font-weight: normal; margin-left: 10px; margin-bottom: 0px;">Bankroll</span>
+            <span id="bankroll-balance" style="font-weight: bold; color: white; font-size: 14px;">Loading...</span>
+          </div>
+        </div>
+      </div>
       <div class="panel-container" id="watchlistPanel" style="min-height: 50px; max-height: 346px;">
         <div class="panel-header" style="display: flex; align-items: center; justify-content: space-between;">
           <span>Watchlist</span>
@@ -787,6 +833,8 @@ async function showMobileUnifiedAutoTradeSettings() {
   // Show/hide strategy sections
   const htcSection = document.getElementById('mobileHTCStrategySection');
   const msSection = document.getElementById('mobileMSStrategySection');
+  const probAdjContainer = document.getElementById('probAdjContainer');
+  const probAdjLabel = document.getElementById('probAdjLabel');
   if (htcSection && msSection) {
     if (isMomentumScalp) {
       htcSection.style.display = 'none';
@@ -795,6 +843,14 @@ async function showMobileUnifiedAutoTradeSettings() {
       htcSection.style.display = 'contents';
       msSection.style.display = 'none';
     }
+  }
+  // Show/hide Probability Adjustment slider (only for Hourly HTC, not Reverse HTC)
+  const isReverseHTC = currentStrategy && currentStrategy.toUpperCase().includes('REVERSE HTC');
+  const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
+  if (probAdjContainer && probAdjLabel) {
+    const displayValue = isHourlyHTC ? 'block' : 'none';
+    probAdjContainer.style.display = displayValue;
+    probAdjLabel.style.display = displayValue;
   }
   
   // Set up cancel and dim click handlers immediately
@@ -883,6 +939,10 @@ async function showMobileUnifiedAutoTradeSettings() {
       setVal('spikeAlertMomentumSlider', data.spike_alert_momentum_threshold ?? 40);
       setVal('spikeAlertCooldownSlider', data.spike_alert_cooldown_level ?? 75);
       setVal('spikeAlertTimeSlider', data.spike_alert_cooldown_time ?? 5);
+      setVal('probAdjSlider', data.prob_adj ?? 5.00);
+      if (document.getElementById('probAdjValueDisplay')) {
+        updateProbAdjDisplay(document.getElementById('probAdjSlider').value);
+      }
       setVal('autoStopProbabilitySlider', data.current_probability ?? 25);
       setVal('momentumSpikeThresholdSlider', data.momentum_spike_threshold ?? 35);
       setVal('verificationPeriodSlider', data.verification_period_seconds ?? 15);
@@ -1098,6 +1158,18 @@ function refreshSliderDisplays() {
   bindSlider('spikeAlertMomentumSlider', 'spikeAlertMomentumValueDisplay', (value) => `±${Math.round(value)}`);
   bindSlider('spikeAlertCooldownSlider', 'spikeAlertCooldownValueDisplay', (value) => `±${Math.round(value)}`);
   bindSlider('spikeAlertTimeSlider', 'spikeAlertTimeValueDisplay', (value) => `${Math.round(value)} min`);
+  // Probability Adjustment slider - use custom handler for percentage display
+  const probAdjSlider = document.getElementById('probAdjSlider');
+  if (probAdjSlider && !probAdjSlider._mobileBound) {
+    probAdjSlider.addEventListener('input', function() {
+      updateProbAdjDisplay(this.value);
+    });
+    window.addEventListener('resize', function() {
+      updateProbAdjDisplay(probAdjSlider.value);
+    });
+    probAdjSlider._mobileBound = true;
+    updateProbAdjDisplay(probAdjSlider.value);
+  }
   bindSlider('autoStopProbabilitySlider', 'sliderValueDisplay', (value) => `${Math.round(value)}%`);
   bindSlider('momentumSpikeThresholdSlider', 'momentumSpikeThresholdValueDisplay', (value) => `±${Math.round(value)}`);
   bindSlider('verificationPeriodSlider', 'verificationPeriodValueDisplay', (value) => `${Math.round(value)}s`);
@@ -1258,24 +1330,6 @@ function hideAutoEntrySettingsModal() {
 </div>
 
     <div class="column" id="col3" style="padding-right: 0px;">
-      <div class="panel-container" style="height: 50px; min-height: 50px; max-height: 50px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between;">
-        <div style="display: flex; align-items: center;">
-          <select id="account-selector" class="dropdown-picker">
-            <option value="live" id="prod-option">Loading...</option>
-            <option value="demo" id="demo-option">Loading...</option>
-          </select>
-        </div>
-        <div style="display: flex; align-items: flex-end; gap: 25px;">
-          <div style="display: flex; flex-direction: column; align-items: flex-end;">
-            <span style="font-size: 11px; color: #ccc; font-weight: normal; margin-bottom: 0px;">Portfolio</span>
-            <span id="portfolio-balance-1" style="font-weight: bold; color: white; font-size: 14px;">Loading...</span>
-          </div>
-          <div style="display: flex; flex-direction: column; align-items: flex-end;">
-            <span style="font-size: 11px; color: #ccc; font-weight: normal; margin-left: 10px; margin-bottom: 0px;">Bankroll</span>
-            <span id="bankroll-balance" style="font-weight: bold; color: white; font-size: 14px;">Loading...</span>
-          </div>
-        </div>
-      </div>
   <script>
     // Sync the mode picker with the global mode on load
     async function syncModePickerWithGlobal() {
@@ -1757,6 +1811,20 @@ document.addEventListener('DOMContentLoaded', () => {
           selector.value = data.account_mode === "prod" ? "live" : "demo";
         }
       }
+      
+      // === Paper Trade Toggled ===
+      if (data.type === 'paper_trade_toggled') {
+        console.log('Paper trade toggle received in trade monitor:', data);
+        
+        // Extract numeric monitor ID from full monitor ID (e.g., "MON_0001_10002" -> "10002")
+        const messageMonitorId = data.monitor_id.split('_').pop();
+        
+        if (currentMonitorId && messageMonitorId === currentMonitorId.toString()) {
+          console.log('🔄 Paper trade toggle affects current monitor, updating UI...');
+          updatePaperTradingUI(data.paper_trade);
+        }
+        return; // Don't process other WebSocket messages for this type
+      }
 
 
 
@@ -2182,7 +2250,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             <div style="position:relative; margin-bottom:24px; width:100%;">
               <input type="checkbox" id="spikeAlertEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;">
-              <span style="font-size:13px; color:#666;">Pause auto entry during market spikes</span>
+              <span style="font-size:13px; color:#666;">Monitor for momentum spikes</span>
             </div>
             
             <label for="spikeAlertMomentumSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Spike Level (±):</label>
@@ -2198,10 +2266,16 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
 
             <label for="spikeAlertTimeSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Time (minutes):</label>
-            <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+            <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
               <input type="range" id="spikeAlertTimeSlider" min="0" max="180" value="15" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
               <div id="spikeAlertTimeValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">15 min</div>
           </div>
+
+            <label id="probAdjLabel" for="probAdjSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Probability Adjustment (%):</label>
+            <div id="probAdjContainer" class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+              <input type="range" id="probAdjSlider" min="0" max="20" step="0.5" value="5" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+              <div id="probAdjValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+            </div>
 
             <hr style="border:none; border-top:1px solid #e0e0e0; margin:24px 0 16px 0;">
 
@@ -4575,6 +4649,22 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   }
 
+  function updateProbAdjDisplay(value) {
+    const display = document.getElementById('probAdjValueDisplay');
+    const slider = document.getElementById('probAdjSlider');
+    if (display && slider) {
+      display.textContent = `${parseFloat(value).toFixed(1)}%`;
+      // Calculate thumb position in px
+      const min = parseFloat(slider.min);
+      const max = parseFloat(slider.max);
+      const percent = (parseFloat(value) - min) / (max - min);
+      const sliderWidth = slider.offsetWidth;
+      const thumbWidth = 16;
+      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
+      display.style.left = `${offset}px`;
+    }
+  }
+
   function updateSpikeAlertTimeDisplay(value) {
     const display = document.getElementById('spikeAlertTimeValueDisplay');
     const slider = document.getElementById('spikeAlertTimeSlider');
@@ -4727,6 +4817,14 @@ document.addEventListener('DOMContentLoaded', function() {
           updateSpikeAlertTimeDisplay(spikeAlertTime);
           window.lastSavedSpikeAlertTime = spikeAlertTime;
         }
+        
+        const probAdjSlider = document.getElementById('probAdjSlider');
+        if (probAdjSlider) {
+          const probAdj = data.prob_adj !== undefined ? data.prob_adj : 5.00;
+          probAdjSlider.value = probAdj;
+          updateProbAdjDisplay(probAdj);
+          window.lastSavedProbAdj = probAdj;
+        }
 
         const perfAllocCheckbox = document.getElementById('autoEntryPerformanceBasedAllocation');
         if (perfAllocCheckbox) {
@@ -4839,31 +4937,47 @@ document.addEventListener('DOMContentLoaded', function() {
           const spikeAlertCooldown = spikeAlertCooldownSlider ? parseInt(spikeAlertCooldownSlider.value) : 30;
           const spikeAlertTime = spikeAlertTimeSlider ? parseInt(spikeAlertTimeSlider.value) : 15;
           
+          // Get current strategy to determine if we should include prob_adj
+          const strategyPicker = document.getElementById('trade-strategy-picker');
+          const currentStrategy = strategyPicker ? strategyPicker.value : '';
+          const isReverseHTC = currentStrategy && currentStrategy.toUpperCase().includes('REVERSE HTC');
+          const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
+          
           if (!currentMonitorId) {
             console.error('No monitor selected, cannot save auto entry settings');
             return;
           }
           
+          const payload = {
+            monitor_id: currentMonitorId,
+            min_probability: newProb,
+            min_differential: newDifferential,
+            max_differential: newMaxDifferential > 0 ? newMaxDifferential : null,
+            min_volume: newMinVolume,
+            min_ttc_seconds: 60, // Keep default TTC for now
+            min_time: minTimeSeconds,
+            max_time: maxTimeSeconds,
+            allow_re_entry: allowReEntry,
+            win_streak_threshold: newWinStreakThreshold,
+            spike_alert_enabled: spikeAlertEnabled,
+            spike_alert_momentum_threshold: spikeAlertMomentum,
+            spike_alert_cooldown_threshold: spikeAlertCooldown,
+            spike_alert_cooldown_minutes: spikeAlertTime,
+            performance_based_allocation: performanceBasedAllocation
+          };
+          
+          // Only include prob_adj for Hourly HTC (not Reverse HTC)
+          if (isHourlyHTC) {
+            const probAdjSlider = document.getElementById('probAdjSlider');
+            if (probAdjSlider) {
+              payload.prob_adj = parseFloat(probAdjSlider.value);
+            }
+          }
+          
           const response = await fetch(window.location.origin + '/api/set_auto_entry_settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              monitor_id: currentMonitorId,
-              min_probability: newProb,
-              min_differential: newDifferential,
-              max_differential: newMaxDifferential > 0 ? newMaxDifferential : null,
-              min_volume: newMinVolume,
-              min_ttc_seconds: 60, // Keep default TTC for now
-              min_time: minTimeSeconds,
-              max_time: maxTimeSeconds,
-              allow_re_entry: allowReEntry,
-              win_streak_threshold: newWinStreakThreshold,
-              spike_alert_enabled: spikeAlertEnabled,
-              spike_alert_momentum_threshold: spikeAlertMomentum,
-              spike_alert_cooldown_threshold: spikeAlertCooldown,
-              spike_alert_cooldown_minutes: spikeAlertTime,
-              performance_based_allocation: performanceBasedAllocation
-            })
+            body: JSON.stringify(payload)
           });
           
           if (response.ok) {
@@ -5462,6 +5576,14 @@ function updateAutoEntryIndicator(data) {
     // Set colors and text based on status (no background colors)
     switch (status) {
         case 'ACTIVE':
+            // Helper function to format cooldown timer as MM:SS
+            function formatCooldownTimer(seconds) {
+                if (!seconds || seconds <= 0) return '';
+                const minutes = Math.floor(seconds / 60);
+                const secs = seconds % 60;
+                return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            }
+            
             indicator.style.display = 'flex';
             indicator.style.backgroundColor = ''; // No background
             indicator.style.border = '';
@@ -5469,7 +5591,17 @@ function updateAutoEntryIndicator(data) {
                 indicatorDot.style.background = '#00ff2f'; // Green dot
             }
             if (indicatorText) {
-                indicatorText.textContent = 'Auto Trade ACTIVE';
+                // Check for cooldown timer (in seconds) - can be present during ACTIVE status
+                const cooldownTimer = data.cooldown_timer || (data.cooldown_timer === 0 ? 0 : null);
+                const hasCooldown = cooldownTimer !== null && cooldownTimer > 0;
+                const cooldownDisplay = hasCooldown ? formatCooldownTimer(cooldownTimer) : '';
+                
+                // Show cooldown timer if available (for Hourly HTC during spike cooldown)
+                if (hasCooldown) {
+                    indicatorText.textContent = `Auto Trade ACTIVE (${cooldownDisplay})`;
+                } else {
+                    indicatorText.textContent = 'Auto Trade ACTIVE';
+                }
             }
             break;
             
@@ -6081,6 +6213,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Global variable to track current symbol
     let currentSymbol = 'BTC'; // Default to BTC, will be updated when monitor is selected
     
+    // Global variable to track paper trading status
+    let currentPaperTrade = false;
+    window.currentPaperTrade = false;
+    
     // Store latest cooldown timer value to combine with status updates
     let latestCooldownTimer = 0;
     
@@ -6215,7 +6351,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }
           }
           
-
+          // Set paper_trade status
+          if ('paper_trade' in monitor) {
+            const paperTrade = monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1;
+            updatePaperTradingUI(paperTrade);
+          }
           
           // Update position display with monitor's total_position
           updatePositionDisplay(monitor.total_position);
@@ -6234,6 +6374,90 @@ document.addEventListener('DOMContentLoaded', () => {
         console.error('Error loading monitor details:', error);
       }
     }
+    
+    // Paper Trading Functions
+    function updatePaperTradingUI(paperTrade) {
+      currentPaperTrade = paperTrade;
+      window.currentPaperTrade = paperTrade;
+      
+      const button = document.querySelector('.paper-trading-button');
+      if (button) {
+        if (paperTrade) {
+          button.classList.add('active');
+          button.classList.remove('inactive');
+          document.getElementById('accountPanel')?.classList.add('paper-trading-active');
+          document.getElementById('watchlistPanel')?.classList.add('paper-trading-active');
+        } else {
+          button.classList.remove('active');
+          button.classList.add('inactive');
+          document.getElementById('accountPanel')?.classList.remove('paper-trading-active');
+          document.getElementById('watchlistPanel')?.classList.remove('paper-trading-active');
+        }
+      }
+    }
+    window.updatePaperTradingUI = updatePaperTradingUI;
+
+    async function fetchPaperTradeStatus() {
+      try {
+        if (!window.currentMonitorId) {
+          return false;
+        }
+        
+        const response = await fetch(`${window.location.origin}/api/monitors?user_id=user_0001`);
+        const data = await response.json();
+        
+        if (data.status === 'ok' && data.monitors) {
+          const monitor = data.monitors.find(m => m.id === window.currentMonitorId);
+          if (monitor) {
+            const paperTrade = monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1;
+            updatePaperTradingUI(paperTrade);
+            return paperTrade;
+          }
+        }
+        return false;
+      } catch (error) {
+        console.error('Error fetching paper trade status:', error);
+        return false;
+      }
+    }
+    window.fetchPaperTradeStatus = fetchPaperTradeStatus;
+
+    async function togglePaperTrade() {
+      try {
+        if (!window.currentMonitorId) {
+          console.error('No current monitor ID, cannot toggle paper trade');
+          return;
+        }
+        
+        const newPaperTrade = !currentPaperTrade;
+        
+        // Optimistically update UI
+        updatePaperTradingUI(newPaperTrade);
+        
+        // Extract numeric monitor ID from mon_0001_10002 format and convert to MON_0001_10002 format
+        const numericId = window.currentMonitorId.split('_').pop();
+        const formattedMonitorId = `MON_0001_${numericId}`;
+        
+        const response = await fetch('/api/monitor/toggle-paper-trade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            monitor_id: formattedMonitorId,
+            paper_trade: newPaperTrade
+          })
+        });
+        
+        const data = await response.json();
+        if (data.status !== 'ok') {
+          // Revert UI on error
+          updatePaperTradingUI(!newPaperTrade);
+          console.error('Failed to toggle paper trade:', data.message);
+        }
+      } catch (error) {
+        console.error('Error toggling paper trade:', error);
+      }
+    }
+    window.togglePaperTrade = togglePaperTrade;
     
     // Function to handle monitor picker change
     function handleMonitorChange() {

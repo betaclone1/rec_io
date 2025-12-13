@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS users.monitor_list_${user_number} (
             current_performance_modifier NUMERIC(10,2) DEFAULT 1.00,
             current_max_pct_exposure NUMERIC(10,2) DEFAULT 0.25,
             performance_based_allocation BOOLEAN NOT NULL DEFAULT FALSE,
+            paper_trade BOOLEAN DEFAULT FALSE,
             created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         
