@@ -3021,35 +3021,48 @@ def check_auto_entry_conditions_momentum_breakout():
             log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Invalid strike_tier: {strike_tier}")
             return
         
-        # Calculate target strikes using strike_tier (one tier above and one tier below)
-        # The strikes should be exactly one strike_tier apart
-        import math
-        
-        # Calculate which strike tier the current price falls into
-        tier_index = math.floor(current_price / strike_tier)
-        target_strike_below = tier_index * strike_tier
-        target_strike_above = (tier_index + 1) * strike_tier
-        
-        # Find these exact strikes in the strikes array
+        # Find the actual available strikes from the strike table
+        # We need the strike immediately above and immediately below the current price
         strikes = strike_table_data.get("strikes", [])
         strike_above_data = None
         strike_below_data = None
+        
+        # Find the closest strike above current price (>= current_price)
+        closest_above = None
+        closest_above_distance = float('inf')
+        
+        # Find the closest strike below current price (<= current_price)
+        closest_below = None
+        closest_below_distance = float('inf')
         
         for strike in strikes:
             strike_value = strike.get("strike")
             if strike_value is None:
                 continue
             
-            # Find exact match for strike above (within 0.01 tolerance for floating point)
-            if abs(strike_value - target_strike_above) < 0.01:
-                strike_above_data = strike
+            # Check if this strike is above the current price
+            if strike_value >= current_price:
+                distance = strike_value - current_price
+                if distance < closest_above_distance:
+                    closest_above_distance = distance
+                    closest_above = strike
             
-            # Find exact match for strike below (within 0.01 tolerance for floating point)
-            if abs(strike_value - target_strike_below) < 0.01:
-                strike_below_data = strike
+            # Check if this strike is below the current price
+            if strike_value <= current_price:
+                distance = current_price - strike_value
+                if distance < closest_below_distance:
+                    closest_below_distance = distance
+                    closest_below = strike
         
-        # Log the target strikes for debugging
-        log(f"[AUTO ENTRY MOMENTUM BREAKOUT] 🎯 Current price: ${current_price:,.2f}, Strike tier: ${strike_tier:,}, Target below: ${target_strike_below:,.0f}, Target above: ${target_strike_above:,.0f}")
+        strike_above_data = closest_above
+        strike_below_data = closest_below
+        
+        # Log the found strikes for debugging
+        above_strike = strike_above_data.get('strike') if strike_above_data else None
+        below_strike = strike_below_data.get('strike') if strike_below_data else None
+        below_str = f"${below_strike:,.0f}" if below_strike else "N/A"
+        above_str = f"${above_strike:,.0f}" if above_strike else "N/A"
+        log(f"[AUTO ENTRY MOMENTUM BREAKOUT] 🎯 Current price: ${current_price:,.2f}, Strike tier: ${strike_tier:,}, Found below: {below_str}, Found above: {above_str}")
         
         # Check if we already have active trades on these strikes
         if strike_above_data:

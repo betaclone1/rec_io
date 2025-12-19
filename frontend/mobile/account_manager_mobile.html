@@ -172,6 +172,11 @@
             <div class="panel">
                 <div class="panel-header">Account Information</div>
                 <div class="panel-body">
+                    <div style="margin-top: 5px; margin-bottom: 15px; font-size: 14px; display: flex; align-items: center; gap: 15px;">
+                        <span id="brokerage-info">Loading...</span>
+                        <a href="https://kalshi.com/account/profile" target="_blank" style="color: #4a9eff; text-decoration: none; font-size: 12px;">Account</a>
+                        <a href="https://kalshi.com/portfolio" target="_blank" style="color: #4a9eff; text-decoration: none; font-size: 12px;">Portfolio</a>
+                    </div>
                     <div style="font-weight: bold; margin-bottom: 4px;">Balance</div>
                     <span id="account-balance">Loading...</span>
                 </div>
@@ -290,11 +295,12 @@
 
         async function loadAccountData() {
             try {
-                const [balanceRes, settlementsRes, fillsRes, positionsRes] = await Promise.all([
+                const [balanceRes, settlementsRes, fillsRes, positionsRes, emailRes] = await Promise.all([
                     fetch(`${window.location.origin}/api/account/balance?mode=${GLOBAL_ACCOUNT_MODE}`),
                     fetch(window.location.origin + "/api/db/settlements"),
                     fetch(window.location.origin + "/api/db/fills"),
                     fetch(window.location.origin + "/api/db/positions"),
+                    fetch(window.location.origin + "/api/get_kalshi_email"),
                 ]);
 
                 // Check for errors
@@ -302,11 +308,13 @@
                 if (!settlementsRes.ok) throw new Error(`Settlements API: ${settlementsRes.status} ${settlementsRes.statusText}`);
                 if (!fillsRes.ok) throw new Error(`Fills API: ${fillsRes.status} ${fillsRes.statusText}`);
                 if (!positionsRes.ok) throw new Error(`Positions API: ${positionsRes.status} ${positionsRes.statusText}`);
+                if (!emailRes.ok) throw new Error(`Email API: ${emailRes.status} ${emailRes.statusText}`);
 
             const settlementsJson = await settlementsRes.json();
             const fillsJson = await fillsRes.json();
             const positionsJson = await positionsRes.json();
-
+            const emailJson = await emailRes.json();
+            
             const settlements = settlementsJson.settlements;
             const fills = fillsJson.fills;
             const positions = positionsJson.positions || [];
@@ -330,6 +338,13 @@
             const balanceInDollars = balanceVal / 100; // Convert cents to dollars
             document.getElementById("account-balance").textContent =
                 `$${Number(balanceInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+
+            // Update brokerage info with email
+            const brokerageInfoEl = document.getElementById("brokerage-info");
+            if (brokerageInfoEl) {
+                const email = emailJson.email || "No email found";
+                brokerageInfoEl.textContent = `${email}`;
+            }
 
             const settlementsBody = document.getElementById("settlements-body");
             // Sort settlements by settled_time in descending order (newest first)

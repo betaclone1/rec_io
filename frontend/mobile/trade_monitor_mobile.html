@@ -632,10 +632,6 @@
       </div>
       <div class="panel-container" id="accountPanel" style="height: 50px; min-height: 50px; max-height: 50px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between;">
         <div style="display: flex; align-items: center;">
-          <select id="account-selector" class="dropdown-picker">
-            <option value="live" id="prod-option">Loading...</option>
-            <option value="demo" id="demo-option">Loading...</option>
-          </select>
           <div class="paper-trading-toggle live-mode" onclick="togglePaperTrade()" title="Click to toggle between LIVE and PAPER trading">
             <div class="paper-trading-toggle-slider"></div>
             <div class="paper-trading-toggle-option">LIVE</div>
@@ -1484,64 +1480,15 @@ function hideAutoEntrySettingsModal() {
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', () => {
-      // Fetch account mode and update selector
+      // Fetch account mode and update balance (no selector in mobile trade monitor)
       fetch(window.location.origin + '/api/get_account_mode')
         .then(res => res.json())
         .then(data => {
           const mode = data.mode;
-          const selector = document.getElementById("account-selector");
-          selector.value = mode === 'prod' ? 'live' : 'demo';
           
           // Fetch and update account balance
           updateAccountBalance(mode);
-          
-          // Fetch and update email display for both options
-          updateEmailDisplay();
         });
-        
-      // Function to update email display in dropdown options
-      async function updateEmailDisplay() {
-        try {
-          // Fetch email for current mode
-          const response = await fetch(window.location.origin + '/api/get_kalshi_email');
-          const data = await response.json();
-          
-          const prodOption = document.getElementById("prod-option");
-          const demoOption = document.getElementById("demo-option");
-          
-          if (prodOption && demoOption) {
-            // For PROD option, show email without DEMO suffix
-            const email = data.email.replace(" DEMO", "");
-            prodOption.textContent = email;
-            
-            // For DEMO option, show email with DEMO suffix
-            demoOption.textContent = email + " DEMO";
-          }
-        } catch (error) {
-          console.error('Error fetching Kalshi email:', error);
-          // Fallback to original text
-          const prodOption = document.getElementById("prod-option");
-          const demoOption = document.getElementById("demo-option");
-          if (prodOption) prodOption.textContent = "PROD";
-          if (demoOption) demoOption.textContent = "DEMO";
-        }
-      }
-
-      document.getElementById("account-selector").addEventListener("change", () => {
-        const selected = document.getElementById("account-selector").value;
-        const mode = selected === "live" ? "prod" : "demo";
-        fetch(window.location.origin + '/api/set_account_mode', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode })
-        }).catch(console.error);
-        
-        // Update balance when account mode changes
-        updateAccountBalance(mode);
-        
-        // Update email display when account mode changes
-        updateEmailDisplay();
-      });
     });
     
     // Function to fetch and update account balance
@@ -1597,11 +1544,14 @@ function hideAutoEntrySettingsModal() {
     
     // Update balance every 30 seconds
     setInterval(() => {
-      const selector = document.getElementById("account-selector");
-      if (selector) {
-        const mode = selector.value === "live" ? "prod" : "demo";
-        updateAccountBalance(mode);
-      }
+      // Get account mode from API (no selector in mobile trade monitor)
+      fetch(window.location.origin + '/api/get_account_mode')
+        .then(res => res.json())
+        .then(data => {
+          const mode = data.mode;
+          updateAccountBalance(mode);
+        })
+        .catch(console.error);
     }, 30000);
 
     // Update monitor bankroll every 15 seconds
@@ -1878,9 +1828,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // === Account Mode Sync ===
       if (data.account_mode) {
-        const selector = document.getElementById("account-selector");
-        if (selector) {
-          selector.value = data.account_mode === "prod" ? "live" : "demo";
+        // Account mode sync - no selector in mobile trade monitor, just update balance if needed
+        if (data.account_mode) {
+          updateAccountBalance(data.account_mode);
         }
       }
       
