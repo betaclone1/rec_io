@@ -2924,6 +2924,11 @@ def check_auto_entry_conditions_momentum_breakout():
         # Get current contract from monitor state
         current_contract = _LAST_MONITOR_STATE.get("contract")
         
+        # Failsafe: Skip 5pm cycles (daily 5pm cycles are excluded)
+        if current_contract and "5pm" in current_contract.lower():
+            log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⏸️ Skipping 5pm cycle: {current_contract}")
+            return
+        
         # Reset trades_entered flag when a new cycle starts (contract changes)
         if current_contract and current_contract != momentum_breakout_last_contract:
             momentum_breakout_trades_entered = False
