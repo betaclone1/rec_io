@@ -153,33 +153,101 @@
     display: block;
   }
 
-  /* Paper Trading Button */
-  .paper-trading-button {
-    padding: 4px 8px;
-    border-radius: 4px;
-    border: 1px solid #4a5568;
+  /* Paper Trading Toggle Switch */
+  .paper-trading-toggle {
+    display: flex;
+    position: relative;
     background-color: #2d3748;
-    color: #a0aec0;
-    font-size: 0.63rem;
+    border-radius: 4px;
+    padding: 2px;
+    min-width: 100px;
+    height: 22px;
     cursor: pointer;
-    transition: all 0.2s;
+    flex: 0 0 auto;
+    border: 1px solid #4a5568;
     margin-left: 10px;
   }
 
-  .paper-trading-button.active {
+  .paper-trading-toggle-option {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+    color: #a0aec0; /* Default inactive color */
+    z-index: 2;
+    transition: color 0.3s ease;
+    position: relative;
+  }
+
+  .paper-trading-toggle-slider {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: calc(50% - 2px);
+    height: calc(100% - 4px);
     background-color: #48bb78;
-    color: white;
-    border-color: #48bb78;
+    border-radius: 3px;
+    transition: transform 0.3s ease;
+    z-index: 1;
   }
 
-  .paper-trading-button:hover {
-    opacity: 0.8;
+  .paper-trading-toggle.paper-mode .paper-trading-toggle-slider {
+    transform: translateX(calc(100% + 2px));
+    background-color: #fbbf24;
   }
 
-  /* Paper Trading Active Panel Border */
-  #accountPanel.paper-trading-active,
-  #watchlistPanel.paper-trading-active {
-    box-shadow: inset 0 0 0 2px #48bb78;
+  /* Active text (underneath slider) MUST be FULL WHITE */
+  .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child,
+  #accountPanel .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child,
+  #watchlistPanel .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child {
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    text-shadow: none !important;
+    opacity: 1 !important;
+    filter: none !important;
+    -webkit-font-smoothing: antialiased !important;
+  }
+
+  .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child,
+  #accountPanel .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child,
+  #watchlistPanel .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child {
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    text-shadow: none !important;
+    opacity: 1 !important;
+    filter: none !important;
+    -webkit-font-smoothing: antialiased !important;
+  }
+
+  /* Ensure inactive options stay grey */
+  .paper-trading-toggle.live-mode .paper-trading-toggle-option:last-child {
+    color: #a0aec0 !important;
+  }
+
+  .paper-trading-toggle.paper-mode .paper-trading-toggle-option:first-child {
+    color: #a0aec0 !important;
+  }
+
+  /* Panel Border Colors */
+  #accountPanel.live-mode,
+  #watchlistPanel.live-mode {
+    border: 2px solid #48bb78 !important;
+    box-shadow: 0 0 0 0 #48bb78;
+  }
+
+  #accountPanel.paper-mode,
+  #watchlistPanel.paper-mode {
+    border: 2px solid #fbbf24 !important;
+    box-shadow: 0 0 0 0 #fbbf24;
+  }
+
+  /* Default border for panels (when no mode class) */
+  #accountPanel:not(.live-mode):not(.paper-mode),
+  #watchlistPanel:not(.live-mode):not(.paper-mode) {
+    border: 1px solid #34495e;
   }
 
 </style>
@@ -1245,7 +1313,11 @@ function closeUnifiedAutoTradeSettings() {
             <option value="live" id="prod-option">Loading...</option>
             <option value="demo" id="demo-option">Loading...</option>
           </select>
-          <button class="paper-trading-button inactive" onclick="togglePaperTrade()" title="Click to toggle paper trading mode">PAPER TRADING</button>
+          <div class="paper-trading-toggle live-mode" onclick="togglePaperTrade()" title="Click to toggle between LIVE and PAPER trading">
+            <div class="paper-trading-toggle-slider"></div>
+            <div class="paper-trading-toggle-option">LIVE</div>
+            <div class="paper-trading-toggle-option">PAPER</div>
+          </div>
         </div>
         <div style="display: flex; align-items: flex-end; gap: 25px;">
           <div style="display: flex; flex-direction: column; align-items: flex-end;">
@@ -1861,10 +1933,11 @@ document.addEventListener('DOMContentLoaded', () => {
           
           console.log('📊 Updating display with WebSocket data:', statusData);
           
-          // Clear cooldown timer if status is not PAUSED
-          if (data.data.auto_trade_status !== 'PAUSED') {
+          // Only clear cooldown timer if status is explicitly DISABLED or we get a timer value of 0
+          // Don't clear on ACTIVE/INACTIVE because Hourly HTC can have cooldown during ACTIVE status
+          if (data.data.auto_trade_status === 'DISABLED') {
             latestCooldownTimer = 0;
-            console.log('🧹 Cleared cooldown timer (status is not PAUSED)');
+            console.log('🧹 Cleared cooldown timer (status is DISABLED)');
           }
           
           updateAutoEntryIndicator(statusData);
@@ -1888,12 +1961,20 @@ document.addEventListener('DOMContentLoaded', () => {
         if (currentMonitorId && messageMonitorId === currentMonitorId.toString()) {
           console.log('🔄 Cooldown timer change affects current monitor, storing timer value...');
           
-          // Store the latest cooldown timer value (don't update display yet)
-          latestCooldownTimer = data.data.cooldown_timer;
+          // Store the latest cooldown timer value
+          latestCooldownTimer = data.data.cooldown_timer || 0;
           console.log('📊 Stored cooldown timer value:', latestCooldownTimer);
           
-          // Only update display if we already have a PAUSED status
-          // The status message will handle the actual display update
+          // Immediately update the display with the new timer value
+          // Get current status from the indicator or fetch it
+          const currentStatus = window.currentAutoTradeStatus || 'ACTIVE';
+          const statusData = {
+            status: currentStatus,
+            enabled: currentStatus === 'ACTIVE' || currentStatus === 'INACTIVE',
+            cooldown_timer: latestCooldownTimer
+          };
+          updateAutoEntryIndicator(statusData);
+          console.log('✅ Display updated with new cooldown timer');
         } else if (!currentMonitorId) {
           console.log('⚠️ Cooldown timer change received but no monitor selected yet');
         } else {
@@ -5922,8 +6003,10 @@ async function fetchInitialAutoEntryIndicator() {
 }
 
 // Update the auto entry indicator display
-function updateAutoEntryIndicator(data) {
-    console.log('🎯 Updating auto entry indicator with data:', data);
+// This function OVERRIDES the one from live-data.js to use status-based logic instead of scanning_active
+// Assign to window to ensure it takes precedence over the live-data.js version
+window.updateAutoEntryIndicator = function updateAutoEntryIndicator(data) {
+    console.log('🎯 [TRADE_MONITOR] Updating auto entry indicator with data:', data);
     const indicator = document.getElementById('autoEntryIndicator');
     if (!indicator) {
         console.error('Auto entry indicator element not found');
@@ -5933,10 +6016,6 @@ function updateAutoEntryIndicator(data) {
     // Get the indicator elements
     const indicatorDot = indicator.querySelector('div');
     const indicatorText = indicator.querySelector('span');
-    
-    console.log('🔍 Found indicator element:', indicator);
-    console.log('🔍 Found indicator dot:', indicatorDot);
-    console.log('🔍 Found indicator text:', indicatorText);
     
     // Always show the indicator
     indicator.style.display = 'flex';
@@ -5966,10 +6045,25 @@ function updateAutoEntryIndicator(data) {
         return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     }
     
-    // Check for cooldown timer (in seconds) - can be present in any status
-    const cooldownTimer = data.cooldown_timer || (data.cooldown_timer === 0 ? 0 : null);
+    // Check for cooldown timer - use data.cooldown_timer if provided, otherwise use stored latestCooldownTimer
+    // This ensures we don't lose the timer value when status updates come without the timer
+    let cooldownTimer = null;
+    if (data.cooldown_timer !== undefined && data.cooldown_timer !== null) {
+        cooldownTimer = data.cooldown_timer;
+        // Update stored value when we receive a new timer
+        if (typeof latestCooldownTimer !== 'undefined') {
+            latestCooldownTimer = cooldownTimer;
+        }
+    } else if (typeof latestCooldownTimer !== 'undefined' && latestCooldownTimer > 0) {
+        // Use stored timer value if data doesn't include it
+        cooldownTimer = latestCooldownTimer;
+    }
+    
     const hasCooldown = cooldownTimer !== null && cooldownTimer > 0;
     const cooldownDisplay = hasCooldown ? formatCooldownTimer(cooldownTimer) : '';
+    
+    // Store current status globally so cooldown timer updates can use it
+    window.currentAutoTradeStatus = status;
     
     // Set colors and text based on status (no background colors)
     switch (status) {
@@ -6050,7 +6144,7 @@ function updateAutoEntryIndicator(data) {
             }
             break;
     }
-}
+};
 
 // Initialize auto entry indicator when page loads
 document.addEventListener('DOMContentLoaded', () => {
@@ -6767,18 +6861,52 @@ document.addEventListener('DOMContentLoaded', () => {
       currentPaperTrade = paperTrade;
       window.currentPaperTrade = paperTrade;
       
-      const button = document.querySelector('.paper-trading-button');
-      if (button) {
+      const toggle = document.querySelector('.paper-trading-toggle');
+      const accountPanel = document.getElementById('accountPanel');
+      const watchlistPanel = document.getElementById('watchlistPanel');
+      
+      if (toggle) {
         if (paperTrade) {
-          button.classList.add('active');
-          button.classList.remove('inactive');
-          document.getElementById('accountPanel')?.classList.add('paper-trading-active');
-          document.getElementById('watchlistPanel')?.classList.add('paper-trading-active');
+          toggle.classList.remove('live-mode');
+          toggle.classList.add('paper-mode');
+          // Force white color on PAPER option
+          const options = toggle.querySelectorAll('.paper-trading-toggle-option');
+          if (options.length >= 2) {
+            options[0].style.color = '#a0aec0'; // LIVE inactive
+            options[1].style.color = '#ffffff'; // PAPER active - FORCE WHITE
+            options[1].style.fontWeight = '600';
+          }
         } else {
-          button.classList.remove('active');
-          button.classList.add('inactive');
-          document.getElementById('accountPanel')?.classList.remove('paper-trading-active');
-          document.getElementById('watchlistPanel')?.classList.remove('paper-trading-active');
+          toggle.classList.remove('paper-mode');
+          toggle.classList.add('live-mode');
+          // Force white color on LIVE option
+          const options = toggle.querySelectorAll('.paper-trading-toggle-option');
+          if (options.length >= 2) {
+            options[0].style.color = '#ffffff'; // LIVE active - FORCE WHITE
+            options[0].style.fontWeight = '600';
+            options[1].style.color = '#a0aec0'; // PAPER inactive
+          }
+        }
+      }
+      
+      // Update panel border colors
+      if (accountPanel) {
+        if (paperTrade) {
+          accountPanel.classList.remove('live-mode');
+          accountPanel.classList.add('paper-mode');
+        } else {
+          accountPanel.classList.remove('paper-mode');
+          accountPanel.classList.add('live-mode');
+        }
+      }
+      
+      if (watchlistPanel) {
+        if (paperTrade) {
+          watchlistPanel.classList.remove('live-mode');
+          watchlistPanel.classList.add('paper-mode');
+        } else {
+          watchlistPanel.classList.remove('paper-mode');
+          watchlistPanel.classList.add('live-mode');
         }
       }
     }

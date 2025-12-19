@@ -1204,9 +1204,7 @@ def refresh_monitor_cycle_performance_for_monitor(
                         WHEN ac.trade_count = 0 THEN 1.00
                         WHEN ac.win_rate_pct < 90 THEN 0.00
                         WHEN ac.win_rate_pct >= 90 AND ac.win_rate_pct < 95 THEN 0.50
-                        WHEN ac.trade_count < 10 AND ac.win_rate_pct > 95 THEN 1.00
-                        WHEN ac.trade_count BETWEEN 10 AND 19 AND ac.win_rate_pct = 100 THEN 1.50
-                        WHEN ac.trade_count > 20 AND ac.win_rate_pct = 100 THEN 2.00
+                        WHEN ac.trade_count >= 20 AND ac.win_rate_pct = 100 THEN 1.50
                         ELSE 1.00
                     END AS performance_modifier,
                     p.win_start AS window_start,
@@ -1725,11 +1723,20 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                             if low_price is None and existing_low_price is not None:
                                 final_low_price = existing_low_price
                     
+                    # Set monitor_confirmed = TRUE if high_price != low_price (meaning ATS was monitoring correctly)
+                    monitor_confirmed = False
+                    if final_high_price is not None and final_low_price is not None:
+                        if final_high_price != final_low_price:
+                            monitor_confirmed = True
+                            log(f"✅ Trade {trade_id}: monitor_confirmed = TRUE (high_price={final_high_price} != low_price={final_low_price})")
+                        else:
+                            log(f"⚠️ Trade {trade_id}: monitor_confirmed = FALSE (high_price == low_price = {final_high_price})")
+                    
                     cursor.execute("""
                         UPDATE users.trades_0001 
-                        SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, ret_pct = %s, high_price = %s, low_price = %s
+                        SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, ret_pct = %s, high_price = %s, low_price = %s, monitor_confirmed = %s
                         WHERE id = %s
-                    """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, ret_pct, final_high_price, final_low_price, trade_id))
+                    """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, ret_pct, final_high_price, final_low_price, monitor_confirmed, trade_id))
                 else:
                     cursor.execute("""
                         UPDATE users.trades_0001 
@@ -2944,6 +2951,15 @@ def check_expired_trades():
                             low_price = existing_low_price
                             log(f"⚠️ EXPIRATION: Preserving existing low_price={low_price} for trade {trade_id}")
                         
+                        # Set monitor_confirmed = TRUE if high_price != low_price (meaning ATS was monitoring correctly)
+                        monitor_confirmed = False
+                        if high_price is not None and low_price is not None:
+                            if high_price != low_price:
+                                monitor_confirmed = True
+                                log(f"✅ EXPIRATION: Trade {trade_id}: monitor_confirmed = TRUE (high_price={high_price} != low_price={low_price})")
+                            else:
+                                log(f"⚠️ EXPIRATION: Trade {trade_id}: monitor_confirmed = FALSE (high_price == low_price = {high_price})")
+                        
                         cursor.execute("""
                             UPDATE users.trades_0001 
                             SET status = 'expired', 
@@ -2951,9 +2967,10 @@ def check_expired_trades():
                                 symbol_close = %s,
                                 close_method = 'expired',
                                 high_price = %s,
-                                low_price = %s
+                                low_price = %s,
+                                monitor_confirmed = %s
                             WHERE id = %s AND status IN ('open', 'closing', 'close_failed')
-                        """, (closed_at, symbol_close, high_price, low_price, trade_id))
+                        """, (closed_at, symbol_close, high_price, low_price, monitor_confirmed, trade_id))
                     pg_conn.commit()
                     print(f"💾 Expired trades update written to PostgreSQL users.trades_0001 for {len(active_trades)} trades (open, closing, and close_failed)")
                 pg_conn.close()

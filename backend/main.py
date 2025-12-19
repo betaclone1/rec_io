@@ -5965,14 +5965,27 @@ async def get_strategies(user_id: str = "user_0001"):
             }
         
         cursor = conn.cursor()
-        # First check if strategy_list_0001 table exists, if not create it with default strategies
+        # Table creation is now handled in database.py init_database()
+        # Just ensure it exists (will be created/updated by init_database if needed)
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users.strategy_list_0001 (
-                id SERIAL PRIMARY KEY,
-                name VARCHAR(100) NOT NULL UNIQUE,
-                created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'users' 
+                AND table_name = 'strategy_list_0001'
             )
         """)
+        table_exists = cursor.fetchone()[0]
+        
+        if not table_exists:
+            # If table doesn't exist, it will be created by init_database on next run
+            # For now, create minimal version
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users.strategy_list_0001 (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(100) NOT NULL UNIQUE,
+                    created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
         
         # Check if table has any data, if not insert default strategies
         cursor.execute("SELECT COUNT(*) FROM users.strategy_list_0001")
@@ -5984,6 +5997,7 @@ async def get_strategies(user_id: str = "user_0001"):
                 'Hourly HTC',
                 'Reverse HTC',
                 'Momentum Scalp',
+                'Momentum Breakout',
                 'Test Strategy',
                 'Daily HTC',
                 'Scalp Strategy'

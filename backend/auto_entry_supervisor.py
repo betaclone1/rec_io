@@ -527,6 +527,10 @@ previous_auto_trade_status = None
 # Track previous state to detect changes
 previous_indicator_state = None
 
+# Track if Momentum Breakout has entered trades for current cycle
+momentum_breakout_trades_entered = False
+momentum_breakout_last_contract = None  # Track the contract we entered trades for
+
 # State tracking for logging reduction
 
 
@@ -1039,6 +1043,8 @@ def determine_auto_entry_status():
             return determine_auto_entry_status_momentum_reversal()
         elif strategy == "Reverse HTC":
             return determine_auto_entry_status_reverse_htc()
+        elif strategy == "Momentum Breakout":
+            return determine_auto_entry_status_momentum_breakout()
         else:
             # Default to Hourly HTC (including fallback)
             return determine_auto_entry_status_hourly_htc()
@@ -1247,6 +1253,54 @@ def determine_auto_entry_status_reverse_htc():
             
     except Exception as e:
         log(f"[AUTO ENTRY REVERSE HTC] ❌ Error determining status: {e}")
+        return "DISABLED"
+
+def determine_auto_entry_status_momentum_breakout():
+    """Determine the current auto entry status for Momentum Breakout strategy
+    
+    Momentum Breakout activates when momentum spike is detected (same as Reverse HTC).
+    It uses the same activation logic but with simplified entry criteria.
+    """
+    try:
+        # Check if auto trade is enabled for this monitor
+        auto_trade_enabled = is_auto_trade_enabled()
+        
+        if not auto_trade_enabled:
+            return "DISABLED"
+        
+        # Check if service is healthy
+        service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
+        
+        if not service_healthy:
+            return "DISABLED"  # Service not running
+        
+        # Check if spike alert is active (REQUIRED for Momentum Breakout to activate)
+        spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
+        
+        if not spike_alert_active:
+            return "INACTIVE"  # Momentum Breakout only activates during momentum spikes
+        
+        # Get auto entry settings
+        settings = get_auto_entry_settings()
+        required_settings = ["min_time", "max_time"]
+        missing_settings = [setting for setting in required_settings if setting not in settings]
+        
+        if missing_settings:
+            return "DISABLED"  # Missing required settings
+        
+        # Check if TTC is within window
+        min_time = settings["min_time"]
+        max_time = settings["max_time"]
+        current_ttc = get_current_ttc()
+        ttc_within_window = min_time <= current_ttc <= max_time
+        
+        if ttc_within_window:
+            return "ACTIVE"
+        else:
+            return "INACTIVE"
+            
+    except Exception as e:
+        log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ❌ Error determining status: {e}")
         return "DISABLED"
 
 def broadcast_auto_entry_indicator_change():
@@ -2278,6 +2332,8 @@ def check_auto_entry_conditions():
             check_auto_entry_conditions_momentum_reversal()
         elif strategy == "Reverse HTC":
             check_auto_entry_conditions_reverse_htc()
+        elif strategy == "Momentum Breakout":
+            check_auto_entry_conditions_momentum_breakout()
         else:
             # Default to Hourly HTC (including fallback)
             check_auto_entry_conditions_hourly_htc()
@@ -2843,6 +2899,244 @@ def check_auto_entry_conditions_reverse_htc():
                 
     except Exception as e:
         log(f"[AUTO ENTRY REVERSE HTC] Error checking auto entry conditions: {e}")
+
+def check_auto_entry_conditions_momentum_breakout():
+    """Check if auto entry conditions are met and trigger trades for Momentum Breakout strategy
+    
+    Momentum Breakout activates when momentum spike is detected (same as Reverse HTC).
+    When activated, it immediately opens TWO trades:
+    - YES trade at strike immediately above the money line
+    - NO trade at strike immediately below the money line
+    Uses strike_tier to find the correct strikes.
+    After entering these two trades, it opens no more trades and holds until expiration.
+    """
+    global momentum_breakout_trades_entered, momentum_breakout_last_contract
+    global auto_entry_indicator_state
+    
+    try:
+        # Get strike table data
+        check_spike_alert_conditions()
+        
+        strike_table_data = get_master_strike_table_data()
+        if strike_table_data:
+            update_monitor_current_state(strike_table_data)
+        
+        # Get current contract from monitor state
+        current_contract = _LAST_MONITOR_STATE.get("contract")
+        
+        # Reset trades_entered flag when a new cycle starts (contract changes)
+        if current_contract and current_contract != momentum_breakout_last_contract:
+            momentum_breakout_trades_entered = False
+            if momentum_breakout_last_contract:
+                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] 🔄 New cycle detected: {momentum_breakout_last_contract} → {current_contract} - resetting entry flag")
+            momentum_breakout_last_contract = current_contract
+        
+        # Check if AUTO TRADE is enabled for this monitor
+        auto_trade_enabled = is_auto_trade_enabled()
+        
+        # Check if service is healthy (monitoring thread is running)
+        service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
+        
+        # Check if spike alert is active (REQUIRED for Momentum Breakout to activate)
+        spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
+        
+        if not auto_trade_enabled:
+            auto_entry_indicator_state.update({
+                "enabled": False,
+                "ttc_within_window": False,
+                "scanning_active": False,
+                "service_healthy": service_healthy,
+                "spike_alert_active": spike_alert_active,
+                "current_ttc": 0,
+                "last_updated": datetime.now().isoformat()
+            })
+            broadcast_auto_entry_indicator_change()
+            return
+        
+        # Get auto entry settings
+        settings = get_auto_entry_settings()
+        required_settings = ["min_time", "max_time"]
+        missing_settings = [setting for setting in required_settings if setting not in settings]
+        if missing_settings:
+            log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ❌ Missing required settings: {missing_settings}")
+            return
+        
+        min_time = settings["min_time"]
+        max_time = settings["max_time"]
+        
+        # Get current TTC
+        current_ttc = get_current_ttc()
+        
+        # Check if TTC is within the time window
+        ttc_within_window = min_time <= current_ttc <= max_time
+        
+        # Determine if scanning is actually active
+        # Scanning is active if: auto_trade enabled + service healthy + TTC in window + spike alert active
+        scanning_active = (auto_trade_enabled and 
+                          service_healthy and 
+                          ttc_within_window and
+                          spike_alert_active)
+        
+        # Update indicator state for frontend
+        auto_entry_indicator_state.update({
+            "enabled": True,
+            "ttc_within_window": ttc_within_window,
+            "scanning_active": scanning_active,
+            "service_healthy": service_healthy,
+            "spike_alert_active": spike_alert_active,
+            "current_ttc": current_ttc,
+            "min_time": min_time,
+            "max_time": max_time,
+            "last_updated": datetime.now().isoformat()
+        })
+        
+        # Broadcast indicator state change
+        broadcast_auto_entry_indicator_change()
+        
+        if not ttc_within_window:
+            return
+        
+        # SPIKE ALERT CHECK - Momentum Breakout REQUIRES spike alert to be active
+        if not spike_alert_active:
+            return
+        
+        # If we've already entered trades for this spike activation, do nothing
+        if momentum_breakout_trades_entered:
+            return
+        
+        if not strike_table_data:
+            log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ No strike table data available")
+            return
+        
+        current_price = strike_table_data.get("current_price")
+        strike_tier = strike_table_data.get("strike_tier")
+        
+        if not current_price or not strike_tier:
+            log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Missing current_price or strike_tier")
+            return
+        
+        try:
+            strike_tier = int(strike_tier)
+        except (ValueError, TypeError):
+            log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Invalid strike_tier: {strike_tier}")
+            return
+        
+        # Calculate target strikes using strike_tier (one tier above and one tier below)
+        # The strikes should be exactly one strike_tier apart
+        import math
+        
+        # Calculate which strike tier the current price falls into
+        tier_index = math.floor(current_price / strike_tier)
+        target_strike_below = tier_index * strike_tier
+        target_strike_above = (tier_index + 1) * strike_tier
+        
+        # Find these exact strikes in the strikes array
+        strikes = strike_table_data.get("strikes", [])
+        strike_above_data = None
+        strike_below_data = None
+        
+        for strike in strikes:
+            strike_value = strike.get("strike")
+            if strike_value is None:
+                continue
+            
+            # Find exact match for strike above (within 0.01 tolerance for floating point)
+            if abs(strike_value - target_strike_above) < 0.01:
+                strike_above_data = strike
+            
+            # Find exact match for strike below (within 0.01 tolerance for floating point)
+            if abs(strike_value - target_strike_below) < 0.01:
+                strike_below_data = strike
+        
+        # Log the target strikes for debugging
+        log(f"[AUTO ENTRY MOMENTUM BREAKOUT] 🎯 Current price: ${current_price:,.2f}, Strike tier: ${strike_tier:,}, Target below: ${target_strike_below:,.0f}, Target above: ${target_strike_above:,.0f}")
+        
+        # Check if we already have active trades on these strikes
+        if strike_above_data:
+            strike_above_key = f"{strike_above_data.get('strike')}-yes"
+            strike_data_for_check = {
+                'strike': strike_above_data.get('strike'),
+                'side': 'yes',
+                'ticker': strike_above_data.get('ticker')
+            }
+            if is_strike_already_traded(strike_data_for_check):
+                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⏸️ YES trade already exists at strike ${strike_above_data.get('strike'):,.0f}")
+                momentum_breakout_trades_entered = True
+                return
+        
+        if strike_below_data:
+            strike_below_key = f"{strike_below_data.get('strike')}-no"
+            strike_data_for_check = {
+                'strike': strike_below_data.get('strike'),
+                'side': 'no',
+                'ticker': strike_below_data.get('ticker')
+            }
+            if is_strike_already_traded(strike_data_for_check):
+                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⏸️ NO trade already exists at strike ${strike_below_data.get('strike'):,.0f}")
+                momentum_breakout_trades_entered = True
+                return
+        
+        # Enter the two trades
+        trades_entered = 0
+        
+        # Enter YES trade at strike above
+        if strike_above_data:
+            yes_ask_dollars = strike_above_data.get('yes_ask_dollars')
+            if yes_ask_dollars:
+                strike_data = {
+                    'strike': f"${int(strike_above_data.get('strike')):,}",
+                    'side': 'yes',
+                    'ticker': strike_above_data.get('ticker'),
+                    'buy_price': float(yes_ask_dollars),
+                    'probability': strike_above_data.get('probability'),
+                    'diff': strike_above_data.get('yes_diff')
+                }
+                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] 🚀 TRIGGERING YES TRADE | Strike: ${strike_above_data.get('strike'):,.0f} | Buy Price: ${float(yes_ask_dollars):.2f} | Ticker: {strike_above_data.get('ticker')}")
+                if trigger_auto_entry_trade(strike_data):
+                    log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ✅ YES TRADE SUCCESSFUL | Strike: ${strike_above_data.get('strike'):,.0f}")
+                    trades_entered += 1
+                else:
+                    log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ❌ YES TRADE FAILED | Strike: ${strike_above_data.get('strike'):,.0f}")
+            else:
+                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Missing yes_ask_dollars for strike above ${strike_above_data.get('strike'):,.0f}")
+        else:
+            log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Could not find strike above money line (current price: ${current_price:,.2f})")
+        
+        # Enter NO trade at strike below
+        if strike_below_data:
+            no_ask_dollars = strike_below_data.get('no_ask_dollars')
+            if no_ask_dollars:
+                strike_data = {
+                    'strike': f"${int(strike_below_data.get('strike')):,}",
+                    'side': 'no',
+                    'ticker': strike_below_data.get('ticker'),
+                    'buy_price': float(no_ask_dollars),
+                    'probability': strike_below_data.get('probability'),
+                    'diff': strike_below_data.get('no_diff')
+                }
+                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] 🚀 TRIGGERING NO TRADE | Strike: ${strike_below_data.get('strike'):,.0f} | Buy Price: ${float(no_ask_dollars):.2f} | Ticker: {strike_below_data.get('ticker')}")
+                if trigger_auto_entry_trade(strike_data):
+                    log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ✅ NO TRADE SUCCESSFUL | Strike: ${strike_below_data.get('strike'):,.0f}")
+                    trades_entered += 1
+                else:
+                    log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ❌ NO TRADE FAILED | Strike: ${strike_below_data.get('strike'):,.0f}")
+            else:
+                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Missing no_ask_dollars for strike below ${strike_below_data.get('strike'):,.0f}")
+        else:
+            log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Could not find strike below money line (current price: ${current_price:,.2f})")
+        
+        # Mark trades as entered if at least one trade was successful
+        if trades_entered > 0:
+            momentum_breakout_trades_entered = True
+            # Update last contract to current contract to track which cycle we entered trades for
+            if current_contract:
+                momentum_breakout_last_contract = current_contract
+            log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ✅ Entered {trades_entered} trade(s) for cycle {current_contract} - will hold until expiration")
+        
+    except Exception as e:
+        import traceback
+        log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ❌ Error checking auto entry conditions: {e}")
+        log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ❌ Traceback: {traceback.format_exc()}")
 
 def check_auto_entry_conditions_momentum_scalp():
     """Check if auto entry conditions are met and trigger trades for Momentum Scalp strategy"""

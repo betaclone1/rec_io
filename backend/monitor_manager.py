@@ -1349,13 +1349,21 @@ def get_strategy_default_settings(strategy_name, user_number="0001"):
             return {}
         
         with conn.cursor() as cursor:
+            # Select all default settings columns (matching monitor_list structure)
             cursor.execute("""
-                SELECT min_probability, min_differential, max_differential, min_time, max_time, 
-                       allow_re_entry, spike_alert_enabled, spike_alert_momentum_threshold,
-                       spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
-                       current_probability, min_ttc_seconds, momentum_spike_enabled,
-                       momentum_spike_threshold, verification_period_enabled, 
-                       verification_period_seconds, min_volume
+                SELECT 
+                    win_streak_threshold, loss_prevention, loss_prevention_toggle,
+                    performance_based_allocation, max_price_spread, paper_trade, prob_adj,
+                    position_size, position_type, multiplier,
+                    min_probability, max_probability, min_differential, max_differential,
+                    min_time, max_time, allow_re_entry,
+                    spike_alert_enabled, spike_alert_momentum_threshold,
+                    spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
+                    current_probability, min_ttc_seconds, momentum_spike_enabled,
+                    momentum_spike_threshold, verification_period_enabled, 
+                    verification_period_seconds, min_volume,
+                    momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount,
+                    momentum_scalp_profit_target, min_ask, max_ask, max_profit
                 FROM users.strategy_list_{user_number} 
                 WHERE name = %s
             """, (strategy_name,))
@@ -1365,31 +1373,62 @@ def get_strategy_default_settings(strategy_name, user_number="0001"):
             
             if result:
                 defaults = {
-                    'min_probability': result[0],
-                    'min_differential': float(result[1]) if result[1] else 0.25,
-                    'max_differential': float(result[2]) if result[2] is not None else None,
-                    'min_time': result[3],
-                    'max_time': result[4],
-                    'allow_re_entry': result[5],
-                    'spike_alert_enabled': result[6],
-                    'spike_alert_momentum_threshold': result[7],
-                    'spike_alert_cooldown_threshold': result[8],
-                    'spike_alert_cooldown_minutes': result[9],
-                    'current_probability': result[10],
-                    'min_ttc_seconds': result[11],
-                    'momentum_spike_enabled': result[12],
-                    'momentum_spike_threshold': result[13],
-                    'verification_period_enabled': result[14],
-                    'verification_period_seconds': result[15],
-                    'min_volume': result[16]
+                    # Strategy defaults
+                    'win_streak_threshold': result[0],
+                    'loss_prevention': result[1],
+                    'loss_prevention_toggle': result[2],
+                    'performance_based_allocation': result[3],
+                    'max_price_spread': float(result[4]) if result[4] is not None else 0.0300,
+                    'paper_trade': result[5],
+                    'prob_adj': float(result[6]) if result[6] is not None else 5.00,
+                    # Position sizing defaults
+                    'position_size': result[7],
+                    'position_type': result[8],
+                    'multiplier': float(result[9]) if result[9] is not None else 1.00,
+                    # Auto entry settings
+                    'min_probability': float(result[10]) if result[10] is not None else None,
+                    'max_probability': float(result[11]) if result[11] is not None else None,
+                    'min_differential': float(result[12]) if result[12] else 0.25,
+                    'max_differential': float(result[13]) if result[13] is not None else None,
+                    'min_time': result[14],
+                    'max_time': result[15],
+                    'allow_re_entry': result[16],
+                    'spike_alert_enabled': result[17],
+                    'spike_alert_momentum_threshold': result[18],
+                    'spike_alert_cooldown_threshold': result[19],
+                    'spike_alert_cooldown_minutes': result[20],
+                    'current_probability': result[21],
+                    'min_ttc_seconds': result[22],
+                    'momentum_spike_enabled': result[23],
+                    'momentum_spike_threshold': result[24],
+                    'verification_period_enabled': result[25],
+                    'verification_period_seconds': result[26],
+                    'min_volume': result[27],
+                    'momentum_scalp_entry_threshold': float(result[28]) if result[28] is not None else None,
+                    'momentum_scalp_trailing_stop_amount': float(result[29]) if result[29] is not None else 0.10,
+                    'momentum_scalp_profit_target': float(result[30]) if result[30] is not None else 0.99,
+                    'min_ask': float(result[31]) if result[31] is not None else 0.0000,
+                    'max_ask': float(result[32]) if result[32] is not None else 0.9800,
+                    'max_profit': float(result[33]) if result[33] is not None else 0.9900
                 }
-                print(f"[STRATEGY DEFAULTS] Loaded defaults for strategy '{strategy_name}': {defaults}")
+                print(f"[STRATEGY DEFAULTS] Loaded defaults for strategy '{strategy_name}'")
                 return defaults
             else:
                 print(f"[STRATEGY DEFAULTS] No defaults found for strategy '{strategy_name}', using fallback defaults")
                 # Return fallback defaults if strategy not found
                 return {
+                    'win_streak_threshold': 22,
+                    'loss_prevention': 'none',
+                    'loss_prevention_toggle': True,
+                    'performance_based_allocation': False,
+                    'max_price_spread': 0.0300,
+                    'paper_trade': False,
+                    'prob_adj': 5.00,
+                    'position_size': 1,
+                    'position_type': 'percent',
+                    'multiplier': 1.00,
                     'min_probability': 25,
+                    'max_probability': None,
                     'min_differential': 0.25,
                     'max_differential': None,
                     'min_time': 0,
@@ -1405,11 +1444,19 @@ def get_strategy_default_settings(strategy_name, user_number="0001"):
                     'momentum_spike_threshold': 70,
                     'verification_period_enabled': False,
                     'verification_period_seconds': 60,
-                    'min_volume': 0
+                    'min_volume': 0,
+                    'momentum_scalp_entry_threshold': None,
+                    'momentum_scalp_trailing_stop_amount': 0.10,
+                    'momentum_scalp_profit_target': 0.99,
+                    'min_ask': 0.0000,
+                    'max_ask': 0.9800,
+                    'max_profit': 0.9900
                 }
                 
     except Exception as e:
         print(f"[STRATEGY DEFAULTS] Error getting strategy defaults for '{strategy_name}': {e}")
+        import traceback
+        traceback.print_exc()
         return {}
 
 def _format_hour_label(hour_index: int) -> str:
@@ -1566,7 +1613,49 @@ def create_monitor():
         
         # Get strategy default settings
         strategy_defaults = get_strategy_default_settings(strategy, user_number)
-        print(f"[MONITOR CREATE] Using strategy defaults for '{strategy}': {strategy_defaults}")
+        if not strategy_defaults:
+            print(f"[MONITOR CREATE] WARNING: strategy_defaults is empty for '{strategy}', using fallback defaults")
+            # Use fallback defaults if strategy not found
+            strategy_defaults = {
+                'win_streak_threshold': 22,
+                'loss_prevention': 'none',
+                'loss_prevention_toggle': True,
+                'performance_based_allocation': False,
+                'max_price_spread': 0.0300,
+                'paper_trade': False,
+                'prob_adj': 5.00,
+                'position_size': 1,
+                'position_type': 'percent',
+                'multiplier': 1.00,
+                'min_probability': 25,
+                'max_probability': None,
+                'min_differential': 0.25,
+                'max_differential': None,
+                'min_time': 0,
+                'max_time': 0,
+                'allow_re_entry': False,
+                'spike_alert_enabled': False,
+                'spike_alert_momentum_threshold': 80,
+                'spike_alert_cooldown_threshold': 60,
+                'spike_alert_cooldown_minutes': 30,
+                'current_probability': None,
+                'min_ttc_seconds': 0,
+                'momentum_spike_enabled': False,
+                'momentum_spike_threshold': 70,
+                'verification_period_enabled': False,
+                'verification_period_seconds': 60,
+                'min_volume': 0,
+                'momentum_scalp_entry_threshold': None,
+                'momentum_scalp_trailing_stop_amount': 0.10,
+                'momentum_scalp_profit_target': 0.99,
+                'min_ask': 0.0000,
+                'max_ask': 0.9800,
+                'max_profit': 0.9900
+            }
+        print(f"[MONITOR CREATE] Using strategy defaults for '{strategy}'")
+        print(f"[MONITOR CREATE] min_time={strategy_defaults.get('min_time')}, max_time={strategy_defaults.get('max_time')}, min_probability={strategy_defaults.get('min_probability')}")
+        print(f"[MONITOR CREATE] max_probability={strategy_defaults.get('max_probability')}, min_differential={strategy_defaults.get('min_differential')}, max_differential={strategy_defaults.get('max_differential')}")
+        print(f"[MONITOR CREATE] spike_alert_enabled={strategy_defaults.get('spike_alert_enabled')}, momentum_spike_enabled={strategy_defaults.get('momentum_spike_enabled')}")
         
         conn = monitor_manager.get_database_connection()
         if not conn:
@@ -1591,26 +1680,34 @@ def create_monitor():
             # Calculate bankroll_allotment_total
             bankroll_allotment_total = int((bankroll_allotment_pct / 100) * total_bankroll_cents)
             
-            # Calculate total_position based on position settings
-            position_type = 'percent'  # Default position type for new monitors
-            multiplier_value = float(multiplier or 0)
+            # Determine final position settings: use request values if provided, otherwise use strategy defaults
+            final_position_size = position_size if position_size is not None else strategy_defaults.get('position_size', 1)
+            final_position_type = data.get("position_type") if data.get("position_type") is not None else strategy_defaults.get('position_type', 'percent')
+            final_multiplier = multiplier if multiplier is not None else strategy_defaults.get('multiplier', 1.0)
+            
+            # Calculate total_position based on final position settings
+            multiplier_value = float(final_multiplier or 0)
             if multiplier_value == 0:
                 total_position = 1
-            elif position_type == 'percent':
+            elif final_position_type == 'percent':
                 # For percent: round((position_size * allotment_dollars / 100) * multiplier)
                 allotment_dollars = bankroll_allotment_total / 100
-                total_position = int(round((position_size * allotment_dollars / 100) * multiplier_value))
+                total_position = int(round((final_position_size * allotment_dollars / 100) * multiplier_value))
             else:
                 # For contracts: position_size * multiplier
-                total_position = int(position_size * multiplier_value)
+                total_position = int(final_position_size * multiplier_value)
             
             # Let PostgreSQL handle the ID automatically with SERIAL
             cursor.execute(f"""
                 INSERT INTO users.monitor_list_{user_number}
                 (name, symbol, strategy, auto_trade, auto_trade_status, status, bankroll_allotment_pct, bankroll_allotment_total, position_size, position_type, multiplier, total_position, trades, win_loss, ret_pct, pnl, dashboard_order, created,
-                 min_probability, min_differential, max_differential, min_time, max_time, allow_re_entry, spike_alert_enabled, spike_alert_momentum_threshold, spike_alert_cooldown_threshold, spike_alert_cooldown_minutes, current_probability, min_ttc_seconds, momentum_spike_enabled, momentum_spike_threshold, verification_period_enabled, verification_period_seconds, min_volume)
+                 win_streak_threshold, loss_prevention, loss_prevention_toggle, performance_based_allocation, max_price_spread, paper_trade, prob_adj,
+                 min_probability, max_probability, min_differential, max_differential, min_time, max_time, allow_re_entry, spike_alert_enabled, spike_alert_momentum_threshold, spike_alert_cooldown_threshold, spike_alert_cooldown_minutes, current_probability, min_ttc_seconds, momentum_spike_enabled, momentum_spike_threshold, verification_period_enabled, verification_period_seconds, min_volume,
+                 momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target, min_ask, max_ask, max_profit)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(),
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
                 f"mon_{user_number}_temp",  # Temporary name
@@ -1621,33 +1718,51 @@ def create_monitor():
                 'active',  # status defaults to 'active'
                 bankroll_allotment_pct / 100,  # Convert to decimal
                 bankroll_allotment_total,
-                position_size,
-                position_type,
-                multiplier,
+                final_position_size,
+                final_position_type,
+                final_multiplier,
                 total_position,
                 0,  # trades defaults to 0
                 0,  # win_loss defaults to 0
                 0,  # ret_pct defaults to 0
                 0,  # pnl defaults to 0
                 999,  # dashboard_order defaults to 999 (end of list)
-                # Strategy default auto trade settings
-                strategy_defaults.get('min_probability', 25),
-                strategy_defaults.get('min_differential', 0.25),
-                strategy_defaults.get('max_differential', None),
-                strategy_defaults.get('min_time', 0),
-                strategy_defaults.get('max_time', 0),
+                # Strategy defaults (from strategy_list)
+                strategy_defaults.get('win_streak_threshold', 22),
+                strategy_defaults.get('loss_prevention', 'none'),
+                strategy_defaults.get('loss_prevention_toggle', True),
+                strategy_defaults.get('performance_based_allocation', False),
+                strategy_defaults.get('max_price_spread', 0.0300),
+                strategy_defaults.get('paper_trade', False),
+                strategy_defaults.get('prob_adj', 5.00),
+                # Strategy default auto trade settings (from strategy_list)
+                # Use values directly from strategy_defaults - they should all be present if strategy was found
+                # Convert to appropriate types and use None if not present
+                float(strategy_defaults.get('min_probability')) if strategy_defaults.get('min_probability') is not None else None,
+                float(strategy_defaults.get('max_probability')) if strategy_defaults.get('max_probability') is not None else None,
+                float(strategy_defaults.get('min_differential')) if strategy_defaults.get('min_differential') is not None else 0.25,
+                float(strategy_defaults.get('max_differential')) if strategy_defaults.get('max_differential') is not None else None,
+                int(strategy_defaults.get('min_time')) if strategy_defaults.get('min_time') is not None else None,
+                int(strategy_defaults.get('max_time')) if strategy_defaults.get('max_time') is not None else None,
                 strategy_defaults.get('allow_re_entry', False),
                 strategy_defaults.get('spike_alert_enabled', False),
-                strategy_defaults.get('spike_alert_momentum_threshold', 80),
-                strategy_defaults.get('spike_alert_cooldown_threshold', 60),
-                strategy_defaults.get('spike_alert_cooldown_minutes', 30),
-                strategy_defaults.get('current_probability', None),
-                strategy_defaults.get('min_ttc_seconds', 0),
+                strategy_defaults.get('spike_alert_momentum_threshold'),
+                strategy_defaults.get('spike_alert_cooldown_threshold'),
+                strategy_defaults.get('spike_alert_cooldown_minutes'),
+                strategy_defaults.get('current_probability'),
+                strategy_defaults.get('min_ttc_seconds'),
                 strategy_defaults.get('momentum_spike_enabled', False),
-                strategy_defaults.get('momentum_spike_threshold', 70),
+                strategy_defaults.get('momentum_spike_threshold'),
                 strategy_defaults.get('verification_period_enabled', False),
-                strategy_defaults.get('verification_period_seconds', 60),
-                strategy_defaults.get('min_volume', 0)
+                strategy_defaults.get('verification_period_seconds'),
+                strategy_defaults.get('min_volume'),
+                # Momentum scalp settings
+                strategy_defaults.get('momentum_scalp_entry_threshold'),
+                strategy_defaults.get('momentum_scalp_trailing_stop_amount', 0.10),
+                strategy_defaults.get('momentum_scalp_profit_target', 0.99),
+                strategy_defaults.get('min_ask', 0.0000),
+                strategy_defaults.get('max_ask', 0.9800),
+                strategy_defaults.get('max_profit', 0.9900)
             ))
             
             # Get the generated ID
