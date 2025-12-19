@@ -198,9 +198,15 @@
       pointer-events: auto !important;
     }
 
-    /* Paper Trading Border */
-    .monitor-tile.paper-trading-active {
-      box-shadow: inset 0 0 0 2px #48bb78;
+    /* Paper Trading Border Colors */
+    .monitor-tile.live-mode {
+      border: 2px solid #48bb78;
+      box-shadow: 0 0 0 0 #48bb78;
+    }
+
+    .monitor-tile.paper-mode {
+      border: 2px solid #fbbf24;
+      box-shadow: 0 0 0 0 #fbbf24;
     }
 
 
@@ -481,37 +487,86 @@
       align-items: center;
     }
 
-    /* Paper Trading Button */
-    .paper-trading-button {
+    /* Paper Trading Toggle Switch */
+    .paper-trading-toggle {
+      display: flex;
+      position: relative;
+      background-color: #2d3748;
+      border-radius: 4px;
+      padding: 2px;
+      min-width: 100px;
+      height: 22px;
+      cursor: pointer;
+      flex: 0 0 auto;
+      border: 1px solid #4a5568;
+      margin-left: 10px;
+    }
+
+    .paper-trading-toggle-option {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       font-size: 9px;
-      color: #a0aec0;
       font-weight: 500;
       letter-spacing: 0.5px;
-      padding: 2px 6px;
-      border-radius: 4px;
-      background-color: #444;
-      border: 1px solid #666;
-      text-align: center;
-      min-width: 80px;
-      flex: 0 0 auto;
-      cursor: pointer;
-      transition: background-color 0.2s, border-color 0.2s, color 0.2s;
+      color: #a0aec0; /* Default inactive color */
+      z-index: 2;
+      transition: color 0.3s ease;
+      position: relative;
     }
 
-    .paper-trading-button:hover {
-      opacity: 0.8;
-    }
-
-    .paper-trading-button.active {
+    .paper-trading-toggle-slider {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: calc(50% - 2px);
+      height: calc(100% - 4px);
       background-color: #48bb78;
-      border-color: #48bb78;
-      color: #ffffff;
+      border-radius: 3px;
+      transition: transform 0.3s ease;
+      z-index: 1;
     }
 
-    .paper-trading-button.inactive {
-      background-color: #444;
-      border-color: #666;
-      color: #a0aec0;
+    .paper-trading-toggle.paper-mode .paper-trading-toggle-slider {
+      transform: translateX(calc(100% + 2px));
+      background-color: #fbbf24;
+    }
+
+    /* Active text (underneath slider) MUST be FULL WHITE */
+    .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child,
+    .monitor-tile .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child,
+    .list-view .monitor-tile .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child,
+    .tile-view .monitor-tile .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child,
+    .monitor-bottom-row .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child {
+      color: #ffffff !important;
+      font-weight: 600 !important;
+      text-shadow: none !important;
+      opacity: 1 !important;
+      filter: none !important;
+      -webkit-font-smoothing: antialiased !important;
+    }
+
+    .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child,
+    .monitor-tile .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child,
+    .list-view .monitor-tile .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child,
+    .tile-view .monitor-tile .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child,
+    .monitor-bottom-row .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child {
+      color: #ffffff !important;
+      font-weight: 600 !important;
+      text-shadow: none !important;
+      opacity: 1 !important;
+      filter: none !important;
+      -webkit-font-smoothing: antialiased !important;
+    }
+
+    /* Ensure inactive options stay grey */
+    .paper-trading-toggle.live-mode .paper-trading-toggle-option:last-child {
+      color: #a0aec0 !important;
+    }
+
+    .paper-trading-toggle.paper-mode .paper-trading-toggle-option:first-child {
+      color: #a0aec0 !important;
     }
 
     /* Auto Trade Label */
@@ -1366,7 +1421,7 @@
         // List view layout - horizontal data arrangement
         const isPaperTrading = monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1;
         return `
-          <div class="monitor-tile list-view ${monitor.status === 'inactive' ? 'inactive' : ''} ${isPaperTrading ? 'paper-trading-active' : ''}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
+          <div class="monitor-tile list-view ${monitor.status === 'inactive' ? 'inactive' : ''} ${isPaperTrading ? 'paper-mode' : 'live-mode'}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
             <!-- Column 1: Status Light -->
             <div class="status-light list-status-light ${monitor.status === 'active' ? 'active' : 'inactive'}" onclick="toggleMonitorStatus('${monitor.id}', '${monitor.name}', '${monitor.status}')" style="cursor: pointer;" title="${monitor.status === 'active' ? 'Click to deactivate monitor' : 'Click to activate monitor'}"></div>
             
@@ -1404,7 +1459,11 @@
             </div>
             <div class="monitor-bottom-row">
               <div class="monitor-uptime">${monitor.uptime}</div>
-              <div class="paper-trading-button ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'active' : 'inactive'}" onclick="togglePaperTrade('${monitor.id}')" title="Click to toggle paper trading mode">PAPER TRADING</div>
+              <div class="paper-trading-toggle ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}" onclick="togglePaperTrade('${monitor.id}')" title="Click to toggle between LIVE and PAPER trading">
+                <div class="paper-trading-toggle-slider"></div>
+                <div class="paper-trading-toggle-option">LIVE</div>
+                <div class="paper-trading-toggle-option">PAPER</div>
+              </div>
               <div class="monitor-name">${monitor.id === 'NEW_MONITOR' ? monitor.name : `Monitor ${monitor.name.slice(-5)}`}</div>
             </div>
             <div class="monitor-controls">
@@ -1426,7 +1485,7 @@
         // Tile view layout - original vertical arrangement
         const isPaperTrading = monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1;
         return `
-          <div class="monitor-tile tile-view ${monitor.status === 'inactive' ? 'inactive' : ''} ${isPaperTrading ? 'paper-trading-active' : ''}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
+          <div class="monitor-tile tile-view ${monitor.status === 'inactive' ? 'inactive' : ''} ${isPaperTrading ? 'paper-mode' : 'live-mode'}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
             <div style="display: flex; align-items: flex-start; margin-bottom: 10px;">
               <!-- Column 1: Status Light -->
               <div class="status-light ${monitor.status === 'active' ? 'active' : 'inactive'}" onclick="toggleMonitorStatus('${monitor.id}', '${monitor.name}', '${monitor.status}')" style="cursor: pointer;" title="${monitor.status === 'active' ? 'Click to deactivate monitor' : 'Click to activate monitor'}"></div>
@@ -1483,7 +1542,11 @@
             </div>
             <div class="monitor-bottom-row">
               <div class="monitor-uptime">${monitor.uptime}</div>
-              <div class="paper-trading-button ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'active' : 'inactive'}" onclick="togglePaperTrade('${monitor.id}')" title="Click to toggle paper trading mode">PAPER TRADING</div>
+              <div class="paper-trading-toggle ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}" onclick="togglePaperTrade('${monitor.id}')" title="Click to toggle between LIVE and PAPER trading">
+                <div class="paper-trading-toggle-slider"></div>
+                <div class="paper-trading-toggle-option">LIVE</div>
+                <div class="paper-trading-toggle-option">PAPER</div>
+              </div>
               <div class="monitor-name">${monitor.id === 'NEW_MONITOR' ? monitor.name : `Monitor ${monitor.name.slice(-5)}`}</div>
             </div>
           </div>
@@ -2388,23 +2451,41 @@
       // Update the monitor data
       monitor.paper_trade = newPaperTrade;
       
-      // Update the visual state of the button
-      const buttonElement = event.target;
-      if (newPaperTrade) {
-        buttonElement.classList.remove('inactive');
-        buttonElement.classList.add('active');
-      } else {
-        buttonElement.classList.remove('active');
-        buttonElement.classList.add('inactive');
+      // Update the visual state of the toggle
+      const toggleElement = document.querySelector(`[data-monitor-id="${monitorId}"] .paper-trading-toggle`);
+      if (toggleElement) {
+        if (newPaperTrade) {
+          toggleElement.classList.remove('live-mode');
+          toggleElement.classList.add('paper-mode');
+          // Force white color on PAPER option
+          const options = toggleElement.querySelectorAll('.paper-trading-toggle-option');
+          if (options.length >= 2) {
+            options[0].style.color = '#a0aec0'; // LIVE inactive
+            options[1].style.color = '#ffffff'; // PAPER active - FORCE WHITE
+            options[1].style.fontWeight = '600';
+          }
+        } else {
+          toggleElement.classList.remove('paper-mode');
+          toggleElement.classList.add('live-mode');
+          // Force white color on LIVE option
+          const options = toggleElement.querySelectorAll('.paper-trading-toggle-option');
+          if (options.length >= 2) {
+            options[0].style.color = '#ffffff'; // LIVE active - FORCE WHITE
+            options[0].style.fontWeight = '600';
+            options[1].style.color = '#a0aec0'; // PAPER inactive
+          }
+        }
       }
       
       // Update the tile border
       const tileElement = document.querySelector(`[data-monitor-id="${monitorId}"]`);
       if (tileElement) {
         if (newPaperTrade) {
-          tileElement.classList.add('paper-trading-active');
+          tileElement.classList.remove('live-mode');
+          tileElement.classList.add('paper-mode');
         } else {
-          tileElement.classList.remove('paper-trading-active');
+          tileElement.classList.remove('paper-mode');
+          tileElement.classList.add('live-mode');
         }
       }
       
@@ -2431,14 +2512,35 @@
           console.error('Failed to update paper trade:', data.message);
           // Revert the UI change on error
           monitor.paper_trade = currentPaperTrade;
-          if (currentPaperTrade) {
-            buttonElement.classList.remove('inactive');
-            buttonElement.classList.add('active');
-            tileElement.classList.add('paper-trading-active');
-          } else {
-            buttonElement.classList.remove('active');
-            buttonElement.classList.add('inactive');
-            tileElement.classList.remove('paper-trading-active');
+          if (toggleElement) {
+            if (currentPaperTrade) {
+              toggleElement.classList.remove('live-mode');
+              toggleElement.classList.add('paper-mode');
+              const options = toggleElement.querySelectorAll('.paper-trading-toggle-option');
+              if (options.length >= 2) {
+                options[0].style.color = '#a0aec0';
+                options[1].style.color = '#ffffff';
+                options[1].style.fontWeight = '600';
+              }
+            } else {
+              toggleElement.classList.remove('paper-mode');
+              toggleElement.classList.add('live-mode');
+              const options = toggleElement.querySelectorAll('.paper-trading-toggle-option');
+              if (options.length >= 2) {
+                options[0].style.color = '#ffffff';
+                options[0].style.fontWeight = '600';
+                options[1].style.color = '#a0aec0';
+              }
+            }
+          }
+          if (tileElement) {
+            if (currentPaperTrade) {
+              tileElement.classList.remove('live-mode');
+              tileElement.classList.add('paper-mode');
+            } else {
+              tileElement.classList.remove('paper-mode');
+              tileElement.classList.add('live-mode');
+            }
           }
         }
       })
@@ -4680,27 +4782,41 @@
               monitor.paper_trade = paperTrade;
               console.log('Updated monitor', frontendMonitorId, 'paper_trade to:', paperTrade);
               
-              // Update the visual state of the button
-              const buttonElement = document.querySelector(`[data-monitor-id="${frontendMonitorId}"] .paper-trading-button`);
+              // Update the visual state of the toggle
+              const toggleElement = document.querySelector(`[data-monitor-id="${frontendMonitorId}"] .paper-trading-toggle`);
               const tileElement = document.querySelector(`[data-monitor-id="${frontendMonitorId}"]`);
               
-              if (buttonElement) {
+              if (toggleElement) {
                 if (paperTrade) {
-                  buttonElement.classList.remove('inactive');
-                  buttonElement.classList.add('active');
+                  toggleElement.classList.remove('live-mode');
+                  toggleElement.classList.add('paper-mode');
+                  const options = toggleElement.querySelectorAll('.paper-trading-toggle-option');
+                  if (options.length >= 2) {
+                    options[0].style.color = '#a0aec0';
+                    options[1].style.color = '#ffffff';
+                    options[1].style.fontWeight = '600';
+                  }
                 } else {
-                  buttonElement.classList.remove('active');
-                  buttonElement.classList.add('inactive');
+                  toggleElement.classList.remove('paper-mode');
+                  toggleElement.classList.add('live-mode');
+                  const options = toggleElement.querySelectorAll('.paper-trading-toggle-option');
+                  if (options.length >= 2) {
+                    options[0].style.color = '#ffffff';
+                    options[0].style.fontWeight = '600';
+                    options[1].style.color = '#a0aec0';
+                  }
                 }
-                console.log('Updated paper trading button visual state for', frontendMonitorId);
+                console.log('Updated paper trading toggle visual state for', frontendMonitorId);
               }
               
               // Update the tile border
               if (tileElement) {
                 if (paperTrade) {
-                  tileElement.classList.add('paper-trading-active');
+                  tileElement.classList.remove('live-mode');
+                  tileElement.classList.add('paper-mode');
                 } else {
-                  tileElement.classList.remove('paper-trading-active');
+                  tileElement.classList.remove('paper-mode');
+                  tileElement.classList.add('live-mode');
                 }
                 console.log('Updated paper trading border for', frontendMonitorId);
               }
