@@ -3903,7 +3903,7 @@ async function fetchAndRenderPositions() {
           <td>${p.ticker}</td>
           <td>${p.market_exposure && p.position !== 0 ? (p.market_exposure / p.position / 100).toFixed(2) : "0.00"}</td>
           <td>${p.position}</td>
-          <td>${p.fees_paid.toFixed(2)}</td>
+          <td>${p.fees_paid != null ? p.fees_paid.toFixed(2) : "0.00"}</td>
           <td>${new Date(p.last_updated_ts).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td>
         </tr>
       `).join("");

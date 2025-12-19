@@ -1629,6 +1629,9 @@
         
         grid.innerHTML = visibleMonitors.map((monitor, index) => createMonitorTile(monitor, index)).join('');
         
+        // Initialize paper trading toggle text colors
+        initializePaperTradingToggleColors();
+        
         // Update status displays to show cooldown timers if available
         visibleMonitors.forEach(monitor => {
           if ((monitor.auto_trade_status === 'PAUSED' || monitor.auto_trade_status === 'paused') && cooldownTimers.has(monitor.id)) {
@@ -2432,6 +2435,28 @@
       }
     }
 
+    // Initialize paper trading toggle text colors for all monitors
+    function initializePaperTradingToggleColors() {
+      const allToggles = document.querySelectorAll('.paper-trading-toggle');
+      allToggles.forEach(toggleElement => {
+        const isPaperMode = toggleElement.classList.contains('paper-mode');
+        const options = toggleElement.querySelectorAll('.paper-trading-toggle-option');
+        if (options.length >= 2) {
+          if (isPaperMode) {
+            // PAPER mode: PAPER is active (white), LIVE is inactive (grey)
+            options[0].style.color = '#a0aec0'; // LIVE inactive
+            options[1].style.color = '#ffffff'; // PAPER active - FORCE WHITE
+            options[1].style.fontWeight = '600';
+          } else {
+            // LIVE mode: LIVE is active (white), PAPER is inactive (grey)
+            options[0].style.color = '#ffffff'; // LIVE active - FORCE WHITE
+            options[0].style.fontWeight = '600';
+            options[1].style.color = '#a0aec0'; // PAPER inactive
+          }
+        }
+      });
+    }
+
     function togglePaperTrade(monitorId) {
       console.log('Paper trading toggle clicked for monitor:', monitorId);
       
@@ -2687,14 +2712,14 @@
       const firstValue = filteredData[0].portfolio || 0; // Portfolio values are already in dollars
       const lastValue = filteredData[filteredData.length - 1].portfolio || 0; // Portfolio values are already in dollars
       
-      const change = lastValue - firstValue;
-      const percentChange = firstValue !== 0 ? (change / firstValue) * 100 : 0;
+      const change = (lastValue != null && firstValue != null) ? (lastValue - firstValue) : 0;
+      const percentChange = (firstValue != null && firstValue !== 0) ? (change / firstValue) * 100 : 0;
       
       // Format the consolidated change display
       const changeElement = document.getElementById('portfolio-change');
       const isPositive = change >= 0;
       
-      const changeText = `$${Math.abs(change).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${percentChange.toFixed(2)}%)`;
+      const changeText = `$${Math.abs(change).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${percentChange != null ? percentChange.toFixed(2) : "0.00"}%)`;
       
       changeElement.textContent = changeText;
       changeElement.className = `change-element ${isPositive ? 'positive' : 'negative'}`;

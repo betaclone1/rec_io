@@ -352,7 +352,8 @@
             
             settlementsBody.innerHTML = sortedSettlements.map(s => {
                 // Revenue is already in whole dollars, display as is
-                const formattedRevenue = s.revenue.toLocaleString(undefined, { 
+                const revenue = s.revenue != null ? s.revenue : 0;
+                const formattedRevenue = revenue.toLocaleString(undefined, { 
                     minimumFractionDigits: 0, 
                     maximumFractionDigits: 0 
                 });
@@ -394,7 +395,7 @@
                         <td>${p.ticker}</td>
                         <td>${p.market_exposure && p.position !== 0 ? (p.market_exposure / p.position / 100).toFixed(2) : "0.00"}</td>
                         <td>${p.position}</td>
-                        <td>${p.fees_paid.toFixed(2)}</td>
+                        <td>${p.fees_paid != null ? p.fees_paid.toFixed(2) : "0.00"}</td>
                         <td>${new Date(p.last_updated_ts).toLocaleString("en-US", { timeZone: "America/New_York" })}</td>
                     </tr>
                 `).join("");
