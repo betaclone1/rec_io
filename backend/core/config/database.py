@@ -89,6 +89,7 @@ def init_database():
                 monitor VARCHAR(50),
                 hour_idx INTEGER,
                 weekly_cycle INTEGER,
+                order_id TEXT,
                 order_id_open TEXT,
                 order_id_close TEXT,
                 high_price DECIMAL(10,4),
@@ -101,7 +102,13 @@ def init_database():
                 monitor_confirmed BOOLEAN DEFAULT FALSE,
                 cycle_win_loss TEXT,
                 cycle_pnl REAL,
-                cycle_ret_pct REAL
+                cycle_ret_pct REAL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                test_filter BOOLEAN DEFAULT FALSE,
+                notes TEXT,
+                ret_pct REAL,
+                momentum_5s_avg NUMERIC
             );
         """)
 
@@ -220,6 +227,76 @@ def init_database():
                       AND column_name = 'cycle_ret_pct'
                 ) THEN
                     ALTER TABLE users.trades_0001 ADD COLUMN cycle_ret_pct REAL;
+                END IF;
+
+                -- Add created_at column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'created_at'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+                END IF;
+
+                -- Add updated_at column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'updated_at'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+                END IF;
+
+                -- Add test_filter column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'test_filter'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN test_filter BOOLEAN DEFAULT FALSE;
+                END IF;
+
+                -- Add notes column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'notes'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN notes TEXT;
+                END IF;
+
+                -- Add ret_pct column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'ret_pct'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN ret_pct REAL;
+                END IF;
+
+                -- Add momentum_5s_avg column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'momentum_5s_avg'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN momentum_5s_avg NUMERIC;
+                END IF;
+
+                -- Add order_id column if it doesn't exist (legacy, before order_id_open/order_id_close)
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'order_id'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN order_id TEXT;
                 END IF;
             END
             $$;
