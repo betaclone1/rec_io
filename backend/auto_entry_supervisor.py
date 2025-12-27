@@ -2918,16 +2918,31 @@ def check_auto_entry_conditions_momentum_breakout():
         check_spike_alert_conditions()
         
         strike_table_data = get_master_strike_table_data()
-        if strike_table_data:
-            update_monitor_current_state(strike_table_data)
-        
-        # Get current contract from monitor state
-        current_contract = _LAST_MONITOR_STATE.get("contract")
         
         # Failsafe: Skip 5pm cycles (daily 5pm cycles are excluded)
-        if current_contract and "5pm" in current_contract.lower():
-            log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⏸️ Skipping 5pm cycle: {current_contract}")
-            return
+        # Check hour_24 directly (17 = 5pm) - most reliable method
+        if strike_table_data:
+            symbol = (strike_table_data or {}).get("symbol") or MONITOR_SYMBOL or "BTC"
+            market_title = (strike_table_data or {}).get("market_title")
+            event_ticker = (strike_table_data or {}).get("event_ticker")
+            
+            # Resolve the hour directly to check for 5pm (hour_24 == 17)
+            _, hour_24 = _resolve_event_time(symbol, market_title, event_ticker)
+            if hour_24 == 17:  # 5pm in 24-hour format
+                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⏸️ Skipping 5pm cycle (hour_24={hour_24})")
+                return
+            
+            # Also check contract label and market_title as additional failsafe
+            current_contract = _LAST_MONITOR_STATE.get("contract")
+            contract_to_check = current_contract or market_title or ""
+            if contract_to_check and "5pm" in contract_to_check.lower():
+                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⏸️ Skipping 5pm cycle (contract check): {contract_to_check}")
+                return
+            
+            update_monitor_current_state(strike_table_data)
+        
+        # Get current contract from monitor state (after update)
+        current_contract = _LAST_MONITOR_STATE.get("contract")
         
         # Reset trades_entered flag when a new cycle starts (contract changes)
         if current_contract and current_contract != momentum_breakout_last_contract:

@@ -1202,7 +1202,7 @@ def refresh_monitor_cycle_performance_for_monitor(
                     END AS max_pct_exposure,
                     CASE
                         WHEN ac.trade_count = 0 THEN 1.00
-                        WHEN ac.win_rate_pct < 90 THEN 0.00
+                        WHEN ac.win_rate_pct < 90 THEN 0.25
                         WHEN ac.win_rate_pct >= 90 AND ac.win_rate_pct < 95 THEN 0.50
                         WHEN ac.trade_count >= 20 AND ac.win_rate_pct = 100 THEN 1.50
                         ELSE 1.00
