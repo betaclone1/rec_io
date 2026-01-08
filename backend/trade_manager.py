@@ -2664,6 +2664,13 @@ async def update_trade_status_api(request: Request):
                         if ticket_id:
                             log_event(ticket_id, f"MANAGER: {log_type} ORDER_ID STORED IN DATABASE: {order_id}")
                     pg_conn.close()
+                    
+                    # FAILSAFE: For opening trades, immediately trigger confirm_open_trade after storing order_id
+                    # This catches the edge case where positions_updated arrives before executor callback
+                    # In normal cases (99.9%), trade is already 'open' so confirm_open_trade will skip (no-op)
+                    if intent == "open" and order_id:
+                        log(f"🛡️ FAILSAFE: Triggering immediate confirmation for trade {id} after storing order_id")
+                        threading.Thread(target=confirm_open_trade, args=(id, ticket_id), daemon=True).start()
                 else:
                     log(f"FAILED TO STORE {log_type} ORDER_ID - NO DATABASE CONNECTION")
                     if ticket_id:
