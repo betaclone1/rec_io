@@ -14,6 +14,34 @@ This document tracks all PostgreSQL database modifications made to the trading s
 
 ## Change History
 
+### 2026-01-11 - Add momentum_30s_avg Column to Live Price Log Tables
+- **Change Type**: SCHEMA_ADDITION
+- **Description**: Added `momentum_30s_avg` column to all live_price_log tables (btc, eth, spx, ndx) to store 30-second rolling average of momentum values as percentile
+- **SQL Commands**:
+```sql
+-- Add momentum_30s_avg column to all live_price_log tables
+ALTER TABLE live_data.live_price_log_1s_btc ADD COLUMN IF NOT EXISTS momentum_30s_avg numeric(5,1);
+ALTER TABLE live_data.live_price_log_1s_eth ADD COLUMN IF NOT EXISTS momentum_30s_avg numeric(5,1);
+ALTER TABLE live_data.live_price_log_1s_spx ADD COLUMN IF NOT EXISTS momentum_30s_avg numeric(5,1);
+ALTER TABLE live_data.live_price_log_1s_ndx ADD COLUMN IF NOT EXISTS momentum_30s_avg numeric(5,1);
+
+-- Add comments to document the field
+COMMENT ON COLUMN live_data.live_price_log_1s_btc.momentum_30s_avg IS '30-second rolling average of momentum values converted to percentile';
+COMMENT ON COLUMN live_data.live_price_log_1s_eth.momentum_30s_avg IS '30-second rolling average of momentum values converted to percentile';
+COMMENT ON COLUMN live_data.live_price_log_1s_spx.momentum_30s_avg IS '30-second rolling average of momentum values converted to percentile';
+COMMENT ON COLUMN live_data.live_price_log_1s_ndx.momentum_30s_avg IS '30-second rolling average of momentum values converted to percentile';
+```
+- **Files Modified**:
+  - `backend/symbol_price_watchdog.py` (added calculate_30s_momentum_average function and insert logic)
+  - `backend/symbol_price_watchdog_finance.py` (added calculate_30s_momentum_average function and insert logic)
+  - `docs/MASTER_DB_SCHEMA_REFERENCE.md` (updated schema documentation)
+  - `add_momentum_30s_avg_migration.sql` (migration script created)
+- **Status**: PENDING
+- **Notes**:
+  - The column is calculated by averaging the last 30 momentum values and converting to percentile
+  - Follows the same pattern as momentum_5s_avg column
+  - Column type: numeric(5,1) to match momentum_5s_avg format
+
 ### 2025-11-08 - Trades Weekly Cycle Backfill
 - **Change Type**: SCHEMA_ADDITION | DATA_MIGRATION | INDEX_CREATION
 - **Description**: Added `hour_idx` and `weekly_cycle` buckets to `users.trades_0001` and backfilled using EST calendar rules to support monitor performance tracking.

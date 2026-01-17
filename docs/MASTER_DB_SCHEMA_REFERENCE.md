@@ -8259,6 +8259,7 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `delta_30m` | `numeric(10,4)` | YES | - | |
 | `momentum_percentile` | `numeric(5,1)` | YES | - | |
 | `momentum_5s_avg` | `numeric(5,1)` | YES | - | |
+| `momentum_30s_avg` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(10,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
 
@@ -8297,6 +8298,7 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `delta_30m` | `numeric(10,4)` | YES | - | |
 | `momentum_percentile` | `numeric(5,1)` | YES | - | |
 | `momentum_5s_avg` | `numeric(5,1)` | YES | - | |
+| `momentum_30s_avg` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(10,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
 
@@ -8335,6 +8337,7 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `delta_30m` | `numeric(10,4)` | YES | - | |
 | `momentum_percentile` | `numeric(5,1)` | YES | - | |
 | `momentum_5s_avg` | `numeric(5,1)` | YES | - | |
+| `momentum_30s_avg` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(10,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
 
@@ -8373,6 +8376,7 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `delta_30m` | `numeric(10,4)` | YES | - | |
 | `momentum_percentile` | `numeric(5,1)` | YES | - | |
 | `momentum_5s_avg` | `numeric(5,1)` | YES | - | |
+| `momentum_30s_avg` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(10,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
 
@@ -10031,6 +10035,19 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `momentum_scalp_entry_threshold` | `numeric(5,2)` | YES | NULL::numeric | |
 | `momentum_scalp_trailing_stop_amount` | `numeric(5,2)` | YES | 0.10 | |
 | `momentum_scalp_profit_target` | `numeric(5,2)` | YES | 0.99 | |
+| `win_streak_threshold` | `integer(32)` | YES | 22 | |
+| `loss_prevention` | `character varying(50)` | YES | 'none'::character varying | |
+| `loss_prevention_toggle` | `boolean` | YES | true | |
+| `performance_based_allocation` | `boolean` | NO | false | |
+| `max_price_spread` | `numeric(6,4)` | YES | 0.0300 | |
+| `paper_trade` | `boolean` | YES | false | |
+| `prob_adj` | `numeric(5,2)` | YES | 5.00 | |
+| `min_ask` | `numeric(6,4)` | YES | 0.0000 | |
+| `max_ask` | `numeric(6,4)` | YES | 0.9800 | |
+| `position_size` | `integer(32)` | YES | 1 | |
+| `position_type` | `character varying(20)` | YES | 'percent'::character varying | |
+| `multiplier` | `numeric(3,2)` | YES | 1.00 | |
+| `max_profit` | `numeric(6,4)` | YES | 0.9900 | |
 
 #### Constraints
 
@@ -10096,6 +10113,8 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `day_saturday` | `boolean` | YES | true | |
 | `chart_view` | `text` | YES | 'pnl'::text | |
 | `pct_mode` | `boolean` | YES | false | |
+| `live_filter` | `boolean` | YES | true | |
+| `paper_filter` | `boolean` | YES | false | |
 
 #### Constraints
 

@@ -252,6 +252,14 @@
                             <input type="checkbox" id="filter-loss" checked style="width: 14px; height: 14px;">
                             Loss
                         </label>
+                        <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
+                            <input type="checkbox" id="filter-live" checked style="width: 14px; height: 14px;">
+                            LIVE
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
+                            <input type="checkbox" id="filter-paper" style="width: 14px; height: 14px;">
+                            PAPER
+                        </label>
                     </div>
                     <div style="flex: 1; display: flex; justify-content: flex-end;">
                         <a href="#" onclick="resetAllFilters(); return false;" style="color: #ccc; text-decoration: none; font-size: 12px; opacity: 0.6; transition: opacity 0.2s ease;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">Reset</a>
@@ -670,6 +678,39 @@
                 }
                 // If win_loss is null/undefined/empty, show it regardless of filters
                 return true;
+            });
+        }
+        
+        // === PAPER TRADE FILTER LOGIC ===
+        function filterTradesByPaperTrade(trades) {
+            const liveCheckbox = document.getElementById('filter-live');
+            const paperCheckbox = document.getElementById('filter-paper');
+            
+            // If checkboxes don't exist yet, return all trades (no filtering)
+            if (!liveCheckbox || !paperCheckbox) {
+                return trades;
+            }
+            
+            const showLive = liveCheckbox.checked;
+            const showPaper = paperCheckbox.checked;
+            
+            return trades.filter(trade => {
+                const paperTrade = trade.paper_trade;
+                
+                // Convert to boolean - handle various formats (boolean, string, number, null)
+                let isPaperTrade = false;
+                if (paperTrade === true || paperTrade === 1 || paperTrade === 'true' || paperTrade === '1' || paperTrade === 'True') {
+                    isPaperTrade = true;
+                } else if (paperTrade === false || paperTrade === 0 || paperTrade === 'false' || paperTrade === '0' || paperTrade === 'False' || paperTrade === null || paperTrade === undefined) {
+                    isPaperTrade = false;
+                }
+                
+                // If it's a paper trade (paper_trade = TRUE), show only if PAPER checkbox is checked
+                if (isPaperTrade) {
+                    return showPaper;
+                }
+                // If it's a live trade (paper_trade = FALSE), show only if LIVE checkbox is checked
+                return showLive;
             });
         }
         
@@ -1102,6 +1143,7 @@
             filtered = filterTradesBySymbol(filtered);
             filtered = filterTradesByMonitor(filtered);
             filtered = filterTradesByDay(filtered);
+            filtered = filterTradesByPaperTrade(filtered);
             
             filteredTrades = [...filtered];
             applyCurrentSort();
@@ -1329,13 +1371,7 @@
             if (endDate) endDateInput.value = endDate;
         }
 
-        // Event listeners
-        document.getElementById('date-filter-picker').addEventListener('change', () => {
-            updateDateRangeDisplay();
-            applyFilters();
-        });
-        document.getElementById('filter-win').addEventListener('change', applyFilters);
-        document.getElementById('filter-loss').addEventListener('change', applyFilters);
+        // Event listeners will be set up in DOMContentLoaded
         
         // Date range inputs
         const startDateInput = document.getElementById('start-date');
@@ -1606,9 +1642,104 @@
             }
         }
 
+        // Save paper trade preferences to database
+        async function savePaperTradePreferences() {
+            try {
+                const filterLive = document.getElementById('filter-live');
+                const filterPaper = document.getElementById('filter-paper');
+                
+                if (!filterLive || !filterPaper) return;
+                
+                const response = await fetch('/api/set_trade_history_preferences', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        live_filter: filterLive.checked,
+                        paper_filter: filterPaper.checked
+                    })
+                });
+                
+                if (response.ok) {
+                    console.log('✅ Paper trade preferences saved');
+                } else {
+                    console.error('❌ Failed to save paper trade preferences');
+                }
+            } catch (error) {
+                console.error('❌ Error saving paper trade preferences:', error);
+            }
+        }
+
+        // Load paper trade preferences from database
+        async function loadPaperTradePreferences() {
+            try {
+                const response = await fetch('/api/get_trade_history_preferences');
+                
+                if (response.ok) {
+                    const preferences = await response.json();
+                    const filterLive = document.getElementById('filter-live');
+                    const filterPaper = document.getElementById('filter-paper');
+                    
+                    if (filterLive && preferences.live_filter !== undefined) {
+                        filterLive.checked = preferences.live_filter;
+                    }
+                    if (filterPaper && preferences.paper_filter !== undefined) {
+                        filterPaper.checked = preferences.paper_filter;
+                    }
+                    
+                    // Return promise for chaining
+                    return Promise.resolve();
+                }
+            } catch (error) {
+                console.error('❌ Error loading paper trade preferences:', error);
+                return Promise.resolve(); // Return resolved promise even on error
+            }
+        }
+
         // Initialize when DOM is loaded
         document.addEventListener('DOMContentLoaded', function() {
             console.log('Mobile trade history initialized');
+            
+            // Set up event listeners
+            const dateFilterPicker = document.getElementById('date-filter-picker');
+            if (dateFilterPicker) {
+                dateFilterPicker.addEventListener('change', () => {
+                    updateDateRangeDisplay();
+                    applyFilters();
+                });
+            }
+            
+            const filterWin = document.getElementById('filter-win');
+            const filterLoss = document.getElementById('filter-loss');
+            if (filterWin) {
+                filterWin.addEventListener('change', () => {
+                    applyFilters();
+                    savePaperTradePreferences();
+                });
+            }
+            if (filterLoss) {
+                filterLoss.addEventListener('change', () => {
+                    applyFilters();
+                    savePaperTradePreferences();
+                });
+            }
+            
+            // Paper trade filter checkboxes
+            const filterLive = document.getElementById('filter-live');
+            const filterPaper = document.getElementById('filter-paper');
+            if (filterLive) {
+                filterLive.addEventListener('change', () => {
+                    applyFilters();
+                    savePaperTradePreferences();
+                });
+            }
+            if (filterPaper) {
+                filterPaper.addEventListener('change', () => {
+                    applyFilters();
+                    savePaperTradePreferences();
+                });
+            }
             
             // Add event listener for % Mode toggle
             const percentModeToggle = document.getElementById('percent-mode-toggle');
@@ -1624,6 +1755,10 @@
             // Initial load
             updateDateRangeDisplay(); // Populate date inputs
             loadPercentModePreference(); // Load % Mode preference
+            loadPaperTradePreferences().then(() => {
+                // Apply filters after preferences are loaded
+                applyFilters();
+            }); // Load paper trade preferences
             fetchAllTrades();
 
             // Auto-refresh every 30 seconds

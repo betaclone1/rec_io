@@ -5209,6 +5209,10 @@
     let dashboardMSMaxAsk = 0.9800;
     let dashboardMSAskIsDragging = false;
     let dashboardMSAskCurrentHandle = null;
+    
+    // Momentum Breakout/Contain Ask Window Variables (reuse probability slider)
+    let dashboardContainMinAsk = 0.0000;
+    let dashboardContainMaxAsk = 0.9800;
 
     // Initialize Time Window slider
     function initDashboardTimeWindowSlider() {
@@ -5301,17 +5305,14 @@
     function updateDashboardProbabilityWindowSlider() {
       if (!dashboardProbSliderWidth) return;
       
-      // Enforce minimum separation (0.5%)
-      const MIN_SEPARATION = 0.5;
-      if (dashboardMaxProbability - dashboardMinProbability < MIN_SEPARATION) {
-        // If too close, adjust max to maintain minimum separation
-        if (dashboardMaxProbability < 100) {
-          dashboardMaxProbability = parseFloat((dashboardMinProbability + MIN_SEPARATION).toFixed(1));
-        } else {
-          // If max is at 100, adjust min down
-          dashboardMinProbability = parseFloat((dashboardMaxProbability - MIN_SEPARATION).toFixed(1));
-        }
-      }
+      // Get current strategy from modal
+      const modal = document.getElementById('unifiedAutoTradeModal');
+      if (!modal || modal.style.display !== 'block') return;
+      const tileId = modal.getAttribute('data-tile-id');
+      const monitor = monitors && monitors.find(m => m.id === tileId);
+      const currentStrategy = monitor ? monitor.strategy : '';
+      const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+      const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
       
       const minHandle = document.getElementById('minProbabilityHandle');
       const maxHandle = document.getElementById('maxProbabilityHandle');
@@ -5321,20 +5322,51 @@
       
       if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
       
-      const minPercent = (dashboardMinProbability / 100) * 100;
-      const maxPercent = (dashboardMaxProbability / 100) * 100;
-      
-      minHandle.style.left = `${minPercent}%`;
-      maxHandle.style.left = `${maxPercent}%`;
-      
-      range.style.left = `${minPercent}%`;
-      range.style.width = `${maxPercent - minPercent}%`;
-      
-      minDisplay.textContent = dashboardMinProbability.toFixed(1) + '%';
-      maxDisplay.textContent = dashboardMaxProbability.toFixed(1) + '%';
-      
-      minDisplay.style.left = `${minPercent}%`;
-      maxDisplay.style.left = `${maxPercent}%`;
+      if (isMomentumBreakout || isMomentumContain) {
+        // Use ask price values (0.0000 to 1.0000)
+        const MIN_ASK_SEPARATION = 0.01;
+        if (dashboardContainMaxAsk - dashboardContainMinAsk < MIN_ASK_SEPARATION) {
+          if (dashboardContainMaxAsk < 1.0) {
+            dashboardContainMaxAsk = parseFloat((dashboardContainMinAsk + MIN_ASK_SEPARATION).toFixed(4));
+          } else {
+            dashboardContainMinAsk = parseFloat((dashboardContainMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
+          }
+        }
+        
+        const minPercent = (dashboardContainMinAsk / 1.0) * 100;
+        const maxPercent = (dashboardContainMaxAsk / 1.0) * 100;
+        
+        minHandle.style.left = `${minPercent}%`;
+        maxHandle.style.left = `${maxPercent}%`;
+        range.style.left = `${minPercent}%`;
+        range.style.width = `${maxPercent - minPercent}%`;
+        minDisplay.textContent = '$' + dashboardContainMinAsk.toFixed(4);
+        maxDisplay.textContent = '$' + dashboardContainMaxAsk.toFixed(4);
+        minDisplay.style.left = `${minPercent}%`;
+        maxDisplay.style.left = `${maxPercent}%`;
+      } else {
+        // Use probability values (0 to 100)
+        const MIN_SEPARATION = 0.5;
+        if (dashboardMaxProbability - dashboardMinProbability < MIN_SEPARATION) {
+          if (dashboardMaxProbability < 100) {
+            dashboardMaxProbability = parseFloat((dashboardMinProbability + MIN_SEPARATION).toFixed(1));
+          } else {
+            dashboardMinProbability = parseFloat((dashboardMaxProbability - MIN_SEPARATION).toFixed(1));
+          }
+        }
+        
+        const minPercent = (dashboardMinProbability / 100) * 100;
+        const maxPercent = (dashboardMaxProbability / 100) * 100;
+        
+        minHandle.style.left = `${minPercent}%`;
+        maxHandle.style.left = `${maxPercent}%`;
+        range.style.left = `${minPercent}%`;
+        range.style.width = `${maxPercent - minPercent}%`;
+        minDisplay.textContent = dashboardMinProbability.toFixed(1) + '%';
+        maxDisplay.textContent = dashboardMaxProbability.toFixed(1) + '%';
+        minDisplay.style.left = `${minPercent}%`;
+        maxDisplay.style.left = `${maxPercent}%`;
+      }
     }
     
     function handleDashboardProbMouseDown(e) {
@@ -5351,28 +5383,57 @@
       const container = document.getElementById('probabilityWindowSliderContainer');
       if (!container) return;
       
+      // Get current strategy from modal
+      const modal = document.getElementById('unifiedAutoTradeModal');
+      if (!modal) return;
+      const tileId = modal.getAttribute('data-tile-id');
+      const monitor = monitors && monitors.find(m => m.id === tileId);
+      const currentStrategy = monitor ? monitor.strategy : '';
+      const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+      const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
+      
       const rect = container.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
-      const probability = parseFloat((Math.round(percent * 10) / 10).toFixed(1)); // Round to 1 decimal place and ensure float
       
-      const MIN_SEPARATION = 0.5; // Minimum separation between min and max (0.5%)
       const minHandle = document.getElementById('minProbabilityHandle');
       const maxHandle = document.getElementById('maxProbabilityHandle');
       
-      if (dashboardProbCurrentHandle === minHandle) {
-        // Ensure min doesn't get too close to max
-        if (probability >= dashboardMaxProbability - MIN_SEPARATION) {
-          dashboardMinProbability = parseFloat((dashboardMaxProbability - MIN_SEPARATION).toFixed(1));
-        } else {
-          dashboardMinProbability = probability;
+      if (isMomentumBreakout || isMomentumContain) {
+        // Use ask price values (0.0000 to 1.0000)
+        const askPrice = parseFloat((percent / 100).toFixed(4));
+        const MIN_ASK_SEPARATION = 0.01;
+        
+        if (dashboardProbCurrentHandle === minHandle) {
+          if (askPrice >= dashboardContainMaxAsk - MIN_ASK_SEPARATION) {
+            dashboardContainMinAsk = parseFloat((dashboardContainMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
+          } else {
+            dashboardContainMinAsk = askPrice;
+          }
+        } else if (dashboardProbCurrentHandle === maxHandle) {
+          if (askPrice <= dashboardContainMinAsk + MIN_ASK_SEPARATION) {
+            dashboardContainMaxAsk = parseFloat((dashboardContainMinAsk + MIN_ASK_SEPARATION).toFixed(4));
+          } else {
+            dashboardContainMaxAsk = askPrice;
+          }
         }
-      } else if (dashboardProbCurrentHandle === maxHandle) {
-        // Ensure max doesn't get too close to min
-        if (probability <= dashboardMinProbability + MIN_SEPARATION) {
-          dashboardMaxProbability = parseFloat((dashboardMinProbability + MIN_SEPARATION).toFixed(1));
-        } else {
-          dashboardMaxProbability = probability;
+      } else {
+        // Use probability values (0 to 100)
+        const probability = parseFloat((Math.round(percent * 10) / 10).toFixed(1));
+        const MIN_SEPARATION = 0.5;
+        
+        if (dashboardProbCurrentHandle === minHandle) {
+          if (probability >= dashboardMaxProbability - MIN_SEPARATION) {
+            dashboardMinProbability = parseFloat((dashboardMaxProbability - MIN_SEPARATION).toFixed(1));
+          } else {
+            dashboardMinProbability = probability;
+          }
+        } else if (dashboardProbCurrentHandle === maxHandle) {
+          if (probability <= dashboardMinProbability + MIN_SEPARATION) {
+            dashboardMaxProbability = parseFloat((dashboardMinProbability + MIN_SEPARATION).toFixed(1));
+          } else {
+            dashboardMaxProbability = probability;
+          }
         }
       }
       
@@ -5865,6 +5926,7 @@
       const modal = document.getElementById('unifiedAutoTradeModal');
       const dim = document.getElementById('unifiedAutoTradeDim');
       modal.style.display = 'block';
+      modal.setAttribute('data-tile-id', tileId); // Store for slider functions
       document.body.style.overflow = 'hidden';
       
       // Get monitor strategy from monitors array
@@ -5872,6 +5934,8 @@
       const currentStrategy = monitor ? monitor.strategy : '';
       const isMomentumScalp = currentStrategy && (currentStrategy.toUpperCase().includes('MOMENTUM SCALP') || currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL'));
       const isMomentumReversal = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL');
+      const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+      const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
       const isReverseHTC = currentStrategy && currentStrategy.toUpperCase().includes('REVERSE HTC');
       const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
       
@@ -5915,6 +5979,48 @@
         probAdjContainer.style.display = displayValue;
         probAdjLabel.style.display = displayValue;
       }
+      
+      // Hide Min Differential, Max Differential for Momentum Breakout and Momentum Contain
+      const minDiffLabel = document.querySelector('label[for="autoEntryDifferentialSlider"]');
+      const minDiffSlider = document.getElementById('autoEntryDifferentialSlider');
+      const minDiffContainer = minDiffSlider ? minDiffSlider.closest('.value-bubble-container') : null;
+      const maxDiffLabel = document.querySelector('label[for="autoEntryMaxDifferentialSlider"]');
+      const maxDiffSlider = document.getElementById('autoEntryMaxDifferentialSlider');
+      const maxDiffContainer = maxDiffSlider ? maxDiffSlider.closest('.value-bubble-container') : null;
+      // Hide Allow Re-Entry for Momentum Contain only
+      const allowReEntryLabel = document.querySelector('label[for="autoEntryAllowReEntry"]');
+      const allowReEntryContainer = allowReEntryLabel ? allowReEntryLabel.nextElementSibling : null;
+      
+      if (isMomentumBreakout || isMomentumContain) {
+        if (minDiffLabel) minDiffLabel.style.display = 'none';
+        if (minDiffContainer) minDiffContainer.style.display = 'none';
+        if (maxDiffLabel) maxDiffLabel.style.display = 'none';
+        if (maxDiffContainer) maxDiffContainer.style.display = 'none';
+      } else {
+        if (minDiffLabel) minDiffLabel.style.display = '';
+        if (minDiffContainer) minDiffContainer.style.display = '';
+        if (maxDiffLabel) maxDiffLabel.style.display = '';
+        if (maxDiffContainer) maxDiffContainer.style.display = '';
+      }
+      
+      // Hide Allow Re-Entry label and container for Momentum Contain only
+      if (isMomentumContain) {
+        if (allowReEntryLabel) allowReEntryLabel.style.display = 'none';
+        if (allowReEntryContainer) allowReEntryContainer.style.display = 'none';
+      } else {
+        if (allowReEntryLabel) allowReEntryLabel.style.display = '';
+        if (allowReEntryContainer) allowReEntryContainer.style.display = '';
+      }
+      
+      // Change "Win Probability Window" label to "Price Window" for Momentum Breakout/Contain
+      const probWindowLabel = document.querySelector('label[for="probabilityWindowSlider"]');
+      if (probWindowLabel) {
+        if (isMomentumBreakout || isMomentumContain) {
+          probWindowLabel.textContent = 'Price Window:';
+        } else {
+          probWindowLabel.textContent = 'Win Probability Window:';
+        }
+      }
 
       const populate = (data) => {
         const setVal = (id,v) => { 
@@ -5929,24 +6035,43 @@
         // Determine which strategy section to populate (use the strategy from monitor data)
         const isMomentumScalp = currentStrategy && (currentStrategy.toUpperCase().includes('MOMENTUM SCALP') || currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL'));
       const isMomentumReversal = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL');
+      const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+      const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
         
         // Common settings (both strategies)
         dashboardMinTimeSeconds = data.min_time !== undefined ? data.min_time : 0;
         dashboardMaxTimeSeconds = data.max_time !== undefined ? data.max_time : 3600;
         
-        // Probability window (both strategies)
-        dashboardMinProbability = data.min_probability !== undefined ? parseFloat(data.min_probability) : 95.00;
-        dashboardMaxProbability = data.max_probability !== undefined ? parseFloat(data.max_probability) : 100.00;
-        
-        // Enforce minimum separation (0.5%) when loading from database
-        const MIN_SEPARATION = 0.5;
-        if (dashboardMaxProbability - dashboardMinProbability < MIN_SEPARATION) {
-          // If too close, adjust max to maintain minimum separation
-          if (dashboardMaxProbability < 100) {
-            dashboardMaxProbability = parseFloat((dashboardMinProbability + MIN_SEPARATION).toFixed(1));
-          } else {
-            // If max is at 100, adjust min down
-            dashboardMinProbability = parseFloat((dashboardMaxProbability - MIN_SEPARATION).toFixed(1));
+        // Probability window (for Hourly HTC) or Ask Price window (for Momentum Breakout/Contain)
+        if (isMomentumBreakout || isMomentumContain) {
+          // Load min_ask/max_ask for Momentum Breakout/Contain
+          dashboardContainMinAsk = data.min_ask !== undefined ? parseFloat(data.min_ask) : 0.0000;
+          dashboardContainMaxAsk = data.max_ask !== undefined ? parseFloat(data.max_ask) : 0.9800;
+          
+          // Enforce minimum separation (0.01 = 1 cent) when loading from database
+          const MIN_ASK_SEPARATION = 0.01;
+          if (dashboardContainMaxAsk - dashboardContainMinAsk < MIN_ASK_SEPARATION) {
+            if (dashboardContainMaxAsk < 1.0) {
+              dashboardContainMaxAsk = parseFloat((dashboardContainMinAsk + MIN_ASK_SEPARATION).toFixed(4));
+            } else {
+              dashboardContainMinAsk = parseFloat((dashboardContainMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
+            }
+          }
+        } else {
+          // Probability window (for Hourly HTC)
+          dashboardMinProbability = data.min_probability !== undefined ? parseFloat(data.min_probability) : 95.00;
+          dashboardMaxProbability = data.max_probability !== undefined ? parseFloat(data.max_probability) : 100.00;
+          
+          // Enforce minimum separation (0.5%) when loading from database
+          const MIN_SEPARATION = 0.5;
+          if (dashboardMaxProbability - dashboardMinProbability < MIN_SEPARATION) {
+            // If too close, adjust max to maintain minimum separation
+            if (dashboardMaxProbability < 100) {
+              dashboardMaxProbability = parseFloat((dashboardMinProbability + MIN_SEPARATION).toFixed(1));
+            } else {
+              // If max is at 100, adjust min down
+              dashboardMinProbability = parseFloat((dashboardMaxProbability - MIN_SEPARATION).toFixed(1));
+            }
           }
         }
         
@@ -6100,6 +6225,7 @@
           // Initialize probability window slider
           if (typeof initDashboardProbabilityWindowSlider === 'function') {
             initDashboardProbabilityWindowSlider();
+            updateDashboardProbabilityWindowSlider(); // Update to show correct values based on strategy
           }
         }, 100);
         // Update value bubbles after a short delay to ensure modal is rendered
@@ -6232,6 +6358,8 @@
         // Determine which strategy is active (use the strategy from monitor data)
         const isMomentumScalp = currentStrategy && (currentStrategy.toUpperCase().includes('MOMENTUM SCALP') || currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL'));
       const isMomentumReversal = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL');
+      const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+      const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
       const isReverseHTC = currentStrategy && currentStrategy.toUpperCase().includes('REVERSE HTC');
       const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
         
@@ -6283,6 +6411,24 @@
           if (msLossPreventionToggle) {
             payload.loss_prevention_toggle = msLossPreventionToggle.checked;
           }
+        } else if (isMomentumBreakout || isMomentumContain) {
+          // MOMENTUM BREAKOUT/CONTAIN specific fields
+          payload.min_volume = parseInt(document.getElementById('autoEntryMinVolumeSlider').value,10);
+          // Use ask price window values (ensure they're floats with 4 decimal places)
+          payload.min_ask = parseFloat(parseFloat(dashboardContainMinAsk).toFixed(4));
+          payload.max_ask = parseFloat(parseFloat(dashboardContainMaxAsk).toFixed(4));
+          // Spike Alert settings
+          payload.spike_alert_enabled = document.getElementById('spikeAlertEnabled').checked;
+          payload.spike_alert_momentum_threshold = parseInt(document.getElementById('spikeAlertMomentumSlider').value,10);
+          payload.spike_alert_cooldown_threshold = parseInt(document.getElementById('spikeAlertCooldownSlider').value,10);
+          payload.spike_alert_cooldown_minutes = parseInt(document.getElementById('spikeAlertTimeSlider').value,10);
+          // Auto Stop settings
+          payload.current_probability = parseInt(document.getElementById('autoStopProbabilitySlider').value,10);
+          payload.min_ttc_seconds = parseInt(document.getElementById('autoStopMinTTCInput') ? document.getElementById('autoStopMinTTCInput').value : '60',10);
+          payload.momentum_spike_enabled = document.getElementById('momentumSpikeEnabled').checked;
+          payload.momentum_spike_threshold = parseInt(document.getElementById('momentumSpikeThresholdSlider').value,10);
+          payload.verification_period_enabled = document.getElementById('verificationPeriodEnabled').checked;
+          payload.verification_period_seconds = parseInt(document.getElementById('verificationPeriodSlider').value,10);
         } else {
           // HOURLY HTC specific fields
           payload.min_volume = parseInt(document.getElementById('autoEntryMinVolumeSlider').value,10);

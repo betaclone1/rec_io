@@ -2057,15 +2057,25 @@ def update_monitor_win_streak(trade_id: int) -> None:
         has_loss = any(trade[1] == 'L' for trade in cycle_trades)
         win_count = sum(1 for trade in cycle_trades if trade[1] == 'W')
         
-        # Get the win_streak_threshold and loss_prevention_toggle from the database for this monitor
+        # Get the strategy, win_streak_threshold and loss_prevention_toggle from the database for this monitor
         with pg_conn.cursor() as cursor:
             cursor.execute(f"""
-                SELECT win_streak_threshold, loss_prevention_toggle FROM users.monitor_list_{user_number}
+                SELECT strategy, win_streak_threshold, loss_prevention_toggle FROM users.monitor_list_{user_number}
                 WHERE id = %s
             """, (monitor_id,))
             config_row = cursor.fetchone()
-            win_streak_threshold = config_row[0] if config_row and config_row[0] is not None else 22
-            loss_prevention_toggle = config_row[1] if config_row and config_row[1] is not None else True
+            strategy = config_row[0] if config_row and config_row[0] else "Hourly HTC"
+            win_streak_threshold = config_row[1] if config_row and config_row[1] is not None else 22
+            loss_prevention_toggle = config_row[2] if config_row and config_row[2] is not None else True
+        
+        # Determine if this is Momentum Contain or Momentum Breakout
+        is_momentum_contain = strategy and "Momentum Contain" in strategy
+        is_momentum_breakout = strategy and "Momentum Breakout" in strategy
+        is_cycle_based_streak = is_momentum_contain or is_momentum_breakout
+        
+        # For Momentum Contain/Breakout: count by cycle wins (1 per cycle), not individual trade wins
+        # For other strategies: count by individual trade wins
+        streak_increment = 1 if is_cycle_based_streak else win_count
         
         # Update win_streak based on cycle result
         with pg_conn.cursor() as cursor:
@@ -2091,7 +2101,7 @@ def update_monitor_win_streak(trade_id: int) -> None:
                     """, (cycle_id, monitor_id))
                 log(f"🔄 Cycle {cycle_id} for {monitor} had a loss - win_streak reset to 0 (trades: {len(cycle_trades)})")
             else:
-                # All wins in the cycle - increment win_streak by the number of wins
+                # All wins in the cycle - increment win_streak
                 if loss_prevention_toggle:
                     # If toggle is TRUE, update loss_prevention based on win streak threshold
                     cursor.execute(f"""
@@ -2103,7 +2113,7 @@ def update_monitor_win_streak(trade_id: int) -> None:
                             END,
                             last_processed_cycle = %s
                         WHERE id = %s
-                    """, (win_count, win_count, win_streak_threshold, cycle_id, monitor_id))
+                    """, (streak_increment, streak_increment, win_streak_threshold, cycle_id, monitor_id))
                 else:
                     # If toggle is FALSE, always set loss_prevention to 'off'
                     cursor.execute(f"""
@@ -2112,8 +2122,11 @@ def update_monitor_win_streak(trade_id: int) -> None:
                             loss_prevention = 'off',
                             last_processed_cycle = %s
                         WHERE id = %s
-                    """, (win_count, cycle_id, monitor_id))
-                log(f"📈 Cycle {cycle_id} for {monitor} all wins - win_streak +{win_count} (trades: {len(cycle_trades)}, threshold: {win_streak_threshold})")
+                    """, (streak_increment, cycle_id, monitor_id))
+                if is_cycle_based_streak:
+                    log(f"📈 Cycle {cycle_id} for {monitor} all wins - win_streak +1 (cycle win, {win_count} trades in cycle, threshold: {win_streak_threshold})")
+                else:
+                    log(f"📈 Cycle {cycle_id} for {monitor} all wins - win_streak +{win_count} (trades: {len(cycle_trades)}, threshold: {win_streak_threshold})")
             
             pg_conn.commit()
         

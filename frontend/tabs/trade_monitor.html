@@ -796,6 +796,8 @@ async function showUnifiedAutoTradeSettingsModal() {
   const strategyPicker = document.getElementById('trade-strategy-picker');
   const currentStrategy = strategyPicker ? strategyPicker.value : '';
   const isMomentumScalp = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
+  const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+  const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
   const isReverseHTC = currentStrategy && currentStrategy.toUpperCase().includes('REVERSE HTC');
   const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
   
@@ -830,8 +832,57 @@ async function showUnifiedAutoTradeSettingsModal() {
     probAdjLabel.style.display = displayValue;
   }
   
+  // Hide Min Differential, Max Differential for Momentum Breakout and Momentum Contain
+  const minDiffLabel = document.querySelector('label[for="autoEntryDifferentialSlider"]');
+  const minDiffSlider = document.getElementById('autoEntryDifferentialSlider');
+  const minDiffContainer = minDiffSlider ? minDiffSlider.closest('.value-bubble-container') : null;
+  const maxDiffLabel = document.querySelector('label[for="autoEntryMaxDifferentialSlider"]');
+  const maxDiffSlider = document.getElementById('autoEntryMaxDifferentialSlider');
+  const maxDiffContainer = maxDiffSlider ? maxDiffSlider.closest('.value-bubble-container') : null;
+  // Hide Allow Re-Entry for Momentum Contain only
+  const allowReEntryLabel = document.querySelector('label[for="autoEntryAllowReEntry"]');
+  const allowReEntryContainer = allowReEntryLabel ? allowReEntryLabel.nextElementSibling : null;
+  
+  if (isMomentumBreakout || isMomentumContain) {
+    if (minDiffLabel) minDiffLabel.style.display = 'none';
+    if (minDiffContainer) minDiffContainer.style.display = 'none';
+    if (maxDiffLabel) maxDiffLabel.style.display = 'none';
+    if (maxDiffContainer) maxDiffContainer.style.display = 'none';
+  } else {
+    if (minDiffLabel) minDiffLabel.style.display = '';
+    if (minDiffContainer) minDiffContainer.style.display = '';
+    if (maxDiffLabel) maxDiffLabel.style.display = '';
+    if (maxDiffContainer) maxDiffContainer.style.display = '';
+  }
+  
+  // Hide Allow Re-Entry label and container for Momentum Contain only
+  if (isMomentumContain) {
+    if (allowReEntryLabel) allowReEntryLabel.style.display = 'none';
+    if (allowReEntryContainer) allowReEntryContainer.style.display = 'none';
+  } else {
+    if (allowReEntryLabel) allowReEntryLabel.style.display = '';
+    if (allowReEntryContainer) allowReEntryContainer.style.display = '';
+  }
+  
+  // Change "Win Probability Window" label to "Price Window" for Momentum Breakout/Contain
+  const probWindowLabel = document.querySelector('label[for="probabilityWindowSlider"]');
+  if (probWindowLabel) {
+    if (isMomentumBreakout || isMomentumContain) {
+      probWindowLabel.textContent = 'Price Window:';
+    } else {
+      probWindowLabel.textContent = 'Win Probability Window:';
+    }
+  }
+  
   // Function to populate all fields and update value bubbles
   const populateAndUpdateAllFields = (data) => {
+    // Re-detect strategy for populate function
+    const strategyPicker = document.getElementById('trade-strategy-picker');
+    const currentStrategy = strategyPicker ? strategyPicker.value : '';
+    const isMomentumScalp = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
+    const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+    const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
+    
     const setVal = (id, v) => { 
       const el = document.getElementById(id); 
       if (el != null && v != null) {
@@ -849,21 +900,45 @@ async function showUnifiedAutoTradeSettingsModal() {
     minTimeSeconds = data.min_time !== undefined ? data.min_time : 0;
     maxTimeSeconds = data.max_time !== undefined ? data.max_time : 3600;
     
-    // Probability window (for HOURLY HTC)
-    let minProbability = data.min_probability !== undefined ? parseFloat(data.min_probability) : 95.00;
-    let maxProbability = data.max_probability !== undefined ? parseFloat(data.max_probability) : 100.00;
-    
-    // Enforce minimum separation (0.5%) when loading from database
-    const MIN_SEPARATION = 0.5;
-    if (maxProbability - minProbability < MIN_SEPARATION) {
-      if (maxProbability < 100) {
-        maxProbability = parseFloat((minProbability + MIN_SEPARATION).toFixed(1));
-      } else {
-        minProbability = parseFloat((maxProbability - MIN_SEPARATION).toFixed(1));
+    // Probability window (for HOURLY HTC) or Ask Price window (for Momentum Breakout/Contain)
+    if (isMomentumBreakout || isMomentumContain) {
+      // Load min_ask/max_ask for Momentum Breakout/Contain
+      window.tradeMonitorContainMinAsk = data.min_ask !== undefined ? parseFloat(data.min_ask) : 0.0000;
+      window.tradeMonitorContainMaxAsk = data.max_ask !== undefined ? parseFloat(data.max_ask) : 0.9800;
+      
+      // Enforce minimum separation (0.01 = 1 cent) when loading from database
+      const MIN_ASK_SEPARATION = 0.01;
+      if (window.tradeMonitorContainMaxAsk - window.tradeMonitorContainMinAsk < MIN_ASK_SEPARATION) {
+        if (window.tradeMonitorContainMaxAsk < 1.0) {
+          window.tradeMonitorContainMaxAsk = parseFloat((window.tradeMonitorContainMinAsk + MIN_ASK_SEPARATION).toFixed(4));
+        } else {
+          window.tradeMonitorContainMinAsk = parseFloat((window.tradeMonitorContainMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
+        }
       }
+      
+      // Update slider immediately after setting values
+      setTimeout(() => {
+        if (typeof updateProbabilityWindowSlider === 'function') {
+          updateProbabilityWindowSlider();
+        }
+      }, 50);
+    } else {
+      // Probability window (for Hourly HTC)
+      let minProbability = data.min_probability !== undefined ? parseFloat(data.min_probability) : 95.00;
+      let maxProbability = data.max_probability !== undefined ? parseFloat(data.max_probability) : 100.00;
+      
+      // Enforce minimum separation (0.5%) when loading from database
+      const MIN_SEPARATION = 0.5;
+      if (maxProbability - minProbability < MIN_SEPARATION) {
+        if (maxProbability < 100) {
+          maxProbability = parseFloat((minProbability + MIN_SEPARATION).toFixed(1));
+        } else {
+          minProbability = parseFloat((maxProbability - MIN_SEPARATION).toFixed(1));
+        }
+      }
+      window.tradeMonitorMinProbability = minProbability;
+      window.tradeMonitorMaxProbability = maxProbability;
     }
-    window.tradeMonitorMinProbability = minProbability;
-    window.tradeMonitorMaxProbability = maxProbability;
     
     setVal('autoEntryMinVolumeSlider', data.min_volume ?? 1000);
     setVal('autoEntryDifferentialSlider', data.min_differential ?? 0);
@@ -1043,6 +1118,18 @@ async function showUnifiedAutoTradeSettingsModal() {
         if (typeof setupMSMinTTCControls === 'function') {
           setupMSMinTTCControls();
         }
+      } else if (isMomentumBreakout || isMomentumContain) {
+        // MOMENTUM BREAKOUT/CONTAIN value bubbles
+        const minVolumeSlider = document.getElementById('autoEntryMinVolumeSlider');
+        
+        if (minVolumeSlider && typeof updateAutoEntryMinVolumeDisplay === 'function') {
+          updateAutoEntryMinVolumeDisplay(minVolumeSlider.value);
+        }
+        // Initialize probability window slider (used for ask price window)
+        if (typeof initProbabilityWindowSlider === 'function') {
+          initProbabilityWindowSlider();
+          updateProbabilityWindowSlider(); // Update to show correct values based on strategy
+        }
       } else {
         // HOURLY HTC value bubbles
         const minVolumeSlider = document.getElementById('autoEntryMinVolumeSlider');
@@ -1056,6 +1143,7 @@ async function showUnifiedAutoTradeSettingsModal() {
         // Initialize probability window slider
         if (typeof initProbabilityWindowSlider === 'function') {
           initProbabilityWindowSlider();
+          updateProbabilityWindowSlider(); // Update to show correct values based on strategy
         }
         if (diffSlider && typeof updateAutoEntryDifferentialDisplay === 'function') {
           updateAutoEntryDifferentialDisplay(diffSlider.value);
@@ -1119,6 +1207,12 @@ async function showUnifiedAutoTradeSettingsModal() {
   if (window.preloadedAutoTradeSettings) {
     console.log('Using pre-loaded auto trade settings');
     populateAndUpdateAllFields(window.preloadedAutoTradeSettings);
+    // Update slider after values are loaded
+    setTimeout(() => {
+      if (typeof updateProbabilityWindowSlider === 'function') {
+        updateProbabilityWindowSlider();
+      }
+    }, 150);
   } else {
     // Load settings from database
     try {
@@ -1133,6 +1227,12 @@ async function showUnifiedAutoTradeSettingsModal() {
       // Store for future use
       window.preloadedAutoTradeSettings = data;
       populateAndUpdateAllFields(data);
+      // Update slider after values are loaded
+      setTimeout(() => {
+        if (typeof updateProbabilityWindowSlider === 'function') {
+          updateProbabilityWindowSlider();
+        }
+      }, 150);
       
     } catch (error) {
       console.error('Error loading auto trade settings:', error);
@@ -1162,6 +1262,15 @@ async function showUnifiedAutoTradeSettingsModal() {
   if (saveBtn && !saveBtn._wired) {
     saveBtn._wired = true;
     saveBtn.onclick = async function() {
+      // Re-detect strategy in case it changed
+      const strategyPicker = document.getElementById('trade-strategy-picker');
+      const currentStrategy = strategyPicker ? strategyPicker.value : '';
+      const isMomentumScalp = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
+      const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+      const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
+      const isReverseHTC = currentStrategy && currentStrategy.toUpperCase().includes('REVERSE HTC');
+      const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
+      
       const payload = {
         monitor_id: window.currentMonitorId,
         min_time: minTimeSeconds,
@@ -1209,6 +1318,24 @@ async function showUnifiedAutoTradeSettingsModal() {
         if (msLossPreventionToggle) {
           payload.loss_prevention_toggle = msLossPreventionToggle.checked;
         }
+      } else if (isMomentumBreakout || isMomentumContain) {
+        // MOMENTUM BREAKOUT/CONTAIN specific fields
+        payload.min_volume = parseInt(document.getElementById('autoEntryMinVolumeSlider').value, 10);
+        // Use ask price window values (ensure they're floats with 4 decimal places)
+        payload.min_ask = parseFloat(parseFloat(window.tradeMonitorContainMinAsk || 0.0000).toFixed(4));
+        payload.max_ask = parseFloat(parseFloat(window.tradeMonitorContainMaxAsk || 0.9800).toFixed(4));
+        // Spike Alert settings
+        payload.spike_alert_enabled = document.getElementById('spikeAlertEnabled').checked;
+        payload.spike_alert_momentum_threshold = parseInt(document.getElementById('spikeAlertMomentumSlider').value, 10);
+        payload.spike_alert_cooldown_threshold = parseInt(document.getElementById('spikeAlertCooldownSlider').value, 10);
+        payload.spike_alert_cooldown_minutes = parseInt(document.getElementById('spikeAlertTimeSlider').value, 10);
+        // Auto Stop settings
+        payload.current_probability = parseInt(document.getElementById('autoStopProbabilitySlider').value, 10);
+        payload.min_ttc_seconds = parseInt(document.getElementById('autoStopMinTTCInput') ? document.getElementById('autoStopMinTTCInput').value : '60', 10);
+        payload.momentum_spike_enabled = document.getElementById('momentumSpikeEnabled').checked;
+        payload.momentum_spike_threshold = parseInt(document.getElementById('momentumSpikeThresholdSlider').value, 10);
+        payload.verification_period_enabled = document.getElementById('verificationPeriodEnabled').checked;
+        payload.verification_period_seconds = parseInt(document.getElementById('verificationPeriodSlider').value, 10);
       } else {
         // HOURLY HTC specific fields
         payload.min_volume = parseInt(document.getElementById('autoEntryMinVolumeSlider').value, 10);
@@ -5511,14 +5638,11 @@ function initProbabilityWindowSlider() {
 function updateProbabilityWindowSlider() {
   if (!tradeMonitorProbSliderWidth) return;
   
-  const MIN_SEPARATION = 0.5;
-  if (window.tradeMonitorMaxProbability - window.tradeMonitorMinProbability < MIN_SEPARATION) {
-    if (window.tradeMonitorMaxProbability < 100) {
-      window.tradeMonitorMaxProbability = parseFloat((window.tradeMonitorMinProbability + MIN_SEPARATION).toFixed(1));
-    } else {
-      window.tradeMonitorMinProbability = parseFloat((window.tradeMonitorMaxProbability - MIN_SEPARATION).toFixed(1));
-    }
-  }
+  // Get current strategy
+  const strategyPicker = document.getElementById('trade-strategy-picker');
+  const currentStrategy = strategyPicker ? strategyPicker.value : '';
+  const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+  const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
   
   const minHandle = document.getElementById('minProbabilityHandle');
   const maxHandle = document.getElementById('maxProbabilityHandle');
@@ -5528,17 +5652,67 @@ function updateProbabilityWindowSlider() {
   
   if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
   
-  const minPercent = (window.tradeMonitorMinProbability / 100) * 100;
-  const maxPercent = (window.tradeMonitorMaxProbability / 100) * 100;
-  
-  minHandle.style.left = `${minPercent}%`;
-  maxHandle.style.left = `${maxPercent}%`;
-  range.style.left = `${minPercent}%`;
-  range.style.width = `${maxPercent - minPercent}%`;
-  minDisplay.textContent = window.tradeMonitorMinProbability.toFixed(1) + '%';
-  maxDisplay.textContent = window.tradeMonitorMaxProbability.toFixed(1) + '%';
-  minDisplay.style.left = `${minPercent}%`;
-  maxDisplay.style.left = `${maxPercent}%`;
+  if (isMomentumBreakout || isMomentumContain) {
+    // Use ask price values (0.0000 to 1.0000)
+    // Initialize if not set
+    if (window.tradeMonitorContainMinAsk === undefined) {
+      window.tradeMonitorContainMinAsk = 0.0000;
+    }
+    if (window.tradeMonitorContainMaxAsk === undefined) {
+      window.tradeMonitorContainMaxAsk = 0.9800;
+    }
+    
+    const MIN_ASK_SEPARATION = 0.01;
+    if (window.tradeMonitorContainMaxAsk - window.tradeMonitorContainMinAsk < MIN_ASK_SEPARATION) {
+      if (window.tradeMonitorContainMaxAsk < 1.0) {
+        window.tradeMonitorContainMaxAsk = parseFloat((window.tradeMonitorContainMinAsk + MIN_ASK_SEPARATION).toFixed(4));
+      } else {
+        window.tradeMonitorContainMinAsk = parseFloat((window.tradeMonitorContainMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
+      }
+    }
+    
+    const minPercent = (window.tradeMonitorContainMinAsk / 1.0) * 100;
+    const maxPercent = (window.tradeMonitorContainMaxAsk / 1.0) * 100;
+    
+    minHandle.style.left = `${minPercent}%`;
+    maxHandle.style.left = `${maxPercent}%`;
+    range.style.left = `${minPercent}%`;
+    range.style.width = `${maxPercent - minPercent}%`;
+    minDisplay.textContent = '$' + window.tradeMonitorContainMinAsk.toFixed(4);
+    maxDisplay.textContent = '$' + window.tradeMonitorContainMaxAsk.toFixed(4);
+    minDisplay.style.left = `${minPercent}%`;
+    maxDisplay.style.left = `${maxPercent}%`;
+  } else {
+    // Use probability values (0 to 100)
+    // Initialize if not set
+    if (window.tradeMonitorMinProbability === undefined) {
+      window.tradeMonitorMinProbability = 95.00;
+    }
+    if (window.tradeMonitorMaxProbability === undefined) {
+      window.tradeMonitorMaxProbability = 100.00;
+    }
+    
+    const MIN_SEPARATION = 0.5;
+    if (window.tradeMonitorMaxProbability - window.tradeMonitorMinProbability < MIN_SEPARATION) {
+      if (window.tradeMonitorMaxProbability < 100) {
+        window.tradeMonitorMaxProbability = parseFloat((window.tradeMonitorMinProbability + MIN_SEPARATION).toFixed(1));
+      } else {
+        window.tradeMonitorMinProbability = parseFloat((window.tradeMonitorMaxProbability - MIN_SEPARATION).toFixed(1));
+      }
+    }
+    
+    const minPercent = (window.tradeMonitorMinProbability / 100) * 100;
+    const maxPercent = (window.tradeMonitorMaxProbability / 100) * 100;
+    
+    minHandle.style.left = `${minPercent}%`;
+    maxHandle.style.left = `${maxPercent}%`;
+    range.style.left = `${minPercent}%`;
+    range.style.width = `${maxPercent - minPercent}%`;
+    minDisplay.textContent = window.tradeMonitorMinProbability.toFixed(1) + '%';
+    maxDisplay.textContent = window.tradeMonitorMaxProbability.toFixed(1) + '%';
+    minDisplay.style.left = `${minPercent}%`;
+    maxDisplay.style.left = `${maxPercent}%`;
+  }
 }
 
 function handleProbMouseDown(e) {
@@ -5555,26 +5729,54 @@ function handleProbMouseMove(e) {
   const container = document.getElementById('probabilityWindowSliderContainer');
   if (!container) return;
   
+  // Get current strategy
+  const strategyPicker = document.getElementById('trade-strategy-picker');
+  const currentStrategy = strategyPicker ? strategyPicker.value : '';
+  const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+  const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
+  
   const rect = container.getBoundingClientRect();
   const x = e.clientX - rect.left;
   const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
-  const probability = parseFloat((Math.round(percent * 10) / 10).toFixed(1));
   
-  const MIN_SEPARATION = 0.5;
   const minHandle = document.getElementById('minProbabilityHandle');
   const maxHandle = document.getElementById('maxProbabilityHandle');
   
-  if (tradeMonitorProbCurrentHandle === minHandle) {
-    if (probability >= window.tradeMonitorMaxProbability - MIN_SEPARATION) {
-      window.tradeMonitorMinProbability = parseFloat((window.tradeMonitorMaxProbability - MIN_SEPARATION).toFixed(1));
-    } else {
-      window.tradeMonitorMinProbability = probability;
+  if (isMomentumBreakout || isMomentumContain) {
+    // Use ask price values (0.0000 to 1.0000)
+    const askPrice = parseFloat((percent / 100).toFixed(4));
+    const MIN_ASK_SEPARATION = 0.01;
+    
+    if (tradeMonitorProbCurrentHandle === minHandle) {
+      if (askPrice >= window.tradeMonitorContainMaxAsk - MIN_ASK_SEPARATION) {
+        window.tradeMonitorContainMinAsk = parseFloat((window.tradeMonitorContainMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
+      } else {
+        window.tradeMonitorContainMinAsk = askPrice;
+      }
+    } else if (tradeMonitorProbCurrentHandle === maxHandle) {
+      if (askPrice <= window.tradeMonitorContainMinAsk + MIN_ASK_SEPARATION) {
+        window.tradeMonitorContainMaxAsk = parseFloat((window.tradeMonitorContainMinAsk + MIN_ASK_SEPARATION).toFixed(4));
+      } else {
+        window.tradeMonitorContainMaxAsk = askPrice;
+      }
     }
-  } else if (tradeMonitorProbCurrentHandle === maxHandle) {
-    if (probability <= window.tradeMonitorMinProbability + MIN_SEPARATION) {
-      window.tradeMonitorMaxProbability = parseFloat((window.tradeMonitorMinProbability + MIN_SEPARATION).toFixed(1));
-    } else {
-      window.tradeMonitorMaxProbability = probability;
+  } else {
+    // Use probability values (0 to 100)
+    const probability = parseFloat((Math.round(percent * 10) / 10).toFixed(1));
+    const MIN_SEPARATION = 0.5;
+    
+    if (tradeMonitorProbCurrentHandle === minHandle) {
+      if (probability >= window.tradeMonitorMaxProbability - MIN_SEPARATION) {
+        window.tradeMonitorMinProbability = parseFloat((window.tradeMonitorMaxProbability - MIN_SEPARATION).toFixed(1));
+      } else {
+        window.tradeMonitorMinProbability = probability;
+      }
+    } else if (tradeMonitorProbCurrentHandle === maxHandle) {
+      if (probability <= window.tradeMonitorMinProbability + MIN_SEPARATION) {
+        window.tradeMonitorMaxProbability = parseFloat((window.tradeMonitorMinProbability + MIN_SEPARATION).toFixed(1));
+      } else {
+        window.tradeMonitorMaxProbability = probability;
+      }
     }
   }
   

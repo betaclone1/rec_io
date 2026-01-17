@@ -222,20 +222,82 @@ class MonitorHistoryDisplay {
         // Count total trades (from filtered results)
         const totalTrades = filteredTrades.length;
         
-        // Count wins and losses
-        let wins = 0;
-        let losses = 0;
-        
-        for (const trade of filteredTrades) {
-            if (trade.win_loss === 'W') {
-                wins++;
-            } else if (trade.win_loss === 'L') {
-                losses++;
+        // Get monitor strategy to determine if cycle-based calculation is needed
+        let strategy = null;
+        if (this.monitorsData && this.monitorsData.length > 0) {
+            // Extract monitor ID from monitor identifier (e.g., "mon_0001_10033" -> "10033")
+            const monitorParts = monitor.split('_');
+            const monitorId = monitorParts.length >= 3 ? monitorParts[2] : null;
+            
+            if (monitorId) {
+                const monitorData = this.monitorsData.find(m => String(m.id) === String(monitorId));
+                if (monitorData && monitorData.strategy) {
+                    strategy = monitorData.strategy;
+                }
             }
         }
         
-        // Calculate win/loss rate (same as monitor_manager.py)
-        const winLossRate = totalTrades > 0 ? Math.round((wins / totalTrades) * 100 * 10) / 10 : 0.0;
+        // Check if this is Momentum Contain or Momentum Breakout
+        const isMomentumContain = strategy && strategy.includes('Momentum Contain');
+        const isMomentumBreakout = strategy && strategy.includes('Momentum Breakout');
+        const isCycleBasedWinLoss = isMomentumContain || isMomentumBreakout;
+        
+        let winLossRate = 0.0;
+        
+        if (isCycleBasedWinLoss) {
+            // Calculate win/loss rate based on cycles (not individual trades)
+            // Group trades by cycle (extract cycle_id from ticker - everything before last hyphen)
+            const cyclesMap = new Map();
+            
+            for (const trade of filteredTrades) {
+                if (!trade.ticker) continue;
+                
+                // Extract cycle_id from ticker (everything before last hyphen)
+                let cycleId = trade.ticker;
+                const lastHyphenIndex = trade.ticker.lastIndexOf('-');
+                if (lastHyphenIndex > 0) {
+                    cycleId = trade.ticker.substring(0, lastHyphenIndex);
+                }
+                
+                if (!cyclesMap.has(cycleId)) {
+                    cyclesMap.set(cycleId, []);
+                }
+                cyclesMap.get(cycleId).push(trade);
+            }
+            
+            // Count winning cycles vs losing cycles
+            let winningCycles = 0;
+            let totalCycles = 0;
+            
+            for (const [cycleId, cycleTrades] of cyclesMap) {
+                totalCycles++;
+                // Check if ANY trade in this cycle is a loss
+                const hasLoss = cycleTrades.some(trade => trade.win_loss === 'L');
+                if (!hasLoss) {
+                    // All wins in this cycle
+                    winningCycles++;
+                }
+            }
+            
+            // Calculate win/loss rate based on cycles
+            winLossRate = totalCycles > 0 ? Math.round((winningCycles / totalCycles) * 100 * 10) / 10 : 0.0;
+        } else {
+            // Original trade-based calculation for other strategies
+            // Count wins and losses
+            let wins = 0;
+            let losses = 0;
+            
+            for (const trade of filteredTrades) {
+                if (trade.win_loss === 'W') {
+                    wins++;
+                } else if (trade.win_loss === 'L') {
+                    losses++;
+                }
+            }
+            
+            // Calculate win/loss rate (same as monitor_manager.py)
+            winLossRate = totalTrades > 0 ? Math.round((wins / totalTrades) * 100 * 10) / 10 : 0.0;
+        }
         
         // Calculate return percentage (sum of all ret_pct values - same as monitor_manager.py)
         let totalRetPct = 0;

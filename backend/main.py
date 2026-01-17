@@ -106,7 +106,8 @@ def get_trade_history_preferences_postgresql():
                        symbol_btc, symbol_eth, symbol_spy, symbol_ndx, symbol_usd_eur,
                        strategy_hourly_htc, strategy_momentum_scalp, strategy_test,
                        day_sunday, day_monday, day_tuesday, day_wednesday, day_thursday, day_friday, day_saturday,
-                       analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp, chart_view, pct_mode
+                       analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp, chart_view, pct_mode,
+                       live_filter, paper_filter
                 FROM users.trade_history_preferences_0001 WHERE id = 1
             """)
             result = cursor.fetchone()
@@ -155,7 +156,9 @@ def get_trade_history_preferences_postgresql():
                     "page_size": result[38],
                     "last_search_timestamp": result[39],
                     "chart_view": result[40],
-                    "pct_mode": result[41]
+                    "pct_mode": result[41],
+                    "live_filter": result[42] if len(result) > 42 else True,
+                    "paper_filter": result[43] if len(result) > 43 else False
                 }
             else:
                 return {
@@ -199,7 +202,9 @@ def get_trade_history_preferences_postgresql():
                     "sort_asc": True,
                     "page_size": 50,
                     "last_search_timestamp": int(time.time()),
-                    "chart_view": "pnl"
+                    "chart_view": "pnl",
+                    "live_filter": True,
+                    "paper_filter": False
                 }
     except Exception as e:
         print(f"[PostgreSQL Error] Failed to get trade history preferences: {e}")
@@ -237,7 +242,9 @@ def get_trade_history_preferences_postgresql():
             "sort_asc": True,
             "page_size": 50,
             "last_search_timestamp": int(time.time()),
-            "chart_view": "pnl"
+            "chart_view": "pnl",
+            "live_filter": True,
+            "paper_filter": False
         }
 
 def update_trade_history_preferences_postgresql(**kwargs):
@@ -2463,6 +2470,10 @@ def save_trade_history_preferences(preferences):
             update_data["win_filter"] = bool(preferences["win_filter"])
         if "loss_filter" in preferences:
             update_data["loss_filter"] = bool(preferences["loss_filter"])
+        if "live_filter" in preferences:
+            update_data["live_filter"] = bool(preferences["live_filter"])
+        if "paper_filter" in preferences:
+            update_data["paper_filter"] = bool(preferences["paper_filter"])
         
         # Contract filters
         contract_fields = [
@@ -5998,6 +6009,7 @@ async def get_strategies(user_id: str = "user_0001"):
                 'Reverse HTC',
                 'Momentum Scalp',
                 'Momentum Breakout',
+                'Momentum Contain',
                 'Test Strategy',
                 'Daily HTC',
                 'Scalp Strategy'

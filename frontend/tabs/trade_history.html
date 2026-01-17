@@ -347,6 +347,18 @@
               </label>
         </div>
           </div>
+          <div style="margin-top: 10px;">
+            <div style="display: flex; gap: 15px;">
+              <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
+                <input type="checkbox" id="filter-live" checked style="width: 14px; height: 14px;">
+                LIVE
+              </label>
+              <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
+                <input type="checkbox" id="filter-paper" style="width: 14px; height: 14px;">
+                PAPER
+              </label>
+            </div>
+          </div>
         </div>
 
       </div>
@@ -638,6 +650,35 @@
         }
         // If win_loss is null/undefined/empty, show it regardless of filters
         return true;
+      });
+    }
+    
+    // === PAPER TRADE FILTER LOGIC ===
+    function filterTradesByPaperTrade(trades) {
+      const liveCheckbox = document.getElementById('filter-live');
+      const paperCheckbox = document.getElementById('filter-paper');
+      
+      // If checkboxes don't exist yet, return all trades (no filtering)
+      if (!liveCheckbox || !paperCheckbox) {
+        return trades;
+      }
+      
+      const showLive = liveCheckbox.checked;
+      const showPaper = paperCheckbox.checked;
+      
+      return trades.filter(trade => {
+        const paperTrade = trade.paper_trade;
+        
+        // Convert to boolean - handle various formats
+        const isPaperTrade = paperTrade === true || paperTrade === 1 || paperTrade === 'true' || paperTrade === '1' || paperTrade === 'True';
+        const isLiveTrade = !isPaperTrade; // false, 0, null, undefined, 'false', etc. are all live trades
+        
+        // If it's a live trade (paper_trade = FALSE), show only if LIVE checkbox is checked
+        if (isLiveTrade) {
+          return showLive;
+        }
+        // If it's a paper trade (paper_trade = TRUE), show only if PAPER checkbox is checked
+        return showPaper;
       });
     }
     
@@ -1101,6 +1142,7 @@
       filtered = filterTradesByStrategy(filtered);
       filtered = filterTradesByMonitor(filtered);
       filtered = filterTradesByDay(filtered);
+      filtered = filterTradesByPaperTrade(filtered);
       
       filteredTrades = [...filtered];
       applyCurrentSort();
@@ -1361,6 +1403,16 @@
           filterLoss.checked = data.loss_filter;
         }
         
+        // Apply paper trade filters
+        const filterLive = document.getElementById('filter-live');
+        const filterPaper = document.getElementById('filter-paper');
+        if (filterLive && data.live_filter !== undefined) {
+          filterLive.checked = data.live_filter;
+        }
+        if (filterPaper && data.paper_filter !== undefined) {
+          filterPaper.checked = data.paper_filter;
+        }
+        
         // Apply contract filters
         const contract12am = document.getElementById('contract-12am');
         const contract9am = document.getElementById('contract-9am');
@@ -1531,7 +1583,21 @@
         });
       }
 
-
+      // Hook up Paper Trade filter checkboxes
+      const filterLive = document.getElementById('filter-live');
+      const filterPaper = document.getElementById('filter-paper');
+      if (filterLive) {
+        filterLive.addEventListener('change', () => {
+          applyFilters();
+          savePreferences();
+        });
+      }
+      if (filterPaper) {
+        filterPaper.addEventListener('change', () => {
+          applyFilters();
+          savePreferences();
+        });
+      }
 
       // Hook up date input fields
       const startDateInput = document.getElementById('start-date');
@@ -2107,6 +2173,8 @@
       const dateFilterPicker = document.getElementById('date-filter-picker');
       const filterWin = document.getElementById('filter-win');
       const filterLoss = document.getElementById('filter-loss');
+      const filterLive = document.getElementById('filter-live');
+      const filterPaper = document.getElementById('filter-paper');
       const startDateInput = document.getElementById('start-date');
       const endDateInput = document.getElementById('end-date');
       const contract12am = document.getElementById('contract-12am');
@@ -2154,6 +2222,8 @@
         end_date: endDateInput ? endDateInput.value : '',
         win_filter: filterWin ? filterWin.checked : true,
         loss_filter: filterLoss ? filterLoss.checked : true,
+        live_filter: filterLive ? filterLive.checked : true,
+        paper_filter: filterPaper ? filterPaper.checked : false,
         contract_12am: contract12am ? contract12am.checked : true,
         contract_9am: contract9am ? contract9am.checked : true,
         contract_10am: contract10am ? contract10am.checked : true,

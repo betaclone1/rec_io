@@ -887,6 +887,45 @@ async function showMobileUnifiedAutoTradeSettings() {
   const strategyPicker = document.getElementById('trade-strategy-picker');
   const currentStrategy = strategyPicker ? strategyPicker.value : '';
   const isMomentumScalp = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
+  const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+  const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
+  
+  // Hide/show fields based on strategy
+  const minDiffLabel = document.querySelector('label[for="autoEntryDifferentialSlider"]');
+  const minDiffContainer = document.getElementById('autoEntryDifferentialSlider') ? document.getElementById('autoEntryDifferentialSlider').closest('.value-bubble-container') : null;
+  const maxDiffLabel = document.querySelector('label[for="autoEntryMaxDifferentialSlider"]');
+  const maxDiffContainer = document.getElementById('autoEntryMaxDifferentialSlider') ? document.getElementById('autoEntryMaxDifferentialSlider').closest('.value-bubble-container') : null;
+  const allowReEntryLabel = document.querySelector('label[for="autoEntryAllowReEntry"]');
+  const allowReEntryContainer = allowReEntryLabel ? allowReEntryLabel.nextElementSibling : null;
+  const probLabel = document.querySelector('label[for="probabilityWindowSlider"]');
+  
+  if (isMomentumBreakout || isMomentumContain) {
+    // Hide Min/Max Differential for Momentum Breakout/Contain
+    if (minDiffLabel) minDiffLabel.style.display = 'none';
+    if (minDiffContainer) minDiffContainer.style.display = 'none';
+    if (maxDiffLabel) maxDiffLabel.style.display = 'none';
+    if (maxDiffContainer) maxDiffContainer.style.display = 'none';
+    // Hide Allow Re-Entry for Momentum Contain only
+    if (isMomentumContain) {
+      if (allowReEntryLabel) allowReEntryLabel.style.display = 'none';
+      if (allowReEntryContainer) allowReEntryContainer.style.display = 'none';
+    } else {
+      if (allowReEntryLabel) allowReEntryLabel.style.display = '';
+      if (allowReEntryContainer) allowReEntryContainer.style.display = '';
+    }
+    // Change label from "Win Probability Window" to "Price Window" for Momentum Breakout/Contain
+    if (probLabel) probLabel.textContent = 'Price Window:';
+  } else {
+    // Show fields for other strategies
+    if (minDiffLabel) minDiffLabel.style.display = '';
+    if (minDiffContainer) minDiffContainer.style.display = '';
+    if (maxDiffLabel) maxDiffLabel.style.display = '';
+    if (maxDiffContainer) maxDiffContainer.style.display = '';
+    if (allowReEntryLabel) allowReEntryLabel.style.display = '';
+    if (allowReEntryContainer) allowReEntryContainer.style.display = '';
+    // Restore original label
+    if (probLabel) probLabel.textContent = 'Win Probability Window:';
+  }
   
   // Update modal title with strategy name and show/hide strategy sections
   const modalTitle = document.getElementById('mobileUnifiedAutoTradeModalTitle');
@@ -956,11 +995,155 @@ async function showMobileUnifiedAutoTradeSettings() {
       if (el) el.checked = !!v;
     };
     
+    // Auto Entry settings
+    minTimeSeconds = data.min_time !== undefined ? data.min_time : 0;
+    maxTimeSeconds = data.max_time !== undefined ? data.max_time : 3600;
+    
+    // Probability window (for HOURLY HTC) or Ask Price window (for Momentum Breakout/Contain)
+    if (isMomentumBreakout || isMomentumContain) {
+      // Load min_ask/max_ask for Momentum Breakout/Contain
+      window.tradeMonitorMobileContainMinAsk = data.min_ask !== undefined ? parseFloat(data.min_ask) : 0.0000;
+      window.tradeMonitorMobileContainMaxAsk = data.max_ask !== undefined ? parseFloat(data.max_ask) : 0.9800;
+      
+      // Enforce minimum separation (0.01 = 1 cent) when loading from database
+      const MIN_ASK_SEPARATION = 0.01;
+      if (window.tradeMonitorMobileContainMaxAsk - window.tradeMonitorMobileContainMinAsk < MIN_ASK_SEPARATION) {
+        if (window.tradeMonitorMobileContainMaxAsk < 1.0) {
+          window.tradeMonitorMobileContainMaxAsk = parseFloat((window.tradeMonitorMobileContainMinAsk + MIN_ASK_SEPARATION).toFixed(4));
+        } else {
+          window.tradeMonitorMobileContainMinAsk = parseFloat((window.tradeMonitorMobileContainMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
+        }
+      }
+      
+      // Update slider immediately after setting values
+      setTimeout(() => {
+        if (typeof updateTradeMonitorProbabilityWindowSlider === 'function') {
+          updateTradeMonitorProbabilityWindowSlider();
+        }
+      }, 50);
+    } else {
+      // Probability window (for Hourly HTC)
+      window.tradeMonitorMobileMinProbability = data.min_probability !== undefined ? parseFloat(data.min_probability) : 95.00;
+      window.tradeMonitorMobileMaxProbability = data.max_probability !== undefined ? parseFloat(data.max_probability) : 100.00;
+      
+      // Enforce minimum separation (0.5%) when loading from database
+      const MIN_SEPARATION = 0.5;
+      if (window.tradeMonitorMobileMaxProbability - window.tradeMonitorMobileMinProbability < MIN_SEPARATION) {
+        if (window.tradeMonitorMobileMaxProbability < 100) {
+          window.tradeMonitorMobileMaxProbability = parseFloat((window.tradeMonitorMobileMinProbability + MIN_SEPARATION).toFixed(1));
+        } else {
+          window.tradeMonitorMobileMinProbability = parseFloat((window.tradeMonitorMobileMaxProbability - MIN_SEPARATION).toFixed(1));
+        }
+      }
+    }
+    
+    setVal('autoEntryMinVolumeSlider', data.min_volume ?? 1000);
+    setVal('autoEntryDifferentialSlider', data.min_differential ?? 0);
+    setVal('autoEntryMaxDifferentialSlider', data.max_differential ?? 0);
+    setChk('autoEntryAllowReEntry', data.allow_re_entry ?? false);
+    setVal('autoEntryWinStreakThresholdSlider', data.win_streak_threshold ?? 22);
+    
+    // Loss Prevention Toggle
+    const lossPreventionToggle = document.getElementById('autoEntryLossPreventionToggle');
+    const winStreakSlider = document.getElementById('autoEntryWinStreakThresholdSlider');
+    const winStreakValueDisplay = document.getElementById('autoEntryWinStreakThresholdValueDisplay');
+    if (lossPreventionToggle) {
+      lossPreventionToggle.checked = data.loss_prevention_toggle !== undefined ? data.loss_prevention_toggle : true;
+      if (winStreakSlider) {
+        winStreakSlider.disabled = !lossPreventionToggle.checked;
+        winStreakSlider.style.opacity = lossPreventionToggle.checked ? '1' : '0.5';
+        winStreakSlider.style.cursor = lossPreventionToggle.checked ? 'pointer' : 'not-allowed';
+      }
+      if (winStreakValueDisplay) {
+        winStreakValueDisplay.style.display = lossPreventionToggle.checked ? 'block' : 'none';
+      }
+      lossPreventionToggle.addEventListener('change', function() {
+        if (winStreakSlider) {
+          winStreakSlider.disabled = !this.checked;
+          winStreakSlider.style.opacity = this.checked ? '1' : '0.5';
+          winStreakSlider.style.cursor = this.checked ? 'pointer' : 'not-allowed';
+        }
+        if (winStreakValueDisplay) {
+          winStreakValueDisplay.style.display = this.checked ? 'block' : 'none';
+        }
+      });
+    }
+    
+    // Spike Alert settings
+    setChk('spikeAlertEnabled', data.spike_alert_enabled ?? true);
+    setVal('spikeAlertMomentumSlider', data.spike_alert_momentum_threshold ?? 60);
+    setVal('spikeAlertCooldownSlider', data.spike_alert_cooldown_threshold ?? 55);
+    setVal('spikeAlertTimeSlider', data.spike_alert_cooldown_minutes ?? 15);
+    setVal('probAdjSlider', data.prob_adj ?? 5.00);
+    
+    // Auto Stop settings
+    setVal('autoStopProbabilitySlider', data.current_probability ?? 40);
+    const minTTC = data.min_ttc_seconds !== undefined ? data.min_ttc_seconds : 60;
+    const minTTCInput = document.getElementById('autoStopMinTTCInput');
+    const minTTCDisplay = document.getElementById('autoStopMinTTCDisplay');
+    if (minTTCInput) minTTCInput.value = minTTC;
+    if (minTTCDisplay && typeof formatSecondsToMMSS === 'function') {
+      minTTCDisplay.textContent = formatSecondsToMMSS(minTTC);
+    }
+    
+    setChk('momentumSpikeEnabled', data.momentum_spike_enabled ?? true);
+    setVal('momentumSpikeThresholdSlider', data.momentum_spike_threshold ?? 35);
+    setChk('verificationPeriodEnabled', data.verification_period_enabled ?? false);
+    setVal('verificationPeriodSlider', data.verification_period_seconds ?? 15);
+    setChk('autoEntryPerformanceBasedAllocation', data.performance_based_allocation ?? false);
+    
+    // Handle Momentum Scalp strategy fields
     if (isMomentumScalp) {
-      // MOMENTUM SCALP settings - populate directly
+      // MS time window uses same min_time/max_time as HTC
+      msMinTimeSeconds = data.min_time !== undefined ? data.min_time : 0;
+      msMaxTimeSeconds = data.max_time !== undefined ? data.max_time : 3600;
+      
       setVal('msAutoEntryMinVolumeSlider', data.min_volume ?? 1000);
-      setVal('msAutoEntryProbabilitySlider', data.min_probability ?? 25);
       setVal('msMomentumScalpEntryThresholdSlider', data.momentum_scalp_entry_threshold ?? 35);
+      setVal('msAutoEntryWinStreakThresholdSlider', data.win_streak_threshold ?? 22);
+      
+      // MS Loss Prevention Toggle
+      const msLossPreventionToggle = document.getElementById('msAutoEntryLossPreventionToggle');
+      const msWinStreakSlider = document.getElementById('msAutoEntryWinStreakThresholdSlider');
+      const msWinStreakValueDisplay = document.getElementById('msAutoEntryWinStreakThresholdValueDisplay');
+      if (msLossPreventionToggle) {
+        msLossPreventionToggle.checked = data.loss_prevention_toggle !== undefined ? data.loss_prevention_toggle : true;
+        if (msWinStreakSlider) {
+          msWinStreakSlider.disabled = !msLossPreventionToggle.checked;
+          msWinStreakSlider.style.opacity = msLossPreventionToggle.checked ? '1' : '0.5';
+          msWinStreakSlider.style.cursor = msLossPreventionToggle.checked ? 'pointer' : 'not-allowed';
+        }
+        if (msWinStreakValueDisplay) {
+          msWinStreakValueDisplay.style.display = msLossPreventionToggle.checked ? 'block' : 'none';
+        }
+        msLossPreventionToggle.addEventListener('change', function() {
+          if (msWinStreakSlider) {
+            msWinStreakSlider.disabled = !this.checked;
+            msWinStreakSlider.style.opacity = this.checked ? '1' : '0.5';
+            msWinStreakSlider.style.cursor = this.checked ? 'pointer' : 'not-allowed';
+          }
+          if (msWinStreakValueDisplay) {
+            msWinStreakValueDisplay.style.display = this.checked ? 'block' : 'none';
+          }
+        });
+      }
+      
+      // Ask window (min_ask and max_ask)
+      window.tradeMonitorMSMinAsk = data.min_ask !== undefined ? parseFloat(data.min_ask) : 0.0000;
+      window.tradeMonitorMSMaxAsk = data.max_ask !== undefined ? parseFloat(data.max_ask) : 0.9800;
+      const MIN_ASK_SEPARATION = 0.01;
+      if (window.tradeMonitorMSMaxAsk - window.tradeMonitorMSMinAsk < MIN_ASK_SEPARATION) {
+        if (window.tradeMonitorMSMaxAsk < 1.0) {
+          window.tradeMonitorMSMaxAsk = parseFloat((window.tradeMonitorMSMinAsk + MIN_ASK_SEPARATION).toFixed(4));
+        } else {
+          window.tradeMonitorMSMinAsk = parseFloat((window.tradeMonitorMSMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
+        }
+      }
+      
+      // Max Price Spread: convert from database (0.0000-0.2000) to slider (0-20)
+      const maxPriceSpread = data.max_price_spread !== undefined ? parseFloat(data.max_price_spread) : 0.0300;
+      const maxPriceSpreadSliderValue = (maxPriceSpread * 100).toFixed(1);
+      setVal('msMaxPriceSpreadSlider', maxPriceSpreadSliderValue);
       
       // Auto Stop
       const msMinTTC = data.min_ttc_seconds !== undefined ? data.min_ttc_seconds : 60;
@@ -976,19 +1159,12 @@ async function showMobileUnifiedAutoTradeSettings() {
       const trailingStopSliderValue = Math.round(trailingStop * 100);
       setVal('msMomentumScalpTrailingStopSlider', trailingStopSliderValue);
       
-      // Profit Target: convert from decimal (0.50-1.00) to slider value (50-100)
-      const profitTarget = data.momentum_scalp_profit_target ?? 0.99;
+      // Profit Target: convert from decimal (0.01-0.50) to slider value (1-50)
+      const profitTarget = data.momentum_scalp_profit_target ?? 0.10;
       const profitTargetSliderValue = Math.round(profitTarget * 100);
       setVal('msMomentumScalpProfitTargetSlider', profitTargetSliderValue);
       
       // Initialize MS time window slider
-      const msMinTime = Number.isFinite(Number(data.min_time)) ? Number(data.min_time) : 0;
-      const msMaxTime = Number.isFinite(Number(data.max_time)) ? Number(data.max_time) : 3600;
-      msMinTimeSeconds = Math.max(0, Math.min(3600, Math.round(msMinTime / 15) * 15));
-      msMaxTimeSeconds = Math.max(0, Math.min(3600, Math.round(msMaxTime / 15) * 15));
-      if (msMaxTimeSeconds <= msMinTimeSeconds) {
-        msMaxTimeSeconds = Math.min(3600, msMinTimeSeconds + 900);
-      }
       setTimeout(() => {
         if (typeof initMSTimeWindowSlider === 'function') {
           initMSTimeWindowSlider();
@@ -996,49 +1172,27 @@ async function showMobileUnifiedAutoTradeSettings() {
         if (typeof ensureMSTimeSliderHandlers === 'function') {
           ensureMSTimeSliderHandlers();
         }
+        if (typeof initMSAskWindowSlider === 'function') {
+          initMSAskWindowSlider();
+        }
+        if (typeof setupMSMinTTCControls === 'function') {
+          setupMSMinTTCControls();
+        }
       }, 50);
-    } else {
-      // HOURLY HTC settings - populate directly using setVal (same as Momentum Scalp)
-      setVal('autoEntryMinVolumeSlider', data.min_volume ?? 1000);
-      setVal('autoEntryProbabilitySlider', data.min_probability ?? 25);
-      setVal('autoEntryDifferentialSlider', data.min_differential ?? 0.25);
-      setVal('autoEntryMaxDifferentialSlider', data.max_differential ?? null);
-      setVal('autoEntryWinStreakThresholdSlider', data.win_streak_threshold ?? 22);
-      setVal('spikeAlertMomentumSlider', data.spike_alert_momentum_threshold ?? 40);
-      setVal('spikeAlertCooldownSlider', data.spike_alert_cooldown_level ?? 75);
-      setVal('spikeAlertTimeSlider', data.spike_alert_cooldown_time ?? 5);
-      setVal('probAdjSlider', data.prob_adj ?? 5.00);
-      if (document.getElementById('probAdjValueDisplay')) {
-        updateProbAdjDisplay(document.getElementById('probAdjSlider').value);
-      }
-      setVal('autoStopProbabilitySlider', data.current_probability ?? 25);
-      setVal('momentumSpikeThresholdSlider', data.momentum_spike_threshold ?? 35);
-      setVal('verificationPeriodSlider', data.verification_period_seconds ?? 15);
-      
-      // Checkboxes
-      setChk('autoEntryAllowReEntry', data.allow_re_entry ?? false);
-      setChk('spikeAlertEnabled', data.spike_alert_enabled ?? true);
-      setChk('momentumSpikeEnabled', data.momentum_spike_enabled ?? true);
-      setChk('verificationPeriodEnabled', data.verification_period_enabled ?? false);
-      setChk('autoEntryPerformanceBasedAllocation', data.performance_based_allocation ?? false);
-      
-      // Auto Stop Min TTC
-      const htcMinTTC = data.min_ttc_seconds !== undefined ? data.min_ttc_seconds : 60;
-      const htcMinTTCInput = document.getElementById('autoStopMinTTCInput');
-      const htcMinTTCDisplay = document.getElementById('autoStopMinTTCDisplay');
-      if (htcMinTTCInput) htcMinTTCInput.value = htcMinTTC;
-      if (htcMinTTCDisplay && typeof formatSecondsToMMSS === 'function') {
-        htcMinTTCDisplay.textContent = formatSecondsToMMSS(htcMinTTC);
-      }
+    }
+    
+    // Initialize probability/price window slider for Hourly HTC and Momentum Breakout/Contain
+    if (!isMomentumScalp) {
+      setTimeout(() => {
+        if (typeof initTradeMonitorProbabilityWindowSlider === 'function') {
+          initTradeMonitorProbabilityWindowSlider();
+        }
+        if (typeof updateTradeMonitorProbabilityWindowSlider === 'function') {
+          updateTradeMonitorProbabilityWindowSlider();
+        }
+      }, 50);
       
       // Initialize HTC time window slider
-      const htcMinTime = Number.isFinite(Number(data.min_time)) ? Number(data.min_time) : 0;
-      const htcMaxTime = Number.isFinite(Number(data.max_time)) ? Number(data.max_time) : 3600;
-      minTimeSeconds = Math.max(0, Math.min(3600, Math.round(htcMinTime / 15) * 15));
-      maxTimeSeconds = Math.max(0, Math.min(3600, Math.round(htcMaxTime / 15) * 15));
-      if (maxTimeSeconds <= minTimeSeconds) {
-        maxTimeSeconds = Math.min(3600, minTimeSeconds + 900);
-      }
       setTimeout(() => {
         if (typeof initTimeWindowSlider === 'function') {
           initTimeWindowSlider();
@@ -1078,16 +1232,52 @@ async function showMobileUnifiedAutoTradeSettings() {
           if (msMinTTCInput) payload.min_ttc_seconds = parseInt(msMinTTCInput.value, 10);
           if (msTrailingStopSlider) payload.momentum_scalp_trailing_stop_amount = parseFloat(msTrailingStopSlider.value) / 100;
           if (msProfitTargetSlider) payload.momentum_scalp_profit_target = parseFloat(msProfitTargetSlider.value) / 100;
+        } else if (isMomentumBreakout || isMomentumContain) {
+          // MOMENTUM BREAKOUT/CONTAIN specific fields
+          payload.min_volume = parseInt(document.getElementById('autoEntryMinVolumeSlider').value, 10);
+          // Use ask price window values (ensure they're floats with 4 decimal places)
+          payload.min_ask = parseFloat(parseFloat(window.tradeMonitorMobileContainMinAsk || 0.0000).toFixed(4));
+          payload.max_ask = parseFloat(parseFloat(window.tradeMonitorMobileContainMaxAsk || 0.9800).toFixed(4));
+          // Spike Alert settings
+          payload.spike_alert_enabled = document.getElementById('spikeAlertEnabled').checked;
+          payload.spike_alert_momentum_threshold = parseInt(document.getElementById('spikeAlertMomentumSlider').value, 10);
+          payload.spike_alert_cooldown_threshold = parseInt(document.getElementById('spikeAlertCooldownSlider').value, 10);
+          payload.spike_alert_cooldown_minutes = parseInt(document.getElementById('spikeAlertTimeSlider').value, 10);
+          // Auto Stop settings
+          payload.current_probability = parseInt(document.getElementById('autoStopProbabilitySlider').value, 10);
+          payload.min_ttc_seconds = parseInt(document.getElementById('autoStopMinTTCInput') ? document.getElementById('autoStopMinTTCInput').value : '60', 10);
+          payload.momentum_spike_enabled = document.getElementById('momentumSpikeEnabled').checked;
+          payload.momentum_spike_threshold = parseInt(document.getElementById('momentumSpikeThresholdSlider').value, 10);
+          payload.verification_period_enabled = document.getElementById('verificationPeriodEnabled').checked;
+          payload.verification_period_seconds = parseInt(document.getElementById('verificationPeriodSlider').value, 10);
         } else {
-          // HOURLY HTC specific fields - use existing save logic
-          if (typeof collectAutoEntrySettings === 'function') {
-            const entrySettings = collectAutoEntrySettings();
-            Object.assign(payload, entrySettings);
+          // HOURLY HTC specific fields
+          payload.min_volume = parseInt(document.getElementById('autoEntryMinVolumeSlider').value, 10);
+          payload.min_probability = parseFloat(parseFloat(window.tradeMonitorMobileMinProbability || 95.00).toFixed(1));
+          payload.max_probability = parseFloat(parseFloat(window.tradeMonitorMobileMaxProbability || 100.00).toFixed(1));
+          payload.min_differential = parseFloat(document.getElementById('autoEntryDifferentialSlider').value);
+          payload.max_differential = (function() { const v = parseFloat(document.getElementById('autoEntryMaxDifferentialSlider').value); return isNaN(v) || v <= 0 ? null : v; })();
+          payload.allow_re_entry = document.getElementById('autoEntryAllowReEntry').checked;
+          payload.win_streak_threshold = parseInt(document.getElementById('autoEntryWinStreakThresholdSlider').value, 10);
+          const lossPreventionToggle = document.getElementById('autoEntryLossPreventionToggle');
+          if (lossPreventionToggle) {
+            payload.loss_prevention_toggle = lossPreventionToggle.checked;
           }
-          if (typeof collectAutoStopSettings === 'function') {
-            const stopSettings = collectAutoStopSettings();
-            Object.assign(payload, stopSettings);
+          payload.current_probability = parseInt(document.getElementById('autoStopProbabilitySlider').value, 10);
+          payload.min_ttc_seconds = parseInt(document.getElementById('autoStopMinTTCInput') ? document.getElementById('autoStopMinTTCInput').value : '60', 10);
+          payload.momentum_spike_enabled = document.getElementById('momentumSpikeEnabled').checked;
+          payload.momentum_spike_threshold = parseInt(document.getElementById('momentumSpikeThresholdSlider').value, 10);
+          payload.verification_period_enabled = document.getElementById('verificationPeriodEnabled').checked;
+          payload.verification_period_seconds = parseInt(document.getElementById('verificationPeriodSlider').value, 10);
+          payload.spike_alert_enabled = document.getElementById('spikeAlertEnabled').checked;
+          payload.spike_alert_momentum_threshold = parseInt(document.getElementById('spikeAlertMomentumSlider').value, 10);
+          payload.spike_alert_cooldown_threshold = parseInt(document.getElementById('spikeAlertCooldownSlider').value, 10);
+          payload.spike_alert_cooldown_minutes = parseInt(document.getElementById('spikeAlertTimeSlider').value, 10);
+          // Only include prob_adj for Hourly HTC (not Reverse HTC)
+          if (isHourlyHTC) {
+            payload.prob_adj = parseFloat(document.getElementById('probAdjSlider').value);
           }
+          payload.performance_based_allocation = document.getElementById('autoEntryPerformanceBasedAllocation').checked;
         }
         
         try {
@@ -1213,10 +1403,194 @@ function bindSlider(inputId, bubbleId, formatter) {
   update();
 }
 
+// TRADE MONITOR MOBILE PROBABILITY/PRICE WINDOW SLIDER (for Hourly HTC and Momentum Breakout/Contain)
+let tradeMonitorMobileProbSliderWidth = 0;
+let tradeMonitorMobileProbIsDragging = false;
+let tradeMonitorMobileProbCurrentHandle = null;
+
+function initTradeMonitorProbabilityWindowSlider() {
+  const container = document.getElementById('probabilityWindowSliderContainer');
+  if (!container) return;
+  tradeMonitorMobileProbSliderWidth = container.offsetWidth;
+  updateTradeMonitorProbabilityWindowSlider();
+}
+
+function updateTradeMonitorProbabilityWindowSlider() {
+  if (!tradeMonitorMobileProbSliderWidth) return;
+  
+  // Get current strategy from strategy picker
+  const strategyPicker = document.getElementById('trade-strategy-picker');
+  const currentStrategy = strategyPicker ? strategyPicker.value : '';
+  const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+  const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
+  
+  const minHandle = document.getElementById('minProbabilityHandle');
+  const maxHandle = document.getElementById('maxProbabilityHandle');
+  const range = document.getElementById('probabilityWindowRange');
+  const minDisplay = document.getElementById('probabilityWindowMinDisplay');
+  const maxDisplay = document.getElementById('probabilityWindowMaxDisplay');
+  
+  if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
+  
+  if (isMomentumBreakout || isMomentumContain) {
+    // Use ask price values (0.0000 to 1.0000)
+    const MIN_ASK_SEPARATION = 0.01;
+    if (window.tradeMonitorMobileContainMaxAsk - window.tradeMonitorMobileContainMinAsk < MIN_ASK_SEPARATION) {
+      if (window.tradeMonitorMobileContainMaxAsk < 1.0) {
+        window.tradeMonitorMobileContainMaxAsk = parseFloat((window.tradeMonitorMobileContainMinAsk + MIN_ASK_SEPARATION).toFixed(4));
+      } else {
+        window.tradeMonitorMobileContainMinAsk = parseFloat((window.tradeMonitorMobileContainMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
+      }
+    }
+    
+    const minPercent = (window.tradeMonitorMobileContainMinAsk / 1.0) * 100;
+    const maxPercent = (window.tradeMonitorMobileContainMaxAsk / 1.0) * 100;
+    
+    minHandle.style.left = `${minPercent}%`;
+    maxHandle.style.left = `${maxPercent}%`;
+    range.style.left = `${minPercent}%`;
+    range.style.width = `${maxPercent - minPercent}%`;
+    minDisplay.textContent = '$' + window.tradeMonitorMobileContainMinAsk.toFixed(4);
+    maxDisplay.textContent = '$' + window.tradeMonitorMobileContainMaxAsk.toFixed(4);
+    minDisplay.style.left = `${minPercent}%`;
+    maxDisplay.style.left = `${maxPercent}%`;
+  } else {
+    // Use probability values (0 to 100)
+    const MIN_SEPARATION = 0.5;
+    if (window.tradeMonitorMobileMaxProbability - window.tradeMonitorMobileMinProbability < MIN_SEPARATION) {
+      if (window.tradeMonitorMobileMaxProbability < 100) {
+        window.tradeMonitorMobileMaxProbability = parseFloat((window.tradeMonitorMobileMinProbability + MIN_SEPARATION).toFixed(1));
+      } else {
+        window.tradeMonitorMobileMinProbability = parseFloat((window.tradeMonitorMobileMaxProbability - MIN_SEPARATION).toFixed(1));
+      }
+    }
+    
+    const minPercent = (window.tradeMonitorMobileMinProbability / 100) * 100;
+    const maxPercent = (window.tradeMonitorMobileMaxProbability / 100) * 100;
+    
+    minHandle.style.left = `${minPercent}%`;
+    maxHandle.style.left = `${maxPercent}%`;
+    range.style.left = `${minPercent}%`;
+    range.style.width = `${maxPercent - minPercent}%`;
+    minDisplay.textContent = window.tradeMonitorMobileMinProbability.toFixed(1) + '%';
+    maxDisplay.textContent = window.tradeMonitorMobileMaxProbability.toFixed(1) + '%';
+    minDisplay.style.left = `${minPercent}%`;
+    maxDisplay.style.left = `${maxPercent}%`;
+  }
+}
+
+function handleTradeMonitorProbMouseDown(e) {
+  tradeMonitorMobileProbIsDragging = true;
+  tradeMonitorMobileProbCurrentHandle = e.target;
+  document.addEventListener('mousemove', handleTradeMonitorProbMouseMove);
+  document.addEventListener('mouseup', handleTradeMonitorProbMouseUp);
+  document.addEventListener('touchmove', handleTradeMonitorProbTouchMove, { passive: false });
+  document.addEventListener('touchend', handleTradeMonitorProbTouchEnd);
+  e.preventDefault();
+}
+
+function handleTradeMonitorProbMouseMove(e) {
+  if (!tradeMonitorMobileProbIsDragging || !tradeMonitorMobileProbCurrentHandle) return;
+  handleTradeMonitorProbPointerMove(e.clientX);
+}
+
+function handleTradeMonitorProbTouchMove(e) {
+  if (!tradeMonitorMobileProbIsDragging || !tradeMonitorMobileProbCurrentHandle || !e.touches || e.touches.length === 0) return;
+  e.preventDefault();
+  handleTradeMonitorProbPointerMove(e.touches[0].clientX);
+}
+
+function handleTradeMonitorProbPointerMove(clientX) {
+  const container = document.getElementById('probabilityWindowSliderContainer');
+  if (!container) return;
+  
+  // Get current strategy
+  const strategyPicker = document.getElementById('trade-strategy-picker');
+  const currentStrategy = strategyPicker ? strategyPicker.value : '';
+  const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+  const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
+  
+  const rect = container.getBoundingClientRect();
+  const x = clientX - rect.left;
+  const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
+  
+  const minHandle = document.getElementById('minProbabilityHandle');
+  const maxHandle = document.getElementById('maxProbabilityHandle');
+  
+  if (isMomentumBreakout || isMomentumContain) {
+    // Use ask price values (0.0000 to 1.0000)
+    const askPrice = parseFloat((percent / 100).toFixed(4));
+    const MIN_ASK_SEPARATION = 0.01;
+    
+    if (tradeMonitorMobileProbCurrentHandle === minHandle) {
+      if (askPrice >= window.tradeMonitorMobileContainMaxAsk - MIN_ASK_SEPARATION) {
+        window.tradeMonitorMobileContainMinAsk = parseFloat((window.tradeMonitorMobileContainMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
+      } else {
+        window.tradeMonitorMobileContainMinAsk = askPrice;
+      }
+    } else if (tradeMonitorMobileProbCurrentHandle === maxHandle) {
+      if (askPrice <= window.tradeMonitorMobileContainMinAsk + MIN_ASK_SEPARATION) {
+        window.tradeMonitorMobileContainMaxAsk = parseFloat((window.tradeMonitorMobileContainMinAsk + MIN_ASK_SEPARATION).toFixed(4));
+      } else {
+        window.tradeMonitorMobileContainMaxAsk = askPrice;
+      }
+    }
+  } else {
+    // Use probability values (0 to 100)
+    const probability = parseFloat((Math.round(percent * 10) / 10).toFixed(1));
+    const MIN_SEPARATION = 0.5;
+    
+    if (tradeMonitorMobileProbCurrentHandle === minHandle) {
+      if (probability >= window.tradeMonitorMobileMaxProbability - MIN_SEPARATION) {
+        window.tradeMonitorMobileMinProbability = parseFloat((window.tradeMonitorMobileMaxProbability - MIN_SEPARATION).toFixed(1));
+      } else {
+        window.tradeMonitorMobileMinProbability = probability;
+      }
+    } else if (tradeMonitorMobileProbCurrentHandle === maxHandle) {
+      if (probability <= window.tradeMonitorMobileMinProbability + MIN_SEPARATION) {
+        window.tradeMonitorMobileMaxProbability = parseFloat((window.tradeMonitorMobileMinProbability + MIN_SEPARATION).toFixed(1));
+      } else {
+        window.tradeMonitorMobileMaxProbability = probability;
+      }
+    }
+  }
+  
+  updateTradeMonitorProbabilityWindowSlider();
+}
+
+function handleTradeMonitorProbMouseUp() {
+  tradeMonitorMobileProbIsDragging = false;
+  tradeMonitorMobileProbCurrentHandle = null;
+  document.removeEventListener('mousemove', handleTradeMonitorProbMouseMove);
+  document.removeEventListener('mouseup', handleTradeMonitorProbMouseUp);
+  document.removeEventListener('touchmove', handleTradeMonitorProbTouchMove);
+  document.removeEventListener('touchend', handleTradeMonitorProbTouchEnd);
+}
+
+function handleTradeMonitorProbTouchEnd() {
+  handleTradeMonitorProbMouseUp();
+}
+
+// Initialize slider handlers
+window.addEventListener('load', function() {
+  const minHandle = document.getElementById('minProbabilityHandle');
+  const maxHandle = document.getElementById('maxProbabilityHandle');
+  if (minHandle && maxHandle) {
+    minHandle.addEventListener('mousedown', handleTradeMonitorProbMouseDown);
+    maxHandle.addEventListener('mousedown', handleTradeMonitorProbMouseDown);
+    minHandle.addEventListener('touchstart', handleTradeMonitorProbMouseDown, { passive: false });
+    maxHandle.addEventListener('touchstart', handleTradeMonitorProbMouseDown, { passive: false });
+  }
+  window.addEventListener('resize', function() {
+    tradeMonitorMobileProbSliderWidth = 0;
+    initTradeMonitorProbabilityWindowSlider();
+  });
+});
+
 function refreshSliderDisplays() {
   // HTC Strategy sliders
   bindSlider('autoEntryMinVolumeSlider', 'autoEntryMinVolumeValueDisplay', (value) => Math.round(Math.max(0, value)).toString());
-  bindSlider('autoEntryProbabilitySlider', 'autoEntrySliderValueDisplay', (value) => `${Math.round(value)}%`);
+  // Probability/Price window slider is handled by updateTradeMonitorProbabilityWindowSlider
   bindSlider('autoEntryDifferentialSlider', 'autoEntryDifferentialValueDisplay', (value) => {
     const num = parseFloat(value || 0).toFixed(2);
     return num >= 0 ? `+${num}` : num;
@@ -2238,10 +2612,21 @@ document.addEventListener('DOMContentLoaded', () => {
               <div id="autoEntryMinVolumeValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">1000</div>
             </div>
             
-            <label for="autoEntryProbabilitySlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Win Probability:</label>
-            <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-              <input type="range" id="autoEntryProbabilitySlider" min="0" max="100" value="25" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
-              <div id="autoEntrySliderValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">25%</div>
+            <label for="probabilityWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Win Probability Window:</label>
+            <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-top:4px; padding-bottom:28px;">
+              <!-- Probability Window Slider Container -->
+              <div id="probabilityWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:0px; box-sizing: border-box;">
+                <!-- Min Probability Handle -->
+                <div id="minProbabilityHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+                <!-- Max Probability Handle -->
+                <div id="maxProbabilityHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+                <!-- Selected Range -->
+                <div id="probabilityWindowRange" style="position:absolute; top:0; height:6px; background:#007bff; border-radius:3px; z-index:5;"></div>
+                <!-- Min Probability Display (BELOW slider) -->
+                <div id="probabilityWindowMinDisplay" style="position:absolute; top:16px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+                <!-- Max Probability Display (ABOVE slider) -->
+                <div id="probabilityWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+              </div>
             </div>
 
             <label for="autoEntryDifferentialSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Differential:</label>
@@ -2262,7 +2647,7 @@ document.addEventListener('DOMContentLoaded', () => {
               <span style="font-size:13px; color:#666;">Allow re-entry on the same strike</span>
             </div>
             
-            <label for="autoEntryWinStreakThresholdSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Loss Prevention Win Streak Threshold:</label>
+            <label for="autoEntryWinStreakThresholdSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Loss Prevention Win Streak Threshold: <input type="checkbox" id="autoEntryLossPreventionToggle" style="margin-left:8px; vertical-align:middle;" /></label>
             <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
               <input type="range" id="autoEntryWinStreakThresholdSlider" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
               <div id="autoEntryWinStreakThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">22</div>
