@@ -6179,6 +6179,9 @@
               // Use ask price window values (ensure they're floats with 4 decimal places)
               payload.min_ask = parseFloat(parseFloat(window.dashboardMobileContainMinAsk || 0.0000).toFixed(4));
               payload.max_ask = parseFloat(parseFloat(window.dashboardMobileContainMaxAsk || 0.9800).toFixed(4));
+              // Win Streak Threshold and Loss Prevention Toggle (same as Hourly HTC)
+              payload.win_streak_threshold = parseInt(document.getElementById('m_winStreak').value, 10);
+              payload.loss_prevention_toggle = document.getElementById('m_lossPreventionToggle').checked;
               // Spike Alert settings
               payload.spike_alert_enabled = document.getElementById('m_spikeEnabled').checked;
               payload.spike_alert_momentum_threshold = parseInt(document.getElementById('m_spikeMomentum').value, 10);
@@ -6191,6 +6194,8 @@
               payload.momentum_spike_threshold = parseInt(document.getElementById('m_momentumThreshold').value, 10);
               payload.verification_period_enabled = document.getElementById('m_verifyEnabled').checked;
               payload.verification_period_seconds = parseInt(document.getElementById('m_verifySeconds').value, 10);
+              // Performance Based Allocation (same as Hourly HTC)
+              payload.performance_based_allocation = document.getElementById('m_perfAlloc').checked;
             } else {
               // HOURLY HTC / REVERSE HTC specific fields
               payload.min_volume = parseInt(document.getElementById('m_autoEntryMinVolume').value, 10);
