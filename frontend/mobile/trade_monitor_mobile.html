@@ -915,6 +915,19 @@ async function showMobileUnifiedAutoTradeSettings() {
     }
     // Change label from "Win Probability Window" to "Price Window" for Momentum Breakout/Contain
     if (probLabel) probLabel.textContent = 'Price Window:';
+    
+    // Show/hide Cooldown Window slider (Momentum Contain only)
+    const cooldownWindowLabel = document.querySelector('label[for="cooldownWindowSlider"]');
+    const cooldownWindowValueContainer = document.querySelector('label[for="cooldownWindowSlider"]')?.nextElementSibling;
+    if (cooldownWindowLabel && cooldownWindowValueContainer) {
+      if (isMomentumContain) {
+        cooldownWindowLabel.style.display = '';
+        cooldownWindowValueContainer.style.display = '';
+      } else {
+        cooldownWindowLabel.style.display = 'none';
+        cooldownWindowValueContainer.style.display = 'none';
+      }
+    }
   } else {
     // Show fields for other strategies
     if (minDiffLabel) minDiffLabel.style.display = '';
@@ -1013,6 +1026,19 @@ async function showMobileUnifiedAutoTradeSettings() {
         } else {
           window.tradeMonitorMobileContainMinAsk = parseFloat((window.tradeMonitorMobileContainMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
         }
+      }
+      
+      // Load cooldown timer window values (Momentum Contain only)
+      if (isMomentumContain) {
+        tradeMonitorMobileMinCooldownTimerSeconds = data.min_cooldown_timer !== undefined && data.min_cooldown_timer !== null ? parseInt(data.min_cooldown_timer, 10) : 300;
+        tradeMonitorMobileMaxCooldownTimerSeconds = data.max_cooldown_timer !== undefined && data.max_cooldown_timer !== null ? parseInt(data.max_cooldown_timer, 10) : 3300;
+        
+        // Initialize slider after values are loaded
+        setTimeout(() => {
+          if (typeof initTradeMonitorCooldownWindowSlider === 'function') {
+            initTradeMonitorCooldownWindowSlider();
+          }
+        }, 100);
       }
       
       // Update slider immediately after setting values
@@ -1187,6 +1213,10 @@ async function showMobileUnifiedAutoTradeSettings() {
         if (typeof initTradeMonitorProbabilityWindowSlider === 'function') {
           initTradeMonitorProbabilityWindowSlider();
         }
+        // Initialize cooldown window slider (Momentum Contain only)
+        if (typeof initTradeMonitorCooldownWindowSlider === 'function') {
+          initTradeMonitorCooldownWindowSlider();
+        }
         if (typeof updateTradeMonitorProbabilityWindowSlider === 'function') {
           updateTradeMonitorProbabilityWindowSlider();
         }
@@ -1249,6 +1279,11 @@ async function showMobileUnifiedAutoTradeSettings() {
           payload.spike_alert_momentum_threshold = parseInt(document.getElementById('spikeAlertMomentumSlider').value, 10);
           payload.spike_alert_cooldown_threshold = parseInt(document.getElementById('spikeAlertCooldownSlider').value, 10);
           payload.spike_alert_cooldown_minutes = parseInt(document.getElementById('spikeAlertTimeSlider').value, 10);
+          // Cooldown Timer Window (Momentum Contain only)
+          if (isMomentumContain) {
+            payload.min_cooldown_timer = tradeMonitorMobileMinCooldownTimerSeconds;
+            payload.max_cooldown_timer = tradeMonitorMobileMaxCooldownTimerSeconds;
+          }
           // Auto Stop settings
           payload.current_probability = parseInt(document.getElementById('autoStopProbabilitySlider').value, 10);
           payload.min_ttc_seconds = parseInt(document.getElementById('autoStopMinTTCInput') ? document.getElementById('autoStopMinTTCInput').value : '60', 10);
@@ -1416,6 +1451,13 @@ let tradeMonitorMobileProbSliderWidth = 0;
 let tradeMonitorMobileProbIsDragging = false;
 let tradeMonitorMobileProbCurrentHandle = null;
 
+// Cooldown Window Slider Variables (Momentum Contain)
+let tradeMonitorMobileCooldownWindowSliderWidth = 0;
+let tradeMonitorMobileMinCooldownTimerSeconds = 300; // 5 minutes default
+let tradeMonitorMobileMaxCooldownTimerSeconds = 3300; // 55 minutes default
+let tradeMonitorMobileCooldownWindowIsDragging = false;
+let tradeMonitorMobileCooldownWindowCurrentHandle = null;
+
 function initTradeMonitorProbabilityWindowSlider() {
   const container = document.getElementById('probabilityWindowSliderContainer');
   if (!container) return;
@@ -1573,6 +1615,117 @@ function handleTradeMonitorProbMouseUp() {
   document.removeEventListener('mouseup', handleTradeMonitorProbMouseUp);
   document.removeEventListener('touchmove', handleTradeMonitorProbTouchMove);
   document.removeEventListener('touchend', handleTradeMonitorProbTouchEnd);
+}
+
+// === COOLDOWN WINDOW SLIDER FUNCTIONS (Momentum Contain) ===
+function initTradeMonitorCooldownWindowSlider() {
+  const container = document.getElementById('cooldownWindowSliderContainer');
+  if (!container) return;
+  tradeMonitorMobileCooldownWindowSliderWidth = container.offsetWidth;
+  updateTradeMonitorCooldownWindowSlider();
+  
+  const minHandle = document.getElementById('minCooldownWindowHandle');
+  const maxHandle = document.getElementById('maxCooldownWindowHandle');
+  if (minHandle && !minHandle._wired) {
+    minHandle._wired = true;
+    minHandle.addEventListener('mousedown', handleTradeMonitorCooldownWindowMouseDown);
+    minHandle.addEventListener('touchstart', handleTradeMonitorCooldownWindowMouseDown);
+  }
+  if (maxHandle && !maxHandle._wired) {
+    maxHandle._wired = true;
+    maxHandle.addEventListener('mousedown', handleTradeMonitorCooldownWindowMouseDown);
+    maxHandle.addEventListener('touchstart', handleTradeMonitorCooldownWindowMouseDown);
+  }
+}
+
+function updateTradeMonitorCooldownWindowSlider() {
+  if (!tradeMonitorMobileCooldownWindowSliderWidth) return;
+  
+  const minHandle = document.getElementById('minCooldownWindowHandle');
+  const maxHandle = document.getElementById('maxCooldownWindowHandle');
+  const range = document.getElementById('cooldownWindowRange');
+  const minDisplay = document.getElementById('cooldownWindowMinDisplay');
+  const maxDisplay = document.getElementById('cooldownWindowMaxDisplay');
+  
+  if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
+  
+  // Max range is 0-3600 seconds (0-60 minutes)
+  const minPercent = (tradeMonitorMobileMinCooldownTimerSeconds / 3600) * 100;
+  const maxPercent = (tradeMonitorMobileMaxCooldownTimerSeconds / 3600) * 100;
+  
+  minHandle.style.left = `${minPercent}%`;
+  maxHandle.style.left = `${maxPercent}%`;
+  
+  range.style.left = `${minPercent}%`;
+  range.style.width = `${maxPercent - minPercent}%`;
+  
+  // Update time display boxes - min BELOW, max ABOVE (matching Price Window)
+  if (typeof formatSecondsToMMSS === 'function') {
+    minDisplay.textContent = formatSecondsToMMSS(tradeMonitorMobileMinCooldownTimerSeconds);
+    maxDisplay.textContent = formatSecondsToMMSS(tradeMonitorMobileMaxCooldownTimerSeconds);
+  }
+  minDisplay.style.left = `${minPercent}%`;
+  maxDisplay.style.left = `${maxPercent}%`;
+}
+
+function handleTradeMonitorCooldownWindowMouseDown(e) {
+  tradeMonitorMobileCooldownWindowIsDragging = true;
+  tradeMonitorMobileCooldownWindowCurrentHandle = e.target;
+  document.addEventListener('mousemove', handleTradeMonitorCooldownWindowMouseMove);
+  document.addEventListener('mouseup', handleTradeMonitorCooldownWindowMouseUp);
+  document.addEventListener('touchmove', handleTradeMonitorCooldownWindowTouchMove, { passive: false });
+  document.addEventListener('touchend', handleTradeMonitorCooldownWindowTouchEnd);
+  e.preventDefault();
+}
+
+function handleTradeMonitorCooldownWindowMouseMove(e) {
+  if (!tradeMonitorMobileCooldownWindowIsDragging || !tradeMonitorMobileCooldownWindowCurrentHandle) return;
+  handleTradeMonitorCooldownWindowPointerMove(e.clientX);
+}
+
+function handleTradeMonitorCooldownWindowTouchMove(e) {
+  if (!tradeMonitorMobileCooldownWindowIsDragging || !tradeMonitorMobileCooldownWindowCurrentHandle || !e.touches || e.touches.length === 0) return;
+  e.preventDefault();
+  handleTradeMonitorCooldownWindowPointerMove(e.touches[0].clientX);
+}
+
+function handleTradeMonitorCooldownWindowPointerMove(clientX) {
+  const container = document.getElementById('cooldownWindowSliderContainer');
+  if (!container) return;
+  
+  const rect = container.getBoundingClientRect();
+  const x = clientX - rect.left;
+  const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
+  
+  // Map percentage to seconds (0-3600, snapped to 15-second intervals)
+  const intervalIndex = Math.round((percent / 100) * 240);
+  const snappedSeconds = Math.max(0, Math.min(3600, intervalIndex * 15));
+  
+  const minHandle = document.getElementById('minCooldownWindowHandle');
+  const maxHandle = document.getElementById('maxCooldownWindowHandle');
+  
+  if (tradeMonitorMobileCooldownWindowCurrentHandle === minHandle) {
+    if (snappedSeconds >= tradeMonitorMobileMaxCooldownTimerSeconds) return;
+    tradeMonitorMobileMinCooldownTimerSeconds = snappedSeconds;
+  } else if (tradeMonitorMobileCooldownWindowCurrentHandle === maxHandle) {
+    if (snappedSeconds <= tradeMonitorMobileMinCooldownTimerSeconds) return;
+    tradeMonitorMobileMaxCooldownTimerSeconds = snappedSeconds;
+  }
+  
+  updateTradeMonitorCooldownWindowSlider();
+}
+
+function handleTradeMonitorCooldownWindowMouseUp() {
+  tradeMonitorMobileCooldownWindowIsDragging = false;
+  tradeMonitorMobileCooldownWindowCurrentHandle = null;
+  document.removeEventListener('mousemove', handleTradeMonitorCooldownWindowMouseMove);
+  document.removeEventListener('mouseup', handleTradeMonitorCooldownWindowMouseUp);
+  document.removeEventListener('touchmove', handleTradeMonitorCooldownWindowTouchMove);
+  document.removeEventListener('touchend', handleTradeMonitorCooldownWindowTouchEnd);
+}
+
+function handleTradeMonitorCooldownWindowTouchEnd() {
+  handleTradeMonitorCooldownWindowMouseUp();
 }
 
 function handleTradeMonitorProbTouchEnd() {
@@ -2636,7 +2789,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div id="probabilityWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
               </div>
             </div>
-
+            
+            <label for="cooldownWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Window:</label>
+            <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-top:4px; padding-bottom:28px;">
+              <!-- Cooldown Window Slider Container -->
+              <div id="cooldownWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:0px; box-sizing: border-box;">
+                <!-- Min Cooldown Window Handle -->
+                <div id="minCooldownWindowHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+                <!-- Max Cooldown Window Handle -->
+                <div id="maxCooldownWindowHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+                <!-- Selected Range -->
+                <div id="cooldownWindowRange" style="position:absolute; top:0; height:6px; background:#007bff; border-radius:3px; z-index:5;"></div>
+                <!-- Min Cooldown Window Display (BELOW slider) -->
+                <div id="cooldownWindowMinDisplay" style="position:absolute; top:16px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+                <!-- Max Cooldown Window Display (ABOVE slider) -->
+                <div id="cooldownWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+              </div>
+            </div>
+            
             <label for="autoEntryDifferentialSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Differential:</label>
             <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
               <input type="range" id="autoEntryDifferentialSlider" min="-10" max="10" step="0.25" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">

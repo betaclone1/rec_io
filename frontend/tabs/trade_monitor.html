@@ -874,6 +874,19 @@ async function showUnifiedAutoTradeSettingsModal() {
     }
   }
   
+  // Show/hide Cooldown Window slider (Momentum Contain only)
+  const cooldownWindowLabel = document.querySelector('label[for="cooldownWindowSlider"]');
+  const cooldownWindowValueContainer = document.querySelector('label[for="cooldownWindowSlider"]')?.nextElementSibling;
+  if (cooldownWindowLabel && cooldownWindowValueContainer) {
+    if (isMomentumContain) {
+      cooldownWindowLabel.style.display = '';
+      cooldownWindowValueContainer.style.display = '';
+    } else {
+      cooldownWindowLabel.style.display = 'none';
+      cooldownWindowValueContainer.style.display = 'none';
+    }
+  }
+  
   // Function to populate all fields and update value bubbles
   const populateAndUpdateAllFields = (data) => {
     // Re-detect strategy for populate function
@@ -914,6 +927,19 @@ async function showUnifiedAutoTradeSettingsModal() {
         } else {
           window.tradeMonitorContainMinAsk = parseFloat((window.tradeMonitorContainMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
         }
+      }
+      
+      // Load cooldown timer window values (Momentum Contain only)
+      if (isMomentumContain) {
+        tradeMonitorMinCooldownTimerSeconds = data.min_cooldown_timer !== undefined && data.min_cooldown_timer !== null ? parseInt(data.min_cooldown_timer, 10) : 300;
+        tradeMonitorMaxCooldownTimerSeconds = data.max_cooldown_timer !== undefined && data.max_cooldown_timer !== null ? parseInt(data.max_cooldown_timer, 10) : 3300;
+        
+        // Initialize slider after values are loaded
+        setTimeout(() => {
+          if (typeof initCooldownWindowSlider === 'function') {
+            initCooldownWindowSlider();
+          }
+        }, 100);
       }
       
       // Update slider immediately after setting values
@@ -1145,6 +1171,10 @@ async function showUnifiedAutoTradeSettingsModal() {
           initProbabilityWindowSlider();
           updateProbabilityWindowSlider(); // Update to show correct values based on strategy
         }
+        // Initialize cooldown window slider (Momentum Contain only)
+        if (typeof initCooldownWindowSlider === 'function') {
+          initCooldownWindowSlider();
+        }
         if (diffSlider && typeof updateAutoEntryDifferentialDisplay === 'function') {
           updateAutoEntryDifferentialDisplay(diffSlider.value);
         }
@@ -1335,6 +1365,11 @@ async function showUnifiedAutoTradeSettingsModal() {
         payload.spike_alert_momentum_threshold = parseInt(document.getElementById('spikeAlertMomentumSlider').value, 10);
         payload.spike_alert_cooldown_threshold = parseInt(document.getElementById('spikeAlertCooldownSlider').value, 10);
         payload.spike_alert_cooldown_minutes = parseInt(document.getElementById('spikeAlertTimeSlider').value, 10);
+        // Cooldown Timer Window (Momentum Contain only)
+        if (isMomentumContain) {
+          payload.min_cooldown_timer = tradeMonitorMinCooldownTimerSeconds;
+          payload.max_cooldown_timer = tradeMonitorMaxCooldownTimerSeconds;
+        }
         // Auto Stop settings
         payload.current_probability = parseInt(document.getElementById('autoStopProbabilitySlider').value, 10);
         payload.min_ttc_seconds = parseInt(document.getElementById('autoStopMinTTCInput') ? document.getElementById('autoStopMinTTCInput').value : '60', 10);
@@ -2455,6 +2490,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div id="probabilityWindowMinDisplay" style="position:absolute; top:16px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
                 <!-- Max Probability Display (ABOVE slider) -->
                 <div id="probabilityWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+              </div>
+            </div>
+            
+            <label for="cooldownWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Window:</label>
+            <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-top:4px; padding-bottom:28px;">
+              <!-- Cooldown Window Slider Container -->
+              <div id="cooldownWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:0px; box-sizing: border-box;">
+                <!-- Min Cooldown Window Handle -->
+                <div id="minCooldownWindowHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+                <!-- Max Cooldown Window Handle -->
+                <div id="maxCooldownWindowHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+                <!-- Selected Range -->
+                <div id="cooldownWindowRange" style="position:absolute; top:0; height:6px; background:#007bff; border-radius:3px; z-index:5;"></div>
+                <!-- Min Cooldown Window Display (BELOW slider) -->
+                <div id="cooldownWindowMinDisplay" style="position:absolute; top:16px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+                <!-- Max Cooldown Window Display (ABOVE slider) -->
+                <div id="cooldownWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
               </div>
             </div>
             
@@ -5625,6 +5677,13 @@ let tradeMonitorProbSliderWidth = 0;
 let tradeMonitorProbIsDragging = false;
 let tradeMonitorProbCurrentHandle = null;
 
+// Cooldown Window Slider Variables (Momentum Contain)
+let tradeMonitorCooldownWindowSliderWidth = 0;
+let tradeMonitorMinCooldownTimerSeconds = 300; // 5 minutes default
+let tradeMonitorMaxCooldownTimerSeconds = 3300; // 55 minutes default
+let tradeMonitorCooldownWindowIsDragging = false;
+let tradeMonitorCooldownWindowCurrentHandle = null;
+
 function initProbabilityWindowSlider() {
   const container = document.getElementById('probabilityWindowSliderContainer');
   if (!container) return;
@@ -5796,6 +5855,97 @@ function handleProbMouseUp() {
   tradeMonitorProbCurrentHandle = null;
   document.removeEventListener('mousemove', handleProbMouseMove);
   document.removeEventListener('mouseup', handleProbMouseUp);
+}
+
+// === COOLDOWN WINDOW SLIDER FUNCTIONS (Momentum Contain) ===
+function initCooldownWindowSlider() {
+  const container = document.getElementById('cooldownWindowSliderContainer');
+  if (!container) return;
+  tradeMonitorCooldownWindowSliderWidth = container.offsetWidth;
+  updateCooldownWindowSlider();
+  
+  const minHandle = document.getElementById('minCooldownWindowHandle');
+  const maxHandle = document.getElementById('maxCooldownWindowHandle');
+  if (minHandle && !minHandle._wired) {
+    minHandle._wired = true;
+    minHandle.addEventListener('mousedown', handleCooldownWindowMouseDown);
+  }
+  if (maxHandle && !maxHandle._wired) {
+    maxHandle._wired = true;
+    maxHandle.addEventListener('mousedown', handleCooldownWindowMouseDown);
+  }
+}
+
+function updateCooldownWindowSlider() {
+  if (!tradeMonitorCooldownWindowSliderWidth) return;
+  
+  const minHandle = document.getElementById('minCooldownWindowHandle');
+  const maxHandle = document.getElementById('maxCooldownWindowHandle');
+  const range = document.getElementById('cooldownWindowRange');
+  const minDisplay = document.getElementById('cooldownWindowMinDisplay');
+  const maxDisplay = document.getElementById('cooldownWindowMaxDisplay');
+  
+  if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
+  
+  // Max range is 0-3600 seconds (0-60 minutes)
+  const minPercent = (tradeMonitorMinCooldownTimerSeconds / 3600) * 100;
+  const maxPercent = (tradeMonitorMaxCooldownTimerSeconds / 3600) * 100;
+  
+  minHandle.style.left = `${minPercent}%`;
+  maxHandle.style.left = `${maxPercent}%`;
+  
+  range.style.left = `${minPercent}%`;
+  range.style.width = `${maxPercent - minPercent}%`;
+  
+  // Update time display boxes - min BELOW, max ABOVE (matching Price Window)
+  minDisplay.textContent = formatSecondsToMMSS(tradeMonitorMinCooldownTimerSeconds);
+  minDisplay.style.left = `${minPercent}%`;
+  
+  maxDisplay.textContent = formatSecondsToMMSS(tradeMonitorMaxCooldownTimerSeconds);
+  maxDisplay.style.left = `${maxPercent}%`;
+}
+
+function handleCooldownWindowMouseDown(e) {
+  tradeMonitorCooldownWindowIsDragging = true;
+  tradeMonitorCooldownWindowCurrentHandle = e.target;
+  document.addEventListener('mousemove', handleCooldownWindowMouseMove);
+  document.addEventListener('mouseup', handleCooldownWindowMouseUp);
+  e.preventDefault();
+}
+
+function handleCooldownWindowMouseMove(e) {
+  if (!tradeMonitorCooldownWindowIsDragging || !tradeMonitorCooldownWindowCurrentHandle) return;
+  
+  const container = document.getElementById('cooldownWindowSliderContainer');
+  if (!container) return;
+  
+  const rect = container.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
+  
+  // Map percentage to seconds (0-3600, snapped to 15-second intervals)
+  const intervalIndex = Math.round((percent / 100) * 240);
+  const snappedSeconds = Math.max(0, Math.min(3600, intervalIndex * 15));
+  
+  const minHandle = document.getElementById('minCooldownWindowHandle');
+  const maxHandle = document.getElementById('maxCooldownWindowHandle');
+  
+  if (tradeMonitorCooldownWindowCurrentHandle === minHandle) {
+    if (snappedSeconds >= tradeMonitorMaxCooldownTimerSeconds) return;
+    tradeMonitorMinCooldownTimerSeconds = snappedSeconds;
+  } else if (tradeMonitorCooldownWindowCurrentHandle === maxHandle) {
+    if (snappedSeconds <= tradeMonitorMinCooldownTimerSeconds) return;
+    tradeMonitorMaxCooldownTimerSeconds = snappedSeconds;
+  }
+  
+  updateCooldownWindowSlider();
+}
+
+function handleCooldownWindowMouseUp() {
+  tradeMonitorCooldownWindowIsDragging = false;
+  tradeMonitorCooldownWindowCurrentHandle = null;
+  document.removeEventListener('mousemove', handleCooldownWindowMouseMove);
+  document.removeEventListener('mouseup', handleCooldownWindowMouseUp);
 }
 
 // === MOMENTUM SCALP TIME WINDOW SLIDER FUNCTIONS ===

@@ -5030,6 +5030,23 @@
           </div>
         </div>
 
+        <label for="m_cooldownWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Window:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-top:4px; padding-bottom:28px;">
+          <!-- Cooldown Window Slider Container -->
+          <div id="m_cooldownWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:0px; box-sizing: border-box;">
+            <!-- Min Cooldown Window Handle -->
+            <div id="m_minCooldownWindowHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Max Cooldown Window Handle -->
+            <div id="m_maxCooldownWindowHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Selected Range -->
+            <div id="m_cooldownWindowRange" style="position:absolute; top:0; height:6px; background:#007bff; border-radius:3px; z-index:5;"></div>
+            <!-- Min Cooldown Window Display (BELOW slider) -->
+            <div id="m_cooldownWindowMinDisplay" style="position:absolute; top:16px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+            <!-- Max Cooldown Window Display (ABOVE slider) -->
+            <div id="m_cooldownWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+          </div>
+        </div>
+
         <label for="m_autoEntryDiff" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Differential:</label>
         <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
           <input type="range" id="m_autoEntryDiff" min="-10" max="10" step="0.25" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
@@ -5281,6 +5298,13 @@
       let dashboardMobileProbSliderWidth = 0;
       let dashboardMobileProbIsDragging = false;
       let dashboardMobileProbCurrentHandle = null;
+      
+      // Cooldown Window Slider Variables (Momentum Contain)
+      let dashboardMobileCooldownWindowSliderWidth = 0;
+      let dashboardMobileMinCooldownTimerSeconds = 300; // 5 minutes default
+      let dashboardMobileMaxCooldownTimerSeconds = 3300; // 55 minutes default
+      let dashboardMobileCooldownWindowIsDragging = false;
+      let dashboardMobileCooldownWindowCurrentHandle = null;
 
       function initDashboardMobileProbabilityWindowSlider() {
         const container = document.getElementById('m_probabilityWindowSliderContainer');
@@ -5475,6 +5499,132 @@
         handleDashboardMobileProbMouseUp();
       }
 
+      // COOLDOWN WINDOW SLIDER (Momentum Contain)
+      function initDashboardMobileCooldownWindowSlider() {
+        const container = document.getElementById('m_cooldownWindowSliderContainer');
+        if (!container) return;
+        dashboardMobileCooldownWindowSliderWidth = container.offsetWidth || container.clientWidth || 0;
+        if (dashboardMobileCooldownWindowSliderWidth > 0) {
+          updateDashboardMobileCooldownWindowSlider();
+        }
+      }
+      
+      function updateDashboardMobileCooldownWindowSlider() {
+        if (!dashboardMobileCooldownWindowSliderWidth) {
+          const container = document.getElementById('m_cooldownWindowSliderContainer');
+          if (container) {
+            dashboardMobileCooldownWindowSliderWidth = container.offsetWidth || container.clientWidth || 0;
+          }
+          if (!dashboardMobileCooldownWindowSliderWidth) {
+            return;
+          }
+        }
+        
+        const minHandle = document.getElementById('m_minCooldownWindowHandle');
+        const maxHandle = document.getElementById('m_maxCooldownWindowHandle');
+        const range = document.getElementById('m_cooldownWindowRange');
+        const minDisplay = document.getElementById('m_cooldownWindowMinDisplay');
+        const maxDisplay = document.getElementById('m_cooldownWindowMaxDisplay');
+        
+        if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
+        
+        // Max range is 0-3600 seconds (0-60 minutes)
+        const minPercent = (dashboardMobileMinCooldownTimerSeconds / 3600) * 100;
+        const maxPercent = (dashboardMobileMaxCooldownTimerSeconds / 3600) * 100;
+        
+        minHandle.style.left = `${minPercent}%`;
+        maxHandle.style.left = `${maxPercent}%`;
+        
+        range.style.left = `${minPercent}%`;
+        range.style.width = `${maxPercent - minPercent}%`;
+        
+        // Update time display boxes - min BELOW, max ABOVE (matching Price Window)
+        if (typeof formatSecondsToMMSS === 'function') {
+          minDisplay.textContent = formatSecondsToMMSS(dashboardMobileMinCooldownTimerSeconds);
+          maxDisplay.textContent = formatSecondsToMMSS(dashboardMobileMaxCooldownTimerSeconds);
+        }
+        minDisplay.style.left = `${minPercent}%`;
+        maxDisplay.style.left = `${maxPercent}%`;
+      }
+      
+      function handleDashboardMobileCooldownWindowMouseDown(e) {
+        dashboardMobileCooldownWindowIsDragging = true;
+        dashboardMobileCooldownWindowCurrentHandle = e.target;
+        document.addEventListener('mousemove', handleDashboardMobileCooldownWindowMouseMove);
+        document.addEventListener('mouseup', handleDashboardMobileCooldownWindowMouseUp);
+        document.addEventListener('touchmove', handleDashboardMobileCooldownWindowTouchMove);
+        document.addEventListener('touchend', handleDashboardMobileCooldownWindowTouchEnd);
+        e.preventDefault();
+      }
+      
+      function handleDashboardMobileCooldownWindowMouseMove(e) {
+        if (!dashboardMobileCooldownWindowIsDragging || !dashboardMobileCooldownWindowCurrentHandle) return;
+        
+        const container = document.getElementById('m_cooldownWindowSliderContainer');
+        if (!container) return;
+        
+        const rect = container.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
+        
+        // Map percentage to seconds (0-3600, snapped to 15-second intervals)
+        const intervalIndex = Math.round((percent / 100) * 240);
+        const snappedSeconds = Math.max(0, Math.min(3600, intervalIndex * 15));
+        
+        const minHandle = document.getElementById('m_minCooldownWindowHandle');
+        const maxHandle = document.getElementById('m_maxCooldownWindowHandle');
+        
+        if (dashboardMobileCooldownWindowCurrentHandle === minHandle) {
+          if (snappedSeconds >= dashboardMobileMaxCooldownTimerSeconds) return;
+          dashboardMobileMinCooldownTimerSeconds = snappedSeconds;
+        } else if (dashboardMobileCooldownWindowCurrentHandle === maxHandle) {
+          if (snappedSeconds <= dashboardMobileMinCooldownTimerSeconds) return;
+          dashboardMobileMaxCooldownTimerSeconds = snappedSeconds;
+        }
+        
+        updateDashboardMobileCooldownWindowSlider();
+      }
+      
+      function handleDashboardMobileCooldownWindowTouchMove(e) {
+        if (e.touches && e.touches.length > 0) {
+          const touch = e.touches[0];
+          const mouseEvent = new MouseEvent('mousemove', {
+            clientX: touch.clientX,
+            clientY: touch.clientY,
+            bubbles: true
+          });
+          handleDashboardMobileCooldownWindowMouseMove(mouseEvent);
+        }
+      }
+      
+      function handleDashboardMobileCooldownWindowMouseUp() {
+        dashboardMobileCooldownWindowIsDragging = false;
+        dashboardMobileCooldownWindowCurrentHandle = null;
+        document.removeEventListener('mousemove', handleDashboardMobileCooldownWindowMouseMove);
+        document.removeEventListener('mouseup', handleDashboardMobileCooldownWindowMouseUp);
+        document.removeEventListener('touchmove', handleDashboardMobileCooldownWindowTouchMove);
+        document.removeEventListener('touchend', handleDashboardMobileCooldownWindowTouchEnd);
+      }
+      
+      function handleDashboardMobileCooldownWindowTouchEnd() {
+        handleDashboardMobileCooldownWindowMouseUp();
+      }
+      
+      function ensureDashboardMobileCooldownWindowSliderHandlers() {
+        const minHandle = document.getElementById('m_minCooldownWindowHandle');
+        const maxHandle = document.getElementById('m_maxCooldownWindowHandle');
+        if (minHandle && !minHandle._mobileWired) {
+          minHandle._mobileWired = true;
+          minHandle.addEventListener('mousedown', handleDashboardMobileCooldownWindowMouseDown);
+          minHandle.addEventListener('touchstart', handleDashboardMobileCooldownWindowMouseDown);
+        }
+        if (maxHandle && !maxHandle._mobileWired) {
+          maxHandle._mobileWired = true;
+          maxHandle.addEventListener('mousedown', handleDashboardMobileCooldownWindowMouseDown);
+          maxHandle.addEventListener('touchstart', handleDashboardMobileCooldownWindowMouseDown);
+        }
+      }
+      
       function ensureDashboardMobileProbSliderHandlers() {
         const minHandle = document.getElementById('m_minProbabilityHandle');
         const maxHandle = document.getElementById('m_maxProbabilityHandle');
@@ -5943,6 +6093,19 @@
           }
           // Change label from "Win Probability Window" to "Price Window" for Momentum Breakout/Contain
           if (probLabel) probLabel.textContent = 'Price Window:';
+          
+          // Show/hide Cooldown Window slider (Momentum Contain only)
+          const cooldownWindowLabel = document.querySelector('label[for="m_cooldownWindowSlider"]');
+          const cooldownWindowValueContainer = document.querySelector('label[for="m_cooldownWindowSlider"]')?.nextElementSibling;
+          if (cooldownWindowLabel && cooldownWindowValueContainer) {
+            if (isMomentumContain) {
+              cooldownWindowLabel.style.display = '';
+              cooldownWindowValueContainer.style.display = '';
+            } else {
+              cooldownWindowLabel.style.display = 'none';
+              cooldownWindowValueContainer.style.display = 'none';
+            }
+          }
         } else {
           // Show fields for other strategies
           if (minDiffLabel) minDiffLabel.style.display = '';
@@ -5997,6 +6160,19 @@
             } else {
               window.dashboardMobileContainMinAsk = parseFloat((window.dashboardMobileContainMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
             }
+          }
+          
+          // Load cooldown timer window values (Momentum Contain only)
+          if (isMomentumContain) {
+            dashboardMobileMinCooldownTimerSeconds = data.min_cooldown_timer !== undefined && data.min_cooldown_timer !== null ? parseInt(data.min_cooldown_timer, 10) : 300;
+            dashboardMobileMaxCooldownTimerSeconds = data.max_cooldown_timer !== undefined && data.max_cooldown_timer !== null ? parseInt(data.max_cooldown_timer, 10) : 3300;
+            
+            // Initialize slider after values are loaded
+            setTimeout(() => {
+              if (typeof initDashboardMobileCooldownWindowSlider === 'function') {
+                initDashboardMobileCooldownWindowSlider();
+              }
+            }, 100);
           }
           
         } else {
@@ -6113,6 +6289,13 @@
             if (typeof initDashboardMobileProbabilityWindowSlider === 'function') {
               initDashboardMobileProbabilityWindowSlider();
             }
+            // Initialize cooldown window slider (Momentum Contain only)
+            if (typeof initDashboardMobileCooldownWindowSlider === 'function') {
+              initDashboardMobileCooldownWindowSlider();
+            }
+            if (typeof ensureDashboardMobileCooldownWindowSliderHandlers === 'function') {
+              ensureDashboardMobileCooldownWindowSliderHandlers();
+            }
             // Initialize slider handlers
             if (typeof ensureDashboardMobileProbSliderHandlers === 'function') {
               ensureDashboardMobileProbSliderHandlers();
@@ -6187,6 +6370,11 @@
               payload.spike_alert_momentum_threshold = parseInt(document.getElementById('m_spikeMomentum').value, 10);
               payload.spike_alert_cooldown_threshold = parseInt(document.getElementById('m_spikeCooldown').value, 10);
               payload.spike_alert_cooldown_minutes = parseInt(document.getElementById('m_spikeTime').value, 10);
+              // Cooldown Timer Window (Momentum Contain only)
+              if (isMomentumContain) {
+                payload.min_cooldown_timer = dashboardMobileMinCooldownTimerSeconds;
+                payload.max_cooldown_timer = dashboardMobileMaxCooldownTimerSeconds;
+              }
               // Auto Stop settings
               payload.current_probability = parseInt(document.getElementById('m_stopProb').value, 10);
               payload.min_ttc_seconds = parseInt(document.getElementById('m_minTTC').value, 10);

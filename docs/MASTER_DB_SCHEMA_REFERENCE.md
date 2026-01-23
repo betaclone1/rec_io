@@ -9808,6 +9808,8 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `dashboard_order` | `integer(32)` | YES | 1 | |
 | `cooldown_timer` | `integer(32)` | YES | 0 | |
 | `cooldown_start_time` | `timestamp with time zone` | YES | - | |
+| `min_cooldown_timer` | `integer(32)` | YES | 300 | Minimum cooldown timer value (in seconds) required for auto entry activation. Strategy will not activate if cooldown_timer is below this value. |
+| `max_cooldown_timer` | `integer(32)` | YES | 3300 | Maximum cooldown timer value (in seconds) allowed for auto entry activation. Strategy will not activate if cooldown_timer is above this value. |
 | `updated_at` | `timestamp with time zone` | YES | CURRENT_TIMESTAMP | |
 | `created_strategy` | `timestamp without time zone` | YES | - | |
 | `updated_strategy` | `timestamp without time zone` | YES | - | |
@@ -10048,6 +10050,8 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `position_type` | `character varying(20)` | YES | 'percent'::character varying | |
 | `multiplier` | `numeric(3,2)` | YES | 1.00 | |
 | `max_profit` | `numeric(6,4)` | YES | 0.9900 | |
+| `min_cooldown_timer` | `integer(32)` | YES | 300 | Minimum cooldown timer value (in seconds) required for auto entry activation. Strategy will not activate if cooldown_timer is below this value. |
+| `max_cooldown_timer` | `integer(32)` | YES | 3300 | Maximum cooldown timer value (in seconds) allowed for auto entry activation. Strategy will not activate if cooldown_timer is above this value. |
 
 #### Constraints
 

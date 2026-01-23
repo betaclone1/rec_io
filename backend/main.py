@@ -2677,7 +2677,8 @@ async def get_auto_entry_settings(monitor_id: str = None):
                        momentum_spike_threshold, verification_period_enabled, verification_period_seconds,
                        min_volume, win_streak_threshold, performance_based_allocation,
                        momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target,
-                       min_ask, max_ask, loss_prevention_toggle, max_price_spread, prob_adj
+                       min_ask, max_ask, loss_prevention_toggle, max_price_spread, prob_adj,
+                       min_cooldown_timer, max_cooldown_timer
                 FROM users.monitor_list_0001 WHERE id = %s
             """, (monitor_id,))
             result = cursor.fetchone()
@@ -2713,7 +2714,9 @@ async def get_auto_entry_settings(monitor_id: str = None):
                     "max_ask": float(result[24]) if result[24] is not None else 0.9800,
                     "loss_prevention_toggle": bool(result[25]) if result[25] is not None else True,
                     "max_price_spread": float(result[26]) if result[26] is not None else 0.0300,
-                    "prob_adj": float(result[27]) if result[27] is not None else 5.00
+                    "prob_adj": float(result[27]) if result[27] is not None else 5.00,
+                    "min_cooldown_timer": result[28] if result[28] is not None else None,
+                    "max_cooldown_timer": result[29] if result[29] is not None else None
                 }
             else:
                 return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
@@ -2841,6 +2844,12 @@ async def set_auto_entry_settings(request: Request):
             if "prob_adj" in data:
                 update_fields.append("prob_adj = %s")
                 update_values.append(float(data["prob_adj"]))
+            if "min_cooldown_timer" in data:
+                update_fields.append("min_cooldown_timer = %s")
+                update_values.append(int(data["min_cooldown_timer"]) if data["min_cooldown_timer"] is not None else None)
+            if "max_cooldown_timer" in data:
+                update_fields.append("max_cooldown_timer = %s")
+                update_values.append(int(data["max_cooldown_timer"]) if data["max_cooldown_timer"] is not None else None)
             
             if update_fields:
                 # Update the monitor in monitor_list table

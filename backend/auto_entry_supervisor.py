@@ -1419,10 +1419,50 @@ def determine_auto_entry_status_momentum_contain():
         current_ttc = get_current_ttc()
         ttc_within_window = min_time <= current_ttc <= max_time
         
-        if ttc_within_window:
-            return "ACTIVE"
-        else:
+        if not ttc_within_window:
             return "INACTIVE"
+        
+        # Check if cooldown timer is within activation window
+        min_cooldown_timer = settings.get("min_cooldown_timer")
+        max_cooldown_timer = settings.get("max_cooldown_timer")
+        
+        # If both min and max are NULL, skip the check (no restriction)
+        if min_cooldown_timer is None and max_cooldown_timer is None:
+            return "ACTIVE"
+        
+        # Get cooldown_timer from database
+        cooldown_timer = None
+        try:
+            import psycopg2
+            conn = psycopg2.connect(
+                host=os.getenv('POSTGRES_HOST', 'localhost'),
+                database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+                user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+                password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+            )
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+                result = cursor.fetchone()
+                cooldown_timer = result[0] if result and result[0] is not None else None
+            conn.close()
+        except Exception as e:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ Error getting cooldown timer: {e}")
+        
+        # If cooldown_timer is NULL, cannot determine - return INACTIVE
+        if cooldown_timer is None:
+            return "INACTIVE"
+        
+        # Check if cooldown_timer is within the activation window
+        # If min is set, cooldown_timer must be >= min (not too close to spike)
+        if min_cooldown_timer is not None and cooldown_timer < min_cooldown_timer:
+            return "INACTIVE"  # Too close to momentum spike
+        
+        # If max is set, cooldown_timer must be <= max (not too far after spike)
+        if max_cooldown_timer is not None and cooldown_timer > max_cooldown_timer:
+            return "INACTIVE"  # Too far after spike regime has ended
+        
+        # All checks passed - cooldown timer is within window
+        return "ACTIVE"
             
     except Exception as e:
         log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ Error determining status: {e}")
@@ -1564,7 +1604,8 @@ def get_auto_entry_settings():
                     SELECT min_probability, max_probability, min_differential, max_differential, min_time, max_time, allow_re_entry,
                            spike_alert_enabled, spike_alert_momentum_threshold, 
                            spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
-                           min_volume, momentum_scalp_entry_threshold, min_ask, max_ask, max_price_spread, prob_adj
+                           min_volume, momentum_scalp_entry_threshold, min_ask, max_ask, max_price_spread, prob_adj,
+                           min_cooldown_timer, max_cooldown_timer
                     FROM users.monitor_list_0001 WHERE id = %s
                 """, (MONITOR_IDENTIFIER.split('_')[1],))
                 strategy_result = cursor.fetchone()
@@ -1587,7 +1628,9 @@ def get_auto_entry_settings():
                         "min_ask": float(strategy_result[13]) if strategy_result[13] is not None else 0.0000,
                         "max_ask": float(strategy_result[14]) if strategy_result[14] is not None else 0.9800,
                         "max_price_spread": float(strategy_result[15]) if strategy_result[15] is not None else 0.0300,
-                        "prob_adj": float(strategy_result[16]) if strategy_result[16] is not None else 5.00
+                        "prob_adj": float(strategy_result[16]) if strategy_result[16] is not None else 5.00,
+                        "min_cooldown_timer": strategy_result[17] if strategy_result[17] is not None else None,
+                        "max_cooldown_timer": strategy_result[18] if strategy_result[18] is not None else None
                     }
                     
                     # Check for settings changes
