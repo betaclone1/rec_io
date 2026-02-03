@@ -3471,6 +3471,47 @@ def check_auto_entry_conditions_momentum_contain():
         if not spike_alert_active:
             return
         
+        # COOLDOWN TIMER CHECK - Validate cooldown_timer is within activation window
+        # This prevents entry when cooldown_timer is outside min/max parameters
+        min_cooldown_timer = settings.get("min_cooldown_timer")
+        max_cooldown_timer = settings.get("max_cooldown_timer")
+        
+        # If either min or max is set, check cooldown_timer is within window
+        if min_cooldown_timer is not None or max_cooldown_timer is not None:
+            # Get cooldown_timer from database
+            cooldown_timer = None
+            try:
+                import psycopg2
+                conn = psycopg2.connect(
+                    host=os.getenv('POSTGRES_HOST', 'localhost'),
+                    database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+                    user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+                    password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+                )
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+                    result = cursor.fetchone()
+                    cooldown_timer = result[0] if result and result[0] is not None else None
+                conn.close()
+            except Exception as e:
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ Error getting cooldown timer: {e}")
+            
+            # If cooldown_timer is NULL, cannot determine - skip entry
+            if cooldown_timer is None:
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ cooldown_timer is NULL - skipping entry")
+                return
+            
+            # Check if cooldown_timer is within the activation window
+            # If min is set, cooldown_timer must be >= min (not too close to spike)
+            if min_cooldown_timer is not None and cooldown_timer < min_cooldown_timer:
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ cooldown_timer ({cooldown_timer}) < min_cooldown_timer ({min_cooldown_timer}) - too close to momentum spike - skipping entry")
+                return
+            
+            # If max is set, cooldown_timer must be <= max (not too far after spike)
+            if max_cooldown_timer is not None and cooldown_timer > max_cooldown_timer:
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ cooldown_timer ({cooldown_timer}) > max_cooldown_timer ({max_cooldown_timer}) - too far after spike regime has ended - skipping entry")
+                return
+        
         # If we've already entered trades for this spike activation, do nothing
         if momentum_contain_trades_entered:
             return
