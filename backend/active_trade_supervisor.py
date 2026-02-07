@@ -524,12 +524,17 @@ def handle_trade_manager_notification():
                 log(f"❌ Failed to add pending trade: {trade_id}")
                 
         elif status == 'open':
-            # Confirm pending trade as open
+            # Try to confirm pending trade first, if that fails, add as new active trade
             success = confirm_pending_trade(trade_id, ticket_id)
             if success:
                 log(f"✅ Successfully confirmed pending trade as open: {trade_id}")
             else:
-                log(f"❌ Failed to confirm pending trade as open: {trade_id}")
+                # Trade was created directly as 'open', add it as new active trade
+                success = add_new_active_trade(trade_id, ticket_id)
+                if success:
+                    log(f"✅ Successfully added new active trade: {trade_id}")
+                else:
+                    log(f"❌ Failed to add new active trade: {trade_id}")
                 
         elif status == 'error':
             # Remove failed trade (any status) from active_trades.db
