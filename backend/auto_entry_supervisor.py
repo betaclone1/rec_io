@@ -2497,10 +2497,11 @@ def check_auto_entry_conditions():
         
         # MARKET HOURS CHECK: Kalshi markets closed 00:00-08:00 EST
         # Skip trade entry during closed hours, but spike monitoring continues above
-        now_est = datetime.now(ZoneInfo("America/New_York"))
-        current_hour = now_est.hour
-        if 0 <= current_hour < 8:  # Between midnight and 8am EST
-            return  # Skip trade entry checks during closed hours (spike monitoring already done)
+        # COMMENTED OUT: Time restriction disabled - auto_entry_supervisor can now find entries during these hours
+        # now_est = datetime.now(ZoneInfo("America/New_York"))
+        # current_hour = now_est.hour
+        # if 0 <= current_hour < 8:  # Between midnight and 8am EST
+        #     return  # Skip trade entry checks during closed hours (spike monitoring already done)
         
         strategy = get_trade_strategy()
         
