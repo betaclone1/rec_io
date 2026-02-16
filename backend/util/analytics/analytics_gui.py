@@ -718,6 +718,7 @@ class AnalyticsGUI:
             dump_process.stdout.close()
             
             restore_output, restore_error = restore_process.communicate()
+            dump_process.wait()  # must wait so returncode is set; otherwise it stays None and we falsely report "Failed to dump"
             dump_error = dump_process.stderr.read()
             
             if restore_process.returncode != 0:
