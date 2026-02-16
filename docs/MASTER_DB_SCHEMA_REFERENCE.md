@@ -8046,6 +8046,8 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `momentum_percentile` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(15,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `movement` | `numeric(10,4)` | YES | - | Composite intra-candle range score (weighted (H-L)/O and rolling means). NULL for first 30 rows. |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile of movement vs analytics.btc_movement_profile (0.5–99.5). Movement profile tables use column **movement_value** for the value at each percentile. |
 
 #### Constraints
 
@@ -8080,6 +8082,8 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `momentum_percentile` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(15,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `movement` | `numeric(10,4)` | YES | - | Composite intra-candle range score (weighted (H-L)/O and rolling means). NULL for first 30 rows. |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile of movement vs analytics.eth_movement_profile (0.5–99.5). Movement profile tables use column **movement_value** for the value at each percentile. |
 
 #### Constraints
 
@@ -8114,6 +8118,8 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `momentum_percentile` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(15,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `movement` | `numeric(10,4)` | YES | - | Composite intra-candle range score (weighted (H-L)/O and rolling means). NULL for first 30 rows. |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile of movement vs analytics.ndx_movement_profile (0.5–99.5). Movement profile tables use column **movement_value** for the value at each percentile. |
 
 #### Constraints
 
@@ -8148,6 +8154,8 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `momentum_percentile` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(15,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `movement` | `numeric(10,4)` | YES | - | Composite intra-candle range score (weighted (H-L)/O and rolling means). NULL for first 30 rows. |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile of movement vs analytics.spx_movement_profile (0.5–99.5). Movement profile tables use column **movement_value** for the value at each percentile. |
 
 #### Constraints
 
@@ -8243,6 +8251,8 @@ For more details, see: `scripts/README_db_schema_migration.md`
 
 ### Table: `live_data.live_price_log_1s_btc`
 
+**Population (movement columns):** `move_1m` … `move_30m`, `movement`, and `movement_percentile` are written by `backend/symbol_price_watchdog.py` on each tick. High/low/open per window are derived from ticks in the same table; the weighted composite and percentile use `analytics.{symbol}_movement_profile` (which has column **movement_value** at each percentile). Same applies to `live_price_log_1s_eth`, `live_price_log_1s_spx`, and `live_price_log_1s_ndx`.
+
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
@@ -8262,6 +8272,14 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `momentum_30s_avg` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(10,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `move_1m` | `numeric(10,4)` | YES | - | Raw movement (high-low)/open for last 1m window. |
+| `move_2m` | `numeric(10,4)` | YES | - | Raw movement for last 2m window. |
+| `move_3m` | `numeric(10,4)` | YES | - | Raw movement for last 3m window. |
+| `move_4m` | `numeric(10,4)` | YES | - | Raw movement for last 4m window. |
+| `move_15m` | `numeric(10,4)` | YES | - | Raw movement for last 15m window. |
+| `move_30m` | `numeric(10,4)` | YES | - | Raw movement for last 30m window. |
+| `movement` | `numeric(10,4)` | YES | - | Weighted composite of move_1m..move_30m (same weights as momentum). |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile from analytics movement profile (0.5–99.5). |
 
 #### Constraints
 
@@ -8301,6 +8319,14 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `momentum_30s_avg` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(10,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `move_1m` | `numeric(10,4)` | YES | - | Raw movement (high-low)/open for last 1m window. |
+| `move_2m` | `numeric(10,4)` | YES | - | Raw movement for last 2m window. |
+| `move_3m` | `numeric(10,4)` | YES | - | Raw movement for last 3m window. |
+| `move_4m` | `numeric(10,4)` | YES | - | Raw movement for last 4m window. |
+| `move_15m` | `numeric(10,4)` | YES | - | Raw movement for last 15m window. |
+| `move_30m` | `numeric(10,4)` | YES | - | Raw movement for last 30m window. |
+| `movement` | `numeric(10,4)` | YES | - | Weighted composite of move_1m..move_30m (same weights as momentum). |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile from analytics movement profile (0.5–99.5). |
 
 #### Constraints
 
@@ -8340,6 +8366,14 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `momentum_30s_avg` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(10,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `move_1m` | `numeric(10,4)` | YES | - | Raw movement (high-low)/open for last 1m window. |
+| `move_2m` | `numeric(10,4)` | YES | - | Raw movement for last 2m window. |
+| `move_3m` | `numeric(10,4)` | YES | - | Raw movement for last 3m window. |
+| `move_4m` | `numeric(10,4)` | YES | - | Raw movement for last 4m window. |
+| `move_15m` | `numeric(10,4)` | YES | - | Raw movement for last 15m window. |
+| `move_30m` | `numeric(10,4)` | YES | - | Raw movement for last 30m window. |
+| `movement` | `numeric(10,4)` | YES | - | Weighted composite of move_1m..move_30m (same weights as momentum). |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile from analytics movement profile (0.5–99.5). |
 
 #### Constraints
 
@@ -8379,6 +8413,14 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `momentum_30s_avg` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(10,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `move_1m` | `numeric(10,4)` | YES | - | Raw movement (high-low)/open for last 1m window. |
+| `move_2m` | `numeric(10,4)` | YES | - | Raw movement for last 2m window. |
+| `move_3m` | `numeric(10,4)` | YES | - | Raw movement for last 3m window. |
+| `move_4m` | `numeric(10,4)` | YES | - | Raw movement for last 4m window. |
+| `move_15m` | `numeric(10,4)` | YES | - | Raw movement for last 15m window. |
+| `move_30m` | `numeric(10,4)` | YES | - | Raw movement for last 30m window. |
+| `movement` | `numeric(10,4)` | YES | - | Weighted composite of move_1m..move_30m (same weights as momentum). |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile from analytics movement profile (0.5–99.5). |
 
 #### Constraints
 
@@ -8697,6 +8739,10 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `no_bid_dollars` | `text` | YES | - | |
 | `yes_price_spread` | `numeric(6,4)` | YES | - | |
 | `no_price_spread` | `numeric(6,4)` | YES | - | |
+| `volatility` | `numeric(10,6)` | YES | - | From live price log; current-minute volatility. |
+| `volatility_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics volatility profile. |
+| `movement` | `numeric(10,4)` | YES | - | From live price log; weighted composite (H-L)/O. |
+| `movement_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics movement profile. |
 
 #### Constraints
 
@@ -8756,6 +8802,10 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `no_bid_dollars` | `text` | YES | - | |
 | `yes_price_spread` | `numeric(6,4)` | YES | - | |
 | `no_price_spread` | `numeric(6,4)` | YES | - | |
+| `volatility` | `numeric(10,6)` | YES | - | From live price log; current-minute volatility. |
+| `volatility_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics volatility profile. |
+| `movement` | `numeric(10,4)` | YES | - | From live price log; weighted composite (H-L)/O. |
+| `movement_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics movement profile. |
 
 #### Constraints
 
@@ -8810,6 +8860,10 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `no_bid_dollars` | `text` | YES | - | |
 | `yes_price_spread` | `numeric(6,4)` | YES | - | |
 | `no_price_spread` | `numeric(6,4)` | YES | - | |
+| `volatility` | `numeric(10,6)` | YES | - | From live price log; current-minute volatility. |
+| `volatility_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics volatility profile. |
+| `movement` | `numeric(10,4)` | YES | - | From live price log; weighted composite (H-L)/O. |
+| `movement_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics movement profile. |
 
 #### Constraints
 
@@ -8877,6 +8931,10 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `no_bid_dollars` | `text` | YES | - | |
 | `yes_price_spread` | `numeric(6,4)` | YES | - | |
 | `no_price_spread` | `numeric(6,4)` | YES | - | |
+| `volatility` | `numeric(10,6)` | YES | - | From live price log; current-minute volatility. |
+| `volatility_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics volatility profile. |
+| `movement` | `numeric(10,4)` | YES | - | From live price log; weighted composite (H-L)/O. |
+| `movement_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics movement profile. |
 
 #### Constraints
 
@@ -10187,6 +10245,9 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `symbol_close` | `real(24)` | YES | - | |
 | `momentum` | `integer(32)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `volatility` | `numeric(10,4)` | YES | - | Raw volatility at trade time (same format as momentum in price history). |
+| `movement` | `numeric(10,4)` | YES | - | Composite intra-candle movement at trade time (same format as momentum). |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Movement percentile 0.5–99.5 (same format as momentum_percentile). |
 | `win_loss` | `text` | YES | - | |
 | `ticker` | `text` | YES | - | |
 | `ticket_id` | `text` | YES | - | |

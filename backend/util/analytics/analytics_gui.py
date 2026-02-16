@@ -93,17 +93,13 @@ class AnalyticsGUI:
         self.step_vars = {}
         steps = [
             ("1. Update Price Logs", "update_price_logs"),
-            ("2. Generate Momentum", "generate_momentum"),
-            ("2b. Generate Volatility", "generate_volatility"),
-            ("3. Generate Profiles", "generate_profiles"),
-            ("3b. Generate Volatility Profiles", "generate_volatility_profiles"),
-            ("4. Assign Percentiles", "assign_percentiles"),
-            ("4b. Assign Volatility Percentiles", "assign_volatility_percentiles"),
-            ("5. Verify Data", "verify_data"),
-            ("6. Archive Fingerprints", "archive_fingerprints"),
-            ("7. Generate Fingerprints", "generate_fingerprints"),
-            ("8. Generate Lookup Tables", "generate_lookup_tables"),
-            ("9. Create Master Tables", "create_master_lookup_tables")
+            ("2. Generate Profiles", "generate_profiles"),
+            ("3. Assign Percentiles", "assign_percentiles"),
+            ("4. Verify Data", "verify_data"),
+            ("5. Archive Fingerprints", "archive_fingerprints"),
+            ("6. Generate Fingerprints", "generate_fingerprints"),
+            ("7. Generate Lookup Tables", "generate_lookup_tables"),
+            ("8. Create Master Tables", "create_master_lookup_tables")
         ]
         
         for i, (label, key) in enumerate(steps):

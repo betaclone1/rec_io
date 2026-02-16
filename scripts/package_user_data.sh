@@ -21,6 +21,34 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Resolve pg_dump so we work when run by backend (no PATH to Postgres bin)
+PG_DUMP=""
+if command -v pg_dump >/dev/null 2>&1; then
+  PG_DUMP="pg_dump"
+fi
+if [ -z "$PG_DUMP" ] && [ -d /opt/homebrew/opt ]; then
+  for f in /opt/homebrew/opt/postgresql@*/bin/pg_dump; do
+    if [ -x "$f" ]; then PG_DUMP="$f"; break; fi
+  done
+fi
+if [ -z "$PG_DUMP" ]; then
+  [ -x /opt/homebrew/bin/pg_dump ] && PG_DUMP="/opt/homebrew/bin/pg_dump"
+fi
+if [ -z "$PG_DUMP" ]; then
+  [ -x /usr/local/bin/pg_dump ] && PG_DUMP="/usr/local/bin/pg_dump"
+fi
+if [ -z "$PG_DUMP" ]; then
+  [ -x /usr/bin/pg_dump ] && PG_DUMP="/usr/bin/pg_dump"
+fi
+if [ -z "$PG_DUMP" ]; then
+  [ -x /Applications/Postgres.app/Contents/Versions/latest/bin/pg_dump ] && PG_DUMP="/Applications/Postgres.app/Contents/Versions/latest/bin/pg_dump"
+fi
+if [ -z "$PG_DUMP" ]; then
+  echo "[PACKAGE] pg_dump not found. Install PostgreSQL client or add its bin to PATH." >&2
+  exit 1
+fi
+export PG_DUMP
+
 # Function to print colored output
 print_status() {
     echo -e "${BLUE}[PACKAGE]${NC} $1"
@@ -83,7 +111,7 @@ backup_database() {
     
     if [[ "$BACKUP_TYPE" == "user" ]]; then
         # User data only - backup only the users schema
-        if pg_dump -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --create --schema=users > "$DB_BACKUP_FILE"; then
+        if "$PG_DUMP" -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --create --schema=users > "$DB_BACKUP_FILE"; then
             print_success "User schema backup created: $DB_BACKUP_FILE"
         else
             print_error "User schema backup failed"
@@ -91,7 +119,7 @@ backup_database() {
         fi
     else
         # Full backup - entire database
-        if pg_dump -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --create > "$DB_BACKUP_FILE"; then
+        if "$PG_DUMP" -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --create > "$DB_BACKUP_FILE"; then
             print_success "Full database backup created: $DB_BACKUP_FILE"
         else
             print_error "Full database backup failed"

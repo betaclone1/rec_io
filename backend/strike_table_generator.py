@@ -448,6 +448,10 @@ class StrikeTableGenerator:
                 active_side VARCHAR(10),
                 momentum_weighted_score DECIMAL(5,3),
                 momentum_percentile DECIMAL(5,1),
+                volatility NUMERIC(10,6),
+                volatility_percentile NUMERIC(5,1),
+                movement NUMERIC(10,4),
+                movement_percentile NUMERIC(5,1),
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             )
             """
@@ -459,7 +463,11 @@ class StrikeTableGenerator:
                 ("yes_bid_dollars", "TEXT"),
                 ("no_bid_dollars", "TEXT"),
                 ("yes_price_spread", "NUMERIC(6,4)"),
-                ("no_price_spread", "NUMERIC(6,4)")
+                ("no_price_spread", "NUMERIC(6,4)"),
+                ("volatility", "NUMERIC(10,6)"),
+                ("volatility_percentile", "NUMERIC(5,1)"),
+                ("movement", "NUMERIC(10,4)"),
+                ("movement_percentile", "NUMERIC(5,1)"),
             ]
             
             for column_name, column_type in missing_columns:
@@ -497,8 +505,9 @@ class StrikeTableGenerator:
             cursor = conn.cursor()
             
             cursor.execute(f"""
-            SELECT price, momentum, momentum_percentile FROM live_data.live_price_log_1s_{self.symbol} 
-            ORDER BY timestamp DESC 
+            SELECT price, momentum, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile
+            FROM live_data.live_price_log_1s_{self.symbol}
+            ORDER BY timestamp DESC
             LIMIT 1
             """)
             
@@ -509,6 +518,10 @@ class StrikeTableGenerator:
             current_price = float(result[0])
             momentum_score = float(result[1]) if result[1] is not None else 0.0
             momentum_percentile = float(result[2]) if result[2] is not None else 0.0
+            volatility = float(result[3]) if result[3] is not None else None
+            volatility_percentile = float(result[4]) if result[4] is not None else None
+            movement = float(result[5]) if result[5] is not None else None
+            movement_percentile = float(result[6]) if result[6] is not None else None
             
             conn.close()
             
@@ -519,6 +532,10 @@ class StrikeTableGenerator:
                 "current_price": current_price,
                 "momentum_score": momentum_score,
                 "momentum_percentile": momentum_percentile,
+                "volatility": volatility,
+                "volatility_percentile": volatility_percentile,
+                "movement": movement,
+                "movement_percentile": movement_percentile,
                 "market_data": market_data
             }
             
@@ -711,6 +728,10 @@ class StrikeTableGenerator:
             current_price = market_info["current_price"]
             momentum_score = market_info["momentum_score"]
             momentum_percentile = market_info["momentum_percentile"]
+            volatility = market_info.get("volatility")
+            volatility_percentile = market_info.get("volatility_percentile")
+            movement = market_info.get("movement")
+            movement_percentile = market_info.get("movement_percentile")
             market_data = market_info["market_data"]
             logger.info(f"✅ Got market data - Price: ${current_price:,.2f}, Momentum: {momentum_percentile:.1f}")
             
@@ -863,13 +884,14 @@ class StrikeTableGenerator:
                     
                     # Insert into database
                     cursor.execute(f"""
-                    INSERT INTO live_data.strike_table_{self.symbol.lower()} 
+                    INSERT INTO live_data.strike_table_{self.symbol.lower()}
                     (symbol, current_price, ttc_seconds, broker, event_ticker, market_title,
                      strike_tier, market_status, strike, buffer, buffer_pct, probability,
                      yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
-                     yes_price_spread, no_price_spread, yes_diff, no_diff, volume, ticker, active_side, 
-                     momentum_weighted_score, momentum_percentile, timestamp, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     yes_price_spread, no_price_spread, yes_diff, no_diff, volume, ticker, active_side,
+                     momentum_weighted_score, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile,
+                     timestamp, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
                         self.symbol.upper(), current_price, ttc_seconds, "Kalshi",
                         market_data.get("event_ticker"), market_title,
@@ -878,6 +900,7 @@ class StrikeTableGenerator:
                         yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
                         yes_price_spread, no_price_spread, yes_diff, no_diff,
                         volume, ticker, active_side, momentum_score, momentum_percentile,
+                        volatility, volatility_percentile, movement, movement_percentile,
                         datetime.now(), datetime.now()
                     ))
                     
@@ -926,7 +949,8 @@ class StrikeTableGenerator:
             cursor.execute(f"""
             SELECT symbol, current_price, ttc_seconds, broker, event_ticker, market_title,
                    strike_tier, market_status, strike, buffer, buffer_pct, probability,
-                   yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume, ticker, active_side, momentum_percentile
+                   yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume, ticker, active_side,
+                   momentum_percentile, volatility, volatility_percentile, movement, movement_percentile
             FROM live_data.strike_table_{self.symbol.lower()}
             WHERE timestamp = %s
             ORDER BY strike
@@ -938,6 +962,7 @@ class StrikeTableGenerator:
                 return None
 
             # Convert to JSON format matching the current UPC output
+            # Column indices: 0-7 symbol..market_status, 8-20 strike..active_side, 21 momentum_percentile, 22-25 volatility, volatility_percentile, movement, movement_percentile
             result = {
                 "symbol": rows[0][0],
                 "current_price": float(rows[0][1]),
@@ -968,10 +993,14 @@ class StrikeTableGenerator:
                     "active_side": row[20]
                 })
             
-            # Add momentum data
+            # Add momentum and market context (from first row; same for all strikes at this timestamp)
             result["momentum"] = {
-                "weighted_score": float(rows[0][21]) if rows[0][21] is not None else 0.0
+                "percentile": float(rows[0][21]) if rows[0][21] is not None else None
             }
+            result["volatility"] = float(rows[0][22]) if rows[0][22] is not None else None
+            result["volatility_percentile"] = float(rows[0][23]) if rows[0][23] is not None else None
+            result["movement"] = float(rows[0][24]) if rows[0][24] is not None else None
+            result["movement_percentile"] = float(rows[0][25]) if rows[0][25] is not None else None
             
             return result
             

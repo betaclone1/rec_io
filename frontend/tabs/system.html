@@ -1581,13 +1581,9 @@
                         
                         if (backupMatch) {
                             const backupFileName = backupMatch[0];
-                            const backupPath = `/opt/rec_io_server/backup/${backupFileName}`;
-                            
                             console.log('Found backup file:', backupFileName);
-                            console.log('Backup path:', backupPath);
-                            
-                            // Automatically trigger download
-                            downloadBackupFile(backupPath, backupFileName);
+                            // Use filename only; backend resolves to project/backup/
+                            downloadBackupFile(backupFileName);
                         } else {
                             console.log('Could not find backup filename in output');
                             document.getElementById('backupStatus').textContent = 'Backup created but could not determine file location. Check the backup directory.';
@@ -1597,9 +1593,8 @@
                         
                     } else {
                         document.getElementById('backupProgressFill').style.width = '100%';
-                        document.getElementById('backupStatus').textContent = `Backup failed: ${result.error}`;
-                        
-
+                        const detail = result.output ? `\n${result.output}` : '';
+                        document.getElementById('backupStatus').textContent = `Backup failed: ${result.error}${detail}`;
                     }
                 } else {
                     document.getElementById('backupProgressFill').style.width = '100%';
@@ -1611,19 +1606,15 @@
             }
         }
         
-        async function downloadBackupFile(backupPath, fileName) {
+        async function downloadBackupFile(fileName) {
             try {
-                // Show download starting
                 document.getElementById('backupStatus').textContent = 'Starting download...';
-                
                 const response = await fetch(window.location.origin + '/api/admin/download-file', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ 
-                        file_path: backupPath 
-                    })
+                    body: JSON.stringify({ file: fileName })
                 });
                 
                 if (response.ok) {

@@ -30,6 +30,7 @@ sys.path.append(os.path.dirname(__file__))
 
 from symbol_data_fetch_pg import update_existing_db
 from momentum_generator_pg import fill_missing_momentum_in_db
+from movement_generator_pg import fill_missing_movement_in_db
 from symbol_profiler import SymbolProfiler
 
 # Configure logging
@@ -157,6 +158,24 @@ def generate_momentum_scores(logger, symbols):
             processed_symbols.append(symbol)
     
     logger.info(f"Momentum generation completed for {len(processed_symbols)} symbols")
+    return processed_symbols
+
+def generate_movement_scores(logger, symbols):
+    """Step 2a: Generate movement scores for all symbols (right after momentum)."""
+    logger.info("📈 Step 2a: Generating movement scores for all symbols")
+    processed_symbols = []
+    for symbol in symbols:
+        try:
+            logger.info(f"Generating movement for {symbol}...")
+            fill_missing_movement_in_db(symbol)
+            logger.info(f"✅ {symbol} movement generation completed")
+            processed_symbols.append(symbol)
+            import gc
+            gc.collect()
+        except Exception as e:
+            logger.error(f"❌ Error generating movement for {symbol}: {e}")
+            processed_symbols.append(symbol)
+    logger.info(f"Movement generation completed for {len(processed_symbols)} symbols")
     return processed_symbols
 
 def generate_daily_profiles(logger, symbols):
@@ -374,9 +393,14 @@ def main():
         results['momentum_symbols'] = generate_momentum_scores(logger, results['updated_symbols'])
         log_step(logger, "Momentum score generation", step_start)
         
+        # Step 2a: Generate movement scores (right after momentum)
+        step_start = log_step(logger, "Movement score generation")
+        results['movement_symbols'] = generate_movement_scores(logger, results['momentum_symbols'])
+        log_step(logger, "Movement score generation", step_start)
+        
         # Step 3: Generate daily profiles
         step_start = log_step(logger, "Daily profile generation")
-        results['profile_symbols'] = generate_daily_profiles(logger, results['momentum_symbols'])
+        results['profile_symbols'] = generate_daily_profiles(logger, results['movement_symbols'])
         log_step(logger, "Daily profile generation", step_start)
         
         # Step 4: Clean up old profiles

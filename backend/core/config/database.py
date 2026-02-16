@@ -108,7 +108,10 @@ def init_database():
                 test_filter BOOLEAN DEFAULT FALSE,
                 notes TEXT,
                 ret_pct REAL,
-                momentum_5s_avg NUMERIC
+                momentum_5s_avg NUMERIC,
+                volatility NUMERIC(10,4),
+                movement NUMERIC(10,4),
+                movement_percentile NUMERIC(5,1)
             );
         """)
 
@@ -289,6 +292,32 @@ def init_database():
                     ALTER TABLE users.trades_0001 ADD COLUMN momentum_5s_avg NUMERIC;
                 END IF;
 
+                -- Add volatility (raw), movement, movement_percentile - same format as momentum / momentum_percentile
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'volatility'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN volatility NUMERIC(10,4);
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'movement'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN movement NUMERIC(10,4);
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'movement_percentile'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN movement_percentile NUMERIC(5,1);
+                END IF;
+
                 -- Add order_id column if it doesn't exist (legacy, before order_id_open/order_id_close)
                 IF NOT EXISTS (
                     SELECT 1 FROM information_schema.columns
@@ -390,7 +419,15 @@ def init_database():
                 delta_3m DECIMAL(10,4),
                 delta_4m DECIMAL(10,4),
                 delta_15m DECIMAL(10,4),
-                delta_30m DECIMAL(10,4)
+                delta_30m DECIMAL(10,4),
+                move_1m DECIMAL(10,4),
+                move_2m DECIMAL(10,4),
+                move_3m DECIMAL(10,4),
+                move_4m DECIMAL(10,4),
+                move_15m DECIMAL(10,4),
+                move_30m DECIMAL(10,4),
+                movement DECIMAL(10,4),
+                movement_percentile DECIMAL(5,1)
             );
         """)
         
@@ -405,8 +442,74 @@ def init_database():
                 delta_3m DECIMAL(10,4),
                 delta_4m DECIMAL(10,4),
                 delta_15m DECIMAL(10,4),
-                delta_30m DECIMAL(10,4)
+                delta_30m DECIMAL(10,4),
+                move_1m DECIMAL(10,4),
+                move_2m DECIMAL(10,4),
+                move_3m DECIMAL(10,4),
+                move_4m DECIMAL(10,4),
+                move_15m DECIMAL(10,4),
+                move_30m DECIMAL(10,4),
+                movement DECIMAL(10,4),
+                movement_percentile DECIMAL(5,1)
             );
+        """)
+        
+        # Ensure movement columns exist on live_price_log tables (btc, eth, spx, ndx)
+        cursor.execute("""
+            DO $$
+            DECLARE
+                t text;
+                c text;
+                ty text;
+                tbl regclass;
+            BEGIN
+                FOREACH t IN ARRAY ARRAY['live_price_log_1s_btc','live_price_log_1s_eth','live_price_log_1s_spx','live_price_log_1s_ndx'] LOOP
+                    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'live_data' AND table_name = t) THEN
+                        FOREACH c IN ARRAY ARRAY['move_1m','move_2m','move_3m','move_4m','move_15m','move_30m','movement','movement_percentile'] LOOP
+                            IF c = 'movement_percentile' THEN ty := 'DECIMAL(5,1)'; ELSE ty := 'DECIMAL(10,4)'; END IF;
+                            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'live_data' AND table_name = t AND column_name = c) THEN
+                                EXECUTE format('ALTER TABLE live_data.%I ADD COLUMN %I ' || ty, t, c);
+                            END IF;
+                        END LOOP;
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+        
+        # Add volatility and movement columns to strike tables (btc, eth, spx, ndx)
+        cursor.execute("""
+            DO $$
+            DECLARE
+                t text;
+                r record;
+            BEGIN
+                FOREACH t IN ARRAY ARRAY['strike_table_btc','strike_table_eth','strike_table_spx','strike_table_ndx'] LOOP
+                    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'live_data' AND table_name = t) THEN
+                        FOR r IN (SELECT unnest(ARRAY['volatility','volatility_percentile','movement','movement_percentile']) AS col,
+                                         unnest(ARRAY['NUMERIC(10,6)','NUMERIC(5,1)','NUMERIC(10,4)','NUMERIC(5,1)']) AS typ) LOOP
+                            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'live_data' AND table_name = t AND column_name = r.col) THEN
+                                EXECUTE format('ALTER TABLE live_data.%I ADD COLUMN %I ' || r.typ, t, r.col);
+                            END IF;
+                        END LOOP;
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+        
+        # Rename momentum_value -> movement_value in all analytics movement profile tables
+        cursor.execute("""
+            DO $$
+            DECLARE
+                r record;
+            BEGIN
+                FOR r IN (SELECT table_name FROM information_schema.tables
+                          WHERE table_schema = 'analytics' AND table_name LIKE '%_movement_profile%') LOOP
+                    IF EXISTS (SELECT 1 FROM information_schema.columns
+                               WHERE table_schema = 'analytics' AND table_name = r.table_name AND column_name = 'momentum_value') THEN
+                        EXECUTE format('ALTER TABLE analytics.%I RENAME COLUMN momentum_value TO movement_value', r.table_name);
+                    END IF;
+                END LOOP;
+            END $$;
         """)
         
         cursor.execute("""

@@ -4227,10 +4227,10 @@ async def execute_command(request: dict):
         
         os.chdir(project_dir)
         
-        # Set up environment with proper PATH
         env = os.environ.copy()
-        # Add common paths for both macOS and Ubuntu
-        env['PATH'] = '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin'
+        # Only restrict PATH for non-backup commands so supervisorctl etc. use a minimal PATH
+        if 'package_user_data.sh' not in command:
+            env['PATH'] = '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin'
         
         # Check if this is a supervisorctl command
         if command.startswith('supervisorctl'):
@@ -4262,23 +4262,40 @@ async def execute_command(request: dict):
             else:
                 return {"success": False, "error": "Invalid supervisorctl command"}
         else:
-            # Execute other commands normally
-            # Use longer timeout for backup operations
             timeout = 300 if 'package_user_data.sh' in command else 30
-            
-            result = subprocess.run(
-                command.split(),
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=env,
-                cwd=project_dir
-            )
+            # Backup script: run with PATH that can find pg_dump (IDE/launcher often don't have it)
+            if 'package_user_data.sh' in command:
+                import shlex
+                run_cmd = ['/bin/bash', '-l', '-c', f'cd {shlex.quote(project_dir)} && {command}']
+                backup_env = env.copy()
+                extra_paths = '/opt/homebrew/bin:/usr/local/bin:/usr/bin'
+                backup_env['PATH'] = (backup_env.get('PATH') or '') + ':' + extra_paths
+                result = subprocess.run(
+                    run_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    cwd=project_dir,
+                    env=backup_env,
+                )
+            else:
+                result = subprocess.run(
+                    command.split(),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    env=env,
+                    cwd=project_dir
+                )
         
         if result.returncode == 0:
             return {"success": True, "output": result.stdout}
         else:
-            return {"success": False, "error": f"Command failed with return code {result.returncode}", "output": result.stderr}
+            err_detail = (result.stderr or "").strip() or (result.stdout or "").strip()
+            err_msg = f"Command failed with return code {result.returncode}"
+            if err_detail:
+                err_msg += f". {err_detail[:500]}"
+            return {"success": False, "error": err_msg, "output": result.stderr or result.stdout}
             
     except subprocess.TimeoutExpired:
         return {"success": False, "error": "Command timed out after 5 minutes"}
@@ -4459,11 +4476,16 @@ async def download_file(request: dict):
         
         file_path = request.get("file_path", "")
         if not file_path:
-            return {"success": False, "error": "No file path provided"}
-        
-        # Security check: ensure the file is within the project directory
-        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        file_path = os.path.abspath(file_path)
+            # Allow filename-only for backup files (resolved under project/backup)
+            file_name = request.get("file", "").strip()
+            if file_name:
+                project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                file_path = os.path.join(project_dir, "backup", file_name)
+            else:
+                return {"success": False, "error": "No file path or file name provided"}
+        if file_path:
+            project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            file_path = os.path.abspath(file_path)
         
         if not file_path.startswith(project_dir):
             return {"success": False, "error": "Access denied: File path outside project directory"}

@@ -14,6 +14,69 @@ This document tracks all PostgreSQL database modifications made to the trading s
 
 ## Change History
 
+### 2026-02-14 - Add movement columns to live price log tables (1s) and watchdog write
+- **Change Type**: SCHEMA_ADDITION
+- **Description**: Added eight movement-related columns to all four live 1s price log tables (btc, eth, spx, ndx): `move_1m`, `move_2m`, `move_3m`, `move_4m`, `move_15m`, `move_30m`, `movement`, `movement_percentile`. The symbol price watchdog now computes and writes these on each tick (tick-derived high/low/open per window, weighted composite, percentile from analytics movement profile).
+- **SQL Commands**:
+```sql
+-- Add movement columns to all live_price_log_1s_* tables
+ALTER TABLE live_data.live_price_log_1s_btc ADD COLUMN IF NOT EXISTS move_1m numeric(10,4);
+ALTER TABLE live_data.live_price_log_1s_btc ADD COLUMN IF NOT EXISTS move_2m numeric(10,4);
+ALTER TABLE live_data.live_price_log_1s_btc ADD COLUMN IF NOT EXISTS move_3m numeric(10,4);
+ALTER TABLE live_data.live_price_log_1s_btc ADD COLUMN IF NOT EXISTS move_4m numeric(10,4);
+ALTER TABLE live_data.live_price_log_1s_btc ADD COLUMN IF NOT EXISTS move_15m numeric(10,4);
+ALTER TABLE live_data.live_price_log_1s_btc ADD COLUMN IF NOT EXISTS move_30m numeric(10,4);
+ALTER TABLE live_data.live_price_log_1s_btc ADD COLUMN IF NOT EXISTS movement numeric(10,4);
+ALTER TABLE live_data.live_price_log_1s_btc ADD COLUMN IF NOT EXISTS movement_percentile numeric(5,1);
+-- Repeat for live_price_log_1s_eth, live_price_log_1s_spx, live_price_log_1s_ndx (same column set).
+```
+- **Files Modified**:
+  - `backend/core/config/database.py` (CREATE/ALTER for new columns on all four tables)
+  - `backend/symbol_price_watchdog.py` (load_movement_profile, calculate_movement_percentile, get_high_low_open_for_window, calculate_move_for_window, get_movement_data; insert_tick extended; movement profile pre-load in log_symbol_price and handle_yahoo_finance_symbol)
+  - `docs/MASTER_DB_SCHEMA_REFERENCE.md` (movement columns documented for live 1s tables)
+  - `docs/PRODUCTION_DB_SCHEMA_AND_BACKFILL_MASTER.md` (live movement population and process)
+- **Files Added**:
+  - `backend/test_watchdog_movement.py` (test script: insert_tick then verify movement columns; run with `python -m backend.test_watchdog_movement` from project root)
+- **Status**: PENDING
+- **Notes**:
+  - No backfill: new rows get movement values as the watchdog runs; older rows keep NULL for these columns unless overwritten by conflict update.
+  - Movement profile source: `analytics.{symbol}_movement_profile` or latest `analytics.{symbol}_movement_profile_YYYYMMDD`. Symbols without a profile (e.g. SPX/NDX) have NULL `movement_percentile`.
+  - Weights match momentum: 1m 0.3, 2m 0.25, 3m 0.2, 4m 0.15, 15m 0.05, 30m 0.05.
+
+### 2026-02-14 - Rename momentum_value to movement_value in movement profile tables
+- **Change Type**: SCHEMA_MODIFICATION
+- **Description**: Renamed column `momentum_value` to `movement_value` in all analytics movement profile tables (`analytics.{symbol}_movement_profile` and `analytics.{symbol}_movement_profile_YYYYMMDD`). The column holds movement values; the name now matches. Momentum profile tables are unchanged (they keep `momentum_value`).
+- **SQL Commands** (per table; migration in database.py runs this for all matching tables):
+```sql
+-- For each table in analytics where table_name LIKE '%_movement_profile%':
+ALTER TABLE analytics.<table_name> RENAME COLUMN momentum_value TO movement_value;
+```
+- **Files Modified**:
+  - `backend/core/config/database.py` (migration in init_database: rename column in all analytics.*_movement_profile* tables)
+  - `backend/util/analytics/symbol_profiler.py` (create_movement_profile_table, insert_movement_profile_data, generate_movement_profile, assign_movement_percentiles — use movement_value)
+  - `backend/symbol_price_watchdog.py` (load_movement_profile: SELECT movement_value)
+  - `docs/MASTER_DB_SCHEMA_REFERENCE.md`, `docs/PRODUCTION_DB_SCHEMA_AND_BACKFILL_MASTER.md` (document movement_value)
+- **Status**: PENDING
+- **Notes**: Run `init_database()` to apply the rename to existing tables. symbol_price_watchdog and strike_table_generator (reads live price log only) use movement_value after this change. New movement profiles created by symbol_profiler will have movement_value column.
+
+### 2026-02-14 - Add volatility and movement to strike tables (btc, eth, spx, ndx)
+- **Change Type**: SCHEMA_ADDITION
+- **Description**: Added four columns to all strike tables (`live_data.strike_table_btc`, `strike_table_eth`, `strike_table_spx`, `strike_table_ndx`): `volatility`, `volatility_percentile`, `movement`, `movement_percentile`. Populated by `strike_table_generator` from the same live 1s price log row used for price and momentum.
+- **SQL Commands**:
+```sql
+ALTER TABLE live_data.strike_table_btc ADD COLUMN IF NOT EXISTS volatility NUMERIC(10,6);
+ALTER TABLE live_data.strike_table_btc ADD COLUMN IF NOT EXISTS volatility_percentile NUMERIC(5,1);
+ALTER TABLE live_data.strike_table_btc ADD COLUMN IF NOT EXISTS movement NUMERIC(10,4);
+ALTER TABLE live_data.strike_table_btc ADD COLUMN IF NOT EXISTS movement_percentile NUMERIC(5,1);
+-- Repeat for strike_table_eth, strike_table_spx, strike_table_ndx.
+```
+- **Files Modified**:
+  - `backend/strike_table_generator.py` (get_current_market_data SELECT and return dict; CREATE TABLE and missing_columns; INSERT; get_latest_strike_table_json SELECT and result keys)
+  - `backend/core/config/database.py` (migration block in init_database for all four strike tables)
+  - `docs/MASTER_DB_SCHEMA_REFERENCE.md` (four new columns documented for strike_table_btc, eth, ndx, spx)
+- **Status**: PENDING
+- **Notes**: Generator adds columns via setup_live_data_schema() when it runs; init_database() migration adds them for existing DBs without running the generator.
+
 ### 2026-01-11 - Add momentum_30s_avg Column to Live Price Log Tables
 - **Change Type**: SCHEMA_ADDITION
 - **Description**: Added `momentum_30s_avg` column to all live_price_log tables (btc, eth, spx, ndx) to store 30-second rolling average of momentum values as percentile

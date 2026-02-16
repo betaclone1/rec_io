@@ -101,6 +101,8 @@ backend/supervisord.conf.backup
 # IDE and editor files
 .idea/
 *.xcodeproj/xcuserdata/
+**/xcuserdata/
+**/*.xcuserstate
 
 # iOS WebView App (exclude from git)
 rec_webview_app/

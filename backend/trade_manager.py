@@ -19,8 +19,6 @@ from apscheduler.triggers.cron import CronTrigger
 from backend.util.paths import get_project_root, get_trade_history_dir, get_logs_dir, get_host, get_data_dir
 from backend.account_mode import get_account_mode
 from backend.util.paths import get_accounts_data_dir
-from backend.symbol_price_watchdog import calculate_momentum_percentile
-
 EST_ZONE = ZoneInfo("America/New_York")
 CONTRACT_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2})(am|pm)$", re.IGNORECASE)
 MONITOR_KEY_PATTERN = re.compile(r"^mon_(\d+?)_(\d+)$", re.IGNORECASE)
@@ -275,46 +273,43 @@ def insert_trade(trade):
         raise ValueError("Trade symbol must be provided - no fallbacks allowed")
     symbol_lower = symbol.lower()
     
-    # Get current symbol price directly from PostgreSQL live_data table - INSTANT
+    # Get symbol price and all market-context fields from live_data (same source as momentum)
+    symbol_open = None
+    momentum_for_db = 0
+    momentum_percentile_for_db = None
+    momentum_5s_avg_for_db = None
+    volatility_for_db = None
+    volatility_percentile_for_db = None
+    movement_for_db = None
+    movement_percentile_for_db = None
     try:
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
-                cursor.execute(f"SELECT price FROM live_data.live_price_log_1s_{symbol_lower} ORDER BY timestamp DESC LIMIT 1")
+                cursor.execute(f"""
+                    SELECT price, momentum, momentum_percentile, momentum_5s_avg,
+                           volatility, volatility_percentile, movement, movement_percentile
+                    FROM live_data.live_price_log_1s_{symbol_lower}
+                    ORDER BY timestamp DESC LIMIT 1
+                """)
                 result = cursor.fetchone()
-            
-            if result and result[0] is not None:
-                symbol_open = int(float(result[0]))
-            else:
-                symbol_open = None
-        else:
-            symbol_open = None
+            if pg_conn:
+                pg_conn.close()
+
+            if result:
+                if result[0] is not None:
+                    symbol_open = int(float(result[0]))
+                momentum_val = result[1]
+                if momentum_val is not None:
+                    momentum_for_db = round(float(momentum_val) * 100)
+                momentum_percentile_for_db = float(result[2]) if result[2] is not None else None
+                momentum_5s_avg_for_db = float(result[3]) if result[3] is not None else None
+                volatility_for_db = float(result[4]) if result[4] is not None else None
+                volatility_percentile_for_db = float(result[5]) if result[5] is not None else None
+                movement_for_db = float(result[6]) if result[6] is not None else None
+                movement_percentile_for_db = float(result[7]) if result[7] is not None else None
     except Exception as e:
-        symbol_open = None
-    
-    # Get current momentum from API and format it correctly for database
-    momentum_for_db = 0
-    momentum_percentile_for_db = None
-    momentum_5s_avg_for_db = None
-    try:
-        momentum_data = get_momentum_data_from_postgresql(symbol)
-        momentum_score = momentum_data.get('weighted_momentum_score', 0)
-        
-        if momentum_score != 0:
-            momentum_for_db = round(momentum_score * 100)
-            # Calculate momentum percentile using the momentum score
-            momentum_percentile = calculate_momentum_percentile(symbol, momentum_score)
-            momentum_percentile_for_db = momentum_percentile
-            # Get 5s momentum average from the API data
-            momentum_5s_avg_for_db = momentum_data.get('momentum_5s_avg')
-        else:
-            momentum_for_db = 0
-            momentum_percentile_for_db = None
-            momentum_5s_avg_for_db = None
-    except Exception as e:
-        momentum_for_db = 0
-        momentum_percentile_for_db = None
-        momentum_5s_avg_for_db = None
+        pass
     
     contract_original = trade.get('contract')
     contract_name = truncate_contract_name(contract_original, symbol)
@@ -419,27 +414,29 @@ def insert_trade(trade):
                         status, date, time, symbol, market, trade_strategy,
                         contract, strike, side, prob, diff, buy_price, position,
                         sell_price, closed_at, fees, pnl, symbol_open, symbol_close,
-                        momentum, volatility_percentile, win_loss, ticker, ticket_id, market_id,
+                        momentum, volatility, volatility_percentile, movement, movement_percentile,
+                        win_loss, ticker, ticket_id, market_id,
                         momentum_percentile, momentum_5s_avg, entry_method, close_method, monitor, bankroll,
                         hour_idx, weekly_cycle, loss_prevention, multiplier, price_spread, paper_trade, cooldown_timer
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """, (
-                    trade.get('status', 'pending'), trade['date'], trade['time'], 
+                    trade.get('status', 'pending'), trade['date'], trade['time'],
                     symbol, trade.get('market', 'Kalshi'), trade.get('trade_strategy', 'Hourly HTC'),
                     contract_name, trade['strike'], trade['side'], trade.get('prob'),
                     diff_formatted, trade['buy_price'], trade['position'], None, None,
-                    None, None, symbol_open, None, momentum_for_db, trade.get('volatility_percentile'),
+                    None, None, symbol_open, None, momentum_for_db,
+                    volatility_for_db, volatility_percentile_for_db, movement_for_db, movement_percentile_for_db,
                     None, trade.get('ticker'), trade.get('ticket_id'), trade.get('market_id', f'{symbol}-USD'),
                     momentum_percentile_for_db, momentum_5s_avg_for_db, trade.get('entry_method', 'manual'), trade.get('close_method'),
-                    monitor_key,  # Monitor must be specified - no fallback
+                    monitor_key,
                     trade.get('bankroll_allotment_total'),
                     hour_idx_for_db, weekly_cycle_for_db,
                     loss_prevention_flag,
                     multiplier_for_db,
                     price_spread,
-                    paper_trade,  # Use paper_trade from trade payload
-                    cooldown_timer  # Cooldown timer from monitor at time of trade creation
+                    paper_trade,
+                    cooldown_timer
                 ))
                 last_id = cursor.fetchone()[0]
                 pg_conn.commit()
