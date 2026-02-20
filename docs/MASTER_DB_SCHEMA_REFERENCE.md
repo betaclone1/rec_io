@@ -8439,6 +8439,55 @@ For more details, see: `scripts/README_db_schema_migration.md`
 
 ---
 
+### Table: `live_data.live_symbol_status`
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | nextval('live_data.live_symbol_status_id_seq'::regclass) | |
+| `symbol` | `character varying(20)` | YES | - | |
+| `timestamp` | `text` | YES | - | |
+| `price` | `numeric(10,2)` | YES | - | |
+| `one_minute_avg` | `numeric(10,2)` | YES | - | |
+| `momentum` | `numeric(10,4)` | YES | - | |
+| `delta_1m` | `numeric(10,4)` | YES | - | |
+| `delta_2m` | `numeric(10,4)` | YES | - | |
+| `delta_3m` | `numeric(10,4)` | YES | - | |
+| `delta_4m` | `numeric(10,4)` | YES | - | |
+| `delta_15m` | `numeric(10,4)` | YES | - | |
+| `delta_30m` | `numeric(10,4)` | YES | - | |
+| `momentum_percentile` | `numeric(5,1)` | YES | - | |
+| `momentum_5s_avg` | `numeric(5,1)` | YES | - | |
+| `volatility` | `numeric(10,6)` | YES | - | |
+| `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `momentum_30s_avg` | `numeric(5,1)` | YES | - | |
+| `move_1m` | `numeric(10,4)` | YES | - | |
+| `move_2m` | `numeric(10,4)` | YES | - | |
+| `move_3m` | `numeric(10,4)` | YES | - | |
+| `move_4m` | `numeric(10,4)` | YES | - | |
+| `move_15m` | `numeric(10,4)` | YES | - | |
+| `move_30m` | `numeric(10,4)` | YES | - | |
+| `movement` | `numeric(10,4)` | YES | - | |
+| `movement_percentile` | `numeric(5,1)` | YES | - | |
+| `prev_day_avg_momentum_percentile` | `numeric(5,1)` | YES | - | |
+| `prev_day_avg_volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `prev_day_avg_movement_percentile` | `numeric(5,1)` | YES | - | |
+| `daily_update` | `text` | YES | - | |
+
+#### Constraints
+
+- **Primary Key:** `live_symbol_status_pkey` on `id`
+
+#### Indexes
+
+- `live_symbol_status_pkey`
+  ```sql
+  CREATE UNIQUE INDEX live_symbol_status_pkey ON live_data.live_symbol_status USING btree (id)
+  ```
+
+---
+
 ### Table: `live_data.market_kalshi_btc`
 
 #### Columns
@@ -10562,6 +10611,32 @@ Log of transfers: internal (between subaccounts, e.g. Master Trading Bankroll â†
 - `ttc_progress_btc_pkey`
   ```sql
   CREATE UNIQUE INDEX ttc_progress_btc_pkey ON work_progress.ttc_progress_btc USING btree (ttc_seconds)
+  ```
+
+---
+
+### Table: `work_progress.ttc_progress_eth`
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `ttc_seconds` | `integer(32)` | NO | - | |
+| `status` | `character varying(20)` | YES | 'pending'::character varying | |
+| `started_at` | `timestamp without time zone` | YES | - | |
+| `completed_at` | `timestamp without time zone` | YES | - | |
+| `rows_generated` | `integer(32)` | YES | 0 | |
+| `error_message` | `text` | YES | - | |
+
+#### Constraints
+
+- **Primary Key:** `ttc_progress_eth_pkey` on `ttc_seconds`
+
+#### Indexes
+
+- `ttc_progress_eth_pkey`
+  ```sql
+  CREATE UNIQUE INDEX ttc_progress_eth_pkey ON work_progress.ttc_progress_eth USING btree (ttc_seconds)
   ```
 
 ---
