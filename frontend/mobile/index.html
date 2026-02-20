@@ -198,7 +198,7 @@
                 return;
             }
             
-            // Set up iframe sources with authentication tokens
+            // Lazy-load iframe URLs (only load the visible tab to avoid 6 blocking requests at once)
             const iframeSources = {
                 dashboard: `/mobile/dashboard?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`,
                 monitor: `/mobile/trade_monitor?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`,
@@ -207,19 +207,18 @@
                 user: `/mobile/user?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`,
                 system: `/mobile/system?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`
             };
-            
-            // Set initial iframe sources
-            Object.keys(iframeSources).forEach(tabName => {
-                const frame = document.getElementById(`${tabName}-frame`);
-                if (frame) {
-                    frame.src = iframeSources[tabName];
-                }
-            });
+
+            // Load only the dashboard iframe on startup; other tabs load when first opened
+            const dashboardFrame = document.getElementById('dashboard-frame');
+            if (dashboardFrame && iframeSources.dashboard) {
+                dashboardFrame.src = iframeSources.dashboard;
+            }
 
             function broadcastTabVisibility() {
                 const frames = document.querySelectorAll('.page-frame');
                 const origin = window.location.origin;
                 frames.forEach(frame => {
+                    if (!frame.src) return;
                     try {
                         if (frame.contentWindow) {
                             frame.contentWindow.postMessage(
@@ -232,18 +231,21 @@
             }
 
             function switchTab(tabName) {
+                const activeTab = document.querySelector(`[data-tab="${tabName}"]`);
+                const activeFrame = document.getElementById(`${tabName}-frame`);
+                if (!activeFrame) return;
+
+                // Lazy-load: set iframe src only when user first opens this tab
+                if (!activeFrame.src && iframeSources[tabName]) {
+                    activeFrame.src = iframeSources[tabName];
+                }
+
                 // Remove active class from all tabs and frames
                 tabItems.forEach(tab => tab.classList.remove('active'));
                 pageFrames.forEach(frame => frame.classList.remove('active'));
 
-                // Add active class to selected tab and frame
-                const activeTab = document.querySelector(`[data-tab="${tabName}"]`);
-                const activeFrame = document.getElementById(`${tabName}-frame`);
-                
-                if (activeTab && activeFrame) {
-                    activeTab.classList.add('active');
-                    activeFrame.classList.add('active');
-                }
+                if (activeTab) activeTab.classList.add('active');
+                activeFrame.classList.add('active');
                 broadcastTabVisibility();
             }
 
@@ -282,6 +284,7 @@
             function refreshAllIframes() {
                 const iframes = document.querySelectorAll('.page-frame');
                 iframes.forEach(iframe => {
+                    if (!iframe.src) return;
                     try {
                         if (iframe.contentWindow) {
                             iframe.contentWindow.postMessage({
