@@ -7,78 +7,65 @@ Update this document whenever schema changes are made during development.
 
 ---
 
-## Updating Your Local Database to Match This Reference
+## How to Check and Update Your Database (No Scripts)
 
-A utility script is available to automatically update your local database schema to match this reference document. This script will:
+Use this document as the source of truth. Do both steps whenever you pull schema changes or need to sync the DB.
 
-- ✅ Preserve all existing data
-- ✅ Add missing columns with appropriate defaults
-- ✅ Handle monitor-specific tables (discovers all instances automatically)
-- ✅ Skip type changes to prevent data issues
+### 1. Run code-defined migrations
 
-### Quick Start
+From the project root (e.g. `/opt/rec_io_server`), run once:
 
-**Preview changes (dry run):**
 ```bash
-cd /opt/rec_io_server
-python3 scripts/update_db_schema_to_reference.py --dry-run
+python3 -c "
+from backend.core.config.database import init_database
+ok, msg = init_database()
+print('OK:', ok, msg)
+"
 ```
 
-**Apply migrations:**
-```bash
-cd /opt/rec_io_server
-python3 scripts/update_db_schema_to_reference.py
+This applies all schema and column changes defined in `backend/core/config/database.py` (new schemas, new tables, new columns on existing tables).
+
+### 2. Check for anything still missing
+
+List what your database has and compare to this document.
+
+**List schemas and tables:**
+
+```sql
+SELECT nspname AS schema, relname AS table
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind = 'r'
+  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY 1, 2;
 ```
 
-The script will:
-1. Parse this schema reference document
-2. Compare with your existing database tables
-3. Show you all changes that will be made
-4. Ask for confirmation before applying (unless using `--dry-run`)
+Run that in `psql` or any SQL client connected to your DB. Then:
 
-### What Gets Updated
+- **Tables:** Every `Schema: X` / `Table: X.Y` in this doc should have a matching schema and table. If a table in the doc is missing, create it (step 3).
+- **Columns:** For each table that exists, open its **Columns** section in this doc and compare to your table. If a column is missing, add it (step 3).
 
-- **Missing Columns**: Added with appropriate data types and defaults
-- **Monitor-Specific Tables**: Automatically discovers and updates all instances (e.g., `monitor_list_0001`, `active_trades_0001_10002`, etc.)
-- **Column Types**: Detected but not changed (to preserve data safety)
-- **Constraints & Indexes**: Not modified (preserves existing structure)
+**Optional – list columns for one table:**
 
-### Safety Features
-
-- All existing data is preserved
-- New columns are added as nullable (if no default specified)
-- NOT NULL columns without defaults are added as nullable to prevent data issues
-- Transaction-based execution (rolls back on error)
-- Confirmation prompt before applying changes
-
-### Example Output
-
-```
-📖 Parsing schema reference...
-✅ Parsed 154 table definitions
-
-🔌 Connecting to database...
-🔍 Analyzing database schema...
-📋 Found 2 instance(s) for pattern: users.active_trades_0001_10002
-
-================================================================================
-Found 24 migration(s) to apply
-================================================================================
-
-📋 Table: users.monitor_list_0001
-   6 column(s) to add:
-   • ALTER TABLE users.monitor_list_0001 ADD COLUMN min_ask NUMERIC(6,4) DEFAULT 0.0000
-   ...
-
-⚠️  Ready to apply 24 migration(s)
-Continue? (yes/no): yes
-
-✅ Successfully applied 24 migration(s)
+```sql
+SELECT column_name, data_type, is_nullable, column_default
+FROM information_schema.columns
+WHERE table_schema = 'users' AND table_name = 'trades_0001'
+ORDER BY ordinal_position;
 ```
 
-### Documentation
+Change `table_schema` and `table_name` as needed.
 
-For more details, see: `scripts/README_db_schema_migration.md`
+### 3. Add missing tables or columns directly
+
+- **Missing table:** In this doc, find the table’s **Columns** (and **Constraints** if any). Write a `CREATE TABLE schema.name ( ... );` that matches (use `SERIAL` for integer IDs with no default, and `CREATE SCHEMA IF NOT EXISTS schema;` if the schema might not exist). Run it against your DB.
+- **Missing column:** From the table’s **Columns** section, note name, type, nullable, and default. Run:
+
+  `ALTER TABLE schema.table_name ADD COLUMN column_name type [DEFAULT value] [NOT NULL];`
+
+  Use the exact types from the doc (e.g. `NUMERIC(5,2)`, `TEXT`, `TIMESTAMP WITH TIME ZONE`). Omit NOT NULL if the column is nullable or you’re not sure.
+
+Re-run the check (step 2) until nothing is missing.
 
 ---
 

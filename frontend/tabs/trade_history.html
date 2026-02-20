@@ -158,10 +158,46 @@
               <button id="contract-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
                 Select Contracts
               </button>
-              <div id="contract-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 200px; overflow-y: auto;">
+              <div id="contract-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 320px; overflow-y: auto;">
                 <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
                   <input type="checkbox" id="contract-all" style="width: 14px; height: 14px;">
                   Select All
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-12am" checked style="width: 14px; height: 14px;">
+                  12am
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-1am" checked style="width: 14px; height: 14px;">
+                  1am
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-2am" checked style="width: 14px; height: 14px;">
+                  2am
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-3am" checked style="width: 14px; height: 14px;">
+                  3am
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-4am" checked style="width: 14px; height: 14px;">
+                  4am
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-5am" checked style="width: 14px; height: 14px;">
+                  5am
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-6am" checked style="width: 14px; height: 14px;">
+                  6am
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-7am" checked style="width: 14px; height: 14px;">
+                  7am
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="contract-8am" checked style="width: 14px; height: 14px;">
+                  8am
                 </label>
                 <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
                   <input type="checkbox" id="contract-9am" checked style="width: 14px; height: 14px;">
@@ -222,10 +258,6 @@
                 <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer;">
                   <input type="checkbox" id="contract-11pm" checked style="width: 14px; height: 14px;">
                   11pm
-                </label>
-                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer;">
-                  <input type="checkbox" id="contract-12am" checked style="width: 14px; height: 14px;">
-                  12am
                 </label>
               </div>
             </div>
@@ -685,6 +717,14 @@
     // === CONTRACT FILTER LOGIC ===
     function filterTradesByContract(trades) {
       const contract12amChecked = document.getElementById('contract-12am').checked;
+      const contract1amChecked = document.getElementById('contract-1am').checked;
+      const contract2amChecked = document.getElementById('contract-2am').checked;
+      const contract3amChecked = document.getElementById('contract-3am').checked;
+      const contract4amChecked = document.getElementById('contract-4am').checked;
+      const contract5amChecked = document.getElementById('contract-5am').checked;
+      const contract6amChecked = document.getElementById('contract-6am').checked;
+      const contract7amChecked = document.getElementById('contract-7am').checked;
+      const contract8amChecked = document.getElementById('contract-8am').checked;
       const contract9amChecked = document.getElementById('contract-9am').checked;
       const contract10amChecked = document.getElementById('contract-10am').checked;
       const contract11amChecked = document.getElementById('contract-11am').checked;
@@ -702,10 +742,11 @@
       const contract11pmChecked = document.getElementById('contract-11pm').checked;
       
       // If no contracts are selected, show no trades
-      if (!contract12amChecked && !contract9amChecked && !contract10amChecked && !contract11amChecked && !contract12pmChecked && 
-          !contract1pmChecked && !contract2pmChecked && !contract3pmChecked && !contract4pmChecked && 
-          !contract5pmChecked && !contract6pmChecked && !contract7pmChecked && !contract8pmChecked && 
-          !contract9pmChecked && !contract10pmChecked && !contract11pmChecked) {
+      if (!contract12amChecked && !contract1amChecked && !contract2amChecked && !contract3amChecked && !contract4amChecked &&
+          !contract5amChecked && !contract6amChecked && !contract7amChecked && !contract8amChecked && !contract9amChecked &&
+          !contract10amChecked && !contract11amChecked && !contract12pmChecked && !contract1pmChecked && !contract2pmChecked &&
+          !contract3pmChecked && !contract4pmChecked && !contract5pmChecked && !contract6pmChecked && !contract7pmChecked &&
+          !contract8pmChecked && !contract9pmChecked && !contract10pmChecked && !contract11pmChecked) {
         return [];
       }
       
@@ -715,6 +756,14 @@
         
         // Check if contract contains any of the selected times
         if (contract12amChecked && contract.includes('12am')) return true;
+        if (contract1amChecked && contract.includes('1am')) return true;
+        if (contract2amChecked && contract.includes('2am')) return true;
+        if (contract3amChecked && contract.includes('3am')) return true;
+        if (contract4amChecked && contract.includes('4am')) return true;
+        if (contract5amChecked && contract.includes('5am')) return true;
+        if (contract6amChecked && contract.includes('6am')) return true;
+        if (contract7amChecked && contract.includes('7am')) return true;
+        if (contract8amChecked && contract.includes('8am')) return true;
         if (contract9amChecked && contract.includes('9am')) return true;
         if (contract10amChecked && contract.includes('10am')) return true;
         if (contract11amChecked && contract.includes('11am')) return true;
@@ -1415,21 +1464,56 @@
         
         // Apply contract filters
         const contract12am = document.getElementById('contract-12am');
+        const contract1am = document.getElementById('contract-1am');
+        const contract2am = document.getElementById('contract-2am');
+        const contract3am = document.getElementById('contract-3am');
+        const contract4am = document.getElementById('contract-4am');
+        const contract5am = document.getElementById('contract-5am');
+        const contract6am = document.getElementById('contract-6am');
+        const contract7am = document.getElementById('contract-7am');
+        const contract8am = document.getElementById('contract-8am');
         const contract9am = document.getElementById('contract-9am');
         const contract10am = document.getElementById('contract-10am');
         const contract11am = document.getElementById('contract-11am');
         const contract12pm = document.getElementById('contract-12pm');
         const contract1pm = document.getElementById('contract-1pm');
-      const contract2pm = document.getElementById('contract-2pm');
-      const contract3pm = document.getElementById('contract-3pm');
-      const contract4pm = document.getElementById('contract-4pm');
-      const contract5pm = document.getElementById('contract-5pm');
-      const contract6pm = document.getElementById('contract-6pm');
-      const contract7pm = document.getElementById('contract-7pm');
-      const contract8pm = document.getElementById('contract-8pm');
-      const contract9pm = document.getElementById('contract-9pm');
-      const contract10pm = document.getElementById('contract-10pm');
-      const contract11pm = document.getElementById('contract-11pm');
+        const contract2pm = document.getElementById('contract-2pm');
+        const contract3pm = document.getElementById('contract-3pm');
+        const contract4pm = document.getElementById('contract-4pm');
+        const contract5pm = document.getElementById('contract-5pm');
+        const contract6pm = document.getElementById('contract-6pm');
+        const contract7pm = document.getElementById('contract-7pm');
+        const contract8pm = document.getElementById('contract-8pm');
+        const contract9pm = document.getElementById('contract-9pm');
+        const contract10pm = document.getElementById('contract-10pm');
+        const contract11pm = document.getElementById('contract-11pm');
+        if (contract12am && data.contract_12am !== undefined) {
+          contract12am.checked = data.contract_12am;
+        }
+        if (contract1am && data.contract_1am !== undefined) {
+          contract1am.checked = data.contract_1am;
+        }
+        if (contract2am && data.contract_2am !== undefined) {
+          contract2am.checked = data.contract_2am;
+        }
+        if (contract3am && data.contract_3am !== undefined) {
+          contract3am.checked = data.contract_3am;
+        }
+        if (contract4am && data.contract_4am !== undefined) {
+          contract4am.checked = data.contract_4am;
+        }
+        if (contract5am && data.contract_5am !== undefined) {
+          contract5am.checked = data.contract_5am;
+        }
+        if (contract6am && data.contract_6am !== undefined) {
+          contract6am.checked = data.contract_6am;
+        }
+        if (contract7am && data.contract_7am !== undefined) {
+          contract7am.checked = data.contract_7am;
+        }
+        if (contract8am && data.contract_8am !== undefined) {
+          contract8am.checked = data.contract_8am;
+        }
         if (contract9am && data.contract_9am !== undefined) {
           contract9am.checked = data.contract_9am;
         }
@@ -1438,9 +1522,6 @@
         }
         if (contract11am && data.contract_11am !== undefined) {
           contract11am.checked = data.contract_11am;
-        }
-        if (contract12am && data.contract_12am !== undefined) {
-          contract12am.checked = data.contract_12am;
         }
         if (contract12pm && data.contract_12pm !== undefined) {
           contract12pm.checked = data.contract_12pm;
@@ -2040,6 +2121,15 @@
       const contractDropdownContent = document.getElementById('contract-dropdown-content');
       const contractAllCheckbox = document.getElementById('contract-all');
       const contractCheckboxes = [
+        document.getElementById('contract-12am'),
+        document.getElementById('contract-1am'),
+        document.getElementById('contract-2am'),
+        document.getElementById('contract-3am'),
+        document.getElementById('contract-4am'),
+        document.getElementById('contract-5am'),
+        document.getElementById('contract-6am'),
+        document.getElementById('contract-7am'),
+        document.getElementById('contract-8am'),
         document.getElementById('contract-9am'),
         document.getElementById('contract-10am'),
         document.getElementById('contract-11am'),
@@ -2054,8 +2144,7 @@
         document.getElementById('contract-8pm'),
         document.getElementById('contract-9pm'),
         document.getElementById('contract-10pm'),
-        document.getElementById('contract-11pm'),
-        document.getElementById('contract-12am')
+        document.getElementById('contract-11pm')
       ];
 
       // Toggle dropdown
@@ -2178,6 +2267,14 @@
       const startDateInput = document.getElementById('start-date');
       const endDateInput = document.getElementById('end-date');
       const contract12am = document.getElementById('contract-12am');
+      const contract1am = document.getElementById('contract-1am');
+      const contract2am = document.getElementById('contract-2am');
+      const contract3am = document.getElementById('contract-3am');
+      const contract4am = document.getElementById('contract-4am');
+      const contract5am = document.getElementById('contract-5am');
+      const contract6am = document.getElementById('contract-6am');
+      const contract7am = document.getElementById('contract-7am');
+      const contract8am = document.getElementById('contract-8am');
       const contract9am = document.getElementById('contract-9am');
       const contract10am = document.getElementById('contract-10am');
       const contract11am = document.getElementById('contract-11am');
@@ -2225,6 +2322,14 @@
         live_filter: filterLive ? filterLive.checked : true,
         paper_filter: filterPaper ? filterPaper.checked : false,
         contract_12am: contract12am ? contract12am.checked : true,
+        contract_1am: contract1am ? contract1am.checked : true,
+        contract_2am: contract2am ? contract2am.checked : true,
+        contract_3am: contract3am ? contract3am.checked : true,
+        contract_4am: contract4am ? contract4am.checked : true,
+        contract_5am: contract5am ? contract5am.checked : true,
+        contract_6am: contract6am ? contract6am.checked : true,
+        contract_7am: contract7am ? contract7am.checked : true,
+        contract_8am: contract8am ? contract8am.checked : true,
         contract_9am: contract9am ? contract9am.checked : true,
         contract_10am: contract10am ? contract10am.checked : true,
         contract_11am: contract11am ? contract11am.checked : true,
@@ -2519,10 +2624,11 @@
             const contract = trade.contract;
             let contractHour = '';
             
-            // Extract hour from contract (e.g., "BTC 4pm" -> "16:00", "BTC 11am" -> "11:00")
+            // Extract hour from contract (e.g., "BTC 4pm" -> "16:00", "BTC 11am" -> "11:00", "BTC 12am" -> "00:00")
             if (contract.includes('am')) {
               const hour = parseInt(contract.match(/(\d+)am/)[1]);
-              contractHour = `${hour.toString().padStart(2, '0')}:00`;
+              const hour24 = hour === 12 ? 0 : hour; // 12am is midnight
+              contractHour = `${hour24.toString().padStart(2, '0')}:00`;
             } else if (contract.includes('pm')) {
               const hour = parseInt(contract.match(/(\d+)pm/)[1]);
               const hour24 = hour === 12 ? 12 : hour + 12;
@@ -3062,7 +3168,7 @@
         let contractId = '';
         if (hour === 0) {
           contractId = 'contract-12am';
-        } else if (hour >= 9 && hour <= 11) {
+        } else if (hour >= 1 && hour <= 11) {
           contractId = `contract-${hour}am`;
         } else if (hour === 12) {
           contractId = 'contract-12pm';
@@ -3076,10 +3182,12 @@
         
         // Uncheck all contract checkboxes first
         const contractCheckboxes = [
+          'contract-12am', 'contract-1am', 'contract-2am', 'contract-3am', 'contract-4am',
+          'contract-5am', 'contract-6am', 'contract-7am', 'contract-8am',
           'contract-9am', 'contract-10am', 'contract-11am', 'contract-12pm',
           'contract-1pm', 'contract-2pm', 'contract-3pm', 'contract-4pm',
           'contract-5pm', 'contract-6pm', 'contract-7pm', 'contract-8pm',
-          'contract-9pm', 'contract-10pm', 'contract-11pm', 'contract-12am'
+          'contract-9pm', 'contract-10pm', 'contract-11pm'
         ];
         
         contractCheckboxes.forEach(id => {

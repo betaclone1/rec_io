@@ -38,5 +38,8 @@
         <key>NSAllowsArbitraryLoads</key>
         <true/>
     </dict>
+    <!-- Base URL for all app traffic (login, API, UI). Use ONE server. For local dev set to e.g. http://YOUR_IP:3000 -->
+    <key>RECBaseURL</key>
+    <string>https://rec-io.com</string>
 </dict>
 </plist>
