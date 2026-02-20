@@ -47,12 +47,9 @@
       flex-direction: column;
       gap: 8px;
       position: relative;
-      /* Webview compatibility */
       -webkit-touch-callout: default;
       touch-action: auto;
       z-index: 5;
-      /* Ensure form groups don't block interactions */
-      pointer-events: none;
     }
     .form-label {
       font-size: 14px;
@@ -138,8 +135,9 @@
     }
 
     var authCheckInProgress = false;
+    var authCheckDone = false;
     function checkAuthStatus() {
-      if (authCheckInProgress) return;
+      if (authCheckInProgress || authCheckDone) return;
       var token = localStorage.getItem('rec_auth_token');
       var deviceId = localStorage.getItem('rec_device_id');
       if (!token || !deviceId) return;
@@ -151,13 +149,15 @@
       })
       .then(function(r) { return r.json(); })
       .then(function(d) {
-        if (d.authenticated) window.location.href = getRedirectUrl(token, deviceId);
-        else { localStorage.removeItem('rec_auth_token'); localStorage.removeItem('rec_device_id'); }
+        if (d.authenticated) {
+          authCheckDone = true;
+          window.location.href = getRedirectUrl(token, deviceId);
+        } else { localStorage.removeItem('rec_auth_token'); localStorage.removeItem('rec_device_id'); }
       })
       .catch(function() { localStorage.removeItem('rec_auth_token'); localStorage.removeItem('rec_device_id'); })
       .finally(function() { authCheckInProgress = false; });
     }
-    if (window.location.pathname === '/login') setTimeout(checkAuthStatus, 300);
+    if (window.location.pathname === '/login') setTimeout(checkAuthStatus, 500);
 
     document.getElementById('loginForm').onsubmit = function(e) {
       e.preventDefault();
