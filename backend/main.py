@@ -1381,16 +1381,18 @@ async def get_core_data(symbol: str = "BTC"):
             )
             cursor = conn.cursor()
             cursor.execute(f"""
-                SELECT momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg
-                FROM live_data.live_price_log_1s_{symbol.lower()} 
-                ORDER BY timestamp DESC 
+                SELECT momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg,
+                       move_1m, move_2m, move_3m, move_4m, movement, movement_percentile
+                FROM live_data.live_price_log_1s_{symbol.lower()}
+                ORDER BY timestamp DESC
                 LIMIT 1
             """)
             result = cursor.fetchone()
             conn.close()
             
             if result:
-                momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg = result
+                (momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg,
+                 move_1m, move_2m, move_3m, move_4m, movement, movement_percentile) = result
                 momentum_data = {
                     'weighted_momentum_score': float(momentum) if momentum is not None else 0.0,
                     'delta_1m': float(delta_1m) if delta_1m is not None else None,
@@ -1400,7 +1402,13 @@ async def get_core_data(symbol: str = "BTC"):
                     'delta_15m': float(delta_15m) if delta_15m is not None else None,
                     'delta_30m': float(delta_30m) if delta_30m is not None else None,
                     'momentum_percentile': float(momentum_percentile) if momentum_percentile is not None else None,
-                    'momentum_5s_avg': float(momentum_5s_avg) if momentum_5s_avg is not None else None
+                    'momentum_5s_avg': float(momentum_5s_avg) if momentum_5s_avg is not None else None,
+                    'move_1m': float(move_1m) if move_1m is not None else None,
+                    'move_2m': float(move_2m) if move_2m is not None else None,
+                    'move_3m': float(move_3m) if move_3m is not None else None,
+                    'move_4m': float(move_4m) if move_4m is not None else None,
+                    'movement': float(movement) if movement is not None else None,
+                    'movement_percentile': float(movement_percentile) if movement_percentile is not None else None,
                 }
                 print(f"[MAIN] Momentum analysis: {momentum_data.get('weighted_momentum_score', 'N/A'):.4f}%")
             else:
@@ -1411,11 +1419,12 @@ async def get_core_data(symbol: str = "BTC"):
                     'delta_4m': None,
                     'delta_15m': None,
                     'delta_30m': None,
-                    'weighted_momentum_score': None
+                    'weighted_momentum_score': None,
+                    'move_1m': None, 'move_2m': None, 'move_3m': None, 'move_4m': None,
+                    'movement': None, 'movement_percentile': None,
                 }
         except Exception as e:
             print(f"Error getting momentum data from PostgreSQL: {e}")
-            # Fallback to null momentum data
             momentum_data = {
                 'delta_1m': None,
                 'delta_2m': None,
@@ -1423,7 +1432,9 @@ async def get_core_data(symbol: str = "BTC"):
                 'delta_4m': None,
                 'delta_15m': None,
                 'delta_30m': None,
-                'weighted_momentum_score': None
+                'weighted_momentum_score': None,
+                'move_1m': None, 'move_2m': None, 'move_3m': None, 'move_4m': None,
+                'movement': None, 'movement_percentile': None,
             }
         
         # Get latest database price from PostgreSQL
@@ -1839,6 +1850,108 @@ async def get_account_balance(mode: str = "prod"):
     except Exception as e:
         print(f"Error getting account balance from PostgreSQL: {e}")
         return {"portfolio": 0, "positions": 0}
+
+@app.get("/api/subaccounts")
+async def get_subaccounts():
+    """Get subaccounts (users.subaccounts_0001) for display. Balances in cents."""
+    try:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute("""
+                SELECT id, subaccount, balance, base_value, realized_pnl, realized_pnl_pct,
+                       target_pnl__pct, transfer_amt, automatic_transfers
+                FROM users.subaccounts_0001
+                ORDER BY id
+            """)
+            rows = cursor.fetchall()
+        conn.close()
+        return {"subaccounts": [dict(r) for r in rows]}
+    except Exception as e:
+        print(f"Error getting subaccounts from PostgreSQL: {e}")
+        return {"subaccounts": []}
+
+@app.patch("/api/subaccounts/automatic-transfers")
+async def update_subaccount_automatic_transfers(request: Request):
+    """Set automatic_transfers for a subaccount by name. Body: { \"subaccount\": \"Master Trading Bankroll\", \"automatic_transfers\": true }."""
+    try:
+        payload = await request.json()
+        subaccount_name = payload.get("subaccount")
+        automatic = payload.get("automatic_transfers")
+        if subaccount_name is None or automatic is None:
+            return {"ok": False, "error": "subaccount and automatic_transfers required"}
+        import psycopg2
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE users.subaccounts_0001 SET automatic_transfers = %s WHERE subaccount = %s",
+                (bool(automatic), subaccount_name)
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                conn.close()
+                return {"ok": False, "error": "subaccount not found"}
+        conn.close()
+        return {"ok": True}
+    except Exception as e:
+        print(f"Error updating subaccount automatic_transfers: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.patch("/api/subaccounts/transfer-settings")
+async def update_subaccount_transfer_settings(request: Request):
+    """Set target_pnl__pct and/or transfer_amt for a subaccount. Body: { \"subaccount\": \"Master Trading Bankroll\", \"target_pnl__pct\": 0.115, \"transfer_amt\": 0.10 } (fractions)."""
+    try:
+        payload = await request.json()
+        subaccount_name = payload.get("subaccount")
+        target_pct = payload.get("target_pnl__pct")
+        transfer_amt = payload.get("transfer_amt")
+        if subaccount_name is None:
+            return {"ok": False, "error": "subaccount required"}
+        if target_pct is None and transfer_amt is None:
+            return {"ok": False, "error": "at least one of target_pnl__pct or transfer_amt required"}
+        import psycopg2
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        with conn.cursor() as cursor:
+            if target_pct is not None and transfer_amt is not None:
+                cursor.execute(
+                    "UPDATE users.subaccounts_0001 SET target_pnl__pct = %s, transfer_amt = %s WHERE subaccount = %s",
+                    (float(target_pct), float(transfer_amt), subaccount_name)
+                )
+            elif target_pct is not None:
+                cursor.execute(
+                    "UPDATE users.subaccounts_0001 SET target_pnl__pct = %s WHERE subaccount = %s",
+                    (float(target_pct), subaccount_name)
+                )
+            else:
+                cursor.execute(
+                    "UPDATE users.subaccounts_0001 SET transfer_amt = %s WHERE subaccount = %s",
+                    (float(transfer_amt), subaccount_name)
+                )
+            conn.commit()
+            if cursor.rowcount == 0:
+                conn.close()
+                return {"ok": False, "error": "subaccount not found"}
+        conn.close()
+        return {"ok": True}
+    except Exception as e:
+        print(f"Error updating subaccount transfer settings: {e}")
+        return {"ok": False, "error": str(e)}
 
 @app.get("/api/monitor/bankroll")
 async def get_monitor_bankroll(monitor_id: str):

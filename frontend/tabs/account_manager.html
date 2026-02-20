@@ -29,6 +29,36 @@
     .group-even {
       background-color: #1f2633;
     }
+    .refresh-button {
+      background: var(--accent-color, #3b82f6);
+      color: white;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      transition: background-color 0.2s;
+    }
+    .refresh-button:hover {
+      background: var(--accent-hover, #2563eb);
+    }
+    .refresh-button:disabled {
+      background: #6b7280;
+      color: #9ca3af;
+      cursor: not-allowed;
+    }
+    /* Compact number inputs for Target % / Transfer Amt */
+    .pct-number-input {
+      width: 52px;
+      padding: 2px 4px;
+      text-align: right;
+      font-size: 12px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      height: 22px;
+      box-sizing: border-box;
+    }
   </style>
 </head>
 <body>
@@ -43,14 +73,47 @@
           <a href="https://kalshi.com/portfolio" target="_blank" style="color: #4a9eff; text-decoration: none; font-size: 12px;">Portfolio</a>
         </div>
         <div style="display: flex; font-size: 12px; align-items: center; margin-bottom: 4px;">
-          <div style="font-weight: bold; width: 320px;">Portfolio</div>
+          <div style="font-weight: bold; width: 320px;">Total Holdings</div>
           <div style="font-weight: bold; width: 320px;">Cash</div>
           <div style="font-weight: bold; width: 320px;">Positions</div>
         </div>
-        <div style="display: flex; align-items: center;">
-          <span id="portfolio-value" style="width: 320px;">Loading...</span>
+        <div style="display: flex; align-items: center; margin-bottom: 12px;">
+          <span id="total-holdings-value" style="width: 320px;">Loading...</span>
           <span id="cash-value" style="width: 320px;">Loading...</span>
           <span id="positions-value" style="width: 320px;">Loading...</span>
+        </div>
+        <div style="display: flex; align-items: flex-start; gap: 24px; margin-top: 8px;">
+          <table class="data-table" style="width: 100%; max-width: 400px; font-size: 12px;">
+            <thead>
+              <tr>
+                <th style="text-align: left;">Subaccount</th>
+                <th style="text-align: right;">Balance</th>
+              </tr>
+            </thead>
+            <tbody id="subaccounts-body">
+              <tr><td colspan="2">Loading...</td></tr>
+            </tbody>
+          </table>
+          <div style="font-size: 12px; flex-shrink: 0;">
+            <div style="margin-bottom: 8px;">
+              <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                <input type="checkbox" id="automatic-transfers-checkbox" />
+                <span>Automatic Transfers</span>
+              </label>
+            </div>
+            <div id="automatic-transfers-fields" style="font-size: 12px; display: none;">
+              <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 4px;">
+                <label style="min-width: 70px;">Target %</label>
+                <input type="number" id="target-pct-field" class="pct-number-input" min="0" step="0.5" placeholder="e.g. 11.5" />
+                <span>%</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 6px;">
+                <label style="min-width: 70px;">Transfer Amt</label>
+                <input type="number" id="transfer-amt-field" class="pct-number-input" min="0" step="0.5" placeholder="e.g. 10" />
+                <span>%</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -161,8 +224,9 @@
       .catch(console.error);
 
     async function loadAccountData() {
-      const [balanceRes, settlementsRes, fillsRes, positionsRes, emailRes] = await Promise.all([
+      const [balanceRes, subaccountsRes, settlementsRes, fillsRes, positionsRes, emailRes] = await Promise.all([
         fetch(`${window.location.origin}/api/account/balance?mode=${GLOBAL_ACCOUNT_MODE}`),
+        fetch(window.location.origin + "/api/subaccounts"),
         fetch(window.location.origin + "/api/db/settlements"),
         fetch(window.location.origin + "/api/db/fills"),
         fetch(window.location.origin + "/api/db/positions"),
@@ -170,9 +234,11 @@
       ]);
 
       const settlementsJson = await settlementsRes.json();
+      const subaccountsJson = await subaccountsRes.json();
       const fillsJson = await fillsRes.json();
       const positionsJson = await positionsRes.json();
       const emailJson = await emailRes.json();
+      const subaccounts = subaccountsJson.subaccounts || [];
 
       const settlements = settlementsJson.settlements;
       const fills = fillsJson.fills;
@@ -196,13 +262,13 @@
       const demoBalJson = await demoBalRes.json();
 
       const activeBal = GLOBAL_ACCOUNT_MODE === "prod" ? prodBalJson : demoBalJson;
-      
-      // Update Portfolio value
-      const portfolioVal = activeBal.portfolio ?? 0;
-      const portfolioInDollars = portfolioVal / 100; // Convert cents to dollars
-      const portfolioEl = document.getElementById("portfolio-value");
-      if (portfolioEl) {
-        portfolioEl.textContent = `$${Number(portfolioInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+
+      // Total Holdings = PRIMARY balance from subaccounts (cents → $D.CC)
+      const primaryRow = subaccounts.find(s => s.subaccount === "PRIMARY");
+      const totalHoldingsCents = primaryRow && primaryRow.balance != null ? primaryRow.balance : 0;
+      const totalHoldingsEl = document.getElementById("total-holdings-value");
+      if (totalHoldingsEl) {
+        totalHoldingsEl.textContent = `$${Number(totalHoldingsCents / 100).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
       }
       
       // Update Positions value
@@ -213,12 +279,46 @@
         positionsEl.textContent = `$${Number(positionsInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
       }
       
-      // Calculate Cash as difference between portfolio and positions
+      // Cash = portfolio - positions (from balance API)
+      const portfolioVal = activeBal.portfolio ?? 0;
       const cashVal = portfolioVal - positionsVal;
       const cashInDollars = cashVal / 100; // Convert cents to dollars
       const cashEl = document.getElementById("cash-value");
       if (cashEl) {
         cashEl.textContent = `$${Number(cashInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+      }
+
+      // Subaccounts table: Master Trading Bankroll and Cash Transfer only (balance as $D.CC)
+      const subaccountsBody = document.getElementById("subaccounts-body");
+      if (subaccountsBody) {
+        const displayNames = ["Master Trading Bankroll", "Cash Transfer"];
+        const toShow = subaccounts.filter(s => displayNames.includes(s.subaccount));
+        subaccountsBody.innerHTML = toShow.map(s => {
+          const cents = s.balance != null ? s.balance : 0;
+          const dollars = (cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          return `<tr><td style="text-align: left;">${s.subaccount}</td><td style="text-align: right;">$${dollars}</td></tr>`;
+        }).join("") || "<tr><td colspan=\"2\">No data</td></tr>";
+      }
+
+      // Automatic Transfers checkbox and Target % / Transfer Amt: reflect Master Trading Bankroll
+      const mtbRow = subaccounts.find(s => s.subaccount === "Master Trading Bankroll");
+      const automaticTransfersCheckbox = document.getElementById("automatic-transfers-checkbox");
+      const automaticTransfersFields = document.getElementById("automatic-transfers-fields");
+      const targetPctField = document.getElementById("target-pct-field");
+      const transferAmtField = document.getElementById("transfer-amt-field");
+      if (automaticTransfersCheckbox) {
+        automaticTransfersCheckbox.checked = !!(mtbRow && mtbRow.automatic_transfers);
+      }
+      if (automaticTransfersFields) {
+        automaticTransfersFields.style.display = (mtbRow && mtbRow.automatic_transfers) ? "" : "none";
+      }
+      if (mtbRow) {
+        const targetPctDisplay = mtbRow.target_pnl__pct != null ? (Number(mtbRow.target_pnl__pct) * 100).toFixed(1) : "";
+        const transferAmtDisplay = mtbRow.transfer_amt != null ? (Number(mtbRow.transfer_amt) * 100).toFixed(1) : "";
+        if (targetPctField) targetPctField.value = targetPctDisplay;
+        if (transferAmtField) transferAmtField.value = transferAmtDisplay;
+        window._mtbOriginalTargetPct = mtbRow.target_pnl__pct != null ? Number((Number(mtbRow.target_pnl__pct) * 100).toFixed(1)) : null;
+        window._mtbOriginalTransferAmt = mtbRow.transfer_amt != null ? Number((Number(mtbRow.transfer_amt) * 100).toFixed(1)) : null;
       }
 
             const settlementsBody = document.getElementById("settlements-body");
@@ -325,6 +425,67 @@
       };
     }
     
+    function parsePctField(field) {
+      if (!field) return null;
+      const v = String(field.value).replace(/%/g, "").trim();
+      if (v === "") return null;
+      const n = parseFloat(v);
+      return isNaN(n) ? null : n;
+    }
+    async function saveTransferSettings() {
+      const targetPctField = document.getElementById("target-pct-field");
+      const transferAmtField = document.getElementById("transfer-amt-field");
+      const curTarget = parsePctField(targetPctField);
+      const curTransfer = parsePctField(transferAmtField);
+      if (curTarget == null && curTransfer == null) return;
+      const body = { subaccount: "Master Trading Bankroll" };
+      if (curTarget != null) body.target_pnl__pct = curTarget / 100;
+      if (curTransfer != null) body.transfer_amt = curTransfer / 100;
+      try {
+        const res = await fetch(window.location.origin + "/api/subaccounts/transfer-settings", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          console.error("Failed to update transfer settings:", data.error);
+          return;
+        }
+        window._mtbOriginalTargetPct = curTarget;
+        window._mtbOriginalTransferAmt = curTransfer;
+      } catch (e) {
+        console.error("Error updating transfer settings:", e);
+      }
+    }
+
+    document.getElementById("target-pct-field")?.addEventListener("change", saveTransferSettings);
+    document.getElementById("transfer-amt-field")?.addEventListener("change", saveTransferSettings);
+
+    // Automatic Transfers checkbox: persist change to backend and show/hide Target % & Transfer Amt
+    document.getElementById("automatic-transfers-checkbox")?.addEventListener("change", async function() {
+      const checked = this.checked;
+      const fieldsEl = document.getElementById("automatic-transfers-fields");
+      if (fieldsEl) fieldsEl.style.display = checked ? "" : "none";
+      try {
+        const res = await fetch(window.location.origin + "/api/subaccounts/automatic-transfers", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ subaccount: "Master Trading Bankroll", automatic_transfers: checked })
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          console.error("Failed to update automatic transfers:", data.error);
+          this.checked = !checked;
+          if (fieldsEl) fieldsEl.style.display = this.checked ? "" : "none";
+        }
+      } catch (e) {
+        console.error("Error updating automatic transfers:", e);
+        this.checked = !checked;
+        if (fieldsEl) fieldsEl.style.display = this.checked ? "" : "none";
+      }
+    });
+
     // Set up WebSocket connection for database change notifications
     setupDatabaseChangeListener();
 

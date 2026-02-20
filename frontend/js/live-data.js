@@ -6,9 +6,18 @@
 // Global data holders
 window.momentumData = {
   weightedScore: null,
-  deltas: {}, // New: to store individual minute deltas
-  momentumPercentile: null, // New: to store momentum percentile
-  rollingPercentiles: [], // New: to store rolling momentum percentiles for chart
+  deltas: {}, // individual minute deltas (decimal)
+  momentumPercentile: null,
+  rollingPercentiles: [],
+};
+
+// Movement data from live price log (same shape for panel charts)
+window.movementData = {
+  weightedScore: null,
+  deltas: {},
+  momentumPercentile: null,
+  rollingScores: [],
+  rollingPercentiles: [],
 };
 
 // === UTILITY FUNCTIONS ===
@@ -61,13 +70,21 @@ function fetchCore(symbol = 'BTC') {
       if (data.delta_30m !== undefined) window.momentumData.deltas['30m'] = data.delta_30m;
 
       // Update momentum percentile (now using 5s average)
-      console.log('Received momentum_5s_avg from API:', data.momentum_5s_avg);
       if (data.momentum_5s_avg !== undefined) {
         window.momentumData.momentumPercentile = data.momentum_5s_avg;
-        console.log('Set window.momentumData.momentumPercentile to (5s avg):', data.momentum_5s_avg);
       }
 
-      // Trigger momentum panel update if function exists
+      // Update movement data from live price log (for Movement tab)
+      if (window.movementData) {
+        if (data.move_1m !== undefined) window.movementData.deltas['1m'] = data.move_1m;
+        if (data.move_2m !== undefined) window.movementData.deltas['2m'] = data.move_2m;
+        if (data.move_3m !== undefined) window.movementData.deltas['3m'] = data.move_3m;
+        if (data.move_4m !== undefined) window.movementData.deltas['4m'] = data.move_4m;
+        if (data.movement !== undefined) window.movementData.weightedScore = data.movement;
+        if (data.movement_percentile !== undefined) window.movementData.momentumPercentile = data.movement_percentile;
+      }
+
+      // Trigger momentum panel update (uses active tab: momentum or movement)
       if (typeof updateMomentumPanel === 'function') {
         console.log('Calling updateMomentumPanel()');
         updateMomentumPanel();

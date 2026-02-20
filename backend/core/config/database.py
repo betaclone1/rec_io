@@ -512,6 +512,72 @@ def init_database():
             END $$;
         """)
         
+        # live_symbol_status: one row per symbol; columns mirror live_price_log_1s_* (latest tick per symbol)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS live_data.live_symbol_status (
+                id SERIAL PRIMARY KEY,
+                symbol VARCHAR(20),
+                "timestamp" TEXT,
+                price DECIMAL(10,2),
+                one_minute_avg DECIMAL(10,2),
+                momentum DECIMAL(10,4),
+                delta_1m DECIMAL(10,4),
+                delta_2m DECIMAL(10,4),
+                delta_3m DECIMAL(10,4),
+                delta_4m DECIMAL(10,4),
+                delta_15m DECIMAL(10,4),
+                delta_30m DECIMAL(10,4),
+                momentum_percentile DECIMAL(5,1),
+                momentum_5s_avg DECIMAL(5,1),
+                volatility DECIMAL(10,6),
+                volatility_percentile DECIMAL(5,1),
+                momentum_30s_avg DECIMAL(5,1),
+                move_1m DECIMAL(10,4),
+                move_2m DECIMAL(10,4),
+                move_3m DECIMAL(10,4),
+                move_4m DECIMAL(10,4),
+                move_15m DECIMAL(10,4),
+                move_30m DECIMAL(10,4),
+                movement DECIMAL(10,4),
+                movement_percentile DECIMAL(5,1),
+                prev_day_avg_momentum_percentile DECIMAL(5,1),
+                prev_day_avg_volatility_percentile DECIMAL(5,1),
+                prev_day_avg_movement_percentile DECIMAL(5,1),
+                daily_update TEXT
+            );
+        """)
+        cursor.execute("""
+            DO $$
+            DECLARE
+                col text;
+                ty text;
+                cols text[] := ARRAY['timestamp','price','one_minute_avg','momentum','delta_1m','delta_2m','delta_3m','delta_4m','delta_15m','delta_30m','momentum_percentile','momentum_5s_avg','volatility','volatility_percentile','momentum_30s_avg','move_1m','move_2m','move_3m','move_4m','move_15m','move_30m','movement','movement_percentile','prev_day_avg_momentum_percentile','prev_day_avg_volatility_percentile','prev_day_avg_movement_percentile','daily_update'];
+                types text[] := ARRAY['TEXT','DECIMAL(10,2)','DECIMAL(10,2)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(5,1)','DECIMAL(5,1)','DECIMAL(10,6)','DECIMAL(5,1)','DECIMAL(5,1)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(5,1)','DECIMAL(5,1)','DECIMAL(5,1)','DECIMAL(5,1)','TEXT'];
+                i int;
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'live_data' AND table_name = 'live_symbol_status') THEN
+                    FOR i IN 1..array_length(cols, 1) LOOP
+                        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'live_data' AND table_name = 'live_symbol_status' AND column_name = cols[i]) THEN
+                            EXECUTE format('ALTER TABLE live_data.live_symbol_status ADD COLUMN %I ' || types[i], cols[i]);
+                        END IF;
+                    END LOOP;
+                END IF;
+            END $$;
+        """)
+        # Migrate daily_update from timestamptz to TEXT (same format as timestamp column)
+        cursor.execute("""
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_schema = 'live_data' AND table_name = 'live_symbol_status' AND column_name = 'daily_update')
+                   AND (SELECT data_type FROM information_schema.columns
+                        WHERE table_schema = 'live_data' AND table_name = 'live_symbol_status' AND column_name = 'daily_update') = 'timestamp with time zone' THEN
+                    ALTER TABLE live_data.live_symbol_status
+                    ALTER COLUMN daily_update TYPE TEXT USING to_char(daily_update AT TIME ZONE 'America/New_York', 'YYYY-MM-DD"T"HH24:MI:SS');
+                END IF;
+            END $$;
+        """)
+        
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS live_data.btc_price_change (
                 id SERIAL PRIMARY KEY,

@@ -10124,6 +10124,37 @@ For more details, see: `scripts/README_db_schema_migration.md`
 
 ---
 
+### Table: `users.subaccounts_0001`
+
+Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Master Trading Bankroll, Cash Transfer) sum to PRIMARY. Updated by kalshi_account_sync when positions = 0. Balances in cents.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | nextval('users.subaccounts_0001_id_seq'::regclass) | |
+| `subaccount` | `text` | NO | '*** SUBACCOUNT NAME ***'::text | Name: PRIMARY, Master Trading Bankroll, Cash Transfer |
+| `balance` | `integer(32)` | NO | 0 | Balance in cents. PRIMARY = total portfolio; MTB = PRIMARY − Cash Transfer |
+| `base_value` | `integer(32)` | YES | - | Starting value in cents (MTB). Used for realized_pnl and rake reset |
+| `realized_pnl` | `integer(32)` | YES | - | balance − base_value in cents (MTB) |
+| `realized_pnl_pct` | `real(24)` | YES | - | (balance − base_value) / base_value as fraction, 4 decimal places (e.g. 0.0148) |
+| `target_pnl__pct` | `real(24)` | YES | - | Target fraction (e.g. 0.01 = 1%). When realized_pnl_pct ≥ this, internal transfer runs (if automatic_transfers) |
+| `transfer_amt` | `real(24)` | YES | - | Transfer as fraction of base_value (e.g. 0.005 = 0.5%). Amount raked = transfer_amt × base_value |
+| `automatic_transfers` | `boolean` | NO | false | If TRUE, target-based internal transfers are initiated by account sync; user-definable per subaccount |
+
+#### Constraints
+
+- **Primary Key:** `subaccounts_0001_pkey` on `id`
+
+#### Indexes
+
+- `subaccounts_0001_pkey`
+  ```sql
+  CREATE UNIQUE INDEX subaccounts_0001_pkey ON users.subaccounts_0001 USING btree (id)
+  ```
+
+---
+
 ### Table: `users.trade_history_preferences_0001`
 
 #### Columns
@@ -10361,6 +10392,35 @@ WHERE t.monitor = cs.monitor
 - `trades_0001_weekly_cycle_idx`
   ```sql
   CREATE INDEX trades_0001_weekly_cycle_idx ON users.trades_0001 USING btree (weekly_cycle)
+  ```
+
+---
+
+### Table: `users.transfers_0001`
+
+Log of transfers: internal (between subaccounts, e.g. Master Trading Bankroll → Cash Transfer) or external (to bank; not used yet). Rows created by kalshi_account_sync when it runs an internal transfer, or (future) when a manual transfer is recorded.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | nextval('users.transfers_0001_id_seq'::regclass) | |
+| `timestamp` | `text` | NO | - | When the transfer occurred; EST with date (e.g. YYYY-MM-DD HH:MM:SS) |
+| `type` | `text` | YES | - | `internal` (between subaccounts) or `external` (to bank; future) |
+| `from` | `text` | YES | - | Source subaccount name (e.g. Master Trading Bankroll) |
+| `to` | `text` | YES | - | Destination subaccount name (e.g. Cash Transfer) |
+| `amount` | `integer(32)` | YES | - | Transfer amount in cents |
+| `initiated` | `text` | YES | - | `automatic` (script) or `manual` (future) |
+
+#### Constraints
+
+- **Primary Key:** `transfers_0001_pkey` on `id`
+
+#### Indexes
+
+- `transfers_0001_pkey`
+  ```sql
+  CREATE UNIQUE INDEX transfers_0001_pkey ON users.transfers_0001 USING btree (id)
   ```
 
 ---

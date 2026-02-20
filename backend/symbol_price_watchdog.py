@@ -86,6 +86,85 @@ VOLATILITY_CACHE = {}
 # Global movement profile cache (percentile -> movement_value)
 MOVEMENT_PROFILES = {}
 
+def update_prev_day_avg_for_symbol(symbol: str, cursor, table_name: str, yesterday_start: str, yesterday_end: str):
+    """
+    Compute previous calendar day's average momentum/volatility/movement percentiles from this symbol's
+    live price log (per-minute resample then daily avg) and UPDATE live_symbol_status.
+    Uses the same connection/cursor as the caller (e.g. insert_tick).
+    """
+    cursor.execute("""
+        WITH per_minute AS (
+            SELECT
+                DATE_TRUNC(%s, timestamp::timestamp) AS minute,
+                AVG(momentum_percentile)   AS mom_pct,
+                AVG(volatility_percentile) AS vol_pct,
+                AVG(movement_percentile)   AS mov_pct
+            FROM live_data.""" + table_name + """
+            WHERE timestamp >= %s AND timestamp < %s
+            GROUP BY DATE_TRUNC(%s, timestamp::timestamp)
+        )
+        SELECT AVG(mom_pct), AVG(vol_pct), AVG(mov_pct) FROM per_minute
+    """, ('minute', yesterday_start, yesterday_end, 'minute'))
+    row = cursor.fetchone()
+    if row and (row[0] is not None or row[1] is not None or row[2] is not None):
+        daily_update_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%dT%H:%M:%S")
+        cursor.execute("""
+            UPDATE live_data.live_symbol_status SET
+                prev_day_avg_momentum_percentile = %s,
+                prev_day_avg_volatility_percentile = %s,
+                prev_day_avg_movement_percentile = %s,
+                daily_update = %s
+            WHERE symbol = %s
+        """, (row[0], row[1], row[2], daily_update_str, symbol))
+        mom = f"{row[0]:.1f}" if row[0] is not None else "NULL"
+        vol = f"{row[1]:.1f}" if row[1] is not None else "NULL"
+        mov = f"{row[2]:.1f}" if row[2] is not None else "NULL"
+        print(f"✅ {symbol} prev_day_avg updated: momentum={mom} volatility={vol} movement={mov}")
+
+def _run_daily_prev_day_avg_0005(symbol: str):
+    """Background thread: run prev_day_avg update every day at 00:05 EST. No dependency on ticks."""
+    table_name = SYMBOL_CONFIG[symbol]["table_name"]
+    print(f"🕐 [{symbol}] Daily prev_day_avg thread started, waiting for 00:05 EST...")
+    sys.stdout.flush()
+    while True:
+        now = datetime.now(ZoneInfo("America/New_York"))
+        # Next 00:05 EST today or tomorrow
+        target = now.replace(hour=0, minute=5, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        wait_seconds = (target - now).total_seconds()
+        wait_hours = wait_seconds / 3600
+        print(f"🕐 [{symbol}] Next prev_day_avg update scheduled for {target.strftime('%Y-%m-%d %H:%M:%S')} EST (in {wait_hours:.1f} hours)")
+        sys.stdout.flush()
+        time.sleep(wait_seconds)
+        now_after_sleep = datetime.now(ZoneInfo("America/New_York"))
+        print(f"🕐 [{symbol}] Running daily prev_day_avg update at {now_after_sleep.strftime('%Y-%m-%d %H:%M:%S')} EST...")
+        sys.stdout.flush()
+        try:
+            conn = get_postgres_connection()
+            if not conn:
+                print(f"⚠️ [{symbol}] Failed to get DB connection for prev_day_avg update")
+                continue
+            cursor = conn.cursor()
+            today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+            today_dt = datetime.strptime(today_str, "%Y-%m-%d")
+            yesterday_dt = today_dt - timedelta(days=1)
+            yesterday_start = yesterday_dt.strftime("%Y-%m-%d") + "T00:00:00"
+            yesterday_end = today_str + "T00:00:00"
+            print(f"🕐 [{symbol}] Computing prev_day_avg for {yesterday_start} to {yesterday_end}")
+            sys.stdout.flush()
+            update_prev_day_avg_for_symbol(symbol, cursor, table_name, yesterday_start, yesterday_end)
+            conn.commit()
+            cursor.close()
+            conn.close()
+            print(f"✅ [{symbol}] Daily prev_day_avg update completed successfully")
+            sys.stdout.flush()
+        except Exception as e:
+            print(f"⚠️ [{symbol}] daily prev_day_avg (00:05) failed: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.stdout.flush()
+
 def load_movement_profile(symbol: str) -> Dict[float, float]:
     """Load movement profile from database and cache (same pattern as momentum)."""
     if symbol in MOVEMENT_PROFILES:
@@ -968,6 +1047,66 @@ def insert_tick(symbol: str, timestamp: str, price: float):
             movement_data.get('movement_percentile'),
         ))
         
+        # Dual write: keep live_symbol_status in sync with latest tick for this symbol
+        tick_values = (
+            timestamp,
+            price,
+            one_minute_avg,
+            momentum_data.get('momentum'),
+            momentum_data.get('delta_1m'),
+            momentum_data.get('delta_2m'),
+            momentum_data.get('delta_3m'),
+            momentum_data.get('delta_4m'),
+            momentum_data.get('delta_15m'),
+            momentum_data.get('delta_30m'),
+            momentum_percentile,
+            momentum_5s_avg,
+            momentum_30s_avg,
+            volatility_value,
+            volatility_percentile,
+            movement_data.get('move_1m'),
+            movement_data.get('move_2m'),
+            movement_data.get('move_3m'),
+            movement_data.get('move_4m'),
+            movement_data.get('move_15m'),
+            movement_data.get('move_30m'),
+            movement_data.get('movement'),
+            movement_data.get('movement_percentile'),
+        )
+        cursor.execute("""
+            UPDATE live_data.live_symbol_status SET
+                "timestamp" = %s,
+                price = %s,
+                one_minute_avg = %s,
+                momentum = %s,
+                delta_1m = %s,
+                delta_2m = %s,
+                delta_3m = %s,
+                delta_4m = %s,
+                delta_15m = %s,
+                delta_30m = %s,
+                momentum_percentile = %s,
+                momentum_5s_avg = %s,
+                volatility = %s,
+                volatility_percentile = %s,
+                momentum_30s_avg = %s,
+                move_1m = %s,
+                move_2m = %s,
+                move_3m = %s,
+                move_4m = %s,
+                move_15m = %s,
+                move_30m = %s,
+                movement = %s,
+                movement_percentile = %s
+            WHERE symbol = %s
+        """, tick_values + (symbol,))
+        if cursor.rowcount == 0:
+            cursor.execute("""
+                INSERT INTO live_data.live_symbol_status
+                (symbol, "timestamp", price, one_minute_avg, momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg, volatility, volatility_percentile, momentum_30s_avg, move_1m, move_2m, move_3m, move_4m, move_15m, move_30m, movement, movement_percentile)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (symbol,) + tick_values)
+        
         # ROLLING WINDOW: Clean up data older than 30 days
         dt = datetime.now(ZoneInfo("America/New_York")).replace(microsecond=0)
         cutoff_time = dt - timedelta(days=30)
@@ -1199,6 +1338,12 @@ async def main():
     method = config.get('method', 'coinbase')  # Default to coinbase for backward compatibility
     
     print(f"Starting {symbol} Price Watchdog (PostgreSQL) using {method}")
+    sys.stdout.flush()
+    # Daily prev_day_avg update at 00:05 EST (runs regardless of ticks)
+    t = threading.Thread(target=_run_daily_prev_day_avg_0005, args=(symbol,), daemon=True)
+    t.start()
+    print("🕐 Daily prev_day_avg update scheduled for 00:05 EST")
+    sys.stdout.flush()
     
     if method == 'yahoo_finance':
         # Yahoo Finance symbols (SPX, NDX, etc.) - run synchronously

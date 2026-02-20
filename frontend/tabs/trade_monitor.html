@@ -611,7 +611,10 @@
       </div>
       <div class="panel-container" style="min-height: 00px;" id="momentumPanelContainer">
         <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
-          <span>Momentum</span>
+          <div style="display: flex; gap: 20px;">
+            <span id="momentum-tab" class="panel-tab active" style="cursor: pointer; opacity: 1; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="if(!this.classList.contains('active')) this.style.opacity='0.3'">Momentum</span>
+            <span id="movement-tab" class="panel-tab" style="cursor: pointer; opacity: 0.3; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="if(!this.classList.contains('active')) this.style.opacity='0.3'">Movement</span>
+          </div>
           <div id="momentum-score-display" style="color: #ccc; font-size: 12px; font-weight: normal;">—</div>
         </div>
         <div class="panel-content" id="momentumPanelContent">
@@ -2983,9 +2986,12 @@ document.addEventListener('DOMContentLoaded', () => {
       momentumPercentile: null,
     };
 
-    function formatNumber(val, addPercent) {
+    window.activeMomentumPanelTab = 'momentum';
+
+    function formatNumber(val, addPercent, isAlreadyPercent) {
       if (val === null || val === undefined || isNaN(val)) return '—';
       const prefix = val >= 0 ? '+' : '';
+      if (isAlreadyPercent) return prefix + Number(val).toFixed(1) + (addPercent ? '%' : '');
       return prefix + (val * 100).toFixed(0) + (addPercent ? '%' : '');
     }
 
@@ -2993,137 +2999,108 @@ document.addEventListener('DOMContentLoaded', () => {
     window.momentum_delta = 0;
 
     function updateMomentumPanel() {
-      const { deltas, weightedScore, momentumPercentile } = window.momentumData;
+      const mode = window.activeMomentumPanelTab || 'momentum';
+      const data = mode === 'movement' ? (window.movementData || {}) : window.momentumData;
+      const { deltas = {}, weightedScore, momentumPercentile } = data;
 
-      // Debug logging
-      console.log('updateMomentumPanel called with:', { deltas, weightedScore, momentumPercentile });
-
-      // Ensure rollingScores array exists
-      if (!window.momentumData.rollingScores) {
-        window.momentumData.rollingScores = [];
-      }
-      
-      // Ensure rollingPercentiles array exists
-      if (!window.momentumData.rollingPercentiles) {
-        window.momentumData.rollingPercentiles = [];
-      }
+      if (!data.rollingScores) data.rollingScores = [];
+      if (!data.rollingPercentiles) data.rollingPercentiles = [];
 
       const momentumScoreEl = document.getElementById('momentum-score-display');
       if (momentumScoreEl) {
-        momentumScoreEl.textContent = formatNumber(weightedScore, false);
+        if (mode === 'movement') {
+          momentumScoreEl.textContent = (weightedScore != null && !isNaN(weightedScore)) ? Number(weightedScore).toFixed(1) : '—';
+        } else {
+          momentumScoreEl.textContent = formatNumber(weightedScore, false);
+        }
       }
 
-      // Update momentum percentile display
       const momentumPercentileEl = document.getElementById('momentum-percentile-display');
-      console.log('momentumPercentileEl found:', !!momentumPercentileEl);
-      console.log('momentumPercentile value:', momentumPercentile, 'type:', typeof momentumPercentile);
       if (momentumPercentileEl) {
         if (momentumPercentile !== null && momentumPercentile !== undefined && !isNaN(momentumPercentile)) {
-          const prefix = momentumPercentile >= 0 ? '+' : '';
-          momentumPercentileEl.textContent = `${prefix}${momentumPercentile.toFixed(0)}%`;
-          console.log('Set momentum percentile to:', `${prefix}${momentumPercentile.toFixed(0)}%`);
+          momentumPercentileEl.textContent = mode === 'movement' ? `${momentumPercentile.toFixed(0)}%` : `${momentumPercentile >= 0 ? '+' : ''}${momentumPercentile.toFixed(0)}%`;
         } else {
           momentumPercentileEl.textContent = '—';
-          console.log('Set momentum percentile to dash (value was null/undefined/NaN)');
         }
-      } else {
-        console.log('momentum-percentile-display element not found!');
       }
 
-      // After updating the display, append weightedScore to rollingScores and trim to 40
       if (typeof weightedScore === "number" && !isNaN(weightedScore)) {
-        window.momentumData.rollingScores.push(weightedScore);
-        if (window.momentumData.rollingScores.length > 40) {
-          window.momentumData.rollingScores = window.momentumData.rollingScores.slice(-40);
-        }
+        data.rollingScores.push(weightedScore);
+        if (data.rollingScores.length > 40) data.rollingScores = data.rollingScores.slice(-40);
       }
-      
-      // After updating the display, append momentumPercentile to rollingPercentiles and trim to 40
       if (typeof momentumPercentile === "number" && !isNaN(momentumPercentile)) {
-        window.momentumData.rollingPercentiles.push(momentumPercentile);
-        if (window.momentumData.rollingPercentiles.length > 40) {
-          window.momentumData.rollingPercentiles = window.momentumData.rollingPercentiles.slice(-40);
-        }
+        data.rollingPercentiles.push(momentumPercentile);
+        if (data.rollingPercentiles.length > 40) data.rollingPercentiles = data.rollingPercentiles.slice(-40);
       }
 
-      // --- Calculate momentum_delta using "momentum of momentum" (second derivative) method ---
-      // Maintain a longer history for delta calculation
-      if (!window.momentumData.momentumScoreHistory) {
-        window.momentumData.momentumScoreHistory = [];
-      }
-      if (typeof weightedScore === "number" && !isNaN(weightedScore)) {
-        window.momentumData.momentumScoreHistory.push(weightedScore);
-        // Keep at most 120 points
-        if (window.momentumData.momentumScoreHistory.length > 120) {
-          window.momentumData.momentumScoreHistory = window.momentumData.momentumScoreHistory.slice(-120);
+      if (mode === 'momentum') {
+        if (!window.momentumData.momentumScoreHistory) window.momentumData.momentumScoreHistory = [];
+        if (typeof weightedScore === "number" && !isNaN(weightedScore)) {
+          window.momentumData.momentumScoreHistory.push(weightedScore);
+          if (window.momentumData.momentumScoreHistory.length > 120) {
+            window.momentumData.momentumScoreHistory = window.momentumData.momentumScoreHistory.slice(-120);
+          }
         }
       }
-      // momentum_delta and indicator display removed from UI
 
       Object.entries(deltas).forEach(([key, val]) => {
         const el = document.getElementById(`delta-${key}`);
-        if (el) el.textContent = formatNumber(val, false);
+        if (el) el.textContent = mode === 'movement' ? ((val != null && !isNaN(val)) ? Number(val).toFixed(1) : '—') : formatNumber(val, false);
       });
 
-      renderMomentumBarChart(deltas);
-      drawRollingMomentumChart();
-      
-      // Fingerprint now updated from consolidated strike table data - no separate API call needed
+      renderMomentumBarChart(deltas, mode);
+      drawRollingMomentumChart(mode);
     }
     
     // Fingerprint display now handled by consolidated strike table data in strike-table.js
 
-    // Chart.js-based momentum bar chart (flicker-free: update data in place)
+    // Chart.js-based momentum/movement bar chart (flicker-free: update data in place)
     let momentumBarChart = null;
-    function renderMomentumBarChart(deltas) {
-      console.log('renderMomentumBarChart called with deltas:', deltas);
-      const ctx = document.getElementById('momentumBarChartCanvas').getContext('2d');
+    function renderMomentumBarChart(deltas, mode) {
+      mode = mode || (window.activeMomentumPanelTab || 'momentum');
+      const ctx = document.getElementById('momentumBarChartCanvas');
+      if (!ctx) return;
       const keys = ['4m', '3m', '2m', '1m'];
-      const values = keys.map(k => deltas[k] * 100);
+      const isMovement = mode === 'movement';
+      const values = isMovement
+        ? keys.map(k => (deltas && deltas[k] != null) ? deltas[k] : 0)
+        : keys.map(k => ((deltas && deltas[k] != null) ? deltas[k] : 0) * 100);
       const bgColors = values.map(v => v >= 0 ? 'rgba(40,167,69,0.7)' : 'rgba(220,53,69,0.7)');
-      console.log('Chart values:', values);
+      const yMin = isMovement ? 0 : -50;
+      const yMax = isMovement ? 20 : 50;
 
       if (!momentumBarChart) {
-        // Initial render
-        momentumBarChart = new Chart(ctx, {
+        momentumBarChart = new Chart(ctx.getContext('2d'), {
           type: 'bar',
           data: {
             labels: keys,
-            datasets: [{
-              data: values,
-              backgroundColor: bgColors,
-            }]
+            datasets: [{ data: values, backgroundColor: bgColors }]
           },
           options: {
             responsive: true,
             animation: false,
             scales: {
-              y: {
-                min: -50,
-                max: 50,
-                ticks: { color: '#fff' },
-                grid: { color: '#444' }
-              },
-              x: {
-                ticks: { color: '#fff' },
-                grid: { color: '#444' }
-              }
+              y: { min: yMin, max: yMax, ticks: { color: '#fff' }, grid: { color: '#444' } },
+              x: { ticks: { color: '#fff' }, grid: { color: '#444' } }
             },
             plugins: { legend: { display: false } }
           }
         });
       } else {
-        // Just update the data
         momentumBarChart.data.datasets[0].data = values;
         momentumBarChart.data.datasets[0].backgroundColor = bgColors;
+        momentumBarChart.options.scales.y.min = yMin;
+        momentumBarChart.options.scales.y.max = yMax;
         momentumBarChart.update();
       }
     }
 
     // fetchCore() moved to live-data.js
 
-    // Draw rolling momentum chart in the third table
-    function drawRollingMomentumChart() {
+    // Draw rolling momentum/movement chart (data from active tab)
+    function drawRollingMomentumChart(mode) {
+      mode = mode || (window.activeMomentumPanelTab || 'momentum');
+      const dataSource = mode === 'movement' ? (window.movementData || {}) : window.momentumData;
       const canvas = document.getElementById('rolling-momentum-chart');
       if (!canvas) return;
       const ctx = canvas.getContext('2d');
@@ -3144,58 +3121,49 @@ document.addEventListener('DOMContentLoaded', () => {
       ctx.lineTo(margin.left, height - margin.bottom);
       ctx.stroke();
 
-      // Y-axis scale: -100 (bottom) to 100 (top) with compressed middle range
-      const yMin = -100;
-      const yMax = 100;
+      const isMovementChart = mode === 'movement';
+      const yMin = isMovementChart ? 0 : -100;
+      const yMax = isMovementChart ? 100 : 100;
       function yForValue(v) {
-        // Compress the -75 to 75 range to take up less vertical space
-        // Use a piecewise function that compresses the middle range
+        if (isMovementChart) {
+          const val = Math.max(0, Math.min(100, v));
+          return margin.top + ((yMax - val) / (yMax - yMin)) * chartHeight;
+        }
         let compressedValue;
         if (v >= -75 && v <= 75) {
-          // Compress -75 to 75 range to take up only 40% of the chart height
-          // Map [-75, 75] to [-30, 30] in the compressed space
           compressedValue = (v / 75) * 30;
         } else if (v > 75) {
-          // Map 75 to 100 to the upper 30% of the chart
-          // Map [75, 100] to [30, 100]
           compressedValue = 30 + ((v - 75) / 25) * 70;
         } else {
-          // Map -100 to -75 to the lower 30% of the chart  
-          // Map [-100, -75] to [-100, -30]
           compressedValue = -100 + ((v + 100) / 25) * 70;
         }
-        
-        // Map compressed value to chart coordinates
-        const y = margin.top + ((yMax - compressedValue) / (yMax - yMin)) * chartHeight;
+        const y = margin.top + ((100 - compressedValue) / 200) * chartHeight;
         return y;
       }
 
-      // Draw tick marks and labels for compressed scale (vertical axis)
       ctx.font = '11px monospace';
       ctx.fillStyle = '#ccc';
       ctx.textAlign = 'right';
-      // Add more tick marks to show the compression: -100, -75, 0, 75, 100
-      const ticks = [-100, -75, 0, 75, 100];
+      const ticks = isMovementChart ? [0, 25, 50, 75, 100] : [-100, -75, 0, 75, 100];
       ticks.forEach(tick => {
         const y = yForValue(tick);
-        // Draw tick mark
         ctx.strokeStyle = '#aaa';
         ctx.beginPath();
         ctx.moveTo(margin.left - 8, y);
         ctx.lineTo(margin.left, y);
         ctx.stroke();
-        // Draw label
         ctx.fillText(tick.toString(), margin.left - 12, y + 4);
       });
 
-      // Draw horizontal zero line
-      const zeroY = yForValue(0);
-      ctx.strokeStyle = '#888';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(margin.left, zeroY);
-      ctx.lineTo(width - margin.right, zeroY);
-      ctx.stroke();
+      if (!isMovementChart) {
+        const zeroY = yForValue(0);
+        ctx.strokeStyle = '#888';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(margin.left, zeroY);
+        ctx.lineTo(width - margin.right, zeroY);
+        ctx.stroke();
+      }
 
       // === Draw horizontal axis line, ticks, and labels ===
       // Axis line near bottom margin
@@ -3232,13 +3200,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // === End horizontal axis and ticks ===
 
-      // Plot the momentum percentile points
-      // Use history from window.momentumData.rollingPercentiles or fallback to current momentumPercentile
+      // Plot the percentile points from active tab (momentum or movement)
       let points = [];
-      if (window.momentumData.rollingPercentiles && Array.isArray(window.momentumData.rollingPercentiles)) {
-        points = window.momentumData.rollingPercentiles.slice(-40);
-      } else if (typeof window.momentumData.momentumPercentile === 'number') {
-        points = Array(40).fill(window.momentumData.momentumPercentile);
+      if (dataSource.rollingPercentiles && Array.isArray(dataSource.rollingPercentiles)) {
+        points = dataSource.rollingPercentiles.slice(-40);
+      } else if (typeof dataSource.momentumPercentile === 'number') {
+        points = Array(40).fill(dataSource.momentumPercentile);
       }
       // Percentiles are already in the correct range (-99.9 to 99.9), no scaling needed
       points = points.map(v => (v === null || v === undefined || isNaN(v) ? null : v));
@@ -3339,6 +3306,33 @@ document.addEventListener('DOMContentLoaded', () => {
       //   ctx.arc(x, y, 2, 0, 2 * Math.PI);
       //   ctx.fill();
       // }
+    }
+
+    function initializeMomentumPanelTabs() {
+      const momentumTab = document.getElementById('momentum-tab');
+      const movementTab = document.getElementById('movement-tab');
+      if (!momentumTab || !movementTab) return;
+      momentumTab.addEventListener('click', function() {
+        window.activeMomentumPanelTab = 'momentum';
+        momentumTab.classList.add('active');
+        momentumTab.style.opacity = '1';
+        movementTab.classList.remove('active');
+        movementTab.style.opacity = '0.3';
+        updateMomentumPanel();
+      });
+      movementTab.addEventListener('click', function() {
+        window.activeMomentumPanelTab = 'movement';
+        movementTab.classList.add('active');
+        movementTab.style.opacity = '1';
+        momentumTab.classList.remove('active');
+        momentumTab.style.opacity = '0.3';
+        updateMomentumPanel();
+      });
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initializeMomentumPanelTabs);
+    } else {
+      initializeMomentumPanelTabs();
     }
   </script>
   <script>
