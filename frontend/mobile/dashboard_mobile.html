@@ -169,7 +169,7 @@
       padding: 10px 0;
     }
 
-    /* Monitor Tile Base */
+    /* Monitor Tile Base - tile body not clickable; only controls receive taps */
     .monitor-tile {
       background-color: #1f2530;
       border-radius: 8px;
@@ -182,19 +182,40 @@
       flex-direction: column;
       gap: 4px;
       position: relative;
+      pointer-events: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    
+    /* New-monitor (add) tile stays clickable */
+    .monitor-tile.new-monitor {
       pointer-events: auto;
     }
     
-    /* Disable all hover effects on monitor tiles */
-    .monitor-tile:hover {
+    /* Re-enable pointer events only on interactive controls inside monitor tiles */
+    .monitor-tile .status-light,
+    .monitor-tile .monitor-icon,
+    .monitor-tile .paper-trading-toggle,
+    .monitor-tile .auto-trade-toggle,
+    .monitor-tile .monitor-settings-icon {
+      pointer-events: auto;
+    }
+    
+    /* Disable all hover/active effects on monitor tile so border never disappears on touch */
+    .monitor-tile:hover,
+    .monitor-tile:active {
       background-color: #1f2530 !important;
-      border-color: #34495e !important;
+      border-color: inherit !important;
       transform: none !important;
     }
     
-    /* Re-enable pointer events for auto trade toggle */
-    .auto-trade-toggle {
-      pointer-events: auto !important;
+    .monitor-tile.live-mode:hover,
+    .monitor-tile.live-mode:active {
+      border-color: #48bb78 !important;
+    }
+    
+    .monitor-tile.paper-mode:hover,
+    .monitor-tile.paper-mode:active {
+      border-color: #fbbf24 !important;
     }
 
     /* Paper Trading Border Colors */
@@ -1736,11 +1757,7 @@
             listItem.style.transition = 'background-color 0.2s ease';
             listItem.style.boxShadow = '0 0 8px rgba(74, 158, 255, 0.01)';
           }
-          
-          // Highlight this monitor tile
-          tile.style.background = '#3a4a5c';
-          tile.style.transition = 'background-color 0.2s ease';
-          tile.style.boxShadow = '0 0 5px rgba(74, 158, 255, 0.05)';
+          /* Do not set inline styles on the tile - prevents border disappearing on touch/mouseout */
         });
         
         tile.addEventListener('mouseout', function() {
@@ -1761,11 +1778,7 @@
             listItem.style.transition = '';
             listItem.style.boxShadow = '';
           }
-          
-          // Remove highlight from this monitor tile
-          tile.style.background = '';
-          tile.style.transition = '';
-          tile.style.boxShadow = '';
+          /* Do not clear inline styles on the tile - prevents border disappearing artifact */
         });
       });
     }
