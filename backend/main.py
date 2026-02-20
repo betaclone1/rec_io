@@ -1953,6 +1953,144 @@ async def update_subaccount_transfer_settings(request: Request):
         print(f"Error updating subaccount transfer settings: {e}")
         return {"ok": False, "error": str(e)}
 
+
+@app.patch("/api/subaccounts/base-value")
+async def update_subaccount_base_value(request: Request):
+    """Set base_value (cents) for a subaccount. Body: { \"subaccount\": \"Master Trading Bankroll\", \"base_value\": 84329 } (base_value in cents)."""
+    try:
+        payload = await request.json()
+        subaccount_name = payload.get("subaccount")
+        base_value = payload.get("base_value")
+        if subaccount_name is None:
+            return {"ok": False, "error": "subaccount required"}
+        if base_value is None:
+            return {"ok": False, "error": "base_value required"}
+        try:
+            base_value_int = int(base_value)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "base_value must be an integer (cents)"}
+        if base_value_int < 0:
+            return {"ok": False, "error": "base_value must be non-negative"}
+        import psycopg2
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE users.subaccounts_0001 SET base_value = %s WHERE subaccount = %s",
+                (base_value_int, subaccount_name)
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                conn.close()
+                return {"ok": False, "error": "subaccount not found"}
+        conn.close()
+        return {"ok": True}
+    except Exception as e:
+        print(f"Error updating subaccount base_value: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/subaccounts/initiate-transfer")
+async def initiate_transfer(request: Request):
+    """
+    Manual internal transfer between subaccounts (e.g. MTB → Cash Transfer).
+    Body: { "from": "Master Trading Bankroll", "to": "Cash Transfer", "amount": 100 } (amount in dollars).
+    Inserts into users.transfers_0001 (initiated=manual), updates subaccounts balances, then triggers
+    kalshi_account_sync (sync_balance) to poll Kalshi and update account_balance.
+    """
+    try:
+        payload = await request.json()
+        from_name = payload.get("from")
+        to_name = payload.get("to")
+        amount_dollars = payload.get("amount")
+        if not from_name or not to_name:
+            return {"ok": False, "error": "from and to required"}
+        if from_name == "PRIMARY" or to_name == "PRIMARY":
+            return {"ok": False, "error": "PRIMARY cannot be from or to"}
+        if from_name == "External" or to_name == "External":
+            return {"ok": False, "error": "External transfers not supported yet"}
+        if from_name == to_name:
+            return {"ok": False, "error": "from and to must differ"}
+        try:
+            amount_val = float(amount_dollars)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "amount must be a number"}
+        if amount_val <= 0:
+            return {"ok": False, "error": "amount must be positive"}
+        amount_cents = int(round(amount_val * 100))
+
+        import psycopg2
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        EST = ZoneInfo("America/New_York")
+        transfer_timestamp_est = datetime.now(EST).strftime("%Y-%m-%d %H:%M:%S")
+
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT balance FROM users.subaccounts_0001 WHERE subaccount = %s",
+                    (from_name,)
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return {"ok": False, "error": f"subaccount not found: {from_name}"}
+                from_balance = int(row[0]) if row[0] is not None else 0
+                if from_balance < amount_cents:
+                    return {"ok": False, "error": f"insufficient balance in {from_name}"}
+                cursor.execute(
+                    "SELECT 1 FROM users.subaccounts_0001 WHERE subaccount = %s",
+                    (to_name,)
+                )
+                if not cursor.fetchone():
+                    return {"ok": False, "error": f"subaccount not found: {to_name}"}
+
+                cursor.execute("""
+                    INSERT INTO users.transfers_0001 (timestamp, type, "from", "to", amount, initiated)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (transfer_timestamp_est, "internal", from_name, to_name, amount_cents, "manual"))
+                cursor.execute(
+                    "UPDATE users.subaccounts_0001 SET balance = balance - %s WHERE subaccount = %s",
+                    (amount_cents, from_name)
+                )
+                cursor.execute(
+                    "UPDATE users.subaccounts_0001 SET balance = balance + %s WHERE subaccount = %s",
+                    (amount_cents, to_name)
+                )
+                conn.commit()
+        finally:
+            conn.close()
+
+        # Notify frontend so Account Information panel refreshes immediately (subaccounts + transfers table)
+        await broadcast_db_change("subaccounts", {"source": "initiate_transfer"})
+        await broadcast_db_change("transfers", {"source": "initiate_transfer"})
+
+        # Trigger kalshi_account_sync (sync_balance) in background: poll Kalshi, update subaccounts/account_balance, notify
+        def _run_sync():
+            try:
+                from backend.kalshi_account_sync_ws import sync_balance
+                sync_balance()
+            except Exception as e:
+                print(f"initiate-transfer: sync_balance failed: {e}")
+
+        import threading
+        threading.Thread(target=_run_sync, daemon=True).start()
+
+        return {"ok": True}
+    except Exception as e:
+        print(f"Error initiating transfer: {e}")
+        return {"ok": False, "error": str(e)}
+
+
 @app.get("/api/monitor/bankroll")
 async def get_monitor_bankroll(monitor_id: str):
     """Get monitor-specific bankroll allotment from PostgreSQL database."""
@@ -2143,6 +2281,39 @@ def get_settlements():
     except Exception as e:
         print(f"Error getting settlements from PostgreSQL: {e}")
         return {"settlements": []}
+
+
+@app.get("/api/db/transfers")
+def get_transfers():
+    """Get transfer history from users.transfers_0001 (internal/external transfer log)."""
+    try:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute("""
+                SELECT id, timestamp, type, "from", "to", amount, initiated
+                FROM users.transfers_0001
+                ORDER BY id DESC
+                LIMIT 100
+            """)
+            rows = cursor.fetchall()
+
+        transfers_list = [dict(r) for r in rows]
+        conn.close()
+        return {"transfers": transfers_list}
+
+    except Exception as e:
+        print(f"Error getting transfers from PostgreSQL: {e}")
+        return {"transfers": []}
+
 
 @app.get("/api/db/system_health")
 def get_system_health_from_db():
