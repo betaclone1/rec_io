@@ -212,6 +212,7 @@
             const dashboardFrame = document.getElementById('dashboard-frame');
             if (dashboardFrame && iframeSources.dashboard) {
                 dashboardFrame.src = iframeSources.dashboard;
+                dashboardFrame.dataset.srcSet = 'true';
             }
 
             function broadcastTabVisibility() {
@@ -235,17 +236,19 @@
                 const activeFrame = document.getElementById(`${tabName}-frame`);
                 if (!activeFrame) return;
 
-                // Lazy-load: set iframe src only when user first opens this tab
-                if (!activeFrame.src && iframeSources[tabName]) {
-                    activeFrame.src = iframeSources[tabName];
-                }
-
-                // Remove active class from all tabs and frames
+                // Remove active class from all tabs and frames first
                 tabItems.forEach(tab => tab.classList.remove('active'));
                 pageFrames.forEach(frame => frame.classList.remove('active'));
 
+                // Make the target tab and frame visible (needed before setting src on some mobile browsers)
                 if (activeTab) activeTab.classList.add('active');
                 activeFrame.classList.add('active');
+
+                // Lazy-load: set iframe src only when user first opens this tab (use data attr; .src can resolve to about:blank when HTML has src="")
+                if (activeFrame.dataset.srcSet !== 'true' && iframeSources[tabName]) {
+                    activeFrame.src = iframeSources[tabName];
+                    activeFrame.dataset.srcSet = 'true';
+                }
                 broadcastTabVisibility();
             }
 
