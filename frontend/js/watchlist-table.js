@@ -23,15 +23,26 @@ async function fetchWatchlistData() {
   }
 }
 
-// === WATCHLIST TABLE INITIALIZATION ===
+// === WATCHLIST TABLE INITIALIZATION (pause when Trade Monitor tab hidden) ===
+
+let watchlistIntervalId = null;
+
+function startWatchlistPolling() {
+  if (watchlistIntervalId != null) clearInterval(watchlistIntervalId);
+  updateWatchlistTable();
+  watchlistIntervalId = setInterval(updateWatchlistTable, 1000);
+}
+
+function stopWatchlistPolling() {
+  if (watchlistIntervalId != null) {
+    clearInterval(watchlistIntervalId);
+    watchlistIntervalId = null;
+  }
+}
 
 function initializeWatchlistTable() {
   console.log('[WATCHLIST] Initializing watchlist table...');
-  // Initial load
-  updateWatchlistTable();
-  
-  // Set up periodic updates (every 1 second)
-  setInterval(updateWatchlistTable, 1000);
+  startWatchlistPolling();
   console.log('[WATCHLIST] Watchlist table initialized and periodic updates set up');
 }
 
@@ -297,6 +308,16 @@ document.addEventListener('DOMContentLoaded', function() {
     console.log('[WATCHLIST] Initializing watchlist table...');
     initializeWatchlistTable();
   }, 500);
+});
+
+window.addEventListener('message', function(event) {
+  if (event.data && event.data.type === 'tab-visibility') {
+    if (event.data.visible) {
+      startWatchlistPolling();
+    } else {
+      stopWatchlistPolling();
+    }
+  }
 });
 
 // Export functions for global access

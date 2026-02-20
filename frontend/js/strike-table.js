@@ -1033,6 +1033,28 @@ function loadDiffModeFromPreferences() {
   window.diffMode = true;
 }
 
+// Interval IDs for pause-when-hidden (Trade Monitor tab)
+let middleColumnIntervalId = null;
+let strikeTableIntervalId = null;
+
+function startStrikeTablePolling() {
+  if (middleColumnIntervalId != null) clearInterval(middleColumnIntervalId);
+  if (strikeTableIntervalId != null) clearInterval(strikeTableIntervalId);
+  middleColumnIntervalId = setInterval(updateMiddleColumnData, 1000);
+  strikeTableIntervalId = setInterval(updateStrikeTable, 1000);
+}
+
+function stopStrikeTablePolling() {
+  if (middleColumnIntervalId != null) {
+    clearInterval(middleColumnIntervalId);
+    middleColumnIntervalId = null;
+  }
+  if (strikeTableIntervalId != null) {
+    clearInterval(strikeTableIntervalId);
+    strikeTableIntervalId = null;
+  }
+}
+
 // Attach handlers after table is rendered
 if (typeof window !== 'undefined') {
   document.addEventListener('DOMContentLoaded', async () => {
@@ -1044,20 +1066,19 @@ if (typeof window !== 'undefined') {
     // Initialize middle column data immediately
     await updateMiddleColumnData();
     
-    // Set up polling for middle column data
-    setInterval(updateMiddleColumnData, 1000); // Poll every 1 second (unchanged frequency)
-    
-    // Initialize and poll strike table data
+    // Set up polling for middle column data and strike table (started when tab visible)
     await updateStrikeTable();
-    setInterval(updateStrikeTable, 1000); // Poll every 1 second (unchanged frequency)
+    startStrikeTablePolling();
   });
 } 
 
 // === STRIKE TABLE WEBSOCKET UPDATES ===
 // WebSocket connection for real-time database change notifications
 let dbChangeWebSocket = null;
+let strikeTableTabPaused = false;
 
 function connectDbChangeWebSocket() {
+  if (strikeTableTabPaused) return;
   if (dbChangeWebSocket && dbChangeWebSocket.readyState === WebSocket.OPEN) {
 
     return; // Already connected
@@ -1092,16 +1113,25 @@ function connectDbChangeWebSocket() {
   
   dbChangeWebSocket.onclose = function(event) {
     
-    // Try to reconnect after 5 seconds
-    setTimeout(() => {
-      
-      connectDbChangeWebSocket();
-    }, 5000);
+    // Reconnect after 5 seconds only if tab is not paused
+    if (!strikeTableTabPaused) {
+      setTimeout(() => {
+
+        connectDbChangeWebSocket();
+      }, 5000);
+    }
   };
   
   dbChangeWebSocket.onerror = function(error) {
     console.error("[WEBSOCKET] ❌ Connection error:", error);
   };
+}
+
+function disconnectDbChangeWebSocket() {
+  if (dbChangeWebSocket) {
+    try { dbChangeWebSocket.close(); } catch (e) {}
+    dbChangeWebSocket = null;
+  }
 }
 
 // Function to fetch and render strike table (called by WebSocket)
@@ -1111,9 +1141,23 @@ function fetchAndRenderStrikeTable() {
   }
 }
 
-// Initialize WebSocket connection
+// Initialize WebSocket connection and tab-visibility pause/resume
 if (typeof window !== 'undefined') {
   connectDbChangeWebSocket();
+
+  window.addEventListener('message', function(event) {
+    if (event.data && event.data.type === 'tab-visibility') {
+      const visible = event.data.visible === true;
+      strikeTableTabPaused = !visible;
+      if (visible) {
+        startStrikeTablePolling();
+        connectDbChangeWebSocket();
+      } else {
+        stopStrikeTablePolling();
+        disconnectDbChangeWebSocket();
+      }
+    }
+  });
   
   // Add a test function to manually trigger a database change notification
   window.testWebSocketConnection = function() {

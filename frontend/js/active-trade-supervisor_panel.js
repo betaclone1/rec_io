@@ -8,6 +8,7 @@ window.activeTradeSupervisorRowsMap = new Map();
 
 // Polling interval management
 let activeTradeSupervisorRefreshInterval = null;
+let activeTradeSupervisorPendingCheckIntervalId = null;
 let hasPendingTrades = false;
 
 // Helper function to insert row in correct sorted position
@@ -467,7 +468,8 @@ function startActiveTradeSupervisorRefresh() {
   startRefresh();
   
   // Also check for pending trades and adjust interval accordingly
-  setInterval(() => {
+  if (activeTradeSupervisorPendingCheckIntervalId) clearInterval(activeTradeSupervisorPendingCheckIntervalId);
+  activeTradeSupervisorPendingCheckIntervalId = setInterval(() => {
     const currentHasPending = window.activeTradeSupervisorRowsMap.size > 0 && 
       Array.from(window.activeTradeSupervisorRowsMap.values()).some(rowObj => 
         rowObj.tr.classList.contains('pending-trade')
@@ -478,6 +480,17 @@ function startActiveTradeSupervisorRefresh() {
       startRefresh(); // Restart with new interval
     }
   }, 2000); // Check every 2 seconds
+}
+
+function stopActiveTradeSupervisorRefresh() {
+  if (activeTradeSupervisorRefreshInterval) {
+    clearInterval(activeTradeSupervisorRefreshInterval);
+    activeTradeSupervisorRefreshInterval = null;
+  }
+  if (activeTradeSupervisorPendingCheckIntervalId) {
+    clearInterval(activeTradeSupervisorPendingCheckIntervalId);
+    activeTradeSupervisorPendingCheckIntervalId = null;
+  }
 }
 
 // === INITIALIZATION ===
@@ -502,6 +515,16 @@ document.addEventListener('DOMContentLoaded', function() {
     
     console.log('[ACTIVE TRADE SUPERVISOR] Initialization complete');
   }, 500);
+});
+
+window.addEventListener('message', function(event) {
+  if (event.data && event.data.type === 'tab-visibility') {
+    if (event.data.visible) {
+      startActiveTradeSupervisorRefresh();
+    } else {
+      stopActiveTradeSupervisorRefresh();
+    }
+  }
 });
 
 // Export functions for global access

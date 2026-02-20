@@ -214,25 +214,49 @@ function updateAutoEntryIndicator(data) {
   indicator.style.display = 'none';
 }
 
-// === POLLING SETUP ===
+// === POLLING SETUP (pause when Trade Monitor tab hidden) ===
+
+let liveDataCoreIntervalId = null;
+let liveDataPriceIntervalId = null;
+
+function getCurrentSymbolForLiveData() {
+  const symbolPicker = document.getElementById('ticker-picker');
+  return symbolPicker ? symbolPicker.value : 'BTC';
+}
+
+function startLiveDataPolling() {
+  if (liveDataCoreIntervalId != null) clearInterval(liveDataCoreIntervalId);
+  if (liveDataPriceIntervalId != null) clearInterval(liveDataPriceIntervalId);
+  fetchCore(getCurrentSymbolForLiveData());
+  fetchSymbolPriceChanges(getCurrentSymbolForLiveData());
+  liveDataCoreIntervalId = setInterval(() => fetchCore(getCurrentSymbolForLiveData()), 5000);
+  liveDataPriceIntervalId = setInterval(() => fetchSymbolPriceChanges(getCurrentSymbolForLiveData()), 60000);
+}
+
+function stopLiveDataPolling() {
+  if (liveDataCoreIntervalId != null) {
+    clearInterval(liveDataCoreIntervalId);
+    liveDataCoreIntervalId = null;
+  }
+  if (liveDataPriceIntervalId != null) {
+    clearInterval(liveDataPriceIntervalId);
+    liveDataPriceIntervalId = null;
+  }
+}
 
 // Initialize polling when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
-  // Get current symbol and fetch price changes
-  const getCurrentSymbol = () => {
-    const symbolPicker = document.getElementById('ticker-picker');
-    return symbolPicker ? symbolPicker.value : 'BTC';
-  };
-  
-  // Initial data fetches
-  fetchCore(getCurrentSymbol());
-  
-  // Initial price changes fetch
-  fetchSymbolPriceChanges(getCurrentSymbol());
+  startLiveDataPolling();
+});
 
-  // Set up polling intervals
-  setInterval(() => fetchCore(getCurrentSymbol()), 5000);                 // Momentum data every 5 seconds for live updates
-  setInterval(() => fetchSymbolPriceChanges(getCurrentSymbol()), 60000);    // Price changes every minute with current symbol
+window.addEventListener('message', function(event) {
+  if (event.data && event.data.type === 'tab-visibility') {
+    if (event.data.visible) {
+      startLiveDataPolling();
+    } else {
+      stopLiveDataPolling();
+    }
+  }
 });
 
 // Export functions for use by other modules
