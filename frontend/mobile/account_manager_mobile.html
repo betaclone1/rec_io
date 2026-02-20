@@ -594,11 +594,14 @@
         // Respect backend-set mode only
         loadAccountData();
         
-        // Add periodic polling for account data (every 10 seconds)
-        setInterval(() => {
-            console.log('🔄 Periodic account data refresh (mobile)');
-            loadAccountData();
-        }, 10000);
+        function startAccountManagerMobilePolling() {
+            if (window._ammRefreshInterval) clearInterval(window._ammRefreshInterval);
+            window._ammRefreshInterval = setInterval(() => {
+                console.log('🔄 Periodic account data refresh (mobile)');
+                loadAccountData();
+            }, 10000);
+        }
+        startAccountManagerMobilePolling();
 
         function updateInitiateTransferAvailable() {
             const fromVal = document.getElementById("initiate-transfer-from")?.value;
@@ -790,10 +793,12 @@
             }
         });
         
-        // WebSocket connection for database change notifications
+        // WebSocket connection for database change notifications (paused when tab hidden)
         function setupDatabaseChangeListener() {
+            if (window.ACCOUNT_MOBILE_PAUSED) return;
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const ws = new WebSocket(`${protocol}//${window.location.host}/ws/db_changes`);
+            const ws = new WebSocket(`${protocol}//${window.location.host}/ws/db_changes`);
+            window._ammDbChangesWs = ws;
             
             ws.onopen = function() {
                 console.log('🔗 Connected to database change notifications (account manager mobile)');
@@ -802,11 +807,7 @@
             ws.onmessage = function(event) {
                 try {
                     const data = JSON.parse(event.data);
-                    console.log('📡 Received database change notification (account manager mobile):', data);
-                    
-                    // Handle different database change types and refresh immediately
                     if (['fills', 'positions', 'settlements', 'subaccounts', 'transfers', 'account_balance'].includes(data.database)) {
-                        console.log('🔄 Refreshing account data due to database change (account manager mobile)');
                         loadAccountData();
                     }
                 } catch (error) {
@@ -819,17 +820,28 @@
             };
             
             ws.onclose = function() {
-                console.log('🔌 Database change WebSocket connection closed (account manager mobile)');
-                // Attempt to reconnect after a delay
-                setTimeout(() => {
-                    console.log('🔄 Attempting to reconnect to database change notifications (account manager mobile)...');
-                    setupDatabaseChangeListener();
-                }, 5000);
+                window._ammDbChangesWs = null;
+                if (!window.ACCOUNT_MOBILE_PAUSED) {
+                    setTimeout(() => setupDatabaseChangeListener(), 5000);
+                }
             };
         }
         
-        // Set up WebSocket connection for database change notifications
         setupDatabaseChangeListener();
+        
+        window.addEventListener('message', function(event) {
+            if (event.data && event.data.type === 'tab-visibility') {
+                const visible = event.data.visible === true;
+                window.ACCOUNT_MOBILE_PAUSED = !visible;
+                if (visible) {
+                    startAccountManagerMobilePolling();
+                    setupDatabaseChangeListener();
+                } else {
+                    if (window._ammRefreshInterval) { clearInterval(window._ammRefreshInterval); window._ammRefreshInterval = null; }
+                    if (window._ammDbChangesWs) { try { window._ammDbChangesWs.close(); } catch (e) {} window._ammDbChangesWs = null; }
+                }
+            }
+        });
         
         // Mobile iframe coordination message handling
         window.addEventListener('message', function(event) {

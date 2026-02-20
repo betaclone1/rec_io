@@ -216,6 +216,21 @@
                 }
             });
 
+            function broadcastTabVisibility() {
+                const frames = document.querySelectorAll('.page-frame');
+                const origin = window.location.origin;
+                frames.forEach(frame => {
+                    try {
+                        if (frame.contentWindow) {
+                            frame.contentWindow.postMessage(
+                                { type: 'tab-visibility', visible: frame.classList.contains('active') },
+                                origin
+                            );
+                        }
+                    } catch (e) { /* cross-origin or not loaded */ }
+                });
+            }
+
             function switchTab(tabName) {
                 // Remove active class from all tabs and frames
                 tabItems.forEach(tab => tab.classList.remove('active'));
@@ -229,6 +244,7 @@
                     activeTab.classList.add('active');
                     activeFrame.classList.add('active');
                 }
+                broadcastTabVisibility();
             }
 
             // Add click handlers to tabs
@@ -242,6 +258,8 @@
 
             // Initialize with dashboard tab active
             switchTab('dashboard');
+            // After iframes have had time to load, tell each tab whether it's visible (heavy tabs pause when hidden)
+            setTimeout(broadcastTabVisibility, 800);
         });
 
         // Auto-refresh functionality for frontend changes

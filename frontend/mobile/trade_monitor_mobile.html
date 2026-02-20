@@ -2077,22 +2077,19 @@ function hideAutoEntrySettingsModal() {
       }
     }
     
-    // Update balance every 30 seconds
-    setInterval(() => {
-      // Get account mode from API (no selector in mobile trade monitor)
-      fetch(window.location.origin + '/api/get_account_mode')
-        .then(res => res.json())
-        .then(data => {
-          const mode = data.mode;
-          updateAccountBalance(mode);
-        })
-        .catch(console.error);
-    }, 30000);
-
-    // Update monitor bankroll every 15 seconds
-    setInterval(() => {
-      updateMonitorBankrollDisplay();
-    }, 15000);
+    // Update balance every 30s, bankroll every 15s (paused when tab hidden; IDs stored for lifecycle)
+    function startTradeMonitorAccountBankrollIntervals() {
+      if (window._tmAccountInterval) clearInterval(window._tmAccountInterval);
+      if (window._tmBankrollInterval) clearInterval(window._tmBankrollInterval);
+      window._tmAccountInterval = setInterval(() => {
+        fetch(window.location.origin + '/api/get_account_mode')
+          .then(res => res.json())
+          .then(data => { updateAccountBalance(data.mode); })
+          .catch(console.error);
+      }, 30000);
+      window._tmBankrollInterval = setInterval(() => updateMonitorBankrollDisplay(), 15000);
+    }
+    startTradeMonitorAccountBankrollIntervals();
   </script>
   <div id="errorTooltip" class="error-tooltip"></div>
 <script>
@@ -2269,9 +2266,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // Initialize auto stop and auto entry from monitor_manager
   // Position variables are loaded from monitor_list when monitor is selected
 
-  // WebSocket setup - use secure WebSocket for HTTPS
+  // WebSocket setup - use secure WebSocket for HTTPS (ref stored so tab-visibility can close when hidden)
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${protocol}//${window.location.host}/ws/preferences`);
+  window._tmPreferencesWs = ws;
   
   ws.onopen = () => {
     console.log('WebSocket connected successfully');
@@ -4588,10 +4586,12 @@ document.addEventListener('DOMContentLoaded', () => {
   setupDatabaseChangeListener();
 });
 
-// WebSocket connection for database change notifications
+// WebSocket connection for database change notifications (paused when tab hidden)
 function setupDatabaseChangeListener() {
+  if (window.TRADE_MONITOR_PAUSED) return;
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${protocol}//${window.location.host}/ws/db_changes`);
+  window._tmDbChangesWs = ws;
   
   ws.onopen = function() {
     // Removed console.log
@@ -4626,12 +4626,10 @@ function setupDatabaseChangeListener() {
   };
   
   ws.onclose = function() {
-    // Removed console.log
-    // Attempt to reconnect after a delay
-    setTimeout(() => {
-      // Removed console.log
-      setupDatabaseChangeListener();
-    }, 5000);
+    window._tmDbChangesWs = null;
+    if (!window.TRADE_MONITOR_PAUSED) {
+      setTimeout(() => setupDatabaseChangeListener(), 5000);
+    }
   };
 }
 
@@ -6063,7 +6061,9 @@ function connectAutoEntryWebSocket() {
         
         autoEntryWebSocket.onclose = function() {
             console.log('🔌 Auto entry WebSocket disconnected, reconnecting...');
-            setTimeout(connectAutoEntryWebSocket, 1000);
+            if (!window.TRADE_MONITOR_PAUSED) {
+                setTimeout(connectAutoEntryWebSocket, 1000);
+            }
         };
         
         autoEntryWebSocket.onerror = function(error) {
@@ -6324,8 +6324,9 @@ document.addEventListener('DOMContentLoaded', () => {
             console.log('[ACTIVE TRADE SUPERVISOR] Starting fetch and render...');
             fetchAndRenderActiveTradeSupervisorTrades();
             
-            // Set up periodic refresh
-            setInterval(() => {
+            // Set up periodic refresh (ID stored so tab-visibility lifecycle can pause it)
+            if (window._tmAtsIntervalId) clearInterval(window._tmAtsIntervalId);
+            window._tmAtsIntervalId = setInterval(() => {
               fetchAndRenderActiveTradeSupervisorTrades();
             }, 2000);
           } else {
@@ -7264,6 +7265,30 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
     });
+  </script>
+  <!-- Tab visibility: pause almost all Trade Monitor work when tab is hidden -->
+  <script>
+  (function() {
+    window.addEventListener('message', function(event) {
+      if (!event.data || event.data.type !== 'tab-visibility') return;
+      const visible = event.data.visible === true;
+      window.TRADE_MONITOR_PAUSED = !visible;
+      if (visible) {
+        if (typeof startTradeMonitorAccountBankrollIntervals === 'function') startTradeMonitorAccountBankrollIntervals();
+        if (typeof setupDatabaseChangeListener === 'function') setupDatabaseChangeListener();
+        if (typeof connectAutoEntryWebSocket === 'function') connectAutoEntryWebSocket();
+        if (typeof fetchAndRenderActiveTradeSupervisorTrades === 'function' && !window._tmAtsIntervalId) {
+          window._tmAtsIntervalId = setInterval(fetchAndRenderActiveTradeSupervisorTrades, 2000);
+        }
+      } else {
+        if (window._tmAccountInterval) { clearInterval(window._tmAccountInterval); window._tmAccountInterval = null; }
+        if (window._tmBankrollInterval) { clearInterval(window._tmBankrollInterval); window._tmBankrollInterval = null; }
+        if (window._tmAtsIntervalId) { clearInterval(window._tmAtsIntervalId); window._tmAtsIntervalId = null; }
+        if (window._tmDbChangesWs) { try { window._tmDbChangesWs.close(); } catch (e) {} window._tmDbChangesWs = null; }
+        if (typeof autoEntryWebSocket !== 'undefined' && autoEntryWebSocket) { try { autoEntryWebSocket.close(); } catch (e) {} autoEntryWebSocket = null; }
+      }
+    });
+  })();
   </script>
 </body>
 </html>

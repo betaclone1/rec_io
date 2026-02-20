@@ -3977,30 +3977,25 @@
       return 1871.27; // Default value from your dummy data
     }
 
-    // Refresh portfolio data every 30 seconds
-    setInterval(loadPortfolioData, 30000);
-    
-    // Refresh portfolio history every 5 minutes
-    setInterval(loadPortfolioHistory, 300000);
-    
-    // TODO: Re-enable allocation data refresh when ready
-    // setInterval(loadAllocationData, 30000);
-    
-    // Refresh monitor data every 30 seconds (reload from database)
-    setInterval(async () => {
-      try {
-        console.log('Dashboard: Refreshing monitor data from database...');
-        const oldMonitors = [...monitors]; // Keep reference to old data
-        await loadMonitors();
-        applyCurrentSort();
-        
-        // Only update stat values, don't re-render entire tiles
-        updateMonitorStatValues(oldMonitors, monitors);
-        console.log('Dashboard: Monitor stat values refreshed');
-      } catch (e) {
-        console.error('Error refreshing monitor data:', e);
-      }
-    }, 30000);
+    // Refresh portfolio/history/monitor/auto-trade (paused when tab hidden; IDs stored for lifecycle)
+    function startDashboardMobilePolling() {
+      if (window._dmPortfolioInterval) clearInterval(window._dmPortfolioInterval);
+      if (window._dmHistoryInterval) clearInterval(window._dmHistoryInterval);
+      if (window._dmMonitorRefreshInterval) clearInterval(window._dmMonitorRefreshInterval);
+      if (window._dmAutoTradeInterval) clearInterval(window._dmAutoTradeInterval);
+      window._dmPortfolioInterval = setInterval(loadPortfolioData, 30000);
+      window._dmHistoryInterval = setInterval(loadPortfolioHistory, 300000);
+      window._dmMonitorRefreshInterval = setInterval(async () => {
+        try {
+          console.log('Dashboard: Refreshing monitor data from database...');
+          const oldMonitors = [...monitors];
+          await loadMonitors();
+          applyCurrentSort();
+          updateMonitorStatValues(oldMonitors, monitors);
+        } catch (e) { console.error('Error refreshing monitor data:', e); }
+      }, 30000);
+      window._dmAutoTradeInterval = setInterval(checkAutoTradeStatus, 10000);
+    }
 
     // Function to check and update auto trade status every 10 seconds
     async function checkAutoTradeStatus() {
@@ -4061,8 +4056,7 @@
       }
     }
 
-    // Check auto trade status every 10 seconds
-    setInterval(checkAutoTradeStatus, 10000);
+    startDashboardMobilePolling();
 
     // Market data functions
     function formatUSD(val) {
@@ -4396,14 +4390,17 @@
       fetchETHCurrentPrice();
       fetchBTCPriceChanges();
       fetchETHPriceChanges();
-      
-      // Update data every 30 seconds
-      setInterval(() => {
-        fetchBTCCurrentPrice();
-        fetchETHCurrentPrice();
-        fetchBTCPriceChanges();
-        fetchETHPriceChanges();
-      }, 30000);
+      function startDashboardMarketDataPolling() {
+        if (window._dmMarketDataInterval) clearInterval(window._dmMarketDataInterval);
+        window._dmMarketDataInterval = setInterval(() => {
+          fetchBTCCurrentPrice();
+          fetchETHCurrentPrice();
+          fetchBTCPriceChanges();
+          fetchETHPriceChanges();
+        }, 30000);
+      }
+      window.startDashboardMarketDataPolling = startDashboardMarketDataPolling;
+      startDashboardMarketDataPolling();
     });
 
     // Archive confirmation modal functions
@@ -4747,6 +4744,7 @@
     }
 
     function connectWebSocket() {
+      if (window.DASHBOARD_MOBILE_PAUSED) return;
       // Close existing connection if any
       if (ws) {
         ws.close();
@@ -4755,6 +4753,7 @@
       // Connect to WebSocket
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(`${protocol}//${window.location.host}/ws/preferences`);
+      window._dashboardMobileWs = ws;
 
       ws.onopen = function() {
         console.log('Dashboard WebSocket connected');
@@ -4928,8 +4927,9 @@
       };
 
       ws.onclose = function() {
-        // Reconnect after a delay
-        setTimeout(connectWebSocket, 5000);
+        if (!window.DASHBOARD_MOBILE_PAUSED) {
+          setTimeout(connectWebSocket, 5000);
+        }
       };
 
       ws.onerror = function(error) {
@@ -6467,6 +6467,28 @@
       window.openMobileUnifiedAutoTradeSettings = openModal;
       window.hideMobileUnifiedAutoTradeSettings = hideModal;
     })();
+  </script>
+  <!-- Tab visibility: pause when hidden -->
+  <script>
+  (function() {
+    window.addEventListener('message', function(event) {
+      if (!event.data || event.data.type !== 'tab-visibility') return;
+      const visible = event.data.visible === true;
+      window.DASHBOARD_MOBILE_PAUSED = !visible;
+      if (visible) {
+        if (typeof startDashboardMobilePolling === 'function') startDashboardMobilePolling();
+        if (typeof startDashboardMarketDataPolling === 'function') startDashboardMarketDataPolling();
+        if (typeof connectWebSocket === 'function') connectWebSocket();
+      } else {
+        if (window._dmPortfolioInterval) { clearInterval(window._dmPortfolioInterval); window._dmPortfolioInterval = null; }
+        if (window._dmHistoryInterval) { clearInterval(window._dmHistoryInterval); window._dmHistoryInterval = null; }
+        if (window._dmMonitorRefreshInterval) { clearInterval(window._dmMonitorRefreshInterval); window._dmMonitorRefreshInterval = null; }
+        if (window._dmAutoTradeInterval) { clearInterval(window._dmAutoTradeInterval); window._dmAutoTradeInterval = null; }
+        if (window._dmMarketDataInterval) { clearInterval(window._dmMarketDataInterval); window._dmMarketDataInterval = null; }
+        if (window._dashboardMobileWs) { try { window._dashboardMobileWs.close(); } catch (e) {} window._dashboardMobileWs = null; }
+      }
+    });
+  })();
   </script>
 </body>
 </html>
