@@ -1242,7 +1242,7 @@
         <div class="panel-header">
           <div style="display: flex; gap: 20px;">
             <span id="bankroll-tab" class="panel-tab" style="cursor: pointer; opacity: 0.3; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="if(!this.classList.contains('active')) this.style.opacity='0.3'">Bankroll</span>
-            <span id="portfolio-tab" class="panel-tab active" style="cursor: pointer; opacity: 1; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="if(!this.classList.contains('active')) this.style.opacity='0.3'">Portfolio</span>
+            <span id="portfolio-tab" class="panel-tab" style="cursor: pointer; opacity: 0.3; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="if(!this.classList.contains('active')) this.style.opacity='0.3'">Portfolio</span>
             <span id="pnl-tab" class="panel-tab" style="cursor: pointer; opacity: 0.3; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="if(!this.classList.contains('active')) this.style.opacity='0.3'">PNL</span>
           </div>
           <div class="portfolio-controls">
@@ -1267,7 +1267,7 @@
               <canvas id="bankroll-chart"></canvas>
             </div>
           </div>
-          <div id="portfolio-tab-content" class="tab-content active">
+          <div id="portfolio-tab-content" class="tab-content">
             <div class="portfolio-chart-container">
               <canvas id="portfolio-chart"></canvas>
             </div>
@@ -1481,13 +1481,21 @@
         GLOBAL_ACCOUNT_MODE = savedMode;
       }
       
-      // STEP 1: Load dashboard preferences FIRST - this sets currentView
+      // STEP 1: Load dashboard preferences FIRST - this sets currentView and portfolioPanelActiveTab
       await loadDashboardPreferences();
       console.log('Dashboard: Preferences loaded, currentView is:', currentView);
       
-      // STEP 2: Load portfolio data and history
-      await loadPortfolioData();
-      await loadPortfolioHistory();
+      // STEP 2: Load only the saved portfolio-panel tab's data so the balance display is correct from first paint
+      if (portfolioPanelActiveTab === 'bankroll') {
+        await loadBankrollData();
+        await loadBankrollHistory();
+      } else if (portfolioPanelActiveTab === 'portfolio') {
+        await loadPortfolioData();
+        await loadPortfolioHistory();
+      } else {
+        await loadPnlData();
+        await loadPnlHistory();
+      }
       
       // STEP 3: Load monitors data
       await loadMonitors();
@@ -1554,6 +1562,8 @@
         tabEl.style.opacity = '1';
         contentEl.classList.add('active');
 
+        saveDashboardPreferences();
+
         // Defer chart load/render so the visible tab has layout and canvas has correct dimensions
         setTimeout(() => {
           if (tabId === 'bankroll') {
@@ -1573,6 +1583,15 @@
       if (bankrollTab) bankrollTab.addEventListener('click', () => switchTo(bankrollTab, bankrollContent, 'bankroll'));
       if (portfolioTab) portfolioTab.addEventListener('click', () => switchTo(portfolioTab, portfolioContent, 'portfolio'));
       if (pnlTab) pnlTab.addEventListener('click', () => switchTo(pnlTab, pnlContent, 'pnl'));
+
+      // Apply saved portfolio view only (no default tab in HTML; set by loadDashboardPreferences)
+      const tabMap = { bankroll: [bankrollTab, bankrollContent], portfolio: [portfolioTab, portfolioContent], pnl: [pnlTab, pnlContent] };
+      const initial = tabMap[portfolioPanelActiveTab];
+      if (initial && initial[0] && initial[1]) {
+        switchTo(initial[0], initial[1], portfolioPanelActiveTab);
+      } else {
+        switchTo(portfolioTab, portfolioContent, 'portfolio');
+      }
     }
 
     // Function to update only stat values without re-rendering tiles
@@ -2790,8 +2809,11 @@
           currentViewMode = data.monitor_view_mode || 'tile';
           currentSortBy = data.monitor_sort_by || 'name';
           currentChartType = data.allocation_view || 'pie';
-          
-          console.log('Dashboard: Preferences loaded, currentView set to:', currentView);
+          const savedPortfolioView = data.portfolio_view || 'portfolio';
+          if (['bankroll', 'portfolio', 'pnl'].includes(savedPortfolioView)) {
+            portfolioPanelActiveTab = savedPortfolioView;
+          }
+          console.log('Dashboard: Preferences loaded, currentView set to:', currentView, ', portfolio_view:', portfolioPanelActiveTab);
           
           
           // Update portfolio chart button states
@@ -2869,7 +2891,8 @@
             portfolio_chart_view: currentView,
             monitor_view_mode: currentViewMode,
             monitor_sort_by: currentSortBy,
-            allocation_view: currentChartType
+            allocation_view: currentChartType,
+            portfolio_view: portfolioPanelActiveTab
           })
         });
         

@@ -5160,6 +5160,7 @@ async def get_performance_realized():
     try:
         import psycopg2
         from datetime import datetime, date, time, timedelta, timezone
+        from zoneinfo import ZoneInfo
 
         conn = psycopg2.connect(
             host="localhost",
@@ -5167,10 +5168,11 @@ async def get_performance_realized():
             user="rec_io_user",
             password="rec_io_password"
         )
-        # Use UTC so period boundaries match DB (created_at::date uses session TZ)
+        # Use America/New_York so "Day" = calendar day in Eastern, matching trade history /trades date
         with conn.cursor() as tz_cur:
-            tz_cur.execute("SET TIME ZONE 'UTC'")
-        now = datetime.now(timezone.utc)
+            tz_cur.execute("SET TIME ZONE 'America/New_York'")
+        eastern = ZoneInfo("America/New_York")
+        now = datetime.now(eastern)
         today = now.date()
 
         # Period starts (00:00:00 to-date)
@@ -5203,7 +5205,7 @@ async def get_performance_realized():
                 start_date_sql = start_dt.strftime("%Y-%m-%d")
                 start_sql = start_dt.strftime("%Y-%m-%d %H:%M:%S")
                 cursor.execute("""
-                    SELECT COALESCE(SUM(pnl), 0)
+                    SELECT COALESCE(SUM(pnl), 0), COALESCE(SUM(ret_pct), 0)
                     FROM users.trades_0001
                     WHERE (test_filter IS NULL OR test_filter = FALSE)
                       AND (paper_trade IS NULL OR paper_trade = FALSE)
@@ -5213,6 +5215,7 @@ async def get_performance_realized():
                 """, (start_date_sql,))
                 row = cursor.fetchone()
                 pnl = float(row[0]) if row and row[0] is not None else 0.0
+                ret_pct_sum = float(row[1]) if row and row[1] is not None else None
 
                 # Previous period PnL (same window length: previous period to date)
                 cursor.execute("""
@@ -5228,20 +5231,8 @@ async def get_performance_realized():
                 prev_row = cursor.fetchone()
                 prev_pnl = float(prev_row[0]) if prev_row and prev_row[0] is not None else 0.0
 
-                # Bankroll at start of period for ret_pct
-                cursor.execute("""
-                    SELECT bankroll_current
-                    FROM users.account_balance_0001
-                    WHERE timestamp < %s
-                    ORDER BY timestamp DESC
-                    LIMIT 1
-                """, (start_sql,))
-                br_row = cursor.fetchone()
-                bankroll_start = float(br_row[0]) / 100.0 if br_row and br_row[0] is not None and br_row[0] > 0 else None
-                if bankroll_start and bankroll_start > 0:
-                    ret_pct = round((pnl / bankroll_start) * 100, 2)
-                else:
-                    ret_pct = 0.0 if pnl == 0 else None
+                # Ret % = sum of per-trade ret_pct (matches trade history summary)
+                ret_pct = round(ret_pct_sum, 2) if ret_pct_sum is not None else None
 
                 result[key] = {"pnl": round(pnl, 2), "ret_pct": ret_pct, "prev_pnl": round(prev_pnl, 2)}
 
@@ -5261,7 +5252,7 @@ async def get_dashboard_preferences(mode: str = "prod"):
         
         with conn.cursor() as cursor:
             cursor.execute("""
-                SELECT portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view
+                SELECT portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, portfolio_view
                 FROM users.dashboard_preferences_0001 
                 WHERE user_id = 1
             """)
@@ -5275,15 +5266,17 @@ async def get_dashboard_preferences(mode: str = "prod"):
                 "portfolio_chart_view": result[0],
                 "monitor_view_mode": result[1] if result[1] else "tile",
                 "monitor_sort_by": result[2] if result[2] else "name",
-                "allocation_view": result[3] if result[3] else "pie"
+                "allocation_view": result[3] if result[3] else "pie",
+                "portfolio_view": result[4] if result[4] else "portfolio"
             }
         else:
             return {
                 "status": "ok",
-                "portfolio_chart_view": "all",  # Default value
-                "monitor_view_mode": "tile",    # Default value
-                "monitor_sort_by": "name",      # Default value
-                "allocation_view": "pie"        # Default value
+                "portfolio_chart_view": "all",
+                "monitor_view_mode": "tile",
+                "monitor_sort_by": "name",
+                "allocation_view": "pie",
+                "portfolio_view": "portfolio"
             }
             
     except Exception as e:
@@ -5303,20 +5296,24 @@ async def save_dashboard_preferences(request: Request):
         monitor_view_mode = data.get("monitor_view_mode", "tile")
         monitor_sort_by = data.get("monitor_sort_by", "name")
         allocation_view = data.get("allocation_view", "pie")
-        print(f"[DASHBOARD PREFERENCES] Extracted values: portfolio_chart_view={portfolio_chart_view}, monitor_view_mode={monitor_view_mode}, monitor_sort_by={monitor_sort_by}, allocation_view={allocation_view}")
+        portfolio_view = data.get("portfolio_view", "portfolio")
+        if portfolio_view not in ("bankroll", "portfolio", "pnl"):
+            portfolio_view = "portfolio"
+        print(f"[DASHBOARD PREFERENCES] Extracted values: portfolio_chart_view={portfolio_chart_view}, monitor_view_mode={monitor_view_mode}, monitor_sort_by={monitor_sort_by}, allocation_view={allocation_view}, portfolio_view={portfolio_view}")
         
         with conn.cursor() as cursor:
             cursor.execute("""
-                INSERT INTO users.dashboard_preferences_0001 (user_id, portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, updated_at)
-                VALUES (1, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                INSERT INTO users.dashboard_preferences_0001 (user_id, portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, portfolio_view, updated_at)
+                VALUES (1, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                 ON CONFLICT (user_id) 
                 DO UPDATE SET 
                     portfolio_chart_view = EXCLUDED.portfolio_chart_view,
                     monitor_view_mode = EXCLUDED.monitor_view_mode,
                     monitor_sort_by = EXCLUDED.monitor_sort_by,
                     allocation_view = EXCLUDED.allocation_view,
+                    portfolio_view = EXCLUDED.portfolio_view,
                     updated_at = CURRENT_TIMESTAMP
-            """, (portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view))
+            """, (portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, portfolio_view))
             
         conn.commit()
         conn.close()

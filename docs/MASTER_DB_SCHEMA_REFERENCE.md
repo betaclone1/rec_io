@@ -9637,6 +9637,7 @@ Re-run the check (step 2) until nothing is missing.
 | `monitor_view_mode` | `character varying(10)` | YES | 'tile'::character varying | |
 | `monitor_sort_by` | `character varying(20)` | YES | 'name'::character varying | |
 | `allocation_view` | `character varying(10)` | YES | 'pie'::character varying | |
+| `portfolio_view` | `text` | YES | 'portfolio' | Which portfolio panel tab is active: `bankroll`, `portfolio`, or `pnl`. Persisted when user changes the tab. |
 
 #### Constraints
 
