@@ -29,17 +29,146 @@
     /* Portfolio Panel */
     .portfolio-panel {
       min-height: 300px;
-      width: 75%;
+      width: 70%;
+      display: flex;
+      flex-direction: column;
     }
 
-    /* New Panel */
+    .portfolio-panel .panel-header {
+      flex-shrink: 0;
+    }
+
+    .portfolio-panel .panel-tab {
+      color: #fff;
+    }
+
+    .portfolio-tabs-body {
+      flex: 1;
+      min-height: 0;
+      position: relative;
+    }
+
+    .portfolio-panel .tab-content {
+      min-height: 0;
+      height: 100%;
+      display: none;
+      flex-direction: column;
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+    }
+
+    .portfolio-panel .tab-content.active {
+      display: flex;
+    }
+
+    .portfolio-panel .tab-content .portfolio-chart-container {
+      flex: 1;
+      min-height: 0;
+      height: auto;
+    }
+
+    /* Performance Panel - realized PnL to-date */
     .new-panel {
       min-height: 300px;
-      width: 25%;
+      width: 30%;
       padding: 8px;
     }
 
-    /* Markets List */
+    .performance-periods {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    .performance-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .performance-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: #a0aec0;
+      width: 48px;
+      text-align: right;
+    }
+
+    .performance-box {
+      display: inline-block;
+      background-color: #1a1d24;
+      border-radius: 8px;
+      border: 1px solid #3d4552;
+      padding: 9px 14px;
+      min-width: 72px;
+      text-align: center;
+    }
+
+    .performance-pnl {
+      font-size: 14px;
+      font-weight: 600;
+      color: #ffffff;
+    }
+
+    .performance-pnl.positive { color: #48bb78; }
+    .performance-pnl.negative { color: #e53e3e; }
+
+    .performance-ret {
+      font-size: 13px;
+      font-weight: 600;
+      text-align: right;
+    }
+
+    .performance-ret.positive { color: #48bb78; }
+    .performance-ret.negative { color: #e53e3e; }
+    .performance-ret.neutral { color: #a0aec0; }
+
+    .performance-compare {
+      font-size: 12px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      color: #ffffff;
+      margin-left: 4px;
+    }
+
+    .performance-compare::before {
+      content: '';
+      width: 0;
+      height: 0;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+    }
+
+    .performance-compare.positive::before { border-bottom: 5px solid #48bb78; }
+    .performance-compare.negative::before { border-top: 5px solid #e53e3e; }
+
+    .performance-compare.neutral::before { display: none; }
+
+    .performance-cash-balance {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid #3d4552;
+      font-size: 15.6px;
+      font-weight: 600;
+      color: #ffffff;
+      text-align: center;
+    }
+
+    .performance-cash-label {
+      margin-right: 6px;
+    }
+
+    .performance-cash-value {
+      color: #ffffff;
+    }
+
+    /* Markets List - commented out with symbol price panel content
     .markets-list {
       padding: 0;
     }
@@ -112,6 +241,7 @@
       color: #dc3545;
       background-color: rgba(220, 53, 69, 0.1);
     }
+    */
 
 
 
@@ -1110,7 +1240,11 @@
       <!-- Portfolio Panel -->
       <div class="panel-container portfolio-panel">
         <div class="panel-header">
-          Portfolio
+          <div style="display: flex; gap: 20px;">
+            <span id="bankroll-tab" class="panel-tab" style="cursor: pointer; opacity: 0.3; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="if(!this.classList.contains('active')) this.style.opacity='0.3'">Bankroll</span>
+            <span id="portfolio-tab" class="panel-tab active" style="cursor: pointer; opacity: 1; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="if(!this.classList.contains('active')) this.style.opacity='0.3'">Portfolio</span>
+            <span id="pnl-tab" class="panel-tab" style="cursor: pointer; opacity: 0.3; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="if(!this.classList.contains('active')) this.style.opacity='0.3'">PNL</span>
+          </div>
           <div class="portfolio-controls">
             <div class="portfolio-info">
               <span class="portfolio-value" id="portfolio-value" style="padding-left: 20px; margin-right: 15px;"">Loading...</span>
@@ -1127,13 +1261,61 @@
             </div>
           </div>
         </div>
-        <div class="portfolio-chart-container">
-          <canvas id="portfolio-chart"></canvas>
+        <div class="portfolio-tabs-body">
+          <div id="bankroll-tab-content" class="tab-content">
+            <div class="portfolio-chart-container">
+              <canvas id="bankroll-chart"></canvas>
+            </div>
+          </div>
+          <div id="portfolio-tab-content" class="tab-content active">
+            <div class="portfolio-chart-container">
+              <canvas id="portfolio-chart"></canvas>
+            </div>
+          </div>
+          <div id="pnl-tab-content" class="tab-content">
+            <div class="portfolio-chart-container">
+              <canvas id="pnl-chart"></canvas>
+            </div>
+          </div>
         </div>
       </div>
 
-      <!-- New Panel -->
+      <!-- Performance Panel: realized PnL to-date (Day / Week / Month / Year) -->
       <div class="panel-container new-panel">
+        <div class="panel-header">
+          <span>Performance</span>
+        </div>
+        <div class="performance-periods">
+          <div class="performance-row" data-period="day">
+            <span class="performance-label">Day</span>
+            <div class="performance-box"><span class="performance-pnl" id="perf-pnl-day">—</span></div>
+            <div class="performance-box"><span class="performance-ret" id="perf-ret-day">—</span></div>
+            <div class="performance-compare" id="perf-compare-day"></div>
+          </div>
+          <div class="performance-row" data-period="week">
+            <span class="performance-label">Week</span>
+            <div class="performance-box"><span class="performance-pnl" id="perf-pnl-week">—</span></div>
+            <div class="performance-box"><span class="performance-ret" id="perf-ret-week">—</span></div>
+            <div class="performance-compare" id="perf-compare-week"></div>
+          </div>
+          <div class="performance-row" data-period="month">
+            <span class="performance-label">Month</span>
+            <div class="performance-box"><span class="performance-pnl" id="perf-pnl-month">—</span></div>
+            <div class="performance-box"><span class="performance-ret" id="perf-ret-month">—</span></div>
+            <div class="performance-compare" id="perf-compare-month"></div>
+          </div>
+          <div class="performance-row" data-period="year">
+            <span class="performance-label">Year</span>
+            <div class="performance-box"><span class="performance-pnl" id="perf-pnl-year">—</span></div>
+            <div class="performance-box"><span class="performance-ret" id="perf-ret-year">—</span></div>
+            <div class="performance-compare" id="perf-compare-year"></div>
+          </div>
+        </div>
+        <div class="performance-cash-balance">
+          <span class="performance-cash-label">Cash Balance:</span>
+          <span class="performance-cash-value" id="perf-cash-balance">—</span>
+        </div>
+        <!-- Symbol prices and change data commented out - may move elsewhere later
         <div class="markets-list">
           <div class="market-item" data-symbol="BTC">
             <div class="market-info">
@@ -1187,6 +1369,7 @@
             </div>
           </div>
         </div>
+        -->
       </div>
     </div>
 
@@ -1280,8 +1463,13 @@
     // Load account mode and fetch portfolio data
     let GLOBAL_ACCOUNT_MODE = 'prod'; // Default to production mode
     let portfolioChart = null;
+    let bankrollChart = null;
+    let pnlChart = null;
     let allHistoryData = []; // Store all data
+    let allBankrollHistoryData = []; // Store bankroll history for Bankroll tab
+    let allPnlHistoryData = []; // Store cumulative PnL series for PNL tab
     let currentView = 'all'; // Current view
+    let portfolioPanelActiveTab = 'portfolio'; // 'portfolio' | 'bankroll' | 'pnl'
     let currentViewMode = 'tile'; // Current view mode (tile/list)
     let currentSortBy = 'name'; // Current sort criteria
     let currentChartType = 'pie'; // Current chart type (pie/bar)
@@ -1306,7 +1494,9 @@
       
       // STEP 3.5: Load allocation data
       await loadAllocationData();
-      
+      loadPerformanceData();
+      loadPerformancePanelCashBalance();
+
       // STEP 4: Initialize monitor history display with correct view BEFORE rendering
       if (window.monitorHistoryDisplay) {
         console.log('Dashboard: Initializing monitor history display with view:', currentView);
@@ -1328,6 +1518,9 @@
           setChartView(view);
         });
       });
+
+      // Portfolio panel tabs (Bankroll, Portfolio, PNL)
+      initializePortfolioPanelTabs();
       
       // Connect to WebSocket after everything is loaded
       console.log('Dashboard: All monitors loaded, now connecting to WebSocket...');
@@ -1336,6 +1529,51 @@
 
     // Monitors data - will be loaded from API
     let monitors = [];
+
+    // Portfolio panel tab switching (Bankroll, Portfolio, PNL)
+    function initializePortfolioPanelTabs() {
+      const bankrollTab = document.getElementById('bankroll-tab');
+      const portfolioTab = document.getElementById('portfolio-tab');
+      const pnlTab = document.getElementById('pnl-tab');
+      const bankrollContent = document.getElementById('bankroll-tab-content');
+      const portfolioContent = document.getElementById('portfolio-tab-content');
+      const pnlContent = document.getElementById('pnl-tab-content');
+
+      function switchTo(tabEl, contentEl, tabId) {
+        portfolioPanelActiveTab = tabId;
+        [bankrollTab, portfolioTab, pnlTab].forEach(el => {
+          if (el) {
+            el.classList.remove('active');
+            el.style.opacity = '0.3';
+          }
+        });
+        [bankrollContent, portfolioContent, pnlContent].forEach(el => {
+          if (el) el.classList.remove('active');
+        });
+        tabEl.classList.add('active');
+        tabEl.style.opacity = '1';
+        contentEl.classList.add('active');
+
+        // Defer chart load/render so the visible tab has layout and canvas has correct dimensions
+        setTimeout(() => {
+          if (tabId === 'bankroll') {
+            loadBankrollData();
+            loadBankrollHistory();
+          } else if (tabId === 'portfolio') {
+            loadPortfolioData();
+            renderPortfolioChart(allHistoryData);
+            updatePortfolioChange();
+          } else if (tabId === 'pnl') {
+            loadPnlData();
+            loadPnlHistory();
+          }
+        }, 50);
+      }
+
+      if (bankrollTab) bankrollTab.addEventListener('click', () => switchTo(bankrollTab, bankrollContent, 'bankroll'));
+      if (portfolioTab) portfolioTab.addEventListener('click', () => switchTo(portfolioTab, portfolioContent, 'portfolio'));
+      if (pnlTab) pnlTab.addEventListener('click', () => switchTo(pnlTab, pnlContent, 'pnl'));
+    }
 
     // Function to update only stat values without re-rendering tiles
     function updateMonitorStatValues(oldMonitors, newMonitors) {
@@ -2697,13 +2935,16 @@
       
       // Save preferences to database
       saveDashboardPreferences();
-      
-      // Re-render chart with new view
-      console.log('About to re-render chart with view:', currentView);
-      renderPortfolioChart(allHistoryData);
-      
-      // Update the change indicator
-      updatePortfolioChange();
+
+      // Re-render the active tab's chart
+      if (portfolioPanelActiveTab === 'bankroll') {
+        loadBankrollHistory();
+      } else if (portfolioPanelActiveTab === 'pnl') {
+        loadPnlHistory();
+      } else {
+        renderPortfolioChart(allHistoryData);
+        updatePortfolioChange();
+      }
       
       // Refresh monitor statistics with new time filter
       if (window.monitorHistoryDisplay) {
@@ -2779,6 +3020,572 @@
       }
     }
 
+    async function loadBankrollData() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/account/balance?mode=${GLOBAL_ACCOUNT_MODE}`);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json();
+        const bankrollValue = data.bankroll_current != null ? data.bankroll_current : 0;
+        const bankrollInDollars = bankrollValue / 100;
+        const formattedValue = new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: 'USD',
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
+        }).format(bankrollInDollars);
+        const portfolioElement = document.getElementById('portfolio-value');
+        if (portfolioElement) portfolioElement.textContent = formattedValue;
+      } catch (error) {
+        console.error('Error loading bankroll data:', error);
+        const portfolioElement = document.getElementById('portfolio-value');
+        if (portfolioElement) {
+          portfolioElement.textContent = 'Error loading data';
+          portfolioElement.style.color = '#ff6b6b';
+        }
+      }
+    }
+
+    async function loadBankrollHistory() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/bankroll/history?period=${currentView}`);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json();
+        const history = data.data || [];
+        if (history.length > 0) {
+          allBankrollHistoryData = history;
+          renderBankrollChart(history);
+          updateBankrollChange();
+        }
+      } catch (error) {
+        console.error('Error loading bankroll history:', error);
+      }
+    }
+
+    function updateBankrollChange() {
+      const changeEl = document.getElementById('portfolio-change');
+      if (allBankrollHistoryData.length < 2) {
+        if (changeEl) changeEl.textContent = '';
+        return;
+      }
+      const filteredData = filterDataByView(allBankrollHistoryData, currentView);
+      if (filteredData.length < 2) {
+        if (changeEl) changeEl.textContent = '';
+        return;
+      }
+      const firstValue = filteredData[0].bankroll || 0;
+      const lastValue = filteredData[filteredData.length - 1].bankroll || 0;
+      const change = lastValue - firstValue;
+      const percentChange = firstValue !== 0 ? (change / firstValue) * 100 : 0;
+      const isPositive = change >= 0;
+      const changeText = `$${Math.abs(change).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${percentChange.toFixed(2)}%)`;
+      changeEl.textContent = changeText;
+      changeEl.className = `change-element ${isPositive ? 'positive' : 'negative'}`;
+    }
+
+    function renderBankrollChart(history) {
+      const ctx = document.getElementById('bankroll-chart');
+      if (!ctx) return;
+      if (bankrollChart) {
+        bankrollChart.destroy();
+        bankrollChart = null;
+      }
+      const filteredData = filterDataByView(history, currentView);
+      const labels = filteredData.map(item => {
+        const date = new Date(item.timestamp);
+        return formatLabel(date, currentView);
+      });
+      const bankrollData = filteredData.map(item => item.bankroll || 0);
+      const smoothingWindow = currentView === '1d' ? 4 : 60;
+      const smoothedData = applyMovingAverage(bankrollData, smoothingWindow);
+      if (smoothedData.length > 0 && bankrollData.length > 0) {
+        smoothedData[smoothedData.length - 1] = bankrollData[bankrollData.length - 1];
+      }
+      const customPlugin = {
+        id: 'customXAxisLabel',
+        afterDraw: function(chart) {
+          if (currentView === '1d') return;
+          const ctx = chart.ctx;
+          const chartArea = chart.chartArea;
+          const lastLabel = labels[labels.length - 1];
+          const x = chartArea.right - 30;
+          const y = chartArea.bottom + 20;
+          ctx.save();
+          ctx.font = '10px Arial';
+          ctx.fillStyle = '#ccc';
+          ctx.textAlign = 'right';
+          ctx.fillText(lastLabel, x, y);
+          ctx.restore();
+        }
+      };
+      const crosshairPlugin = {
+        id: 'crosshair',
+        afterDraw: function(chart) {
+          if (chart.tooltip && chart.tooltip.opacity > 0) {
+            const ctx = chart.ctx;
+            const chartArea = chart.chartArea;
+            const dataset = chart.getDatasetMeta(0);
+            if (chart.tooltip.dataPoints && chart.tooltip.dataPoints.length > 0) {
+              const dataPoint = dataset.data[chart.tooltip.dataPoints[0].dataIndex];
+              if (dataPoint) {
+                const opacity = chart.tooltip.opacity;
+                ctx.save();
+                ctx.globalAlpha = opacity;
+                ctx.strokeStyle = '#4a9eff';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([5, 5]);
+                ctx.beginPath();
+                ctx.moveTo(dataPoint.x, chartArea.top);
+                ctx.lineTo(dataPoint.x, chartArea.bottom);
+                ctx.stroke();
+                ctx.restore();
+                ctx.save();
+                ctx.globalAlpha = opacity;
+                ctx.strokeStyle = '#4a9eff';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([5, 5]);
+                ctx.beginPath();
+                ctx.moveTo(chartArea.left, dataPoint.y);
+                ctx.lineTo(chartArea.right, dataPoint.y);
+                ctx.stroke();
+                ctx.restore();
+                ctx.save();
+                ctx.globalAlpha = opacity;
+                ctx.fillStyle = '#4a9eff';
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(dataPoint.x, dataPoint.y, 4, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.stroke();
+                ctx.restore();
+              }
+            }
+          }
+        }
+      };
+      const yAxisLabelsPlugin = {
+        id: 'customYAxisLabels',
+        afterDraw: function(chart) {
+          const ctx = chart.ctx;
+          const chartArea = chart.chartArea;
+          const yScale = chart.scales.y;
+          if (!yScale) return;
+          const ticks = yScale.ticks;
+          const visibleTicks = ticks.filter((tick, index) => index % 2 === 0 && index < ticks.length - 1);
+          ctx.save();
+          ctx.font = '10px Arial';
+          ctx.fillStyle = '#ccc';
+          ctx.textAlign = 'left';
+          visibleTicks.forEach(tick => {
+            const y = yScale.getPixelForValue(tick.value);
+            if (y >= chartArea.top && y <= chartArea.bottom) {
+              ctx.fillText('$' + Math.round(tick.value).toLocaleString(), chartArea.left + 5, y + 3);
+            }
+          });
+          ctx.restore();
+        }
+      };
+      const glowPlugin = {
+        id: 'glowEffect',
+        beforeDraw: function(chart) {
+          const ctx = chart.ctx;
+          const dataset = chart.getDatasetMeta(0);
+          if (dataset && dataset.data && dataset.data.length > 0) {
+            ctx.save();
+            for (let i = 3; i >= 1; i--) {
+              ctx.shadowColor = 'rgba(74, 158, 255, 0.3)';
+              ctx.shadowBlur = i * 5;
+              ctx.shadowOffsetX = 0;
+              ctx.shadowOffsetY = 0;
+              ctx.strokeStyle = '#4a9eff';
+              ctx.lineWidth = 2;
+              ctx.lineCap = 'round';
+              ctx.lineJoin = 'round';
+              ctx.beginPath();
+              const firstPoint = dataset.data[0];
+              ctx.moveTo(firstPoint.x, firstPoint.y);
+              for (let j = 1; j < dataset.data.length; j++) {
+                ctx.lineTo(dataset.data[j].x, dataset.data[j].y);
+              }
+              ctx.stroke();
+            }
+            ctx.restore();
+          }
+        }
+      };
+      const config = {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Bankroll Value ($)',
+            data: smoothedData,
+            borderColor: '#4a9eff',
+            backgroundColor: 'rgba(74, 158, 255, 0.1)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.1,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            pointHoverBackgroundColor: '#4a9eff'
+          }]
+        },
+        plugins: [customPlugin, crosshairPlugin, yAxisLabelsPlugin, glowPlugin],
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { intersect: false, mode: 'index' },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                title: function(context) {
+                  const dataIndex = context[0].dataIndex;
+                  const originalTimestamp = filteredData[dataIndex].timestamp;
+                  return formatTooltipTitle(new Date(originalTimestamp), currentView);
+                },
+                label: function(context) {
+                  return `Bankroll: $${context.parsed.y.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                }
+              }
+            }
+          },
+          scales: {
+            y: {
+              display: true,
+              grid: { display: true, color: 'rgba(255, 255, 255, 0.10)', lineWidth: 1 },
+              ticks: { display: false },
+              border: { display: false },
+              beginAtZero: false,
+              grace: '10%'
+            },
+            x: {
+              grid: { display: false },
+              ticks: { color: '#ccc', font: { size: 10 }, maxRotation: 45, minRotation: 0, maxTicksLimit: 8 }
+            }
+          }
+        }
+      };
+      bankrollChart = new Chart(ctx, config);
+      observeChartResize(bankrollChart);
+      setTimeout(() => { if (bankrollChart) bankrollChart.resize(); }, 100);
+    }
+
+    async function loadPerformanceData() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/performance/realized`);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json();
+        if (data.status !== 'ok' || !data.periods) return;
+        const periods = data.periods;
+        ['day', 'week', 'month', 'year'].forEach(key => {
+          const p = periods[key];
+          if (!p) return;
+          const pnlEl = document.getElementById(`perf-pnl-${key}`);
+          const retEl = document.getElementById(`perf-ret-${key}`);
+          const compareEl = document.getElementById(`perf-compare-${key}`);
+          const pnl = Number(p.pnl) || 0;
+          const prevPnl = Number(p.prev_pnl) || 0;
+          const pnlStr = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(pnl);
+          if (pnlEl) {
+            pnlEl.textContent = pnlStr;
+            pnlEl.className = 'performance-pnl' + (pnl > 0 ? ' positive' : pnl < 0 ? ' negative' : '');
+          }
+          if (retEl) {
+            const retPct = p.ret_pct != null ? p.ret_pct : (pnl === 0 ? 0 : null);
+            if (retPct != null) {
+              retEl.textContent = retPct.toFixed(2) + '%';
+              retEl.className = 'performance-ret' + (retPct > 0 ? ' positive' : retPct < 0 ? ' negative' : ' neutral');
+            } else {
+              retEl.textContent = '—';
+              retEl.className = 'performance-ret neutral';
+            }
+          }
+          if (compareEl) {
+            const delta = pnl - prevPnl;
+            const isPositive = delta > 0;
+            const isNegative = delta < 0;
+            const deltaStr = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(delta);
+            let pctStr = '—';
+            if (prevPnl !== 0) {
+              const rawPct = (delta / prevPnl) * 100;
+              const pctSignMatchesDelta = delta >= 0 ? Math.abs(rawPct) : -Math.abs(rawPct);
+              pctStr = Math.round(pctSignMatchesDelta) + '%';
+            }
+            compareEl.textContent = deltaStr + ' (' + pctStr + ')';
+            compareEl.className = 'performance-compare' + (isPositive ? ' positive' : isNegative ? ' negative' : ' neutral');
+          }
+        });
+      } catch (error) {
+        console.error('Error loading performance data:', error);
+      }
+    }
+
+    async function loadPerformancePanelCashBalance() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/subaccounts`);
+        if (!response.ok) return;
+        const data = await response.json();
+        const subaccounts = data.subaccounts || [];
+        const cash = subaccounts.find(s => s.subaccount === 'Cash Transfer');
+        const el = document.getElementById('perf-cash-balance');
+        if (!el) return;
+        if (cash && cash.balance != null) {
+          const dollars = (Number(cash.balance) / 100).toFixed(2);
+          el.textContent = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(dollars));
+        } else {
+          el.textContent = '—';
+        }
+      } catch (error) {
+        console.error('Error loading cash balance:', error);
+        const el = document.getElementById('perf-cash-balance');
+        if (el) el.textContent = '—';
+      }
+    }
+
+    async function loadPnlData() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/pnl/history?period=${currentView}`);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json();
+        const totalPnl = data.total_pnl != null ? data.total_pnl : 0;
+        const formattedValue = new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: 'USD',
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+          signDisplay: 'always'
+        }).format(totalPnl);
+        const portfolioElement = document.getElementById('portfolio-value');
+        if (portfolioElement) portfolioElement.textContent = formattedValue;
+      } catch (error) {
+        console.error('Error loading PnL data:', error);
+        const portfolioElement = document.getElementById('portfolio-value');
+        if (portfolioElement) {
+          portfolioElement.textContent = 'Error loading data';
+          portfolioElement.style.color = '#ff6b6b';
+        }
+      }
+    }
+
+    async function loadPnlHistory() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/pnl/history?period=${currentView}`);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json();
+        const history = data.data || [];
+        if (history.length > 0) {
+          allPnlHistoryData = history;
+          renderPnlChart(history);
+          updatePnlChange();
+        } else {
+          allPnlHistoryData = [{ timestamp: new Date().toISOString(), pnl: 0 }];
+          renderPnlChart(allPnlHistoryData);
+          updatePnlChange();
+        }
+      } catch (error) {
+        console.error('Error loading PnL history:', error);
+      }
+    }
+
+    function updatePnlChange() {
+      const changeEl = document.getElementById('portfolio-change');
+      if (allPnlHistoryData.length < 1) {
+        if (changeEl) changeEl.textContent = '';
+        return;
+      }
+      const last = allPnlHistoryData[allPnlHistoryData.length - 1];
+      const totalPnl = last.pnl != null ? last.pnl : 0;
+      const isPositive = totalPnl >= 0;
+      const changeText = `$${Math.abs(totalPnl).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (from $0)`;
+      changeEl.textContent = changeText;
+      changeEl.className = `change-element ${isPositive ? 'positive' : 'negative'}`;
+    }
+
+    function renderPnlChart(history) {
+      const ctx = document.getElementById('pnl-chart');
+      if (!ctx) return;
+      if (pnlChart) {
+        pnlChart.destroy();
+        pnlChart = null;
+      }
+      const data = history.length > 0 ? history : [{ timestamp: new Date().toISOString(), pnl: 0 }];
+      const labels = data.map(item => {
+        const date = new Date(item.timestamp);
+        return formatLabel(date, currentView);
+      });
+      const pnlValues = data.map(item => item.pnl != null ? item.pnl : 0);
+      const customPlugin = {
+        id: 'customXAxisLabel',
+        afterDraw: function(chart) {
+          if (currentView === '1d') return;
+          const ctx = chart.ctx;
+          const chartArea = chart.chartArea;
+          const lastLabel = labels[labels.length - 1];
+          const x = chartArea.right - 30;
+          const y = chartArea.bottom + 20;
+          ctx.save();
+          ctx.font = '10px Arial';
+          ctx.fillStyle = '#ccc';
+          ctx.textAlign = 'right';
+          ctx.fillText(lastLabel, x, y);
+          ctx.restore();
+        }
+      };
+      const crosshairPlugin = {
+        id: 'crosshair',
+        afterDraw: function(chart) {
+          if (chart.tooltip && chart.tooltip.opacity > 0) {
+            const ctx = chart.ctx;
+            const chartArea = chart.chartArea;
+            const dataset = chart.getDatasetMeta(0);
+            if (chart.tooltip.dataPoints && chart.tooltip.dataPoints.length > 0) {
+              const dataPoint = dataset.data[chart.tooltip.dataPoints[0].dataIndex];
+              if (dataPoint) {
+                const opacity = chart.tooltip.opacity;
+                ctx.save();
+                ctx.globalAlpha = opacity;
+                ctx.strokeStyle = '#4a9eff';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([5, 5]);
+                ctx.beginPath();
+                ctx.moveTo(dataPoint.x, chartArea.top);
+                ctx.lineTo(dataPoint.x, chartArea.bottom);
+                ctx.stroke();
+                ctx.restore();
+                ctx.save();
+                ctx.globalAlpha = opacity;
+                ctx.strokeStyle = '#4a9eff';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([5, 5]);
+                ctx.beginPath();
+                ctx.moveTo(chartArea.left, dataPoint.y);
+                ctx.lineTo(chartArea.right, dataPoint.y);
+                ctx.stroke();
+                ctx.restore();
+                ctx.save();
+                ctx.globalAlpha = opacity;
+                ctx.fillStyle = '#4a9eff';
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(dataPoint.x, dataPoint.y, 4, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.stroke();
+                ctx.restore();
+              }
+            }
+          }
+        }
+      };
+      const yAxisLabelsPlugin = {
+        id: 'customYAxisLabels',
+        afterDraw: function(chart) {
+          const ctx = chart.ctx;
+          const chartArea = chart.chartArea;
+          const yScale = chart.scales.y;
+          if (!yScale) return;
+          const ticks = yScale.ticks;
+          const visibleTicks = ticks.filter((tick, index) => index % 2 === 0 && index < ticks.length - 1);
+          ctx.save();
+          ctx.font = '10px Arial';
+          ctx.fillStyle = '#ccc';
+          ctx.textAlign = 'left';
+          visibleTicks.forEach(tick => {
+            const y = yScale.getPixelForValue(tick.value);
+            if (y >= chartArea.top && y <= chartArea.bottom) {
+              ctx.fillText('$' + Math.round(tick.value).toLocaleString(), chartArea.left + 5, y + 3);
+            }
+          });
+          ctx.restore();
+        }
+      };
+      const glowPlugin = {
+        id: 'glowEffect',
+        beforeDraw: function(chart) {
+          const ctx = chart.ctx;
+          const dataset = chart.getDatasetMeta(0);
+          if (dataset && dataset.data && dataset.data.length > 0) {
+            ctx.save();
+            for (let i = 3; i >= 1; i--) {
+              ctx.shadowColor = 'rgba(74, 158, 255, 0.3)';
+              ctx.shadowBlur = i * 5;
+              ctx.shadowOffsetX = 0;
+              ctx.shadowOffsetY = 0;
+              ctx.strokeStyle = '#4a9eff';
+              ctx.lineWidth = 2;
+              ctx.lineCap = 'round';
+              ctx.lineJoin = 'round';
+              ctx.beginPath();
+              const firstPoint = dataset.data[0];
+              ctx.moveTo(firstPoint.x, firstPoint.y);
+              for (let j = 1; j < dataset.data.length; j++) {
+                ctx.lineTo(dataset.data[j].x, dataset.data[j].y);
+              }
+              ctx.stroke();
+            }
+            ctx.restore();
+          }
+        }
+      };
+      const config = {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Cumulative PnL ($)',
+            data: pnlValues,
+            borderColor: '#4a9eff',
+            backgroundColor: 'rgba(74, 158, 255, 0.1)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.1,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            pointHoverBackgroundColor: '#4a9eff'
+          }]
+        },
+        plugins: [customPlugin, crosshairPlugin, yAxisLabelsPlugin, glowPlugin],
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { intersect: false, mode: 'index' },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                title: function(context) {
+                  const dataIndex = context[0].dataIndex;
+                  const originalTimestamp = data[dataIndex].timestamp;
+                  return formatTooltipTitle(new Date(originalTimestamp), currentView);
+                },
+                label: function(context) {
+                  return `PnL: $${context.parsed.y.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                }
+              }
+            }
+          },
+          scales: {
+            y: {
+              display: true,
+              grid: { display: true, color: 'rgba(255, 255, 255, 0.10)', lineWidth: 1 },
+              ticks: { display: false },
+              border: { display: false },
+              beginAtZero: true,
+              grace: '5%'
+            },
+            x: {
+              grid: { display: false },
+              ticks: { color: '#ccc', font: { size: 10 }, maxRotation: 45, minRotation: 0, maxTicksLimit: 8 }
+            }
+          }
+        }
+      };
+      pnlChart = new Chart(ctx, config);
+      observeChartResize(pnlChart);
+      setTimeout(() => { if (pnlChart) pnlChart.resize(); }, 100);
+    }
+
     // Function to apply a simple moving average
     function applyMovingAverage(data, windowSize) {
       if (windowSize <= 1) {
@@ -2795,6 +3602,14 @@
       return smoothedData;
     }
 
+    function observeChartResize(chart) {
+      if (!chart || !chart.canvas || !chart.canvas.parentElement) return;
+      const ro = new ResizeObserver(() => {
+        if (chart.canvas.offsetParent !== null) chart.resize();
+      });
+      ro.observe(chart.canvas.parentElement);
+    }
+
     function renderPortfolioChart(history) {
       console.log('renderPortfolioChart called with history length:', history.length, 'currentView:', currentView);
       
@@ -2803,6 +3618,7 @@
       // Destroy existing chart if it exists
       if (portfolioChart) {
         portfolioChart.destroy();
+        portfolioChart = null;
       }
       
       // Filter data based on current view
@@ -3074,6 +3890,8 @@
       
       // Create the chart
       portfolioChart = new Chart(ctx, config);
+      observeChartResize(portfolioChart);
+      setTimeout(() => { if (portfolioChart) portfolioChart.resize(); }, 100);
     }
 
     function filterDataByView(data, view) {
@@ -3950,11 +4768,27 @@
       return 1871.27; // Default value from your dummy data
     }
 
-    // Refresh portfolio data every 30 seconds
-    setInterval(loadPortfolioData, 30000);
-    
-    // Refresh portfolio history every 5 minutes
-    setInterval(loadPortfolioHistory, 300000);
+    // Refresh the active portfolio-panel tab's data every 30 seconds (keep tab consistent)
+    setInterval(() => {
+      if (portfolioPanelActiveTab === 'bankroll') {
+        loadBankrollData();
+      } else if (portfolioPanelActiveTab === 'portfolio') {
+        loadPortfolioData();
+      } else if (portfolioPanelActiveTab === 'pnl') {
+        loadPnlData();
+      }
+    }, 30000);
+
+    // Refresh the active portfolio-panel tab's history every 5 minutes
+    setInterval(() => {
+      if (portfolioPanelActiveTab === 'bankroll') {
+        loadBankrollHistory();
+      } else if (portfolioPanelActiveTab === 'portfolio') {
+        loadPortfolioHistory();
+      } else if (portfolioPanelActiveTab === 'pnl') {
+        loadPnlHistory();
+      }
+    }, 300000);
     
     // TODO: Re-enable allocation data refresh when ready
     // setInterval(loadAllocationData, 30000);
@@ -3994,7 +4828,8 @@
       }
     }, 30000);
 
-    // Market data functions
+    // Market data functions - commented out with symbol price panel (may move elsewhere later)
+    /*
     function formatUSD(val) {
       if (typeof val !== "number" || isNaN(val)) return "$0.00";
       return "$" + val.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
@@ -4012,14 +4847,11 @@
       el.className = num >= 0 ? "" : "negative";
     }
 
-    // Fetch BTC price changes from backend API and update markets panel
     async function fetchBTCPriceChanges() {
       try {
         const res = await fetch(window.location.origin + '/btc_price_changes');
         if (!res.ok) throw new Error('Failed to fetch BTC price changes');
         const data = await res.json();
-        
-        // Update 1h, 1d change numbers in the markets panel
         if ('change1h' in data) {
           const el = document.getElementById('btc-change-1h');
           if (el) decorateChange(el, data.change1h);
@@ -4033,14 +4865,11 @@
       }
     }
 
-    // Fetch ETH price changes from backend API and update markets panel
     async function fetchETHPriceChanges() {
       try {
         const res = await fetch(window.location.origin + '/eth_price_changes');
         if (!res.ok) throw new Error('Failed to fetch ETH price changes');
         const data = await res.json();
-        
-        // Update 1h, 1d change numbers in the markets panel
         if ('change1h' in data) {
           const el = document.getElementById('eth-change-1h');
           if (el) decorateChange(el, data.change1h);
@@ -4054,13 +4883,11 @@
       }
     }
 
-    // Fetch current BTC price from backend API
     async function fetchBTCCurrentPrice() {
       try {
         const res = await fetch(window.location.origin + '/api/btc_price');
         if (!res.ok) throw new Error('Failed to fetch BTC current price');
         const data = await res.json();
-        
         if (data.price) {
           const el = document.getElementById('btc-price');
           if (el) el.textContent = formatUSD(data.price);
@@ -4070,13 +4897,11 @@
       }
     }
 
-    // Fetch current ETH price from backend API
     async function fetchETHCurrentPrice() {
       try {
         const res = await fetch(window.location.origin + '/api/eth_price');
         if (!res.ok) throw new Error('Failed to fetch ETH current price');
         const data = await res.json();
-        
         if (data.price) {
           const el = document.getElementById('eth-price');
           if (el) el.textContent = formatUSD(data.price);
@@ -4085,6 +4910,7 @@
         console.error('Error fetching ETH current price:', error);
       }
     }
+    */
 
     // Helper function to extract numeric monitor ID from full monitor ID
     function extractMonitorId(fullMonitorId) {
@@ -4319,15 +5145,13 @@
       }
     }
 
-    // Initialize market data on page load
+    // Initialize market data on page load - commented out with symbol price panel
+    /*
     document.addEventListener('DOMContentLoaded', function() {
-      // Fetch initial data
       fetchBTCCurrentPrice();
       fetchETHCurrentPrice();
       fetchBTCPriceChanges();
       fetchETHPriceChanges();
-      
-      // Update data every 30 seconds
       setInterval(() => {
         fetchBTCCurrentPrice();
         fetchETHCurrentPrice();
@@ -4335,6 +5159,7 @@
         fetchETHPriceChanges();
       }, 30000);
     });
+    */
 
     // Archive confirmation modal functions
     function showArchiveConfirmation(monitorId, monitorName) {

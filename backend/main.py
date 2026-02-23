@@ -4984,6 +4984,274 @@ async def get_portfolio_history(period: str = "1m"):
         print(f"Error getting portfolio history: {e}")
         return {"status": "error", "message": str(e)}
 
+@app.get("/api/bankroll/history")
+async def get_bankroll_history(period: str = "1m"):
+    """Get historical bankroll_current data from account_balance for charting."""
+    try:
+        import psycopg2
+        from datetime import datetime, timedelta
+
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+
+        now = datetime.now()
+        if period == "1d":
+            today_5am = now.replace(hour=5, minute=0, second=0, microsecond=0)
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT timestamp, bankroll_current
+                    FROM users.account_balance_0001
+                    WHERE timestamp < %s
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                """, (today_5am.strftime('%Y-%m-%d %H:%M:%S'),))
+                last_before_5am = cursor.fetchone()
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT timestamp, bankroll_current
+                    FROM users.account_balance_0001
+                    WHERE timestamp >= %s
+                    ORDER BY timestamp ASC
+                """, (today_5am.strftime('%Y-%m-%d %H:%M:%S'),))
+                results = cursor.fetchall()
+            if last_before_5am:
+                results = [last_before_5am] + list(results)
+        elif period == "1w":
+            start_time = now - timedelta(weeks=1)
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT timestamp, bankroll_current
+                    FROM users.account_balance_0001
+                    WHERE timestamp >= %s
+                    ORDER BY timestamp ASC
+                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
+                results = cursor.fetchall()
+        elif period == "1m":
+            start_time = now - timedelta(days=30)
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT timestamp, bankroll_current
+                    FROM users.account_balance_0001
+                    WHERE timestamp >= %s
+                    ORDER BY timestamp ASC
+                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
+                results = cursor.fetchall()
+        elif period == "1y":
+            start_time = now - timedelta(days=365)
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT timestamp, bankroll_current
+                    FROM users.account_balance_0001
+                    WHERE timestamp >= %s
+                    ORDER BY timestamp ASC
+                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
+                results = cursor.fetchall()
+        else:  # "all"
+            start_time = datetime(2020, 1, 1)
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT timestamp, bankroll_current
+                    FROM users.account_balance_0001
+                    WHERE timestamp >= %s
+                    ORDER BY timestamp ASC
+                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
+                results = cursor.fetchall()
+
+        conn.close()
+
+        data = []
+        for row in results:
+            timestamp, bankroll_current = row
+            data.append({
+                "timestamp": timestamp if timestamp else None,
+                "bankroll": float(bankroll_current) / 100 if bankroll_current is not None else 0  # cents to dollars
+            })
+
+        return {
+            "status": "ok",
+            "period": period,
+            "count": len(data),
+            "data": data
+        }
+
+    except Exception as e:
+        print(f"Error getting bankroll history: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/pnl/history")
+async def get_pnl_history(period: str = "1m"):
+    """Get cumulative PnL from trades_0001 for charting. Only counts trades where test_filter and paper_trade are FALSE.
+    Returns time series starting at $0 for the selected window (1d=24h, 1w=7d, 1m=30d, 1y=365d, all)."""
+    try:
+        import psycopg2
+        from datetime import datetime, timedelta
+
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+
+        now = datetime.now()
+        start_time = None
+        if period == "1d":
+            start_time = now - timedelta(hours=24)
+        elif period == "1w":
+            start_time = now - timedelta(days=7)
+        elif period == "1m":
+            start_time = now - timedelta(days=30)
+        elif period == "1y":
+            start_time = now - timedelta(days=365)
+        else:  # "all"
+            start_time = datetime(2020, 1, 1)
+
+        start_date_sql = start_time.strftime("%Y-%m-%d")
+
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT COALESCE(
+                    CASE WHEN closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE NULL END,
+                    created_at
+                ) AS ts, pnl
+                FROM users.trades_0001
+                WHERE (test_filter IS NULL OR test_filter = FALSE)
+                  AND (paper_trade IS NULL OR paper_trade = FALSE)
+                  AND LOWER(TRIM(status)) IN ('closed', 'settled')
+                  AND pnl IS NOT NULL
+                  AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN (closed_at::timestamptz)::date ELSE created_at::date END) >= %s::date
+                ORDER BY ts ASC
+            """, (start_date_sql,))
+            rows = cursor.fetchall()
+
+        conn.close()
+
+        # Build cumulative series starting at $0
+        data = []
+        cumulative = 0.0
+        # First point: start of window at $0
+        data.append({"timestamp": start_date_sql + "T00:00:00", "pnl": 0.0})
+        for (ts, pnl) in rows:
+            pnl_val = float(pnl) if pnl is not None else 0.0
+            cumulative += pnl_val
+            ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+            data.append({"timestamp": ts_str, "pnl": round(cumulative, 2)})
+
+        return {
+            "status": "ok",
+            "period": period,
+            "count": len(data),
+            "data": data,
+            "total_pnl": round(cumulative, 2)
+        }
+
+    except Exception as e:
+        print(f"Error getting PnL history: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/performance/realized")
+async def get_performance_realized():
+    """Realized PnL to-date for Day (00:00 today), Week (Sunday 00:00), Month (1st 00:00), Year (Jan 1 00:00).
+    Only trades where paper_trade and test_filter are FALSE. Returns pnl in dollars and ret_pct for each period."""
+    try:
+        import psycopg2
+        from datetime import datetime, date, time, timedelta, timezone
+
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        # Use UTC so period boundaries match DB (created_at::date uses session TZ)
+        with conn.cursor() as tz_cur:
+            tz_cur.execute("SET TIME ZONE 'UTC'")
+        now = datetime.now(timezone.utc)
+        today = now.date()
+
+        # Period starts (00:00:00 to-date)
+        day_start = datetime.combine(today, time(0, 0, 0))
+        days_since_sunday = (today.weekday() + 1) % 7
+        sunday = today - timedelta(days=days_since_sunday)
+        week_start = datetime.combine(sunday, time(0, 0, 0))
+        month_start = datetime.combine(today.replace(day=1), time(0, 0, 0))
+        year_start = datetime.combine(today.replace(month=1, day=1), time(0, 0, 0))
+
+        # Previous period end dates (for "previous period to date" comparison)
+        yesterday = today - timedelta(days=1)
+        prev_week_end = sunday - timedelta(days=1)
+        prev_week_start = prev_week_end - timedelta(days=6)
+        prev_month_first = (today.replace(day=1) - timedelta(days=1)).replace(day=1)
+        prev_month_last = today.replace(day=1) - timedelta(days=1)
+        prev_year_first = today.replace(month=1, day=1, year=today.year - 1)
+        prev_year_last = today.replace(month=12, day=31, year=today.year - 1)
+
+        periods = [
+            ("day", day_start, yesterday.strftime("%Y-%m-%d"), yesterday.strftime("%Y-%m-%d")),
+            ("week", week_start, prev_week_start.strftime("%Y-%m-%d"), prev_week_end.strftime("%Y-%m-%d")),
+            ("month", month_start, prev_month_first.strftime("%Y-%m-%d"), prev_month_last.strftime("%Y-%m-%d")),
+            ("year", year_start, prev_year_first.strftime("%Y-%m-%d"), prev_year_last.strftime("%Y-%m-%d")),
+        ]
+
+        result = {}
+        with conn.cursor() as cursor:
+            for key, start_dt, prev_start_sql, prev_end_sql in periods:
+                start_date_sql = start_dt.strftime("%Y-%m-%d")
+                start_sql = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+                cursor.execute("""
+                    SELECT COALESCE(SUM(pnl), 0)
+                    FROM users.trades_0001
+                    WHERE (test_filter IS NULL OR test_filter = FALSE)
+                      AND (paper_trade IS NULL OR paper_trade = FALSE)
+                      AND LOWER(TRIM(status)) IN ('closed', 'settled')
+                      AND pnl IS NOT NULL
+                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN (closed_at::timestamptz)::date ELSE created_at::date END) >= %s::date
+                """, (start_date_sql,))
+                row = cursor.fetchone()
+                pnl = float(row[0]) if row and row[0] is not None else 0.0
+
+                # Previous period PnL (same window length: previous period to date)
+                cursor.execute("""
+                    SELECT COALESCE(SUM(pnl), 0)
+                    FROM users.trades_0001
+                    WHERE (test_filter IS NULL OR test_filter = FALSE)
+                      AND (paper_trade IS NULL OR paper_trade = FALSE)
+                      AND LOWER(TRIM(status)) IN ('closed', 'settled')
+                      AND pnl IS NOT NULL
+                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN (closed_at::timestamptz)::date ELSE created_at::date END) >= %s::date
+                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN (closed_at::timestamptz)::date ELSE created_at::date END) <= %s::date
+                """, (prev_start_sql, prev_end_sql))
+                prev_row = cursor.fetchone()
+                prev_pnl = float(prev_row[0]) if prev_row and prev_row[0] is not None else 0.0
+
+                # Bankroll at start of period for ret_pct
+                cursor.execute("""
+                    SELECT bankroll_current
+                    FROM users.account_balance_0001
+                    WHERE timestamp < %s
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                """, (start_sql,))
+                br_row = cursor.fetchone()
+                bankroll_start = float(br_row[0]) / 100.0 if br_row and br_row[0] is not None and br_row[0] > 0 else None
+                if bankroll_start and bankroll_start > 0:
+                    ret_pct = round((pnl / bankroll_start) * 100, 2)
+                else:
+                    ret_pct = 0.0 if pnl == 0 else None
+
+                result[key] = {"pnl": round(pnl, 2), "ret_pct": ret_pct, "prev_pnl": round(prev_pnl, 2)}
+
+        conn.close()
+        return {"status": "ok", "periods": result}
+
+    except Exception as e:
+        print(f"Error getting performance realized: {e}")
+        return {"status": "error", "message": str(e)}
+
 @app.get("/api/dashboard/preferences")
 async def get_dashboard_preferences(mode: str = "prod"):
     """Get dashboard preferences for the current user"""
