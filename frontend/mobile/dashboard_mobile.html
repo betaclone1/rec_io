@@ -926,6 +926,7 @@
     .view-buttons {
       display: flex;
       gap: 5px;
+      margin-left: auto;
     }
 
     .view-btn {
@@ -3295,15 +3296,17 @@
 
     function renderPortfolioChart(history) {
       const ctx = document.getElementById('portfolio-chart');
-      
+      if (!ctx) return;
+
       if (portfolioChart) {
         portfolioChart.destroy();
         portfolioChart = null;
       }
-      
+
       // Filter data based on current view
       const filteredData = filterDataByView(history, currentView);
-      
+      if (filteredData.length === 0) return;
+
       // Prepare data for chart with appropriate labels
       const labels = filteredData.map(item => {
         const date = new Date(item.timestamp);
@@ -3574,6 +3577,9 @@
     }
 
     function filterDataByView(data, view) {
+      if (!data || data.length === 0) {
+        return [];
+      }
       const now = new Date();
       let startDate;
       
