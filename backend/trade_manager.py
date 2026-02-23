@@ -2540,7 +2540,9 @@ async def add_trade(request: Request):
         paper_trade = False
 
     if paper_trade:
-        # PAPER TRADE: Skip executor, create pending trade, then immediately mark as open
+        # PAPER TRADE: Skip executor, create pending trade, then immediately mark as open.
+        # Return HTTP response as soon as DB work is done so the client (e.g. auto_entry_supervisor)
+        # does not timeout when main_app or active_trade_supervisor are slow; notifications run in background.
         log(f"📝 PAPER TRADE: Skipping executor, processing immediately")
         
         # Insert trade with 'pending' status first
@@ -2551,9 +2553,6 @@ async def add_trade(request: Request):
             log(f"❌ Failed to insert paper trade to database")
             log_event(data.get("ticket_id", "UNKNOWN"), "MANAGER: PAPER TRADE — DATABASE INSERT FAILED")
             return {"error": "Failed to insert paper trade to database", "id": None}
-        
-        # Notify active trade supervisor about the new pending trade
-        notify_active_trade_supervisor_direct(trade_id, data.get("ticket_id", "PAPER"), "pending")
         
         # Immediately mark as open with fees = 0.00, using original buy_price
         try:
@@ -2575,8 +2574,16 @@ async def add_trade(request: Request):
         
         log_event(data.get("ticket_id", "UNKNOWN"), "MANAGER: PAPER TRADE — OPENED IMMEDIATELY")
         
-        # Notify active trade supervisor that trade is now open
-        notify_active_trade_supervisor_direct(trade_id, data.get("ticket_id", "PAPER"), "open")
+        # Notify active trade supervisor in background so slow ATS does not block response and cause client timeout
+        ticket_id_val = data.get("ticket_id", "PAPER")
+        def _paper_notify_background():
+            try:
+                notify_active_trade_supervisor_direct(trade_id, ticket_id_val, "pending")
+                notify_active_trade_supervisor_direct(trade_id, ticket_id_val, "open")
+            except Exception as e:
+                log(f"ERROR in paper-trade background notify: {e}")
+        t = threading.Thread(target=_paper_notify_background, daemon=True)
+        t.start()
         
         return {"id": trade_id}
     else:
