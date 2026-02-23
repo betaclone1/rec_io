@@ -61,6 +61,7 @@
 
     /* Portfolio panel tabs - Mobile */
     .portfolio-panel .panel-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .portfolio-panel .panel-header .portfolio-controls { flex: 1 1 100%; }
     .portfolio-panel .panel-tab { color: #fff; cursor: pointer; opacity: 0.3; transition: opacity 0.2s; }
     .portfolio-panel .panel-tab.active { opacity: 1; }
     .portfolio-tabs-body { flex: 1; min-height: 0; position: relative; }
@@ -3221,6 +3222,8 @@
           }
         }
       });
+      observeChartResize(bankrollChart);
+      setTimeout(() => { if (bankrollChart) bankrollChart.resize(); }, 100);
     }
 
     function renderPnlChart(history) {
@@ -3262,6 +3265,8 @@
           }
         }
       });
+      observeChartResize(pnlChart);
+      setTimeout(() => { if (pnlChart) pnlChart.resize(); }, 100);
     }
 
     // Function to apply a simple moving average
@@ -3280,12 +3285,20 @@
       return smoothedData;
     }
 
+    function observeChartResize(chart) {
+      if (!chart || !chart.canvas || !chart.canvas.parentElement) return;
+      const ro = new ResizeObserver(() => {
+        if (chart.canvas.offsetParent !== null) chart.resize();
+      });
+      ro.observe(chart.canvas.parentElement);
+    }
+
     function renderPortfolioChart(history) {
       const ctx = document.getElementById('portfolio-chart');
       
-      // Destroy existing chart if it exists
       if (portfolioChart) {
         portfolioChart.destroy();
+        portfolioChart = null;
       }
       
       // Filter data based on current view
@@ -3556,6 +3569,8 @@
       
       // Create the chart
       portfolioChart = new Chart(ctx, config);
+      observeChartResize(portfolioChart);
+      setTimeout(() => { if (portfolioChart) portfolioChart.resize(); }, 100);
     }
 
     function filterDataByView(data, view) {
@@ -4420,10 +4435,23 @@
     function startDashboardMobilePolling() {
       if (window._dmPortfolioInterval) clearInterval(window._dmPortfolioInterval);
       if (window._dmHistoryInterval) clearInterval(window._dmHistoryInterval);
+      if (window._dmPerformanceInterval) clearInterval(window._dmPerformanceInterval);
       if (window._dmMonitorRefreshInterval) clearInterval(window._dmMonitorRefreshInterval);
       if (window._dmAutoTradeInterval) clearInterval(window._dmAutoTradeInterval);
-      window._dmPortfolioInterval = setInterval(loadPortfolioData, 30000);
-      window._dmHistoryInterval = setInterval(loadPortfolioHistory, 300000);
+      window._dmPortfolioInterval = setInterval(() => {
+        if (portfolioPanelActiveTab === 'bankroll') loadBankrollData();
+        else if (portfolioPanelActiveTab === 'portfolio') loadPortfolioData();
+        else if (portfolioPanelActiveTab === 'pnl') loadPnlData();
+      }, 30000);
+      window._dmHistoryInterval = setInterval(() => {
+        if (portfolioPanelActiveTab === 'bankroll') loadBankrollHistory();
+        else if (portfolioPanelActiveTab === 'portfolio') loadPortfolioHistory();
+        else if (portfolioPanelActiveTab === 'pnl') loadPnlHistory();
+      }, 300000);
+      window._dmPerformanceInterval = setInterval(() => {
+        loadPerformanceData();
+        loadPerformancePanelCashBalance();
+      }, 30000);
       window._dmMonitorRefreshInterval = setInterval(async () => {
         try {
           console.log('Dashboard: Refreshing monitor data from database...');
@@ -6921,6 +6949,7 @@
       } else {
         if (window._dmPortfolioInterval) { clearInterval(window._dmPortfolioInterval); window._dmPortfolioInterval = null; }
         if (window._dmHistoryInterval) { clearInterval(window._dmHistoryInterval); window._dmHistoryInterval = null; }
+        if (window._dmPerformanceInterval) { clearInterval(window._dmPerformanceInterval); window._dmPerformanceInterval = null; }
         if (window._dmMonitorRefreshInterval) { clearInterval(window._dmMonitorRefreshInterval); window._dmMonitorRefreshInterval = null; }
         if (window._dmAutoTradeInterval) { clearInterval(window._dmAutoTradeInterval); window._dmAutoTradeInterval = null; }
         if (window._dmMarketDataInterval) { clearInterval(window._dmMarketDataInterval); window._dmMarketDataInterval = null; }

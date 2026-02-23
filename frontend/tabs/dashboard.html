@@ -4808,6 +4808,12 @@
       }
     }, 30000);
 
+    // Refresh Performance panel (realized PnL + cash balance) at same rate as Portfolio panel
+    setInterval(() => {
+      loadPerformanceData();
+      loadPerformancePanelCashBalance();
+    }, 30000);
+
     // Refresh the active portfolio-panel tab's history every 5 minutes
     setInterval(() => {
       if (portfolioPanelActiveTab === 'bankroll') {
