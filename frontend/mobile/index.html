@@ -27,8 +27,8 @@
         .mobile-container {
             display: flex;
             flex-direction: column;
-            height: 92vh;
-            width: 100vw;
+            height: 98vh;
+            width: 100%;
         }
 
         .content-area {
@@ -54,6 +54,8 @@
             border-top: 1px solid #444;
             height: 60px;
             min-height: 60px;
+            padding-bottom: env(safe-area-inset-bottom, 0);
+            box-sizing: border-box;
         }
 
         .tab-item {
