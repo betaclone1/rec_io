@@ -5155,11 +5155,12 @@ async def get_pnl_history(period: str = "1m"):
 
 @app.get("/api/performance/realized")
 async def get_performance_realized():
-    """Realized PnL to-date for Day (00:00 today), Week (Sunday 00:00), Month (1st 00:00), Year (Jan 1 00:00).
-    Only trades where paper_trade and test_filter are FALSE. Returns pnl in dollars and ret_pct for each period."""
+    """Realized PnL to-date for Day/Week/Month/Year: current period from period start through now,
+    and prev_pnl for the same-length window in the previous period (e.g. yesterday 00:00–18:00 vs today 00:00–18:00).
+    Only trades where paper_trade and test_filter are FALSE. All times America/New_York."""
     try:
         import psycopg2
-        from datetime import datetime, date, time, timedelta, timezone
+        from datetime import datetime, timedelta
         from zoneinfo import ZoneInfo
 
         conn = psycopg2.connect(
@@ -5168,42 +5169,46 @@ async def get_performance_realized():
             user="rec_io_user",
             password="rec_io_password"
         )
-        # Use America/New_York so "Day" = calendar day in Eastern, matching trade history /trades date
         with conn.cursor() as tz_cur:
             tz_cur.execute("SET TIME ZONE 'America/New_York'")
         eastern = ZoneInfo("America/New_York")
         now = datetime.now(eastern)
         today = now.date()
 
-        # Period starts (00:00:00 to-date)
-        day_start = datetime.combine(today, time(0, 0, 0))
+        # Period starts (00:00:00 Eastern, timezone-aware)
+        def et_start(y, m, d):
+            return datetime(y, m, d, 0, 0, 0, tzinfo=eastern)
+
+        day_start = et_start(today.year, today.month, today.day)
         days_since_sunday = (today.weekday() + 1) % 7
         sunday = today - timedelta(days=days_since_sunday)
-        week_start = datetime.combine(sunday, time(0, 0, 0))
-        month_start = datetime.combine(today.replace(day=1), time(0, 0, 0))
-        year_start = datetime.combine(today.replace(month=1, day=1), time(0, 0, 0))
+        week_start = et_start(sunday.year, sunday.month, sunday.day)
+        month_start = et_start(today.year, today.month, 1)
+        year_start = et_start(today.year, 1, 1)
 
-        # Previous period end dates (for "previous period to date" comparison)
+        # Previous period starts (same calendar window, prior period)
         yesterday = today - timedelta(days=1)
-        prev_week_end = sunday - timedelta(days=1)
-        prev_week_start = prev_week_end - timedelta(days=6)
+        prev_sunday = sunday - timedelta(days=7)
         prev_month_first = (today.replace(day=1) - timedelta(days=1)).replace(day=1)
-        prev_month_last = today.replace(day=1) - timedelta(days=1)
         prev_year_first = today.replace(month=1, day=1, year=today.year - 1)
-        prev_year_last = today.replace(month=12, day=31, year=today.year - 1)
+
+        prev_day_start = et_start(yesterday.year, yesterday.month, yesterday.day)
+        prev_week_start = et_start(prev_sunday.year, prev_sunday.month, prev_sunday.day)
+        prev_month_start = et_start(prev_month_first.year, prev_month_first.month, prev_month_first.day)
+        prev_year_start = et_start(prev_year_first.year, prev_year_first.month, prev_year_first.day)
 
         periods = [
-            ("day", day_start, yesterday.strftime("%Y-%m-%d"), yesterday.strftime("%Y-%m-%d")),
-            ("week", week_start, prev_week_start.strftime("%Y-%m-%d"), prev_week_end.strftime("%Y-%m-%d")),
-            ("month", month_start, prev_month_first.strftime("%Y-%m-%d"), prev_month_last.strftime("%Y-%m-%d")),
-            ("year", year_start, prev_year_first.strftime("%Y-%m-%d"), prev_year_last.strftime("%Y-%m-%d")),
+            ("day", day_start, prev_day_start),
+            ("week", week_start, prev_week_start),
+            ("month", month_start, prev_month_start),
+            ("year", year_start, prev_year_start),
         ]
 
         result = {}
         with conn.cursor() as cursor:
-            for key, start_dt, prev_start_sql, prev_end_sql in periods:
-                start_date_sql = start_dt.strftime("%Y-%m-%d")
-                start_sql = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+            for key, period_start, prev_start in periods:
+                # Current period: [period_start, now] (to-date)
+                period_end = now
                 cursor.execute("""
                     SELECT COALESCE(SUM(pnl), 0), COALESCE(SUM(ret_pct), 0)
                     FROM users.trades_0001
@@ -5211,13 +5216,16 @@ async def get_performance_realized():
                       AND (paper_trade IS NULL OR paper_trade = FALSE)
                       AND LOWER(TRIM(status)) IN ('closed', 'settled')
                       AND pnl IS NOT NULL
-                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN (closed_at::timestamptz)::date ELSE created_at::date END) >= %s::date
-                """, (start_date_sql,))
+                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) >= %s
+                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) <= %s
+                """, (period_start, period_end))
                 row = cursor.fetchone()
                 pnl = float(row[0]) if row and row[0] is not None else 0.0
                 ret_pct_sum = float(row[1]) if row and row[1] is not None else None
 
-                # Previous period PnL (same window length: previous period to date)
+                # Previous period: same-length window (prev_start through prev_start + (now - period_start))
+                duration = period_end - period_start
+                prev_end = prev_start + duration
                 cursor.execute("""
                     SELECT COALESCE(SUM(pnl), 0)
                     FROM users.trades_0001
@@ -5225,15 +5233,13 @@ async def get_performance_realized():
                       AND (paper_trade IS NULL OR paper_trade = FALSE)
                       AND LOWER(TRIM(status)) IN ('closed', 'settled')
                       AND pnl IS NOT NULL
-                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN (closed_at::timestamptz)::date ELSE created_at::date END) >= %s::date
-                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN (closed_at::timestamptz)::date ELSE created_at::date END) <= %s::date
-                """, (prev_start_sql, prev_end_sql))
+                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) >= %s
+                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) <= %s
+                """, (prev_start, prev_end))
                 prev_row = cursor.fetchone()
                 prev_pnl = float(prev_row[0]) if prev_row and prev_row[0] is not None else 0.0
 
-                # Ret % = sum of per-trade ret_pct (matches trade history summary)
                 ret_pct = round(ret_pct_sum, 2) if ret_pct_sum is not None else None
-
                 result[key] = {"pnl": round(pnl, 2), "ret_pct": ret_pct, "prev_pnl": round(prev_pnl, 2)}
 
         conn.close()

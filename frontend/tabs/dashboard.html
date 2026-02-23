@@ -3419,14 +3419,21 @@
 
     function updatePnlChange() {
       const changeEl = document.getElementById('portfolio-change');
-      if (allPnlHistoryData.length < 1) {
+      if (allPnlHistoryData.length < 2) {
         if (changeEl) changeEl.textContent = '';
         return;
       }
-      const last = allPnlHistoryData[allPnlHistoryData.length - 1];
-      const totalPnl = last.pnl != null ? last.pnl : 0;
-      const isPositive = totalPnl >= 0;
-      const changeText = `$${Math.abs(totalPnl).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (from $0)`;
+      const filteredData = filterDataByView(allPnlHistoryData, currentView);
+      if (filteredData.length < 2) {
+        if (changeEl) changeEl.textContent = '';
+        return;
+      }
+      const firstPnl = filteredData[0].pnl != null ? filteredData[0].pnl : 0;
+      const lastPnl = filteredData[filteredData.length - 1].pnl != null ? filteredData[filteredData.length - 1].pnl : 0;
+      const change = lastPnl - firstPnl;
+      const percentChange = firstPnl !== 0 ? (change / Math.abs(firstPnl)) * 100 : (lastPnl !== 0 ? 100 : 0);
+      const isPositive = change >= 0;
+      const changeText = `$${Math.abs(change).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${percentChange >= 0 ? '' : '-'}${Math.abs(percentChange).toFixed(2)}%)`;
       changeEl.textContent = changeText;
       changeEl.className = `change-element ${isPositive ? 'positive' : 'negative'}`;
     }
