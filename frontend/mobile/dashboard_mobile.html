@@ -2921,16 +2921,17 @@
       }
       
       saveDashboardPreferences();
+
+      // Re-fetch and re-render so time window actually changes (same as desktop)
       if (portfolioPanelActiveTab === 'bankroll') {
-        renderBankrollChart(allBankrollHistoryData);
-        updateBankrollChange();
-      } else if (portfolioPanelActiveTab === 'portfolio') {
+        loadBankrollHistory();
+      } else if (portfolioPanelActiveTab === 'pnl') {
+        loadPnlHistory();
+      } else {
         renderPortfolioChart(allHistoryData);
         updatePortfolioChange();
-      } else {
-        renderPnlChart(allPnlHistoryData);
-        updatePnlChange();
       }
+
       // Refresh monitor statistics with new time filter
       if (window.monitorHistoryDisplay) {
         console.log(`Dashboard: Refreshing monitor statistics for time view: ${view}`);
