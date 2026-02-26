@@ -1898,9 +1898,14 @@
         var pull = e.touches[0].clientY - startY;
         if (pull <= 0) return;
         currentPull = Math.min(pull, 120);
+        window.parent.postMessage({ type: 'pull-to-refresh-progress', pull: currentPull }, window.location.origin);
       }, { passive: true });
       document.addEventListener('touchend', function() {
-        if (currentPull >= threshold) window.parent.postMessage({ type: 'pull-to-refresh-triggered' }, window.location.origin);
+        if (currentPull >= threshold) {
+          window.parent.postMessage({ type: 'pull-to-refresh-triggered' }, window.location.origin);
+        } else {
+          window.parent.postMessage({ type: 'pull-to-refresh-progress', pull: 0 }, window.location.origin);
+        }
         currentPull = 0;
       }, { passive: true });
       window.addEventListener('message', function(e) {
