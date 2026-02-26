@@ -170,7 +170,7 @@
 <body>
     <div id="pull-to-refresh" aria-live="polite">
         <span class="ptr-spinner"></span>
-        <span class="ptr-text">Pull to refresh</span>
+        <span class="ptr-text">Release to refresh</span>
     </div>
     <div class="mobile-container">
         <!-- Content Area -->
@@ -304,28 +304,25 @@
             // After iframes have had time to load, tell each tab whether it's visible (heavy tabs pause when hidden)
             setTimeout(broadcastTabVisibility, 800);
 
-            // Pull-to-refresh: progress from iframe slides bar and updates copy; triggered -> refresh; done -> hide
-            // Refresh triggers only after pull >= PTR_THRESHOLD px (bar placement unchanged)
+            // Pull-to-refresh: bar only appears when pull >= PTR_THRESHOLD, shows "Release to refresh" only
             const ptrEl = document.getElementById('pull-to-refresh');
             const ptrText = ptrEl && ptrEl.querySelector('.ptr-text');
-            const PTR_THRESHOLD = 144;
+            const PTR_THRESHOLD = 216; // 50% beyond previous 144
             window.addEventListener('message', function(e) {
                 if (!e.data || e.origin !== window.location.origin) return;
                 if (e.data.type === 'pull-to-refresh-progress') {
                     var pull = Math.max(0, Number(e.data.pull) || 0);
-                    if (pull === 0) {
+                    if (pull < PTR_THRESHOLD) {
                         if (ptrEl) {
                             ptrEl.classList.remove('visible', 'release');
                             ptrEl.style.transform = 'translateY(-100%)';
                         }
-                        if (ptrText) ptrText.textContent = 'Pull to refresh';
                     } else {
                         if (ptrEl) {
-                            ptrEl.classList.add('visible');
-                            ptrEl.classList.toggle('release', pull >= PTR_THRESHOLD);
-                            ptrEl.style.transform = 'translateY(' + (Math.min(pull, 80) - 52) + 'px)';
+                            ptrEl.classList.add('visible', 'release');
+                            ptrEl.style.transform = 'translateY(0)';
                         }
-                        if (ptrText) ptrText.textContent = pull >= PTR_THRESHOLD ? 'Release to refresh' : 'Pull to refresh';
+                        if (ptrText) ptrText.textContent = 'Release to refresh';
                     }
                 } else if (e.data.type === 'pull-to-refresh-triggered') {
                     if (ptrEl) { ptrEl.classList.add('visible', 'refreshing'); ptrEl.style.transform = 'translateY(0)'; }
@@ -333,7 +330,7 @@
                     if (e.source && e.source.postMessage) e.source.postMessage({ type: 'pull-to-refresh-do' }, e.origin);
                 } else if (e.data.type === 'pull-to-refresh-done') {
                     if (ptrEl) { ptrEl.classList.remove('visible', 'refreshing'); ptrEl.style.transform = 'translateY(-100%)'; }
-                    if (ptrText) ptrText.textContent = 'Pull to refresh';
+                    if (ptrText) ptrText.textContent = 'Release to refresh';
                 }
             });
         });
