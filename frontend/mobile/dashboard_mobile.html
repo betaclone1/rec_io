@@ -4571,6 +4571,20 @@
       }
     }
 
+    /** Refresh all displayed data (for pull-to-refresh). */
+    async function refreshAllDashboardData() {
+      await refreshPortfolioPanel();
+      await Promise.all([loadPerformanceData(), loadPerformancePanelCashBalance()]);
+      const oldMonitors = [...monitors];
+      await loadMonitors();
+      applyCurrentSort();
+      updateMonitorStatValues(oldMonitors, monitors);
+      initializeMonitors();
+      await loadAllocationData();
+      if (window.monitorHistoryDisplay) window.monitorHistoryDisplay.refresh(currentView);
+    }
+    window.__onPullToRefresh = function() { return refreshAllDashboardData(); };
+
     startDashboardMobilePolling();
 
     // Market data functions
@@ -7002,6 +7016,34 @@
         if (window._dmAutoTradeInterval) { clearInterval(window._dmAutoTradeInterval); window._dmAutoTradeInterval = null; }
         if (window._dmMarketDataInterval) { clearInterval(window._dmMarketDataInterval); window._dmMarketDataInterval = null; }
         if (window._dashboardMobileWs) { try { window._dashboardMobileWs.close(); } catch (e) {} window._dashboardMobileWs = null; }
+      }
+    });
+  })();
+  </script>
+  <script>
+  (function() {
+    if (window.parent === window) return;
+    var threshold = 72, startY = 0, currentPull = 0;
+    function atTop() { var se = document.scrollingElement || document.documentElement; return se && se.scrollTop <= 0; }
+    document.addEventListener('touchstart', function(e) { if (e.touches.length === 1) { startY = e.touches[0].clientY; currentPull = 0; } }, { passive: true });
+    document.addEventListener('touchmove', function(e) {
+      if (e.touches.length !== 1 || !atTop()) return;
+      var pull = e.touches[0].clientY - startY;
+      if (pull <= 0) return;
+      currentPull = Math.min(pull, 120);
+    }, { passive: true });
+    document.addEventListener('touchend', function() {
+      if (currentPull >= threshold) window.parent.postMessage({ type: 'pull-to-refresh-triggered' }, window.location.origin);
+      currentPull = 0;
+    }, { passive: true });
+    window.addEventListener('message', function(e) {
+      if (e.origin !== window.location.origin || !e.data || e.data.type !== 'pull-to-refresh-do') return;
+      var p = typeof window.__onPullToRefresh === 'function' ? window.__onPullToRefresh() : null;
+      if (p && typeof p.then === 'function') {
+        p.then(function() { window.parent.postMessage({ type: 'pull-to-refresh-done' }, window.location.origin); }).catch(function() { window.parent.postMessage({ type: 'pull-to-refresh-done' }, window.location.origin); });
+      } else {
+        window.parent.postMessage({ type: 'pull-to-refresh-done' }, window.location.origin);
+        if (p === null || p === undefined) location.reload();
       }
     });
   })();
