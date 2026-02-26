@@ -2901,8 +2901,7 @@
       if (portfolioPanelActiveTab === 'bankroll') {
         await loadBankrollHistory();
       } else if (portfolioPanelActiveTab === 'portfolio') {
-        if (allHistoryData.length === 0) await loadPortfolioHistory();
-        else applyPortfolioView();
+        await loadPortfolioHistory(); // always refetch so top line + delta + chart get fresh data on interval
       } else {
         await loadPnlHistory();
       }
@@ -2924,8 +2923,12 @@
       
       saveDashboardPreferences();
 
-      // Any change to view type or time window redraws top line, delta, and chart
-      refreshPortfolioPanel();
+      // Time-window only: reapply filter from existing data (instant). Full refresh does refetch on interval/tab.
+      if (portfolioPanelActiveTab === 'portfolio') {
+        applyPortfolioView();
+      } else {
+        refreshPortfolioPanel();
+      }
 
       // Refresh monitor statistics with new time filter
       if (window.monitorHistoryDisplay) {

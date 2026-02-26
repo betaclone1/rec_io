@@ -2933,7 +2933,12 @@
 
       saveDashboardPreferences();
 
-      await refreshPortfolioPanel();
+      // Time-window only: reapply filter from existing data (instant). Full refresh does refetch on interval/tab.
+      if (portfolioPanelActiveTab === 'portfolio') {
+        applyPortfolioView();
+      } else {
+        await refreshPortfolioPanel();
+      }
 
       if (window.monitorHistoryDisplay) {
         window.monitorHistoryDisplay.refresh(view);
@@ -2945,8 +2950,7 @@
       if (portfolioPanelActiveTab === 'bankroll') {
         await loadBankrollHistory();
       } else if (portfolioPanelActiveTab === 'portfolio') {
-        if (allHistoryData.length === 0) await loadPortfolioHistory();
-        else applyPortfolioView();
+        await loadPortfolioHistory(); // always refetch so top line + delta + chart get fresh data on interval
       } else if (portfolioPanelActiveTab === 'pnl') {
         await loadPnlHistory();
       }
