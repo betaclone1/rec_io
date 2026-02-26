@@ -746,7 +746,8 @@
     <script>
     (function() {
       if (window.parent === window) return;
-      var threshold = 144, startY = 0, currentPull = 0;
+      var threshold = 144; // px pull required to trigger refresh
+      var startY = 0, currentPull = 0;
       function atTop() { var se = document.scrollingElement || document.documentElement; return se && se.scrollTop <= 0; }
       document.addEventListener('touchstart', function(e) { if (e.touches.length === 1) { startY = e.touches[0].clientY; currentPull = 0; } }, { passive: true });
       document.addEventListener('touchmove', function(e) {

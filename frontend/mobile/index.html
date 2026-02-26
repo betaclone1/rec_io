@@ -305,6 +305,7 @@
             setTimeout(broadcastTabVisibility, 800);
 
             // Pull-to-refresh: progress from iframe slides bar and updates copy; triggered -> refresh; done -> hide
+            // Refresh triggers only after pull >= PTR_THRESHOLD px (bar placement unchanged)
             const ptrEl = document.getElementById('pull-to-refresh');
             const ptrText = ptrEl && ptrEl.querySelector('.ptr-text');
             const PTR_THRESHOLD = 144;
@@ -322,7 +323,7 @@
                         if (ptrEl) {
                             ptrEl.classList.add('visible');
                             ptrEl.classList.toggle('release', pull >= PTR_THRESHOLD);
-                            ptrEl.style.transform = 'translateY(' + (Math.min(pull, 160) - 52) + 'px)';
+                            ptrEl.style.transform = 'translateY(' + (Math.min(pull, 80) - 52) + 'px)';
                         }
                         if (ptrText) ptrText.textContent = pull >= PTR_THRESHOLD ? 'Release to refresh' : 'Pull to refresh';
                     }
