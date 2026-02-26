@@ -1489,20 +1489,10 @@
       
       // STEP 1: Load dashboard preferences FIRST - this sets currentView and portfolioPanelActiveTab
       await loadDashboardPreferences();
-      console.log('Dashboard: Preferences loaded, currentView is:', currentView);
-      
-      // STEP 2: Load only the saved portfolio-panel tab's data so the balance display is correct from first paint
-      if (portfolioPanelActiveTab === 'bankroll') {
-        await loadBankrollData();
-        await loadBankrollHistory();
-      } else if (portfolioPanelActiveTab === 'portfolio') {
-        await loadPortfolioData();
-        await loadPortfolioHistory();
-      } else {
-        await loadPnlData();
-        await loadPnlHistory();
-      }
-      
+
+      // STEP 2: One path to refresh portfolio panel (top line + chart + delta for active tab)
+      await refreshPortfolioPanel();
+
       // STEP 3: Load monitors data
       await loadMonitors();
       
@@ -1570,19 +1560,8 @@
 
         saveDashboardPreferences();
 
-        // Defer chart load/render so the visible tab has layout and canvas has correct dimensions
-        setTimeout(() => {
-          if (tabId === 'bankroll') {
-            loadBankrollData();
-            loadBankrollHistory();
-          } else if (tabId === 'portfolio') {
-            loadPortfolioData();
-            renderPortfolioChart(allHistoryData);
-            updatePortfolioChange();
-          } else if (tabId === 'pnl') {
-            loadPnlData();
-            loadPnlHistory();
-          }
+        setTimeout(async () => {
+          await refreshPortfolioPanel();
         }, 50);
       }
 
@@ -2945,40 +2924,31 @@
       changeElement.className = `change-element ${isPositive ? 'positive' : 'negative'}`;
     }
 
-    function setChartView(view) {
-      console.log('setChartView called with view:', view);
-      console.log('Current allHistoryData length:', allHistoryData.length);
-      
+    async function setChartView(view) {
       currentView = view;
-      
-      // Update button styles
-      document.querySelectorAll('.view-btn').forEach(btn => {
-        btn.classList.remove('active');
-      });
-      
-      // Find and activate the correct button
+
+      document.querySelectorAll('.view-btn').forEach(btn => btn.classList.remove('active'));
       const targetButton = document.querySelector(`button[data-view="${view}"]`);
-      if (targetButton) {
-        targetButton.classList.add('active');
-      }
-      
-      // Save preferences to database
+      if (targetButton) targetButton.classList.add('active');
+
       saveDashboardPreferences();
 
-      // Re-render the active tab's chart
-      if (portfolioPanelActiveTab === 'bankroll') {
-        loadBankrollHistory();
-      } else if (portfolioPanelActiveTab === 'pnl') {
-        loadPnlHistory();
-      } else {
-        renderPortfolioChart(allHistoryData);
-        updatePortfolioChange();
-      }
-      
-      // Refresh monitor statistics with new time filter
+      await refreshPortfolioPanel();
+
       if (window.monitorHistoryDisplay) {
-        console.log(`Dashboard: Refreshing monitor statistics for time view: ${view}`);
         window.monitorHistoryDisplay.refresh(view);
+      }
+    }
+
+    /** Refresh panel for current (view type + time window). Top line, delta, and chart all come from that combination. */
+    async function refreshPortfolioPanel() {
+      if (portfolioPanelActiveTab === 'bankroll') {
+        await loadBankrollHistory();
+      } else if (portfolioPanelActiveTab === 'portfolio') {
+        if (allHistoryData.length === 0) await loadPortfolioHistory();
+        else applyPortfolioView();
+      } else if (portfolioPanelActiveTab === 'pnl') {
+        await loadPnlHistory();
       }
     }
 
@@ -3006,6 +2976,7 @@
         const portfolioElement = document.getElementById('portfolio-value');
         if (portfolioElement) {
           portfolioElement.textContent = formattedValue;
+          portfolioElement.style.color = '';
         }
         
       } catch (error) {
@@ -3018,34 +2989,29 @@
       }
     }
 
+    /** Set top line, chart, and delta from allHistoryData + currentView (no fetch). */
+    function applyPortfolioView() {
+      const filteredData = filterDataByView(allHistoryData, currentView);
+      const lastVal = filteredData.length > 0 ? (filteredData[filteredData.length - 1].portfolio || 0) : 0;
+      const formatted = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(lastVal);
+      const el = document.getElementById('portfolio-value');
+      if (el) { el.textContent = formatted; el.style.color = ''; }
+      renderPortfolioChart(allHistoryData);
+      updatePortfolioChange();
+    }
+
     async function loadPortfolioHistory() {
       try {
         const response = await fetch(`${window.location.origin}/api/portfolio/history?period=1y`);
-        
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
-        const history = data.data || []; // The portfolio/history endpoint returns data in 'data' field
-        
-        console.log('Portfolio history loaded:', history.length, 'data points');
-        if (history.length > 0) {
-          console.log('First data point:', history[0]);
-          console.log('Last data point:', history[history.length - 1]);
-          console.log('Date range:', new Date(history[0].timestamp), 'to', new Date(history[history.length - 1].timestamp));
-        }
-        
-        if (history.length > 0) {
-          allHistoryData = history; // Store all history data
-          renderPortfolioChart(history);
-          updatePortfolioChange(); // Update the change indicator
-        } else {
-          console.log('No historical data available');
-        }
-        
+        const history = data.data || [];
+        allHistoryData = history;
+        applyPortfolioView();
       } catch (error) {
         console.error('Error loading portfolio history:', error);
+        allHistoryData = [];
+        applyPortfolioView();
       }
     }
 
@@ -3063,7 +3029,7 @@
           maximumFractionDigits: 2
         }).format(bankrollInDollars);
         const portfolioElement = document.getElementById('portfolio-value');
-        if (portfolioElement) portfolioElement.textContent = formattedValue;
+        if (portfolioElement) { portfolioElement.textContent = formattedValue; portfolioElement.style.color = ''; }
       } catch (error) {
         console.error('Error loading bankroll data:', error);
         const portfolioElement = document.getElementById('portfolio-value');
@@ -3080,13 +3046,20 @@
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
         const history = data.data || [];
-        if (history.length > 0) {
-          allBankrollHistoryData = history;
-          renderBankrollChart(history);
-          updateBankrollChange();
-        }
+        allBankrollHistoryData = history;
+        const lastVal = history.length > 0 ? (history[history.length - 1].bankroll || 0) : 0;
+        const formatted = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(lastVal);
+        const el = document.getElementById('portfolio-value');
+        if (el) { el.textContent = formatted; el.style.color = ''; }
+        renderBankrollChart(history);
+        updateBankrollChange();
       } catch (error) {
         console.error('Error loading bankroll history:', error);
+        allBankrollHistoryData = [];
+        const el = document.getElementById('portfolio-value');
+        if (el) el.textContent = '—';
+        renderBankrollChart([]);
+        updateBankrollChange();
       }
     }
 
@@ -3403,17 +3376,24 @@
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
         const history = data.data || [];
-        if (history.length > 0) {
-          allPnlHistoryData = history;
-          renderPnlChart(history);
-          updatePnlChange();
-        } else {
-          allPnlHistoryData = [{ timestamp: new Date().toISOString(), pnl: 0 }];
-          renderPnlChart(allPnlHistoryData);
-          updatePnlChange();
-        }
+        const totalPnl = data.total_pnl != null ? data.total_pnl : 0;
+        const formattedValue = new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: 'USD',
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+          signDisplay: 'auto'
+        }).format(totalPnl);
+        const portfolioElement = document.getElementById('portfolio-value');
+        if (portfolioElement) { portfolioElement.textContent = formattedValue; portfolioElement.style.color = ''; }
+        allPnlHistoryData = history.length > 0 ? history : [{ timestamp: new Date().toISOString(), pnl: 0 }];
+        renderPnlChart(allPnlHistoryData);
+        updatePnlChange();
       } catch (error) {
         console.error('Error loading PnL history:', error);
+        allPnlHistoryData = [];
+        renderPnlChart([{ timestamp: new Date().toISOString(), pnl: 0 }]);
+        updatePnlChange();
       }
     }
 
@@ -3647,20 +3627,17 @@
     }
 
     function renderPortfolioChart(history) {
-      console.log('renderPortfolioChart called with history length:', history.length, 'currentView:', currentView);
-      
       const ctx = document.getElementById('portfolio-chart');
-      
-      // Destroy existing chart if it exists
+      if (!ctx) return;
+
       if (portfolioChart) {
         portfolioChart.destroy();
         portfolioChart = null;
       }
-      
-      // Filter data based on current view
+
       const filteredData = filterDataByView(history, currentView);
-      console.log('After filtering, filteredData length:', filteredData.length);
-      
+      if (filteredData.length === 0) return;
+
       // Prepare data for chart with appropriate labels
       const labels = filteredData.map(item => {
         const date = new Date(item.timestamp);
@@ -4804,16 +4781,7 @@
       return 1871.27; // Default value from your dummy data
     }
 
-    // Refresh the active portfolio-panel tab's data every 30 seconds (keep tab consistent)
-    setInterval(() => {
-      if (portfolioPanelActiveTab === 'bankroll') {
-        loadBankrollData();
-      } else if (portfolioPanelActiveTab === 'portfolio') {
-        loadPortfolioData();
-      } else if (portfolioPanelActiveTab === 'pnl') {
-        loadPnlData();
-      }
-    }, 30000);
+    setInterval(() => { refreshPortfolioPanel(); }, 30000);
 
     // Refresh Performance panel (realized PnL + cash balance) at same rate as Portfolio panel
     setInterval(() => {
@@ -4821,16 +4789,7 @@
       loadPerformancePanelCashBalance();
     }, 30000);
 
-    // Refresh the active portfolio-panel tab's history every 5 minutes
-    setInterval(() => {
-      if (portfolioPanelActiveTab === 'bankroll') {
-        loadBankrollHistory();
-      } else if (portfolioPanelActiveTab === 'portfolio') {
-        loadPortfolioHistory();
-      } else if (portfolioPanelActiveTab === 'pnl') {
-        loadPnlHistory();
-      }
-    }, 300000);
+    setInterval(() => { refreshPortfolioPanel(); }, 300000);
     
     // TODO: Re-enable allocation data refresh when ready
     // setInterval(loadAllocationData, 30000);
