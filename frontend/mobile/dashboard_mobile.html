@@ -1343,17 +1343,8 @@
       await loadDashboardPreferences();
       console.log('Dashboard: Preferences loaded, currentView is:', currentView);
       
-      // STEP 2: Load only the saved portfolio-panel tab's data
-      if (portfolioPanelActiveTab === 'bankroll') {
-        await loadBankrollData();
-        await loadBankrollHistory();
-      } else if (portfolioPanelActiveTab === 'portfolio') {
-        await loadPortfolioData();
-        await loadPortfolioHistory();
-      } else {
-        await loadPnlData();
-        await loadPnlHistory();
-      }
+      // STEP 2: Load portfolio panel (top line + delta + chart from view type + time window)
+      await refreshPortfolioPanel();
       
       loadPerformanceData();
       loadPerformancePanelCashBalance();
@@ -2849,19 +2840,7 @@
         tabEl.style.opacity = '1';
         contentEl.classList.add('active');
         saveDashboardPreferences();
-        setTimeout(() => {
-          if (tabId === 'bankroll') {
-            loadBankrollData();
-            loadBankrollHistory();
-          } else if (tabId === 'portfolio') {
-            loadPortfolioData();
-            renderPortfolioChart(allHistoryData);
-            updatePortfolioChange();
-          } else {
-            loadPnlData();
-            loadPnlHistory();
-          }
-        }, 50);
+        setTimeout(() => { refreshPortfolioPanel(); }, 50);
       }
 
       if (bankrollTab) bankrollTab.addEventListener('click', () => switchTo(bankrollTab, bankrollContent, 'bankroll'));
@@ -2906,6 +2885,29 @@
       changeElement.className = `change-element ${isPositive ? 'positive' : 'negative'}`;
     }
 
+    /** Set top line, chart, and delta from allHistoryData + currentView (no fetch). */
+    function applyPortfolioView() {
+      const filteredData = filterDataByView(allHistoryData, currentView);
+      const lastVal = filteredData.length > 0 ? (filteredData[filteredData.length - 1].portfolio || 0) : 0;
+      const formatted = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(lastVal);
+      const el = document.getElementById('portfolio-value');
+      if (el) { el.textContent = formatted; el.style.color = ''; }
+      renderPortfolioChart(allHistoryData);
+      updatePortfolioChange();
+    }
+
+    /** Single refresh: top line + delta + chart for active tab. View type + time window drive all three. */
+    async function refreshPortfolioPanel() {
+      if (portfolioPanelActiveTab === 'bankroll') {
+        await loadBankrollHistory();
+      } else if (portfolioPanelActiveTab === 'portfolio') {
+        if (allHistoryData.length === 0) await loadPortfolioHistory();
+        else applyPortfolioView();
+      } else {
+        await loadPnlHistory();
+      }
+    }
+
     function setChartView(view) {
       currentView = view;
       
@@ -2922,15 +2924,8 @@
       
       saveDashboardPreferences();
 
-      // Re-fetch and re-render so time window actually changes (same as desktop)
-      if (portfolioPanelActiveTab === 'bankroll') {
-        loadBankrollHistory();
-      } else if (portfolioPanelActiveTab === 'pnl') {
-        loadPnlHistory();
-      } else {
-        renderPortfolioChart(allHistoryData);
-        updatePortfolioChange();
-      }
+      // Any change to view type or time window redraws top line, delta, and chart
+      refreshPortfolioPanel();
 
       // Refresh monitor statistics with new time filter
       if (window.monitorHistoryDisplay) {
@@ -2978,24 +2973,15 @@
     async function loadPortfolioHistory() {
       try {
         const response = await fetch(`${window.location.origin}/api/portfolio/history?period=1y`);
-        
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
-        const history = data.data || []; // The portfolio/history endpoint returns data in 'data' field
-        
-        if (history.length > 0) {
-          allHistoryData = history; // Store all history data
-          renderPortfolioChart(history);
-          updatePortfolioChange(); // Update the change indicator
-        } else {
-          console.log('No historical data available');
-        }
-        
+        const history = data.data || [];
+        allHistoryData = history;
+        applyPortfolioView();
       } catch (error) {
         console.error('Error loading portfolio history:', error);
+        allHistoryData = [];
+        applyPortfolioView();
       }
     }
 
@@ -3097,11 +3083,13 @@
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
         const history = data.data || [];
-        if (history.length > 0) {
-          allBankrollHistoryData = history;
-          renderBankrollChart(history);
-          updateBankrollChange();
-        }
+        allBankrollHistoryData = history;
+        const lastVal = history.length > 0 ? (history[history.length - 1].bankroll || 0) : 0;
+        const formatted = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(lastVal);
+        const el = document.getElementById('portfolio-value');
+        if (el) { el.textContent = formatted; el.style.color = ''; }
+        renderBankrollChart(history);
+        updateBankrollChange();
       } catch (error) {
         console.error('Error loading bankroll history:', error);
       }
@@ -3153,6 +3141,10 @@
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
         const history = data.data || [];
+        const totalPnl = data.total_pnl != null ? data.total_pnl : 0;
+        const formattedValue = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(totalPnl);
+        const portfolioElement = document.getElementById('portfolio-value');
+        if (portfolioElement) { portfolioElement.textContent = formattedValue; portfolioElement.style.color = ''; }
         if (history.length > 0) {
           allPnlHistoryData = history;
           renderPnlChart(history);
@@ -4500,16 +4492,7 @@
       if (window._dmPerformanceInterval) clearInterval(window._dmPerformanceInterval);
       if (window._dmMonitorRefreshInterval) clearInterval(window._dmMonitorRefreshInterval);
       if (window._dmAutoTradeInterval) clearInterval(window._dmAutoTradeInterval);
-      window._dmPortfolioInterval = setInterval(() => {
-        if (portfolioPanelActiveTab === 'bankroll') loadBankrollData();
-        else if (portfolioPanelActiveTab === 'portfolio') loadPortfolioData();
-        else if (portfolioPanelActiveTab === 'pnl') loadPnlData();
-      }, 30000);
-      window._dmHistoryInterval = setInterval(() => {
-        if (portfolioPanelActiveTab === 'bankroll') loadBankrollHistory();
-        else if (portfolioPanelActiveTab === 'portfolio') loadPortfolioHistory();
-        else if (portfolioPanelActiveTab === 'pnl') loadPnlHistory();
-      }, 300000);
+      window._dmPortfolioInterval = setInterval(() => { refreshPortfolioPanel(); }, 30000);
       window._dmPerformanceInterval = setInterval(() => {
         loadPerformanceData();
         loadPerformancePanelCashBalance();
