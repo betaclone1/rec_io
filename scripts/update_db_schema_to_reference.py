@@ -14,8 +14,11 @@ This utility script:
 Usage:
     # Preview changes
     python3 scripts/update_db_schema_to_reference.py --dry-run
-    
-    # Apply migrations
+
+    # Apply migrations (no prompt)
+    python3 scripts/update_db_schema_to_reference.py --yes
+
+    # Apply migrations (interactive)
     python3 scripts/update_db_schema_to_reference.py
 
 See docs/MASTER_DB_SCHEMA_REFERENCE.md for detailed instructions.
@@ -465,9 +468,9 @@ def main():
         print("🔍 Analyzing database schema...")
         statements = generate_alter_statements(conn, reference_schemas)
         
-        # Ask for confirmation (unless dry-run flag)
         dry_run = '--dry-run' in sys.argv
-        if not dry_run and statements:
+        auto_yes = '--yes' in sys.argv or '-y' in sys.argv
+        if not dry_run and statements and not auto_yes:
             print(f"\n⚠️  Ready to apply {len(statements)} migration(s)")
             response = input("Continue? (yes/no): ")
             if response.lower() != 'yes':

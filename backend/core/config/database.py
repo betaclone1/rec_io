@@ -412,6 +412,17 @@ def init_database():
                 END IF;
             END $$;
         """)
+        # Add kalshi_user_id to user_info_0001 if table exists (MASTER_DB_SCHEMA_REFERENCE)
+        cursor.execute("""
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'users' AND table_name = 'user_info_0001') THEN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'users' AND table_name = 'user_info_0001' AND column_name = 'kalshi_user_id') THEN
+                        ALTER TABLE users.user_info_0001 ADD COLUMN kalshi_user_id VARCHAR(50);
+                    END IF;
+                END IF;
+            END $$;
+        """)
         
         # Create sequence for 5-digit IDs starting with 10001
         cursor.execute("""

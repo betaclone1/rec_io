@@ -745,8 +745,12 @@ def sync_balance():
                         if new_deposit_amounts:
                             with pg_conn.cursor() as cur:
                                 for amount_net in new_deposit_amounts:
-                                    cur.execute("UPDATE users.subaccounts_0001 SET balance = balance + %s WHERE subaccount = 'PRIMARY'", (amount_net,))
                                     cur.execute("UPDATE users.subaccounts_0001 SET balance = balance + %s WHERE subaccount = 'Cash Transfer'", (amount_net,))
+                                # PRIMARY is always a direct copy of account_balance.portfolio; never derive from subaccount sums or increments
+                                cur.execute("SELECT portfolio FROM users.account_balance_0001 ORDER BY id DESC LIMIT 1")
+                                row = cur.fetchone()
+                                if row and row[0] is not None:
+                                    cur.execute("UPDATE users.subaccounts_0001 SET balance = %s WHERE subaccount = 'PRIMARY'", (int(row[0]),))
                             pg_conn.commit()
                             notify_frontend_db_change("subaccounts", {"source": "external_deposit"})
                             notify_frontend_db_change("transfers", {"source": "external_deposit"})
@@ -760,7 +764,11 @@ def sync_balance():
                                     amount_subtracted = min(amount_net, cash_balance)
                                     new_cash = cash_balance - amount_subtracted
                                     cur.execute("UPDATE users.subaccounts_0001 SET balance = %s WHERE subaccount = 'Cash Transfer'", (new_cash,))
-                                    cur.execute("UPDATE users.subaccounts_0001 SET balance = balance - %s WHERE subaccount = 'PRIMARY'", (amount_subtracted,))
+                                # PRIMARY is always a direct copy of account_balance.portfolio; never derive from subaccount sums or decrements
+                                cur.execute("SELECT portfolio FROM users.account_balance_0001 ORDER BY id DESC LIMIT 1")
+                                row = cur.fetchone()
+                                if row and row[0] is not None:
+                                    cur.execute("UPDATE users.subaccounts_0001 SET balance = %s WHERE subaccount = 'PRIMARY'", (int(row[0]),))
                             pg_conn.commit()
                             notify_frontend_db_change("subaccounts", {"source": "external_withdrawal"})
                             notify_frontend_db_change("transfers", {"source": "external_withdrawal"})
