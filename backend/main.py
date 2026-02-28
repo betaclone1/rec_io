@@ -1807,6 +1807,19 @@ async def get_kalshi_snapshot():
         return {"markets": []}
 
 # API endpoints for account data
+@app.post("/api/account/sync")
+async def trigger_account_sync():
+    """Trigger a full account retrieval cycle from kalshi_account_sync (balance, subaccounts, account history). Runs in background; returns immediately."""
+    import threading
+    def _run_sync():
+        try:
+            from backend.kalshi_account_sync_ws import sync_balance
+            sync_balance()
+        except Exception as e:
+            print(f"account/sync: sync_balance failed: {e}")
+    threading.Thread(target=_run_sync, daemon=True).start()
+    return {"ok": True}
+
 @app.get("/api/account/balance")
 async def get_account_balance(mode: str = "prod"):
     """Get account balance from PostgreSQL database."""
