@@ -471,7 +471,7 @@ def get_current_momentum(symbol="BTC"):
         
         # Get momentum percentile from strike table (same value across all rows)
         cursor.execute(f"""
-            SELECT momentum_percentile FROM live_data.strike_table_{symbol.lower()} 
+            SELECT momentum_percentile FROM live_data.strike_table_hourly_{symbol.lower()} 
             LIMIT 1
         """)
         
@@ -1052,7 +1052,7 @@ def get_master_strike_table_data():
                     market_title,
                     strike_tier,
                     market_status
-                FROM live_data.strike_table_{current_symbol.lower()}
+                FROM live_data.strike_table_hourly_{current_symbol.lower()}
                 LIMIT 1
             """)
             header_data = cursor.fetchone()
@@ -1072,7 +1072,7 @@ def get_master_strike_table_data():
                     yes_diff,
                     no_diff,
                     active_side
-                FROM live_data.strike_table_{current_symbol.lower()}
+                FROM live_data.strike_table_hourly_{current_symbol.lower()}
                 ORDER BY strike
             """)
             strikes_data = cursor.fetchall()

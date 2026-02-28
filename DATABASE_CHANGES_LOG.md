@@ -14,6 +14,20 @@ This document tracks all PostgreSQL database modifications made to the trading s
 
 ## Change History
 
+### 2026-02-27 - Rename strike tables to strike_table_hourly_{symbol}
+- **Change Type**: SCHEMA_MODIFICATION (table rename)
+- **Description**: Renamed hourly strike tables for 15m naming clarity: `live_data.strike_table_btc` → `live_data.strike_table_hourly_btc`, and same for eth, ndx, spx. All backend references and MASTER_DB_SCHEMA_REFERENCE.md updated. Future 15m markets can use e.g. `strike_table_15m_{symbol}`.
+- **SQL Commands**:
+```sql
+ALTER TABLE live_data.strike_table_btc RENAME TO strike_table_hourly_btc;
+ALTER TABLE live_data.strike_table_eth RENAME TO strike_table_hourly_eth;
+ALTER TABLE live_data.strike_table_ndx RENAME TO strike_table_hourly_ndx;
+ALTER TABLE live_data.strike_table_spx RENAME TO strike_table_hourly_spx;
+```
+- **Files Modified**: `backend/strike_table_generator.py`, `backend/active_trade_supervisor.py`, `backend/auto_entry_supervisor.py`, `backend/auto_entry_supervisor_test.py`, `backend/trade_manager.py`, `backend/main.py`, `backend/core/config/database.py`, `docs/MASTER_DB_SCHEMA_REFERENCE.md`, `docs/PRODUCTION_DB_SCHEMA_AND_BACKFILL_MASTER.md`, `DATABASE_CHANGES_LOG.md`
+- **Files Added**: `scripts/rename_strike_tables_to_hourly.py`
+- **Status**: APPLIED
+
 ### 2026-02-14 - Add movement columns to live price log tables (1s) and watchdog write
 - **Change Type**: SCHEMA_ADDITION
 - **Description**: Added eight movement-related columns to all four live 1s price log tables (btc, eth, spx, ndx): `move_1m`, `move_2m`, `move_3m`, `move_4m`, `move_15m`, `move_30m`, `movement`, `movement_percentile`. The symbol price watchdog now computes and writes these on each tick (tick-derived high/low/open per window, weighted composite, percentile from analytics movement profile).
@@ -61,19 +75,19 @@ ALTER TABLE analytics.<table_name> RENAME COLUMN momentum_value TO movement_valu
 
 ### 2026-02-14 - Add volatility and movement to strike tables (btc, eth, spx, ndx)
 - **Change Type**: SCHEMA_ADDITION
-- **Description**: Added four columns to all strike tables (`live_data.strike_table_btc`, `strike_table_eth`, `strike_table_spx`, `strike_table_ndx`): `volatility`, `volatility_percentile`, `movement`, `movement_percentile`. Populated by `strike_table_generator` from the same live 1s price log row used for price and momentum.
+- **Description**: Added four columns to all strike tables (`live_data.strike_table_hourly_btc`, `strike_table_hourly_eth`, `strike_table_hourly_spx`, `strike_table_hourly_ndx`): `volatility`, `volatility_percentile`, `movement`, `movement_percentile`. Populated by `strike_table_generator` from the same live 1s price log row used for price and momentum.
 - **SQL Commands**:
 ```sql
-ALTER TABLE live_data.strike_table_btc ADD COLUMN IF NOT EXISTS volatility NUMERIC(10,6);
-ALTER TABLE live_data.strike_table_btc ADD COLUMN IF NOT EXISTS volatility_percentile NUMERIC(5,1);
-ALTER TABLE live_data.strike_table_btc ADD COLUMN IF NOT EXISTS movement NUMERIC(10,4);
-ALTER TABLE live_data.strike_table_btc ADD COLUMN IF NOT EXISTS movement_percentile NUMERIC(5,1);
--- Repeat for strike_table_eth, strike_table_spx, strike_table_ndx.
+ALTER TABLE live_data.strike_table_hourly_btc ADD COLUMN IF NOT EXISTS volatility NUMERIC(10,6);
+ALTER TABLE live_data.strike_table_hourly_btc ADD COLUMN IF NOT EXISTS volatility_percentile NUMERIC(5,1);
+ALTER TABLE live_data.strike_table_hourly_btc ADD COLUMN IF NOT EXISTS movement NUMERIC(10,4);
+ALTER TABLE live_data.strike_table_hourly_btc ADD COLUMN IF NOT EXISTS movement_percentile NUMERIC(5,1);
+-- Repeat for strike_table_hourly_eth, strike_table_hourly_spx, strike_table_hourly_ndx.
 ```
 - **Files Modified**:
   - `backend/strike_table_generator.py` (get_current_market_data SELECT and return dict; CREATE TABLE and missing_columns; INSERT; get_latest_strike_table_json SELECT and result keys)
-  - `backend/core/config/database.py` (migration block in init_database for all four strike tables)
-  - `docs/MASTER_DB_SCHEMA_REFERENCE.md` (four new columns documented for strike_table_btc, eth, ndx, spx)
+  - `backend/core/config/database.py` (migration block in init_database for all four strike_table_hourly_* tables)
+  - `docs/MASTER_DB_SCHEMA_REFERENCE.md` (four new columns documented for strike_table_hourly_btc, eth, ndx, spx)
 - **Status**: PENDING
 - **Notes**: Generator adds columns via setup_live_data_schema() when it runs; init_database() migration adds them for existing DBs without running the generator.
 

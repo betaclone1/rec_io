@@ -420,7 +420,7 @@ def get_monitor_symbol():
         cursor = conn.cursor()
         
         cursor.execute(f"""
-            SELECT symbol FROM users.monitor_list_{USER_NUMBER} 
+            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{USER_NUMBER} 
             WHERE id = %s
         """, (MONITOR_ID,))
         
@@ -428,26 +428,32 @@ def get_monitor_symbol():
         conn.close()
         
         if result and result[0]:
-            return result[0].upper()  # Return uppercase (BTC, ETH, etc.)
+            return result[0].upper(), (result[1] or 'hourly').strip().lower()  # (symbol, market)
         else:
             log(f"[AUTO_ENTRY_SUPERVISOR] ⚠️ No symbol found for monitor {MONITOR_IDENTIFIER}, defaulting to BTC")
-            return "BTC"  # Default fallback
+            return "BTC", "hourly"
     except Exception as e:
         log(f"[AUTO_ENTRY_SUPERVISOR] ❌ Error getting monitor symbol: {e}, defaulting to BTC")
-        return "BTC"  # Default fallback
+        return "BTC", "hourly"
 
-# Get the symbol for this monitor (will be updated dynamically)
-MONITOR_SYMBOL = get_monitor_symbol()
-print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] 📊 Initial symbol: {MONITOR_SYMBOL}")
+def get_strike_table_name(symbol: str, market: str) -> str:
+    """Strike table name from symbol and market (hourly or 15m)."""
+    m = (market or 'hourly').strip().lower()
+    if m not in ('hourly', '15m'):
+        m = 'hourly'
+    return f"strike_table_{m}_{symbol.lower()}"
 
-def get_current_monitor_symbol():
-    """Get the current symbol for this monitor (dynamic lookup)"""
-    global MONITOR_SYMBOL
-    
+# Get the symbol and market for this monitor (will be updated dynamically)
+_monitor_symbol_market = get_monitor_symbol()
+MONITOR_SYMBOL = _monitor_symbol_market[0] if isinstance(_monitor_symbol_market, tuple) else _monitor_symbol_market
+MONITOR_MARKET = _monitor_symbol_market[1] if isinstance(_monitor_symbol_market, tuple) else 'hourly'
+print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] 📊 Initial symbol: {MONITOR_SYMBOL}, market: {MONITOR_MARKET}")
+
+def get_current_monitor_symbol_and_market():
+    """Get (symbol, market) for this monitor from database. market is 'hourly' or '15m'."""
+    global MONITOR_SYMBOL, MONITOR_MARKET
     try:
         import psycopg2
-        
-        # PostgreSQL connection parameters
         postgres_config = {
             'host': os.getenv('POSTGRES_HOST', 'localhost'),
             'port': int(os.getenv('POSTGRES_PORT', '5432')),
@@ -455,31 +461,31 @@ def get_current_monitor_symbol():
             'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
             'password': os.getenv('POSTGRES_PASSWORD', '')
         }
-        
         conn = psycopg2.connect(**postgres_config)
         cursor = conn.cursor()
-        
         cursor.execute(f"""
-            SELECT symbol FROM users.monitor_list_{USER_NUMBER} 
+            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{USER_NUMBER}
             WHERE id = %s
         """, (MONITOR_ID,))
-        
         result = cursor.fetchone()
         conn.close()
-        
         if result and result[0]:
-            new_symbol = result[0].upper()  # Return uppercase (BTC, ETH, etc.)
-            
-            # Check if symbol has changed
-            if new_symbol != MONITOR_SYMBOL:
-                log(f"[AUTO_ENTRY_SUPERVISOR] 🔄 Symbol changed from {MONITOR_SYMBOL} to {new_symbol}")
-                MONITOR_SYMBOL = new_symbol
-            
-            return new_symbol
-        else:
-            return "BTC"  # Default fallback
+            sym = result[0].upper()
+            mkt = (result[1] or 'hourly').strip().lower()
+            if mkt not in ('hourly', '15m'):
+                mkt = 'hourly'
+            if sym != MONITOR_SYMBOL or mkt != MONITOR_MARKET:
+                log(f"[AUTO_ENTRY_SUPERVISOR] 🔄 Monitor symbol/market: {MONITOR_SYMBOL}/{MONITOR_MARKET} -> {sym}/{mkt}")
+                MONITOR_SYMBOL, MONITOR_MARKET = sym, mkt
+            return sym, mkt
+        return "BTC", "hourly"
     except Exception as e:
-        return "BTC"  # Default fallback
+        return "BTC", "hourly"
+
+def get_current_monitor_symbol():
+    """Get the current symbol for this monitor (dynamic lookup)"""
+    sym, _ = get_current_monitor_symbol_and_market()
+    return sym
 
 # Get port from monitor-specific system
 # Register this monitor's ports to ensure consistency
@@ -1687,7 +1693,7 @@ def get_watchlist_path_DELETED():
     return os.path.join(get_data_dir(), "live_data", "markets", "kalshi", "strike_tables", f"{current_symbol.lower()}_watchlist.json")
 
 def get_master_strike_table_data():
-    """Get current master strike table data from PostgreSQL"""
+    """Get current master strike table data from PostgreSQL (uses monitor symbol + market)."""
     try:
         import psycopg2
         conn = psycopg2.connect(
@@ -1697,7 +1703,8 @@ def get_master_strike_table_data():
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
         )
         with conn.cursor() as cursor:
-            current_symbol = get_current_monitor_symbol()
+            current_symbol, current_market = get_current_monitor_symbol_and_market()
+            table_name = get_strike_table_name(current_symbol, current_market)
             cursor.execute(f"""
                 SELECT
                     symbol,
@@ -1707,7 +1714,7 @@ def get_master_strike_table_data():
                     market_title,
                     strike_tier,
                     market_status
-                FROM live_data.strike_table_{current_symbol.lower()}
+                FROM live_data.{table_name}
                 LIMIT 1
             """)
             header_data = cursor.fetchone()
@@ -1731,7 +1738,7 @@ def get_master_strike_table_data():
                     active_side,
                     yes_price_spread,
                     no_price_spread
-                FROM live_data.strike_table_{current_symbol.lower()}
+                FROM live_data.{table_name}
                 ORDER BY strike
             """)
             strikes_data = cursor.fetchall()

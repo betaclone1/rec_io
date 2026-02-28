@@ -154,7 +154,7 @@ def get_monitor_symbol():
         cursor = conn.cursor()
         
         cursor.execute(f"""
-            SELECT symbol FROM users.monitor_list_{USER_NUMBER} 
+            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{USER_NUMBER}
             WHERE id = %s
         """, (MONITOR_ID,))
         
@@ -162,25 +162,31 @@ def get_monitor_symbol():
         conn.close()
         
         if result and result[0]:
-            return result[0].upper()  # Return uppercase (BTC, ETH, etc.)
+            return result[0].upper(), (result[1] or 'hourly').strip().lower()
         else:
             log(f"[ACTIVE_TRADE_SUPERVISOR] ⚠️ No symbol found for monitor {MONITOR_IDENTIFIER}, defaulting to BTC")
-            return "BTC"  # Default fallback
+            return "BTC", "hourly"
     except Exception as e:
         log(f"[ACTIVE_TRADE_SUPERVISOR] ❌ Error getting monitor symbol: {e}, defaulting to BTC")
-        return "BTC"  # Default fallback
+        return "BTC", "hourly"
 
-MONITOR_SYMBOL = get_monitor_symbol()
-print(f"[ACTIVE_TRADE_SUPERVISOR_{MONITOR_IDENTIFIER}] 📊 Initial symbol: {MONITOR_SYMBOL}")
+def get_strike_table_name(symbol: str, market: str) -> str:
+    """Strike table name from symbol and market (hourly or 15m)."""
+    m = (market or 'hourly').strip().lower()
+    if m not in ('hourly', '15m'):
+        m = 'hourly'
+    return f"strike_table_{m}_{symbol.lower()}"
 
-def get_current_monitor_symbol():
-    """Get the current symbol for this monitor (dynamic lookup)"""
-    global MONITOR_SYMBOL
-    
+_sym_mkt = get_monitor_symbol()
+MONITOR_SYMBOL = _sym_mkt[0] if isinstance(_sym_mkt, tuple) else _sym_mkt
+MONITOR_MARKET = _sym_mkt[1] if isinstance(_sym_mkt, tuple) else 'hourly'
+print(f"[ACTIVE_TRADE_SUPERVISOR_{MONITOR_IDENTIFIER}] 📊 Initial symbol: {MONITOR_SYMBOL}, market: {MONITOR_MARKET}")
+
+def get_current_monitor_symbol_and_market():
+    """Get (symbol, market) for this monitor from database. market is 'hourly' or '15m'."""
+    global MONITOR_SYMBOL, MONITOR_MARKET
     try:
         import psycopg2
-        
-        # PostgreSQL connection parameters
         postgres_config = {
             'host': os.getenv('POSTGRES_HOST', 'localhost'),
             'port': int(os.getenv('POSTGRES_PORT', '5432')),
@@ -188,31 +194,37 @@ def get_current_monitor_symbol():
             'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
             'password': os.getenv('POSTGRES_PASSWORD', '')
         }
-        
         conn = psycopg2.connect(**postgres_config)
         cursor = conn.cursor()
-        
         cursor.execute(f"""
-            SELECT symbol FROM users.monitor_list_{USER_NUMBER} 
+            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{USER_NUMBER}
             WHERE id = %s
         """, (MONITOR_ID,))
-        
         result = cursor.fetchone()
         conn.close()
-        
         if result and result[0]:
-            new_symbol = result[0].upper()  # Return uppercase (BTC, ETH, etc.)
-            
-            # Check if symbol has changed
-            if new_symbol != MONITOR_SYMBOL:
-                log(f"[ACTIVE_TRADE_SUPERVISOR] 🔄 Symbol changed from {MONITOR_SYMBOL} to {new_symbol}")
-                MONITOR_SYMBOL = new_symbol
-            
-            return new_symbol
-        else:
-            return "BTC"  # Default fallback
+            sym = result[0].upper()
+            mkt = (result[1] or 'hourly').strip().lower()
+            if mkt not in ('hourly', '15m'):
+                mkt = 'hourly'
+            if sym != MONITOR_SYMBOL or mkt != MONITOR_MARKET:
+                log(f"[ACTIVE_TRADE_SUPERVISOR] 🔄 Monitor symbol/market: {MONITOR_SYMBOL}/{MONITOR_MARKET} -> {sym}/{mkt}")
+                MONITOR_SYMBOL, MONITOR_MARKET = sym, mkt
+            return sym, mkt
+        return "BTC", "hourly"
     except Exception as e:
-        return "BTC"  # Default fallback
+        return "BTC", "hourly"
+
+def get_current_monitor_symbol():
+    """Get the current symbol for this monitor (dynamic lookup)"""
+    sym, _ = get_current_monitor_symbol_and_market()
+    return sym
+
+def _get_symbol_and_market_for_strike(symbol: str = None):
+    """Resolve (symbol, market) for strike table: from monitor if symbol is None, else symbol + hourly."""
+    if symbol is None:
+        return get_current_monitor_symbol_and_market()
+    return symbol.upper(), 'hourly'
 
 # Get port from monitor-specific system
 from backend.core.port_config import get_monitor_port, register_monitor_ports
@@ -1182,7 +1194,7 @@ def get_kalshi_market_snapshot(symbol: str = None) -> Optional[Dict[str, Any]]:
                 volume,
                 event_ticker,
                 strike
-            FROM live_data.market_kalshi_{symbol.lower()}
+            FROM live_data.market_kalshi_hourly_{symbol.lower()}
             ORDER BY updated_at DESC
         """)
         
@@ -1274,10 +1286,8 @@ def get_current_probability(strike: float, current_price: float, ttc_seconds: fl
     Fallback to the old API if PostgreSQL data is not available.
     """
     try:
-        # Use current monitor symbol if no symbol specified
-        if symbol is None:
-            symbol = get_current_monitor_symbol()
-            
+        sym, mkt = _get_symbol_and_market_for_strike(symbol)
+        table_name = get_strike_table_name(sym, mkt)
         conn = get_postgresql_connection()
         if not conn:
             log("⚠️ Failed to connect to PostgreSQL for probability lookup")
@@ -1285,10 +1295,10 @@ def get_current_probability(strike: float, current_price: float, ttc_seconds: fl
             
         cursor = conn.cursor()
         
-        # Get probability from PostgreSQL strike table
+        # Get probability from PostgreSQL strike table (hourly or 15m per monitor)
         cursor.execute(f"""
             SELECT probability 
-            FROM live_data.strike_table_{symbol.lower()} 
+            FROM live_data.{table_name} 
             WHERE strike = %s
             ORDER BY timestamp DESC 
             LIMIT 1
@@ -2560,15 +2570,13 @@ def get_auto_stop_threshold():
         return 40
 
 def get_unified_ttc_seconds(symbol: str = None):
-    """Get unified TTC from master strike table"""
+    """Get unified TTC from master strike table (uses monitor symbol+market when symbol is None)."""
     try:
-        # Use current monitor symbol if no symbol specified
-        if symbol is None:
-            symbol = get_current_monitor_symbol()
-            
+        sym, mkt = _get_symbol_and_market_for_strike(symbol)
+        table_name = get_strike_table_name(sym, mkt)
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute(f"SELECT ttc_seconds FROM live_data.strike_table_{symbol.lower()} LIMIT 1")
+        cursor.execute(f"SELECT ttc_seconds FROM live_data.{table_name} LIMIT 1")
         result = cursor.fetchone()
         conn.close()
         

@@ -371,6 +371,7 @@ def init_database():
                 id INTEGER PRIMARY KEY DEFAULT nextval('users.monitor_list_0001_id_seq'),
                 name VARCHAR(255) NOT NULL,
                 symbol VARCHAR(20) NOT NULL,
+                market TEXT DEFAULT 'hourly',
                 strategy VARCHAR(100),
                 auto_trade BOOLEAN DEFAULT FALSE,
                 auto_trade_status VARCHAR(20) DEFAULT 'inactive',
@@ -483,7 +484,7 @@ def init_database():
                 t text;
                 r record;
             BEGIN
-                FOREACH t IN ARRAY ARRAY['strike_table_btc','strike_table_eth','strike_table_spx','strike_table_ndx'] LOOP
+                FOREACH t IN ARRAY ARRAY['strike_table_hourly_btc','strike_table_hourly_eth','strike_table_hourly_spx','strike_table_hourly_ndx'] LOOP
                     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'live_data' AND table_name = t) THEN
                         FOR r IN (SELECT unnest(ARRAY['volatility','volatility_percentile','movement','movement_percentile']) AS col,
                                          unnest(ARRAY['NUMERIC(10,6)','NUMERIC(5,1)','NUMERIC(10,4)','NUMERIC(5,1)']) AS typ) LOOP
@@ -491,6 +492,35 @@ def init_database():
                                 EXECUTE format('ALTER TABLE live_data.%I ADD COLUMN %I ' || r.typ, t, r.col);
                             END IF;
                         END LOOP;
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+        
+        # Add market column (TEXT: 'hourly' or '15m') to all market_kalshi_* and strike_table_* tables
+        cursor.execute("""
+            DO $$
+            DECLARE
+                r record;
+                tbl text;
+                def text;
+            BEGIN
+                FOR r IN (
+                    SELECT unnest(ARRAY['market_kalshi_hourly_btc','market_kalshi_hourly_eth','market_kalshi_hourly_ndx','market_kalshi_hourly_spx']) AS t, 'hourly' AS d
+                    UNION ALL SELECT 'market_kalshi_15m_btc', '15m'
+                    UNION ALL SELECT 'market_kalshi_15m_eth', '15m'
+                    UNION ALL SELECT 'strike_table_hourly_btc', 'hourly'
+                    UNION ALL SELECT 'strike_table_hourly_eth', 'hourly'
+                    UNION ALL SELECT 'strike_table_hourly_ndx', 'hourly'
+                    UNION ALL SELECT 'strike_table_hourly_spx', 'hourly'
+                    UNION ALL SELECT 'strike_table_15m_btc', '15m'
+                    UNION ALL SELECT 'strike_table_15m_eth', '15m'
+                ) LOOP
+                    tbl := r.t;
+                    def := r.d;
+                    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'live_data' AND table_name = tbl)
+                       AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'live_data' AND table_name = tbl AND column_name = 'market') THEN
+                        EXECUTE format('ALTER TABLE live_data.%I ADD COLUMN market TEXT DEFAULT %L', tbl, def);
                     END IF;
                 END LOOP;
             END $$;
@@ -621,10 +651,11 @@ def init_database():
         
         # New naming convention for strike table
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS live_data.strike_table_btc (
+            CREATE TABLE IF NOT EXISTS live_data.strike_table_hourly_btc (
                 id SERIAL PRIMARY KEY,
                 timestamp TIMESTAMP WITH TIME ZONE DEFAULT now(),
                 symbol VARCHAR(10),
+                market TEXT DEFAULT 'hourly',
                 current_price DECIMAL(10,2),
                 ttc_seconds INTEGER,
                 broker VARCHAR(20),
@@ -647,6 +678,48 @@ def init_database():
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
             );
         """)
+        
+        # 15m strike tables (single strike per table; strike_tier 0)
+        for sym in ('btc', 'eth'):
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS live_data.strike_table_15m_{sym} (
+                    id SERIAL PRIMARY KEY,
+                    timestamp TIMESTAMP WITH TIME ZONE DEFAULT now(),
+                    symbol VARCHAR(10),
+                    market TEXT DEFAULT '15m',
+                    current_price DECIMAL(10,2),
+                    ttc_seconds INTEGER,
+                    broker VARCHAR(20),
+                    event_ticker VARCHAR(50),
+                    market_title TEXT,
+                    strike_tier INTEGER,
+                    market_status VARCHAR(20),
+                    strike INTEGER,
+                    buffer DECIMAL(10,2),
+                    buffer_pct DECIMAL(5,2),
+                    probability DECIMAL(5,2),
+                    yes_ask DECIMAL(5,2),
+                    no_ask DECIMAL(5,2),
+                    yes_ask_dollars TEXT,
+                    no_ask_dollars TEXT,
+                    yes_bid_dollars TEXT,
+                    no_bid_dollars TEXT,
+                    yes_price_spread NUMERIC(6,4),
+                    no_price_spread NUMERIC(6,4),
+                    yes_diff DECIMAL(5,2),
+                    no_diff DECIMAL(5,2),
+                    volume INTEGER,
+                    ticker VARCHAR(50),
+                    active_side VARCHAR(10),
+                    momentum_weighted_score DECIMAL(5,3),
+                    momentum_percentile DECIMAL(5,1),
+                    volatility NUMERIC(10,6),
+                    volatility_percentile NUMERIC(5,1),
+                    movement NUMERIC(10,4),
+                    movement_percentile NUMERIC(5,1),
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+                );
+            """)
         
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS system.health_status (
@@ -774,6 +847,32 @@ def init_database():
             END
             $$;
         """)
+        
+        # Add market column to all monitor_list tables (hourly vs 15m); backfill existing rows to 'hourly'
+        cursor.execute("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'users' 
+            AND table_name LIKE 'monitor_list_%'
+            ORDER BY table_name
+        """)
+        monitor_list_tables_market = [row[0] for row in cursor.fetchall()]
+        for table_name in monitor_list_tables_market:
+            cursor.execute(f"""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'users'
+                          AND table_name = '{table_name}'
+                          AND column_name = 'market'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN market TEXT DEFAULT %L', '{table_name}', 'hourly');
+                        EXECUTE format('UPDATE users.%I SET market = %L WHERE market IS NULL', '{table_name}', 'hourly');
+                    END IF;
+                END
+                $$;
+            """)
         
         # Create strategy_list_0001 table with all default settings columns (matching monitor_list structure)
         cursor.execute("""

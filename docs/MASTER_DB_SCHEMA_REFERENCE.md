@@ -8475,15 +8475,16 @@ Re-run the check (step 2) until nothing is missing.
 
 ---
 
-### Table: `live_data.market_kalshi_btc`
+### Table: `live_data.market_kalshi_hourly_btc`
 
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_btc_id_seq'::r... | |
+| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_hourly_btc_id_seq'::r... | |
 | `event_ticker` | `character varying(50)` | NO | - | |
 | `market_ticker` | `character varying(100)` | NO | - | |
+| `market` | `text` | YES | 'hourly' | Interval: hourly or 15m |
 | `strike` | `character varying(20)` | YES | - | |
 | `yes_bid` | `integer(32)` | YES | - | |
 | `yes_ask` | `integer(32)` | YES | - | |
@@ -8514,24 +8515,25 @@ Re-run the check (step 2) until nothing is missing.
 
 - `market_kalshi_btc_event_market_unique`
   ```sql
-  CREATE UNIQUE INDEX market_kalshi_btc_event_market_unique ON live_data.market_kalshi_btc USING btree (event_ticker, market_ticker)
+  CREATE UNIQUE INDEX market_kalshi_btc_event_market_unique ON live_data.market_kalshi_hourly_btc USING btree (event_ticker, market_ticker)
   ```
 - `market_kalshi_btc_pkey`
   ```sql
-  CREATE UNIQUE INDEX market_kalshi_btc_pkey ON live_data.market_kalshi_btc USING btree (id)
+  CREATE UNIQUE INDEX market_kalshi_btc_pkey ON live_data.market_kalshi_hourly_btc USING btree (id)
   ```
 
 ---
 
-### Table: `live_data.market_kalshi_eth`
+### Table: `live_data.market_kalshi_hourly_eth`
 
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_eth_id_seq'::r... | |
+| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_hourly_eth_id_seq'::r... | |
 | `event_ticker` | `character varying(50)` | NO | - | |
 | `market_ticker` | `character varying(100)` | NO | - | |
+| `market` | `text` | YES | - | Interval: 'hourly' or '15m' |
 | `strike` | `character varying(20)` | YES | - | |
 | `yes_bid` | `integer(32)` | YES | - | |
 | `yes_ask` | `integer(32)` | YES | - | |
@@ -8562,24 +8564,25 @@ Re-run the check (step 2) until nothing is missing.
 
 - `market_kalshi_eth_event_market_unique`
   ```sql
-  CREATE UNIQUE INDEX market_kalshi_eth_event_market_unique ON live_data.market_kalshi_eth USING btree (event_ticker, market_ticker)
+  CREATE UNIQUE INDEX market_kalshi_eth_event_market_unique ON live_data.market_kalshi_hourly_eth USING btree (event_ticker, market_ticker)
   ```
 - `market_kalshi_eth_pkey`
   ```sql
-  CREATE UNIQUE INDEX market_kalshi_eth_pkey ON live_data.market_kalshi_eth USING btree (id)
+  CREATE UNIQUE INDEX market_kalshi_eth_pkey ON live_data.market_kalshi_hourly_eth USING btree (id)
   ```
 
 ---
 
-### Table: `live_data.market_kalshi_ndx`
+### Table: `live_data.market_kalshi_hourly_ndx`
 
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_spx_id_seq'::r... | |
+| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_hourly_ndx_id_seq'::r... | |
 | `event_ticker` | `character varying(50)` | NO | - | |
 | `market_ticker` | `character varying(100)` | NO | - | |
+| `market` | `text` | YES | - | Interval: 'hourly' or '15m' |
 | `strike` | `character varying(20)` | YES | - | |
 | `yes_bid` | `integer(32)` | YES | - | |
 | `yes_ask` | `integer(32)` | YES | - | |
@@ -8614,28 +8617,29 @@ Re-run the check (step 2) until nothing is missing.
 
 - `market_kalshi_ndx_event_market_unique`
   ```sql
-  CREATE UNIQUE INDEX market_kalshi_ndx_event_market_unique ON live_data.market_kalshi_ndx USING btree (event_ticker, market_ticker)
+  CREATE UNIQUE INDEX market_kalshi_ndx_event_market_unique ON live_data.market_kalshi_hourly_ndx USING btree (event_ticker, market_ticker)
   ```
 - `market_kalshi_ndx_event_ticker_market_ticker_key`
   ```sql
-  CREATE UNIQUE INDEX market_kalshi_ndx_event_ticker_market_ticker_key ON live_data.market_kalshi_ndx USING btree (event_ticker, market_ticker)
+  CREATE UNIQUE INDEX market_kalshi_ndx_event_ticker_market_ticker_key ON live_data.market_kalshi_hourly_ndx USING btree (event_ticker, market_ticker)
   ```
 - `market_kalshi_ndx_pkey`
   ```sql
-  CREATE UNIQUE INDEX market_kalshi_ndx_pkey ON live_data.market_kalshi_ndx USING btree (id)
+  CREATE UNIQUE INDEX market_kalshi_ndx_pkey ON live_data.market_kalshi_hourly_ndx USING btree (id)
   ```
 
 ---
 
-### Table: `live_data.market_kalshi_spx`
+### Table: `live_data.market_kalshi_hourly_spx`
 
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_spx_id_seq'::r... | |
+| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_hourly_spx_id_seq'::r... | |
 | `event_ticker` | `character varying(50)` | NO | - | |
 | `market_ticker` | `character varying(100)` | NO | - | |
+| `market` | `text` | YES | - | Interval: 'hourly' or '15m' |
 | `strike` | `character varying(20)` | YES | - | |
 | `yes_bid` | `integer(32)` | YES | - | |
 | `yes_ask` | `integer(32)` | YES | - | |
@@ -8666,11 +8670,107 @@ Re-run the check (step 2) until nothing is missing.
 
 - `market_kalshi_spx_event_market_unique`
   ```sql
-  CREATE UNIQUE INDEX market_kalshi_spx_event_market_unique ON live_data.market_kalshi_spx USING btree (event_ticker, market_ticker)
+  CREATE UNIQUE INDEX market_kalshi_spx_event_market_unique ON live_data.market_kalshi_hourly_spx USING btree (event_ticker, market_ticker)
   ```
 - `market_kalshi_spx_pkey`
   ```sql
-  CREATE UNIQUE INDEX market_kalshi_spx_pkey ON live_data.market_kalshi_spx USING btree (id)
+  CREATE UNIQUE INDEX market_kalshi_spx_pkey ON live_data.market_kalshi_hourly_spx USING btree (id)
+  ```
+
+---
+
+### Table: `live_data.market_kalshi_15m_btc`
+
+Kalshi 15-minute market data for BTC. One row per current 15m window; truncated and repopulated on each rollover. `strike` is backfilled from `live_data.live_price_log_1s_btc`.`one_minute_avg` at the market's opening time (start of the 15m window).
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_15m_btc_id_seq'::regclass) | |
+| `event_ticker` | `character varying(50)` | NO | - | |
+| `market_ticker` | `character varying(100)` | NO | - | |
+| `market` | `text` | YES | '15m' | Interval: 'hourly' or '15m' |
+| `strike` | `character varying(20)` | YES | - | Backfilled from 1s price log at opening time |
+| `yes_bid` | `integer(32)` | YES | - | |
+| `yes_ask` | `integer(32)` | YES | - | |
+| `no_bid` | `integer(32)` | YES | - | |
+| `no_ask` | `integer(32)` | YES | - | |
+| `last_price` | `integer(32)` | YES | - | |
+| `volume` | `integer(32)` | YES | - | |
+| `volume_24h` | `integer(32)` | YES | - | |
+| `open_interest` | `integer(32)` | YES | - | |
+| `liquidity` | `integer(32)` | YES | - | |
+| `created_at` | `timestamp with time zone` | YES | now() | |
+| `updated_at` | `timestamp with time zone` | YES | now() | |
+| `yes_bid_dollars` | `text` | YES | - | |
+| `yes_ask_dollars` | `text` | YES | - | |
+| `no_bid_dollars` | `text` | YES | - | |
+| `no_ask_dollars` | `text` | YES | - | |
+| `last_price_dollars` | `text` | YES | - | |
+
+#### Constraints
+
+- **Primary Key:** `market_kalshi_15m_btc_pkey` on `id`
+- **Unique:** `market_kalshi_15m_btc_event_market_unique` on `(event_ticker, market_ticker)`
+
+#### Indexes
+
+- `market_kalshi_15m_btc_event_market_unique`
+  ```sql
+  CREATE UNIQUE INDEX market_kalshi_15m_btc_event_market_unique ON live_data.market_kalshi_15m_btc USING btree (event_ticker, market_ticker)
+  ```
+- `market_kalshi_15m_btc_pkey`
+  ```sql
+  CREATE UNIQUE INDEX market_kalshi_15m_btc_pkey ON live_data.market_kalshi_15m_btc USING btree (id)
+  ```
+
+---
+
+### Table: `live_data.market_kalshi_15m_eth`
+
+Kalshi 15-minute market data for ETH. One row per current 15m window; truncated and repopulated on each rollover. `strike` is backfilled from `live_data.live_price_log_1s_eth`.`one_minute_avg` at the market's opening time (start of the 15m window).
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_15m_eth_id_seq'::regclass) | |
+| `event_ticker` | `character varying(50)` | NO | - | |
+| `market_ticker` | `character varying(100)` | NO | - | |
+| `market` | `text` | YES | '15m' | Interval: 'hourly' or '15m' |
+| `strike` | `character varying(20)` | YES | - | Backfilled from 1s price log at opening time |
+| `yes_bid` | `integer(32)` | YES | - | |
+| `yes_ask` | `integer(32)` | YES | - | |
+| `no_bid` | `integer(32)` | YES | - | |
+| `no_ask` | `integer(32)` | YES | - | |
+| `last_price` | `integer(32)` | YES | - | |
+| `volume` | `integer(32)` | YES | - | |
+| `volume_24h` | `integer(32)` | YES | - | |
+| `open_interest` | `integer(32)` | YES | - | |
+| `liquidity` | `integer(32)` | YES | - | |
+| `created_at` | `timestamp with time zone` | YES | now() | |
+| `updated_at` | `timestamp with time zone` | YES | now() | |
+| `yes_bid_dollars` | `text` | YES | - | |
+| `yes_ask_dollars` | `text` | YES | - | |
+| `no_bid_dollars` | `text` | YES | - | |
+| `no_ask_dollars` | `text` | YES | - | |
+| `last_price_dollars` | `text` | YES | - | |
+
+#### Constraints
+
+- **Primary Key:** `market_kalshi_15m_eth_pkey` on `id`
+- **Unique:** `market_kalshi_15m_eth_event_market_unique` on `(event_ticker, market_ticker)`
+
+#### Indexes
+
+- `market_kalshi_15m_eth_event_market_unique`
+  ```sql
+  CREATE UNIQUE INDEX market_kalshi_15m_eth_event_market_unique ON live_data.market_kalshi_15m_eth USING btree (event_ticker, market_ticker)
+  ```
+- `market_kalshi_15m_eth_pkey`
+  ```sql
+  CREATE UNIQUE INDEX market_kalshi_15m_eth_pkey ON live_data.market_kalshi_15m_eth USING btree (id)
   ```
 
 ---
@@ -8739,15 +8839,16 @@ Re-run the check (step 2) until nothing is missing.
 
 ---
 
-### Table: `live_data.strike_table_btc`
+### Table: `live_data.strike_table_hourly_btc`
 
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.strike_table_btc_id_seq'::re... | |
+| `id` | `integer(32)` | NO | nextval('live_data.strike_table_hourly_btc_id_seq'::re... | |
 | `timestamp` | `timestamp with time zone` | YES | now() | |
 | `symbol` | `character varying(10)` | YES | - | |
+| `market` | `text` | YES | 'hourly' | Interval: 'hourly' or '15m' |
 | `current_price` | `numeric(10,2)` | YES | - | |
 | `ttc_seconds` | `integer(32)` | YES | - | |
 | `broker` | `character varying(20)` | YES | - | |
@@ -8789,28 +8890,29 @@ Re-run the check (step 2) until nothing is missing.
 
 - `idx_strike_table_btc_lookup`
   ```sql
-  CREATE INDEX idx_strike_table_btc_lookup ON live_data.strike_table_btc USING btree ("timestamp", symbol, current_price)
+  CREATE INDEX idx_strike_table_btc_lookup ON live_data.strike_table_hourly_btc USING btree ("timestamp", symbol, current_price)
   ```
 - `strike_table_btc_pkey`
   ```sql
-  CREATE UNIQUE INDEX strike_table_btc_pkey ON live_data.strike_table_btc USING btree (id)
+  CREATE UNIQUE INDEX strike_table_btc_pkey ON live_data.strike_table_hourly_btc USING btree (id)
   ```
 - `strike_table_btc_strike_unique`
   ```sql
-  CREATE UNIQUE INDEX strike_table_btc_strike_unique ON live_data.strike_table_btc USING btree (strike)
+  CREATE UNIQUE INDEX strike_table_btc_strike_unique ON live_data.strike_table_hourly_btc USING btree (strike)
   ```
 
 ---
 
-### Table: `live_data.strike_table_eth`
+### Table: `live_data.strike_table_hourly_eth`
 
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.strike_table_eth_id_seq'::re... | |
+| `id` | `integer(32)` | NO | nextval('live_data.strike_table_hourly_eth_id_seq'::re... | |
 | `timestamp` | `timestamp with time zone` | YES | now() | |
 | `symbol` | `character varying(10)` | YES | - | |
+| `market` | `text` | YES | 'hourly' | Interval: 'hourly' or '15m' |
 | `current_price` | `numeric(10,2)` | YES | - | |
 | `ttc_seconds` | `integer(32)` | YES | - | |
 | `broker` | `character varying(20)` | YES | - | |
@@ -8851,24 +8953,25 @@ Re-run the check (step 2) until nothing is missing.
 
 - `idx_strike_table_eth_lookup`
   ```sql
-  CREATE INDEX idx_strike_table_eth_lookup ON live_data.strike_table_eth USING btree ("timestamp", symbol, current_price)
+  CREATE INDEX idx_strike_table_eth_lookup ON live_data.strike_table_hourly_eth USING btree ("timestamp", symbol, current_price)
   ```
 - `strike_table_eth_pkey`
   ```sql
-  CREATE UNIQUE INDEX strike_table_eth_pkey ON live_data.strike_table_eth USING btree (id)
+  CREATE UNIQUE INDEX strike_table_eth_pkey ON live_data.strike_table_hourly_eth USING btree (id)
   ```
 
 ---
 
-### Table: `live_data.strike_table_ndx`
+### Table: `live_data.strike_table_hourly_ndx`
 
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.strike_table_btc_id_seq'::re... | |
+| `id` | `integer(32)` | NO | nextval('live_data.strike_table_hourly_ndx_id_seq'::re... | |
 | `timestamp` | `timestamp with time zone` | YES | now() | |
 | `symbol` | `character varying(10)` | YES | - | |
+| `market` | `text` | YES | 'hourly' | Interval: 'hourly' or '15m' |
 | `current_price` | `numeric(10,2)` | YES | - | |
 | `ttc_seconds` | `integer(32)` | YES | - | |
 | `broker` | `character varying(20)` | YES | - | |
@@ -8910,36 +9013,37 @@ Re-run the check (step 2) until nothing is missing.
 
 - `idx_strike_table_ndx_lookup`
   ```sql
-  CREATE INDEX idx_strike_table_ndx_lookup ON live_data.strike_table_ndx USING btree ("timestamp", symbol, current_price)
+  CREATE INDEX idx_strike_table_ndx_lookup ON live_data.strike_table_hourly_ndx USING btree ("timestamp", symbol, current_price)
   ```
 - `strike_table_ndx_pkey`
   ```sql
-  CREATE UNIQUE INDEX strike_table_ndx_pkey ON live_data.strike_table_ndx USING btree (id)
+  CREATE UNIQUE INDEX strike_table_ndx_pkey ON live_data.strike_table_hourly_ndx USING btree (id)
   ```
 - `strike_table_ndx_strike_key`
   ```sql
-  CREATE UNIQUE INDEX strike_table_ndx_strike_key ON live_data.strike_table_ndx USING btree (strike)
+  CREATE UNIQUE INDEX strike_table_ndx_strike_key ON live_data.strike_table_hourly_ndx USING btree (strike)
   ```
 - `strike_table_ndx_timestamp_symbol_current_price_idx`
   ```sql
-  CREATE INDEX strike_table_ndx_timestamp_symbol_current_price_idx ON live_data.strike_table_ndx USING btree ("timestamp", symbol, current_price)
+  CREATE INDEX strike_table_ndx_timestamp_symbol_current_price_idx ON live_data.strike_table_hourly_ndx USING btree ("timestamp", symbol, current_price)
   ```
 - `strike_table_ndx_timestamp_symbol_current_price_idx1`
   ```sql
-  CREATE INDEX strike_table_ndx_timestamp_symbol_current_price_idx1 ON live_data.strike_table_ndx USING btree ("timestamp", symbol, current_price)
+  CREATE INDEX strike_table_ndx_timestamp_symbol_current_price_idx1 ON live_data.strike_table_hourly_ndx USING btree ("timestamp", symbol, current_price)
   ```
 
 ---
 
-### Table: `live_data.strike_table_spx`
+### Table: `live_data.strike_table_hourly_spx`
 
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.strike_table_btc_id_seq'::re... | |
+| `id` | `integer(32)` | NO | nextval('live_data.strike_table_hourly_spx_id_seq'::re... | |
 | `timestamp` | `timestamp with time zone` | YES | now() | |
 | `symbol` | `character varying(10)` | YES | - | |
+| `market` | `text` | YES | 'hourly' | Interval: 'hourly' or '15m' |
 | `current_price` | `numeric(10,2)` | YES | - | |
 | `ttc_seconds` | `integer(32)` | YES | - | |
 | `broker` | `character varying(20)` | YES | - | |
@@ -8981,20 +9085,40 @@ Re-run the check (step 2) until nothing is missing.
 
 - `idx_strike_table_spx_lookup`
   ```sql
-  CREATE INDEX idx_strike_table_spx_lookup ON live_data.strike_table_spx USING btree ("timestamp", symbol, current_price)
+  CREATE INDEX idx_strike_table_spx_lookup ON live_data.strike_table_hourly_spx USING btree ("timestamp", symbol, current_price)
   ```
 - `strike_table_spx_pkey`
   ```sql
-  CREATE UNIQUE INDEX strike_table_spx_pkey ON live_data.strike_table_spx USING btree (id)
+  CREATE UNIQUE INDEX strike_table_spx_pkey ON live_data.strike_table_hourly_spx USING btree (id)
   ```
 - `strike_table_spx_strike_key`
   ```sql
-  CREATE UNIQUE INDEX strike_table_spx_strike_key ON live_data.strike_table_spx USING btree (strike)
+  CREATE UNIQUE INDEX strike_table_spx_strike_key ON live_data.strike_table_hourly_spx USING btree (strike)
   ```
 - `strike_table_spx_timestamp_symbol_current_price_idx`
   ```sql
-  CREATE INDEX strike_table_spx_timestamp_symbol_current_price_idx ON live_data.strike_table_spx USING btree ("timestamp", symbol, current_price)
+  CREATE INDEX strike_table_spx_timestamp_symbol_current_price_idx ON live_data.strike_table_hourly_spx USING btree ("timestamp", symbol, current_price)
   ```
+
+---
+
+### Table: `live_data.strike_table_15m_btc`
+
+15-minute strike table for BTC. Single strike per table; `market` = '15m'. Same column set as `strike_table_hourly_btc` with `market` TEXT DEFAULT '15m'.
+
+#### Columns
+
+Same as `live_data.strike_table_hourly_btc` with the addition of `market` (TEXT, default '15m') after `symbol`.
+
+---
+
+### Table: `live_data.strike_table_15m_eth`
+
+15-minute strike table for ETH. Single strike per table; `market` = '15m'. Same column set as `strike_table_hourly_eth` with `market` TEXT DEFAULT '15m'.
+
+#### Columns
+
+Same as `live_data.strike_table_hourly_eth` with the addition of `market` (TEXT, default '15m') after `symbol`.
 
 ---
 
@@ -9454,6 +9578,7 @@ Re-run the check (step 2) until nothing is missing.
 | `id` | `integer(32)` | NO | nextval('testing.market_kalshi_btc_websocket_id... | |
 | `event_ticker` | `character varying(50)` | NO | - | |
 | `market_ticker` | `character varying(100)` | NO | - | |
+| `market` | `text` | YES | - | Interval: 'hourly' or '15m' |
 | `strike` | `character varying(20)` | YES | - | |
 | `yes_bid` | `integer(32)` | YES | - | |
 | `yes_ask` | `integer(32)` | YES | - | |
@@ -9885,6 +10010,7 @@ Re-run the check (step 2) until nothing is missing.
 | `id` | `integer(32)` | NO | nextval('users.monitor_list_0001_id_seq'::regcl... | |
 | `name` | `character varying(255)` | NO | - | |
 | `symbol` | `character varying(20)` | NO | - | |
+| `market` | `text` | YES | 'hourly' | Market interval: 'hourly' or '15m'. |
 | `strategy` | `character varying(100)` | YES | - | |
 | `auto_trade` | `boolean` | YES | false | |
 | `auto_trade_status` | `character varying(20)` | YES | 'inactive'::character varying | |

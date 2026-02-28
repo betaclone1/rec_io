@@ -336,50 +336,64 @@ class LookupProbabilityCalculator:
 
 class StrikeTableGenerator:
     """Generates strike table data and writes to PostgreSQL live_data schema."""
-    
-    def __init__(self, symbol: str):
+
+    def __init__(self, symbol: str, interval: str = "hourly"):
         self.symbol = symbol.lower()
+        self.interval = interval.lower()  # "hourly" or "15m"
+        if self.interval == "15m" and self.symbol not in ("btc", "eth"):
+            raise ValueError("15m interval only supported for BTC and ETH")
         self.db_config = POSTGRES_CONFIG
-        logger.info(f"🔧 Initializing strike table generator for {symbol.upper()}")
+        logger.info(f"🔧 Initializing strike table generator for {symbol.upper()} ({self.interval})")
         self.calculator = LookupProbabilityCalculator(symbol)
-        logger.info(f"✅ Strike table generator initialized for {symbol.upper()}")
+        logger.info(f"✅ Strike table generator initialized for {symbol.upper()} ({self.interval})")
+
+    def _strike_table_name(self) -> str:
+        """Table name: strike_table_hourly_{symbol} or strike_table_15m_{symbol}."""
+        suffix = "15m" if self.interval == "15m" else "hourly"
+        return f"strike_table_{suffix}_{self.symbol}"
     
     def generate_market_title(self, event_ticker: str) -> str:
         """
         Generate a human-readable market title from event ticker.
-        
-        Args:
-            event_ticker: Event ticker like 'KXBTCD-25AUG1515'
-            
-        Returns:
-            Formatted title like 'BTC price today at 3pm'
+        Hourly: KXBTCD-25AUG1515 -> "BTC price today at 3pm"
+        15m:    KXBTC15M-26FEB271745 -> "BTC price today at 5:45pm" (DDMMMYY + HHMM)
         """
         if not event_ticker:
             return f"{self.symbol.upper()} price today"
         
         try:
-            # Parse event ticker format: KXBTCD-25AUG1515
-            # KXBTCD = Kalshi Bitcoin Daily
-            # 25AUG15 = August 15, 2025 at 15:00 (3pm)
-            
-            # Extract date and time from the end
             parts = event_ticker.split('-')
             if len(parts) < 2:
                 return f"{self.symbol.upper()} price today"
             
-            date_time_part = parts[-1]  # 25AUG1515
+            date_time_part = parts[-1]  # 25AUG1515 (hourly) or 26FEB271745 (15m)
             
-            # Extract date (25AUG15) and hour (15)
+            if self.interval == "15m":
+                # 15m: DDMMMYY + HHMM e.g. 26FEB271745 -> 26 FEB 27, 17:45
+                if len(date_time_part) >= 11:
+                    date_part = date_time_part[:7]   # 26FEB27
+                    time_part = date_time_part[7:11] # 1745
+                    hour_24 = int(time_part[:2])
+                    minute = int(time_part[2:4])
+                    # 12-hour with h:mm am/pm
+                    if hour_24 == 0:
+                        time_str = f"12:{minute:02d}am"
+                    elif hour_24 < 12:
+                        time_str = f"{hour_24}:{minute:02d}am"
+                    elif hour_24 == 12:
+                        time_str = f"12:{minute:02d}pm"
+                    else:
+                        time_str = f"{hour_24 - 12}:{minute:02d}pm"
+                    return f"{self.symbol.upper()} price today at {time_str}"
+                return f"{self.symbol.upper()} price today"
+            
+            # Hourly: 25AUG1515 -> date 25AUG15, hour 15
             if len(date_time_part) >= 7:
                 date_part = date_time_part[:-2]  # 25AUG15
                 hour_part = date_time_part[-2:]  # 15
-                
-                # Parse date
-                day = date_part[:2]  # 25
-                month = date_part[2:5]  # AUG
-                year = date_part[5:]  # 15
-                
-                # Convert to 24-hour format and then to 12-hour format
+                day = date_part[:2]
+                month = date_part[2:5]
+                year = date_part[5:]
                 hour_24 = int(hour_part)
                 if hour_24 == 0:
                     time_str = "12am"
@@ -389,17 +403,12 @@ class StrikeTableGenerator:
                     time_str = "12pm"
                 else:
                     time_str = f"{hour_24 - 12}pm"
-                
-                # Check if it's today
                 today = datetime.now()
                 event_date = datetime.strptime(f"{day}{month}20{year}", "%d%b%Y")
-                
                 if event_date.date() == today.date():
                     return f"{self.symbol.upper()} price today at {time_str}"
-                else:
-                    # Format date like "Aug 15"
-                    month_name = event_date.strftime("%b")
-                    return f"{self.symbol.upper()} price on {month_name} {day} at {time_str}"
+                month_name = event_date.strftime("%b")
+                return f"{self.symbol.upper()} price on {month_name} {day} at {time_str}"
             
             return f"{self.symbol.upper()} price today"
             
@@ -416,12 +425,14 @@ class StrikeTableGenerator:
             # Create live_data schema
             cursor.execute("CREATE SCHEMA IF NOT EXISTS live_data")
             
-            # Create strike table data table
+            # Create strike table (hourly or 15m)
+            table_name = self._strike_table_name()
             strike_table_sql = f"""
-            CREATE TABLE IF NOT EXISTS live_data.strike_table_{self.symbol.lower()} (
+            CREATE TABLE IF NOT EXISTS live_data.{table_name} (
                 id SERIAL PRIMARY KEY,
                 timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                 symbol VARCHAR(10),
+                market TEXT,
                 current_price DECIMAL(10,2),
                 ttc_seconds INTEGER,
                 broker VARCHAR(20),
@@ -456,9 +467,11 @@ class StrikeTableGenerator:
             )
             """
             cursor.execute(strike_table_sql)
+            conn.commit()  # Persist table before ALTERs so rollback in loop doesn't drop it
             
             # Add missing columns if they don't exist
             missing_columns = [
+                ("market", "TEXT"),
                 ("momentum_weighted_score", "DECIMAL(5,3)"),
                 ("yes_bid_dollars", "TEXT"),
                 ("no_bid_dollars", "TEXT"),
@@ -469,20 +482,18 @@ class StrikeTableGenerator:
                 ("movement", "NUMERIC(10,4)"),
                 ("movement_percentile", "NUMERIC(5,1)"),
             ]
-            
             for column_name, column_type in missing_columns:
                 try:
-                    cursor.execute(f"ALTER TABLE live_data.strike_table_{self.symbol.lower()} ADD COLUMN {column_name} {column_type};")
-                    conn.commit()  # Commit the ALTER TABLE before continuing
+                    cursor.execute(f"ALTER TABLE live_data.{table_name} ADD COLUMN {column_name} {column_type};")
+                    conn.commit()
                 except psycopg2.ProgrammingError:
-                    # Column already exists, ignore error
-                    conn.rollback()  # Rollback and continue
+                    conn.rollback()  # Only rolls back the failed ALTER
                     pass
             
             # Create index for strike table
             strike_index_sql = f"""
-                    CREATE INDEX IF NOT EXISTS idx_strike_table_{self.symbol.lower()}_lookup
-        ON live_data.strike_table_{self.symbol.lower()} (timestamp, symbol, current_price)
+                    CREATE INDEX IF NOT EXISTS idx_{table_name}_lookup
+        ON live_data.{table_name} (timestamp, symbol, current_price)
             """
             cursor.execute(strike_index_sql)
             
@@ -544,54 +555,48 @@ class StrikeTableGenerator:
             raise
     
     def get_kalshi_market_snapshot(self) -> Dict[str, Any]:
-        """Get live Kalshi market snapshot from the market_kalshi_{symbol} database table"""
+        """Get live Kalshi market snapshot from market_kalshi_hourly_{symbol} or market_kalshi_15m_{symbol}."""
         try:
             conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
+            if self.interval == "15m":
+                market_table = f"market_kalshi_15m_{self.symbol}"
+            else:
+                market_table = f"market_kalshi_hourly_{self.symbol}"
             
-            # Get the latest event_ticker from the market_kalshi_{symbol} table
             cursor.execute(f"""
                 SELECT event_ticker 
-                FROM live_data.market_kalshi_{self.symbol} 
+                FROM live_data.{market_table} 
                 ORDER BY updated_at DESC 
                 LIMIT 1
             """)
-            
             result = cursor.fetchone()
             if not result:
-                raise ValueError(f"No event_ticker found in market_kalshi_{self.symbol} table")
-            
+                raise ValueError(f"No event_ticker found in {market_table} table")
             event_ticker = result[0]
             
-            # Get all markets for this event_ticker
             cursor.execute(f"""
                 SELECT market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask, last_price,
                        yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
                        volume, volume_24h, open_interest, liquidity, updated_at
-                FROM live_data.market_kalshi_{self.symbol} 
+                FROM live_data.{market_table} 
                 WHERE event_ticker = %s
                 ORDER BY updated_at DESC
             """, (event_ticker,))
-            
             market_rows = cursor.fetchall()
             if not market_rows:
                 raise ValueError(f"No markets found for event_ticker: {event_ticker}")
             
-            # Convert database rows to market dictionary format
             markets = []
             for row in market_rows:
                 market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask, last_price, yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars, volume, volume_24h, open_interest, liquidity, updated_at = row
-                
-                # Convert strike from "$104,250" or "6,475.0099" format to float
                 floor_strike = None
                 if strike:
                     try:
-                        # Handle both formats: with or without '$' prefix
                         clean_strike = strike.replace('$', '').replace(',', '')
                         floor_strike = float(clean_strike)
                     except ValueError:
                         continue
-                
                 market = {
                     "ticker": market_ticker,
                     "floor_strike": floor_strike,
@@ -609,47 +614,33 @@ class StrikeTableGenerator:
                     "volume_24h": volume_24h,
                     "open_interest": open_interest,
                     "liquidity": liquidity,
-                    "status": "active"  # Assume active status for database records
+                    "status": "active"
                 }
                 markets.append(market)
             
-            # Detect strike tier spacing
-            strike_tier = self.detect_strike_tier_spacing(markets)
+            # 15m: single strike, strike_tier 0; hourly: detect from spacing
+            if self.interval == "15m":
+                strike_tier = 0
+            else:
+                strike_tier = self.detect_strike_tier_spacing(markets)
             
-            # For database records, we'll use the event_ticker as the title and estimate strike_date
-            # The strike_date is typically the hour from the event_ticker
             event_title = f"{self.symbol.upper()} Price at {event_ticker}"
-            
-            # Extract date from event_ticker (e.g., KXBTCD-25AUG1515 -> 2025-08-15T15:00:00)
             try:
-                # Parse event_ticker format: KXBTCD-25AUG1515
-                # Extract year, month, day, hour
                 parts = event_ticker.split('-')
                 if len(parts) >= 2:
-                    date_part = parts[1]  # 25AUG1515
-                    year = "20" + date_part[:2]  # 25 -> 2025
-                    month_str = date_part[2:5]  # AUG
-                    day = date_part[5:7]  # 15
-                    hour = date_part[7:9]  # 15
-                    
-                    # Convert month abbreviation to number
-                    month_map = {
-                        'JAN': '01', 'FEB': '02', 'MAR': '03', 'APR': '04',
-                        'MAY': '05', 'JUN': '06', 'JUL': '07', 'AUG': '08',
-                        'SEP': '09', 'OCT': '10', 'NOV': '11', 'DEC': '12'
-                    }
-                    month = month_map.get(month_str, '01')
-                    
+                    date_part = parts[1]
+                    year = "20" + date_part[:2]
+                    month_str = date_part[2:5]
+                    day = date_part[5:7]
+                    hour = date_part[7:9] if len(date_part) >= 9 else "00"
                     strike_date = f"{year}-{month}-{day}T{hour}:00:00Z"
                 else:
-                    strike_date = "2025-08-15T15:00:00Z"  # Default fallback
+                    strike_date = "2025-08-15T15:00:00Z"
             except Exception:
-                strike_date = "2025-08-15T15:00:00Z"  # Default fallback
+                strike_date = "2025-08-15T15:00:00Z"
             
             conn.close()
-            
             logger.info(f"📊 Loaded live market data from database - Event: {event_ticker}, Markets: {len(markets)}, Tier: ${strike_tier:,}")
-            
             return {
                 "event_ticker": event_ticker,
                 "market_status": "active",
@@ -699,19 +690,29 @@ class StrikeTableGenerator:
             raise
     
     def calculate_ttc_seconds(self, strike_date: str) -> int:
-        """Calculate time to close in seconds - always top of next hour."""
+        """Calculate time to close: top of next hour (hourly) or next 15m boundary (15m)."""
         try:
             from datetime import datetime, timedelta
-            now = datetime.now()
-            
-            # Calculate time to top of next hour
-            next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-            ttc_seconds = int((next_hour - now).total_seconds())
-            
-            return max(0, ttc_seconds)  # Allow countdown to 0
+            if self.interval == "15m":
+                import pytz
+                est = pytz.timezone("America/New_York")
+                now = datetime.now(est)
+                minute = now.minute
+                # Next 15m boundary: :00, :15, :30, :45
+                next_min = ((minute // 15) + 1) * 15
+                if next_min >= 60:
+                    next_boundary = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+                else:
+                    next_boundary = now.replace(minute=next_min, second=0, microsecond=0)
+                ttc_seconds = int((next_boundary - now).total_seconds())
+            else:
+                now = datetime.now()
+                next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+                ttc_seconds = int((next_hour - now).total_seconds())
+            return max(0, ttc_seconds)
         except Exception as e:
             logger.warning(f"⚠️ Error calculating TTC, using default: {e}")
-            return 300  # Default 5 minutes
+            return 300
     
     def generate_strike_table(self) -> bool:
         """
@@ -743,35 +744,28 @@ class StrikeTableGenerator:
             # Get available market strikes
             markets = market_data.get("markets", [])
             available_strikes = []
-            
             for market in markets:
                 floor_strike = market.get("floor_strike")
                 if floor_strike:
-                    # Convert from 118499.99 format to 118500
                     market_strike = int(float(floor_strike) + 0.01)
                     available_strikes.append(market_strike)
-            
             if not available_strikes:
                 raise ValueError("No valid strikes found in market data")
-            
-            # Sort by distance from current price
             available_strikes.sort(key=lambda x: abs(x - current_price))
-            
-            # Filter strikes to only include those within lookup table buffer range
-            max_buffer = self.calculator.max_buffer
-            filtered_strikes = []
-            for strike in available_strikes:
-                buffer = abs(current_price - strike)
-                if buffer <= max_buffer:
-                    filtered_strikes.append(strike)
-                else:
-                    logger.debug(f"Skipping strike {strike} - buffer {buffer} exceeds max buffer {max_buffer}")
-            
-            # Take the closest strikes (up to 21 total) from filtered list
-            max_strikes = min(21, len(filtered_strikes))
-            strikes = filtered_strikes[:max_strikes]
-            
-            logger.info(f"🎯 Processing {len(strikes)} strikes from market data")
+            if self.interval == "15m":
+                # Single strike only; strike_tier 0
+                max_buffer = self.calculator.max_buffer
+                single = available_strikes[0]
+                if abs(current_price - single) > max_buffer:
+                    logger.warning(f"15m strike {single} outside lookup buffer {max_buffer}, using anyway")
+                strikes = [single]
+                logger.info(f"🎯 Processing 1 strike (15m) from market data: {single}")
+            else:
+                max_buffer = self.calculator.max_buffer
+                filtered_strikes = [s for s in available_strikes if abs(current_price - s) <= max_buffer]
+                max_strikes = min(21, len(filtered_strikes))
+                strikes = filtered_strikes[:max_strikes]
+                logger.info(f"🎯 Processing {len(strikes)} strikes from market data")
             
             # Use momentum percentile directly as bucket
             # momentum_percentile is already in percentile format like -47.0, -51.0, etc.
@@ -781,10 +775,11 @@ class StrikeTableGenerator:
             conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
             
+            table_name = self._strike_table_name()
             # Clear ALL previous strike table data - only keep current iteration
             try:
-                cursor.execute(f"DELETE FROM live_data.strike_table_{self.symbol.lower()}")
-                logger.info(f"✅ Cleared previous strike table data for {self.symbol.upper()}")
+                cursor.execute(f"DELETE FROM live_data.{table_name}")
+                logger.info(f"✅ Cleared previous strike table data for {self.symbol.upper()} ({self.interval})")
             except Exception as e:
                 logger.error(f"❌ Error clearing strike table: {e}")
                 conn.rollback()
@@ -881,21 +876,23 @@ class StrikeTableGenerator:
                     
                     # Generate market title from event ticker
                     market_title = self.generate_market_title(market_data.get("event_ticker"))
-                    
+                    # 15m: strike_tier 0; hourly: from market_data
+                    strike_tier_val = 0 if self.interval == "15m" else market_data.get("strike_tier")
+                    market_val = "15m" if self.interval == "15m" else "hourly"
                     # Insert into database
                     cursor.execute(f"""
-                    INSERT INTO live_data.strike_table_{self.symbol.lower()}
-                    (symbol, current_price, ttc_seconds, broker, event_ticker, market_title,
+                    INSERT INTO live_data.{table_name}
+                    (symbol, market, current_price, ttc_seconds, broker, event_ticker, market_title,
                      strike_tier, market_status, strike, buffer, buffer_pct, probability,
                      yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
                      yes_price_spread, no_price_spread, yes_diff, no_diff, volume, ticker, active_side,
                      momentum_weighted_score, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile,
                      timestamp, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
-                        self.symbol.upper(), current_price, ttc_seconds, "Kalshi",
+                        self.symbol.upper(), market_val, current_price, ttc_seconds, "Kalshi",
                         market_data.get("event_ticker"), market_title,
-                        market_data.get("strike_tier"), market_data.get("market_status"),
+                        strike_tier_val, market_data.get("market_status"),
                         strike, buffer, buffer_pct, probability,
                         yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
                         yes_price_spread, no_price_spread, yes_diff, no_diff,
@@ -936,9 +933,10 @@ class StrikeTableGenerator:
             conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
             
+            table_name = self._strike_table_name()
             # Get the latest timestamp
             cursor.execute(f"""
-            SELECT MAX(timestamp) FROM live_data.strike_table_{self.symbol.lower()}
+            SELECT MAX(timestamp) FROM live_data.{table_name}
             """)
             
             latest_timestamp = cursor.fetchone()[0]
@@ -951,7 +949,7 @@ class StrikeTableGenerator:
                    strike_tier, market_status, strike, buffer, buffer_pct, probability,
                    yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume, ticker, active_side,
                    momentum_percentile, volatility, volatility_percentile, movement, movement_percentile
-            FROM live_data.strike_table_{self.symbol.lower()}
+            FROM live_data.{table_name}
             WHERE timestamp = %s
             ORDER BY strike
             """, (latest_timestamp,))
@@ -1011,12 +1009,52 @@ class StrikeTableGenerator:
             if conn:
                 conn.close()
 
-def run_continuous_generation(interval_seconds: int = 30, symbol: str = "btc"):
+    def get_strike_table_consistency_info(self) -> Optional[Dict[str, Any]]:
+        """
+        Get information about the consistency of the current strike table data.
+        Returns None if no data exists, or a dict with consistency info.
+        """
+        conn = None
+        try:
+            conn = psycopg2.connect(**self.db_config)
+            cursor = conn.cursor()
+            table_name = self._strike_table_name()
+            cursor.execute(f"""
+                SELECT 
+                    COUNT(*) as total_records,
+                    COUNT(DISTINCT timestamp) as unique_timestamps,
+                    MIN(timestamp) as earliest_timestamp,
+                    MAX(timestamp) as latest_timestamp,
+                    MAX(timestamp) - MIN(timestamp) as time_span
+                FROM live_data.{table_name}
+            """)
+            result = cursor.fetchone()
+            if not result or result[0] == 0:
+                return None
+            total_records, unique_timestamps, earliest, latest, time_span = result
+            is_consistent = unique_timestamps == 1
+            return {
+                "total_records": total_records,
+                "unique_timestamps": unique_timestamps,
+                "earliest_timestamp": earliest,
+                "latest_timestamp": latest,
+                "time_span_seconds": time_span.total_seconds() if time_span else 0,
+                "is_consistent": is_consistent,
+                "consistency_status": "CONSISTENT" if is_consistent else "MIXED_TIMESTAMPS"
+            }
+        except Exception as e:
+            logger.error(f"❌ Error checking strike table consistency: {e}")
+            return None
+        finally:
+            if conn:
+                conn.close()
+
+def run_continuous_generation(interval_seconds: int = 30, symbol: str = "btc", interval: str = "hourly"):
     """Run the strike table generator continuously."""
-    logger.info(f"🚀 Starting continuous strike table generation for {symbol.upper()} (interval: {interval_seconds}s)")
+    logger.info(f"🚀 Starting continuous strike table generation for {symbol.upper()} ({interval}, interval: {interval_seconds}s)")
     
     # Initialize generator
-    generator = StrikeTableGenerator(symbol)
+    generator = StrikeTableGenerator(symbol, interval=interval)
     
     # Setup schema
     generator.setup_live_data_schema()
@@ -1043,7 +1081,7 @@ def run_continuous_generation(interval_seconds: int = 30, symbol: str = "btc"):
                            MIN(probability) as min_prob, 
                            MAX(probability) as max_prob,
                            AVG(probability) as avg_prob
-                    FROM live_data.strike_table_{generator.symbol.lower()}
+                    FROM live_data.{generator._strike_table_name()}
                     """)
                     
                     result = cursor.fetchone()
@@ -1076,22 +1114,23 @@ def main():
     parser = argparse.ArgumentParser(description='Strike Table Generator (Multi-Symbol)')
     parser.add_argument('symbol', help='Symbol to generate strike table for (e.g., BTC, ETH)')
     parser.add_argument('mode', help='Mode: test for single generation, continuous for ongoing generation')
-    parser.add_argument('interval', type=int, nargs='?', default=30, help='Seconds between generations (for continuous mode)')
-    
+    parser.add_argument('interval_sec', type=int, nargs='?', default=30, help='Seconds between generations (for continuous mode)')
+    parser.add_argument('--interval', choices=['hourly', '15m'], default='hourly', help='Market interval: hourly (default) or 15m (BTC/ETH only)')
     args = parser.parse_args()
     symbol = args.symbol.upper()
     mode = args.mode
+    interval_sec = args.interval_sec
     interval = args.interval
-    
+    if interval == "15m" and symbol.lower() not in ("btc", "eth"):
+        parser.error("--interval 15m only supported for BTC and ETH")
     if mode == "continuous":
-        # Run in continuous mode
-        run_continuous_generation(interval, symbol)
+        run_continuous_generation(interval_sec, symbol, interval=interval)
     else:
         # Run in test mode
-        logger.info(f"🚀 Testing PostgreSQL Strike Table Generator for {symbol}")
+        logger.info(f"🚀 Testing PostgreSQL Strike Table Generator for {symbol} ({interval})")
         
         # Initialize generator
-        generator = StrikeTableGenerator(symbol)
+        generator = StrikeTableGenerator(symbol, interval=interval)
         
         # Setup schema
         generator.setup_live_data_schema()
@@ -1110,7 +1149,7 @@ def main():
             
             cursor.execute(f"""
             SELECT COUNT(*) as total_records, MAX(timestamp) as latest_update 
-            FROM live_data.strike_table_{generator.symbol.lower()}
+            FROM live_data.{generator._strike_table_name()}
             """)
             
             result = cursor.fetchone()
@@ -1122,7 +1161,7 @@ def main():
                 # Show sample strike table data
                 cursor.execute(f"""
                 SELECT strike, buffer, probability, yes_ask, no_ask, active_side 
-                FROM live_data.strike_table_{generator.symbol.lower()} 
+                FROM live_data.{generator._strike_table_name()} 
                 ORDER BY strike 
                 LIMIT 5
                 """)
@@ -1138,52 +1177,6 @@ def main():
             conn.close()
         else:
             logger.error("❌ Strike table generation failed")
-    
-    def get_strike_table_consistency_info(self) -> Optional[Dict[str, Any]]:
-        """
-        Get information about the consistency of the current strike table data.
-        Returns None if no data exists, or a dict with consistency info.
-        """
-        try:
-            conn = psycopg2.connect(**self.db_config)
-            cursor = conn.cursor()
-            
-            # Get timestamp consistency info
-            cursor.execute(f"""
-                SELECT 
-                    COUNT(*) as total_records,
-                    COUNT(DISTINCT timestamp) as unique_timestamps,
-                    MIN(timestamp) as earliest_timestamp,
-                    MAX(timestamp) as latest_timestamp,
-                    MAX(timestamp) - MIN(timestamp) as time_span
-                FROM live_data.strike_table_{self.symbol.lower()}
-            """)
-            
-            result = cursor.fetchone()
-            if not result or result[0] == 0:
-                return None
-            
-            total_records, unique_timestamps, earliest, latest, time_span = result
-            
-            # Check if all records have the same timestamp (atomic update)
-            is_consistent = unique_timestamps == 1
-            
-            return {
-                "total_records": total_records,
-                "unique_timestamps": unique_timestamps,
-                "earliest_timestamp": earliest,
-                "latest_timestamp": latest,
-                "time_span_seconds": time_span.total_seconds() if time_span else 0,
-                "is_consistent": is_consistent,
-                "consistency_status": "CONSISTENT" if is_consistent else "MIXED_TIMESTAMPS"
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ Error checking strike table consistency: {e}")
-            return None
-        finally:
-            if conn:
-                conn.close()
 
 if __name__ == "__main__":
     main()

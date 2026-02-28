@@ -6546,8 +6546,8 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Test API call directly
         setTimeout(function() {
-          // Removed console.log
-          fetch(window.location.origin + `/api/strike_tables/${currentSymbol.toLowerCase()}`)
+          const marketParam = (window.currentMarket && window.currentMarket !== 'hourly') ? '?market=' + encodeURIComponent(window.currentMarket) : '';
+          fetch(window.location.origin + `/api/strike_tables/${currentSymbol.toLowerCase()}${marketParam}`)
             .then(response => response.json())
             .then(data => {
               // Removed console.log
@@ -7090,7 +7090,8 @@ document.addEventListener('DOMContentLoaded', () => {
             console.log('[MONITOR] Setting symbol picker to:', monitor.symbol);
             symbolPicker.value = monitor.symbol;
             currentSymbol = monitor.symbol; // Update current symbol
-            console.log('[MONITOR] Current symbol set to:', currentSymbol);
+            window.currentMarket = (monitor.market && (monitor.market === '15m' || monitor.market === 'hourly')) ? monitor.market : 'hourly';
+            console.log('[MONITOR] Current symbol set to:', currentSymbol, ', market:', window.currentMarket);
             
             // Refresh price changes for the new symbol
             if (window.liveData && typeof window.liveData.fetchSymbolPriceChanges === 'function') {

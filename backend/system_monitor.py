@@ -56,9 +56,13 @@ class SystemMonitor:
             "trade_executor": get_port("trade_executor"),
             "symbol_price_watchdog_btc": get_port("symbol_price_watchdog_btc"),
             "symbol_price_watchdog_eth": get_port("symbol_price_watchdog_eth"),
-            "strike_table_generator_btc": get_port("strike_table_generator_btc"),
+            "strike_table_generator_hourly_btc": get_port("strike_table_generator_hourly_btc"),
+            "strike_table_generator_15m_btc": get_port("strike_table_generator_15m_btc"),
+            "strike_table_generator_15m_eth": get_port("strike_table_generator_15m_eth"),
             "kalshi_account_sync": get_port("kalshi_account_sync"),
-            "kalshi_market_watchdog_btc": get_port("kalshi_market_watchdog_btc"),
+            "kalshi_market_watchdog_hourly_btc": get_port("kalshi_market_watchdog_hourly_btc"),
+            "kalshi_market_watchdog_15m_btc": get_port("kalshi_market_watchdog_15m_btc"),
+            "kalshi_market_watchdog_15m_eth": get_port("kalshi_market_watchdog_15m_eth"),
             "monitor_manager": get_port("monitor_manager"),
             "cascading_failure_detector": get_port("cascading_failure_detector"),
             "system_monitor": get_port("system_monitor")
@@ -103,10 +107,12 @@ class SystemMonitor:
                 {"name": "symbol_price_watchdog_ndx", "script": "symbol_price_watchdog.py NDX"},
                 {"name": "symbol_price_watchdog_spx", "script": "symbol_price_watchdog.py SPX"},
                 {"name": "kalshi_account_sync", "script": "kalshi_account_sync_ws.py"},
-                {"name": "kalshi_market_watchdog_btc", "script": "kalshi_market_watchdog.py BTC"},
-                {"name": "kalshi_market_watchdog_eth", "script": "kalshi_market_watchdog.py ETH"},
-                {"name": "kalshi_market_watchdog_ndx", "script": "kalshi_market_watchdog.py NDX"},
-                {"name": "kalshi_market_watchdog_spx", "script": "kalshi_market_watchdog.py SPX"},
+                {"name": "kalshi_market_watchdog_hourly_btc", "script": "kalshi_market_watchdog.py BTC"},
+                {"name": "kalshi_market_watchdog_hourly_eth", "script": "kalshi_market_watchdog.py ETH"},
+                {"name": "kalshi_market_watchdog_hourly_ndx", "script": "kalshi_market_watchdog.py NDX"},
+                {"name": "kalshi_market_watchdog_hourly_spx", "script": "kalshi_market_watchdog.py SPX"},
+                {"name": "kalshi_market_watchdog_15m_btc", "script": "kalshi_market_watchdog.py BTC --interval 15m"},
+                {"name": "kalshi_market_watchdog_15m_eth", "script": "kalshi_market_watchdog.py ETH --interval 15m"},
                 {"name": "system_monitor", "script": "system_monitor.py"},
                 {"name": "monitor_manager", "script": "monitor_manager.py"},
                 {"name": "cascading_failure_detector", "script": "cascading_failure_detector.py"}
@@ -134,13 +140,18 @@ class SystemMonitor:
                 active_trade_name = f"active_trade_supervisor_{monitor_identifier}"
                 discovered_services[active_trade_name] = active_trade_port
             
-            # Add strike table generators
+            # Add strike table generators (hourly)
             supported_symbols = ['BTC', 'ETH', 'NDX', 'SPX']
-            strike_table_port_base = 8020
-            for i, symbol in enumerate(supported_symbols):
-                strike_table_port = strike_table_port_base + i
-                strike_table_name = f"strike_table_generator_{symbol.lower()}"
-                discovered_services[strike_table_name] = strike_table_port
+            strike_table_default_ports = {'btc': 8014, 'eth': 8015, 'spx': 8016, 'ndx': 8017}
+            for symbol in supported_symbols:
+                strike_table_name = f"strike_table_generator_hourly_{symbol.lower()}"
+                discovered_services[strike_table_name] = ports.get(
+                    strike_table_name, strike_table_default_ports[symbol.lower()]
+                )
+            # 15m strike table generators (BTC, ETH)
+            for symbol in ['BTC', 'ETH']:
+                name = f"strike_table_generator_15m_{symbol.lower()}"
+                discovered_services[name] = ports.get(name, 8023 if symbol == 'BTC' else 8024)
             
             # Update the service URLs with discovered services
             self.service_urls = discovered_services
@@ -822,8 +833,8 @@ class SystemMonitor:
                 # Group services by category (updated to match current configuration)
                 service_categories = {
                     "Core Trading": ["main_app", "trade_manager", "trade_executor"],
-                    "Data Services": ["symbol_price_watchdog_btc", "symbol_price_watchdog_eth", "symbol_price_watchdog_spx", "symbol_price_watchdog_ndx", "strike_table_generator_btc", "strike_table_generator_eth", "strike_table_generator_spx", "strike_table_generator_ndx"],
-                    "Kalshi API": ["kalshi_account_sync", "kalshi_market_watchdog_btc", "kalshi_market_watchdog_eth", "kalshi_market_watchdog_spx", "kalshi_market_watchdog_ndx"],
+                    "Data Services": ["symbol_price_watchdog_btc", "symbol_price_watchdog_eth", "symbol_price_watchdog_spx", "symbol_price_watchdog_ndx", "strike_table_generator_hourly_btc", "strike_table_generator_hourly_eth", "strike_table_generator_hourly_spx", "strike_table_generator_hourly_ndx", "strike_table_generator_15m_btc", "strike_table_generator_15m_eth"],
+                    "Kalshi API": ["kalshi_account_sync", "kalshi_market_watchdog_hourly_btc", "kalshi_market_watchdog_hourly_eth", "kalshi_market_watchdog_hourly_spx", "kalshi_market_watchdog_hourly_ndx", "kalshi_market_watchdog_15m_btc", "kalshi_market_watchdog_15m_eth"],
                     "Monitor Management": ["monitor_manager"],
                     "System Management": ["cascading_failure_detector", "system_monitor"]
                 }

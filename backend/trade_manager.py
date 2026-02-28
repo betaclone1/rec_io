@@ -57,6 +57,30 @@ def _fetch_monitor_state(pg_conn, monitor_key):
         return None
 
 
+def _get_market_for_monitor_key(pg_conn, monitor_key):
+    """Return market ('hourly' or '15m') for the given monitor_key from monitor_list. Default 'hourly'."""
+    if not monitor_key or not pg_conn:
+        return 'hourly'
+    try:
+        match = MONITOR_KEY_PATTERN.match(str(monitor_key))
+        if not match:
+            return 'hourly'
+        user_number = match.group(1)
+        monitor_id = match.group(2)
+        with pg_conn.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT COALESCE(market, 'hourly') FROM users.monitor_list_{user_number}
+                WHERE id = %s
+            """, (monitor_id,))
+            row = cursor.fetchone()
+            if row and row[0]:
+                m = str(row[0]).strip().lower()
+                return m if m in ('hourly', '15m') else 'hourly'
+        return 'hourly'
+    except Exception as e:
+        return 'hourly'
+
+
 def _normalize_trade_date(value):
     """Best-effort conversion of stored trade date into an aware datetime in EST."""
     if value is None:
@@ -144,26 +168,29 @@ def _compute_weekly_cycle(trade_date, hour_idx):
     postgres_dow = (normalized_date.weekday() + 1) % 7  # Sunday=0 … Saturday=6
     return (postgres_dow * 24) + hour_idx
 
-def _get_price_spread_from_strike_table(symbol, ticker, side):
+def _get_price_spread_from_strike_table(symbol, ticker, side, market=None):
     """Get the price spread for a given ticker and side from the strike table.
     
     Args:
         symbol: The symbol (e.g., 'BTC', 'ETH')
         ticker: The ticker string (e.g., 'BTC-12345-Y')
         side: The side ('Y' or 'N', or 'yes' or 'no')
+        market: 'hourly' or '15m'; if None, defaults to 'hourly'
     
     Returns:
         float or None: The price spread (4 decimal places) or None if not found
     """
     if not symbol or not ticker or not side:
         return None
+    mkt = (market or 'hourly').strip().lower()
+    if mkt not in ('hourly', '15m'):
+        mkt = 'hourly'
+    table_name = f'strike_table_{mkt}_{symbol.lower()}'
     
     try:
         pg_conn = get_postgresql_connection()
         if not pg_conn:
             return None
-        
-        symbol_lower = symbol.lower()
         
         # Normalize side: 'Y' or 'yes' -> 'yes', 'N' or 'no' -> 'no'
         normalized_side = side.upper()
@@ -172,7 +199,6 @@ def _get_price_spread_from_strike_table(symbol, ticker, side):
         elif normalized_side == 'N':
             side_column = 'no_price_spread'
         else:
-            # Try lowercase
             normalized_side = side.lower()
             if normalized_side == 'yes':
                 side_column = 'yes_price_spread'
@@ -191,7 +217,7 @@ def _get_price_spread_from_strike_table(symbol, ticker, side):
                 LIMIT 1
             """).format(
                 sql.Identifier(side_column),
-                sql.Identifier(f'strike_table_{symbol_lower}')
+                sql.Identifier(table_name)
             )
             cursor.execute(query, (ticker,))
             
@@ -384,12 +410,13 @@ def insert_trade(trade):
                 if multiplier_for_db is None:
                     multiplier_for_db = 1.0
                 
-                # Get price spread from strike table
+                # Get price spread from strike table (use monitor's market when available)
                 ticker = trade.get('ticker')
                 side = trade.get('side')
                 price_spread = None
                 if ticker and side:
-                    price_spread = _get_price_spread_from_strike_table(symbol, ticker, side)
+                    market = _get_market_for_monitor_key(pg_conn, trade.get('monitor'))
+                    price_spread = _get_price_spread_from_strike_table(symbol, ticker, side, market)
 
                 # Get paper_trade value from trade payload, default to False
                 paper_trade = trade.get('paper_trade', False)

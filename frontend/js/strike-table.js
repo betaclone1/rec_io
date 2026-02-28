@@ -36,10 +36,17 @@ function getCurrentSymbol() {
   return symbolPicker ? symbolPicker.value : 'BTC';
 }
 
-// Fetch unified TTC data
-async function fetchUnifiedTTC(symbol = 'BTC') {
+// Get current market (hourly or 15m) from monitor context; used for strike table API calls
+function getCurrentMarket() {
+  return (typeof window.currentMarket !== 'undefined' && window.currentMarket) ? window.currentMarket : 'hourly';
+}
+
+// Fetch unified TTC data (optional market: hourly or 15m)
+async function fetchUnifiedTTC(symbol = 'BTC', market = null) {
   try {
-    const response = await apiCall(`/api/unified_ttc/${symbol.toLowerCase()}`);
+    const m = market || getCurrentMarket();
+    const url = `/api/unified_ttc/${symbol.toLowerCase()}${m && m !== 'hourly' ? '?market=' + encodeURIComponent(m) : ''}`;
+    const response = await apiCall(url);
     const data = await response.json();
     return data.ttc_seconds || 0;
   } catch (error) {
@@ -104,10 +111,12 @@ async function apiCall(endpoint, options = {}) {
   }
 }
 
-// Fetch strike table data from PostgreSQL endpoint
-async function fetchStrikeTableData(symbol = 'BTC') {
+// Fetch strike table data from PostgreSQL endpoint (optional market: hourly or 15m)
+async function fetchStrikeTableData(symbol = 'BTC', market = null) {
   try {
-    const response = await apiCall(`/api/postgresql/strike_table/${symbol.toLowerCase()}`);
+    const m = market || getCurrentMarket();
+    const url = `/api/postgresql/strike_table/${symbol.toLowerCase()}${m && m !== 'hourly' ? '?market=' + encodeURIComponent(m) : ''}`;
+    const response = await apiCall(url);
     const data = await response.json();
     return data;
   } catch (error) {

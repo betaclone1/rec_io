@@ -55,17 +55,21 @@ class CascadingFailureDetector:
             "symbol_price_watchdog_btc", # BTC price data
             "symbol_price_watchdog_eth", # ETH price data
             "symbol_price_watchdog_spx", # SPX price data
-            "strike_table_generator_btc", # BTC strike table data
-            "strike_table_generator_eth", # ETH strike table data
-            "strike_table_generator_spx", # SPX strike table data
-            "strike_table_generator_ndx", # NDX strike table data
+            "strike_table_generator_hourly_btc", # BTC strike table data
+            "strike_table_generator_hourly_eth", # ETH strike table data
+            "strike_table_generator_hourly_spx", # SPX strike table data
+            "strike_table_generator_hourly_ndx", # NDX strike table data
             "kalshi_account_sync", # Kalshi API sync
-            "kalshi_market_watchdog_btc", # BTC Kalshi market data
-            "kalshi_market_watchdog_eth", # ETH Kalshi market data
-            "kalshi_market_watchdog_spx", # SPX Kalshi market data
-            "kalshi_market_watchdog_ndx", # NDX Kalshi market data
-            "kalshi_market_watchdog_inx", # INX Kalshi market data
-            "kalshi_market_watchdog_nasdaq100", # NASDAQ100 Kalshi market data
+            "kalshi_market_watchdog_hourly_btc", # BTC Kalshi hourly market data
+            "kalshi_market_watchdog_hourly_eth", # ETH Kalshi hourly market data
+            "kalshi_market_watchdog_hourly_spx", # SPX Kalshi hourly market data
+            "kalshi_market_watchdog_hourly_ndx", # NDX Kalshi hourly market data
+            "kalshi_market_watchdog_hourly_inx", # INX Kalshi hourly market data
+            "kalshi_market_watchdog_hourly_nasdaq100", # NASDAQ100 Kalshi hourly market data
+            "kalshi_market_watchdog_15m_btc", # BTC Kalshi 15m market data
+            "kalshi_market_watchdog_15m_eth", # ETH Kalshi 15m market data
+            "strike_table_generator_15m_btc", # BTC 15m strike table
+            "strike_table_generator_15m_eth", # ETH 15m strike table
         ]
         
         # Monitor-specific services will be added dynamically

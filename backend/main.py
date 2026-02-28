@@ -1773,7 +1773,7 @@ async def get_kalshi_snapshot():
                     volume,
                     event_ticker,
                     strike
-                FROM live_data.market_kalshi_btc
+                FROM live_data.market_kalshi_hourly_btc
                 ORDER BY updated_at DESC
             """)
             
@@ -2603,7 +2603,7 @@ async def get_strike_table_mobile():
                     yes_diff,
                     no_diff,
                     active_side
-                FROM live_data.strike_table_btc
+                FROM live_data.strike_table_hourly_btc
                 ORDER BY strike
             """)
             
@@ -3364,7 +3364,7 @@ async def get_live_probabilities():
                 SELECT 
                     strike,
                     probability
-                FROM live_data.strike_table_btc
+                FROM live_data.strike_table_hourly_btc
                 ORDER BY strike
             """)
             
@@ -3440,7 +3440,7 @@ async def get_strike_table(symbol: str):
                     strike_tier,
                     market_status,
                     momentum_percentile
-                FROM live_data.strike_table_{symbol_lower}
+                FROM live_data.strike_table_hourly_{symbol_lower}
                 LIMIT 1
             """)
             
@@ -3465,7 +3465,7 @@ async def get_strike_table(symbol: str):
                     yes_diff,
                     no_diff,
                     active_side
-                FROM live_data.strike_table_{symbol_lower}
+                FROM live_data.strike_table_hourly_{symbol_lower}
                 ORDER BY strike
             """)
             
@@ -3532,7 +3532,7 @@ async def get_postgresql_strike_table(symbol: str):
                     momentum_percentile,
                     market_title,
                     timestamp
-                FROM live_data.strike_table_{symbol.lower()} 
+                FROM live_data.strike_table_hourly_{symbol.lower()} 
                 LIMIT 1
             """)
             
@@ -3557,7 +3557,7 @@ async def get_postgresql_strike_table(symbol: str):
                     yes_diff,
                     no_diff,
                     active_side
-                FROM live_data.strike_table_{symbol.lower()} 
+                FROM live_data.strike_table_hourly_{symbol.lower()} 
                 ORDER BY strike
             """)
             
@@ -3798,10 +3798,11 @@ async def get_unified_ttc(symbol: str):
             user="rec_io_user",
             password="rec_io_password"
         )
+        symbol_lower = symbol.lower()
         with conn.cursor() as cursor:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT ttc_seconds, event_ticker, market_title, market_status
-                FROM live_data.strike_table_btc
+                FROM live_data.strike_table_hourly_{symbol_lower}
                 WHERE market_status = 'active'
                 ORDER BY ttc_seconds ASC
                 LIMIT 1

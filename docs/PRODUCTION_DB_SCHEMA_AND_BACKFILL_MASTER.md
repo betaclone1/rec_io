@@ -41,7 +41,7 @@ This document is the single source of truth for:
 
 ### 1.5 Strike tables (real-time) — volatility and movement columns
 
-- **Tables:** `live_data.strike_table_btc`, `strike_table_eth`, `strike_table_spx`, `strike_table_ndx`.
+- **Tables:** `live_data.strike_table_hourly_btc`, `strike_table_hourly_eth`, `strike_table_hourly_spx`, `strike_table_hourly_ndx`.
 - **New columns (all four tables):** `volatility`, `volatility_percentile`, `movement`, `movement_percentile`.
 - **How they get populated:** The **strike table generator** (`backend/strike_table_generator.py`) reads the latest row from `live_data.live_price_log_1s_{symbol}` (same row used for price and momentum) and writes these four values into each strike table row it generates. No backfill: new snapshots get the values when the generator runs after schema/code deploy.
 - **Reference:** Schema in `docs/MASTER_DB_SCHEMA_REFERENCE.md`; change log in `DATABASE_CHANGES_LOG.md`. Schema migration: `init_database()` in `backend/core/config/database.py` adds the columns if missing.
