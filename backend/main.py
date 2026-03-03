@@ -106,7 +106,8 @@ def get_trade_history_preferences_postgresql():
                        symbol_btc, symbol_eth, symbol_spy, symbol_ndx, symbol_usd_eur,
                        strategy_hourly_htc, strategy_momentum_scalp, strategy_test,
                        day_sunday, day_monday, day_tuesday, day_wednesday, day_thursday, day_friday, day_saturday,
-                       analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp, chart_view, pct_mode
+                       analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp, chart_view, pct_mode,
+                       live_filter, paper_filter
                 FROM users.trade_history_preferences_0001 WHERE id = 1
             """)
             result = cursor.fetchone()
@@ -155,7 +156,9 @@ def get_trade_history_preferences_postgresql():
                     "page_size": result[38],
                     "last_search_timestamp": result[39],
                     "chart_view": result[40],
-                    "pct_mode": result[41]
+                    "pct_mode": result[41],
+                    "live_filter": result[42] if len(result) > 42 else True,
+                    "paper_filter": result[43] if len(result) > 43 else False
                 }
             else:
                 return {
@@ -199,7 +202,9 @@ def get_trade_history_preferences_postgresql():
                     "sort_asc": True,
                     "page_size": 50,
                     "last_search_timestamp": int(time.time()),
-                    "chart_view": "pnl"
+                    "chart_view": "pnl",
+                    "live_filter": True,
+                    "paper_filter": False
                 }
     except Exception as e:
         print(f"[PostgreSQL Error] Failed to get trade history preferences: {e}")
@@ -237,7 +242,9 @@ def get_trade_history_preferences_postgresql():
             "sort_asc": True,
             "page_size": 50,
             "last_search_timestamp": int(time.time()),
-            "chart_view": "pnl"
+            "chart_view": "pnl",
+            "live_filter": True,
+            "paper_filter": False
         }
 
 def update_trade_history_preferences_postgresql(**kwargs):
@@ -1374,16 +1381,18 @@ async def get_core_data(symbol: str = "BTC"):
             )
             cursor = conn.cursor()
             cursor.execute(f"""
-                SELECT momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg
-                FROM live_data.live_price_log_1s_{symbol.lower()} 
-                ORDER BY timestamp DESC 
+                SELECT momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg,
+                       move_1m, move_2m, move_3m, move_4m, movement, movement_percentile
+                FROM live_data.live_price_log_1s_{symbol.lower()}
+                ORDER BY timestamp DESC
                 LIMIT 1
             """)
             result = cursor.fetchone()
             conn.close()
             
             if result:
-                momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg = result
+                (momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg,
+                 move_1m, move_2m, move_3m, move_4m, movement, movement_percentile) = result
                 momentum_data = {
                     'weighted_momentum_score': float(momentum) if momentum is not None else 0.0,
                     'delta_1m': float(delta_1m) if delta_1m is not None else None,
@@ -1393,7 +1402,13 @@ async def get_core_data(symbol: str = "BTC"):
                     'delta_15m': float(delta_15m) if delta_15m is not None else None,
                     'delta_30m': float(delta_30m) if delta_30m is not None else None,
                     'momentum_percentile': float(momentum_percentile) if momentum_percentile is not None else None,
-                    'momentum_5s_avg': float(momentum_5s_avg) if momentum_5s_avg is not None else None
+                    'momentum_5s_avg': float(momentum_5s_avg) if momentum_5s_avg is not None else None,
+                    'move_1m': float(move_1m) if move_1m is not None else None,
+                    'move_2m': float(move_2m) if move_2m is not None else None,
+                    'move_3m': float(move_3m) if move_3m is not None else None,
+                    'move_4m': float(move_4m) if move_4m is not None else None,
+                    'movement': float(movement) if movement is not None else None,
+                    'movement_percentile': float(movement_percentile) if movement_percentile is not None else None,
                 }
                 print(f"[MAIN] Momentum analysis: {momentum_data.get('weighted_momentum_score', 'N/A'):.4f}%")
             else:
@@ -1404,11 +1419,12 @@ async def get_core_data(symbol: str = "BTC"):
                     'delta_4m': None,
                     'delta_15m': None,
                     'delta_30m': None,
-                    'weighted_momentum_score': None
+                    'weighted_momentum_score': None,
+                    'move_1m': None, 'move_2m': None, 'move_3m': None, 'move_4m': None,
+                    'movement': None, 'movement_percentile': None,
                 }
         except Exception as e:
             print(f"Error getting momentum data from PostgreSQL: {e}")
-            # Fallback to null momentum data
             momentum_data = {
                 'delta_1m': None,
                 'delta_2m': None,
@@ -1416,7 +1432,9 @@ async def get_core_data(symbol: str = "BTC"):
                 'delta_4m': None,
                 'delta_15m': None,
                 'delta_30m': None,
-                'weighted_momentum_score': None
+                'weighted_momentum_score': None,
+                'move_1m': None, 'move_2m': None, 'move_3m': None, 'move_4m': None,
+                'movement': None, 'movement_percentile': None,
             }
         
         # Get latest database price from PostgreSQL
@@ -1755,7 +1773,7 @@ async def get_kalshi_snapshot():
                     volume,
                     event_ticker,
                     strike
-                FROM live_data.market_kalshi_btc
+                FROM live_data.market_kalshi_hourly_btc
                 ORDER BY updated_at DESC
             """)
             
@@ -1832,6 +1850,246 @@ async def get_account_balance(mode: str = "prod"):
     except Exception as e:
         print(f"Error getting account balance from PostgreSQL: {e}")
         return {"portfolio": 0, "positions": 0}
+
+@app.get("/api/subaccounts")
+async def get_subaccounts():
+    """Get subaccounts (users.subaccounts_0001) for display. Balances in cents."""
+    try:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute("""
+                SELECT id, subaccount, balance, base_value, realized_pnl, realized_pnl_pct,
+                       target_pnl__pct, transfer_amt, automatic_transfers
+                FROM users.subaccounts_0001
+                ORDER BY id
+            """)
+            rows = cursor.fetchall()
+        conn.close()
+        return {"subaccounts": [dict(r) for r in rows]}
+    except Exception as e:
+        print(f"Error getting subaccounts from PostgreSQL: {e}")
+        return {"subaccounts": []}
+
+@app.patch("/api/subaccounts/automatic-transfers")
+async def update_subaccount_automatic_transfers(request: Request):
+    """Set automatic_transfers for a subaccount by name. Body: { \"subaccount\": \"Master Trading Bankroll\", \"automatic_transfers\": true }."""
+    try:
+        payload = await request.json()
+        subaccount_name = payload.get("subaccount")
+        automatic = payload.get("automatic_transfers")
+        if subaccount_name is None or automatic is None:
+            return {"ok": False, "error": "subaccount and automatic_transfers required"}
+        import psycopg2
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE users.subaccounts_0001 SET automatic_transfers = %s WHERE subaccount = %s",
+                (bool(automatic), subaccount_name)
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                conn.close()
+                return {"ok": False, "error": "subaccount not found"}
+        conn.close()
+        return {"ok": True}
+    except Exception as e:
+        print(f"Error updating subaccount automatic_transfers: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.patch("/api/subaccounts/transfer-settings")
+async def update_subaccount_transfer_settings(request: Request):
+    """Set target_pnl__pct and/or transfer_amt for a subaccount. Body: { \"subaccount\": \"Master Trading Bankroll\", \"target_pnl__pct\": 0.115, \"transfer_amt\": 0.10 } (fractions)."""
+    try:
+        payload = await request.json()
+        subaccount_name = payload.get("subaccount")
+        target_pct = payload.get("target_pnl__pct")
+        transfer_amt = payload.get("transfer_amt")
+        if subaccount_name is None:
+            return {"ok": False, "error": "subaccount required"}
+        if target_pct is None and transfer_amt is None:
+            return {"ok": False, "error": "at least one of target_pnl__pct or transfer_amt required"}
+        import psycopg2
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        with conn.cursor() as cursor:
+            if target_pct is not None and transfer_amt is not None:
+                cursor.execute(
+                    "UPDATE users.subaccounts_0001 SET target_pnl__pct = %s, transfer_amt = %s WHERE subaccount = %s",
+                    (float(target_pct), float(transfer_amt), subaccount_name)
+                )
+            elif target_pct is not None:
+                cursor.execute(
+                    "UPDATE users.subaccounts_0001 SET target_pnl__pct = %s WHERE subaccount = %s",
+                    (float(target_pct), subaccount_name)
+                )
+            else:
+                cursor.execute(
+                    "UPDATE users.subaccounts_0001 SET transfer_amt = %s WHERE subaccount = %s",
+                    (float(transfer_amt), subaccount_name)
+                )
+            conn.commit()
+            if cursor.rowcount == 0:
+                conn.close()
+                return {"ok": False, "error": "subaccount not found"}
+        conn.close()
+        return {"ok": True}
+    except Exception as e:
+        print(f"Error updating subaccount transfer settings: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@app.patch("/api/subaccounts/base-value")
+async def update_subaccount_base_value(request: Request):
+    """Set base_value (cents) for a subaccount. Body: { \"subaccount\": \"Master Trading Bankroll\", \"base_value\": 84329 } (base_value in cents)."""
+    try:
+        payload = await request.json()
+        subaccount_name = payload.get("subaccount")
+        base_value = payload.get("base_value")
+        if subaccount_name is None:
+            return {"ok": False, "error": "subaccount required"}
+        if base_value is None:
+            return {"ok": False, "error": "base_value required"}
+        try:
+            base_value_int = int(base_value)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "base_value must be an integer (cents)"}
+        if base_value_int < 0:
+            return {"ok": False, "error": "base_value must be non-negative"}
+        import psycopg2
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE users.subaccounts_0001 SET base_value = %s WHERE subaccount = %s",
+                (base_value_int, subaccount_name)
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                conn.close()
+                return {"ok": False, "error": "subaccount not found"}
+        conn.close()
+        return {"ok": True}
+    except Exception as e:
+        print(f"Error updating subaccount base_value: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/subaccounts/initiate-transfer")
+async def initiate_transfer(request: Request):
+    """
+    Manual internal transfer between subaccounts (e.g. MTB → Cash Transfer).
+    Body: { "from": "Master Trading Bankroll", "to": "Cash Transfer", "amount": 100 } (amount in dollars).
+    Inserts into users.transfers_0001 (initiated=manual), updates subaccounts balances, then triggers
+    kalshi_account_sync (sync_balance) to poll Kalshi and update account_balance.
+    """
+    try:
+        payload = await request.json()
+        from_name = payload.get("from")
+        to_name = payload.get("to")
+        amount_dollars = payload.get("amount")
+        if not from_name or not to_name:
+            return {"ok": False, "error": "from and to required"}
+        if from_name == "PRIMARY" or to_name == "PRIMARY":
+            return {"ok": False, "error": "PRIMARY cannot be from or to"}
+        if from_name == "External" or to_name == "External":
+            return {"ok": False, "error": "External transfers not supported yet"}
+        if from_name == to_name:
+            return {"ok": False, "error": "from and to must differ"}
+        try:
+            amount_val = float(amount_dollars)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "amount must be a number"}
+        if amount_val <= 0:
+            return {"ok": False, "error": "amount must be positive"}
+        amount_cents = int(round(amount_val * 100))
+
+        import psycopg2
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        EST = ZoneInfo("America/New_York")
+        transfer_timestamp_est = datetime.now(EST).strftime("%Y-%m-%d %H:%M:%S")
+
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT balance FROM users.subaccounts_0001 WHERE subaccount = %s",
+                    (from_name,)
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return {"ok": False, "error": f"subaccount not found: {from_name}"}
+                from_balance = int(row[0]) if row[0] is not None else 0
+                if from_balance < amount_cents:
+                    return {"ok": False, "error": f"insufficient balance in {from_name}"}
+                cursor.execute(
+                    "SELECT 1 FROM users.subaccounts_0001 WHERE subaccount = %s",
+                    (to_name,)
+                )
+                if not cursor.fetchone():
+                    return {"ok": False, "error": f"subaccount not found: {to_name}"}
+
+                cursor.execute("""
+                    INSERT INTO users.transfers_0001 (timestamp, type, "from", "to", amount, initiated)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (transfer_timestamp_est, "internal", from_name, to_name, amount_cents, "manual"))
+                cursor.execute(
+                    "UPDATE users.subaccounts_0001 SET balance = balance - %s WHERE subaccount = %s",
+                    (amount_cents, from_name)
+                )
+                cursor.execute(
+                    "UPDATE users.subaccounts_0001 SET balance = balance + %s WHERE subaccount = %s",
+                    (amount_cents, to_name)
+                )
+                conn.commit()
+        finally:
+            conn.close()
+
+        # Notify frontend so Account Information panel refreshes immediately (subaccounts + transfers table)
+        await broadcast_db_change("subaccounts", {"source": "initiate_transfer"})
+        await broadcast_db_change("transfers", {"source": "initiate_transfer"})
+
+        # Trigger kalshi_account_sync (sync_balance) in background: poll Kalshi, update subaccounts/account_balance, notify
+        def _run_sync():
+            try:
+                from backend.kalshi_account_sync_ws import sync_balance
+                sync_balance()
+            except Exception as e:
+                print(f"initiate-transfer: sync_balance failed: {e}")
+
+        import threading
+        threading.Thread(target=_run_sync, daemon=True).start()
+
+        return {"ok": True}
+    except Exception as e:
+        print(f"Error initiating transfer: {e}")
+        return {"ok": False, "error": str(e)}
+
 
 @app.get("/api/monitor/bankroll")
 async def get_monitor_bankroll(monitor_id: str):
@@ -2023,6 +2281,39 @@ def get_settlements():
     except Exception as e:
         print(f"Error getting settlements from PostgreSQL: {e}")
         return {"settlements": []}
+
+
+@app.get("/api/db/transfers")
+def get_transfers():
+    """Get transfer history from users.transfers_0001 (internal/external transfer log)."""
+    try:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute("""
+                SELECT id, timestamp, type, "from", "to", amount, initiated
+                FROM users.transfers_0001
+                ORDER BY id DESC
+                LIMIT 100
+            """)
+            rows = cursor.fetchall()
+
+        transfers_list = [dict(r) for r in rows]
+        conn.close()
+        return {"transfers": transfers_list}
+
+    except Exception as e:
+        print(f"Error getting transfers from PostgreSQL: {e}")
+        return {"transfers": []}
+
 
 @app.get("/api/db/system_health")
 def get_system_health_from_db():
@@ -2281,13 +2572,25 @@ async def get_momentum_score():
         print(f"Error getting momentum score: {e}")
         return {"weighted_score": 0, "error": str(e)}
 
+def _strike_table_name(symbol: str, market: str) -> str:
+    """Build strike table name from symbol and market. Market must be 'hourly' or '15m'."""
+    s = (symbol or "btc").lower()
+    m = (market or "").strip().lower()
+    if m not in ("hourly", "15m"):
+        raise ValueError("market must be 'hourly' or '15m'")
+    return f"strike_table_{m}_{s}"
+
+
 @app.get("/api/strike_table")
-async def get_strike_table_mobile():
-    """Get strike table data for mobile from PostgreSQL."""
+async def get_strike_table_mobile(request: Request):
+    """Get strike table data for mobile. Query params: symbol, market (required: hourly or 15m)."""
     try:
         import psycopg2
-        
-        # Connect to PostgreSQL
+        symbol = (request.query_params.get("symbol") or "btc").lower()
+        market = (request.query_params.get("market") or "").strip().lower()
+        if market not in ("hourly", "15m"):
+            return {"strikes": [], "error": "market required (hourly or 15m)"}
+        table_name = _strike_table_name(symbol, market)
         conn = psycopg2.connect(
             host="localhost",
             database="rec_io_db",
@@ -2297,7 +2600,7 @@ async def get_strike_table_mobile():
         
         with conn.cursor() as cursor:
             # Get strike table data from PostgreSQL
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT 
                     strike,
                     buffer,
@@ -2312,7 +2615,7 @@ async def get_strike_table_mobile():
                     yes_diff,
                     no_diff,
                     active_side
-                FROM live_data.strike_table_btc
+                    FROM live_data.{table_name}
                 ORDER BY strike
             """)
             
@@ -2463,6 +2766,10 @@ def save_trade_history_preferences(preferences):
             update_data["win_filter"] = bool(preferences["win_filter"])
         if "loss_filter" in preferences:
             update_data["loss_filter"] = bool(preferences["loss_filter"])
+        if "live_filter" in preferences:
+            update_data["live_filter"] = bool(preferences["live_filter"])
+        if "paper_filter" in preferences:
+            update_data["paper_filter"] = bool(preferences["paper_filter"])
         
         # Contract filters
         contract_fields = [
@@ -2666,7 +2973,8 @@ async def get_auto_entry_settings(monitor_id: str = None):
                        momentum_spike_threshold, verification_period_enabled, verification_period_seconds,
                        min_volume, win_streak_threshold, performance_based_allocation,
                        momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target,
-                       min_ask, max_ask, loss_prevention_toggle, max_price_spread
+                       min_ask, max_ask, loss_prevention_toggle, max_price_spread, prob_adj,
+                       min_cooldown_timer, max_cooldown_timer
                 FROM users.monitor_list_0001 WHERE id = %s
             """, (monitor_id,))
             result = cursor.fetchone()
@@ -2701,7 +3009,10 @@ async def get_auto_entry_settings(monitor_id: str = None):
                     "min_ask": float(result[23]) if result[23] is not None else 0.0000,
                     "max_ask": float(result[24]) if result[24] is not None else 0.9800,
                     "loss_prevention_toggle": bool(result[25]) if result[25] is not None else True,
-                    "max_price_spread": float(result[26]) if result[26] is not None else 0.0300
+                    "max_price_spread": float(result[26]) if result[26] is not None else 0.0300,
+                    "prob_adj": float(result[27]) if result[27] is not None else 5.00,
+                    "min_cooldown_timer": result[28] if result[28] is not None else None,
+                    "max_cooldown_timer": result[29] if result[29] is not None else None
                 }
             else:
                 return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
@@ -2826,6 +3137,15 @@ async def set_auto_entry_settings(request: Request):
             if "max_price_spread" in data:
                 update_fields.append("max_price_spread = %s")
                 update_values.append(float(data["max_price_spread"]))
+            if "prob_adj" in data:
+                update_fields.append("prob_adj = %s")
+                update_values.append(float(data["prob_adj"]))
+            if "min_cooldown_timer" in data:
+                update_fields.append("min_cooldown_timer = %s")
+                update_values.append(int(data["min_cooldown_timer"]) if data["min_cooldown_timer"] is not None else None)
+            if "max_cooldown_timer" in data:
+                update_fields.append("max_cooldown_timer = %s")
+                update_values.append(int(data["max_cooldown_timer"]) if data["max_cooldown_timer"] is not None else None)
             
             if update_fields:
                 # Update the monitor in monitor_list table
@@ -2900,8 +3220,9 @@ async def trigger_open_trade(request: Request):
         symbol = data.get("symbol")
         position = data.get("position")
         trade_strategy = data.get("trade_strategy")
+        paper_trade = data.get("paper_trade", False)
         
-        print(f"[TRIGGER OPEN TRADE] Received request: strike={strike}, side={side}, ticker={ticker}, buy_price={buy_price}, prob={prob}, symbol_open={symbol_open}, momentum={momentum}")
+        print(f"[TRIGGER OPEN TRADE] Received request: strike={strike}, side={side}, ticker={ticker}, buy_price={buy_price}, prob={prob}, symbol_open={symbol_open}, momentum={momentum}, paper_trade={paper_trade}")
         
         # Forward the request directly to the trade_manager service
         trade_manager_port = get_port("trade_manager")
@@ -2986,10 +3307,12 @@ async def trigger_open_trade(request: Request):
             "symbol_close": None,
             "momentum": momentum,
             "prob": prob,
+            "diff": data.get("diff"),  # Add diff from request
             "win_loss": None,
             "entry_method": data.get("entry_method", "manual"),
             "monitor": monitor,  # Add monitor field
-            "bankroll_allotment_total": bankroll_allotment_total
+            "bankroll_allotment_total": bankroll_allotment_total,
+            "paper_trade": paper_trade  # Add paper_trade from request
         }
         
         # Send request directly to trade_manager
@@ -3034,12 +3357,15 @@ def frontend_changes():
     return {"last_modified": latest}
 
 @app.get("/api/live_probabilities")
-async def get_live_probabilities():
-    """Get live probabilities from PostgreSQL strike table"""
+async def get_live_probabilities(request: Request):
+    """Get live probabilities. Query params: symbol, market (required: hourly or 15m)."""
     try:
         import psycopg2
-        
-        # Connect to PostgreSQL
+        symbol = (request.query_params.get("symbol") or "btc").lower()
+        market = (request.query_params.get("market") or "").strip().lower()
+        if market not in ("hourly", "15m"):
+            return {"error": "market required (hourly or 15m)"}
+        table_name = _strike_table_name(symbol, market)
         conn = psycopg2.connect(
             host="localhost",
             database="rec_io_db",
@@ -3049,11 +3375,11 @@ async def get_live_probabilities():
         
         with conn.cursor() as cursor:
             # Get probability data from PostgreSQL strike table
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT 
                     strike,
                     probability
-                FROM live_data.strike_table_btc
+                    FROM live_data.{table_name}
                 ORDER BY strike
             """)
             
@@ -3101,15 +3427,17 @@ def safe_read_json(filepath: str, timeout: float = 0.1):
             return None
 
 @app.get("/api/strike_tables/{symbol}")
-async def get_strike_table(symbol: str):
-    """Get strike table data for a specific symbol from PostgreSQL"""
+async def get_strike_table(symbol: str, request: Request):
+    """Get strike table data. Query param: market (required: hourly or 15m)."""
     try:
         import psycopg2
         
-        # Convert symbol to lowercase for consistency
+        # Convert symbol to lowercase for consistency (used for error messages/logs)
         symbol_lower = symbol.lower()
-        
-        # Connect to PostgreSQL
+        market = (request.query_params.get("market") or "").strip().lower()
+        if market not in ("hourly", "15m"):
+            return {"error": "market required (hourly or 15m)"}
+        table_name = _strike_table_name(symbol, market)
         conn = psycopg2.connect(
             host="localhost",
             database="rec_io_db",
@@ -3129,7 +3457,7 @@ async def get_strike_table(symbol: str):
                     strike_tier,
                     market_status,
                     momentum_percentile
-                FROM live_data.strike_table_{symbol_lower}
+                    FROM live_data.{table_name}
                 LIMIT 1
             """)
             
@@ -3154,7 +3482,7 @@ async def get_strike_table(symbol: str):
                     yes_diff,
                     no_diff,
                     active_side
-                FROM live_data.strike_table_{symbol_lower}
+                    FROM live_data.{table_name}
                 ORDER BY strike
             """)
             
@@ -3198,12 +3526,14 @@ async def get_strike_table(symbol: str):
         return {"error": f"Error loading strike table for {symbol} from PostgreSQL: {str(e)}"}
 
 @app.get("/api/postgresql/strike_table/{symbol}")
-async def get_postgresql_strike_table(symbol: str):
-    """Get strike table data from PostgreSQL for a specific symbol"""
+async def get_postgresql_strike_table(symbol: str, request: Request):
+    """Get strike table data. Query param: market (required: hourly or 15m)."""
     try:
         import psycopg2
-        
-        # Connect to PostgreSQL
+        market = (request.query_params.get("market") or "").strip().lower()
+        if market not in ("hourly", "15m"):
+            return {"error": "market required (hourly or 15m)"}
+        table_name = _strike_table_name(symbol, market)
         conn = psycopg2.connect(
             host="localhost",
             database="rec_io_db",
@@ -3221,7 +3551,7 @@ async def get_postgresql_strike_table(symbol: str):
                     momentum_percentile,
                     market_title,
                     timestamp
-                FROM live_data.strike_table_{symbol.lower()} 
+                    FROM live_data.{table_name}
                 LIMIT 1
             """)
             
@@ -3246,7 +3576,7 @@ async def get_postgresql_strike_table(symbol: str):
                     yes_diff,
                     no_diff,
                     active_side
-                FROM live_data.strike_table_{symbol.lower()} 
+                    FROM live_data.{table_name}
                 ORDER BY strike
             """)
             
@@ -3477,10 +3807,14 @@ async def get_active_trades_for_monitor(monitor_name: str):
         return {"error": f"Error loading active trades for monitor {monitor_name} from PostgreSQL: {str(e)}"}
 
 @app.get("/api/unified_ttc/{symbol}")
-async def get_unified_ttc(symbol: str):
-    """Get unified TTC data for a specific symbol from strike table"""
+async def get_unified_ttc(symbol: str, request: Request):
+    """Get unified TTC data. Query param: market (required: hourly or 15m)."""
     try:
         import psycopg2
+        market = (request.query_params.get("market") or "").strip().lower()
+        if market not in ("hourly", "15m"):
+            return {"error": "market required (hourly or 15m)", "ttc_seconds": 0}
+        table_name = _strike_table_name(symbol, market)
         conn = psycopg2.connect(
             host="localhost",
             database="rec_io_db",
@@ -3488,9 +3822,9 @@ async def get_unified_ttc(symbol: str):
             password="rec_io_password"
         )
         with conn.cursor() as cursor:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT ttc_seconds, event_ticker, market_title, market_status
-                FROM live_data.strike_table_btc
+                    FROM live_data.{table_name}
                 WHERE market_status = 'active'
                 ORDER BY ttc_seconds ASC
                 LIMIT 1
@@ -4200,10 +4534,10 @@ async def execute_command(request: dict):
         
         os.chdir(project_dir)
         
-        # Set up environment with proper PATH
         env = os.environ.copy()
-        # Add common paths for both macOS and Ubuntu
-        env['PATH'] = '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin'
+        # Only restrict PATH for non-backup commands so supervisorctl etc. use a minimal PATH
+        if 'package_user_data.sh' not in command:
+            env['PATH'] = '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin'
         
         # Check if this is a supervisorctl command
         if command.startswith('supervisorctl'):
@@ -4235,23 +4569,40 @@ async def execute_command(request: dict):
             else:
                 return {"success": False, "error": "Invalid supervisorctl command"}
         else:
-            # Execute other commands normally
-            # Use longer timeout for backup operations
             timeout = 300 if 'package_user_data.sh' in command else 30
-            
-            result = subprocess.run(
-                command.split(),
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=env,
-                cwd=project_dir
-            )
+            # Backup script: run with PATH that can find pg_dump (IDE/launcher often don't have it)
+            if 'package_user_data.sh' in command:
+                import shlex
+                run_cmd = ['/bin/bash', '-l', '-c', f'cd {shlex.quote(project_dir)} && {command}']
+                backup_env = env.copy()
+                extra_paths = '/opt/homebrew/bin:/usr/local/bin:/usr/bin'
+                backup_env['PATH'] = (backup_env.get('PATH') or '') + ':' + extra_paths
+                result = subprocess.run(
+                    run_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    cwd=project_dir,
+                    env=backup_env,
+                )
+            else:
+                result = subprocess.run(
+                    command.split(),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    env=env,
+                    cwd=project_dir
+                )
         
         if result.returncode == 0:
             return {"success": True, "output": result.stdout}
         else:
-            return {"success": False, "error": f"Command failed with return code {result.returncode}", "output": result.stderr}
+            err_detail = (result.stderr or "").strip() or (result.stdout or "").strip()
+            err_msg = f"Command failed with return code {result.returncode}"
+            if err_detail:
+                err_msg += f". {err_detail[:500]}"
+            return {"success": False, "error": err_msg, "output": result.stderr or result.stdout}
             
     except subprocess.TimeoutExpired:
         return {"success": False, "error": "Command timed out after 5 minutes"}
@@ -4432,11 +4783,16 @@ async def download_file(request: dict):
         
         file_path = request.get("file_path", "")
         if not file_path:
-            return {"success": False, "error": "No file path provided"}
-        
-        # Security check: ensure the file is within the project directory
-        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        file_path = os.path.abspath(file_path)
+            # Allow filename-only for backup files (resolved under project/backup)
+            file_name = request.get("file", "").strip()
+            if file_name:
+                project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                file_path = os.path.join(project_dir, "backup", file_name)
+            else:
+                return {"success": False, "error": "No file path or file name provided"}
+        if file_path:
+            project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            file_path = os.path.abspath(file_path)
         
         if not file_path.startswith(project_dir):
             return {"success": False, "error": "Access denied: File path outside project directory"}
@@ -4651,6 +5007,271 @@ async def get_portfolio_history(period: str = "1m"):
         print(f"Error getting portfolio history: {e}")
         return {"status": "error", "message": str(e)}
 
+@app.get("/api/bankroll/history")
+async def get_bankroll_history(period: str = "1m"):
+    """Get historical bankroll_current data from account_balance for charting."""
+    try:
+        import psycopg2
+        from datetime import datetime, timedelta
+
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+
+        now = datetime.now()
+        if period == "1d":
+            today_5am = now.replace(hour=5, minute=0, second=0, microsecond=0)
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT timestamp, bankroll_current
+                    FROM users.account_balance_0001
+                    WHERE timestamp < %s
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                """, (today_5am.strftime('%Y-%m-%d %H:%M:%S'),))
+                last_before_5am = cursor.fetchone()
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT timestamp, bankroll_current
+                    FROM users.account_balance_0001
+                    WHERE timestamp >= %s
+                    ORDER BY timestamp ASC
+                """, (today_5am.strftime('%Y-%m-%d %H:%M:%S'),))
+                results = cursor.fetchall()
+            if last_before_5am:
+                results = [last_before_5am] + list(results)
+        elif period == "1w":
+            start_time = now - timedelta(weeks=1)
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT timestamp, bankroll_current
+                    FROM users.account_balance_0001
+                    WHERE timestamp >= %s
+                    ORDER BY timestamp ASC
+                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
+                results = cursor.fetchall()
+        elif period == "1m":
+            start_time = now - timedelta(days=30)
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT timestamp, bankroll_current
+                    FROM users.account_balance_0001
+                    WHERE timestamp >= %s
+                    ORDER BY timestamp ASC
+                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
+                results = cursor.fetchall()
+        elif period == "1y":
+            start_time = now - timedelta(days=365)
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT timestamp, bankroll_current
+                    FROM users.account_balance_0001
+                    WHERE timestamp >= %s
+                    ORDER BY timestamp ASC
+                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
+                results = cursor.fetchall()
+        else:  # "all"
+            start_time = datetime(2020, 1, 1)
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT timestamp, bankroll_current
+                    FROM users.account_balance_0001
+                    WHERE timestamp >= %s
+                    ORDER BY timestamp ASC
+                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
+                results = cursor.fetchall()
+
+        conn.close()
+
+        data = []
+        for row in results:
+            timestamp, bankroll_current = row
+            data.append({
+                "timestamp": timestamp if timestamp else None,
+                "bankroll": float(bankroll_current) / 100 if bankroll_current is not None else 0  # cents to dollars
+            })
+
+        return {
+            "status": "ok",
+            "period": period,
+            "count": len(data),
+            "data": data
+        }
+
+    except Exception as e:
+        print(f"Error getting bankroll history: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/pnl/history")
+async def get_pnl_history(period: str = "1m"):
+    """Get cumulative PnL from trades_0001 for charting. Only counts trades where test_filter and paper_trade are FALSE.
+    Returns time series starting at $0 for the selected window (1d=24h, 1w=7d, 1m=30d, 1y=365d, all)."""
+    try:
+        import psycopg2
+        from datetime import datetime, timedelta
+
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+
+        now = datetime.now()
+        start_time = None
+        if period == "1d":
+            start_time = now - timedelta(hours=24)
+        elif period == "1w":
+            start_time = now - timedelta(days=7)
+        elif period == "1m":
+            start_time = now - timedelta(days=30)
+        elif period == "1y":
+            start_time = now - timedelta(days=365)
+        else:  # "all"
+            start_time = datetime(2020, 1, 1)
+
+        start_date_sql = start_time.strftime("%Y-%m-%d")
+
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT COALESCE(
+                    CASE WHEN closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE NULL END,
+                    created_at
+                ) AS ts, pnl
+                FROM users.trades_0001
+                WHERE (test_filter IS NULL OR test_filter = FALSE)
+                  AND (paper_trade IS NULL OR paper_trade = FALSE)
+                  AND LOWER(TRIM(status)) IN ('closed', 'settled')
+                  AND pnl IS NOT NULL
+                  AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN (closed_at::timestamptz)::date ELSE created_at::date END) >= %s::date
+                ORDER BY ts ASC
+            """, (start_date_sql,))
+            rows = cursor.fetchall()
+
+        conn.close()
+
+        # Build cumulative series starting at $0
+        data = []
+        cumulative = 0.0
+        # First point: start of window at $0
+        data.append({"timestamp": start_date_sql + "T00:00:00", "pnl": 0.0})
+        for (ts, pnl) in rows:
+            pnl_val = float(pnl) if pnl is not None else 0.0
+            cumulative += pnl_val
+            ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+            data.append({"timestamp": ts_str, "pnl": round(cumulative, 2)})
+
+        return {
+            "status": "ok",
+            "period": period,
+            "count": len(data),
+            "data": data,
+            "total_pnl": round(cumulative, 2)
+        }
+
+    except Exception as e:
+        print(f"Error getting PnL history: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/performance/realized")
+async def get_performance_realized():
+    """Realized PnL to-date for Day/Week/Month/Year: current period from period start through now,
+    and prev_pnl for the same-length window in the previous period (e.g. yesterday 00:00–18:00 vs today 00:00–18:00).
+    Only trades where paper_trade and test_filter are FALSE. All times America/New_York."""
+    try:
+        import psycopg2
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        with conn.cursor() as tz_cur:
+            tz_cur.execute("SET TIME ZONE 'America/New_York'")
+        eastern = ZoneInfo("America/New_York")
+        now = datetime.now(eastern)
+        today = now.date()
+
+        # Period starts (00:00:00 Eastern, timezone-aware)
+        def et_start(y, m, d):
+            return datetime(y, m, d, 0, 0, 0, tzinfo=eastern)
+
+        day_start = et_start(today.year, today.month, today.day)
+        days_since_sunday = (today.weekday() + 1) % 7
+        sunday = today - timedelta(days=days_since_sunday)
+        week_start = et_start(sunday.year, sunday.month, sunday.day)
+        month_start = et_start(today.year, today.month, 1)
+        year_start = et_start(today.year, 1, 1)
+
+        # Previous period starts (same calendar window, prior period)
+        yesterday = today - timedelta(days=1)
+        prev_sunday = sunday - timedelta(days=7)
+        prev_month_first = (today.replace(day=1) - timedelta(days=1)).replace(day=1)
+        prev_year_first = today.replace(month=1, day=1, year=today.year - 1)
+
+        prev_day_start = et_start(yesterday.year, yesterday.month, yesterday.day)
+        prev_week_start = et_start(prev_sunday.year, prev_sunday.month, prev_sunday.day)
+        prev_month_start = et_start(prev_month_first.year, prev_month_first.month, prev_month_first.day)
+        prev_year_start = et_start(prev_year_first.year, prev_year_first.month, prev_year_first.day)
+
+        periods = [
+            ("day", day_start, prev_day_start),
+            ("week", week_start, prev_week_start),
+            ("month", month_start, prev_month_start),
+            ("year", year_start, prev_year_start),
+        ]
+
+        result = {}
+        with conn.cursor() as cursor:
+            for key, period_start, prev_start in periods:
+                # Current period: [period_start, now] (to-date)
+                period_end = now
+                cursor.execute("""
+                    SELECT COALESCE(SUM(pnl), 0), COALESCE(SUM(ret_pct), 0)
+                    FROM users.trades_0001
+                    WHERE (test_filter IS NULL OR test_filter = FALSE)
+                      AND (paper_trade IS NULL OR paper_trade = FALSE)
+                      AND LOWER(TRIM(status)) IN ('closed', 'settled')
+                      AND pnl IS NOT NULL
+                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) >= %s
+                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) <= %s
+                """, (period_start, period_end))
+                row = cursor.fetchone()
+                pnl = float(row[0]) if row and row[0] is not None else 0.0
+                ret_pct_sum = float(row[1]) if row and row[1] is not None else None
+
+                # Previous period: same-length window (prev_start through prev_start + (now - period_start))
+                duration = period_end - period_start
+                prev_end = prev_start + duration
+                cursor.execute("""
+                    SELECT COALESCE(SUM(pnl), 0)
+                    FROM users.trades_0001
+                    WHERE (test_filter IS NULL OR test_filter = FALSE)
+                      AND (paper_trade IS NULL OR paper_trade = FALSE)
+                      AND LOWER(TRIM(status)) IN ('closed', 'settled')
+                      AND pnl IS NOT NULL
+                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) >= %s
+                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) <= %s
+                """, (prev_start, prev_end))
+                prev_row = cursor.fetchone()
+                prev_pnl = float(prev_row[0]) if prev_row and prev_row[0] is not None else 0.0
+
+                ret_pct = round(ret_pct_sum, 2) if ret_pct_sum is not None else None
+                result[key] = {"pnl": round(pnl, 2), "ret_pct": ret_pct, "prev_pnl": round(prev_pnl, 2)}
+
+        conn.close()
+        return {"status": "ok", "periods": result}
+
+    except Exception as e:
+        print(f"Error getting performance realized: {e}")
+        return {"status": "error", "message": str(e)}
+
 @app.get("/api/dashboard/preferences")
 async def get_dashboard_preferences(mode: str = "prod"):
     """Get dashboard preferences for the current user"""
@@ -4660,7 +5281,7 @@ async def get_dashboard_preferences(mode: str = "prod"):
         
         with conn.cursor() as cursor:
             cursor.execute("""
-                SELECT portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view
+                SELECT portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, portfolio_view
                 FROM users.dashboard_preferences_0001 
                 WHERE user_id = 1
             """)
@@ -4674,15 +5295,17 @@ async def get_dashboard_preferences(mode: str = "prod"):
                 "portfolio_chart_view": result[0],
                 "monitor_view_mode": result[1] if result[1] else "tile",
                 "monitor_sort_by": result[2] if result[2] else "name",
-                "allocation_view": result[3] if result[3] else "pie"
+                "allocation_view": result[3] if result[3] else "pie",
+                "portfolio_view": result[4] if result[4] else "portfolio"
             }
         else:
             return {
                 "status": "ok",
-                "portfolio_chart_view": "all",  # Default value
-                "monitor_view_mode": "tile",    # Default value
-                "monitor_sort_by": "name",      # Default value
-                "allocation_view": "pie"        # Default value
+                "portfolio_chart_view": "all",
+                "monitor_view_mode": "tile",
+                "monitor_sort_by": "name",
+                "allocation_view": "pie",
+                "portfolio_view": "portfolio"
             }
             
     except Exception as e:
@@ -4702,20 +5325,24 @@ async def save_dashboard_preferences(request: Request):
         monitor_view_mode = data.get("monitor_view_mode", "tile")
         monitor_sort_by = data.get("monitor_sort_by", "name")
         allocation_view = data.get("allocation_view", "pie")
-        print(f"[DASHBOARD PREFERENCES] Extracted values: portfolio_chart_view={portfolio_chart_view}, monitor_view_mode={monitor_view_mode}, monitor_sort_by={monitor_sort_by}, allocation_view={allocation_view}")
+        portfolio_view = data.get("portfolio_view", "portfolio")
+        if portfolio_view not in ("bankroll", "portfolio", "pnl"):
+            portfolio_view = "portfolio"
+        print(f"[DASHBOARD PREFERENCES] Extracted values: portfolio_chart_view={portfolio_chart_view}, monitor_view_mode={monitor_view_mode}, monitor_sort_by={monitor_sort_by}, allocation_view={allocation_view}, portfolio_view={portfolio_view}")
         
         with conn.cursor() as cursor:
             cursor.execute("""
-                INSERT INTO users.dashboard_preferences_0001 (user_id, portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, updated_at)
-                VALUES (1, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                INSERT INTO users.dashboard_preferences_0001 (user_id, portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, portfolio_view, updated_at)
+                VALUES (1, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                 ON CONFLICT (user_id) 
                 DO UPDATE SET 
                     portfolio_chart_view = EXCLUDED.portfolio_chart_view,
                     monitor_view_mode = EXCLUDED.monitor_view_mode,
                     monitor_sort_by = EXCLUDED.monitor_sort_by,
                     allocation_view = EXCLUDED.allocation_view,
+                    portfolio_view = EXCLUDED.portfolio_view,
                     updated_at = CURRENT_TIMESTAMP
-            """, (portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view))
+            """, (portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, portfolio_view))
             
         conn.commit()
         conn.close()
@@ -4785,7 +5412,9 @@ async def get_monitors(user_id: str = "user_0001"):
                     current_weekly_cycle,
                     current_performance_modifier,
                     current_max_pct_exposure,
-                    performance_based_allocation
+                    performance_based_allocation,
+                    paper_trade,
+                    market
                 FROM users.monitor_list_{user_number}
                 WHERE status != 'ARCHIVED'
                 ORDER BY dashboard_order, id
@@ -4821,6 +5450,8 @@ async def get_monitors(user_id: str = "user_0001"):
                 current_performance_modifier,
                 current_max_pct_exposure,
                 performance_based_allocation,
+                paper_trade,
+                market,
             ) = row
             
             # Calculate uptime from created timestamp
@@ -4867,6 +5498,8 @@ async def get_monitors(user_id: str = "user_0001"):
                 "current_performance_modifier": current_performance_modifier,
                 "current_max_pct_exposure": current_max_pct_exposure,
                 "performance_based_allocation": performance_based_allocation,
+                "paper_trade": paper_trade or False,
+                "market": (market or "").strip().lower() if market else None,
             }
             monitors.append(formatted_monitor)
         
@@ -4995,7 +5628,7 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
         
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade
+            SELECT id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade, paper_trade, market
             FROM users.monitor_list_{user_number}
             WHERE id = %s AND status = 'active'
         """, (monitor_id,))
@@ -5004,7 +5637,10 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
         conn.close()
         
         if result:
-            monitor_id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade = result
+            monitor_id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade, paper_trade, market = result
+            mkt = (market or "").strip().lower()
+            if mkt not in ("hourly", "15m"):
+                mkt = None
             return {
                 "status": "ok",
                 "monitor": {
@@ -5017,7 +5653,9 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
                     "total_position": total_position,
                     "position_type": position_type,
                     "bankroll_allotment_total": bankroll_allotment_total,
-                    "auto_trade": auto_trade
+                    "auto_trade": auto_trade,
+                    "paper_trade": paper_trade or False,
+                    "market": mkt,
                 }
             }
         else:
@@ -5141,22 +5779,24 @@ async def get_monitor_names(user_id: str = "user_0001"):
         
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT id, name
+            SELECT id, name, symbol, market
             FROM users.monitor_list_{user_number}
             WHERE status = 'active'
             ORDER BY name
         """)
-        
         results = cursor.fetchall()
         conn.close()
-        
-        # Transform to simple format for dropdown
         monitors = []
         for row in results:
-            monitor_id, name = row
+            monitor_id, name, symbol, market = row
+            mkt = (market or "").strip().lower() if market else None
+            if mkt not in ("hourly", "15m"):
+                mkt = None
             monitors.append({
                 "id": monitor_id,
-                "name": name
+                "name": name,
+                "symbol": symbol,
+                "market": mkt
             })
         
         return {
@@ -5571,6 +6211,84 @@ async def toggle_auto_trade(request: dict):
         print(f"Error in toggle auto trade: {e}")
         return {"status": "error", "message": str(e)}
 
+@app.post("/api/monitor/toggle-paper-trade")
+async def toggle_paper_trade(request: Request):
+    """Toggle paper_trade boolean value for a specific monitor"""
+    try:
+        # Extract parameters from request body
+        data = await request.json()
+        monitor_id = data.get("monitor_id")
+        paper_trade = data.get("paper_trade")
+        user_id = data.get("user_id", "user_0001")
+        
+        if not monitor_id or paper_trade is None:
+            return {"status": "error", "message": "Missing monitor_id or paper_trade parameter"}
+        
+        # Extract user number and monitor ID from monitor_id
+        # Handle multiple formats: MON_0001_10001, mon_0001_10001, or just 10001
+        if (monitor_id.startswith("MON_") or monitor_id.startswith("mon_")) and "_" in monitor_id:
+            parts = monitor_id.split("_")
+            if len(parts) >= 3:
+                user_number = parts[1]
+                db_monitor_id = parts[2]
+            else:
+                return {"status": "error", "message": "Invalid monitor ID format"}
+        elif monitor_id.isdigit():
+            # Handle numeric ID format (e.g., "10010")
+            user_number = "0001"  # Default user number
+            db_monitor_id = monitor_id
+        else:
+            return {"status": "error", "message": "Invalid monitor ID format"}
+        
+        # Update the database directly
+        try:
+            from backend.core.config.database import get_postgresql_connection
+            conn = get_postgresql_connection()
+            
+            with conn.cursor() as cursor:
+                # Update paper_trade boolean
+                cursor.execute(f"""
+                    UPDATE users.monitor_list_{user_number}
+                    SET paper_trade = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                """, (paper_trade, db_monitor_id))
+                
+                if cursor.rowcount == 0:
+                    conn.close()
+                    return {"status": "error", "message": "Monitor not found"}
+                
+            conn.commit()
+            conn.close()
+            
+            print(f"[MAIN] ✅ Updated monitor {monitor_id} paper_trade to {paper_trade}")
+            
+            # Broadcast the change to all connected WebSocket clients
+            message = {
+                "type": "paper_trade_toggled",
+                "monitor_id": monitor_id,  # Keep original format (MON_0001_10001)
+                "paper_trade": paper_trade
+            }
+            
+            # Send to preferences WebSocket clients
+            for websocket in connected_clients.copy():
+                try:
+                    await websocket.send_text(json.dumps(message))
+                except Exception as e:
+                    print(f"Error sending paper_trade update to WebSocket client: {e}")
+                    connected_clients.discard(websocket)
+            
+            print(f"[MAIN] ✅ Paper trade change broadcasted to {len(connected_clients)} clients")
+            
+            return {"status": "ok", "message": "Paper trade updated successfully"}
+            
+        except Exception as e:
+            print(f"[MAIN] ❌ Error updating database: {e}")
+            return {"status": "error", "message": f"Database error: {str(e)}"}
+            
+    except Exception as e:
+        print(f"[MAIN] ❌ Error toggling paper trade: {e}")
+        return {"status": "error", "message": str(e)}
+
 @app.post("/api/update_monitor_position")
 async def update_monitor_position(request: Request):
     """Proxy endpoint to forward monitor position updates to monitor_manager"""
@@ -5876,14 +6594,27 @@ async def get_strategies(user_id: str = "user_0001"):
             }
         
         cursor = conn.cursor()
-        # First check if strategy_list_0001 table exists, if not create it with default strategies
+        # Table creation is now handled in database.py init_database()
+        # Just ensure it exists (will be created/updated by init_database if needed)
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users.strategy_list_0001 (
-                id SERIAL PRIMARY KEY,
-                name VARCHAR(100) NOT NULL UNIQUE,
-                created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'users' 
+                AND table_name = 'strategy_list_0001'
             )
         """)
+        table_exists = cursor.fetchone()[0]
+        
+        if not table_exists:
+            # If table doesn't exist, it will be created by init_database on next run
+            # For now, create minimal version
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users.strategy_list_0001 (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(100) NOT NULL UNIQUE,
+                    created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
         
         # Check if table has any data, if not insert default strategies
         cursor.execute("SELECT COUNT(*) FROM users.strategy_list_0001")
@@ -5893,7 +6624,10 @@ async def get_strategies(user_id: str = "user_0001"):
             # Insert default strategies
             default_strategies = [
                 'Hourly HTC',
+                'Reverse HTC',
                 'Momentum Scalp',
+                'Momentum Breakout',
+                'Momentum Contain',
                 'Test Strategy',
                 'Daily HTC',
                 'Scalp Strategy'

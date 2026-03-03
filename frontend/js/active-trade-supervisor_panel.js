@@ -8,6 +8,7 @@ window.activeTradeSupervisorRowsMap = new Map();
 
 // Polling interval management
 let activeTradeSupervisorRefreshInterval = null;
+let activeTradeSupervisorPendingCheckIntervalId = null;
 let hasPendingTrades = false;
 
 // Helper function to insert row in correct sorted position
@@ -215,7 +216,7 @@ function renderActiveTradeSupervisorTrades(activeTrades) {
       closeSpan.dataset.tradeId = trade.trade_id;
       closeSpan.dataset.action = "close";
       closeSpan.style.cursor = "pointer";
-      closeSpan.onclick = () => closeActiveTrade(trade.trade_id, trade.ticket_id);
+      closeSpan.onclick = () => closeActiveTrade(trade.trade_id, trade.ticket_id, trade.current_close_price);
       const innerDiv = document.createElement("div");
       
       // Display PnL if available, otherwise show "Close"
@@ -324,7 +325,7 @@ function renderActiveTradeSupervisorTrades(activeTrades) {
         const closeSpan = cells[6].querySelector('.price-box');
         if (closeSpan) {
           closeSpan.style.cursor = "pointer";
-          closeSpan.onclick = () => closeActiveTrade(trade.trade_id, trade.ticket_id);
+          closeSpan.onclick = () => closeActiveTrade(trade.trade_id, trade.ticket_id, trade.current_close_price);
         }
       }
       
@@ -402,15 +403,24 @@ function renderActiveTradeSupervisorTrades(activeTrades) {
 
 // === CLOSE TRADE FUNCTION ===
 
-async function closeActiveTrade(tradeId, ticketId) {
+async function closeActiveTrade(tradeId, ticketId, currentClosePrice = null) {
   try {
 
     
     // Use the centralized closeTrade function from the trade execution controller
     if (typeof window.closeTrade === 'function') {
-      // Get current symbol price for sell price
-      const currentPrice = typeof getCurrentSymbolTickerPrice === 'function' ? getCurrentSymbolTickerPrice() : 
-                          (typeof getCurrentBTCTickerPrice === 'function' ? getCurrentBTCTickerPrice() : 0.5);
+      // Use current_close_price if available (for paper trades), otherwise use symbol price
+      let sellPrice;
+      if (currentClosePrice !== null && currentClosePrice !== undefined) {
+        // sell_price = 1 - current_close_price (current_close_price is the opposite side's ask)
+        const currentClosePriceFloat = parseFloat(currentClosePrice);
+        sellPrice = 1 - currentClosePriceFloat;
+        console.log(`[ACTIVE TRADE SUPERVISOR] current_close_price: ${currentClosePriceFloat}, calculated sell_price: ${sellPrice}`);
+      } else {
+        // Fallback to symbol price for live trades
+        sellPrice = typeof getCurrentSymbolTickerPrice === 'function' ? getCurrentSymbolTickerPrice() : 
+                    (typeof getCurrentBTCTickerPrice === 'function' ? getCurrentBTCTickerPrice() : 0.5);
+      }
 
       
       // Create a mock event object since we don't have the actual event
@@ -422,7 +432,7 @@ async function closeActiveTrade(tradeId, ticketId) {
       
       // Call the centralized close trade function - let it handle all notifications
       
-      await window.closeTrade(tradeId, currentPrice, mockEvent);
+      await window.closeTrade(tradeId, sellPrice, mockEvent);
       
     } else {
       console.error('[ACTIVE TRADE SUPERVISOR] Centralized closeTrade function not available');
@@ -458,7 +468,8 @@ function startActiveTradeSupervisorRefresh() {
   startRefresh();
   
   // Also check for pending trades and adjust interval accordingly
-  setInterval(() => {
+  if (activeTradeSupervisorPendingCheckIntervalId) clearInterval(activeTradeSupervisorPendingCheckIntervalId);
+  activeTradeSupervisorPendingCheckIntervalId = setInterval(() => {
     const currentHasPending = window.activeTradeSupervisorRowsMap.size > 0 && 
       Array.from(window.activeTradeSupervisorRowsMap.values()).some(rowObj => 
         rowObj.tr.classList.contains('pending-trade')
@@ -469,6 +480,17 @@ function startActiveTradeSupervisorRefresh() {
       startRefresh(); // Restart with new interval
     }
   }, 2000); // Check every 2 seconds
+}
+
+function stopActiveTradeSupervisorRefresh() {
+  if (activeTradeSupervisorRefreshInterval) {
+    clearInterval(activeTradeSupervisorRefreshInterval);
+    activeTradeSupervisorRefreshInterval = null;
+  }
+  if (activeTradeSupervisorPendingCheckIntervalId) {
+    clearInterval(activeTradeSupervisorPendingCheckIntervalId);
+    activeTradeSupervisorPendingCheckIntervalId = null;
+  }
 }
 
 // === INITIALIZATION ===
@@ -493,6 +515,16 @@ document.addEventListener('DOMContentLoaded', function() {
     
     console.log('[ACTIVE TRADE SUPERVISOR] Initialization complete');
   }, 500);
+});
+
+window.addEventListener('message', function(event) {
+  if (event.data && event.data.type === 'tab-visibility') {
+    if (event.data.visible) {
+      startActiveTradeSupervisorRefresh();
+    } else {
+      stopActiveTradeSupervisorRefresh();
+    }
+  }
 });
 
 // Export functions for global access

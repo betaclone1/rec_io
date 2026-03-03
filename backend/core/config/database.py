@@ -89,13 +89,29 @@ def init_database():
                 monitor VARCHAR(50),
                 hour_idx INTEGER,
                 weekly_cycle INTEGER,
+                order_id TEXT,
                 order_id_open TEXT,
                 order_id_close TEXT,
                 high_price DECIMAL(10,4),
                 low_price DECIMAL(10,4),
                 loss_prevention BOOLEAN DEFAULT FALSE,
                 multiplier DECIMAL(10,2),
-                price_spread DECIMAL(6,4)
+                price_spread DECIMAL(6,4),
+                paper_trade BOOLEAN DEFAULT FALSE,
+                cooldown_timer INTEGER,
+                monitor_confirmed BOOLEAN DEFAULT FALSE,
+                cycle_win_loss TEXT,
+                cycle_pnl REAL,
+                cycle_ret_pct REAL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                test_filter BOOLEAN DEFAULT FALSE,
+                notes TEXT,
+                ret_pct REAL,
+                momentum_5s_avg NUMERIC,
+                volatility NUMERIC(10,4),
+                movement NUMERIC(10,4),
+                movement_percentile NUMERIC(5,1)
             );
         """)
 
@@ -155,6 +171,162 @@ def init_database():
                 ) THEN
                     ALTER TABLE users.trades_0001 ADD COLUMN volatility_percentile NUMERIC(5,1);
                 END IF;
+
+                -- Add paper_trade column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'paper_trade'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN paper_trade BOOLEAN DEFAULT FALSE;
+                END IF;
+
+                -- Add cooldown_timer column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'cooldown_timer'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN cooldown_timer INTEGER;
+                END IF;
+
+                -- Add monitor_confirmed column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'monitor_confirmed'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN monitor_confirmed BOOLEAN DEFAULT FALSE;
+                END IF;
+
+                -- Add cycle_win_loss column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'cycle_win_loss'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN cycle_win_loss TEXT;
+                END IF;
+
+                -- Add cycle_pnl column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'cycle_pnl'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN cycle_pnl REAL;
+                END IF;
+
+                -- Add cycle_ret_pct column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'cycle_ret_pct'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN cycle_ret_pct REAL;
+                END IF;
+
+                -- Add created_at column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'created_at'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+                END IF;
+
+                -- Add updated_at column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'updated_at'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+                END IF;
+
+                -- Add test_filter column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'test_filter'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN test_filter BOOLEAN DEFAULT FALSE;
+                END IF;
+
+                -- Add notes column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'notes'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN notes TEXT;
+                END IF;
+
+                -- Add ret_pct column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'ret_pct'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN ret_pct REAL;
+                END IF;
+
+                -- Add momentum_5s_avg column if it doesn't exist
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'momentum_5s_avg'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN momentum_5s_avg NUMERIC;
+                END IF;
+
+                -- Add volatility (raw), movement, movement_percentile - same format as momentum / momentum_percentile
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'volatility'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN volatility NUMERIC(10,4);
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'movement'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN movement NUMERIC(10,4);
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'movement_percentile'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN movement_percentile NUMERIC(5,1);
+                END IF;
+
+                -- Add order_id column if it doesn't exist (legacy, before order_id_open/order_id_close)
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'order_id'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN order_id TEXT;
+                END IF;
             END
             $$;
         """)
@@ -199,6 +371,7 @@ def init_database():
                 id INTEGER PRIMARY KEY DEFAULT nextval('users.monitor_list_0001_id_seq'),
                 name VARCHAR(255) NOT NULL,
                 symbol VARCHAR(20) NOT NULL,
+                market TEXT DEFAULT 'hourly',
                 strategy VARCHAR(100),
                 auto_trade BOOLEAN DEFAULT FALSE,
                 auto_trade_status VARCHAR(20) DEFAULT 'inactive',
@@ -220,6 +393,8 @@ def init_database():
                 current_max_pct_exposure NUMERIC(10,2) DEFAULT 0.25,
                 performance_based_allocation BOOLEAN NOT NULL DEFAULT FALSE,
                 max_price_spread NUMERIC(6,4) DEFAULT 0.0300,
+                paper_trade BOOLEAN DEFAULT FALSE,
+                prob_adj NUMERIC(5,2) DEFAULT 5.00,
                 created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
@@ -245,7 +420,15 @@ def init_database():
                 delta_3m DECIMAL(10,4),
                 delta_4m DECIMAL(10,4),
                 delta_15m DECIMAL(10,4),
-                delta_30m DECIMAL(10,4)
+                delta_30m DECIMAL(10,4),
+                move_1m DECIMAL(10,4),
+                move_2m DECIMAL(10,4),
+                move_3m DECIMAL(10,4),
+                move_4m DECIMAL(10,4),
+                move_15m DECIMAL(10,4),
+                move_30m DECIMAL(10,4),
+                movement DECIMAL(10,4),
+                movement_percentile DECIMAL(5,1)
             );
         """)
         
@@ -260,8 +443,169 @@ def init_database():
                 delta_3m DECIMAL(10,4),
                 delta_4m DECIMAL(10,4),
                 delta_15m DECIMAL(10,4),
-                delta_30m DECIMAL(10,4)
+                delta_30m DECIMAL(10,4),
+                move_1m DECIMAL(10,4),
+                move_2m DECIMAL(10,4),
+                move_3m DECIMAL(10,4),
+                move_4m DECIMAL(10,4),
+                move_15m DECIMAL(10,4),
+                move_30m DECIMAL(10,4),
+                movement DECIMAL(10,4),
+                movement_percentile DECIMAL(5,1)
             );
+        """)
+        
+        # Ensure movement columns exist on live_price_log tables (btc, eth, spx, ndx)
+        cursor.execute("""
+            DO $$
+            DECLARE
+                t text;
+                c text;
+                ty text;
+                tbl regclass;
+            BEGIN
+                FOREACH t IN ARRAY ARRAY['live_price_log_1s_btc','live_price_log_1s_eth','live_price_log_1s_spx','live_price_log_1s_ndx'] LOOP
+                    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'live_data' AND table_name = t) THEN
+                        FOREACH c IN ARRAY ARRAY['move_1m','move_2m','move_3m','move_4m','move_15m','move_30m','movement','movement_percentile'] LOOP
+                            IF c = 'movement_percentile' THEN ty := 'DECIMAL(5,1)'; ELSE ty := 'DECIMAL(10,4)'; END IF;
+                            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'live_data' AND table_name = t AND column_name = c) THEN
+                                EXECUTE format('ALTER TABLE live_data.%I ADD COLUMN %I ' || ty, t, c);
+                            END IF;
+                        END LOOP;
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+        
+        # Add volatility and movement columns to strike tables (btc, eth, spx, ndx)
+        cursor.execute("""
+            DO $$
+            DECLARE
+                t text;
+                r record;
+            BEGIN
+                FOREACH t IN ARRAY ARRAY['strike_table_hourly_btc','strike_table_hourly_eth','strike_table_hourly_spx','strike_table_hourly_ndx'] LOOP
+                    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'live_data' AND table_name = t) THEN
+                        FOR r IN (SELECT unnest(ARRAY['volatility','volatility_percentile','movement','movement_percentile']) AS col,
+                                         unnest(ARRAY['NUMERIC(10,6)','NUMERIC(5,1)','NUMERIC(10,4)','NUMERIC(5,1)']) AS typ) LOOP
+                            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'live_data' AND table_name = t AND column_name = r.col) THEN
+                                EXECUTE format('ALTER TABLE live_data.%I ADD COLUMN %I ' || r.typ, t, r.col);
+                            END IF;
+                        END LOOP;
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+        
+        # Add market column (TEXT: 'hourly' or '15m') to all market_kalshi_* and strike_table_* tables
+        cursor.execute("""
+            DO $$
+            DECLARE
+                r record;
+                tbl text;
+                def text;
+            BEGIN
+                FOR r IN (
+                    SELECT unnest(ARRAY['market_kalshi_hourly_btc','market_kalshi_hourly_eth','market_kalshi_hourly_ndx','market_kalshi_hourly_spx']) AS t, 'hourly' AS d
+                    UNION ALL SELECT 'market_kalshi_15m_btc', '15m'
+                    UNION ALL SELECT 'market_kalshi_15m_eth', '15m'
+                    UNION ALL SELECT 'strike_table_hourly_btc', 'hourly'
+                    UNION ALL SELECT 'strike_table_hourly_eth', 'hourly'
+                    UNION ALL SELECT 'strike_table_hourly_ndx', 'hourly'
+                    UNION ALL SELECT 'strike_table_hourly_spx', 'hourly'
+                    UNION ALL SELECT 'strike_table_15m_btc', '15m'
+                    UNION ALL SELECT 'strike_table_15m_eth', '15m'
+                ) LOOP
+                    tbl := r.t;
+                    def := r.d;
+                    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'live_data' AND table_name = tbl)
+                       AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'live_data' AND table_name = tbl AND column_name = 'market') THEN
+                        EXECUTE format('ALTER TABLE live_data.%I ADD COLUMN market TEXT DEFAULT %L', tbl, def);
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+        
+        # Rename momentum_value -> movement_value in all analytics movement profile tables
+        cursor.execute("""
+            DO $$
+            DECLARE
+                r record;
+            BEGIN
+                FOR r IN (SELECT table_name FROM information_schema.tables
+                          WHERE table_schema = 'analytics' AND table_name LIKE '%_movement_profile%') LOOP
+                    IF EXISTS (SELECT 1 FROM information_schema.columns
+                               WHERE table_schema = 'analytics' AND table_name = r.table_name AND column_name = 'momentum_value') THEN
+                        EXECUTE format('ALTER TABLE analytics.%I RENAME COLUMN momentum_value TO movement_value', r.table_name);
+                    END IF;
+                END LOOP;
+            END $$;
+        """)
+        
+        # live_symbol_status: one row per symbol; columns mirror live_price_log_1s_* (latest tick per symbol)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS live_data.live_symbol_status (
+                id SERIAL PRIMARY KEY,
+                symbol VARCHAR(20),
+                "timestamp" TEXT,
+                price DECIMAL(10,2),
+                one_minute_avg DECIMAL(10,2),
+                momentum DECIMAL(10,4),
+                delta_1m DECIMAL(10,4),
+                delta_2m DECIMAL(10,4),
+                delta_3m DECIMAL(10,4),
+                delta_4m DECIMAL(10,4),
+                delta_15m DECIMAL(10,4),
+                delta_30m DECIMAL(10,4),
+                momentum_percentile DECIMAL(5,1),
+                momentum_5s_avg DECIMAL(5,1),
+                volatility DECIMAL(10,6),
+                volatility_percentile DECIMAL(5,1),
+                momentum_30s_avg DECIMAL(5,1),
+                move_1m DECIMAL(10,4),
+                move_2m DECIMAL(10,4),
+                move_3m DECIMAL(10,4),
+                move_4m DECIMAL(10,4),
+                move_15m DECIMAL(10,4),
+                move_30m DECIMAL(10,4),
+                movement DECIMAL(10,4),
+                movement_percentile DECIMAL(5,1),
+                prev_day_avg_momentum_percentile DECIMAL(5,1),
+                prev_day_avg_volatility_percentile DECIMAL(5,1),
+                prev_day_avg_movement_percentile DECIMAL(5,1),
+                daily_update TEXT
+            );
+        """)
+        cursor.execute("""
+            DO $$
+            DECLARE
+                col text;
+                ty text;
+                cols text[] := ARRAY['timestamp','price','one_minute_avg','momentum','delta_1m','delta_2m','delta_3m','delta_4m','delta_15m','delta_30m','momentum_percentile','momentum_5s_avg','volatility','volatility_percentile','momentum_30s_avg','move_1m','move_2m','move_3m','move_4m','move_15m','move_30m','movement','movement_percentile','prev_day_avg_momentum_percentile','prev_day_avg_volatility_percentile','prev_day_avg_movement_percentile','daily_update'];
+                types text[] := ARRAY['TEXT','DECIMAL(10,2)','DECIMAL(10,2)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(5,1)','DECIMAL(5,1)','DECIMAL(10,6)','DECIMAL(5,1)','DECIMAL(5,1)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(5,1)','DECIMAL(5,1)','DECIMAL(5,1)','DECIMAL(5,1)','TEXT'];
+                i int;
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'live_data' AND table_name = 'live_symbol_status') THEN
+                    FOR i IN 1..array_length(cols, 1) LOOP
+                        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'live_data' AND table_name = 'live_symbol_status' AND column_name = cols[i]) THEN
+                            EXECUTE format('ALTER TABLE live_data.live_symbol_status ADD COLUMN %I ' || types[i], cols[i]);
+                        END IF;
+                    END LOOP;
+                END IF;
+            END $$;
+        """)
+        # Migrate daily_update from timestamptz to TEXT (same format as timestamp column)
+        cursor.execute("""
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_schema = 'live_data' AND table_name = 'live_symbol_status' AND column_name = 'daily_update')
+                   AND (SELECT data_type FROM information_schema.columns
+                        WHERE table_schema = 'live_data' AND table_name = 'live_symbol_status' AND column_name = 'daily_update') = 'timestamp with time zone' THEN
+                    ALTER TABLE live_data.live_symbol_status
+                    ALTER COLUMN daily_update TYPE TEXT USING to_char(daily_update AT TIME ZONE 'America/New_York', 'YYYY-MM-DD"T"HH24:MI:SS');
+                END IF;
+            END $$;
         """)
         
         cursor.execute("""
@@ -307,10 +651,11 @@ def init_database():
         
         # New naming convention for strike table
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS live_data.strike_table_btc (
+            CREATE TABLE IF NOT EXISTS live_data.strike_table_hourly_btc (
                 id SERIAL PRIMARY KEY,
                 timestamp TIMESTAMP WITH TIME ZONE DEFAULT now(),
                 symbol VARCHAR(10),
+                market TEXT DEFAULT 'hourly',
                 current_price DECIMAL(10,2),
                 ttc_seconds INTEGER,
                 broker VARCHAR(20),
@@ -333,6 +678,48 @@ def init_database():
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
             );
         """)
+        
+        # 15m strike tables (single strike per table; strike_tier 0)
+        for sym in ('btc', 'eth'):
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS live_data.strike_table_15m_{sym} (
+                    id SERIAL PRIMARY KEY,
+                    timestamp TIMESTAMP WITH TIME ZONE DEFAULT now(),
+                    symbol VARCHAR(10),
+                    market TEXT DEFAULT '15m',
+                    current_price DECIMAL(10,2),
+                    ttc_seconds INTEGER,
+                    broker VARCHAR(20),
+                    event_ticker VARCHAR(50),
+                    market_title TEXT,
+                    strike_tier INTEGER,
+                    market_status VARCHAR(20),
+                    strike INTEGER,
+                    buffer DECIMAL(10,2),
+                    buffer_pct DECIMAL(5,2),
+                    probability DECIMAL(5,2),
+                    yes_ask DECIMAL(5,2),
+                    no_ask DECIMAL(5,2),
+                    yes_ask_dollars TEXT,
+                    no_ask_dollars TEXT,
+                    yes_bid_dollars TEXT,
+                    no_bid_dollars TEXT,
+                    yes_price_spread NUMERIC(6,4),
+                    no_price_spread NUMERIC(6,4),
+                    yes_diff DECIMAL(5,2),
+                    no_diff DECIMAL(5,2),
+                    volume INTEGER,
+                    ticker VARCHAR(50),
+                    active_side VARCHAR(10),
+                    momentum_weighted_score DECIMAL(5,3),
+                    momentum_percentile DECIMAL(5,1),
+                    volatility NUMERIC(10,6),
+                    volatility_percentile NUMERIC(5,1),
+                    movement NUMERIC(10,4),
+                    movement_percentile NUMERIC(5,1),
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+                );
+            """)
         
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS system.health_status (
@@ -419,9 +806,503 @@ def init_database():
                     ALTER TABLE users.monitor_list_0001 ADD COLUMN max_price_spread NUMERIC(6,4) DEFAULT 0.0300;
                     UPDATE users.monitor_list_0001 SET max_price_spread = 0.0300 WHERE max_price_spread IS NULL;
                 END IF;
+
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'monitor_list_0001'
+                      AND column_name = 'paper_trade'
+                ) THEN
+                    ALTER TABLE users.monitor_list_0001 ADD COLUMN paper_trade BOOLEAN DEFAULT FALSE;
+                    UPDATE users.monitor_list_0001 SET paper_trade = FALSE WHERE paper_trade IS NULL;
+                END IF;
+
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'monitor_list_0001'
+                      AND column_name = 'prob_adj'
+                ) THEN
+                    ALTER TABLE users.monitor_list_0001 ADD COLUMN prob_adj NUMERIC(5,2) DEFAULT 5.00;
+                    UPDATE users.monitor_list_0001 SET prob_adj = 5.00 WHERE prob_adj IS NULL;
+                END IF;
+
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'monitor_list_0001'
+                      AND column_name = 'min_cooldown_timer'
+                ) THEN
+                    ALTER TABLE users.monitor_list_0001 ADD COLUMN min_cooldown_timer INTEGER DEFAULT 300;
+                END IF;
+
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'monitor_list_0001'
+                      AND column_name = 'max_cooldown_timer'
+                ) THEN
+                    ALTER TABLE users.monitor_list_0001 ADD COLUMN max_cooldown_timer INTEGER DEFAULT 3300;
+                END IF;
             END
             $$;
         """)
+        
+        # Add market column to all monitor_list tables (hourly vs 15m); backfill existing rows to 'hourly'
+        cursor.execute("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'users' 
+            AND table_name LIKE 'monitor_list_%'
+            ORDER BY table_name
+        """)
+        monitor_list_tables_market = [row[0] for row in cursor.fetchall()]
+        for table_name in monitor_list_tables_market:
+            cursor.execute(f"""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'users'
+                          AND table_name = '{table_name}'
+                          AND column_name = 'market'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN market TEXT DEFAULT %L', '{table_name}', 'hourly');
+                        EXECUTE format('UPDATE users.%I SET market = %L WHERE market IS NULL', '{table_name}', 'hourly');
+                    END IF;
+                END
+                $$;
+            """)
+        
+        # Create strategy_list_0001 table with all default settings columns (matching monitor_list structure)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users.strategy_list_0001 (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(100) NOT NULL UNIQUE,
+                created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated TIMESTAMP,
+                -- Strategy default settings (matching monitor_list columns, excluding monitor-specific ones)
+                win_streak_threshold INTEGER DEFAULT 22,
+                loss_prevention VARCHAR(50) DEFAULT 'none',
+                loss_prevention_toggle BOOLEAN DEFAULT TRUE,
+                performance_based_allocation BOOLEAN NOT NULL DEFAULT FALSE,
+                max_price_spread NUMERIC(6,4) DEFAULT 0.0300,
+                paper_trade BOOLEAN DEFAULT FALSE,
+                prob_adj NUMERIC(5,2) DEFAULT 5.00,
+                -- Position sizing defaults
+                position_size INTEGER DEFAULT 1,
+                position_type VARCHAR(20) DEFAULT 'percent',
+                multiplier NUMERIC(3,2) DEFAULT 1.00,
+                -- Auto entry settings
+                min_probability NUMERIC(5,2),
+                max_probability NUMERIC(5,2),
+                min_differential NUMERIC(5,2) DEFAULT 0.25,
+                max_differential NUMERIC(5,2),
+                min_time INTEGER,
+                max_time INTEGER,
+                allow_re_entry BOOLEAN DEFAULT FALSE,
+                spike_alert_enabled BOOLEAN DEFAULT FALSE,
+                spike_alert_momentum_threshold INTEGER,
+                spike_alert_cooldown_threshold INTEGER,
+                spike_alert_cooldown_minutes INTEGER,
+                current_probability INTEGER,
+                min_ttc_seconds INTEGER,
+                momentum_spike_enabled BOOLEAN DEFAULT FALSE,
+                momentum_spike_threshold INTEGER,
+                verification_period_enabled BOOLEAN DEFAULT FALSE,
+                verification_period_seconds INTEGER,
+                min_volume INTEGER,
+                momentum_scalp_entry_threshold NUMERIC(5,2),
+                momentum_scalp_trailing_stop_amount NUMERIC(5,2) DEFAULT 0.10,
+                momentum_scalp_profit_target NUMERIC(5,2) DEFAULT 0.99,
+                min_ask NUMERIC(6,4) DEFAULT 0.0000,
+                max_ask NUMERIC(6,4) DEFAULT 0.9800,
+                max_profit NUMERIC(6,4) DEFAULT 0.9900,
+                min_cooldown_timer INTEGER DEFAULT 300,
+                max_cooldown_timer INTEGER DEFAULT 3300
+            );
+        """)
+        
+        # Add any missing columns to strategy_list_0001 (for existing tables)
+        cursor.execute("""
+            DO $$
+            BEGIN
+                -- Add columns that might not exist in older versions
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'updated'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN updated TIMESTAMP;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'win_streak_threshold'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN win_streak_threshold INTEGER DEFAULT 22;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'loss_prevention'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN loss_prevention VARCHAR(50) DEFAULT 'none';
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'loss_prevention_toggle'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN loss_prevention_toggle BOOLEAN DEFAULT TRUE;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'performance_based_allocation'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN performance_based_allocation BOOLEAN NOT NULL DEFAULT FALSE;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'max_price_spread'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN max_price_spread NUMERIC(6,4) DEFAULT 0.0300;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'paper_trade'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN paper_trade BOOLEAN DEFAULT FALSE;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'prob_adj'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN prob_adj NUMERIC(5,2) DEFAULT 5.00;
+                END IF;
+                
+                -- Auto entry settings columns
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'min_probability'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN min_probability NUMERIC(5,2);
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'max_probability'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN max_probability NUMERIC(5,2);
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'min_differential'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN min_differential NUMERIC(5,2) DEFAULT 0.25;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'max_differential'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN max_differential NUMERIC(5,2);
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'min_time'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN min_time INTEGER;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'max_time'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN max_time INTEGER;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'allow_re_entry'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN allow_re_entry BOOLEAN DEFAULT FALSE;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'spike_alert_enabled'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN spike_alert_enabled BOOLEAN DEFAULT FALSE;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'spike_alert_momentum_threshold'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN spike_alert_momentum_threshold INTEGER;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'spike_alert_cooldown_threshold'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN spike_alert_cooldown_threshold INTEGER;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'spike_alert_cooldown_minutes'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN spike_alert_cooldown_minutes INTEGER;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'current_probability'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN current_probability INTEGER;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'min_ttc_seconds'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN min_ttc_seconds INTEGER;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'momentum_spike_enabled'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN momentum_spike_enabled BOOLEAN DEFAULT FALSE;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'momentum_spike_threshold'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN momentum_spike_threshold INTEGER;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'verification_period_enabled'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN verification_period_enabled BOOLEAN DEFAULT FALSE;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'verification_period_seconds'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN verification_period_seconds INTEGER;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'min_volume'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN min_volume INTEGER;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'momentum_scalp_entry_threshold'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN momentum_scalp_entry_threshold NUMERIC(5,2);
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'momentum_scalp_trailing_stop_amount'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN momentum_scalp_trailing_stop_amount NUMERIC(5,2) DEFAULT 0.10;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'momentum_scalp_profit_target'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN momentum_scalp_profit_target NUMERIC(5,2) DEFAULT 0.99;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'min_ask'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN min_ask NUMERIC(6,4) DEFAULT 0.0000;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'max_ask'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN max_ask NUMERIC(6,4) DEFAULT 0.9800;
+                END IF;
+                
+                -- Position sizing defaults
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'position_size'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN position_size INTEGER DEFAULT 1;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'position_type'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN position_type VARCHAR(20) DEFAULT 'percent';
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'multiplier'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN multiplier NUMERIC(3,2) DEFAULT 1.00;
+                END IF;
+                
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'max_profit'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN max_profit NUMERIC(6,4) DEFAULT 0.9900;
+                END IF;
+
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'min_cooldown_timer'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN min_cooldown_timer INTEGER DEFAULT 300;
+                END IF;
+
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'max_cooldown_timer'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN max_cooldown_timer INTEGER DEFAULT 3300;
+                END IF;
+            END
+            $$;
+        """)
+        
+        # Add paper_trade column to all monitor_list tables (not just 0001)
+        # Find all monitor_list tables and add the column if it doesn't exist
+        cursor.execute("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'users' 
+            AND table_name LIKE 'monitor_list_%'
+            ORDER BY table_name
+        """)
+        monitor_list_tables = [row[0] for row in cursor.fetchall()]
+        
+        for table_name in monitor_list_tables:
+            cursor.execute(f"""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'users'
+                          AND table_name = '{table_name}'
+                          AND column_name = 'paper_trade'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN paper_trade BOOLEAN DEFAULT FALSE', '{table_name}');
+                        EXECUTE format('UPDATE users.%I SET paper_trade = FALSE WHERE paper_trade IS NULL', '{table_name}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'users'
+                          AND table_name = '{table_name}'
+                          AND column_name = 'prob_adj'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN prob_adj NUMERIC(5,2) DEFAULT 5.00', '{table_name}');
+                        EXECUTE format('UPDATE users.%I SET prob_adj = 5.00 WHERE prob_adj IS NULL', '{table_name}');
+                    END IF;
+                END
+                $$;
+            """)
         
         # Grant privileges
         cursor.execute("GRANT ALL PRIVILEGES ON SCHEMA users TO rec_io_user;")

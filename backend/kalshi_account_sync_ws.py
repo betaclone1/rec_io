@@ -11,6 +11,18 @@ HYBRID APPROACH:
 5. Hourly balance checks on the hour + daily 1AM balance check
 
 This balances responsiveness with data freshness and API efficiency.
+
+SUBACCOUNTS:
+Subaccounts (users.subaccounts_0001) are an internal approximation of Kalshi subaccounts
+and work in tandem with account_balance (users.account_balance_0001). All subaccount
+logic—reading/writing subaccount balances and keeping them consistent with the main
+portfolio—is the purview of this service (kalshi_account_sync).
+
+Invariant: At ALL times the sum of all subaccount balances EXCEPT PRIMARY must equal
+the PRIMARY balance. So PRIMARY = total portfolio; every other subaccount allocates
+that total (e.g. Master Trading Bankroll + Cash Transfer + ... = PRIMARY). Whenever
+the subaccounts table is updated, we should verify this reconciliation (to be implemented
+when non-PRIMARY balances are written).
 """
 
 import sys
@@ -376,6 +388,77 @@ def fetch_event_json(event_ticker):
         return None
 
 
+def subaccounts_update(cursor, portfolio_value):
+    """
+    Update users.subaccounts_0001: PRIMARY, Master Trading Bankroll balance and PnLs,
+    then check target_pnl_pct and run internal transfer to Cash Transfer if triggered.
+    Returns (master_bankroll_balance, transfer_triggered).
+    """
+    # PRIMARY = total portfolio
+    cursor.execute("""
+        UPDATE users.subaccounts_0001 SET balance = %s WHERE subaccount = 'PRIMARY'
+    """, (portfolio_value,))
+    # Cash Transfer balance (unchanged until/unless we trigger a transfer)
+    cursor.execute("""
+        SELECT COALESCE(balance, 0) FROM users.subaccounts_0001 WHERE subaccount = 'Cash Transfer'
+    """)
+    cash_transfer_row = cursor.fetchone()
+    cash_transfer_balance = int(cash_transfer_row[0]) if cash_transfer_row else 0
+    master_bankroll_balance = portfolio_value - cash_transfer_balance
+    # MTB base_value, target/transfer settings, and automatic_transfers (user setting)
+    cursor.execute("""
+        SELECT base_value, target_pnl__pct, transfer_amt, automatic_transfers FROM users.subaccounts_0001 WHERE subaccount = 'Master Trading Bankroll'
+    """)
+    mtb_row = cursor.fetchone()
+    base_value = int(mtb_row[0]) if mtb_row and mtb_row[0] is not None else None
+    target_pnl_pct = float(mtb_row[1]) if mtb_row and mtb_row[1] is not None else None
+    transfer_amt = float(mtb_row[2]) if mtb_row and mtb_row[2] is not None else None
+    automatic_transfers = bool(mtb_row[3]) if mtb_row and mtb_row[3] is not None else False
+    if base_value is not None and base_value != 0:
+        realized_pnl = master_bankroll_balance - base_value
+        ratio = (master_bankroll_balance - base_value) / base_value
+        realized_pnl_pct = float(int(ratio * 10000)) / 10000.0
+    else:
+        realized_pnl = None
+        realized_pnl_pct = None
+    cursor.execute("""
+        UPDATE users.subaccounts_0001
+        SET balance = %s, realized_pnl = %s, realized_pnl_pct = %s
+        WHERE subaccount = 'Master Trading Bankroll'
+    """, (master_bankroll_balance, realized_pnl, realized_pnl_pct))
+    transfer_triggered = False
+    # Internal transfer: only if automatic_transfers is TRUE and realized_pnl_pct >= target_pnl_pct
+    if (
+        automatic_transfers
+        and base_value is not None and base_value != 0
+        and target_pnl_pct is not None
+        and transfer_amt is not None
+        and realized_pnl_pct is not None
+        and realized_pnl_pct >= target_pnl_pct
+    ):
+        transfer_amount = int(round(transfer_amt * base_value))
+        new_cash_transfer_balance = cash_transfer_balance + transfer_amount
+        cursor.execute("""
+            UPDATE users.subaccounts_0001 SET balance = %s WHERE subaccount = 'Cash Transfer'
+        """, (new_cash_transfer_balance,))
+        new_mtb_balance = portfolio_value - new_cash_transfer_balance
+        cursor.execute("""
+            UPDATE users.subaccounts_0001
+            SET balance = %s, base_value = %s, realized_pnl = 0, realized_pnl_pct = 0
+            WHERE subaccount = 'Master Trading Bankroll'
+        """, (new_mtb_balance, new_mtb_balance))
+        master_bankroll_balance = new_mtb_balance
+        transfer_triggered = True
+        # Record the transfer in users.transfers_0001
+        transfer_timestamp_est = datetime.now(EST).strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("""
+            INSERT INTO users.transfers_0001 (timestamp, type, "from", "to", amount, initiated)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (transfer_timestamp_est, "internal", "Master Trading Bankroll", "Cash Transfer", transfer_amount, "automatic"))
+        print(f"💾 Internal transfer: {transfer_amount} to Cash Transfer (target_pnl_pct={target_pnl_pct} reached). MTB base_value reset to {new_mtb_balance}, PnL reset to 0. Recorded in users.transfers_0001.")
+    print(f"💾 PRIMARY={portfolio_value}, Master Trading Bankroll={master_bankroll_balance} (Cash Transfer={new_cash_transfer_balance if transfer_triggered else cash_transfer_balance}), realized_pnl={0 if transfer_triggered else realized_pnl}, realized_pnl_pct={0 if transfer_triggered else realized_pnl_pct} (users.subaccounts_0001)")
+    return (master_bankroll_balance, transfer_triggered)
+
 
 def sync_balance():
     print("⏱ Sync attempt...")
@@ -422,40 +505,46 @@ def sync_balance():
                     exposure_result = cursor.fetchone()
                     total_exposure = int(exposure_result[0]) if exposure_result and exposure_result[0] else 0
                     
-                    # Get previous portfolio value and bankroll to maintain constant portfolio when exposure > 0
+                    # Get previous bankroll for ratchet (and for hold when positions != 0)
                     cursor.execute("""
                         SELECT portfolio, bankroll_current FROM users.account_balance_0001 
                         ORDER BY id DESC LIMIT 1
                     """)
                     prev_result = cursor.fetchone()
-                    prev_portfolio = prev_result[0] if prev_result else None
                     prev_bankroll = prev_result[1] if prev_result else None
                     
-                    # Use Kalshi's correct portfolio calculation: balance + portfolio_value
-                    portfolio_value = int(total_portfolio_value)  # Total portfolio from Kalshi API
-                    positions_value = int(portfolio_value_raw)    # Open positions value from Kalshi API
+                    # PORTFOLIO = total at Kalshi (cash + positions). Feeds PRIMARY in subaccounts; written to account_balance.portfolio.
+                    portfolio_value = int(total_portfolio_value)
+                    positions_value = int(portfolio_value_raw)
                     
-                    # Calculate bankroll_current based on portfolio performance
-                    if prev_bankroll is None:
-                        # First entry - set bankroll to current portfolio value
-                        bankroll_current = portfolio_value
-                    else:
-                        # Check if portfolio has grown (track ALL gains)
-                        if portfolio_value > prev_bankroll:
-                            bankroll_current = portfolio_value
-                        # Check if portfolio has significant drawdown (30% or more) - will be user configurable
-                        elif portfolio_value <= (prev_bankroll * 0.7):  # 30% drawdown threshold
-                            bankroll_current = portfolio_value
+                    # Only update subaccounts and derive bankroll_current from Master Trading Bankroll when flat (positions=0).
+                    # When positions != 0, skip subaccounts and hold bankroll_current to avoid noisy API during open/close.
+                    if positions_value == 0:
+                        # Update subaccounts (PRIMARY, MTB, PnLs; internal transfer if target hit). Returns (mtb_balance, transfer_triggered).
+                        master_bankroll_balance, transfer_triggered = subaccounts_update(cursor, portfolio_value)
+                        if transfer_triggered:
+                            # After internal transfer, use new MTB balance directly as bankroll_current (bypass ratchet).
+                            bankroll_current = master_bankroll_balance
                         else:
-                            # Small drawdown - maintain previous bankroll
-                            bankroll_current = prev_bankroll
+                            # Ratchet: bankroll_current from Master Trading Bankroll (step up / step down only on large drawdown / else hold)
+                            if prev_bankroll is None:
+                                bankroll_current = master_bankroll_balance
+                            elif master_bankroll_balance > prev_bankroll:
+                                bankroll_current = master_bankroll_balance
+                            elif master_bankroll_balance <= (prev_bankroll * 0.7):
+                                bankroll_current = master_bankroll_balance
+                            else:
+                                bankroll_current = prev_bankroll
+                    else:
+                        # Hold bankroll_current; do not update subaccounts
+                        bankroll_current = prev_bankroll if prev_bankroll is not None else portfolio_value
                     
                     cursor.execute("""
                         INSERT INTO users.account_balance_0001 (balance, exposure, positions, portfolio, bankroll_current, portfolio_value, timestamp)
                         VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """, (balance_amount, total_exposure, positions_value, portfolio_value, bankroll_current, portfolio_value_raw, current_timestamp))
                     pg_conn.commit()
-                    print(f"💾 Balance (cash: {balance_amount}), Open Positions ({positions_value}), Total Portfolio ({portfolio_value}), Kalshi Portfolio Value ({portfolio_value_raw}) written to PostgreSQL users.account_balance_0001")
+                    print(f"💾 Balance (cash: {balance_amount}), Open Positions ({positions_value}), Total Portfolio ({portfolio_value}), bankroll_current={bankroll_current} (positions={'flat' if positions_value == 0 else 'open'}) written to users.account_balance_0001")
                     
                     # Notify frontend of account balance change
                     notify_frontend_db_change("account_balance", {

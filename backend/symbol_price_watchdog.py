@@ -83,6 +83,137 @@ VOLATILITY_PROFILES = {}
 # Global volatility value cache: {symbol: {minute_key: (volatility_value, volatility_percentile)}}
 VOLATILITY_CACHE = {}
 
+# Global movement profile cache (percentile -> movement_value)
+MOVEMENT_PROFILES = {}
+
+def update_prev_day_avg_for_symbol(symbol: str, cursor, table_name: str, yesterday_start: str, yesterday_end: str):
+    """
+    Compute previous calendar day's average momentum/volatility/movement percentiles from this symbol's
+    live price log (per-minute resample then daily avg) and UPDATE live_symbol_status.
+    Uses the same connection/cursor as the caller (e.g. insert_tick).
+    """
+    cursor.execute("""
+        WITH per_minute AS (
+            SELECT
+                DATE_TRUNC(%s, timestamp::timestamp) AS minute,
+                AVG(momentum_percentile)   AS mom_pct,
+                AVG(volatility_percentile) AS vol_pct,
+                AVG(movement_percentile)   AS mov_pct
+            FROM live_data.""" + table_name + """
+            WHERE timestamp >= %s AND timestamp < %s
+            GROUP BY DATE_TRUNC(%s, timestamp::timestamp)
+        )
+        SELECT AVG(mom_pct), AVG(vol_pct), AVG(mov_pct) FROM per_minute
+    """, ('minute', yesterday_start, yesterday_end, 'minute'))
+    row = cursor.fetchone()
+    if row and (row[0] is not None or row[1] is not None or row[2] is not None):
+        daily_update_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%dT%H:%M:%S")
+        cursor.execute("""
+            UPDATE live_data.live_symbol_status SET
+                prev_day_avg_momentum_percentile = %s,
+                prev_day_avg_volatility_percentile = %s,
+                prev_day_avg_movement_percentile = %s,
+                daily_update = %s
+            WHERE symbol = %s
+        """, (row[0], row[1], row[2], daily_update_str, symbol))
+        mom = f"{row[0]:.1f}" if row[0] is not None else "NULL"
+        vol = f"{row[1]:.1f}" if row[1] is not None else "NULL"
+        mov = f"{row[2]:.1f}" if row[2] is not None else "NULL"
+        print(f"✅ {symbol} prev_day_avg updated: momentum={mom} volatility={vol} movement={mov}")
+
+def _run_daily_prev_day_avg_0005(symbol: str):
+    """Background thread: run prev_day_avg update every day at 00:05 EST. No dependency on ticks."""
+    table_name = SYMBOL_CONFIG[symbol]["table_name"]
+    print(f"🕐 [{symbol}] Daily prev_day_avg thread started, waiting for 00:05 EST...")
+    sys.stdout.flush()
+    while True:
+        now = datetime.now(ZoneInfo("America/New_York"))
+        # Next 00:05 EST today or tomorrow
+        target = now.replace(hour=0, minute=5, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        wait_seconds = (target - now).total_seconds()
+        wait_hours = wait_seconds / 3600
+        print(f"🕐 [{symbol}] Next prev_day_avg update scheduled for {target.strftime('%Y-%m-%d %H:%M:%S')} EST (in {wait_hours:.1f} hours)")
+        sys.stdout.flush()
+        time.sleep(wait_seconds)
+        now_after_sleep = datetime.now(ZoneInfo("America/New_York"))
+        print(f"🕐 [{symbol}] Running daily prev_day_avg update at {now_after_sleep.strftime('%Y-%m-%d %H:%M:%S')} EST...")
+        sys.stdout.flush()
+        try:
+            conn = get_postgres_connection()
+            if not conn:
+                print(f"⚠️ [{symbol}] Failed to get DB connection for prev_day_avg update")
+                continue
+            cursor = conn.cursor()
+            today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+            today_dt = datetime.strptime(today_str, "%Y-%m-%d")
+            yesterday_dt = today_dt - timedelta(days=1)
+            yesterday_start = yesterday_dt.strftime("%Y-%m-%d") + "T00:00:00"
+            yesterday_end = today_str + "T00:00:00"
+            print(f"🕐 [{symbol}] Computing prev_day_avg for {yesterday_start} to {yesterday_end}")
+            sys.stdout.flush()
+            update_prev_day_avg_for_symbol(symbol, cursor, table_name, yesterday_start, yesterday_end)
+            conn.commit()
+            cursor.close()
+            conn.close()
+            print(f"✅ [{symbol}] Daily prev_day_avg update completed successfully")
+            sys.stdout.flush()
+        except Exception as e:
+            print(f"⚠️ [{symbol}] daily prev_day_avg (00:05) failed: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.stdout.flush()
+
+def load_movement_profile(symbol: str) -> Dict[float, float]:
+    """Load movement profile from database and cache (same pattern as momentum)."""
+    if symbol in MOVEMENT_PROFILES:
+        return MOVEMENT_PROFILES[symbol]
+    try:
+        conn = get_postgres_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT table_name FROM information_schema.tables
+            WHERE table_schema = 'analytics' AND table_name LIKE %s
+            ORDER BY table_name DESC
+        """, (f"{symbol.lower()}_movement_profile_%",))
+        results = cursor.fetchall()
+        if not results:
+            profile_table = f"analytics.{symbol.lower()}_movement_profile"
+        else:
+            profile_table = f"analytics.{results[0][0]}"
+        cursor.execute(f"SELECT percentile, movement_value FROM {profile_table} ORDER BY percentile")
+        profile = {float(row[0]): float(row[1]) for row in cursor.fetchall()}
+        conn.close()
+        MOVEMENT_PROFILES[symbol] = profile
+        return profile
+    except Exception as e:
+        print(f"⚠️ Load movement profile for {symbol}: {e}")
+        return {}
+
+def calculate_movement_percentile(symbol: str, movement_value: float) -> Optional[float]:
+    """Interpolated percentile for movement value using cached movement profile."""
+    if movement_value is None:
+        return None
+    profile = MOVEMENT_PROFILES.get(symbol) or load_movement_profile(symbol)
+    if not profile:
+        return None
+    percentiles = sorted(profile.keys())
+    values = [profile[p] for p in percentiles]
+    if movement_value <= values[0]:
+        return percentiles[0]
+    if movement_value >= values[-1]:
+        return percentiles[-1]
+    for i in range(len(values) - 1):
+        if values[i] <= movement_value <= values[i + 1]:
+            p1, p2 = percentiles[i], percentiles[i + 1]
+            v1, v2 = values[i], values[i + 1]
+            if v2 == v1:
+                return p1
+            return round(p1 + (p2 - p1) * (movement_value - v1) / (v2 - v1), 1)
+    closest = min(profile.keys(), key=lambda p: abs(profile[p] - movement_value))
+    return closest
+
 def load_momentum_profile(symbol: str) -> Dict[float, float]:
     """Load momentum profile from database and cache it in memory"""
     if symbol in MOMENTUM_PROFILES:
@@ -386,6 +517,37 @@ def get_current_price_from_db(symbol: str) -> Optional[float]:
         print(f"Error getting current price: {e}")
         return None
 
+def get_high_low_open_for_window(symbol: str, minutes_ago: int) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """Return (high, low, open) for the last N minutes from live table. Open = price at window start (oldest tick)."""
+    try:
+        conn = get_postgres_connection()
+        cursor = conn.cursor()
+        est_tz = ZoneInfo("America/New_York")
+        now_est = datetime.now(est_tz)
+        cutoff = (now_est - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%S")
+        table_name = SYMBOL_CONFIG[symbol]["table_name"]
+        cursor.execute(f"""
+            SELECT MIN(price) AS low, MAX(price) AS high,
+                   (array_agg(price ORDER BY timestamp ASC))[1] AS open_price
+            FROM live_data.{table_name}
+            WHERE timestamp >= %s
+        """, (cutoff,))
+        row = cursor.fetchone()
+        conn.close()
+        if row and row[0] is not None and row[1] is not None and row[2] is not None:
+            return (float(row[1]), float(row[0]), float(row[2]))
+        return (None, None, None)
+    except Exception as e:
+        print(f"get_high_low_open_for_window({symbol}, {minutes_ago}m): {e}")
+        return (None, None, None)
+
+def calculate_move_for_window(symbol: str, minutes: int) -> Optional[float]:
+    """Raw movement for window: (high - low) / open * 100. Returns None if insufficient data or open is 0."""
+    high, low, open_price = get_high_low_open_for_window(symbol, minutes)
+    if high is None or low is None or open_price is None or open_price == 0:
+        return None
+    return (high - low) / open_price * 100.0
+
 def calculate_delta(current_price: float, past_price: Optional[float]) -> Optional[float]:
     """Calculate percentage delta between current and past price"""
     if past_price is None or past_price == 0:
@@ -450,6 +612,36 @@ def calculate_weighted_momentum_score(deltas: Dict[str, Optional[float]]) -> Opt
         return weighted_sum / total_weight
     return None
 
+# Movement windows and weights (mirror momentum: 1m, 2m, 3m, 4m, 15m, 30m)
+MOVEMENT_WINDOWS = [1, 2, 3, 4, 15, 30]
+MOVEMENT_WEIGHTS = {1: 0.3, 2: 0.25, 3: 0.2, 4: 0.15, 15: 0.05, 30: 0.05}
+
+def get_movement_data(symbol: str) -> Dict[str, Any]:
+    """Compute move_1m..move_30m from tick high/low/open, weighted movement, and movement_percentile."""
+    moves = {}
+    for m in MOVEMENT_WINDOWS:
+        moves[f"move_{m}m"] = calculate_move_for_window(symbol, m)
+    weighted_sum = 0.0
+    total_weight = 0.0
+    for m in MOVEMENT_WINDOWS:
+        w = MOVEMENT_WEIGHTS[m]
+        v = moves[f"move_{m}m"]
+        if v is not None:
+            weighted_sum += v * w
+            total_weight += w
+    movement = (weighted_sum / total_weight) if total_weight > 0 else None
+    movement_percentile = calculate_movement_percentile(symbol, movement) if movement is not None else None
+    return {
+        "move_1m": moves["move_1m"],
+        "move_2m": moves["move_2m"],
+        "move_3m": moves["move_3m"],
+        "move_4m": moves["move_4m"],
+        "move_15m": moves["move_15m"],
+        "move_30m": moves["move_30m"],
+        "movement": movement,
+        "movement_percentile": movement_percentile,
+    }
+
 def calculate_5s_momentum_average(symbol: str = 'BTC') -> Optional[float]:
     """Calculate 5-second rolling average of momentum values and return as percentile"""
     try:
@@ -487,6 +679,43 @@ def calculate_5s_momentum_average(symbol: str = 'BTC') -> Optional[float]:
         print(f"⚠️ 5s momentum average calculation failed: {e}")
         return None
 
+def calculate_30s_momentum_average(symbol: str = 'BTC') -> Optional[float]:
+    """Calculate 30-second rolling average of momentum values and return as percentile"""
+    try:
+        conn = get_postgres_connection()
+        cursor = conn.cursor()
+        
+        table_name = SYMBOL_CONFIG[symbol]['table_name']
+        
+        # Get the last 30 momentum values (last 30 seconds)
+        cursor.execute(f"""
+            SELECT momentum 
+            FROM live_data.{table_name} 
+            WHERE momentum IS NOT NULL 
+            ORDER BY timestamp DESC 
+            LIMIT 30
+        """)
+        
+        results = cursor.fetchall()
+        
+        if len(results) < 1:
+            conn.close()
+            return None
+        
+        # Calculate average of the momentum values
+        momentum_values = [float(row[0]) for row in results]
+        momentum_30s_avg = sum(momentum_values) / len(momentum_values)
+        
+        # Convert the 30-second average to percentile
+        momentum_30s_percentile = calculate_momentum_percentile(symbol, momentum_30s_avg)
+        
+        conn.close()
+        return momentum_30s_percentile
+        
+    except Exception as e:
+        print(f"⚠️ 30s momentum average calculation failed: {e}")
+        return None
+
 def calculate_native_momentum(symbol: str = 'BTC') -> Dict[str, Any]:
     """Calculate complete momentum analysis including deltas and weighted score"""
     deltas = calculate_momentum_deltas(symbol)
@@ -504,23 +733,24 @@ def calculate_native_momentum(symbol: str = 'BTC') -> Dict[str, Any]:
         'current_price': get_current_price_from_db(symbol)
     }
 
-def get_minute_candles_for_volatility(symbol: str) -> list:
+def get_minute_candles_for_volatility(symbol: str, lookback_minutes: int = 60) -> list:
     """
-    Get 1-minute OHLC candles from the last 60 minutes using separate connection.
-    Returns list of dicts with keys: open, high, low, close
+    Get 1-minute OHLC candles from the last lookback_minutes using separate connection.
+    Returns list of dicts with keys: open, high, low, close (oldest first).
     """
     try:
         conn = get_postgres_connection()
+        if not conn:
+            return []
         cursor = conn.cursor()
         
         # Get current time in EST
         now = datetime.now(ZoneInfo("America/New_York"))
-        cutoff_time = now - timedelta(minutes=60)
+        cutoff_time = now - timedelta(minutes=lookback_minutes)
         cutoff_str = cutoff_time.strftime("%Y-%m-%dT%H:%M:%S")
         
         table_name = SYMBOL_CONFIG[symbol]['table_name']
         
-        # SQL aggregation - returns 60 rows (one per minute)
         cursor.execute(f"""
             SELECT 
                 DATE_TRUNC('minute', timestamp::timestamp)::text as minute,
@@ -556,14 +786,23 @@ def get_minute_candles_for_volatility(symbol: str) -> list:
 def calculate_native_volatility(symbol: str = 'BTC') -> Optional[float]:
     """
     Calculate weighted multi-timeframe volatility using True Range (ATR-based approach).
-    Matches the calculation method in volatility_generator_pg.py
+    Matches the calculation method in volatility_generator_pg.py.
+    After a feed gap we may have fewer than 59 candles in the last 60 minutes; try
+    longer lookbacks (90, 120 min) so volatility recovers instead of staying NULL for hours.
     """
     try:
-        # Get last 60 minutes of candles
-        candles = get_minute_candles_for_volatility(symbol)
+        # Get candles: try 60 min, then 90, then 120 so we recover after gaps
+        candles = get_minute_candles_for_volatility(symbol, 60)
+        if len(candles) < 59:
+            candles = get_minute_candles_for_volatility(symbol, 90)
+        if len(candles) < 59:
+            candles = get_minute_candles_for_volatility(symbol, 120)
         
-        if len(candles) < 59:  # Allow 59 candles (current minute might not be complete)
+        if len(candles) < 59:  # Still not enough (e.g. very long outage)
             return None
+        
+        # Use only the most recent 60 candles so volatility = "last 60 minutes"
+        candles = candles[-60:]
         
         # Calculate True Range for each candle
         tr_values = []
@@ -731,17 +970,34 @@ def insert_tick(symbol: str, timestamp: str, price: float):
         except Exception as e:
             print(f"⚠️ 5s momentum average calculation failed: {e}")
         
+        # Calculate 30-second momentum average
+        momentum_30s_avg = None
+        try:
+            momentum_30s_avg = calculate_30s_momentum_average(symbol)
+        except Exception as e:
+            print(f"⚠️ 30s momentum average calculation failed: {e}")
+        
         # Get volatility for current minute (calculated synchronously on first tick of minute)
         minute_key = timestamp[:16]  # Extract minute key (YYYY-MM-DDTHH:MM)
         volatility_value, volatility_percentile = get_volatility_for_minute(symbol, minute_key)
         
+        # Get movement data (move_1m..move_30m, movement, movement_percentile)
+        try:
+            movement_data = get_movement_data(symbol)
+        except Exception as e:
+            print(f"⚠️ Movement calculation failed: {e}")
+            movement_data = {
+                "move_1m": None, "move_2m": None, "move_3m": None, "move_4m": None,
+                "move_15m": None, "move_30m": None, "movement": None, "movement_percentile": None,
+            }
+        
         table_name = SYMBOL_CONFIG[symbol]['table_name']
         
-        # Insert the data with all columns including momentum_percentile, momentum_5s_avg, volatility, and volatility_percentile
+        # Insert the data with all columns including momentum, volatility, and movement
         cursor.execute(f'''
             INSERT INTO live_data.{table_name} 
-            (timestamp, price, one_minute_avg, momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg, volatility, volatility_percentile) 
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (timestamp, price, one_minute_avg, momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg, momentum_30s_avg, volatility, volatility_percentile, move_1m, move_2m, move_3m, move_4m, move_15m, move_30m, movement, movement_percentile) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (timestamp) DO UPDATE SET
                 price = EXCLUDED.price,
                 one_minute_avg = EXCLUDED.one_minute_avg,
@@ -754,11 +1010,20 @@ def insert_tick(symbol: str, timestamp: str, price: float):
                 delta_30m = EXCLUDED.delta_30m,
                 momentum_percentile = EXCLUDED.momentum_percentile,
                 momentum_5s_avg = EXCLUDED.momentum_5s_avg,
+                momentum_30s_avg = EXCLUDED.momentum_30s_avg,
                 volatility = EXCLUDED.volatility,
-                volatility_percentile = EXCLUDED.volatility_percentile
+                volatility_percentile = EXCLUDED.volatility_percentile,
+                move_1m = EXCLUDED.move_1m,
+                move_2m = EXCLUDED.move_2m,
+                move_3m = EXCLUDED.move_3m,
+                move_4m = EXCLUDED.move_4m,
+                move_15m = EXCLUDED.move_15m,
+                move_30m = EXCLUDED.move_30m,
+                movement = EXCLUDED.movement,
+                movement_percentile = EXCLUDED.movement_percentile
         ''', (
-            timestamp, 
-            price, 
+            timestamp,
+            price,
             one_minute_avg,
             momentum_data.get('momentum'),
             momentum_data.get('delta_1m'),
@@ -769,9 +1034,78 @@ def insert_tick(symbol: str, timestamp: str, price: float):
             momentum_data.get('delta_30m'),
             momentum_percentile,
             momentum_5s_avg,
+            momentum_30s_avg,
             volatility_value,
-            volatility_percentile
+            volatility_percentile,
+            movement_data.get('move_1m'),
+            movement_data.get('move_2m'),
+            movement_data.get('move_3m'),
+            movement_data.get('move_4m'),
+            movement_data.get('move_15m'),
+            movement_data.get('move_30m'),
+            movement_data.get('movement'),
+            movement_data.get('movement_percentile'),
         ))
+        
+        # Dual write: keep live_symbol_status in sync with latest tick for this symbol
+        tick_values = (
+            timestamp,
+            price,
+            one_minute_avg,
+            momentum_data.get('momentum'),
+            momentum_data.get('delta_1m'),
+            momentum_data.get('delta_2m'),
+            momentum_data.get('delta_3m'),
+            momentum_data.get('delta_4m'),
+            momentum_data.get('delta_15m'),
+            momentum_data.get('delta_30m'),
+            momentum_percentile,
+            momentum_5s_avg,
+            momentum_30s_avg,
+            volatility_value,
+            volatility_percentile,
+            movement_data.get('move_1m'),
+            movement_data.get('move_2m'),
+            movement_data.get('move_3m'),
+            movement_data.get('move_4m'),
+            movement_data.get('move_15m'),
+            movement_data.get('move_30m'),
+            movement_data.get('movement'),
+            movement_data.get('movement_percentile'),
+        )
+        cursor.execute("""
+            UPDATE live_data.live_symbol_status SET
+                "timestamp" = %s,
+                price = %s,
+                one_minute_avg = %s,
+                momentum = %s,
+                delta_1m = %s,
+                delta_2m = %s,
+                delta_3m = %s,
+                delta_4m = %s,
+                delta_15m = %s,
+                delta_30m = %s,
+                momentum_percentile = %s,
+                momentum_5s_avg = %s,
+                volatility = %s,
+                volatility_percentile = %s,
+                momentum_30s_avg = %s,
+                move_1m = %s,
+                move_2m = %s,
+                move_3m = %s,
+                move_4m = %s,
+                move_15m = %s,
+                move_30m = %s,
+                movement = %s,
+                movement_percentile = %s
+            WHERE symbol = %s
+        """, tick_values + (symbol,))
+        if cursor.rowcount == 0:
+            cursor.execute("""
+                INSERT INTO live_data.live_symbol_status
+                (symbol, "timestamp", price, one_minute_avg, momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg, volatility, volatility_percentile, momentum_30s_avg, move_1m, move_2m, move_3m, move_4m, move_15m, move_30m, movement, movement_percentile)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (symbol,) + tick_values)
         
         # ROLLING WINDOW: Clean up data older than 30 days
         dt = datetime.now(ZoneInfo("America/New_York")).replace(microsecond=0)
@@ -798,18 +1132,23 @@ async def log_symbol_price(symbol: str):
     last_logged_second = None
     symbol_config = SYMBOL_CONFIG[symbol]
     
-    # Pre-load momentum and volatility profiles for this symbol
+    # Pre-load momentum, volatility, and movement profiles for this symbol
     print(f"🔄 Pre-loading momentum profile for {symbol}...")
     load_momentum_profile(symbol)
     print(f"🔄 Pre-loading volatility profile for {symbol}...")
     load_volatility_profile(symbol)
+    print(f"🔄 Pre-loading movement profile for {symbol}...")
+    load_movement_profile(symbol)
     
     while True:
         try:
             async with websockets.connect(symbol_config['api_endpoint']) as websocket:
                 subscribe_message = {
                     "type": "subscribe",
-                    "channels": [{"name": "ticker", "product_ids": [symbol_config['product_id']]}]
+                    "channels": [
+                        {"name": "ticker", "product_ids": [symbol_config['product_id']]},
+                        {"name": "heartbeat", "product_ids": [symbol_config['product_id']]}
+                    ]
                 }
                 await websocket.send(json.dumps(subscribe_message))
 
@@ -912,11 +1251,13 @@ def handle_yahoo_finance_symbol(symbol: str):
     symbol_config = SYMBOL_CONFIG[symbol]
     last_logged_second = None
     
-    # Pre-load momentum and volatility profiles for this symbol
+    # Pre-load momentum, volatility, and movement profiles for this symbol
     print(f"🔄 Pre-loading momentum profile for {symbol}...")
     load_momentum_profile(symbol)
     print(f"🔄 Pre-loading volatility profile for {symbol}...")
     load_volatility_profile(symbol)
+    print(f"🔄 Pre-loading movement profile for {symbol}...")
+    load_movement_profile(symbol)
     
     def on_new_msg(ws, msg):
         """Handle incoming Yahoo Finance ticker messages"""
@@ -997,6 +1338,12 @@ async def main():
     method = config.get('method', 'coinbase')  # Default to coinbase for backward compatibility
     
     print(f"Starting {symbol} Price Watchdog (PostgreSQL) using {method}")
+    sys.stdout.flush()
+    # Daily prev_day_avg update at 00:05 EST (runs regardless of ticks)
+    t = threading.Thread(target=_run_daily_prev_day_avg_0005, args=(symbol,), daemon=True)
+    t.start()
+    print("🕐 Daily prev_day_avg update scheduled for 00:05 EST")
+    sys.stdout.flush()
     
     if method == 'yahoo_finance':
         # Yahoo Finance symbols (SPX, NDX, etc.) - run synchronously

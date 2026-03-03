@@ -15,7 +15,6 @@
   
   <script src="https://d3js.org/d3.v7.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
   <script src="../js/monitor_history_display.js"></script>
   <style>
     /* Dashboard Container */
@@ -32,10 +31,43 @@
       width: 100%;
     }
 
-    /* New Panel - Mobile: Hide */
+    /* Performance Panel - Mobile: Full width at top; no extra margin so buffer matches other panels */
     .new-panel {
-      display: none;
+      display: flex;
+      flex-direction: column;
+      min-height: 260px;
+      width: 100%;
+      padding: 8px;
+      margin-bottom: 0;
     }
+
+    .performance-periods { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; width: fit-content; align-self: center; }
+    .performance-row { display: flex; align-items: center; gap: 10px; }
+    .performance-label { font-size: 13px; font-weight: 600; color: #a0aec0; width: 48px; text-align: right; }
+    .performance-box { display: inline-block; background-color: #1a1d24; border-radius: 8px; border: 1px solid #3d4552; padding: 9px 14px; min-width: 72px; text-align: center; }
+    .performance-pnl { font-size: 14px; font-weight: 600; color: #ffffff; }
+    .performance-pnl.positive { color: #48bb78; }
+    .performance-pnl.negative { color: #e53e3e; }
+    .performance-ret { font-size: 13px; font-weight: 600; text-align: right; }
+    .performance-ret.positive { color: #48bb78; }
+    .performance-ret.negative { color: #e53e3e; }
+    .performance-ret.neutral { color: #a0aec0; }
+    .performance-compare { font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 4px; color: #ffffff; margin-left: 4px; }
+    .performance-compare::before { content: ''; width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; }
+    .performance-compare.positive::before { border-bottom: 5px solid #48bb78; }
+    .performance-compare.negative::before { border-top: 5px solid #e53e3e; }
+    .performance-compare.neutral::before { display: none; }
+    .performance-cash-balance { margin-top: 12px; padding-top: 10px; border-top: 1px solid #3d4552; font-size: 15.6px; font-weight: 600; color: #ffffff; text-align: center; width: fit-content; align-self: center; }
+    .performance-cash-value { color: #ffffff; }
+
+    /* Portfolio panel tabs - Mobile */
+    .portfolio-panel .panel-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .portfolio-panel .panel-header .portfolio-controls { flex: 1 1 100%; }
+    .portfolio-panel .panel-tab { color: #fff; cursor: pointer; opacity: 0.3; transition: opacity 0.2s; }
+    .portfolio-panel .panel-tab.active { opacity: 1; }
+    .portfolio-tabs-body { flex: 1; min-height: 0; position: relative; }
+    .portfolio-panel .tab-content { display: none; min-height: 200px; }
+    .portfolio-panel .tab-content.active { display: block; }
 
     /* Markets List */
     .markets-list {
@@ -170,7 +202,7 @@
       padding: 10px 0;
     }
 
-    /* Monitor Tile Base */
+    /* Monitor Tile Base - tile body not clickable; only controls receive taps */
     .monitor-tile {
       background-color: #1f2530;
       border-radius: 8px;
@@ -183,19 +215,51 @@
       flex-direction: column;
       gap: 4px;
       position: relative;
+      pointer-events: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    
+    /* New-monitor (add) tile stays clickable */
+    .monitor-tile.new-monitor {
       pointer-events: auto;
     }
     
-    /* Disable all hover effects on monitor tiles */
-    .monitor-tile:hover {
+    /* Re-enable pointer events only on interactive controls inside monitor tiles */
+    .monitor-tile .status-light,
+    .monitor-tile .monitor-icon,
+    .monitor-tile .paper-trading-toggle,
+    .monitor-tile .auto-trade-toggle,
+    .monitor-tile .monitor-settings-icon {
+      pointer-events: auto;
+    }
+    
+    /* Disable all hover/active effects on monitor tile so border never disappears on touch */
+    .monitor-tile:hover,
+    .monitor-tile:active {
       background-color: #1f2530 !important;
-      border-color: #34495e !important;
+      border-color: inherit !important;
       transform: none !important;
     }
     
-    /* Re-enable pointer events for auto trade toggle */
-    .auto-trade-toggle {
-      pointer-events: auto !important;
+    .monitor-tile.live-mode:hover,
+    .monitor-tile.live-mode:active {
+      border-color: #48bb78 !important;
+    }
+    
+    .monitor-tile.paper-mode:hover,
+    .monitor-tile.paper-mode:active {
+      border-color: #fbbf24 !important;
+    }
+
+    /* Paper Trading Border Colors */
+    .monitor-tile.live-mode {
+      border: 2px solid #48bb78;
+      box-shadow: 0 0 0 0 #48bb78;
+    }
+
+    .monitor-tile.paper-mode {
+      border: 2px solid #fbbf24;
+      box-shadow: 0 0 0 0 #fbbf24;
     }
 
 
@@ -215,10 +279,8 @@
     }
 
     .tile-view .monitor-name {
-      position: absolute;
-      bottom: 16px;
-      right: 16px;
       font-size: 9px;
+      text-align: right;
     }
 
     /* Monitor Controls */
@@ -436,9 +498,128 @@
       justify-content: center;
     }
 
+    /* Monitor Bottom Row for List View */
+    .list-view .monitor-bottom-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 10px;
+    }
+
+    .list-view .monitor-bottom-row .monitor-uptime {
+      margin-right: 0;
+      min-width: auto;
+    }
+
+    .list-view .monitor-bottom-row .monitor-name {
+      margin-left: 0;
+      min-width: auto;
+    }
+
     .tile-view .monitor-uptime {
       text-align: left;
+    }
+
+    /* Monitor Bottom Row */
+    .tile-view .monitor-bottom-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
       margin-top: 10px;
+    }
+
+    .tile-view .monitor-bottom-row .monitor-uptime {
+      margin-top: 0;
+      display: flex;
+      align-items: center;
+    }
+
+    .tile-view .monitor-bottom-row .monitor-name {
+      margin-top: 0;
+      display: flex;
+      align-items: center;
+    }
+
+    /* Paper Trading Toggle Switch */
+    .paper-trading-toggle {
+      display: flex;
+      position: relative;
+      background-color: #2d3748;
+      border-radius: 4px;
+      padding: 2px;
+      min-width: 100px;
+      height: 22px;
+      cursor: pointer;
+      flex: 0 0 auto;
+      border: 1px solid #4a5568;
+      margin-left: 10px;
+    }
+
+    .paper-trading-toggle-option {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9px;
+      font-weight: 500;
+      letter-spacing: 0.5px;
+      color: #a0aec0; /* Default inactive color */
+      z-index: 2;
+      transition: color 0.3s ease;
+      position: relative;
+    }
+
+    .paper-trading-toggle-slider {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: calc(50% - 2px);
+      height: calc(100% - 4px);
+      background-color: #48bb78;
+      border-radius: 3px;
+      transition: transform 0.3s ease;
+      z-index: 1;
+    }
+
+    .paper-trading-toggle.paper-mode .paper-trading-toggle-slider {
+      transform: translateX(calc(100% + 2px));
+      background-color: #fbbf24;
+    }
+
+    /* Active text (underneath slider) MUST be FULL WHITE */
+    .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child,
+    .monitor-tile .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child,
+    .list-view .monitor-tile .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child,
+    .tile-view .monitor-tile .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child,
+    .monitor-bottom-row .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child {
+      color: #ffffff !important;
+      font-weight: 600 !important;
+      text-shadow: none !important;
+      opacity: 1 !important;
+      filter: none !important;
+      -webkit-font-smoothing: antialiased !important;
+    }
+
+    .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child,
+    .monitor-tile .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child,
+    .list-view .monitor-tile .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child,
+    .tile-view .monitor-tile .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child,
+    .monitor-bottom-row .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child {
+      color: #ffffff !important;
+      font-weight: 600 !important;
+      text-shadow: none !important;
+      opacity: 1 !important;
+      filter: none !important;
+      -webkit-font-smoothing: antialiased !important;
+    }
+
+    /* Ensure inactive options stay grey */
+    .paper-trading-toggle.live-mode .paper-trading-toggle-option:last-child {
+      color: #a0aec0 !important;
+    }
+
+    .paper-trading-toggle.paper-mode .paper-trading-toggle-option:first-child {
+      color: #a0aec0 !important;
     }
 
     /* Auto Trade Label */
@@ -679,23 +860,6 @@
       opacity: 1;
     }
 
-    /* Sortable Styles */
-    .sortable-ghost {
-      opacity: 0.3;
-    }
-
-    .sortable-chosen {
-      background-color: #293745;
-    }
-
-    .sortable-drag {
-      opacity: 0.8;
-    }
-
-    .sortable-fallback {
-      opacity: 0.8;
-    }
-
     /* Portfolio Chart */
     .portfolio-chart-container {
       height: 200px;
@@ -763,6 +927,7 @@
     .view-buttons {
       display: flex;
       gap: 5px;
+      margin-left: auto;
     }
 
     .view-btn {
@@ -1026,15 +1191,55 @@
 </head>
 <body>
   <div class="dashboard-container">
-    <!-- Portfolio and New Panel Row -->
+    <!-- Performance Panel - Mobile: at top -->
+    <div class="panel-container new-panel">
+      <div class="panel-header">
+        <span>Performance</span>
+      </div>
+      <div class="performance-periods">
+        <div class="performance-row" data-period="day">
+          <span class="performance-label">Day</span>
+          <div class="performance-box"><span class="performance-pnl" id="perf-pnl-day">—</span></div>
+          <div class="performance-box"><span class="performance-ret" id="perf-ret-day">—</span></div>
+          <div class="performance-compare" id="perf-compare-day"></div>
+        </div>
+        <div class="performance-row" data-period="week">
+          <span class="performance-label">Week</span>
+          <div class="performance-box"><span class="performance-pnl" id="perf-pnl-week">—</span></div>
+          <div class="performance-box"><span class="performance-ret" id="perf-ret-week">—</span></div>
+          <div class="performance-compare" id="perf-compare-week"></div>
+        </div>
+        <div class="performance-row" data-period="month">
+          <span class="performance-label">Month</span>
+          <div class="performance-box"><span class="performance-pnl" id="perf-pnl-month">—</span></div>
+          <div class="performance-box"><span class="performance-ret" id="perf-ret-month">—</span></div>
+          <div class="performance-compare" id="perf-compare-month"></div>
+        </div>
+        <div class="performance-row" data-period="year">
+          <span class="performance-label">Year</span>
+          <div class="performance-box"><span class="performance-pnl" id="perf-pnl-year">—</span></div>
+          <div class="performance-box"><span class="performance-ret" id="perf-ret-year">—</span></div>
+          <div class="performance-compare" id="perf-compare-year"></div>
+        </div>
+      </div>
+      <div class="performance-cash-balance">
+        <span class="performance-cash-label">Cash Balance:</span>
+        <span class="performance-cash-value" id="perf-cash-balance">—</span>
+      </div>
+    </div>
+
+    <!-- Portfolio Panel with tabs -->
     <div class="panels-row">
-      <!-- Portfolio Panel -->
       <div class="panel-container portfolio-panel">
         <div class="panel-header">
-          Portfolio
+          <div style="display: flex; gap: 12px; align-items: center;">
+            <span id="bankroll-tab" class="panel-tab" style="opacity: 0.3;">Bankroll</span>
+            <span id="portfolio-tab" class="panel-tab" style="opacity: 0.3;">Portfolio</span>
+            <span id="pnl-tab" class="panel-tab" style="opacity: 0.3;">PNL</span>
+          </div>
           <div class="portfolio-controls">
             <div class="portfolio-info">
-              <span class="portfolio-value" id="portfolio-value" style="padding-left: 20px; margin-right: 15px;"">Loading...</span>
+              <span class="portfolio-value" id="portfolio-value" style="padding-left: 10px; margin-right: 10px;">Loading...</span>
               <div class="portfolio-change-container">
                 <div class="change-element" id="portfolio-change"></div>
               </div>
@@ -1048,11 +1253,25 @@
             </div>
           </div>
         </div>
-        <div class="portfolio-chart-container">
-          <canvas id="portfolio-chart"></canvas>
+        <div class="portfolio-tabs-body">
+          <div id="bankroll-tab-content" class="tab-content">
+            <div class="portfolio-chart-container">
+              <canvas id="bankroll-chart"></canvas>
+            </div>
+          </div>
+          <div id="portfolio-tab-content" class="tab-content">
+            <div class="portfolio-chart-container">
+              <canvas id="portfolio-chart"></canvas>
+            </div>
+          </div>
+          <div id="pnl-tab-content" class="tab-content">
+            <div class="portfolio-chart-container">
+              <canvas id="pnl-chart"></canvas>
+            </div>
+          </div>
         </div>
       </div>
-
+    </div>
 
     <!-- Monitors and Allocation Row -->
     <div class="panels-row">
@@ -1107,6 +1326,11 @@
     let currentViewMode = 'tile'; // Current view mode (tile/list)
     let currentSortBy = 'name'; // Current sort criteria
     let currentChartType = 'pie'; // Current chart type (pie/bar)
+    let portfolioPanelActiveTab = 'portfolio'; // 'bankroll' | 'portfolio' | 'pnl'
+    let allBankrollHistoryData = [];
+    let allPnlHistoryData = [];
+    let bankrollChart = null;
+    let pnlChart = null;
 
     // Load account mode from localStorage or default to prod
     document.addEventListener('DOMContentLoaded', async function() {
@@ -1115,13 +1339,15 @@
         GLOBAL_ACCOUNT_MODE = savedMode;
       }
       
-      // STEP 1: Load dashboard preferences FIRST - this sets currentView
+      // STEP 1: Load dashboard preferences FIRST - this sets currentView and portfolioPanelActiveTab
       await loadDashboardPreferences();
       console.log('Dashboard: Preferences loaded, currentView is:', currentView);
       
-      // STEP 2: Load portfolio data and history
-      await loadPortfolioData();
-      await loadPortfolioHistory();
+      // STEP 2: Load portfolio panel (top line + delta + chart from view type + time window)
+      await refreshPortfolioPanel();
+      
+      loadPerformanceData();
+      loadPerformancePanelCashBalance();
       
       // STEP 3: Load monitors data
       await loadMonitors();
@@ -1149,6 +1375,8 @@
           setChartView(view);
         });
       });
+      
+      initializePortfolioPanelTabs();
       
       // Connect to WebSocket after everything is loaded
       connectWebSocket();
@@ -1275,6 +1503,85 @@
       }
     }
 
+    function isTruthyFlag(value) {
+      if (typeof value === 'boolean') return value;
+      if (typeof value === 'number') return value !== 0;
+      if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        return ['true', 't', '1', 'yes', 'y', 'on'].includes(normalized);
+      }
+      return false;
+    }
+
+    function resolveAllocationBadgeState(monitor) {
+      const lossPreventionValue =
+        monitor.loss_prevention ??
+        monitor.lossPrevention ??
+        monitor.loss_prevention_mode ??
+        monitor.lossPreventionMode;
+      const lossPreventionActive = lossPreventionValue && lossPreventionValue !== 'none' && lossPreventionValue !== 'off';
+      if (lossPreventionActive) {
+        return { visible: true, text: 'LP', className: 'allocation-status-badge lp' };
+      }
+
+      const performanceAllocationFlag =
+        monitor.performance_based_allocation ??
+        monitor.performanceBasedAllocation ??
+        monitor.performance_allocation ??
+        monitor.performanceAllocation;
+
+      if (!isTruthyFlag(performanceAllocationFlag)) {
+        return { visible: false };
+      }
+
+      const modifierSource =
+        monitor.current_performance_modifier ??
+        monitor.currentPerformanceModifier ??
+        monitor.performance_modifier ??
+        monitor.performanceModifier ??
+        monitor.allocation_modifier ??
+        monitor.allocationModifier;
+      const modifier = parseFloat(modifierSource);
+
+      if (!Number.isFinite(modifier)) {
+        return { visible: false };
+      }
+
+      const normalized = Math.round(modifier * 100) / 100;
+      const isClose = (target) => Math.abs(normalized - target) < 0.001;
+
+      if (isClose(0)) {
+        return { visible: true, text: '1c', className: 'allocation-status-badge alloc-orange' };
+      }
+
+      if (isClose(0.5)) {
+        return { visible: true, text: '½x', className: 'allocation-status-badge alloc-yellow' };
+      }
+
+      if (isClose(1)) {
+        return { visible: false };
+      }
+
+      if (isClose(1.5)) {
+        return { visible: true, text: '1.5x', className: 'allocation-status-badge alloc-green' };
+      }
+
+      if (isClose(2)) {
+        return { visible: true, text: '2x', className: 'allocation-status-badge alloc-green' };
+      }
+
+      const formatted = normalized % 1 === 0 ? `${normalized.toFixed(0)}x` : `${normalized.toFixed(2)}x`;
+      return { visible: true, text: formatted, className: 'allocation-status-badge alloc-green' };
+    }
+
+    function getAllocationBadgeMarkup(monitor) {
+      const badge = resolveAllocationBadgeState(monitor);
+      if (!badge.visible) {
+        return '';
+      }
+      return `<div class="${badge.className}">${badge.text}</div>`;
+    }
+
     // Create monitor tile HTML
     function createMonitorTile(monitor, index) {
       const isListView = currentViewMode === 'list';
@@ -1291,8 +1598,9 @@
       
       if (isListView) {
         // List view layout - horizontal data arrangement
+        const isPaperTrading = monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1;
         return `
-          <div class="monitor-tile list-view ${monitor.status === 'inactive' ? 'inactive' : ''}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
+          <div class="monitor-tile list-view ${monitor.status === 'inactive' ? 'inactive' : ''} ${isPaperTrading ? 'paper-mode' : 'live-mode'}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
             <!-- Column 1: Status Light -->
             <div class="status-light list-status-light ${monitor.status === 'active' ? 'active' : 'inactive'}" onclick="toggleMonitorStatus('${monitor.id}', '${monitor.name}', '${monitor.status}')" style="cursor: pointer;" title="${monitor.status === 'active' ? 'Click to deactivate monitor' : 'Click to activate monitor'}"></div>
             
@@ -1328,8 +1636,15 @@
                 <div class="stat-label">PnL</div>
               </div>
             </div>
-            <div class="monitor-uptime">${monitor.uptime}</div>
-            <div class="monitor-name">${monitor.id === 'NEW_MONITOR' ? monitor.name : `Monitor ${monitor.name.slice(-5)}`}</div>
+            <div class="monitor-bottom-row">
+              <div class="monitor-uptime">${monitor.uptime}</div>
+              <div class="paper-trading-toggle ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}" onclick="togglePaperTrade('${monitor.id}')" title="Click to toggle between LIVE and PAPER trading">
+                <div class="paper-trading-toggle-slider"></div>
+                <div class="paper-trading-toggle-option">LIVE</div>
+                <div class="paper-trading-toggle-option">PAPER</div>
+              </div>
+              <div class="monitor-name">${monitor.id === 'NEW_MONITOR' ? monitor.name : `Monitor ${monitor.name.slice(-5)}`}</div>
+            </div>
             <div class="monitor-controls">
               <div style="display: flex; align-items: center;">
                 <img 
@@ -1347,9 +1662,9 @@
         `;
       } else {
         // Tile view layout - original vertical arrangement
+        const isPaperTrading = monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1;
         return `
-          <div class="monitor-tile tile-view ${monitor.status === 'inactive' ? 'inactive' : ''}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
-            <div class="monitor-name">${monitor.id === 'NEW_MONITOR' ? monitor.name : `Monitor ${monitor.name.slice(-5)}`}</div>
+          <div class="monitor-tile tile-view ${monitor.status === 'inactive' ? 'inactive' : ''} ${isPaperTrading ? 'paper-mode' : 'live-mode'}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
             <div style="display: flex; align-items: flex-start; margin-bottom: 10px;">
               <!-- Column 1: Status Light -->
               <div class="status-light ${monitor.status === 'active' ? 'active' : 'inactive'}" onclick="toggleMonitorStatus('${monitor.id}', '${monitor.name}', '${monitor.status}')" style="cursor: pointer;" title="${monitor.status === 'active' ? 'Click to deactivate monitor' : 'Click to activate monitor'}"></div>
@@ -1404,7 +1719,15 @@
                 <div class="stat-label">PnL</div>
               </div>
             </div>
-            <div class="monitor-uptime">${monitor.uptime}</div>
+            <div class="monitor-bottom-row">
+              <div class="monitor-uptime">${monitor.uptime}</div>
+              <div class="paper-trading-toggle ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}" onclick="togglePaperTrade('${monitor.id}')" title="Click to toggle between LIVE and PAPER trading">
+                <div class="paper-trading-toggle-slider"></div>
+                <div class="paper-trading-toggle-option">LIVE</div>
+                <div class="paper-trading-toggle-option">PAPER</div>
+              </div>
+              <div class="monitor-name">${monitor.id === 'NEW_MONITOR' ? monitor.name : `Monitor ${monitor.name.slice(-5)}`}</div>
+            </div>
           </div>
         `;
       }
@@ -1485,6 +1808,9 @@
         
         grid.innerHTML = visibleMonitors.map((monitor, index) => createMonitorTile(monitor, index)).join('');
         
+        // Initialize paper trading toggle text colors
+        initializePaperTradingToggleColors();
+        
         // Update status displays to show cooldown timers if available
         visibleMonitors.forEach(monitor => {
           if ((monitor.auto_trade_status === 'PAUSED' || monitor.auto_trade_status === 'paused') && cooldownTimers.has(monitor.id)) {
@@ -1528,11 +1854,7 @@
             listItem.style.transition = 'background-color 0.2s ease';
             listItem.style.boxShadow = '0 0 8px rgba(74, 158, 255, 0.01)';
           }
-          
-          // Highlight this monitor tile
-          tile.style.background = '#3a4a5c';
-          tile.style.transition = 'background-color 0.2s ease';
-          tile.style.boxShadow = '0 0 5px rgba(74, 158, 255, 0.05)';
+          /* Do not set inline styles on the tile - prevents border disappearing on touch/mouseout */
         });
         
         tile.addEventListener('mouseout', function() {
@@ -1553,11 +1875,7 @@
             listItem.style.transition = '';
             listItem.style.boxShadow = '';
           }
-          
-          // Remove highlight from this monitor tile
-          tile.style.background = '';
-          tile.style.transition = '';
-          tile.style.boxShadow = '';
+          /* Do not clear inline styles on the tile - prevents border disappearing artifact */
         });
       });
     }
@@ -1645,57 +1963,6 @@
           tooltip.classList.remove('show');
         }
       });
-    }
-
-    // Initialize Sortable for monitor tiles
-    function initializeSortable() {
-      const grid = document.getElementById('monitors-grid');
-      if (grid) {
-        new Sortable(grid, {
-          animation: 150,
-          ghostClass: 'sortable-ghost',
-          chosenClass: 'sortable-chosen',
-          dragClass: 'sortable-drag',
-          fallbackClass: 'sortable-fallback',
-          forceFallback: true,
-          filter: '.new-monitor, .monitor-icon, .monitor-icons', // Prevent new monitor tile and icon areas from being dragged
-          onMove: function(evt) {
-            // Prevent dropping any tile after the new monitor tile
-            const newMonitorIndex = monitors.findIndex(m => m.id === 'NEW_MONITOR');
-            const draggedIndex = evt.dragged.dataset.index;
-            const newIndex = evt.dragged.parentNode.children.length - 1; // Last position is reserved for new monitor
-            
-            if (evt.related && evt.related.classList.contains('new-monitor')) {
-              return false; // Prevent dropping on new monitor tile
-            }
-            
-            // Prevent dropping after the new monitor tile
-            if (evt.newIndex >= newMonitorIndex) {
-              return false;
-            }
-            
-            return true;
-          },
-          onEnd: function(evt) {
-            // When tiles are manually reordered, show "Custom" in the sort picker
-            const sortPicker = document.getElementById('sortPicker');
-            const customOption = sortPicker.querySelector('option[value="custom"]');
-            if (customOption) {
-              customOption.style.display = ''; // Show the custom option
-              sortPicker.value = 'custom';
-            }
-            
-            // Update the current sort criteria to custom
-            currentSortBy = 'custom';
-            
-            // Save the new order to the database
-            saveMonitorOrder();
-            
-            // Save the custom sort preference to the database
-            saveDashboardPreferences();
-          }
-        });
-      }
     }
 
     // Sort monitors by the selected criteria
@@ -2288,6 +2555,156 @@
       }
     }
 
+    // Initialize paper trading toggle text colors for all monitors
+    function initializePaperTradingToggleColors() {
+      const allToggles = document.querySelectorAll('.paper-trading-toggle');
+      allToggles.forEach(toggleElement => {
+        const isPaperMode = toggleElement.classList.contains('paper-mode');
+        const options = toggleElement.querySelectorAll('.paper-trading-toggle-option');
+        if (options.length >= 2) {
+          if (isPaperMode) {
+            // PAPER mode: PAPER is active (white), LIVE is inactive (grey)
+            options[0].style.color = '#a0aec0'; // LIVE inactive
+            options[1].style.color = '#ffffff'; // PAPER active - FORCE WHITE
+            options[1].style.fontWeight = '600';
+          } else {
+            // LIVE mode: LIVE is active (white), PAPER is inactive (grey)
+            options[0].style.color = '#ffffff'; // LIVE active - FORCE WHITE
+            options[0].style.fontWeight = '600';
+            options[1].style.color = '#a0aec0'; // PAPER inactive
+          }
+        }
+      });
+    }
+
+    function togglePaperTrade(monitorId) {
+      console.log('Paper trading toggle clicked for monitor:', monitorId);
+      
+      // Find the monitor in the data
+      const monitor = monitors.find(m => m.id === monitorId);
+      if (!monitor) {
+        console.error('Monitor not found:', monitorId);
+        return;
+      }
+      
+      // Get current paper_trade value (handle various formats)
+      const currentPaperTrade = monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1;
+      const newPaperTrade = !currentPaperTrade;
+      
+      console.log(`Toggling paper trade from ${currentPaperTrade} to ${newPaperTrade} for ${monitorId}`);
+      
+      // Update the monitor data
+      monitor.paper_trade = newPaperTrade;
+      
+      // Update the visual state of the toggle
+      const toggleElement = document.querySelector(`[data-monitor-id="${monitorId}"] .paper-trading-toggle`);
+      if (toggleElement) {
+        if (newPaperTrade) {
+          toggleElement.classList.remove('live-mode');
+          toggleElement.classList.add('paper-mode');
+          // Force white color on PAPER option
+          const options = toggleElement.querySelectorAll('.paper-trading-toggle-option');
+          if (options.length >= 2) {
+            options[0].style.color = '#a0aec0'; // LIVE inactive
+            options[1].style.color = '#ffffff'; // PAPER active - FORCE WHITE
+            options[1].style.fontWeight = '600';
+          }
+        } else {
+          toggleElement.classList.remove('paper-mode');
+          toggleElement.classList.add('live-mode');
+          // Force white color on LIVE option
+          const options = toggleElement.querySelectorAll('.paper-trading-toggle-option');
+          if (options.length >= 2) {
+            options[0].style.color = '#ffffff'; // LIVE active - FORCE WHITE
+            options[0].style.fontWeight = '600';
+            options[1].style.color = '#a0aec0'; // PAPER inactive
+          }
+        }
+      }
+      
+      // Update the tile border
+      const tileElement = document.querySelector(`[data-monitor-id="${monitorId}"]`);
+      if (tileElement) {
+        if (newPaperTrade) {
+          tileElement.classList.remove('live-mode');
+          tileElement.classList.add('paper-mode');
+        } else {
+          tileElement.classList.remove('paper-mode');
+          tileElement.classList.add('live-mode');
+        }
+      }
+      
+      // Send update to backend
+      // Extract numeric monitor ID from mon_0001_10002 format and convert to MON_0001_10002 format
+      const numericId = monitorId.split('_').pop(); // Extract 10002 from mon_0001_10002
+      const formattedMonitorId = `MON_0001_${numericId}`;
+      
+      console.log('Sending request with formatted monitor ID:', formattedMonitorId);
+      
+      fetch('/api/monitor/toggle-paper-trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          monitor_id: formattedMonitorId, 
+          paper_trade: newPaperTrade 
+        })
+      })
+      .then(response => response.json())
+      .then(data => {
+        if (data.status === 'ok') {
+          console.log('Successfully updated paper trade in database');
+        } else {
+          console.error('Failed to update paper trade:', data.message);
+          // Revert the UI change on error
+          monitor.paper_trade = currentPaperTrade;
+          if (toggleElement) {
+            if (currentPaperTrade) {
+              toggleElement.classList.remove('live-mode');
+              toggleElement.classList.add('paper-mode');
+              const options = toggleElement.querySelectorAll('.paper-trading-toggle-option');
+              if (options.length >= 2) {
+                options[0].style.color = '#a0aec0';
+                options[1].style.color = '#ffffff';
+                options[1].style.fontWeight = '600';
+              }
+            } else {
+              toggleElement.classList.remove('paper-mode');
+              toggleElement.classList.add('live-mode');
+              const options = toggleElement.querySelectorAll('.paper-trading-toggle-option');
+              if (options.length >= 2) {
+                options[0].style.color = '#ffffff';
+                options[0].style.fontWeight = '600';
+                options[1].style.color = '#a0aec0';
+              }
+            }
+          }
+          if (tileElement) {
+            if (currentPaperTrade) {
+              tileElement.classList.remove('live-mode');
+              tileElement.classList.add('paper-mode');
+            } else {
+              tileElement.classList.remove('paper-mode');
+              tileElement.classList.add('live-mode');
+            }
+          }
+        }
+      })
+      .catch(error => {
+        console.error('Error updating paper trade:', error);
+        // Revert the UI change on error
+        monitor.paper_trade = currentPaperTrade;
+        if (currentPaperTrade) {
+          buttonElement.classList.remove('inactive');
+          buttonElement.classList.add('active');
+          tileElement.classList.add('paper-trading-active');
+        } else {
+          buttonElement.classList.remove('active');
+          buttonElement.classList.add('inactive');
+          tileElement.classList.remove('paper-trading-active');
+        }
+      });
+    }
+
     async function loadDashboardPreferences() {
       try {
         const response = await fetch(`${window.location.origin}/api/dashboard/preferences?mode=${GLOBAL_ACCOUNT_MODE}`);
@@ -2302,8 +2719,11 @@
           currentViewMode = data.monitor_view_mode || 'tile';
           currentSortBy = data.monitor_sort_by || 'name';
           currentChartType = data.allocation_view || 'pie';
-          
-          console.log('Dashboard: Preferences loaded, currentView set to:', currentView);
+          const savedPortfolioView = data.portfolio_view || 'portfolio';
+          if (['bankroll', 'portfolio', 'pnl'].includes(savedPortfolioView)) {
+            portfolioPanelActiveTab = savedPortfolioView;
+          }
+          console.log('Dashboard: Preferences loaded, currentView set to:', currentView, ', portfolio_view:', portfolioPanelActiveTab);
           
           
           // Update portfolio chart button states
@@ -2381,7 +2801,8 @@
             portfolio_chart_view: currentView,
             monitor_view_mode: currentViewMode,
             monitor_sort_by: currentSortBy,
-            allocation_view: currentChartType
+            allocation_view: currentChartType,
+            portfolio_view: portfolioPanelActiveTab
           })
         });
         
@@ -2396,6 +2817,42 @@
         
       } catch (error) {
         console.error('Error saving dashboard preferences:', error);
+      }
+    }
+
+    function initializePortfolioPanelTabs() {
+      const bankrollTab = document.getElementById('bankroll-tab');
+      const portfolioTab = document.getElementById('portfolio-tab');
+      const pnlTab = document.getElementById('pnl-tab');
+      const bankrollContent = document.getElementById('bankroll-tab-content');
+      const portfolioContent = document.getElementById('portfolio-tab-content');
+      const pnlContent = document.getElementById('pnl-tab-content');
+
+      function switchTo(tabEl, contentEl, tabId) {
+        portfolioPanelActiveTab = tabId;
+        [bankrollTab, portfolioTab, pnlTab].forEach(el => {
+          if (el) { el.classList.remove('active'); el.style.opacity = '0.3'; }
+        });
+        [bankrollContent, portfolioContent, pnlContent].forEach(el => {
+          if (el) el.classList.remove('active');
+        });
+        tabEl.classList.add('active');
+        tabEl.style.opacity = '1';
+        contentEl.classList.add('active');
+        saveDashboardPreferences();
+        setTimeout(() => { refreshPortfolioPanel(); }, 50);
+      }
+
+      if (bankrollTab) bankrollTab.addEventListener('click', () => switchTo(bankrollTab, bankrollContent, 'bankroll'));
+      if (portfolioTab) portfolioTab.addEventListener('click', () => switchTo(portfolioTab, portfolioContent, 'portfolio'));
+      if (pnlTab) pnlTab.addEventListener('click', () => switchTo(pnlTab, pnlContent, 'pnl'));
+
+      const tabMap = { bankroll: [bankrollTab, bankrollContent], portfolio: [portfolioTab, portfolioContent], pnl: [pnlTab, pnlContent] };
+      const initial = tabMap[portfolioPanelActiveTab];
+      if (initial && initial[0] && initial[1]) {
+        switchTo(initial[0], initial[1], portfolioPanelActiveTab);
+      } else {
+        switchTo(portfolioTab, portfolioContent, 'portfolio');
       }
     }
 
@@ -2415,17 +2872,39 @@
       const firstValue = filteredData[0].portfolio || 0; // Portfolio values are already in dollars
       const lastValue = filteredData[filteredData.length - 1].portfolio || 0; // Portfolio values are already in dollars
       
-      const change = lastValue - firstValue;
-      const percentChange = firstValue !== 0 ? (change / firstValue) * 100 : 0;
+      const change = (lastValue != null && firstValue != null) ? (lastValue - firstValue) : 0;
+      const percentChange = (firstValue != null && firstValue !== 0) ? (change / firstValue) * 100 : 0;
       
       // Format the consolidated change display
       const changeElement = document.getElementById('portfolio-change');
       const isPositive = change >= 0;
       
-      const changeText = `$${Math.abs(change).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${percentChange.toFixed(2)}%)`;
+      const changeText = `$${Math.abs(change).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${percentChange != null ? percentChange.toFixed(2) : "0.00"}%)`;
       
       changeElement.textContent = changeText;
       changeElement.className = `change-element ${isPositive ? 'positive' : 'negative'}`;
+    }
+
+    /** Set top line, chart, and delta from allHistoryData + currentView (no fetch). */
+    function applyPortfolioView() {
+      const filteredData = filterDataByView(allHistoryData, currentView);
+      const lastVal = filteredData.length > 0 ? (filteredData[filteredData.length - 1].portfolio || 0) : 0;
+      const formatted = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(lastVal);
+      const el = document.getElementById('portfolio-value');
+      if (el) { el.textContent = formatted; el.style.color = ''; }
+      renderPortfolioChart(allHistoryData);
+      updatePortfolioChange();
+    }
+
+    /** Single refresh: top line + delta + chart for active tab. View type + time window drive all three. */
+    async function refreshPortfolioPanel() {
+      if (portfolioPanelActiveTab === 'bankroll') {
+        await loadBankrollHistory();
+      } else if (portfolioPanelActiveTab === 'portfolio') {
+        await loadPortfolioHistory(); // always refetch so top line + delta + chart get fresh data on interval
+      } else {
+        await loadPnlHistory();
+      }
     }
 
     function setChartView(view) {
@@ -2442,15 +2921,15 @@
         targetButton.classList.add('active');
       }
       
-      // Save preferences to database
       saveDashboardPreferences();
-      
-      // Re-render chart with new view
-      renderPortfolioChart(allHistoryData);
-      
-      // Update the change indicator
-      updatePortfolioChange();
-      
+
+      // Time-window only: reapply filter from existing data (instant). Full refresh does refetch on interval/tab.
+      if (portfolioPanelActiveTab === 'portfolio') {
+        applyPortfolioView();
+      } else {
+        refreshPortfolioPanel();
+      }
+
       // Refresh monitor statistics with new time filter
       if (window.monitorHistoryDisplay) {
         console.log(`Dashboard: Refreshing monitor statistics for time view: ${view}`);
@@ -2497,25 +2976,349 @@
     async function loadPortfolioHistory() {
       try {
         const response = await fetch(`${window.location.origin}/api/portfolio/history?period=1y`);
-        
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
-        const history = data.data || []; // The portfolio/history endpoint returns data in 'data' field
-        
-        if (history.length > 0) {
-          allHistoryData = history; // Store all history data
-          renderPortfolioChart(history);
-          updatePortfolioChange(); // Update the change indicator
-        } else {
-          console.log('No historical data available');
-        }
-        
+        const history = data.data || [];
+        allHistoryData = history;
+        applyPortfolioView();
       } catch (error) {
         console.error('Error loading portfolio history:', error);
+        allHistoryData = [];
+        applyPortfolioView();
       }
+    }
+
+    async function loadPerformanceData() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/performance/realized`);
+        if (!response.ok) return;
+        const data = await response.json();
+        if (data.status !== 'ok' || !data.periods) return;
+        const periods = data.periods;
+        ['day', 'week', 'month', 'year'].forEach(key => {
+          const p = periods[key];
+          if (!p) return;
+          const pnlEl = document.getElementById(`perf-pnl-${key}`);
+          const retEl = document.getElementById(`perf-ret-${key}`);
+          const compareEl = document.getElementById(`perf-compare-${key}`);
+          const pnl = Number(p.pnl) || 0;
+          const prevPnl = Number(p.prev_pnl) || 0;
+          const pnlStr = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(pnl);
+          if (pnlEl) {
+            pnlEl.textContent = pnlStr;
+            pnlEl.className = 'performance-pnl' + (pnl > 0 ? ' positive' : pnl < 0 ? ' negative' : '');
+          }
+          if (retEl) {
+            const retPct = p.ret_pct != null ? p.ret_pct : (pnl === 0 ? 0 : null);
+            if (retPct != null) {
+              retEl.textContent = retPct.toFixed(2) + '%';
+              retEl.className = 'performance-ret' + (retPct > 0 ? ' positive' : retPct < 0 ? ' negative' : ' neutral');
+            } else {
+              retEl.textContent = '—';
+              retEl.className = 'performance-ret neutral';
+            }
+          }
+          if (compareEl) {
+            const delta = pnl - prevPnl;
+            const isPositive = delta > 0;
+            const isNegative = delta < 0;
+            const deltaStr = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(delta);
+            let pctStr = '—';
+            if (prevPnl !== 0) {
+              const rawPct = (delta / prevPnl) * 100;
+              const pctSignMatchesDelta = delta >= 0 ? Math.abs(rawPct) : -Math.abs(rawPct);
+              pctStr = Math.round(pctSignMatchesDelta) + '%';
+            }
+            compareEl.textContent = deltaStr + ' (' + pctStr + ')';
+            compareEl.className = 'performance-compare' + (isPositive ? ' positive' : isNegative ? ' negative' : ' neutral');
+          }
+        });
+      } catch (error) {
+        console.error('Error loading performance data:', error);
+      }
+    }
+
+    async function loadPerformancePanelCashBalance() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/subaccounts`);
+        if (!response.ok) return;
+        const data = await response.json();
+        const subaccounts = data.subaccounts || [];
+        const cash = subaccounts.find(s => s.subaccount === 'Cash Transfer');
+        const el = document.getElementById('perf-cash-balance');
+        if (!el) return;
+        if (cash && cash.balance != null) {
+          const dollars = (Number(cash.balance) / 100).toFixed(2);
+          el.textContent = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(dollars));
+        } else {
+          el.textContent = '—';
+        }
+      } catch (error) {
+        console.error('Error loading cash balance:', error);
+        const el = document.getElementById('perf-cash-balance');
+        if (el) el.textContent = '—';
+      }
+    }
+
+    async function loadBankrollData() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/account/balance?mode=${GLOBAL_ACCOUNT_MODE}`);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json();
+        const bankrollValue = data.bankroll_current != null ? data.bankroll_current : 0;
+        const bankrollInDollars = bankrollValue / 100;
+        const formattedValue = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(bankrollInDollars);
+        const portfolioElement = document.getElementById('portfolio-value');
+        if (portfolioElement) portfolioElement.textContent = formattedValue;
+      } catch (error) {
+        console.error('Error loading bankroll data:', error);
+        const portfolioElement = document.getElementById('portfolio-value');
+        if (portfolioElement) {
+          portfolioElement.textContent = 'Error loading data';
+          portfolioElement.style.color = '#ff6b6b';
+        }
+      }
+    }
+
+    async function loadBankrollHistory() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/bankroll/history?period=${currentView}`);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json();
+        const history = data.data || [];
+        allBankrollHistoryData = history;
+        const lastVal = history.length > 0 ? (history[history.length - 1].bankroll || 0) : 0;
+        const formatted = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(lastVal);
+        const el = document.getElementById('portfolio-value');
+        if (el) { el.textContent = formatted; el.style.color = ''; }
+        renderBankrollChart(history);
+        updateBankrollChange();
+      } catch (error) {
+        console.error('Error loading bankroll history:', error);
+      }
+    }
+
+    function updateBankrollChange() {
+      const changeEl = document.getElementById('portfolio-change');
+      if (allBankrollHistoryData.length < 2) {
+        if (changeEl) changeEl.textContent = '';
+        return;
+      }
+      const filteredData = filterDataByView(allBankrollHistoryData, currentView);
+      if (filteredData.length < 2) {
+        if (changeEl) changeEl.textContent = '';
+        return;
+      }
+      const firstValue = filteredData[0].bankroll || 0;
+      const lastValue = filteredData[filteredData.length - 1].bankroll || 0;
+      const change = lastValue - firstValue;
+      const percentChange = firstValue !== 0 ? (change / firstValue) * 100 : 0;
+      const isPositive = change >= 0;
+      const changeText = `$${Math.abs(change).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${percentChange.toFixed(2)}%)`;
+      changeEl.textContent = changeText;
+      changeEl.className = `change-element ${isPositive ? 'positive' : 'negative'}`;
+    }
+
+    async function loadPnlData() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/pnl/history?period=${currentView}`);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json();
+        const totalPnl = data.total_pnl != null ? data.total_pnl : 0;
+        const formattedValue = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(totalPnl);
+        const portfolioElement = document.getElementById('portfolio-value');
+        if (portfolioElement) portfolioElement.textContent = formattedValue;
+      } catch (error) {
+        console.error('Error loading PnL data:', error);
+        const portfolioElement = document.getElementById('portfolio-value');
+        if (portfolioElement) {
+          portfolioElement.textContent = 'Error loading data';
+          portfolioElement.style.color = '#ff6b6b';
+        }
+      }
+    }
+
+    async function loadPnlHistory() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/pnl/history?period=${currentView}`);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json();
+        const history = data.data || [];
+        const totalPnl = data.total_pnl != null ? data.total_pnl : 0;
+        const formattedValue = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(totalPnl);
+        const portfolioElement = document.getElementById('portfolio-value');
+        if (portfolioElement) { portfolioElement.textContent = formattedValue; portfolioElement.style.color = ''; }
+        if (history.length > 0) {
+          allPnlHistoryData = history;
+          renderPnlChart(history);
+          updatePnlChange();
+        } else {
+          allPnlHistoryData = [{ timestamp: new Date().toISOString(), pnl: 0 }];
+          renderPnlChart(allPnlHistoryData);
+          updatePnlChange();
+        }
+      } catch (error) {
+        console.error('Error loading PnL history:', error);
+      }
+    }
+
+    function updatePnlChange() {
+      const changeEl = document.getElementById('portfolio-change');
+      if (allPnlHistoryData.length < 2) {
+        if (changeEl) changeEl.textContent = '';
+        return;
+      }
+      const filteredData = filterDataByView(allPnlHistoryData, currentView);
+      if (filteredData.length < 2) {
+        if (changeEl) changeEl.textContent = '';
+        return;
+      }
+      const firstPnl = filteredData[0].pnl != null ? filteredData[0].pnl : 0;
+      const lastPnl = filteredData[filteredData.length - 1].pnl != null ? filteredData[filteredData.length - 1].pnl : 0;
+      const change = lastPnl - firstPnl;
+      const percentChange = firstPnl !== 0 ? (change / Math.abs(firstPnl)) * 100 : (lastPnl !== 0 ? 100 : 0);
+      const isPositive = change >= 0;
+      const changeText = `$${Math.abs(change).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${percentChange >= 0 ? '' : '-'}${Math.abs(percentChange).toFixed(2)}%)`;
+      changeEl.textContent = changeText;
+      changeEl.className = `change-element ${isPositive ? 'positive' : 'negative'}`;
+    }
+
+    function renderBankrollChart(history) {
+      const ctx = document.getElementById('bankroll-chart');
+      if (!ctx) return;
+      if (bankrollChart) {
+        bankrollChart.destroy();
+        bankrollChart = null;
+      }
+      const filteredData = filterDataByView(history, currentView);
+      const labels = filteredData.map(item => {
+        const date = new Date(item.timestamp);
+        return formatLabel(date, currentView);
+      });
+      const bankrollData = filteredData.map(item => item.bankroll || 0);
+      const smoothingWindow = currentView === '1d' ? 4 : 60;
+      const smoothedData = applyMovingAverage(bankrollData, smoothingWindow);
+      if (smoothedData.length > 0 && bankrollData.length > 0) {
+        smoothedData[smoothedData.length - 1] = bankrollData[bankrollData.length - 1];
+      }
+      const yAxisLabelsPlugin = {
+        id: 'customYAxisLabels',
+        afterDraw: function(chart) {
+          const ctx = chart.ctx;
+          const chartArea = chart.chartArea;
+          const yScale = chart.scales.y;
+          if (!yScale) return;
+          const ticks = yScale.ticks;
+          const visibleTicks = ticks.filter((tick, index) => index % 2 === 0 && index < ticks.length - 1);
+          ctx.save();
+          ctx.font = '10px Arial';
+          ctx.fillStyle = '#ccc';
+          ctx.textAlign = 'left';
+          visibleTicks.forEach(tick => {
+            const y = yScale.getPixelForValue(tick.value);
+            if (y >= chartArea.top && y <= chartArea.bottom) {
+              ctx.fillText('$' + Math.round(tick.value).toLocaleString(), chartArea.left + 5, y + 3);
+            }
+          });
+          ctx.restore();
+        }
+      };
+      bankrollChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Bankroll',
+            data: smoothedData,
+            borderColor: '#4a9eff',
+            backgroundColor: 'rgba(74, 158, 255, 0.1)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.1,
+            pointRadius: 0,
+            pointHoverRadius: 4
+          }]
+        },
+        plugins: [yAxisLabelsPlugin],
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: { display: true, grid: { color: 'rgba(255,255,255,0.1)' }, ticks: { display: false } },
+            x: { grid: { display: false }, ticks: { color: '#ccc', maxTicksLimit: 8 } }
+          }
+        }
+      });
+      observeChartResize(bankrollChart);
+      setTimeout(() => { if (bankrollChart) bankrollChart.resize(); }, 100);
+    }
+
+    function renderPnlChart(history) {
+      const ctx = document.getElementById('pnl-chart');
+      if (!ctx) return;
+      if (pnlChart) {
+        pnlChart.destroy();
+        pnlChart = null;
+      }
+      const data = history.length > 0 ? history : [{ timestamp: new Date().toISOString(), pnl: 0 }];
+      const labels = data.map(item => {
+        const date = new Date(item.timestamp);
+        return formatLabel(date, currentView);
+      });
+      const pnlValues = data.map(item => item.pnl != null ? item.pnl : 0);
+      const yAxisLabelsPluginPnl = {
+        id: 'customYAxisLabels',
+        afterDraw: function(chart) {
+          const ctx = chart.ctx;
+          const chartArea = chart.chartArea;
+          const yScale = chart.scales.y;
+          if (!yScale) return;
+          const ticks = yScale.ticks;
+          const visibleTicks = ticks.filter((tick, index) => index % 2 === 0 && index < ticks.length - 1);
+          ctx.save();
+          ctx.font = '10px Arial';
+          ctx.fillStyle = '#ccc';
+          ctx.textAlign = 'left';
+          visibleTicks.forEach(tick => {
+            const y = yScale.getPixelForValue(tick.value);
+            if (y >= chartArea.top && y <= chartArea.bottom) {
+              const label = '$' + Math.round(tick.value).toLocaleString();
+              ctx.fillText(label, chartArea.left + 5, y + 3);
+            }
+          });
+          ctx.restore();
+        }
+      };
+      pnlChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'PnL',
+            data: pnlValues,
+            borderColor: '#4a9eff',
+            backgroundColor: 'rgba(74, 158, 255, 0.1)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.1,
+            pointRadius: 0,
+            pointHoverRadius: 4
+          }]
+        },
+        plugins: [yAxisLabelsPluginPnl],
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: { display: true, grid: { color: 'rgba(255,255,255,0.1)' }, ticks: { display: false } },
+            x: { grid: { display: false }, ticks: { color: '#ccc', maxTicksLimit: 8 } }
+          }
+        }
+      });
+      observeChartResize(pnlChart);
+      setTimeout(() => { if (pnlChart) pnlChart.resize(); }, 100);
     }
 
     // Function to apply a simple moving average
@@ -2534,17 +3337,27 @@
       return smoothedData;
     }
 
+    function observeChartResize(chart) {
+      if (!chart || !chart.canvas || !chart.canvas.parentElement) return;
+      const ro = new ResizeObserver(() => {
+        if (chart.canvas.offsetParent !== null) chart.resize();
+      });
+      ro.observe(chart.canvas.parentElement);
+    }
+
     function renderPortfolioChart(history) {
       const ctx = document.getElementById('portfolio-chart');
-      
-      // Destroy existing chart if it exists
+      if (!ctx) return;
+
       if (portfolioChart) {
         portfolioChart.destroy();
+        portfolioChart = null;
       }
-      
+
       // Filter data based on current view
       const filteredData = filterDataByView(history, currentView);
-      
+      if (filteredData.length === 0) return;
+
       // Prepare data for chart with appropriate labels
       const labels = filteredData.map(item => {
         const date = new Date(item.timestamp);
@@ -2810,9 +3623,14 @@
       
       // Create the chart
       portfolioChart = new Chart(ctx, config);
+      observeChartResize(portfolioChart);
+      setTimeout(() => { if (portfolioChart) portfolioChart.resize(); }, 100);
     }
 
     function filterDataByView(data, view) {
+      if (!data || data.length === 0) {
+        return [];
+      }
       const now = new Date();
       let startDate;
       
@@ -3670,30 +4488,29 @@
       return 1871.27; // Default value from your dummy data
     }
 
-    // Refresh portfolio data every 30 seconds
-    setInterval(loadPortfolioData, 30000);
-    
-    // Refresh portfolio history every 5 minutes
-    setInterval(loadPortfolioHistory, 300000);
-    
-    // TODO: Re-enable allocation data refresh when ready
-    // setInterval(loadAllocationData, 30000);
-    
-    // Refresh monitor data every 30 seconds (reload from database)
-    setInterval(async () => {
-      try {
-        console.log('Dashboard: Refreshing monitor data from database...');
-        const oldMonitors = [...monitors]; // Keep reference to old data
-        await loadMonitors();
-        applyCurrentSort();
-        
-        // Only update stat values, don't re-render entire tiles
-        updateMonitorStatValues(oldMonitors, monitors);
-        console.log('Dashboard: Monitor stat values refreshed');
-      } catch (e) {
-        console.error('Error refreshing monitor data:', e);
-      }
-    }, 30000);
+    // Refresh portfolio/history/monitor/auto-trade (paused when tab hidden; IDs stored for lifecycle)
+    function startDashboardMobilePolling() {
+      if (window._dmPortfolioInterval) clearInterval(window._dmPortfolioInterval);
+      if (window._dmHistoryInterval) clearInterval(window._dmHistoryInterval);
+      if (window._dmPerformanceInterval) clearInterval(window._dmPerformanceInterval);
+      if (window._dmMonitorRefreshInterval) clearInterval(window._dmMonitorRefreshInterval);
+      if (window._dmAutoTradeInterval) clearInterval(window._dmAutoTradeInterval);
+      window._dmPortfolioInterval = setInterval(() => { refreshPortfolioPanel(); }, 30000);
+      window._dmPerformanceInterval = setInterval(() => {
+        loadPerformanceData();
+        loadPerformancePanelCashBalance();
+      }, 30000);
+      window._dmMonitorRefreshInterval = setInterval(async () => {
+        try {
+          console.log('Dashboard: Refreshing monitor data from database...');
+          const oldMonitors = [...monitors];
+          await loadMonitors();
+          applyCurrentSort();
+          updateMonitorStatValues(oldMonitors, monitors);
+        } catch (e) { console.error('Error refreshing monitor data:', e); }
+      }, 30000);
+      window._dmAutoTradeInterval = setInterval(checkAutoTradeStatus, 10000);
+    }
 
     // Function to check and update auto trade status every 10 seconds
     async function checkAutoTradeStatus() {
@@ -3754,8 +4571,21 @@
       }
     }
 
-    // Check auto trade status every 10 seconds
-    setInterval(checkAutoTradeStatus, 10000);
+    /** Refresh all displayed data (for pull-to-refresh). */
+    async function refreshAllDashboardData() {
+      await refreshPortfolioPanel();
+      await Promise.all([loadPerformanceData(), loadPerformancePanelCashBalance()]);
+      const oldMonitors = [...monitors];
+      await loadMonitors();
+      applyCurrentSort();
+      updateMonitorStatValues(oldMonitors, monitors);
+      initializeMonitors();
+      await loadAllocationData();
+      if (window.monitorHistoryDisplay) window.monitorHistoryDisplay.refresh(currentView);
+    }
+    window.__onPullToRefresh = function() { return refreshAllDashboardData(); };
+
+    startDashboardMobilePolling();
 
     // Market data functions
     function formatUSD(val) {
@@ -4089,14 +4919,17 @@
       fetchETHCurrentPrice();
       fetchBTCPriceChanges();
       fetchETHPriceChanges();
-      
-      // Update data every 30 seconds
-      setInterval(() => {
-        fetchBTCCurrentPrice();
-        fetchETHCurrentPrice();
-        fetchBTCPriceChanges();
-        fetchETHPriceChanges();
-      }, 30000);
+      function startDashboardMarketDataPolling() {
+        if (window._dmMarketDataInterval) clearInterval(window._dmMarketDataInterval);
+        window._dmMarketDataInterval = setInterval(() => {
+          fetchBTCCurrentPrice();
+          fetchETHCurrentPrice();
+          fetchBTCPriceChanges();
+          fetchETHPriceChanges();
+        }, 30000);
+      }
+      window.startDashboardMarketDataPolling = startDashboardMarketDataPolling;
+      startDashboardMarketDataPolling();
     });
 
     // Archive confirmation modal functions
@@ -4420,16 +5253,27 @@
     // Helper function to get status text with optional timer
     function getStatusText(status, monitorId) {
       const statusUpper = status.toUpperCase();
-      if (statusUpper === 'PAUSED') {
-        const timer = cooldownTimers.get(monitorId);
-        if (timer && timer > 0) {
-          return formatCooldownTimer(timer);
+      const timer = cooldownTimers.get(monitorId);
+      
+      // Show cooldown timer if available, regardless of status (for cooldown mode during ACTIVE state)
+      if (timer && timer > 0) {
+        const timerDisplay = formatCooldownTimer(timer);
+        if (statusUpper === 'PAUSED') {
+          return timerDisplay; // For PAUSED, show only timer
+        } else {
+          return `${statusUpper} (${timerDisplay})`; // For ACTIVE/other, show status with timer
         }
+      }
+      
+      // No timer, return status only
+      if (statusUpper === 'PAUSED') {
+        return statusUpper;
       }
       return statusUpper;
     }
 
     function connectWebSocket() {
+      if (window.DASHBOARD_MOBILE_PAUSED) return;
       // Close existing connection if any
       if (ws) {
         ws.close();
@@ -4438,6 +5282,7 @@
       // Connect to WebSocket
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(`${protocol}//${window.location.host}/ws/preferences`);
+      window._dashboardMobileWs = ws;
 
       ws.onopen = function() {
         console.log('Dashboard WebSocket connected');
@@ -4482,6 +5327,66 @@
               console.log('Available monitor IDs:', monitors.map(m => m.id));
             }
           }
+
+          // Handle paper trade toggle updates
+          if (data.type === 'paper_trade_toggled') {
+            console.log('Paper trade toggle received:', data);
+            
+            // Convert backend format (MON_0001_10002) to frontend format (mon_0001_10002)
+            const backendMonitorId = data.monitor_id; // e.g., MON_0001_10002
+            const frontendMonitorId = backendMonitorId.replace('MON_', 'mon_'); // e.g., mon_0001_10002
+            
+            console.log('Converting monitor ID:', backendMonitorId, '->', frontendMonitorId);
+            
+            // Find the monitor in local data and update it
+            const monitor = monitors.find(m => m.id === frontendMonitorId);
+            if (monitor) {
+              const paperTrade = data.paper_trade === true || data.paper_trade === 'true' || data.paper_trade === 1;
+              monitor.paper_trade = paperTrade;
+              console.log('Updated monitor', frontendMonitorId, 'paper_trade to:', paperTrade);
+              
+              // Update the visual state of the toggle
+              const toggleElement = document.querySelector(`[data-monitor-id="${frontendMonitorId}"] .paper-trading-toggle`);
+              const tileElement = document.querySelector(`[data-monitor-id="${frontendMonitorId}"]`);
+              
+              if (toggleElement) {
+                if (paperTrade) {
+                  toggleElement.classList.remove('live-mode');
+                  toggleElement.classList.add('paper-mode');
+                  const options = toggleElement.querySelectorAll('.paper-trading-toggle-option');
+                  if (options.length >= 2) {
+                    options[0].style.color = '#a0aec0';
+                    options[1].style.color = '#ffffff';
+                    options[1].style.fontWeight = '600';
+                  }
+                } else {
+                  toggleElement.classList.remove('paper-mode');
+                  toggleElement.classList.add('live-mode');
+                  const options = toggleElement.querySelectorAll('.paper-trading-toggle-option');
+                  if (options.length >= 2) {
+                    options[0].style.color = '#ffffff';
+                    options[0].style.fontWeight = '600';
+                    options[1].style.color = '#a0aec0';
+                  }
+                }
+                console.log('Updated paper trading toggle visual state for', frontendMonitorId);
+              }
+              
+              // Update the tile border
+              if (tileElement) {
+                if (paperTrade) {
+                  tileElement.classList.remove('live-mode');
+                  tileElement.classList.add('paper-mode');
+                } else {
+                  tileElement.classList.remove('paper-mode');
+                  tileElement.classList.add('live-mode');
+                }
+                console.log('Updated paper trading border for', frontendMonitorId);
+              }
+            } else {
+              console.warn('Monitor not found in local data for paper trade update:', frontendMonitorId);
+            }
+          }
           
           // Handle monitor list updates
           if (data.type === 'monitor_list_updated') {
@@ -4498,17 +5403,22 @@
             const monitorId = data.data.monitor_id;
             const cooldownTimer = data.data.cooldown_timer;
             
-            // Store the cooldown timer value
-            cooldownTimers.set(monitorId, cooldownTimer);
-            console.log(`Stored cooldown timer for ${monitorId}: ${cooldownTimer}s`);
+            // Store the cooldown timer value (or remove if timer is 0 or null)
+            if (cooldownTimer && cooldownTimer > 0) {
+              cooldownTimers.set(monitorId, cooldownTimer);
+              console.log(`Stored cooldown timer for ${monitorId}: ${cooldownTimer}s`);
+            } else {
+              cooldownTimers.delete(monitorId);
+              console.log(`Cleared cooldown timer for ${monitorId}`);
+            }
             
-            // Update the display if monitor is currently PAUSED
+            // Update the display for any status (ACTIVE, PAUSED, etc.) if monitor exists
             const monitor = monitors.find(m => m.id === monitorId);
-            if (monitor && (monitor.auto_trade_status === 'PAUSED' || monitor.auto_trade_status === 'paused')) {
+            if (monitor) {
               const statusElement = document.querySelector(`[data-monitor-id="${monitorId}"] .monitor-status`);
               if (statusElement) {
-                statusElement.textContent = getStatusText('PAUSED', monitorId);
-                console.log(`Updated timer display for ${monitorId}`);
+                statusElement.textContent = getStatusText(monitor.auto_trade_status, monitorId);
+                console.log(`Updated timer display for ${monitorId} (status: ${monitor.auto_trade_status})`);
               }
             }
           }
@@ -4524,10 +5434,8 @@
             if (monitor) {
               monitor.auto_trade_status = data.data.auto_trade_status;
               
-              // Clear cooldown timer if status is not PAUSED
-              if (data.data.auto_trade_status.toUpperCase() !== 'PAUSED') {
-                cooldownTimers.delete(data.data.monitor_id);
-              }
+              // Don't clear cooldown timer on status change - let cooldown_timer_change messages handle it
+              // Cooldown can exist during ACTIVE status (for Hourly HTC during spike cooldown)
               
               // Update the visual status indicator
               const statusElement = document.querySelector(`[data-monitor-id="${data.data.monitor_id}"] .monitor-status`);
@@ -4548,92 +5456,14 @@
       };
 
       ws.onclose = function() {
-        // Reconnect after a delay
-        setTimeout(connectWebSocket, 5000);
+        if (!window.DASHBOARD_MOBILE_PAUSED) {
+          setTimeout(connectWebSocket, 5000);
+        }
       };
 
       ws.onerror = function(error) {
         console.error('Dashboard WebSocket error:', error);
       };
-    }
-
-    function isTruthyFlag(value) {
-      if (typeof value === 'boolean') return value;
-      if (typeof value === 'number') return value !== 0;
-      if (typeof value === 'string') {
-        const normalized = value.trim().toLowerCase();
-        return ['true', 't', '1', 'yes', 'y', 'on'].includes(normalized);
-      }
-      return false;
-    }
-
-    function resolveAllocationBadgeState(monitor) {
-      const lossPreventionValue =
-        monitor.loss_prevention ??
-        monitor.lossPrevention ??
-        monitor.loss_prevention_mode ??
-        monitor.lossPreventionMode;
-      const lossPreventionActive = lossPreventionValue && lossPreventionValue !== 'none' && lossPreventionValue !== 'off';
-      if (lossPreventionActive) {
-        return { visible: true, text: 'LP', className: 'allocation-status-badge lp' };
-      }
-
-      const performanceAllocationFlag =
-        monitor.performance_based_allocation ??
-        monitor.performanceBasedAllocation ??
-        monitor.performance_allocation ??
-        monitor.performanceAllocation;
-
-      if (!isTruthyFlag(performanceAllocationFlag)) {
-        return { visible: false };
-      }
-
-      const modifierSource =
-        monitor.current_performance_modifier ??
-        monitor.currentPerformanceModifier ??
-        monitor.performance_modifier ??
-        monitor.performanceModifier ??
-        monitor.allocation_modifier ??
-        monitor.allocationModifier;
-      const modifier = parseFloat(modifierSource);
-
-      if (!Number.isFinite(modifier)) {
-        return { visible: false };
-      }
-
-      const normalized = Math.round(modifier * 100) / 100;
-      const isClose = (target) => Math.abs(normalized - target) < 0.001;
-
-      if (isClose(0)) {
-        return { visible: true, text: '1c', className: 'allocation-status-badge alloc-orange' };
-      }
-
-      if (isClose(0.5)) {
-        return { visible: true, text: '½x', className: 'allocation-status-badge alloc-yellow' };
-      }
-
-      if (isClose(1)) {
-        return { visible: false };
-      }
-
-      if (isClose(1.5)) {
-        return { visible: true, text: '1.5x', className: 'allocation-status-badge alloc-green' };
-      }
-
-      if (isClose(2)) {
-        return { visible: true, text: '2x', className: 'allocation-status-badge alloc-green' };
-      }
-
-      const formatted = normalized % 1 === 0 ? `${normalized.toFixed(0)}x` : `${normalized.toFixed(2)}x`;
-      return { visible: true, text: formatted, className: 'allocation-status-badge alloc-green' };
-    }
-
-    function getAllocationBadgeMarkup(monitor) {
-      const badge = resolveAllocationBadgeState(monitor);
-      if (!badge.visible) {
-        return '';
-      }
-      return `<div class="${badge.className}">${badge.text}</div>`;
     }
 
   </script>
@@ -4657,235 +5487,8 @@
       return null;
     }
 
-    function openMobileUnifiedAutoTradeSettings(tileId){
-      const apiId = mobileNormalizeMonitorId(tileId);
-      const modal = document.getElementById('mobileUnifiedAutoTradeModal');
-      const dim = document.getElementById('mobileUnifiedAutoTradeDim');
-      modal.style.display = 'block';
-      if (dim) dim.style.display = 'block';
-      document.body.style.overflow = 'hidden';
-
-      // Get monitor strategy from monitors array
-      const monitor = monitors && monitors.find(m => m.id === tileId);
-      const currentStrategy = monitor ? monitor.strategy : '';
-      const isMomentumScalp = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
-      
-      // Update modal title with strategy name and show/hide strategy sections
-      const modalTitle = document.getElementById('mobileUnifiedAutoTradeModalTitle');
-      if (modalTitle) {
-        if (currentStrategy) {
-          modalTitle.textContent = `Auto Trade Settings - ${currentStrategy}`;
-        } else {
-          modalTitle.textContent = 'Auto Trade Settings';
-        }
-      }
-      
-      // Show/hide strategy sections
-      const htcSection = document.getElementById('m_htcStrategySection');
-      const msSection = document.getElementById('m_msStrategySection');
-      if (htcSection && msSection) {
-        if (isMomentumScalp) {
-          htcSection.style.display = 'none';
-          msSection.style.display = 'contents';
-        } else {
-          htcSection.style.display = 'contents';
-          msSection.style.display = 'none';
-        }
-      }
-
-      mobileFetchSettings(apiId).then(data => {
-        if (!data) return;
-        const setVal = (id,v)=>{const el=document.getElementById(id); if(el&&v!=null) el.value=v;};
-        const setChk = (id,v)=>{const el=document.getElementById(id); if(el) el.checked=!!v;};
-        
-        // Determine which strategy section to populate
-        if (isMomentumScalp) {
-          // MOMENTUM SCALP settings
-          setVal('m_msAutoEntryMinVolume', data.min_volume ?? 1000);
-          setVal('m_msAutoEntryProb', data.min_probability ?? 25);
-          setVal('m_msMomentumScalpEntryThreshold', data.momentum_scalp_entry_threshold ?? 35);
-          
-          // Auto Stop
-          const msMinTTC = data.min_ttc_seconds !== undefined ? data.min_ttc_seconds : 60;
-          const msMinTTCInput = document.getElementById('m_msAutoStopMinTTC');
-          const msMinTTCDisplay = document.getElementById('m_msMinTTCDisplay');
-          if (msMinTTCInput) msMinTTCInput.value = msMinTTC;
-          if (msMinTTCDisplay) msMinTTCDisplay.textContent = formatSecondsToMMSS(msMinTTC);
-          
-          // Trailing Stop: convert from decimal (0.00-1.00) to slider value (0-100)
-          const trailingStop = data.momentum_scalp_trailing_stop_amount ?? 0.10;
-          const trailingStopSliderValue = Math.round(trailingStop * 100);
-          setVal('m_msTrailingStop', trailingStopSliderValue);
-          
-          // Profit Target: convert from decimal (0.50-1.00) to slider value (50-100)
-          const profitTarget = data.momentum_scalp_profit_target ?? 0.99;
-          const profitTargetSliderValue = Math.round(profitTarget * 100);
-          setVal('m_msProfitTarget', profitTargetSliderValue);
-          
-          // Initialize MS time window slider
-          const msMinTime = Number.isFinite(Number(data.min_time)) ? Number(data.min_time) : 0;
-          const msMaxTime = Number.isFinite(Number(data.max_time)) ? Number(data.max_time) : 3600;
-          msState.minTimeSeconds = Math.max(0, Math.min(3600, Math.round(msMinTime / 15) * 15));
-          msState.maxTimeSeconds = Math.max(0, Math.min(3600, Math.round(msMaxTime / 15) * 15));
-          if (msState.maxTimeSeconds <= msState.minTimeSeconds) {
-            msState.maxTimeSeconds = Math.min(3600, msState.minTimeSeconds + 900);
-          }
-          
-          // Display text values
-          document.getElementById('m_msMinVolVal').textContent = document.getElementById('m_msAutoEntryMinVolume').value;
-          document.getElementById('m_msProbVal').textContent = document.getElementById('m_msAutoEntryProb').value + '%';
-          document.getElementById('m_msMomentumThresholdVal').textContent = '±' + document.getElementById('m_msMomentumScalpEntryThreshold').value;
-          document.getElementById('m_msTrailingStopVal').textContent = (parseFloat(document.getElementById('m_msTrailingStop').value) / 100).toFixed(2);
-          document.getElementById('m_msProfitTargetVal').textContent = (parseFloat(document.getElementById('m_msProfitTarget').value) / 100).toFixed(2);
-          
-          // Initialize MS time window slider display
-          setTimeout(() => {
-            updateMSTimeWindowSlider();
-            requestAnimationFrame(ensureMSTimeSliderHandlers);
-          }, 50);
-        } else {
-          // HOURLY HTC settings
-        setVal('m_autoEntryMinVolume', data.min_volume ?? 1000);
-        setVal('m_autoEntryProb', data.min_probability ?? 25);
-        setVal('m_autoEntryDiff', data.min_differential ?? 0);
-        setVal('m_autoEntryMaxDiff', data.max_differential ?? 0);
-        setChk('m_allowRe', data.allow_re_entry ?? false);
-        setVal('m_winStreak', data.win_streak_threshold ?? 22);
-        // Spike pause
-        setChk('m_spikeEnabled', data.spike_alert_enabled ?? true);
-        setVal('m_spikeMomentum', data.spike_alert_momentum_threshold ?? 60);
-        setVal('m_spikeCooldown', data.spike_alert_cooldown_threshold ?? 55);
-        setVal('m_spikeTime', data.spike_alert_cooldown_minutes ?? 15);
-        setChk('m_perfAlloc', data.performance_based_allocation ?? false);
-        // Auto Stop
-        setVal('m_stopProb', data.current_probability ?? 40);
-        setChk('m_momentumEnabled', data.momentum_spike_enabled ?? true);
-        setVal('m_momentumThreshold', data.momentum_spike_threshold ?? 35);
-        setChk('m_verifyEnabled', data.verification_period_enabled ?? false);
-        setVal('m_verifySeconds', data.verification_period_seconds ?? 15);
-        // Display text values
-        document.getElementById('m_minVolVal').textContent = document.getElementById('m_autoEntryMinVolume').value;
-        document.getElementById('m_probVal').textContent = document.getElementById('m_autoEntryProb').value + '%';
-        document.getElementById('m_diffVal').textContent = (parseFloat(document.getElementById('m_autoEntryDiff').value)||0).toFixed(2);
-        document.getElementById('m_maxDiffVal').textContent = (parseFloat(document.getElementById('m_autoEntryMaxDiff').value)||0).toFixed(2);
-        document.getElementById('m_winStreakVal').textContent = document.getElementById('m_winStreak').value;
-        document.getElementById('m_spikeMomentumVal').textContent = '±' + document.getElementById('m_spikeMomentum').value;
-        document.getElementById('m_spikeCooldownVal').textContent = '±' + document.getElementById('m_spikeCooldown').value;
-        document.getElementById('m_spikeTimeVal').textContent = document.getElementById('m_spikeTime').value + ' min';
-        document.getElementById('m_stopProbVal').textContent = document.getElementById('m_stopProb').value + '%';
-        document.getElementById('m_momentumThresholdVal').textContent = '±' + document.getElementById('m_momentumThreshold').value;
-        document.getElementById('m_verifySecondsVal').textContent = document.getElementById('m_verifySeconds').value + 's';
-          
-          // Initialize HTC time window slider
-          const htcMinTime = Number.isFinite(Number(data.min_time)) ? Number(data.min_time) : 0;
-          const htcMaxTime = Number.isFinite(Number(data.max_time)) ? Number(data.max_time) : 3600;
-          state.minTimeSeconds = Math.max(0, Math.min(3600, Math.round(htcMinTime / 15) * 15));
-          state.maxTimeSeconds = Math.max(0, Math.min(3600, Math.round(htcMaxTime / 15) * 15));
-          if (state.maxTimeSeconds <= state.minTimeSeconds) {
-            state.maxTimeSeconds = Math.min(3600, state.minTimeSeconds + 900);
-          }
-          
-          // Initialize HTC time window slider display
-          setTimeout(() => {
-            updateTimeWindowSlider();
-            requestAnimationFrame(ensureTimeSliderHandlers);
-          }, 50);
-        }
-        
-        // Ensure slider bindings and refresh displays
-        ensureSliderBindings();
-        refreshSliderDisplays();
-
-        // Save handler (idempotent)
-        const saveBtn = document.getElementById('m_unifiedSave');
-        saveBtn.onclick = async function(){
-          // Determine which strategy is active
-          const isMS = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
-          
-          const payload = {
-            monitor_id: apiId,
-            min_time: isMS ? msState.minTimeSeconds : state.minTimeSeconds,
-            max_time: isMS ? msState.maxTimeSeconds : state.maxTimeSeconds
-          };
-          
-          if (isMS) {
-            // MOMENTUM SCALP specific fields
-            const msMinVolumeSlider = document.getElementById('m_msAutoEntryMinVolume');
-            const msProbabilitySlider = document.getElementById('m_msAutoEntryProb');
-            const msMomentumThresholdSlider = document.getElementById('m_msMomentumScalpEntryThreshold');
-            const msMinTTCInput = document.getElementById('m_msAutoStopMinTTC');
-            const msTrailingStopSlider = document.getElementById('m_msTrailingStop');
-            const msProfitTargetSlider = document.getElementById('m_msProfitTarget');
-            
-            if (msMinVolumeSlider) {
-              payload.min_volume = parseInt(msMinVolumeSlider.value, 10);
-            }
-            if (msProbabilitySlider) {
-              payload.min_probability = parseInt(msProbabilitySlider.value, 10);
-            }
-            if (msMomentumThresholdSlider) {
-              payload.momentum_scalp_entry_threshold = parseInt(msMomentumThresholdSlider.value, 10);
-            }
-            if (msMinTTCInput) {
-              payload.min_ttc_seconds = parseInt(msMinTTCInput.value, 10);
-            }
-            if (msTrailingStopSlider) {
-              // Convert from slider value (0-100) to decimal (0.00-1.00)
-              payload.momentum_scalp_trailing_stop_amount = parseFloat(msTrailingStopSlider.value) / 100;
-            }
-            if (msProfitTargetSlider) {
-              // Convert from slider value (50-100) to decimal (0.50-1.00)
-              payload.momentum_scalp_profit_target = parseFloat(msProfitTargetSlider.value) / 100;
-            }
-          } else {
-            // HOURLY HTC specific fields
-            payload.min_volume = parseInt(document.getElementById('m_autoEntryMinVolume').value,10);
-            payload.min_probability = parseInt(document.getElementById('m_autoEntryProb').value,10);
-            payload.min_differential = parseFloat(document.getElementById('m_autoEntryDiff').value);
-            payload.max_differential = (function(){const v=parseFloat(document.getElementById('m_autoEntryMaxDiff').value);return isNaN(v)||v<=0?null:v;})();
-            payload.allow_re_entry = document.getElementById('m_allowRe').checked;
-            payload.win_streak_threshold = parseInt(document.getElementById('m_winStreak').value,10);
-            payload.spike_alert_enabled = document.getElementById('m_spikeEnabled').checked;
-            payload.spike_alert_momentum_threshold = parseInt(document.getElementById('m_spikeMomentum').value,10);
-            payload.spike_alert_cooldown_threshold = parseInt(document.getElementById('m_spikeCooldown').value,10);
-            payload.spike_alert_cooldown_minutes = parseInt(document.getElementById('m_spikeTime').value,10);
-            payload.performance_based_allocation = document.getElementById('m_perfAlloc').checked;
-            payload.current_probability = parseInt(document.getElementById('m_stopProb').value,10);
-            payload.min_ttc_seconds = parseInt(document.getElementById('m_minTTC').value,10);
-            payload.momentum_spike_enabled = document.getElementById('m_momentumEnabled').checked;
-            payload.momentum_spike_threshold = parseInt(document.getElementById('m_momentumThreshold').value,10);
-            payload.verification_period_enabled = document.getElementById('m_verifyEnabled').checked;
-            payload.verification_period_seconds = parseInt(document.getElementById('m_verifySeconds').value,10);
-          }
-          try{
-            const resp = await fetch('/api/set_auto_entry_settings', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-            const j = await resp.json();
-            if (j && j.status !== 'error') hideMobileUnifiedAutoTradeSettings();
-          }catch(e){}
-        };
-
-        // Enter / Esc
-        const keyHandler = function(e){
-          if (modal.style.display === 'none') return;
-          if (e.key === 'Enter') { e.preventDefault(); document.getElementById('m_unifiedSave').click(); }
-          else if (e.key === 'Escape') { e.preventDefault(); hideMobileUnifiedAutoTradeSettings(); }
-        };
-        if (!modal._keyHandler){ document.addEventListener('keydown', keyHandler); modal._keyHandler = keyHandler; }
-
-      });
-
-      dim.onclick = hideMobileUnifiedAutoTradeSettings;
-      document.getElementById('m_unifiedCancel').onclick = hideMobileUnifiedAutoTradeSettings;
-    }
-
-    function hideMobileUnifiedAutoTradeSettings(){
-      const modal = document.getElementById('mobileUnifiedAutoTradeModal');
-      modal.style.display = 'none';
-      const dim = document.getElementById('mobileUnifiedAutoTradeDim');
-      if (dim) dim.style.display = 'none';
-      document.body.style.overflow = 'auto';
-      if (modal._keyHandler){ document.removeEventListener('keydown', modal._keyHandler); delete modal._keyHandler; }
-    }
+    // openMobileUnifiedAutoTradeSettings is defined in IIFE below and assigned to window.openMobileUnifiedAutoTradeSettings
+    // The event listeners below will use window.openMobileUnifiedAutoTradeSettings when it's available
 
     // Defensive: delegate tap/click on settings gear to open modal, even if inline onclick fails
     document.addEventListener('click', function(ev){
@@ -4894,9 +5497,9 @@
       const tile = icon.closest('.monitor-tile');
       if (!tile) return;
       const monId = tile.getAttribute('data-monitor-id');
-      if (monId && typeof openMobileUnifiedAutoTradeSettings === 'function') {
+      if (monId && window.openMobileUnifiedAutoTradeSettings && typeof window.openMobileUnifiedAutoTradeSettings === 'function') {
         ev.preventDefault();
-        openMobileUnifiedAutoTradeSettings(monId);
+        window.openMobileUnifiedAutoTradeSettings(monId);
       }
     }, true);
     document.addEventListener('touchend', function(event) {
@@ -4905,11 +5508,12 @@
       const tile = icon.closest('.monitor-tile');
       if (!tile) return;
       const monId = tile.getAttribute('data-monitor-id');
-      if (monId && typeof openMobileUnifiedAutoTradeSettings === 'function') {
+      if (monId && window.openMobileUnifiedAutoTradeSettings && typeof window.openMobileUnifiedAutoTradeSettings === 'function') {
         event.preventDefault();
-        openMobileUnifiedAutoTradeSettings(monId);
+        window.openMobileUnifiedAutoTradeSettings(monId);
       }
     }, { passive: false, capture: true });
+
   </script>
 
   <!-- Mobile Unified Auto Trade Settings Modal -->
@@ -4938,10 +5542,38 @@
           <div id="m_minVolVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">1000</div>
         </div>
 
-        <label for="m_autoEntryProb" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Win Probability:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_autoEntryProb" min="0" max="100" value="25" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
-          <div id="m_probVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">25%</div>
+        <label for="m_probabilityWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Win Probability Window:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-top:4px; padding-bottom:28px;">
+          <!-- Probability Window Slider Container -->
+          <div id="m_probabilityWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:0px; box-sizing: border-box;">
+            <!-- Min Probability Handle -->
+            <div id="m_minProbabilityHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Max Probability Handle -->
+            <div id="m_maxProbabilityHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Selected Range -->
+            <div id="m_probabilityWindowRange" style="position:absolute; top:0; height:6px; background:#007bff; border-radius:3px; z-index:5;"></div>
+            <!-- Min Probability Display (BELOW slider) -->
+            <div id="m_probabilityWindowMinDisplay" style="position:absolute; top:16px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+            <!-- Max Probability Display (ABOVE slider) -->
+            <div id="m_probabilityWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+          </div>
+        </div>
+
+        <label for="m_cooldownWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Window:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-top:4px; padding-bottom:28px;">
+          <!-- Cooldown Window Slider Container -->
+          <div id="m_cooldownWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:0px; box-sizing: border-box;">
+            <!-- Min Cooldown Window Handle -->
+            <div id="m_minCooldownWindowHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Max Cooldown Window Handle -->
+            <div id="m_maxCooldownWindowHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Selected Range -->
+            <div id="m_cooldownWindowRange" style="position:absolute; top:0; height:6px; background:#007bff; border-radius:3px; z-index:5;"></div>
+            <!-- Min Cooldown Window Display (BELOW slider) -->
+            <div id="m_cooldownWindowMinDisplay" style="position:absolute; top:16px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+            <!-- Max Cooldown Window Display (ABOVE slider) -->
+            <div id="m_cooldownWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+          </div>
         </div>
 
         <label for="m_autoEntryDiff" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Differential:</label>
@@ -4962,7 +5594,7 @@
           <span style="font-size:13px; color:#666;">Allow re-entry on the same strike</span>
         </div>
 
-        <label for="m_winStreak" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Loss Prevention Win Streak Threshold:</label>
+        <label for="m_winStreak" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Loss Prevention Win Streak Threshold: <input type="checkbox" id="m_lossPreventionToggle" style="margin-left:8px; vertical-align:middle;" /></label>
         <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
           <input type="range" id="m_winStreak" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_winStreakVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">22</div>
@@ -4972,7 +5604,7 @@
 
         <div style="position:relative; margin-bottom:24px; width:100%;">
           <input type="checkbox" id="m_spikeEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;">
-          <span style="font-size:13px; color:#666;">Pause auto entry during market spikes</span>
+          <span style="font-size:13px; color:#666;">Monitor for momentum spikes</span>
         </div>
 
         <label for="m_spikeMomentum" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Spike Level (±):</label>
@@ -4988,9 +5620,15 @@
         </div>
 
         <label for="m_spikeTime" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Time (minutes):</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
           <input type="range" id="m_spikeTime" min="0" max="180" value="15" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_spikeTimeVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">15 min</div>
+        </div>
+
+        <label id="m_probAdjLabel" for="m_probAdjSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Probability Adjustment (%):</label>
+        <div id="m_probAdjContainer" class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+          <input type="range" id="m_probAdjSlider" min="0" max="20" step="0.5" value="5" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="m_probAdjValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
         </div>
 
         <hr style="border:none; border-top:1px solid #e0e0e0; margin:24px 0 16px 0;">
@@ -5174,7 +5812,8 @@
         maxTimeSeconds: 3600,
         sliderInitialized: false,
         currentHandle: null,
-        sliderBindingsInitialized: false
+        sliderBindingsInitialized: false,
+        currentTileId: null
       };
 
       function formatSecondsToMMSS(seconds) {
@@ -5182,6 +5821,364 @@
         const minutes = Math.floor(total / 60);
         const secs = total % 60;
         return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+      }
+
+      // DASHBOARD MOBILE PROBABILITY/PRICE WINDOW SLIDER (for Hourly HTC and Momentum Breakout/Contain)
+      let dashboardMobileProbSliderWidth = 0;
+      let dashboardMobileProbIsDragging = false;
+      let dashboardMobileProbCurrentHandle = null;
+      
+      // Cooldown Window Slider Variables (Momentum Contain)
+      let dashboardMobileCooldownWindowSliderWidth = 0;
+      let dashboardMobileMinCooldownTimerSeconds = 300; // 5 minutes default
+      let dashboardMobileMaxCooldownTimerSeconds = 3300; // 55 minutes default
+      let dashboardMobileCooldownWindowIsDragging = false;
+      let dashboardMobileCooldownWindowCurrentHandle = null;
+
+      function initDashboardMobileProbabilityWindowSlider() {
+        const container = document.getElementById('m_probabilityWindowSliderContainer');
+        if (!container) return;
+        dashboardMobileProbSliderWidth = container.offsetWidth || container.clientWidth || 0;
+        if (dashboardMobileProbSliderWidth > 0) {
+          updateDashboardMobileProbabilityWindowSlider();
+        }
+      }
+
+      function updateDashboardMobileProbabilityWindowSlider() {
+        // Ensure slider width is initialized
+        if (!dashboardMobileProbSliderWidth) {
+          const container = document.getElementById('m_probabilityWindowSliderContainer');
+          if (container) {
+            dashboardMobileProbSliderWidth = container.offsetWidth || container.clientWidth || 0;
+          }
+          if (!dashboardMobileProbSliderWidth) {
+            return;
+          }
+        }
+        
+        // Get current strategy from monitors array
+        const monitor = monitors && monitors.find(m => m.id === state.currentTileId);
+        const currentStrategy = monitor ? monitor.strategy : '';
+        const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+        const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
+        
+        const minHandle = document.getElementById('m_minProbabilityHandle');
+        const maxHandle = document.getElementById('m_maxProbabilityHandle');
+        const range = document.getElementById('m_probabilityWindowRange');
+        const minDisplay = document.getElementById('m_probabilityWindowMinDisplay');
+        const maxDisplay = document.getElementById('m_probabilityWindowMaxDisplay');
+        
+        if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
+        
+        if (isMomentumBreakout || isMomentumContain) {
+          // Use ask price values (0.0000 to 1.0000)
+          // Ensure values are initialized
+          if (typeof window.dashboardMobileContainMinAsk === 'undefined' || window.dashboardMobileContainMinAsk === null) {
+            window.dashboardMobileContainMinAsk = 0.0000;
+          }
+          if (typeof window.dashboardMobileContainMaxAsk === 'undefined' || window.dashboardMobileContainMaxAsk === null) {
+            window.dashboardMobileContainMaxAsk = 0.9800;
+          }
+          
+          const MIN_ASK_SEPARATION = 0.01;
+          if (window.dashboardMobileContainMaxAsk - window.dashboardMobileContainMinAsk < MIN_ASK_SEPARATION) {
+            if (window.dashboardMobileContainMaxAsk < 1.0) {
+              window.dashboardMobileContainMaxAsk = parseFloat((window.dashboardMobileContainMinAsk + MIN_ASK_SEPARATION).toFixed(4));
+            } else {
+              window.dashboardMobileContainMinAsk = parseFloat((window.dashboardMobileContainMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
+            }
+          }
+          
+          const minPercent = (window.dashboardMobileContainMinAsk / 1.0) * 100;
+          const maxPercent = (window.dashboardMobileContainMaxAsk / 1.0) * 100;
+          
+          minHandle.style.left = `${minPercent}%`;
+          maxHandle.style.left = `${maxPercent}%`;
+          range.style.left = `${minPercent}%`;
+          range.style.width = `${maxPercent - minPercent}%`;
+          minDisplay.textContent = '$' + window.dashboardMobileContainMinAsk.toFixed(4);
+          maxDisplay.textContent = '$' + window.dashboardMobileContainMaxAsk.toFixed(4);
+          minDisplay.style.left = `${minPercent}%`;
+          maxDisplay.style.left = `${maxPercent}%`;
+        } else {
+          // Use probability values (0 to 100)
+          // Ensure values are initialized
+          if (typeof window.dashboardMobileMinProbability === 'undefined' || window.dashboardMobileMinProbability === null) {
+            window.dashboardMobileMinProbability = 95.00;
+          }
+          if (typeof window.dashboardMobileMaxProbability === 'undefined' || window.dashboardMobileMaxProbability === null) {
+            window.dashboardMobileMaxProbability = 100.00;
+          }
+          
+          const MIN_SEPARATION = 0.5;
+          if (window.dashboardMobileMaxProbability - window.dashboardMobileMinProbability < MIN_SEPARATION) {
+            if (window.dashboardMobileMaxProbability < 100) {
+              window.dashboardMobileMaxProbability = parseFloat((window.dashboardMobileMinProbability + MIN_SEPARATION).toFixed(1));
+            } else {
+              window.dashboardMobileMinProbability = parseFloat((window.dashboardMobileMaxProbability - MIN_SEPARATION).toFixed(1));
+            }
+          }
+          
+          const minPercent = (window.dashboardMobileMinProbability / 100) * 100;
+          const maxPercent = (window.dashboardMobileMaxProbability / 100) * 100;
+          
+          minHandle.style.left = `${minPercent}%`;
+          maxHandle.style.left = `${maxPercent}%`;
+          range.style.left = `${minPercent}%`;
+          range.style.width = `${maxPercent - minPercent}%`;
+          minDisplay.textContent = window.dashboardMobileMinProbability.toFixed(1) + '%';
+          maxDisplay.textContent = window.dashboardMobileMaxProbability.toFixed(1) + '%';
+          minDisplay.style.left = `${minPercent}%`;
+          maxDisplay.style.left = `${maxPercent}%`;
+        }
+      }
+
+      function handleDashboardMobileProbMouseDown(e) {
+        dashboardMobileProbIsDragging = true;
+        dashboardMobileProbCurrentHandle = e.target;
+        document.addEventListener('mousemove', handleDashboardMobileProbMouseMove);
+        document.addEventListener('mouseup', handleDashboardMobileProbMouseUp);
+        document.addEventListener('touchmove', handleDashboardMobileProbTouchMove, { passive: false });
+        document.addEventListener('touchend', handleDashboardMobileProbTouchEnd);
+        e.preventDefault();
+      }
+
+      function handleDashboardMobileProbMouseMove(e) {
+        if (!dashboardMobileProbIsDragging || !dashboardMobileProbCurrentHandle) return;
+        handleDashboardMobileProbPointerMove(e.clientX);
+      }
+
+      function handleDashboardMobileProbTouchMove(e) {
+        if (!dashboardMobileProbIsDragging || !dashboardMobileProbCurrentHandle || !e.touches || e.touches.length === 0) return;
+        e.preventDefault();
+        handleDashboardMobileProbPointerMove(e.touches[0].clientX);
+      }
+
+      function handleDashboardMobileProbPointerMove(clientX) {
+        const container = document.getElementById('m_probabilityWindowSliderContainer');
+        if (!container) return;
+        
+        // Get current strategy from stored value or monitors array
+        let currentStrategy = window.dashboardMobileCurrentStrategy;
+        if (!currentStrategy && state.currentTileId) {
+          const monitor = monitors && monitors.find(m => m.id === state.currentTileId);
+          currentStrategy = monitor ? monitor.strategy : '';
+        }
+        const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+        const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
+        
+        const rect = container.getBoundingClientRect();
+        const x = clientX - rect.left;
+        const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
+        
+        const minHandle = document.getElementById('m_minProbabilityHandle');
+        const maxHandle = document.getElementById('m_maxProbabilityHandle');
+        
+        if (isMomentumBreakout || isMomentumContain) {
+          // Use ask price values (0.0000 to 1.0000)
+          const askPrice = parseFloat((percent / 100).toFixed(4));
+          const MIN_ASK_SEPARATION = 0.01;
+          
+          if (dashboardMobileProbCurrentHandle === minHandle) {
+            if (askPrice >= window.dashboardMobileContainMaxAsk - MIN_ASK_SEPARATION) {
+              window.dashboardMobileContainMinAsk = parseFloat((window.dashboardMobileContainMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
+            } else {
+              window.dashboardMobileContainMinAsk = askPrice;
+            }
+          } else if (dashboardMobileProbCurrentHandle === maxHandle) {
+            if (askPrice <= window.dashboardMobileContainMinAsk + MIN_ASK_SEPARATION) {
+              window.dashboardMobileContainMaxAsk = parseFloat((window.dashboardMobileContainMinAsk + MIN_ASK_SEPARATION).toFixed(4));
+            } else {
+              window.dashboardMobileContainMaxAsk = askPrice;
+            }
+          }
+        } else {
+          // Use probability values (0 to 100)
+          const probability = parseFloat((Math.round(percent * 10) / 10).toFixed(1));
+          const MIN_SEPARATION = 0.5;
+          
+          if (dashboardMobileProbCurrentHandle === minHandle) {
+            if (probability >= window.dashboardMobileMaxProbability - MIN_SEPARATION) {
+              window.dashboardMobileMinProbability = parseFloat((window.dashboardMobileMaxProbability - MIN_SEPARATION).toFixed(1));
+            } else {
+              window.dashboardMobileMinProbability = probability;
+            }
+          } else if (dashboardMobileProbCurrentHandle === maxHandle) {
+            if (probability <= window.dashboardMobileMinProbability + MIN_SEPARATION) {
+              window.dashboardMobileMaxProbability = parseFloat((window.dashboardMobileMinProbability + MIN_SEPARATION).toFixed(1));
+            } else {
+              window.dashboardMobileMaxProbability = probability;
+            }
+          }
+        }
+        
+        updateDashboardMobileProbabilityWindowSlider();
+      }
+
+      function handleDashboardMobileProbMouseUp() {
+        dashboardMobileProbIsDragging = false;
+        dashboardMobileProbCurrentHandle = null;
+        document.removeEventListener('mousemove', handleDashboardMobileProbMouseMove);
+        document.removeEventListener('mouseup', handleDashboardMobileProbMouseUp);
+        document.removeEventListener('touchmove', handleDashboardMobileProbTouchMove);
+        document.removeEventListener('touchend', handleDashboardMobileProbTouchEnd);
+      }
+
+      function handleDashboardMobileProbTouchEnd() {
+        handleDashboardMobileProbMouseUp();
+      }
+
+      // COOLDOWN WINDOW SLIDER (Momentum Contain)
+      function initDashboardMobileCooldownWindowSlider() {
+        const container = document.getElementById('m_cooldownWindowSliderContainer');
+        if (!container) return;
+        dashboardMobileCooldownWindowSliderWidth = container.offsetWidth || container.clientWidth || 0;
+        if (dashboardMobileCooldownWindowSliderWidth > 0) {
+          updateDashboardMobileCooldownWindowSlider();
+        }
+      }
+      
+      function updateDashboardMobileCooldownWindowSlider() {
+        if (!dashboardMobileCooldownWindowSliderWidth) {
+          const container = document.getElementById('m_cooldownWindowSliderContainer');
+          if (container) {
+            dashboardMobileCooldownWindowSliderWidth = container.offsetWidth || container.clientWidth || 0;
+          }
+          if (!dashboardMobileCooldownWindowSliderWidth) {
+            return;
+          }
+        }
+        
+        const minHandle = document.getElementById('m_minCooldownWindowHandle');
+        const maxHandle = document.getElementById('m_maxCooldownWindowHandle');
+        const range = document.getElementById('m_cooldownWindowRange');
+        const minDisplay = document.getElementById('m_cooldownWindowMinDisplay');
+        const maxDisplay = document.getElementById('m_cooldownWindowMaxDisplay');
+        
+        if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
+        
+        // Max range is 0-3600 seconds (0-60 minutes)
+        const minPercent = (dashboardMobileMinCooldownTimerSeconds / 3600) * 100;
+        const maxPercent = (dashboardMobileMaxCooldownTimerSeconds / 3600) * 100;
+        
+        minHandle.style.left = `${minPercent}%`;
+        maxHandle.style.left = `${maxPercent}%`;
+        
+        range.style.left = `${minPercent}%`;
+        range.style.width = `${maxPercent - minPercent}%`;
+        
+        // Update time display boxes - min BELOW, max ABOVE (matching Price Window)
+        if (typeof formatSecondsToMMSS === 'function') {
+          minDisplay.textContent = formatSecondsToMMSS(dashboardMobileMinCooldownTimerSeconds);
+          maxDisplay.textContent = formatSecondsToMMSS(dashboardMobileMaxCooldownTimerSeconds);
+        }
+        minDisplay.style.left = `${minPercent}%`;
+        maxDisplay.style.left = `${maxPercent}%`;
+      }
+      
+      function handleDashboardMobileCooldownWindowMouseDown(e) {
+        dashboardMobileCooldownWindowIsDragging = true;
+        dashboardMobileCooldownWindowCurrentHandle = e.target;
+        document.addEventListener('mousemove', handleDashboardMobileCooldownWindowMouseMove);
+        document.addEventListener('mouseup', handleDashboardMobileCooldownWindowMouseUp);
+        document.addEventListener('touchmove', handleDashboardMobileCooldownWindowTouchMove);
+        document.addEventListener('touchend', handleDashboardMobileCooldownWindowTouchEnd);
+        e.preventDefault();
+      }
+      
+      function handleDashboardMobileCooldownWindowMouseMove(e) {
+        if (!dashboardMobileCooldownWindowIsDragging || !dashboardMobileCooldownWindowCurrentHandle) return;
+        
+        const container = document.getElementById('m_cooldownWindowSliderContainer');
+        if (!container) return;
+        
+        const rect = container.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
+        
+        // Map percentage to seconds (0-3600, snapped to 15-second intervals)
+        const intervalIndex = Math.round((percent / 100) * 240);
+        const snappedSeconds = Math.max(0, Math.min(3600, intervalIndex * 15));
+        
+        const minHandle = document.getElementById('m_minCooldownWindowHandle');
+        const maxHandle = document.getElementById('m_maxCooldownWindowHandle');
+        
+        if (dashboardMobileCooldownWindowCurrentHandle === minHandle) {
+          if (snappedSeconds >= dashboardMobileMaxCooldownTimerSeconds) return;
+          dashboardMobileMinCooldownTimerSeconds = snappedSeconds;
+        } else if (dashboardMobileCooldownWindowCurrentHandle === maxHandle) {
+          if (snappedSeconds <= dashboardMobileMinCooldownTimerSeconds) return;
+          dashboardMobileMaxCooldownTimerSeconds = snappedSeconds;
+        }
+        
+        updateDashboardMobileCooldownWindowSlider();
+      }
+      
+      function handleDashboardMobileCooldownWindowTouchMove(e) {
+        if (e.touches && e.touches.length > 0) {
+          const touch = e.touches[0];
+          const mouseEvent = new MouseEvent('mousemove', {
+            clientX: touch.clientX,
+            clientY: touch.clientY,
+            bubbles: true
+          });
+          handleDashboardMobileCooldownWindowMouseMove(mouseEvent);
+        }
+      }
+      
+      function handleDashboardMobileCooldownWindowMouseUp() {
+        dashboardMobileCooldownWindowIsDragging = false;
+        dashboardMobileCooldownWindowCurrentHandle = null;
+        document.removeEventListener('mousemove', handleDashboardMobileCooldownWindowMouseMove);
+        document.removeEventListener('mouseup', handleDashboardMobileCooldownWindowMouseUp);
+        document.removeEventListener('touchmove', handleDashboardMobileCooldownWindowTouchMove);
+        document.removeEventListener('touchend', handleDashboardMobileCooldownWindowTouchEnd);
+      }
+      
+      function handleDashboardMobileCooldownWindowTouchEnd() {
+        handleDashboardMobileCooldownWindowMouseUp();
+      }
+      
+      function ensureDashboardMobileCooldownWindowSliderHandlers() {
+        const minHandle = document.getElementById('m_minCooldownWindowHandle');
+        const maxHandle = document.getElementById('m_maxCooldownWindowHandle');
+        if (minHandle && !minHandle._mobileWired) {
+          minHandle._mobileWired = true;
+          minHandle.addEventListener('mousedown', handleDashboardMobileCooldownWindowMouseDown);
+          minHandle.addEventListener('touchstart', handleDashboardMobileCooldownWindowMouseDown);
+        }
+        if (maxHandle && !maxHandle._mobileWired) {
+          maxHandle._mobileWired = true;
+          maxHandle.addEventListener('mousedown', handleDashboardMobileCooldownWindowMouseDown);
+          maxHandle.addEventListener('touchstart', handleDashboardMobileCooldownWindowMouseDown);
+        }
+      }
+      
+      function ensureDashboardMobileProbSliderHandlers() {
+        const minHandle = document.getElementById('m_minProbabilityHandle');
+        const maxHandle = document.getElementById('m_maxProbabilityHandle');
+        if (!minHandle || !maxHandle) return;
+        
+        if (!minHandle._probBound) {
+          minHandle.addEventListener('mousedown', handleDashboardMobileProbMouseDown);
+          minHandle.addEventListener('touchstart', handleDashboardMobileProbMouseDown);
+          minHandle._probBound = true;
+        }
+        if (!maxHandle._probBound) {
+          maxHandle.addEventListener('mousedown', handleDashboardMobileProbMouseDown);
+          maxHandle.addEventListener('touchstart', handleDashboardMobileProbMouseDown);
+          maxHandle._probBound = true;
+        }
+        
+        if (!window._dashboardMobileProbResizeBound) {
+          window.addEventListener('resize', () => {
+            if (dashboardMobileProbSliderWidth) {
+              dashboardMobileProbSliderWidth = document.getElementById('m_probabilityWindowSliderContainer')?.offsetWidth || 0;
+              updateDashboardMobileProbabilityWindowSlider();
+            }
+          });
+          window._dashboardMobileProbResizeBound = true;
+        }
       }
 
       function updateTimeWindowSlider() {
@@ -5192,8 +6189,9 @@
         const maxDisplay = document.getElementById('m_timeWindowMaxDisplay');
         if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
 
-        const minPercent = (state.minTimeSeconds / 3600) * 100;
-        const maxPercent = (state.maxTimeSeconds / 3600) * 100;
+        const maxScale = window.dashboardMobileTimeWindowMaxSeconds || 3600;
+        const minPercent = (state.minTimeSeconds / maxScale) * 100;
+        const maxPercent = (state.maxTimeSeconds / maxScale) * 100;
 
         minHandle.style.left = `${minPercent}%`;
         maxHandle.style.left = `${maxPercent}%`;
@@ -5212,10 +6210,12 @@
         const rect = container.getBoundingClientRect();
         if (rect.width === 0) return;
 
+        const maxScale = window.dashboardMobileTimeWindowMaxSeconds || 3600;
         const clamped = Math.max(rect.left, Math.min(rect.right, clientX));
         const percent = ((clamped - rect.left) / rect.width) * 100;
-        const intervalIndex = Math.round((percent / 100) * 240);
-        const snappedSeconds = Math.max(0, Math.min(3600, intervalIndex * 15));
+        const numIntervals = maxScale / 15;
+        const intervalIndex = Math.round((percent / 100) * numIntervals);
+        const snappedSeconds = Math.max(0, Math.min(maxScale, intervalIndex * 15));
 
         if (state.currentHandle === 'min') {
           if (snappedSeconds < state.maxTimeSeconds) state.minTimeSeconds = snappedSeconds;
@@ -5415,9 +6415,23 @@
         update();
       }
 
+      function updateProbAdjDisplay(value) {
+        const display = document.getElementById('m_probAdjValueDisplay');
+        const slider = document.getElementById('m_probAdjSlider');
+        if (display && slider) {
+          display.textContent = `${parseFloat(value).toFixed(1)}%`;
+          const min = parseFloat(slider.min);
+          const max = parseFloat(slider.max);
+          const percent = (parseFloat(value) - min) / (max - min);
+          const sliderWidth = slider.offsetWidth;
+          const thumbWidth = 16;
+          const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
+          display.style.left = `${offset}px`;
+        }
+      }
+
       function refreshSliderDisplays() {
         bindSlider('m_autoEntryMinVolume', 'm_minVolVal', (value) => Math.round(Math.max(0, value)).toString());
-        bindSlider('m_autoEntryProb', 'm_probVal', (value) => `${Math.round(value)}%`);
         bindSlider('m_autoEntryDiff', 'm_diffVal', (value) => {
           const num = parseFloat(value || 0).toFixed(2);
           return num >= 0 ? `+${num}` : num;
@@ -5427,6 +6441,18 @@
         bindSlider('m_spikeMomentum', 'm_spikeMomentumVal', (value) => `±${Math.round(value)}`);
         bindSlider('m_spikeCooldown', 'm_spikeCooldownVal', (value) => `±${Math.round(value)}`);
         bindSlider('m_spikeTime', 'm_spikeTimeVal', (value) => `${Math.round(value)} min`);
+        // Probability Adjustment slider - use custom handler for percentage display
+        const probAdjSlider = document.getElementById('m_probAdjSlider');
+        if (probAdjSlider && !probAdjSlider._mobileBound) {
+          probAdjSlider.addEventListener('input', function() {
+            updateProbAdjDisplay(this.value);
+          });
+          window.addEventListener('resize', function() {
+            updateProbAdjDisplay(probAdjSlider.value);
+          });
+          probAdjSlider._mobileBound = true;
+          updateProbAdjDisplay(probAdjSlider.value);
+        }
         bindSlider('m_stopProb', 'm_stopProbVal', (value) => `${Math.round(value)}%`);
         bindSlider('m_momentumThreshold', 'm_momentumThresholdVal', (value) => `±${Math.round(value)}`);
         bindSlider('m_verifySeconds', 'm_verifySecondsVal', (value) => `${Math.round(value)}s`);
@@ -5542,7 +6568,16 @@
         // Get monitor strategy from monitors array
         const monitor = monitors && monitors.find(m => m.id === tileId);
         const currentStrategy = monitor ? monitor.strategy : '';
+        // Store current strategy and tile ID for use in update functions
+        window.dashboardMobileCurrentStrategy = currentStrategy;
+        state.currentTileId = tileId;
         const isMomentumScalp = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
+        const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+        const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
+        const isReverseHTC = currentStrategy && currentStrategy.toUpperCase().includes('REVERSE HTC');
+        const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
+        const is15mHTC = currentStrategy && currentStrategy.toUpperCase().includes('15M HTC');
+        window.dashboardMobileTimeWindowMaxSeconds = is15mHTC ? 900 : 3600;
         
         // Update modal title with strategy name and show/hide strategy sections
         const modalTitle = document.getElementById('mobileUnifiedAutoTradeModalTitle');
@@ -5566,6 +6601,65 @@
             msSection.style.display = 'none';
           }
         }
+        
+        // Hide/show fields based on strategy
+        const minDiffLabel = document.querySelector('label[for="m_autoEntryDiff"]');
+        const minDiffContainer = document.getElementById('m_autoEntryDiff') ? document.getElementById('m_autoEntryDiff').closest('.value-bubble-container') : null;
+        const maxDiffLabel = document.querySelector('label[for="m_autoEntryMaxDiff"]');
+        const maxDiffContainer = document.getElementById('m_autoEntryMaxDiff') ? document.getElementById('m_autoEntryMaxDiff').closest('.value-bubble-container') : null;
+        const allowReEntryLabel = document.querySelector('label[for="m_allowRe"]');
+        const allowReEntryContainer = allowReEntryLabel ? allowReEntryLabel.nextElementSibling : null;
+        const probLabel = document.querySelector('label[for="m_probabilityWindowSlider"]');
+        
+        if (isMomentumBreakout || isMomentumContain) {
+          // Hide Min/Max Differential for Momentum Breakout/Contain
+          if (minDiffLabel) minDiffLabel.style.display = 'none';
+          if (minDiffContainer) minDiffContainer.style.display = 'none';
+          if (maxDiffLabel) maxDiffLabel.style.display = 'none';
+          if (maxDiffContainer) maxDiffContainer.style.display = 'none';
+          // Hide Allow Re-Entry for Momentum Contain only
+          if (isMomentumContain) {
+            if (allowReEntryLabel) allowReEntryLabel.style.display = 'none';
+            if (allowReEntryContainer) allowReEntryContainer.style.display = 'none';
+          } else {
+            if (allowReEntryLabel) allowReEntryLabel.style.display = '';
+            if (allowReEntryContainer) allowReEntryContainer.style.display = '';
+          }
+          // Change label from "Win Probability Window" to "Price Window" for Momentum Breakout/Contain
+          if (probLabel) probLabel.textContent = 'Price Window:';
+          
+          // Show/hide Cooldown Window slider (Momentum Contain only)
+          const cooldownWindowLabel = document.querySelector('label[for="m_cooldownWindowSlider"]');
+          const cooldownWindowValueContainer = document.querySelector('label[for="m_cooldownWindowSlider"]')?.nextElementSibling;
+          if (cooldownWindowLabel && cooldownWindowValueContainer) {
+            if (isMomentumContain) {
+              cooldownWindowLabel.style.display = '';
+              cooldownWindowValueContainer.style.display = '';
+            } else {
+              cooldownWindowLabel.style.display = 'none';
+              cooldownWindowValueContainer.style.display = 'none';
+            }
+          }
+        } else {
+          // Show fields for other strategies
+          if (minDiffLabel) minDiffLabel.style.display = '';
+          if (minDiffContainer) minDiffContainer.style.display = '';
+          if (maxDiffLabel) maxDiffLabel.style.display = '';
+          if (maxDiffContainer) maxDiffContainer.style.display = '';
+          if (allowReEntryLabel) allowReEntryLabel.style.display = '';
+          if (allowReEntryContainer) allowReEntryContainer.style.display = '';
+          // Restore original label
+          if (probLabel) probLabel.textContent = 'Win Probability Window:';
+        }
+        
+        // Show/hide Probability Adjustment slider (Hourly HTC and 15m HTC — same strategy, different strike table)
+        const probAdjContainer = document.getElementById('m_probAdjContainer');
+        const probAdjLabel = document.getElementById('m_probAdjLabel');
+        if (probAdjContainer && probAdjLabel) {
+          const displayValue = (isHourlyHTC || is15mHTC) ? 'block' : 'none';
+          probAdjContainer.style.display = displayValue;
+          probAdjLabel.style.display = displayValue;
+        }
 
         const data = await mobileFetchSettings(apiId);
         if (!data) return;
@@ -5579,12 +6673,59 @@
           if (el) el.checked = !!value;
         };
 
-        // Common settings (both strategies)
+        // Common settings (both strategies) — 15m HTC uses 0:00–15:00 (900s)
+        const timeMax = (currentStrategy && currentStrategy.toUpperCase().includes('15M HTC')) ? 900 : 3600;
+        window.dashboardMobileTimeWindowMaxSeconds = timeMax;
         const minTime = Number.isFinite(Number(data.min_time)) ? Number(data.min_time) : 0;
-        const maxTime = Number.isFinite(Number(data.max_time)) ? Number(data.max_time) : 3600;
-        const minTimeRounded = Math.max(0, Math.min(3600, Math.round(minTime / 15) * 15));
-        const maxTimeRounded = Math.max(0, Math.min(3600, Math.round(maxTime / 15) * 15));
-        const finalMaxTime = maxTimeRounded <= minTimeRounded ? Math.min(3600, minTimeRounded + 900) : maxTimeRounded;
+        const maxTime = Number.isFinite(Number(data.max_time)) ? Number(data.max_time) : timeMax;
+        const minTimeRounded = Math.max(0, Math.min(timeMax, Math.round(minTime / 15) * 15));
+        const maxTimeRounded = Math.max(0, Math.min(timeMax, Math.round(maxTime / 15) * 15));
+        const finalMaxTime = maxTimeRounded <= minTimeRounded ? Math.min(timeMax, minTimeRounded + 900) : maxTimeRounded;
+        
+        // Probability window (for HOURLY HTC) or Ask Price window (for Momentum Breakout/Contain)
+        if (isMomentumBreakout || isMomentumContain) {
+          // Load min_ask/max_ask for Momentum Breakout/Contain
+          window.dashboardMobileContainMinAsk = data.min_ask !== undefined ? parseFloat(data.min_ask) : 0.0000;
+          window.dashboardMobileContainMaxAsk = data.max_ask !== undefined ? parseFloat(data.max_ask) : 0.9800;
+          
+          // Enforce minimum separation (0.01 = 1 cent) when loading from database
+          const MIN_ASK_SEPARATION = 0.01;
+          if (window.dashboardMobileContainMaxAsk - window.dashboardMobileContainMinAsk < MIN_ASK_SEPARATION) {
+            if (window.dashboardMobileContainMaxAsk < 1.0) {
+              window.dashboardMobileContainMaxAsk = parseFloat((window.dashboardMobileContainMinAsk + MIN_ASK_SEPARATION).toFixed(4));
+            } else {
+              window.dashboardMobileContainMinAsk = parseFloat((window.dashboardMobileContainMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
+            }
+          }
+          
+          // Load cooldown timer window values (Momentum Contain only)
+          if (isMomentumContain) {
+            dashboardMobileMinCooldownTimerSeconds = data.min_cooldown_timer !== undefined && data.min_cooldown_timer !== null ? parseInt(data.min_cooldown_timer, 10) : 300;
+            dashboardMobileMaxCooldownTimerSeconds = data.max_cooldown_timer !== undefined && data.max_cooldown_timer !== null ? parseInt(data.max_cooldown_timer, 10) : 3300;
+            
+            // Initialize slider after values are loaded
+            setTimeout(() => {
+              if (typeof initDashboardMobileCooldownWindowSlider === 'function') {
+                initDashboardMobileCooldownWindowSlider();
+              }
+            }, 100);
+          }
+          
+        } else {
+          // Probability window (for Hourly HTC)
+          window.dashboardMobileMinProbability = data.min_probability !== undefined ? parseFloat(data.min_probability) : 95.00;
+          window.dashboardMobileMaxProbability = data.max_probability !== undefined ? parseFloat(data.max_probability) : 100.00;
+          
+          // Enforce minimum separation (0.5%) when loading from database
+          const MIN_SEPARATION = 0.5;
+          if (window.dashboardMobileMaxProbability - window.dashboardMobileMinProbability < MIN_SEPARATION) {
+            if (window.dashboardMobileMaxProbability < 100) {
+              window.dashboardMobileMaxProbability = parseFloat((window.dashboardMobileMinProbability + MIN_SEPARATION).toFixed(1));
+            } else {
+              window.dashboardMobileMinProbability = parseFloat((window.dashboardMobileMaxProbability - MIN_SEPARATION).toFixed(1));
+            }
+          }
+        }
         
         if (isMomentumScalp) {
           // MOMENTUM SCALP settings
@@ -5613,31 +6754,57 @@
           msState.minTimeSeconds = minTimeRounded;
           msState.maxTimeSeconds = finalMaxTime;
         } else {
-          // HOURLY HTC settings
-        setVal('m_autoEntryMinVolume', data.min_volume ?? 1000);
-        setVal('m_autoEntryProb', data.min_probability ?? 25);
-        setVal('m_autoEntryDiff', data.min_differential ?? 0);
-        setVal('m_autoEntryMaxDiff', data.max_differential ?? 0);
-        setChk('m_allowRe', data.allow_re_entry ?? false);
-        setVal('m_winStreak', data.win_streak_threshold ?? 22);
+          // HOURLY HTC / REVERSE HTC / MOMENTUM BREAKOUT / MOMENTUM CONTAIN settings
+          setVal('m_autoEntryMinVolume', data.min_volume ?? 1000);
+          setVal('m_autoEntryDiff', data.min_differential ?? 0);
+          setVal('m_autoEntryMaxDiff', data.max_differential ?? 0);
+          setChk('m_allowRe', data.allow_re_entry ?? false);
+          setVal('m_winStreak', data.win_streak_threshold ?? 22);
+          
+          // Loss Prevention Toggle
+          const lossPreventionToggle = document.getElementById('m_lossPreventionToggle');
+          const winStreakSlider = document.getElementById('m_winStreak');
+          const winStreakValueDisplay = document.getElementById('m_winStreakVal');
+          if (lossPreventionToggle) {
+            lossPreventionToggle.checked = data.loss_prevention_toggle !== undefined ? data.loss_prevention_toggle : true;
+            if (winStreakSlider) {
+              winStreakSlider.disabled = !lossPreventionToggle.checked;
+              winStreakSlider.style.opacity = lossPreventionToggle.checked ? '1' : '0.5';
+              winStreakSlider.style.cursor = lossPreventionToggle.checked ? 'pointer' : 'not-allowed';
+            }
+            if (winStreakValueDisplay) {
+              winStreakValueDisplay.style.display = lossPreventionToggle.checked ? 'block' : 'none';
+            }
+            lossPreventionToggle.addEventListener('change', function() {
+              if (winStreakSlider) {
+                winStreakSlider.disabled = !this.checked;
+                winStreakSlider.style.opacity = this.checked ? '1' : '0.5';
+                winStreakSlider.style.cursor = this.checked ? 'pointer' : 'not-allowed';
+              }
+              if (winStreakValueDisplay) {
+                winStreakValueDisplay.style.display = this.checked ? 'block' : 'none';
+              }
+            });
+          }
 
-        setChk('m_spikeEnabled', data.spike_alert_enabled ?? true);
-        setVal('m_spikeMomentum', data.spike_alert_momentum_threshold ?? 60);
-        setVal('m_spikeCooldown', data.spike_alert_cooldown_threshold ?? 55);
-        setVal('m_spikeTime', data.spike_alert_cooldown_minutes ?? 15);
-        setChk('m_perfAlloc', data.performance_based_allocation ?? false);
+          setChk('m_spikeEnabled', data.spike_alert_enabled ?? true);
+          setVal('m_spikeMomentum', data.spike_alert_momentum_threshold ?? 60);
+          setVal('m_spikeCooldown', data.spike_alert_cooldown_threshold ?? 55);
+          setVal('m_spikeTime', data.spike_alert_cooldown_minutes ?? 15);
+          setVal('m_probAdjSlider', data.prob_adj ?? 5.00);
+          setChk('m_perfAlloc', data.performance_based_allocation ?? false);
 
-        setVal('m_stopProb', data.current_probability ?? 40);
-        setChk('m_momentumEnabled', data.momentum_spike_enabled ?? true);
-        setVal('m_momentumThreshold', data.momentum_spike_threshold ?? 35);
-        setChk('m_verifyEnabled', data.verification_period_enabled ?? false);
-        setVal('m_verifySeconds', data.verification_period_seconds ?? 15);
+          setVal('m_stopProb', data.current_probability ?? 40);
+          setChk('m_momentumEnabled', data.momentum_spike_enabled ?? true);
+          setVal('m_momentumThreshold', data.momentum_spike_threshold ?? 35);
+          setChk('m_verifyEnabled', data.verification_period_enabled ?? false);
+          setVal('m_verifySeconds', data.verification_period_seconds ?? 15);
 
-        const minTTCSeconds = data.min_ttc_seconds ?? 60;
-        const minTTCInput = document.getElementById('m_minTTC');
-        if (minTTCInput) minTTCInput.value = minTTCSeconds;
-        const minTTCDisplay = document.getElementById('m_minTTCDisplay');
-        if (minTTCDisplay) minTTCDisplay.textContent = formatSecondsToMMSS(minTTCSeconds);
+          const minTTCSeconds = data.min_ttc_seconds ?? 60;
+          const minTTCInput = document.getElementById('m_minTTC');
+          if (minTTCInput) minTTCInput.value = minTTCSeconds;
+          const minTTCDisplay = document.getElementById('m_minTTCDisplay');
+          if (minTTCDisplay) minTTCDisplay.textContent = formatSecondsToMMSS(minTTCSeconds);
 
           // Initialize HTC time window slider
           state.minTimeSeconds = minTimeRounded;
@@ -5650,23 +6817,53 @@
           updateMSTimeWindowSlider();
           requestAnimationFrame(ensureMSTimeSliderHandlers);
         } else {
-        updateTimeWindowSlider();
-        requestAnimationFrame(ensureTimeSliderHandlers);
+          updateTimeWindowSlider();
+          requestAnimationFrame(ensureTimeSliderHandlers);
+          // Initialize probability/price window slider for Hourly HTC and Momentum Breakout/Contain
+          setTimeout(() => {
+            // Initialize slider width first (this also calls update)
+            if (typeof initDashboardMobileProbabilityWindowSlider === 'function') {
+              initDashboardMobileProbabilityWindowSlider();
+            }
+            // Initialize cooldown window slider (Momentum Contain only)
+            if (typeof initDashboardMobileCooldownWindowSlider === 'function') {
+              initDashboardMobileCooldownWindowSlider();
+            }
+            if (typeof ensureDashboardMobileCooldownWindowSliderHandlers === 'function') {
+              ensureDashboardMobileCooldownWindowSliderHandlers();
+            }
+            // Initialize slider handlers
+            if (typeof ensureDashboardMobileProbSliderHandlers === 'function') {
+              ensureDashboardMobileProbSliderHandlers();
+            }
+            // Ensure display is updated with loaded values
+            setTimeout(() => {
+              if (typeof updateDashboardMobileProbabilityWindowSlider === 'function') {
+                updateDashboardMobileProbabilityWindowSlider();
+              }
+            }, 50);
+          }, 150);
         }
 
         const saveBtn = document.getElementById('m_unifiedSave');
         if (saveBtn) {
           saveBtn.onclick = async function() {
-            // Determine which strategy is active
-            const isMS = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
+            // Determine which strategy is active (reuse variables from outer scope)
+            const saveIsMS = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
             
             const payload = {
               monitor_id: apiId,
-              min_time: isMS ? msState.minTimeSeconds : state.minTimeSeconds,
-              max_time: isMS ? msState.maxTimeSeconds : state.maxTimeSeconds
+              min_time: saveIsMS ? msState.minTimeSeconds : state.minTimeSeconds,
+              max_time: saveIsMS ? msState.maxTimeSeconds : state.maxTimeSeconds
             };
             
-            if (isMS) {
+            // Determine strategy for save (reuse variables from outer scope, but need local copies for Breakout/Contain)
+            const saveIsMB = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+            const saveIsMC = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
+            const saveIsRHTC = currentStrategy && currentStrategy.toUpperCase().includes('REVERSE HTC');
+            const saveIsHHTC = (currentStrategy && (currentStrategy.toUpperCase().includes('HOURLY HTC') || currentStrategy.toUpperCase().includes('15M HTC')) && !saveIsRHTC);
+            
+            if (saveIsMS) {
               // MOMENTUM SCALP specific fields
               const msMinVolumeSlider = document.getElementById('m_msAutoEntryMinVolume');
               const msProbabilitySlider = document.getElementById('m_msAutoEntryProb');
@@ -5695,10 +6892,40 @@
                 // Convert from slider value (50-100) to decimal (0.50-1.00)
                 payload.momentum_scalp_profit_target = parseFloat(msProfitTargetSlider.value) / 100;
               }
-            } else {
-              // HOURLY HTC specific fields
+            } else if (saveIsMB || saveIsMC) {
+              // MOMENTUM BREAKOUT/CONTAIN specific fields
               payload.min_volume = parseInt(document.getElementById('m_autoEntryMinVolume').value, 10);
-              payload.min_probability = parseInt(document.getElementById('m_autoEntryProb').value, 10);
+              // Use ask price window values (ensure they're floats with 4 decimal places)
+              payload.min_ask = parseFloat(parseFloat(window.dashboardMobileContainMinAsk || 0.0000).toFixed(4));
+              payload.max_ask = parseFloat(parseFloat(window.dashboardMobileContainMaxAsk || 0.9800).toFixed(4));
+              // Win Streak Threshold and Loss Prevention Toggle (same as Hourly HTC)
+              payload.win_streak_threshold = parseInt(document.getElementById('m_winStreak').value, 10);
+              payload.loss_prevention_toggle = document.getElementById('m_lossPreventionToggle').checked;
+              // Spike Alert settings
+              payload.spike_alert_enabled = document.getElementById('m_spikeEnabled').checked;
+              payload.spike_alert_momentum_threshold = parseInt(document.getElementById('m_spikeMomentum').value, 10);
+              payload.spike_alert_cooldown_threshold = parseInt(document.getElementById('m_spikeCooldown').value, 10);
+              payload.spike_alert_cooldown_minutes = parseInt(document.getElementById('m_spikeTime').value, 10);
+              // Cooldown Timer Window (Momentum Contain only)
+              if (isMomentumContain) {
+                payload.min_cooldown_timer = dashboardMobileMinCooldownTimerSeconds;
+                payload.max_cooldown_timer = dashboardMobileMaxCooldownTimerSeconds;
+              }
+              // Auto Stop settings
+              payload.current_probability = parseInt(document.getElementById('m_stopProb').value, 10);
+              payload.min_ttc_seconds = parseInt(document.getElementById('m_minTTC').value, 10);
+              payload.momentum_spike_enabled = document.getElementById('m_momentumEnabled').checked;
+              payload.momentum_spike_threshold = parseInt(document.getElementById('m_momentumThreshold').value, 10);
+              payload.verification_period_enabled = document.getElementById('m_verifyEnabled').checked;
+              payload.verification_period_seconds = parseInt(document.getElementById('m_verifySeconds').value, 10);
+              // Performance Based Allocation (same as Hourly HTC)
+              payload.performance_based_allocation = document.getElementById('m_perfAlloc').checked;
+            } else {
+              // HOURLY HTC / REVERSE HTC specific fields
+              payload.min_volume = parseInt(document.getElementById('m_autoEntryMinVolume').value, 10);
+              // Use probability window values (ensure they're floats with 1 decimal)
+              payload.min_probability = parseFloat(parseFloat(window.dashboardMobileMinProbability || 95.00).toFixed(1));
+              payload.max_probability = parseFloat(parseFloat(window.dashboardMobileMaxProbability || 100.00).toFixed(1));
               payload.min_differential = parseFloat(document.getElementById('m_autoEntryDiff').value);
               payload.max_differential = (function() {
                 const v = parseFloat(document.getElementById('m_autoEntryMaxDiff').value);
@@ -5706,10 +6933,18 @@
               })();
               payload.allow_re_entry = document.getElementById('m_allowRe').checked;
               payload.win_streak_threshold = parseInt(document.getElementById('m_winStreak').value, 10);
+              const lossPreventionToggle = document.getElementById('m_lossPreventionToggle');
+              if (lossPreventionToggle) {
+                payload.loss_prevention_toggle = lossPreventionToggle.checked;
+              }
               payload.spike_alert_enabled = document.getElementById('m_spikeEnabled').checked;
               payload.spike_alert_momentum_threshold = parseInt(document.getElementById('m_spikeMomentum').value, 10);
               payload.spike_alert_cooldown_threshold = parseInt(document.getElementById('m_spikeCooldown').value, 10);
               payload.spike_alert_cooldown_minutes = parseInt(document.getElementById('m_spikeTime').value, 10);
+              // Include prob_adj for Hourly HTC and 15m HTC (not Reverse HTC)
+              if (saveIsHHTC) {
+                payload.prob_adj = parseFloat(document.getElementById('m_probAdjSlider').value);
+              }
               payload.performance_based_allocation = document.getElementById('m_perfAlloc').checked;
               payload.current_probability = parseInt(document.getElementById('m_stopProb').value, 10);
               payload.min_ttc_seconds = parseInt(document.getElementById('m_minTTC').value, 10);
@@ -5768,6 +7003,63 @@
       window.openMobileUnifiedAutoTradeSettings = openModal;
       window.hideMobileUnifiedAutoTradeSettings = hideModal;
     })();
+  </script>
+  <!-- Tab visibility: pause when hidden -->
+  <script>
+  (function() {
+    window.addEventListener('message', function(event) {
+      if (!event.data || event.data.type !== 'tab-visibility') return;
+      const visible = event.data.visible === true;
+      window.DASHBOARD_MOBILE_PAUSED = !visible;
+      if (visible) {
+        if (typeof startDashboardMobilePolling === 'function') startDashboardMobilePolling();
+        if (typeof startDashboardMarketDataPolling === 'function') startDashboardMarketDataPolling();
+        if (typeof connectWebSocket === 'function') connectWebSocket();
+      } else {
+        if (window._dmPortfolioInterval) { clearInterval(window._dmPortfolioInterval); window._dmPortfolioInterval = null; }
+        if (window._dmHistoryInterval) { clearInterval(window._dmHistoryInterval); window._dmHistoryInterval = null; }
+        if (window._dmPerformanceInterval) { clearInterval(window._dmPerformanceInterval); window._dmPerformanceInterval = null; }
+        if (window._dmMonitorRefreshInterval) { clearInterval(window._dmMonitorRefreshInterval); window._dmMonitorRefreshInterval = null; }
+        if (window._dmAutoTradeInterval) { clearInterval(window._dmAutoTradeInterval); window._dmAutoTradeInterval = null; }
+        if (window._dmMarketDataInterval) { clearInterval(window._dmMarketDataInterval); window._dmMarketDataInterval = null; }
+        if (window._dashboardMobileWs) { try { window._dashboardMobileWs.close(); } catch (e) {} window._dashboardMobileWs = null; }
+      }
+    });
+  })();
+  </script>
+  <script>
+  (function() {
+    if (window.parent === window) return;
+    var threshold = 216;
+    var startY = 0, currentPull = 0;
+    function atTop() { var se = document.scrollingElement || document.documentElement; return se && se.scrollTop <= 0; }
+    document.addEventListener('touchstart', function(e) { if (e.touches.length === 1) { startY = e.touches[0].clientY; currentPull = 0; } }, { passive: true });
+    document.addEventListener('touchmove', function(e) {
+      if (e.touches.length !== 1 || !atTop()) return;
+      var pull = e.touches[0].clientY - startY;
+      if (pull <= 0) return;
+      currentPull = Math.min(pull, 280);
+      window.parent.postMessage({ type: 'pull-to-refresh-progress', pull: currentPull >= threshold ? currentPull : 0 }, window.location.origin);
+    }, { passive: true });
+    document.addEventListener('touchend', function() {
+      if (currentPull >= threshold) {
+        window.parent.postMessage({ type: 'pull-to-refresh-triggered' }, window.location.origin);
+      } else {
+        window.parent.postMessage({ type: 'pull-to-refresh-progress', pull: 0 }, window.location.origin);
+      }
+      currentPull = 0;
+    }, { passive: true });
+    window.addEventListener('message', function(e) {
+      if (e.origin !== window.location.origin || !e.data || e.data.type !== 'pull-to-refresh-do') return;
+      var p = typeof window.__onPullToRefresh === 'function' ? window.__onPullToRefresh() : null;
+      if (p && typeof p.then === 'function') {
+        p.then(function() { window.parent.postMessage({ type: 'pull-to-refresh-done' }, window.location.origin); }).catch(function() { window.parent.postMessage({ type: 'pull-to-refresh-done' }, window.location.origin); });
+      } else {
+        window.parent.postMessage({ type: 'pull-to-refresh-done' }, window.location.origin);
+        if (p === null || p === undefined) location.reload();
+      }
+    });
+  })();
   </script>
 </body>
 </html>

@@ -75,6 +75,33 @@ window.closeTrade = async function(tradeId, sellPrice, event) {
     // Use current BTC price for symbol_close
     const symbolClose = typeof getCurrentBTCTickerPrice === 'function' ? getCurrentBTCTickerPrice() : null;
 
+    // For paper trades, fetch current_close_price from active trades and calculate sell_price = 1 - current_close_price
+    let finalSellPrice = sellPrice;
+    if (trade.paper_trade) {
+      try {
+        // Get current monitor name for monitor-specific active trades
+        const currentMonitorName = window.currentMonitorName;
+        if (currentMonitorName) {
+          const activeTradesUrl = window.location.origin + `/api/active_trades/${currentMonitorName}`;
+          const activeTradesRes = await fetch(activeTradesUrl, { cache: 'no-store' });
+          if (activeTradesRes.ok) {
+            const activeTradesData = await activeTradesRes.json();
+            if (activeTradesData.active_trades && Array.isArray(activeTradesData.active_trades)) {
+              const activeTrade = activeTradesData.active_trades.find(t => t.trade_id == tradeId);
+              if (activeTrade && activeTrade.current_close_price !== null && activeTrade.current_close_price !== undefined) {
+                // sell_price = 1 - current_close_price (current_close_price is the opposite side's ask)
+                const currentClosePrice = parseFloat(activeTrade.current_close_price);
+                finalSellPrice = 1 - currentClosePrice;
+                console.log(`[PAPER TRADE] current_close_price: ${currentClosePrice}, calculated sell_price: ${finalSellPrice}`);
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.warn(`[PAPER TRADE] Could not fetch current_close_price from active trades: ${error}, using provided sellPrice`);
+      }
+    }
+
     // Compose payload to match open ticket, plus intent: 'close'
     const payload = {
       id:               tradeId,  // Include the specific trade_id
@@ -86,7 +113,7 @@ window.closeTrade = async function(tradeId, sellPrice, event) {
       action:           'close',
       type:             'market',
       time_in_force:    'IOC',
-      buy_price:        sellPrice,
+      buy_price:        finalSellPrice,  // Use finalSellPrice (current_close_price for paper trades)
       symbol_close:     symbolClose,
       close_method:     'manual'
     };
@@ -232,6 +259,12 @@ window.prepareTradeData = async function(target) {
     kalshiTicker = target.parentElement.dataset.ticker;
   }
 
+  // Get diff value from data attribute
+  let diff = null;
+  if (target.dataset.diff) {
+    diff = parseFloat(target.dataset.diff);
+  }
+
   // Get other data - use current symbol instead of hardcoded BTC
   const symbol_open = typeof getCurrentSymbolTickerPrice === 'function' ? getCurrentSymbolTickerPrice() : null;
   
@@ -279,8 +312,9 @@ window.prepareTradeData = async function(target) {
     return null;
   }
 
-  // Get trade strategy from monitor configuration (like auto_entry_supervisor) - NO FALLBACKS
+  // Get trade strategy and paper_trade from monitor configuration (like auto_entry_supervisor) - NO FALLBACKS
   let tradeStrategy = null;
+  let paperTrade = false;
   try {
     const currentMonitorId = window.currentMonitorId;
     if (!currentMonitorId) {
@@ -293,11 +327,12 @@ window.prepareTradeData = async function(target) {
       const data = await response.json();
       if (data.status === 'ok' && data.monitor) {
         tradeStrategy = data.monitor.strategy;
+        paperTrade = data.monitor.paper_trade || false;
         if (!tradeStrategy) {
           console.error('No strategy found in monitor configuration');
           return null;
         }
-        console.log(`Trade strategy loaded from monitor ${currentMonitorId}: ${tradeStrategy}`);
+        console.log(`Trade strategy loaded from monitor ${currentMonitorId}: ${tradeStrategy}, paper_trade: ${paperTrade}`);
       } else {
         console.error('Failed to get monitor data:', data.message);
         return null;
@@ -340,9 +375,11 @@ window.prepareTradeData = async function(target) {
     momentum: momentum,
     
     prob: prob,
+    diff: diff,  // Add diff value
     trade_strategy: tradeStrategy,
     entry_method: "manual",
-    monitor: currentMonitorName  // Add monitor field
+    monitor: currentMonitorName,  // Add monitor field
+    paper_trade: paperTrade  // Add paper_trade from monitor config
   };
 
   return tradeData;

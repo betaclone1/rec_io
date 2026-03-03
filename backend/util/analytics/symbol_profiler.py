@@ -51,6 +51,7 @@ class SymbolProfiler:
         # Table names
         self.source_table = f"historical_data.{self.symbol}_price_history"
         self.momentum_profile_table = f"analytics.{self.symbol}_momentum_profile"
+        self.movement_profile_table = f"analytics.{self.symbol}_movement_profile"
         self.price_profile_table = f"analytics.{self.symbol}_price_profile"
         self.volatility_profile_table = f"analytics.{self.symbol}_volatility_profile"
         
@@ -130,6 +131,48 @@ class SymbolProfiler:
             logger.info(f"📊 Loaded {len(df)} momentum records from {self.symbol} table")
             return df
             
+        except Exception as e:
+            raise e
+        finally:
+            conn.close()
+
+    def load_movement_data(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
+        """Load movement data for profile generation (same shape as momentum)."""
+        conn = self.get_postgresql_connection()
+        if not conn:
+            raise Exception("Failed to connect to PostgreSQL")
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema = 'historical_data' AND table_name = '{self.symbol}_price_history'
+                AND column_name = 'movement'
+            """)
+            if not cursor.fetchone():
+                conn.close()
+                raise Exception(f"No movement column in {self.source_table}")
+            query = f"""SELECT timestamp, movement FROM {self.source_table} WHERE movement IS NOT NULL"""
+            params = []
+            if start_date or end_date:
+                query += " AND"
+                if start_date:
+                    query += " timestamp >= %s"
+                    params.append(start_date)
+                if end_date:
+                    if start_date:
+                        query += " AND"
+                    query += " timestamp <= %s"
+                    params.append(end_date)
+            query += " ORDER BY timestamp"
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            if not rows:
+                raise Exception(f"No movement data found for {self.symbol}")
+            df = pd.DataFrame(rows, columns=['timestamp', 'movement'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df['movement'] = df['movement'].astype(float)
+            logger.info(f"📊 Loaded {len(df)} movement records from {self.symbol} table")
+            return df
         except Exception as e:
             raise e
         finally:
@@ -222,6 +265,36 @@ class SymbolProfiler:
         logger.info(f"⏰ Calculated time weights: {len(weights)} records, weight range: {weights.min():.6f} to {weights.max():.6f}")
         return weights
     
+    def _percentile_profile_from_values(self, values: np.ndarray, weights: np.ndarray, use_centered_scale: bool = True) -> pd.DataFrame:
+        """
+        Build percentile profile from a value array and weights.
+        - use_centered_scale=True (momentum): percentile column -99.5 to +99.5.
+        - use_centered_scale=False (movement): percentile column 0.5 to 99.5 (movement is always >= 0).
+        """
+        weighted_mean = np.average(values, weights=weights)
+        weighted_std = np.sqrt(np.average((values - weighted_mean)**2, weights=weights))
+        raw_percentiles = np.arange(0.5, 100, 0.5)
+        weighted_percentiles = []
+        sorted_indices = np.argsort(values)
+        sorted_weights = weights[sorted_indices]
+        sorted_values = values[sorted_indices]
+        cumsum_weights = np.cumsum(sorted_weights)
+        for p in raw_percentiles:
+            target_weight = p / 100.0
+            idx = np.searchsorted(cumsum_weights, target_weight)
+            percentile_value = sorted_values[-1] if idx >= len(sorted_values) else sorted_values[idx]
+            weighted_percentiles.append(percentile_value)
+        percentile_labels = [(p - 50) * 2 for p in raw_percentiles] if use_centered_scale else list(raw_percentiles)
+        profile_df = pd.DataFrame({
+            'percentile': percentile_labels,
+            'momentum_value': weighted_percentiles,
+            'deviation_from_mean': [x - weighted_mean for x in weighted_percentiles],
+            'z_score': [(x - weighted_mean) / weighted_std for x in weighted_percentiles]
+        })
+        profile_df['weighted_mean'] = weighted_mean
+        profile_df['weighted_std'] = weighted_std
+        return profile_df
+
     def calculate_percentile_profile(self, df: pd.DataFrame, weights: np.ndarray) -> pd.DataFrame:
         """
         Calculate percentile-based momentum profile.
@@ -233,64 +306,8 @@ class SymbolProfiler:
         Returns:
             DataFrame with percentile profile
         """
-        momentum_values = df['momentum'].values
-        
-        # Calculate weighted statistics
-        weighted_mean = np.average(momentum_values, weights=weights)
-        weighted_std = np.sqrt(np.average((momentum_values - weighted_mean)**2, weights=weights))
-        
-        # Calculate percentiles (0.5th to 99.5th percentile in 0.5 increments)
-        raw_percentiles = np.arange(0.5, 100, 0.5)  # 0.5, 1.0, 1.5, ..., 99.5
-        
-        # Calculate weighted percentiles
-        weighted_percentiles = []
-        for p in raw_percentiles:
-            # Use weighted quantile calculation
-            sorted_indices = np.argsort(momentum_values)
-            sorted_weights = weights[sorted_indices]
-            sorted_values = momentum_values[sorted_indices]
-            
-            # Calculate cumulative weights
-            cumsum_weights = np.cumsum(sorted_weights)
-            
-            # Find the index where cumulative weight reaches the percentile
-            target_weight = p / 100.0
-            idx = np.searchsorted(cumsum_weights, target_weight)
-            
-            if idx >= len(sorted_values):
-                percentile_value = sorted_values[-1]
-            else:
-                percentile_value = sorted_values[idx]
-            
-            weighted_percentiles.append(percentile_value)
-        
-        # Transform percentiles to centered scale (-99.5 to +99.5)
-        # 0.5 -> -99.5, 50.0 -> 0.0, 99.5 -> +99.5
-        centered_percentiles = []
-        for p in raw_percentiles:
-            # Linear transformation: map 0.5-99.5 to -99.5 to +99.5
-            # Formula: centered_p = (p - 50) * 2
-            # This gives: 0.5 -> -99, 50.0 -> 0, 99.5 -> +99
-            centered_p = (p - 50) * 2
-            centered_percentiles.append(centered_p)
-        
-        # Verify array lengths match
-        assert len(centered_percentiles) == len(weighted_percentiles), f"Array length mismatch: centered_percentiles={len(centered_percentiles)}, weighted_percentiles={len(weighted_percentiles)}"
-        
-        # Create profile DataFrame
-        profile_df = pd.DataFrame({
-            'percentile': centered_percentiles,
-            'momentum_value': weighted_percentiles,
-            'deviation_from_mean': [p - weighted_mean for p in weighted_percentiles],
-            'z_score': [(p - weighted_mean) / weighted_std for p in weighted_percentiles]
-        })
-        
-        # Add summary statistics
-        profile_df['weighted_mean'] = weighted_mean
-        profile_df['weighted_std'] = weighted_std
-        
-        logger.info(f"📈 Calculated percentile profile: mean={weighted_mean:.4f}, std={weighted_std:.4f}")
-        return profile_df
+        logger.info(f"📈 Calculated percentile profile from momentum values")
+        return self._percentile_profile_from_values(df['momentum'].values, weights)
     
     def create_profile_table(self):
         """Create the momentum profile table in the analytics schema."""
@@ -379,6 +396,69 @@ class SymbolProfiler:
             raise
         finally:
             conn.close()
+
+    def create_movement_profile_table(self):
+        """Create the movement profile table (value column is movement_value)."""
+        conn = self.get_postgresql_connection()
+        if not conn:
+            raise Exception("Failed to connect to PostgreSQL")
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS {self.movement_profile_table} (
+                    percentile NUMERIC(6,1) PRIMARY KEY,
+                    movement_value NUMERIC(15,6) NOT NULL,
+                    deviation_from_mean NUMERIC(15,6) NOT NULL,
+                    z_score NUMERIC(15,6) NOT NULL,
+                    weighted_mean NUMERIC(15,6) NOT NULL,
+                    weighted_std NUMERIC(15,6) NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+            logger.info(f"✅ Created/verified table: {self.movement_profile_table}")
+        except Exception as e:
+            logger.error(f"❌ Error creating movement profile table: {e}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def insert_movement_profile_data(self, profile_df: pd.DataFrame):
+        """Insert movement profile data (column movement_value)."""
+        conn = self.get_postgresql_connection()
+        if not conn:
+            raise Exception("Failed to connect to PostgreSQL")
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"DELETE FROM {self.movement_profile_table}")
+            for idx, row in profile_df.iterrows():
+                cursor.execute(f"""
+                    INSERT INTO {self.movement_profile_table}
+                    (percentile, movement_value, deviation_from_mean, z_score, weighted_mean, weighted_std)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (float(row['percentile']), float(row['movement_value']), float(row['deviation_from_mean']),
+                      float(row['z_score']), float(row['weighted_mean']), float(row['weighted_std'])))
+            conn.commit()
+            logger.info(f"✅ Inserted {len(profile_df)} records into {self.movement_profile_table}")
+        except Exception as e:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def generate_movement_profile(self, start_date: str = None, end_date: str = None):
+        """Generate movement profile: percentiles 0.5 to 99.5 (movement is always positive)."""
+        logger.info(f"🚀 Starting movement profile generation for {self.symbol.upper()}")
+        df = self.load_movement_data(start_date, end_date)
+        weights = self.calculate_time_weights(df)
+        profile_df = self._percentile_profile_from_values(df['movement'].values, weights, use_centered_scale=False)
+        profile_df = profile_df.rename(columns={'momentum_value': 'movement_value'})
+        self.create_movement_profile_table()
+        self.insert_movement_profile_data(profile_df)
+        logger.info(f"📊 Movement profile: {len(df)} records, mean={profile_df['weighted_mean'].iloc[0]:.4f}")
+        return profile_df
     
     def generate_profile(self, start_date: str = None, end_date: str = None):
         """
@@ -764,6 +844,77 @@ class SymbolProfiler:
             
         except Exception as e:
             logger.error(f"❌ Error assigning momentum percentiles: {e}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def assign_movement_percentiles(self, start_date: str = None, end_date: str = None):
+        """Assign movement percentile from movement profile (same pattern as momentum)."""
+        logger.info(f"🚀 Starting movement percentile assignment for {self.symbol.upper()}")
+        conn = self.get_postgresql_connection()
+        if not conn:
+            raise Exception("Failed to connect to PostgreSQL")
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema = 'historical_data' AND table_name = '{self.symbol}_price_history'
+                AND column_name = 'movement_percentile'
+            """)
+            if not cursor.fetchone():
+                cursor.execute(f"ALTER TABLE {self.source_table} ADD COLUMN movement_percentile NUMERIC(5,1)")
+                conn.commit()
+            cursor.execute(f"""
+                SELECT table_name FROM information_schema.tables
+                WHERE table_schema = 'analytics' AND table_name LIKE '{self.symbol}_movement_profile_%'
+                ORDER BY table_name DESC LIMIT 1
+            """)
+            row = cursor.fetchone()
+            profile_table = f"analytics.{row[0]}" if row else self.movement_profile_table
+            cursor.execute(f"SELECT percentile, movement_value FROM {profile_table} ORDER BY percentile")
+            profile_data = cursor.fetchall()
+            if not profile_data:
+                logger.warning(f"No movement profile found for {self.symbol}")
+                conn.close()
+                return 0
+            percentile_mapping = {mv: pct for pct, mv in profile_data}
+            query = f"SELECT timestamp, movement FROM {self.source_table} WHERE movement IS NOT NULL"
+            params = []
+            if start_date or end_date:
+                query += " AND"
+                if start_date:
+                    query += " timestamp >= %s"
+                    params.append(start_date)
+                if end_date:
+                    if start_date:
+                        query += " AND"
+                    query += " timestamp <= %s"
+                    params.append(end_date)
+            query += " ORDER BY timestamp"
+            cursor.execute(query, params)
+            rows_to_update = cursor.fetchall()
+            if not rows_to_update:
+                conn.close()
+                return 0
+            batch_size = 1000
+            total_updated = 0
+            for i in range(0, len(rows_to_update), batch_size):
+                batch = rows_to_update[i:i + batch_size]
+                updates = []
+                for timestamp, movement in batch:
+                    closest = min(percentile_mapping.keys(), key=lambda x: abs(x - movement))
+                    updates.append((percentile_mapping[closest], timestamp))
+                if updates:
+                    cursor.executemany(f"""
+                        UPDATE {self.source_table} SET movement_percentile = %s WHERE timestamp = %s
+                    """, updates)
+                    total_updated += len(updates)
+            conn.commit()
+            logger.info(f"✅ Assigned movement_percentile to {total_updated} rows")
+            return total_updated
+        except Exception as e:
+            logger.error(f"❌ Error assigning movement percentiles: {e}")
             conn.rollback()
             raise
         finally:

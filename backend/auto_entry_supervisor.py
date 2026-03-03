@@ -34,7 +34,7 @@ if project_root not in sys.path:
 
 # Import the universal centralized port system
 from backend.core.port_config import get_port, get_monitor_port, register_monitor_ports
-from backend.util.paths import get_host, get_data_dir, get_service_url, get_trade_history_dir
+from backend.util.paths import get_host, get_data_dir, get_service_url, get_trade_history_dir, get_logs_dir
 
 # Add these functions after the existing imports and before the get_monitor_identifier function
 
@@ -139,6 +139,8 @@ _LAST_MONITOR_STATE = {
 }
 
 MARKET_TITLE_TODAY_PATTERN = re.compile(r"price today at\s+(\d{1,2})\s*(am|pm)", re.IGNORECASE)
+# 15m market title: "BTC price today at 12:45pm" -> capture 12, 45, pm
+MARKET_TITLE_TODAY_15M_PATTERN = re.compile(r"price today at\s+(\d{1,2}):(\d{2})\s*(am|pm)", re.IGNORECASE)
 MARKET_TITLE_DATE_PATTERN = re.compile(r"price on\s+([A-Za-z]{3})\s+(\d{1,2})\s+at\s+(\d{1,2})\s*(am|pm)", re.IGNORECASE)
 
 
@@ -161,22 +163,38 @@ def _hour_label_to_hour24(hour_value: int, period: str) -> int:
 
 
 def _resolve_event_time(symbol: str, market_title: Optional[str], event_ticker: Optional[str]) -> tuple[Optional[str], Optional[int]]:
-    """Return (contract_label, hour_24) if we can parse a time from the market metadata."""
+    """Return (contract_label, hour_24) if we can parse a time from the market metadata.
+    Contract label is simplified for DB: hourly e.g. 'BTC 2pm', 15m e.g. 'BTC 12:45pm'."""
     now_est = datetime.now(ZoneInfo("America/New_York"))
     time_hour_24 = None
+    contract_label = None
 
     title = market_title or ""
 
-    match = MARKET_TITLE_DATE_PATTERN.search(title)
-    if match:
-        _, _, hour_str, period = match.groups()
+    # 15m: "price today at 12:45pm" -> "BTC 12:45pm"
+    match_15m = MARKET_TITLE_TODAY_15M_PATTERN.search(title)
+    if match_15m:
+        hour_str, minute_str, period = match_15m.groups()
         try:
             hour_val = int(hour_str)
+            minute_val = int(minute_str)
             time_hour_24 = _hour_label_to_hour24(hour_val, period)
+            time_label = f"{hour_val}:{minute_str}{period.lower()}"
+            contract_label = f"{symbol.upper()} {time_label}"
         except Exception:
-            time_hour_24 = None
+            pass
 
-    if time_hour_24 is None:
+    if contract_label is None:
+        match = MARKET_TITLE_DATE_PATTERN.search(title)
+        if match:
+            _, _, hour_str, period = match.groups()
+            try:
+                hour_val = int(hour_str)
+                time_hour_24 = _hour_label_to_hour24(hour_val, period)
+            except Exception:
+                time_hour_24 = None
+
+    if contract_label is None and time_hour_24 is None:
         match_today = MARKET_TITLE_TODAY_PATTERN.search(title)
         if match_today:
             hour_str, period = match_today.groups()
@@ -186,7 +204,7 @@ def _resolve_event_time(symbol: str, market_title: Optional[str], event_ticker: 
             except Exception:
                 time_hour_24 = None
 
-    if time_hour_24 is None and event_ticker:
+    if contract_label is None and time_hour_24 is None and event_ticker:
         parts = event_ticker.split("-")
         if len(parts) >= 2:
             dt_part = parts[-1]
@@ -198,10 +216,10 @@ def _resolve_event_time(symbol: str, market_title: Optional[str], event_ticker: 
                 except Exception:
                     time_hour_24 = None
 
-    if time_hour_24 is None:
-        return None, None
-
-    contract_label = f"{symbol.upper()} {_format_time_label(time_hour_24)}"
+    if contract_label is None and time_hour_24 is not None:
+        contract_label = f"{symbol.upper()} {_format_time_label(time_hour_24)}"
+    if contract_label is None:
+        return None, time_hour_24
     return contract_label, time_hour_24
 
 
@@ -420,7 +438,7 @@ def get_monitor_symbol():
         cursor = conn.cursor()
         
         cursor.execute(f"""
-            SELECT symbol FROM users.monitor_list_{USER_NUMBER} 
+            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{USER_NUMBER} 
             WHERE id = %s
         """, (MONITOR_ID,))
         
@@ -428,26 +446,32 @@ def get_monitor_symbol():
         conn.close()
         
         if result and result[0]:
-            return result[0].upper()  # Return uppercase (BTC, ETH, etc.)
+            return result[0].upper(), (result[1] or 'hourly').strip().lower()  # (symbol, market)
         else:
             log(f"[AUTO_ENTRY_SUPERVISOR] ⚠️ No symbol found for monitor {MONITOR_IDENTIFIER}, defaulting to BTC")
-            return "BTC"  # Default fallback
+            return "BTC", "hourly"
     except Exception as e:
         log(f"[AUTO_ENTRY_SUPERVISOR] ❌ Error getting monitor symbol: {e}, defaulting to BTC")
-        return "BTC"  # Default fallback
+        return "BTC", "hourly"
 
-# Get the symbol for this monitor (will be updated dynamically)
-MONITOR_SYMBOL = get_monitor_symbol()
-print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] 📊 Initial symbol: {MONITOR_SYMBOL}")
+def get_strike_table_name(symbol: str, market: str) -> str:
+    """Strike table name from symbol and market (hourly or 15m)."""
+    m = (market or 'hourly').strip().lower()
+    if m not in ('hourly', '15m'):
+        m = 'hourly'
+    return f"strike_table_{m}_{symbol.lower()}"
 
-def get_current_monitor_symbol():
-    """Get the current symbol for this monitor (dynamic lookup)"""
-    global MONITOR_SYMBOL
-    
+# Get the symbol and market for this monitor (will be updated dynamically)
+_monitor_symbol_market = get_monitor_symbol()
+MONITOR_SYMBOL = _monitor_symbol_market[0] if isinstance(_monitor_symbol_market, tuple) else _monitor_symbol_market
+MONITOR_MARKET = _monitor_symbol_market[1] if isinstance(_monitor_symbol_market, tuple) else 'hourly'
+print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] 📊 Initial symbol: {MONITOR_SYMBOL}, market: {MONITOR_MARKET}")
+
+def get_current_monitor_symbol_and_market():
+    """Get (symbol, market) for this monitor from database. market is 'hourly' or '15m'."""
+    global MONITOR_SYMBOL, MONITOR_MARKET
     try:
         import psycopg2
-        
-        # PostgreSQL connection parameters
         postgres_config = {
             'host': os.getenv('POSTGRES_HOST', 'localhost'),
             'port': int(os.getenv('POSTGRES_PORT', '5432')),
@@ -455,31 +479,31 @@ def get_current_monitor_symbol():
             'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
             'password': os.getenv('POSTGRES_PASSWORD', '')
         }
-        
         conn = psycopg2.connect(**postgres_config)
         cursor = conn.cursor()
-        
         cursor.execute(f"""
-            SELECT symbol FROM users.monitor_list_{USER_NUMBER} 
+            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{USER_NUMBER}
             WHERE id = %s
         """, (MONITOR_ID,))
-        
         result = cursor.fetchone()
         conn.close()
-        
         if result and result[0]:
-            new_symbol = result[0].upper()  # Return uppercase (BTC, ETH, etc.)
-            
-            # Check if symbol has changed
-            if new_symbol != MONITOR_SYMBOL:
-                log(f"[AUTO_ENTRY_SUPERVISOR] 🔄 Symbol changed from {MONITOR_SYMBOL} to {new_symbol}")
-                MONITOR_SYMBOL = new_symbol
-            
-            return new_symbol
-        else:
-            return "BTC"  # Default fallback
+            sym = result[0].upper()
+            mkt = (result[1] or 'hourly').strip().lower()
+            if mkt not in ('hourly', '15m'):
+                mkt = 'hourly'
+            if sym != MONITOR_SYMBOL or mkt != MONITOR_MARKET:
+                log(f"[AUTO_ENTRY_SUPERVISOR] 🔄 Monitor symbol/market: {MONITOR_SYMBOL}/{MONITOR_MARKET} -> {sym}/{mkt}")
+                MONITOR_SYMBOL, MONITOR_MARKET = sym, mkt
+            return sym, mkt
+        return "BTC", "hourly"
     except Exception as e:
-        return "BTC"  # Default fallback
+        return "BTC", "hourly"
+
+def get_current_monitor_symbol():
+    """Get the current symbol for this monitor (dynamic lookup)"""
+    sym, _ = get_current_monitor_symbol_and_market()
+    return sym
 
 # Get port from monitor-specific system
 # Register this monitor's ports to ensure consistency
@@ -526,6 +550,13 @@ previous_auto_trade_status = None
 
 # Track previous state to detect changes
 previous_indicator_state = None
+
+# Track if Momentum Breakout has entered trades for current cycle
+momentum_breakout_trades_entered = False
+momentum_breakout_last_contract = None  # Track the contract we entered trades for
+
+momentum_contain_trades_entered = False
+momentum_contain_last_contract = None  # Track the contract we entered trades for
 
 # State tracking for logging reduction
 
@@ -582,7 +613,7 @@ def load_auto_entry_state_from_db():
                 if strategy_result:
                     cooldown_minutes, min_time, max_time = strategy_result
                 
-                # Calculate remaining time based on timestamp
+                # Calculate remaining time based on timestamp (can go negative to show elapsed time)
                 spike_alert_active = False
                 remaining_minutes = None
                 
@@ -590,44 +621,40 @@ def load_auto_entry_state_from_db():
                     now = datetime.now(ZoneInfo("America/New_York"))
                     time_elapsed = (now - cooldown_start_time).total_seconds()
                     total_cooldown_seconds = cooldown_minutes * 60
-                    remaining_seconds = max(0, total_cooldown_seconds - time_elapsed)
+                    remaining_seconds = total_cooldown_seconds - time_elapsed  # Can be negative
                     
+                    # Spike alert is only active when timer is positive (within cooldown period)
                     if remaining_seconds > 0:
                         spike_alert_active = True
                         remaining_minutes = remaining_seconds / 60
-                        
-                        # Update cooldown_timer with calculated remaining seconds (monitor_list is now single source of truth)
-                        cursor.execute(
-                            "UPDATE users.monitor_list_0001 SET cooldown_timer = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
-                            (int(remaining_seconds), MONITOR_ID)
-                        )
-                        
-                        conn.commit()
-                        
-                        # Notify frontend of cooldown timer change
-                        try:
-                            port = get_port("main_app")
-                            url = f"http://localhost:{port}/api/notify_cooldown_timer_change"
-                            # Send full monitor ID format that dashboard expects (mon_0001_10002) - lowercase
-                            full_monitor_id = f"mon_{USER_NUMBER}_{MONITOR_ID}"
-                            response = requests.post(url, json={
-                                "monitor_id": full_monitor_id,
-                                "cooldown_timer": int(remaining_seconds)
-                            }, timeout=2)
-                            if response.ok:
-                                log(f"[AUTO ENTRY] ✅ Cooldown timer change notification sent: monitor_id={full_monitor_id}, timer={remaining_seconds}")
-                            else:
-                                log(f"[AUTO ENTRY] ⚠️ Failed to send cooldown timer notification: {response.status_code}")
-                        except Exception as e:
-                            log(f"[AUTO ENTRY] ❌ Error sending cooldown timer notification: {e}")
                     else:
-                        # Cooldown has expired, clear the start time (monitor_list is now single source of truth)
-                        cursor.execute(
-                            "UPDATE users.monitor_list_0001 SET cooldown_start_time = NULL, cooldown_timer = 0, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
-                            (MONITOR_ID,)
-                        )
-                        
-                        conn.commit()
+                        # Timer has expired or gone negative - spike alert inactive, but keep tracking elapsed time
+                        remaining_minutes = remaining_seconds / 60  # Negative value shows elapsed time
+                    
+                    # Always update cooldown_timer (even when negative) to show time since last spike
+                    cursor.execute(
+                        "UPDATE users.monitor_list_0001 SET cooldown_timer = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                        (int(remaining_seconds), MONITOR_ID)
+                    )
+                    
+                    conn.commit()
+                    
+                    # Notify frontend of cooldown timer change
+                    try:
+                        port = get_port("main_app")
+                        url = f"http://localhost:{port}/api/notify_cooldown_timer_change"
+                        # Send full monitor ID format that dashboard expects (mon_0001_10002) - lowercase
+                        full_monitor_id = f"mon_{USER_NUMBER}_{MONITOR_ID}"
+                        response = requests.post(url, json={
+                            "monitor_id": full_monitor_id,
+                            "cooldown_timer": int(remaining_seconds)
+                        }, timeout=2)
+                        if response.ok:
+                            log(f"[AUTO ENTRY] ✅ Cooldown timer change notification sent: monitor_id={full_monitor_id}, timer={remaining_seconds}")
+                        else:
+                            log(f"[AUTO ENTRY] ⚠️ Failed to send cooldown timer notification: {response.status_code}")
+                    except Exception as e:
+                        log(f"[AUTO ENTRY] ❌ Error sending cooldown timer notification: {e}")
                 
                 state = {
                     "user_id": "user_0001",
@@ -635,7 +662,7 @@ def load_auto_entry_state_from_db():
                     "enabled": False,
                     "scanning_active": False,
                     "spike_alert_active": spike_alert_active,
-                    "spike_alert_start_time": cooldown_start_time.isoformat() if spike_alert_active and cooldown_start_time else None,
+                    "spike_alert_start_time": cooldown_start_time.isoformat() if cooldown_start_time else None,  # Always track, even when inactive
                     "spike_alert_momentum_value": None,  # Not stored in DB
                     "spike_alert_recovery_countdown": remaining_minutes,
                     "current_momentum": None,
@@ -663,17 +690,9 @@ def log(message: str):
     timestamp = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S")
     log_message = f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER} {timestamp}] {message}"
     
-    # Print to console (for existing functionality)
-    print(log_message)
-    
-    # Also write to log file
-    try:
-        log_file_path = f"/opt/rec_io_server/logs/auto_entry_supervisor_{MONITOR_IDENTIFIER}.log"
-        with open(log_file_path, "a", encoding="utf-8") as f:
-            f.write(log_message + "\n")
-    except Exception as e:
-        # Don't break the system if logging fails
-        print(f"[LOGGING ERROR] Failed to write to log file: {e}")
+    # Just print to stdout - supervisor will capture this to .out.log
+    # Use flush to ensure real-time logging
+    print(log_message, flush=True)
 
 def log_heartbeat():
     """Log heartbeat every 5 minutes with system status"""
@@ -704,7 +723,7 @@ def log_heartbeat():
         except Exception:
             cooldown_timer = 0
         
-        cooldown_str = f"{cooldown_timer}s" if cooldown_timer > 0 else "None"
+        cooldown_str = f"{cooldown_timer}s" if cooldown_timer is not None else "None"  # Can be negative to show elapsed time
         
         log(f"💓 HEARTBEAT | Auto Trade: {auto_trade_enabled} | Symbol: {current_symbol} | Momentum: {momentum_str} | Cooldown: {cooldown_str}")
         
@@ -747,6 +766,78 @@ def get_current_momentum(symbol="BTC"):
             return None
     except Exception as e:
         log(f"[AUTO ENTRY MOMENTUM] Error getting momentum for {symbol}: {e}")
+        return None
+
+def get_momentum_30s_avg(symbol="BTC"):
+    """Get current momentum_30s_avg from live price log for specified symbol"""
+    try:
+        import psycopg2
+        
+        # PostgreSQL connection parameters
+        postgres_config = {
+            'host': os.getenv('POSTGRES_HOST', 'localhost'),
+            'port': int(os.getenv('POSTGRES_PORT', '5432')),
+            'database': os.getenv('POSTGRES_DB', 'rec_io_db'),
+            'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
+            'password': os.getenv('POSTGRES_PASSWORD', '')
+        }
+        
+        conn = psycopg2.connect(**postgres_config)
+        cursor = conn.cursor()
+        
+        # Get momentum_30s_avg from live price log (symbol's live data stream)
+        cursor.execute(f"""
+            SELECT momentum_30s_avg FROM live_data.live_price_log_1s_{symbol.lower()} 
+            ORDER BY timestamp DESC 
+            LIMIT 1
+        """)
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result and result[0] is not None:
+            momentum_30s_avg = float(result[0])
+            return momentum_30s_avg
+        else:
+            return None
+    except Exception as e:
+        log(f"[AUTO ENTRY MOMENTUM] Error getting momentum_30s_avg for {symbol}: {e}")
+        return None
+
+def get_momentum_percentile(symbol="BTC"):
+    """Get current momentum_percentile from live price log for specified symbol"""
+    try:
+        import psycopg2
+        
+        # PostgreSQL connection parameters
+        postgres_config = {
+            'host': os.getenv('POSTGRES_HOST', 'localhost'),
+            'port': int(os.getenv('POSTGRES_PORT', '5432')),
+            'database': os.getenv('POSTGRES_DB', 'rec_io_db'),
+            'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
+            'password': os.getenv('POSTGRES_PASSWORD', '')
+        }
+        
+        conn = psycopg2.connect(**postgres_config)
+        cursor = conn.cursor()
+        
+        # Get momentum_percentile from live price log (symbol's live data stream)
+        cursor.execute(f"""
+            SELECT momentum_percentile FROM live_data.live_price_log_1s_{symbol.lower()} 
+            ORDER BY timestamp DESC 
+            LIMIT 1
+        """)
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result and result[0] is not None:
+            momentum_percentile = float(result[0])
+            return momentum_percentile
+        else:
+            return None
+    except Exception as e:
+        log(f"[AUTO ENTRY MOMENTUM] Error getting momentum_percentile for {symbol}: {e}")
         return None
 
 def check_spike_alert_conditions():
@@ -838,8 +929,12 @@ def check_spike_alert_conditions():
         
         now = datetime.now(ZoneInfo("America/New_York"))
         
-        if spike_detected and not state["spike_alert_active"]:
-            # SPIKE DETECTED - Enter spike alert mode
+        # CRITICAL: Use the spike_alert_active from loaded state (which is based on cooldown timer)
+        # This ensures Reverse HTC only activates when cooldown timer is actually positive
+        spike_alert_active_from_db = state["spike_alert_active"]
+        
+        if spike_detected and not spike_alert_active_from_db:
+            # SPIKE DETECTED - Enter spike alert mode (only if cooldown timer is not already active)
             state["spike_alert_active"] = True
             state["spike_alert_start_time"] = now.isoformat()
             state["spike_alert_momentum_value"] = current_momentum
@@ -850,8 +945,8 @@ def check_spike_alert_conditions():
             
             log(f"[SPIKE ALERT] 🚨 SPIKE DETECTED! Momentum: {current_momentum:.2f} (threshold: ±{spike_threshold})")
             log(f"[SPIKE ALERT] Auto entry PAUSED for {cooldown_minutes} minutes")
-            
-        elif state["spike_alert_active"]:
+        
+        elif spike_alert_active_from_db:
             if recovery_conditions_met:
                 # Check if recovery duration has passed
                 if state["spike_alert_start_time"]:
@@ -859,14 +954,11 @@ def check_spike_alert_conditions():
                     time_in_recovery = (now - spike_start).total_seconds() / 60
                     
                     if time_in_recovery >= cooldown_minutes:
-                        # RECOVERY COMPLETE - Exit spike alert mode
+                        # RECOVERY COMPLETE - Exit spike alert mode (but keep cooldown_start_time for tracking)
                         state["spike_alert_active"] = False
-                        state["spike_alert_start_time"] = None
                         state["spike_alert_momentum_value"] = None
                         state["spike_alert_recovery_countdown"] = None
-                        
-                        # Reset cooldown period in database
-                        reset_cooldown_period_in_db()
+                        # Note: spike_alert_start_time remains set in DB (cooldown_start_time) for tracking elapsed time
                         
                         log(f"[SPIKE ALERT] ✅ RECOVERY COMPLETE! Auto entry RESUMED")
                         log(f"[SPIKE ALERT] Recovery time: {time_in_recovery:.1f} minutes")
@@ -920,7 +1012,7 @@ def start_cooldown_period_in_db():
         with conn.cursor() as cursor:
             # Update the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
-                "UPDATE users.monitor_list_0001 SET cooldown_start_time = NOW(), updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                f"UPDATE users.monitor_list_{USER_NUMBER} SET cooldown_start_time = NOW(), updated_at = CURRENT_TIMESTAMP WHERE id = %s",
                 (MONITOR_ID,)
             )
             
@@ -943,7 +1035,7 @@ def reset_cooldown_period_in_db():
         with conn.cursor() as cursor:
             # Reset the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
-                "UPDATE users.monitor_list_0001 SET cooldown_start_time = NULL, cooldown_timer = 0, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                f"UPDATE users.monitor_list_{USER_NUMBER} SET cooldown_start_time = NULL, cooldown_timer = 0, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
                 (MONITOR_ID,)
             )
             
@@ -1048,6 +1140,12 @@ def determine_auto_entry_status():
             return determine_auto_entry_status_momentum_scalp()
         elif strategy == "Momentum Reversal":
             return determine_auto_entry_status_momentum_reversal()
+        elif strategy == "Reverse HTC":
+            return determine_auto_entry_status_reverse_htc()
+        elif strategy == "Momentum Breakout":
+            return determine_auto_entry_status_momentum_breakout()
+        elif strategy == "Momentum Contain":
+            return determine_auto_entry_status_momentum_contain()
         else:
             # Default to Hourly HTC (including fallback)
             return determine_auto_entry_status_hourly_htc()
@@ -1070,11 +1168,10 @@ def determine_auto_entry_status_hourly_htc():
         if not service_healthy:
             return "DISABLED"  # Service not running
         
-        # Check if spike alert is active (blocks all trades)
+        # Check if spike alert is active (no longer pauses - uses prob_adj instead)
         spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
         
-        if spike_alert_active:
-            return "PAUSED"  # Spike alert active
+        # Note: spike_alert_active no longer causes PAUSED status - monitor continues with adjusted probability
         
         # Get auto entry settings
         settings = get_auto_entry_settings()
@@ -1209,6 +1306,190 @@ def determine_auto_entry_status_momentum_reversal():
             
     except Exception as e:
         log(f"[AUTO ENTRY MR] ❌ Error determining status: {e}")
+        return "DISABLED"
+
+def determine_auto_entry_status_reverse_htc():
+    """Determine the current auto entry status for Reverse HTC strategy
+    
+    Reverse HTC activates when momentum spike is detected (opposite of Hourly HTC).
+    It trades during the cooldown period when Hourly HTC would be paused.
+    """
+    try:
+        # Check if auto trade is enabled for this monitor
+        auto_trade_enabled = is_auto_trade_enabled()
+        
+        if not auto_trade_enabled:
+            return "DISABLED"
+        
+        # Check if service is healthy
+        service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
+        
+        if not service_healthy:
+            return "DISABLED"  # Service not running
+        
+        # Check if spike alert is active (REQUIRED for Reverse HTC to activate)
+        spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
+        
+        if not spike_alert_active:
+            return "INACTIVE"  # Reverse HTC only activates during momentum spikes
+        
+        # Get auto entry settings
+        settings = get_auto_entry_settings()
+        required_settings = ["min_time", "max_time", "min_probability", "min_differential"]
+        missing_settings = [setting for setting in required_settings if setting not in settings]
+        
+        if missing_settings:
+            return "DISABLED"  # Missing required settings
+        
+        # Check if TTC is within window
+        min_time = settings["min_time"]
+        max_time = settings["max_time"]
+        current_ttc = get_current_ttc()
+        ttc_within_window = min_time <= current_ttc <= max_time
+        
+        if ttc_within_window:
+            return "ACTIVE"
+        else:
+            return "INACTIVE"
+            
+    except Exception as e:
+        log(f"[AUTO ENTRY REVERSE HTC] ❌ Error determining status: {e}")
+        return "DISABLED"
+
+def determine_auto_entry_status_momentum_breakout():
+    """Determine the current auto entry status for Momentum Breakout strategy
+    
+    Momentum Breakout activates when momentum spike is detected (same as Reverse HTC).
+    It uses the same activation logic but with simplified entry criteria.
+    """
+    try:
+        # Check if auto trade is enabled for this monitor
+        auto_trade_enabled = is_auto_trade_enabled()
+        
+        if not auto_trade_enabled:
+            return "DISABLED"
+        
+        # Check if service is healthy
+        service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
+        
+        if not service_healthy:
+            return "DISABLED"  # Service not running
+        
+        # Check if spike alert is active (REQUIRED for Momentum Breakout to activate)
+        spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
+        
+        if not spike_alert_active:
+            return "INACTIVE"  # Momentum Breakout only activates during momentum spikes
+        
+        # Get auto entry settings
+        settings = get_auto_entry_settings()
+        required_settings = ["min_time", "max_time"]
+        missing_settings = [setting for setting in required_settings if setting not in settings]
+        
+        if missing_settings:
+            return "DISABLED"  # Missing required settings
+        
+        # Check if TTC is within window
+        min_time = settings["min_time"]
+        max_time = settings["max_time"]
+        current_ttc = get_current_ttc()
+        ttc_within_window = min_time <= current_ttc <= max_time
+        
+        if ttc_within_window:
+            return "ACTIVE"
+        else:
+            return "INACTIVE"
+            
+    except Exception as e:
+        log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ❌ Error determining status: {e}")
+        return "DISABLED"
+
+def determine_auto_entry_status_momentum_contain():
+    """Determine the current auto entry status for Momentum Contain strategy
+    
+    Momentum Contain activates when momentum spike is detected (same as Momentum Breakout).
+    It uses the same activation logic but with flipped trade sides (contrarian strategy).
+    """
+    try:
+        # Check if auto trade is enabled for this monitor
+        auto_trade_enabled = is_auto_trade_enabled()
+        
+        if not auto_trade_enabled:
+            return "DISABLED"
+        
+        # Check if service is healthy
+        service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
+        
+        if not service_healthy:
+            return "DISABLED"  # Service not running
+        
+        # Check if spike alert is active (REQUIRED for Momentum Contain to activate)
+        spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
+        
+        if not spike_alert_active:
+            return "INACTIVE"  # Momentum Contain only activates during momentum spikes
+        
+        # Get auto entry settings
+        settings = get_auto_entry_settings()
+        required_settings = ["min_time", "max_time"]
+        missing_settings = [setting for setting in required_settings if setting not in settings]
+        
+        if missing_settings:
+            return "DISABLED"  # Missing required settings
+        
+        # Check if TTC is within window
+        min_time = settings["min_time"]
+        max_time = settings["max_time"]
+        current_ttc = get_current_ttc()
+        ttc_within_window = min_time <= current_ttc <= max_time
+        
+        if not ttc_within_window:
+            return "INACTIVE"
+        
+        # Check if cooldown timer is within activation window
+        min_cooldown_timer = settings.get("min_cooldown_timer")
+        max_cooldown_timer = settings.get("max_cooldown_timer")
+        
+        # If both min and max are NULL, skip the check (no restriction)
+        if min_cooldown_timer is None and max_cooldown_timer is None:
+            return "ACTIVE"
+        
+        # Get cooldown_timer from database
+        cooldown_timer = None
+        try:
+            import psycopg2
+            conn = psycopg2.connect(
+                host=os.getenv('POSTGRES_HOST', 'localhost'),
+                database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+                user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+                password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+            )
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+                result = cursor.fetchone()
+                cooldown_timer = result[0] if result and result[0] is not None else None
+            conn.close()
+        except Exception as e:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ Error getting cooldown timer: {e}")
+        
+        # If cooldown_timer is NULL, cannot determine - return INACTIVE
+        if cooldown_timer is None:
+            return "INACTIVE"
+        
+        # Check if cooldown_timer is within the activation window
+        # If min is set, cooldown_timer must be >= min (not too close to spike)
+        if min_cooldown_timer is not None and cooldown_timer < min_cooldown_timer:
+            return "INACTIVE"  # Too close to momentum spike
+        
+        # If max is set, cooldown_timer must be <= max (not too far after spike)
+        if max_cooldown_timer is not None and cooldown_timer > max_cooldown_timer:
+            return "INACTIVE"  # Too far after spike regime has ended
+        
+        # All checks passed - cooldown timer is within window
+        return "ACTIVE"
+            
+    except Exception as e:
+        log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ Error determining status: {e}")
         return "DISABLED"
 
 def broadcast_auto_entry_indicator_change():
@@ -1347,7 +1628,8 @@ def get_auto_entry_settings():
                     SELECT min_probability, max_probability, min_differential, max_differential, min_time, max_time, allow_re_entry,
                            spike_alert_enabled, spike_alert_momentum_threshold, 
                            spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
-                           min_volume, momentum_scalp_entry_threshold, min_ask, max_ask, max_price_spread
+                           min_volume, momentum_scalp_entry_threshold, min_ask, max_ask, max_price_spread, prob_adj,
+                           min_cooldown_timer, max_cooldown_timer
                     FROM users.monitor_list_0001 WHERE id = %s
                 """, (MONITOR_IDENTIFIER.split('_')[1],))
                 strategy_result = cursor.fetchone()
@@ -1369,7 +1651,10 @@ def get_auto_entry_settings():
                         "momentum_scalp_entry_threshold": float(strategy_result[12]) if strategy_result[12] is not None else None,
                         "min_ask": float(strategy_result[13]) if strategy_result[13] is not None else 0.0000,
                         "max_ask": float(strategy_result[14]) if strategy_result[14] is not None else 0.9800,
-                        "max_price_spread": float(strategy_result[15]) if strategy_result[15] is not None else 0.0300
+                        "max_price_spread": float(strategy_result[15]) if strategy_result[15] is not None else 0.0300,
+                        "prob_adj": float(strategy_result[16]) if strategy_result[16] is not None else 5.00,
+                        "min_cooldown_timer": strategy_result[17] if strategy_result[17] is not None else None,
+                        "max_cooldown_timer": strategy_result[18] if strategy_result[18] is not None else None
                     }
                     
                     # Check for settings changes
@@ -1398,11 +1683,13 @@ def get_auto_entry_settings():
         return {}
 
 def get_current_ttc():
-    """Get current TTC from unified TTC endpoint"""
+    """Get current TTC from unified TTC endpoint (requires market: hourly or 15m)."""
     try:
         port = get_port("main_app")
-        current_symbol = get_current_monitor_symbol()
-        url = f"http://localhost:{port}/api/unified_ttc/{current_symbol.lower()}"
+        current_symbol, current_market = get_current_monitor_symbol_and_market()
+        if not current_market or current_market not in ("hourly", "15m"):
+            return 0
+        url = f"http://localhost:{port}/api/unified_ttc/{current_symbol.lower()}?market={current_market}"
         response = requests.get(url, timeout=2)
         if response.ok:
             data = response.json()
@@ -1426,7 +1713,7 @@ def get_watchlist_path_DELETED():
     return os.path.join(get_data_dir(), "live_data", "markets", "kalshi", "strike_tables", f"{current_symbol.lower()}_watchlist.json")
 
 def get_master_strike_table_data():
-    """Get current master strike table data from PostgreSQL"""
+    """Get current master strike table data from PostgreSQL (uses monitor symbol + market)."""
     try:
         import psycopg2
         conn = psycopg2.connect(
@@ -1436,7 +1723,8 @@ def get_master_strike_table_data():
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
         )
         with conn.cursor() as cursor:
-            current_symbol = get_current_monitor_symbol()
+            current_symbol, current_market = get_current_monitor_symbol_and_market()
+            table_name = get_strike_table_name(current_symbol, current_market)
             cursor.execute(f"""
                 SELECT
                     symbol,
@@ -1446,7 +1734,7 @@ def get_master_strike_table_data():
                     market_title,
                     strike_tier,
                     market_status
-                FROM live_data.strike_table_{current_symbol.lower()}
+                FROM live_data.{table_name}
                 LIMIT 1
             """)
             header_data = cursor.fetchone()
@@ -1470,7 +1758,7 @@ def get_master_strike_table_data():
                     active_side,
                     yes_price_spread,
                     no_price_spread
-                FROM live_data.strike_table_{current_symbol.lower()}
+                FROM live_data.{table_name}
                 ORDER BY strike
             """)
             strikes_data = cursor.fetchall()
@@ -1739,6 +2027,7 @@ def get_watchlist_data_DELETED():
 
 def get_position_size():
     """Get total position size from monitor-specific configuration"""
+    conn = None
     try:
         import psycopg2
         conn = psycopg2.connect(
@@ -1766,6 +2055,7 @@ def get_position_size():
 
 def get_current_multiplier():
     """Get current multiplier value for this monitor."""
+    conn = None
     try:
         import psycopg2
         conn = psycopg2.connect(
@@ -1793,6 +2083,7 @@ def get_current_multiplier():
 
 def get_loss_prevention_state():
     """Get loss_prevention state from monitor-specific configuration"""
+    conn = None
     try:
         import psycopg2
         conn = psycopg2.connect(
@@ -1820,6 +2111,7 @@ def get_loss_prevention_state():
 
 def get_trade_strategy():
     """Get trade strategy from monitor-specific configuration"""
+    conn = None
     try:
         import psycopg2
         conn = psycopg2.connect(
@@ -1833,10 +2125,8 @@ def get_trade_strategy():
             result = cursor.fetchone()
             if result:
                 trade_strategy = result[0]
-                log(f"[AUTO ENTRY] Trade strategy loaded from monitor {MONITOR_ID}: {trade_strategy}")
                 return trade_strategy
             else:
-                log(f"[AUTO ENTRY] No monitor configuration found for monitor {MONITOR_ID}")
                 return "Hourly HTC"  # Default fallback
     except Exception as e:
         log(f"[AUTO ENTRY] Error loading trade strategy from monitor {MONITOR_ID}: {e}")
@@ -1847,6 +2137,7 @@ def get_trade_strategy():
 
 def get_bankroll_allotment():
     """Get bankroll allotment total from monitor-specific configuration"""
+    conn = None
     try:
         import psycopg2
         conn = psycopg2.connect(
@@ -1885,10 +2176,15 @@ def trigger_auto_entry_trade(strike_data):
         port = get_port("trade_manager")
         url = f"http://localhost:{port}/trades"
         
-        # Get contract name from strike table market_title
+        # Get contract name in same simplified form as hourly (e.g. "BTC 2pm", "BTC 12:45pm" for 15m)
         strike_table_data = get_master_strike_table_data()
         current_symbol = get_current_monitor_symbol()
-        contract_name = strike_table_data.get("market_title", f"{current_symbol} Market") if strike_table_data else f"{current_symbol} Market"
+        contract_label, _ = _resolve_event_time(
+            current_symbol,
+            strike_table_data.get("market_title") if strike_table_data else None,
+            strike_table_data.get("event_ticker") if strike_table_data else None,
+        )
+        contract_name = contract_label or (strike_table_data.get("market_title") if strike_table_data else None) or f"{current_symbol} Market"
         
         # Get position size from trade preferences
         position_size = get_position_size()
@@ -1944,6 +2240,25 @@ def trigger_auto_entry_trade(strike_data):
         # Get trade strategy from PostgreSQL
         trade_strategy = get_trade_strategy()
         
+        # Get paper_trade setting from monitor config
+        paper_trade = False
+        try:
+            import psycopg2
+            conn = psycopg2.connect(
+                host=os.getenv('POSTGRES_HOST', 'localhost'),
+                database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+                user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+                password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+            )
+            with conn.cursor() as cursor:
+                cursor.execute(f"SELECT paper_trade FROM users.monitor_list_{USER_NUMBER} WHERE id = %s", (MONITOR_ID,))
+                result = cursor.fetchone()
+                if result and result[0] is not None:
+                    paper_trade = bool(result[0])
+            conn.close()
+        except Exception as e:
+            log(f"[AUTO ENTRY] ⚠️ Could not get paper_trade setting: {e}, defaulting to False")
+        
         # Prepare the trade data exactly like trade_initiator does
         trade_payload = {
             "ticket_id": ticket_id,
@@ -1965,7 +2280,8 @@ def trigger_auto_entry_trade(strike_data):
             "bankroll_allotment_total": bankroll_allotment,
             "entry_method": "auto_entry",
             "loss_prevention": loss_prevention == "one_contract",
-            "multiplier": get_current_multiplier()
+            "multiplier": get_current_multiplier(),
+            "paper_trade": paper_trade
         }
         
         log(f"[AUTO ENTRY] 📤 Sending trade to trade_manager: {trade_payload}")
@@ -2029,6 +2345,123 @@ def can_trade_strike(strike_key):
             # {strike_key} passed cooldown check - added to cooldown
     return True
 
+def has_bracket_for_cycle(contract: Optional[str] = None, strike_tier: Optional[int] = None) -> bool:
+    """Check if a bracket exists for the current cycle (contract/date).
+    
+    A bracket is defined as: one Y trade and one N trade with strikes within 2 strike tiers of each other.
+    This function queries trades_0001 for open/pending trades from this monitor with the same contract.
+    
+    Args:
+        contract: The contract label (e.g., "BTC 12pm"). If None, uses _LAST_MONITOR_STATE["contract"].
+        strike_tier: The strike tier spacing (e.g., 250 for BTC, 50 for ETH). If None, tries to get from strike table data.
+    
+    Returns:
+        True if a bracket exists (Y and N trades within 2 strike tiers), False otherwise.
+    """
+    try:
+        import psycopg2
+        
+        # Get contract from parameter or from state
+        if contract is None:
+            contract = _LAST_MONITOR_STATE.get("contract")
+        
+        if not contract:
+            # No contract available, can't check bracket
+            return False
+        
+        # Get strike_tier if not provided
+        if strike_tier is None:
+            # Try to get from strike table data
+            strike_table_data = get_master_strike_table_data()
+            if strike_table_data and strike_table_data.get("strike_tier"):
+                try:
+                    strike_tier = int(strike_table_data["strike_tier"])
+                except (ValueError, TypeError):
+                    strike_tier = None
+        
+        if strike_tier is None or strike_tier <= 0:
+            # Can't determine bracket distance without strike tier
+            log(f"[AUTO ENTRY REVERSE HTC] ⚠️ Cannot check bracket - strike_tier not available")
+            return False
+        
+        # Calculate bracket distance: 2 strikes = 2 * strike_tier
+        bracket_distance = 2 * strike_tier
+        
+        conn = psycopg2.connect(
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
+            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+        )
+        cursor = conn.cursor()
+        
+        # Get current monitor identifier
+        current_monitor = f"mon_0001_{MONITOR_ID}"
+        
+        # Query trades_0001 table for open/pending trades from this monitor with the same contract
+        cursor.execute("""
+            SELECT id, strike, side, status, contract, date
+            FROM users.trades_0001 
+            WHERE status IN ('open', 'pending')
+              AND monitor = %s
+              AND contract = %s
+        """, (current_monitor, contract))
+        
+        trades = cursor.fetchall()
+        conn.close()
+        
+        if not trades:
+            return False
+        
+        # Parse strikes and separate by side
+        yes_trades = []
+        no_trades = []
+        
+        # Helper function to parse strike value (e.g., "$50,000" -> 50000)
+        def parse_strike(strike_str: str) -> Optional[float]:
+            if not strike_str:
+                return None
+            # Remove $ and commas, then convert to float
+            cleaned = strike_str.replace('$', '').replace(',', '').strip()
+            try:
+                return float(cleaned)
+            except (ValueError, TypeError):
+                return None
+        
+        for trade in trades:
+            trade_id, strike_str, side, status, trade_contract, trade_date = trade
+            
+            # Normalize side
+            normalized_side = str(side).upper()
+            if normalized_side in ['Y', 'YES']:
+                strike_value = parse_strike(strike_str)
+                if strike_value is not None:
+                    yes_trades.append(strike_value)
+            elif normalized_side in ['N', 'NO']:
+                strike_value = parse_strike(strike_str)
+                if strike_value is not None:
+                    no_trades.append(strike_value)
+        
+        # Check if we have at least one Y and one N trade
+        if not yes_trades or not no_trades:
+            return False
+        
+        # Check if any Y and N trades are within bracket_distance of each other
+        for yes_strike in yes_trades:
+            for no_strike in no_trades:
+                strike_diff = abs(yes_strike - no_strike)
+                if strike_diff <= bracket_distance:
+                    # Bracket found
+                    return True
+        
+        # No bracket found
+        return False
+        
+    except Exception as e:
+        log(f"[AUTO ENTRY REVERSE HTC] ⚠️ Error checking bracket: {e}")
+        # On error, allow trading (fail open)
+        return False
+
 def is_strike_already_traded(strike_data):
     """Check if we already have an open or pending trade on this strike by querying trades_0001 table directly.
     Only blocks new trades if there's an existing trade from the SAME MONITOR on the same strike/side."""
@@ -2058,10 +2491,7 @@ def is_strike_already_traded(strike_data):
         ticker = strike_data.get('ticker')
         side = strike_data.get('side')
         
-        # Only log if there are trades to check (reduce log spam)
-        if len(trades) > 0:
-            log(f"Checking {len(trades)} trades (open/pending) for ticker {ticker} {side} from monitor {current_monitor}")
-        
+        # Don't log every check - only log when we find a match
         for trade in trades:
             trade_id, trade_ticker, trade_side, trade_status, trade_monitor = trade
             
@@ -2085,9 +2515,7 @@ def is_strike_already_traded(strike_data):
                 log(f"⚠️ Found {trade_status} trade (ID: {trade_id}) on {strike_data.get('strike', 'unknown')} {side} from same monitor {current_monitor}")
                 return True
         
-        # Only log when there are actual trades but none match (reduce log spam)
-        if len(trades) > 0:
-            log(f"No matching trades found for {strike_data.get('strike', 'unknown')} {side} from monitor {current_monitor}")
+        # Don't log when no match found - this happens constantly and creates spam
         return False
     except Exception as e:
         log(f"Error checking trades_0001 table: {e}")
@@ -2096,17 +2524,36 @@ def is_strike_already_traded(strike_data):
 def check_auto_entry_conditions():
     """Check if auto entry conditions are met and trigger trades - routes to strategy-specific logic"""
     try:
+        # ALWAYS check spike alert conditions first (even during closed hours) to monitor momentum spikes
+        check_spike_alert_conditions()
+        
+        # MARKET HOURS CHECK: Kalshi markets closed 00:00-08:00 EST
+        # Skip trade entry during closed hours, but spike monitoring continues above
+        # COMMENTED OUT: Time restriction disabled - auto_entry_supervisor can now find entries during these hours
+        # now_est = datetime.now(ZoneInfo("America/New_York"))
+        # current_hour = now_est.hour
+        # if 0 <= current_hour < 8:  # Between midnight and 8am EST
+        #     return  # Skip trade entry checks during closed hours (spike monitoring already done)
+        
         strategy = get_trade_strategy()
         
         if strategy == "Momentum Scalp":
             check_auto_entry_conditions_momentum_scalp()
         elif strategy == "Momentum Reversal":
             check_auto_entry_conditions_momentum_reversal()
+        elif strategy == "Reverse HTC":
+            check_auto_entry_conditions_reverse_htc()
+        elif strategy == "Momentum Breakout":
+            check_auto_entry_conditions_momentum_breakout()
+        elif strategy == "Momentum Contain":
+            check_auto_entry_conditions_momentum_contain()
         else:
             # Default to Hourly HTC (including fallback)
             check_auto_entry_conditions_hourly_htc()
     except Exception as e:
+        import traceback
         log(f"[AUTO ENTRY] ❌ Error checking entry conditions: {e}")
+        log(f"[AUTO ENTRY] ❌ Traceback: {traceback.format_exc()}")
 
 def check_auto_entry_conditions_hourly_htc():
     """Check if auto entry conditions are met and trigger trades for Hourly HTC strategy"""
@@ -2128,7 +2575,7 @@ def check_auto_entry_conditions_hourly_htc():
         # Check if service is healthy (monitoring thread is running)
         service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
         
-        # Check if spike alert is active (blocks all trades)
+        # Check if spike alert is active (no longer blocks - uses prob_adj to adjust probability instead)
         spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
         
         if not auto_trade_enabled:
@@ -2158,9 +2605,17 @@ def check_auto_entry_conditions_hourly_htc():
         
         min_time = settings["min_time"]
         max_time = settings["max_time"]
-        min_probability = settings["min_probability"]
+        base_min_probability = settings["min_probability"]
         max_probability = settings["max_probability"]
         min_differential = settings["min_differential"]
+        
+        # Apply prob_adj adjustment during spike alert cooldown
+        prob_adj = settings.get("prob_adj", 5.00)  # Default to 5.00 if not set
+        if spike_alert_active:
+            min_probability = base_min_probability + prob_adj
+            log(f"[AUTO ENTRY] 📊 Using adjusted probability: {base_min_probability:.2f} + {prob_adj:.2f} = {min_probability:.2f}% (spike cooldown active)")
+        else:
+            min_probability = base_min_probability
         
         # Get current TTC
         current_ttc = get_current_ttc()
@@ -2169,11 +2624,11 @@ def check_auto_entry_conditions_hourly_htc():
         ttc_within_window = min_time <= current_ttc <= max_time
         
         # Determine if scanning is actually active
-        # Scanning is active if: auto_trade enabled + service healthy + TTC in window + no blocking conditions (including spike alert)
+        # Scanning is active if: auto_trade enabled + service healthy + TTC in window
+        # Note: spike_alert_active no longer blocks scanning - it adjusts probability instead
         scanning_active = (auto_trade_enabled and 
                           service_healthy and 
-                          ttc_within_window and
-                          not spike_alert_active)  # SPIKE ALERT blocks scanning
+                          ttc_within_window)
         
         # Update indicator state for frontend
         auto_entry_indicator_state.update({
@@ -2192,15 +2647,52 @@ def check_auto_entry_conditions_hourly_htc():
         broadcast_auto_entry_indicator_change()
         
         if not ttc_within_window:
+            # Log occasionally when TTC is outside window
+            import time
+            current_time = time.time()
+            if not hasattr(check_auto_entry_conditions_hourly_htc, 'last_ttc_log'):
+                check_auto_entry_conditions_hourly_htc.last_ttc_log = 0
+            if current_time - check_auto_entry_conditions_hourly_htc.last_ttc_log >= 300:  # Log every 5 minutes
+                log(f"[AUTO ENTRY] ⏸️ TTC outside window: {current_ttc}s (window: {min_time}-{max_time}s)")
+                check_auto_entry_conditions_hourly_htc.last_ttc_log = current_time
             return
         
-        # SPIKE ALERT CHECK - Block all trades if spike alert is active
-        if spike_alert_active:
-            log(f"[AUTO ENTRY] ⏸️ SPIKE ALERT ACTIVE - Skipping all trade processing")
+        # Note: spike_alert_active no longer blocks trades - probability is adjusted instead (see min_probability calculation above)
+        
+        if not strike_table_data:
+            # Log occasionally if strike table data is missing
+            import time
+            current_time = time.time()
+            if not hasattr(check_auto_entry_conditions_hourly_htc, 'last_strike_table_log'):
+                check_auto_entry_conditions_hourly_htc.last_strike_table_log = 0
+            if current_time - check_auto_entry_conditions_hourly_htc.last_strike_table_log >= 60:  # Log every 60 seconds
+                log(f"[AUTO ENTRY] ⚠️ No strike table data available")
+                check_auto_entry_conditions_hourly_htc.last_strike_table_log = current_time
             return
         
-        if not strike_table_data or "strikes" not in strike_table_data:
+        if "strikes" not in strike_table_data:
+            # Log occasionally if strikes array is missing
+            import time
+            current_time = time.time()
+            if not hasattr(check_auto_entry_conditions_hourly_htc, 'last_strikes_missing_log'):
+                check_auto_entry_conditions_hourly_htc.last_strikes_missing_log = 0
+            if current_time - check_auto_entry_conditions_hourly_htc.last_strikes_missing_log >= 60:  # Log every 60 seconds
+                log(f"[AUTO ENTRY] ⚠️ Strike table data missing 'strikes' array")
+                check_auto_entry_conditions_hourly_htc.last_strikes_missing_log = current_time
             return
+        
+        # Log that we're scanning strikes (only log occasionally to avoid spam)
+        import time
+        current_time = time.time()
+        if not hasattr(check_auto_entry_conditions_hourly_htc, 'last_scan_log'):
+            check_auto_entry_conditions_hourly_htc.last_scan_log = 0
+        if current_time - check_auto_entry_conditions_hourly_htc.last_scan_log >= 60:  # Log every 60 seconds
+            strike_count = len(strike_table_data.get("strikes", []))
+            prob_display = f"{min_probability:.2f}-{max_probability}%"
+            if spike_alert_active:
+                prob_display += f" (adjusted: {base_min_probability:.2f}+{prob_adj:.2f})"
+            log(f"[AUTO ENTRY] 🔍 Scanning {strike_count} strikes | TTC: {current_ttc}s | Window: {min_time}-{max_time}s | Prob: {prob_display}")
+            check_auto_entry_conditions_hourly_htc.last_scan_log = current_time
         
         # Process each strike ONCE
         processed_strikes = set()  # Prevent duplicate processing
@@ -2249,7 +2741,6 @@ def check_auto_entry_conditions_hourly_htc():
                 if max_differential is not None:
                     diff = strike.get('yes_diff') if active_side == 'yes' else strike.get('no_diff')
                     if diff is None or diff > max_differential:
-                        # Skipping {strike_key} - differential {diff} above max threshold {max_differential}
                         continue
                 
                 # STEP 5: Check volume threshold
@@ -2263,7 +2754,6 @@ def check_auto_entry_conditions_hourly_htc():
                 yes_ask_dollars = strike.get('yes_ask_dollars')
                 no_ask_dollars = strike.get('no_ask_dollars')
                 if not yes_ask_dollars or not no_ask_dollars:
-                    log(f"⚠️ Missing _dollars values for strike {strike.get('strike')}, skipping")
                     continue
                 # Convert _dollars to cents for comparison
                 yes_ask_cents = float(yes_ask_dollars) * 100
@@ -2295,21 +2785,25 @@ def check_auto_entry_conditions_hourly_htc():
                 else:
                     continue
                 
-                # STEP 6: Prepare strike data for trade trigger
+                # STEP 6: Get diff value for the active side
+                diff = strike.get('yes_diff') if active_side == 'yes' else strike.get('no_diff')
+                
+                # STEP 7: Prepare strike data for trade trigger
                 strike_data = {
                     'strike': f"${int(strike.get('strike')):,}",
                     'side': side,
                     'ticker': strike.get('ticker'),
                     'buy_price': buy_price,
-                    'probability': prob
+                    'probability': prob,
+                    'diff': diff
                 }
                 
-                # STEP 7: Check if strike is already traded
+                # STEP 8: Check if strike is already traded
                 if is_strike_already_traded(strike_data):
                     log(f"[AUTO ENTRY] ⏸️ Skipping {strike_key} - already has open/pending trade")
                     continue
                 
-                # STEP 8: Trigger the trade
+                # STEP 9: Trigger the trade
                 log(f"[AUTO ENTRY] 🚀 TRIGGERING TRADE | {strike_key} | Prob: {prob}% | Buy Price: ${buy_price:.2f} | Ticker: {strike.get('ticker')}")
                 if trigger_auto_entry_trade(strike_data):
                     log(f"[AUTO ENTRY] ✅ TRADE SUCCESSFUL | {strike_key} | Trade triggered and sent to trade_manager")
@@ -2324,6 +2818,964 @@ def check_auto_entry_conditions_hourly_htc():
                 
     except Exception as e:
         log(f"[AUTO ENTRY HTC] Error checking auto entry conditions: {e}")
+
+def check_auto_entry_conditions_reverse_htc():
+    """Check if auto entry conditions are met and trigger trades for Reverse HTC strategy
+    
+    Reverse HTC activates when momentum spike is detected (opposite of Hourly HTC).
+    It uses the same entry logic as Hourly HTC but enters with the OPPOSITE side.
+    """
+    global auto_entry_indicator_state
+    
+    try:
+        # Get strike table data directly (no watchlist needed)
+        
+        # Check spike alert conditions first
+        check_spike_alert_conditions()
+
+        strike_table_data = get_master_strike_table_data()
+        if strike_table_data:
+            update_monitor_current_state(strike_table_data)
+
+        # Check if AUTO TRADE is enabled for this monitor
+        auto_trade_enabled = is_auto_trade_enabled()
+        
+        # Check if service is healthy (monitoring thread is running)
+        service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
+        
+        # Check if spike alert is active (REQUIRED for Reverse HTC to activate)
+        spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
+        
+        if not auto_trade_enabled:
+            auto_entry_indicator_state.update({
+                "enabled": False,
+                "ttc_within_window": False,
+                "scanning_active": False,
+                "service_healthy": service_healthy,
+                "spike_alert_active": spike_alert_active,
+                "current_ttc": 0,
+                "last_updated": datetime.now().isoformat()
+            })
+            # Broadcast indicator state change
+            broadcast_auto_entry_indicator_change()
+            return
+        
+        # Get auto entry settings - NO DEFAULTS
+        settings = get_auto_entry_settings()
+        
+        # Check if all required settings exist
+        required_settings = ["min_time", "max_time", "min_probability", "max_probability", "min_differential"]
+        missing_settings = [setting for setting in required_settings if setting not in settings]
+        if missing_settings:
+            log(f"[AUTO ENTRY REVERSE HTC] ❌ Missing required settings: {missing_settings}")
+            log(f"[AUTO ENTRY REVERSE HTC] Cannot proceed without complete settings configuration")
+            return
+        
+        min_time = settings["min_time"]
+        max_time = settings["max_time"]
+        min_probability = settings["min_probability"]
+        max_probability = settings["max_probability"]
+        min_differential = settings["min_differential"]
+        
+        # Get current TTC
+        current_ttc = get_current_ttc()
+        
+        # Check if TTC is within the time window
+        ttc_within_window = min_time <= current_ttc <= max_time
+        
+        # Determine if scanning is actually active
+        # Scanning is active if: auto_trade enabled + service healthy + TTC in window + spike alert active (REQUIRED for Reverse HTC)
+        scanning_active = (auto_trade_enabled and 
+                          service_healthy and 
+                          ttc_within_window and
+                          spike_alert_active)  # SPIKE ALERT REQUIRED for Reverse HTC
+        
+        # Update indicator state for frontend
+        auto_entry_indicator_state.update({
+            "enabled": True,
+            "ttc_within_window": ttc_within_window,
+            "scanning_active": scanning_active,
+            "service_healthy": service_healthy,
+            "spike_alert_active": spike_alert_active,
+            "current_ttc": current_ttc,
+            "min_time": min_time,
+            "max_time": max_time,
+            "last_updated": datetime.now().isoformat()
+        })
+        
+        # Broadcast indicator state change
+        broadcast_auto_entry_indicator_change()
+        
+        if not ttc_within_window:
+            # Log occasionally when TTC is outside window
+            import time
+            current_time = time.time()
+            if not hasattr(check_auto_entry_conditions_reverse_htc, 'last_ttc_log'):
+                check_auto_entry_conditions_reverse_htc.last_ttc_log = 0
+            if current_time - check_auto_entry_conditions_reverse_htc.last_ttc_log >= 300:  # Log every 5 minutes
+                log(f"[AUTO ENTRY REVERSE HTC] ⏸️ TTC outside window: {current_ttc}s (window: {min_time}-{max_time}s)")
+                check_auto_entry_conditions_reverse_htc.last_ttc_log = current_time
+            return
+        
+        # SPIKE ALERT CHECK - Reverse HTC REQUIRES spike alert to be active
+        if not spike_alert_active:
+            log(f"[AUTO ENTRY REVERSE HTC] ⏸️ SPIKE ALERT NOT ACTIVE - Reverse HTC requires momentum spike to activate")
+            return
+        
+        # BRACKET CHECK - Reverse HTC should only enter trades until a bracket is formed
+        # A bracket is: one Y trade and one N trade with strikes within 2 strike tiers of each other
+        # Use contract_label from _LAST_MONITOR_STATE (same format as what trade_manager stores after truncation)
+        current_contract = _LAST_MONITOR_STATE.get("contract")
+        strike_tier = strike_table_data.get("strike_tier") if strike_table_data else None
+        if strike_tier:
+            try:
+                strike_tier = int(strike_tier)
+            except (ValueError, TypeError):
+                strike_tier = None
+        
+        if has_bracket_for_cycle(current_contract, strike_tier):
+            # Log occasionally to avoid spam
+            import time
+            current_time = time.time()
+            if not hasattr(check_auto_entry_conditions_reverse_htc, 'last_bracket_log'):
+                check_auto_entry_conditions_reverse_htc.last_bracket_log = 0
+            if current_time - check_auto_entry_conditions_reverse_htc.last_bracket_log >= 300:  # Log every 5 minutes
+                bracket_distance = 2 * strike_tier if strike_tier else "unknown"
+                log(f"[AUTO ENTRY REVERSE HTC] ⏸️ BRACKET FORMED - No further entries for cycle {current_contract} (bracket distance: {bracket_distance})")
+                check_auto_entry_conditions_reverse_htc.last_bracket_log = current_time
+            return
+        
+        if not strike_table_data:
+            # Log occasionally if strike table data is missing
+            import time
+            current_time = time.time()
+            if not hasattr(check_auto_entry_conditions_reverse_htc, 'last_strike_table_log'):
+                check_auto_entry_conditions_reverse_htc.last_strike_table_log = 0
+            if current_time - check_auto_entry_conditions_reverse_htc.last_strike_table_log >= 60:  # Log every 60 seconds
+                log(f"[AUTO ENTRY REVERSE HTC] ⚠️ No strike table data available")
+                check_auto_entry_conditions_reverse_htc.last_strike_table_log = current_time
+            return
+        
+        if "strikes" not in strike_table_data:
+            # Log occasionally if strikes array is missing
+            import time
+            current_time = time.time()
+            if not hasattr(check_auto_entry_conditions_reverse_htc, 'last_strikes_missing_log'):
+                check_auto_entry_conditions_reverse_htc.last_strikes_missing_log = 0
+            if current_time - check_auto_entry_conditions_reverse_htc.last_strikes_missing_log >= 60:  # Log every 60 seconds
+                log(f"[AUTO ENTRY REVERSE HTC] ⚠️ Strike table data missing 'strikes' array")
+                check_auto_entry_conditions_reverse_htc.last_strikes_missing_log = current_time
+            return
+        
+        # Log that we're scanning strikes (only log occasionally to avoid spam)
+        import time
+        current_time = time.time()
+        if not hasattr(check_auto_entry_conditions_reverse_htc, 'last_scan_log'):
+            check_auto_entry_conditions_reverse_htc.last_scan_log = 0
+        if current_time - check_auto_entry_conditions_reverse_htc.last_scan_log >= 60:  # Log every 60 seconds
+            strike_count = len(strike_table_data.get("strikes", []))
+            log(f"[AUTO ENTRY REVERSE HTC] 🔍 Scanning {strike_count} strikes | TTC: {current_ttc}s | Window: {min_time}-{max_time}s | Prob: {min_probability}-{max_probability}% | SPIKE ACTIVE")
+            check_auto_entry_conditions_reverse_htc.last_scan_log = current_time
+        
+        # Process each strike ONCE
+        processed_strikes = set()  # Prevent duplicate processing
+        
+        for i, strike in enumerate(strike_table_data["strikes"]):
+            try:
+                # Use active_side for strike_key generation (EXACT SAME AS HOURLY HTC)
+                active_side = strike.get('active_side')
+                if not active_side:
+                    continue
+                    
+                strike_key = f"{strike.get('strike')}-{active_side}"
+                
+                # Prevent duplicate processing
+                if strike_key in processed_strikes:
+                    continue
+                
+                processed_strikes.add(strike_key)
+                
+                # STEP 1: ATOMIC cooldown check (EXACT SAME AS HOURLY HTC)
+                if not can_trade_strike(strike_key):
+                    continue
+                
+                # STEP 1.5: BRACKET CHECK BEFORE EACH TRADE - Prevent entering if bracket already exists
+                # Check bracket before triggering trade to prevent third entry
+                # Use current_contract (set at function start) which matches database format
+                if current_contract and has_bracket_for_cycle(current_contract, strike_tier):
+                    bracket_distance = 2 * strike_tier if strike_tier else "unknown"
+                    log(f"[AUTO ENTRY REVERSE HTC] ⏸️ BRACKET EXISTS - Skipping strike {strike_key} for cycle {current_contract} (bracket distance: {bracket_distance})")
+                    continue  # Skip this strike if bracket already exists
+                
+                # STEP 2: Check if we already have an active trade on this strike
+                # REVERSE HTC: Check opposite side (since we'll be trading opposite side)
+                opposite_side = 'no' if active_side == 'yes' else 'yes'
+                strike_data_for_check = {
+                    'strike': strike.get('strike'),
+                    'side': opposite_side,
+                    'ticker': strike.get('ticker')
+                }
+                
+                if is_strike_already_traded(strike_data_for_check):
+                    continue
+                
+                # STEP 3: Check probability window (EXACT SAME AS HOURLY HTC)
+                prob = strike.get('probability')
+                if prob is None or prob < min_probability or prob > max_probability:
+                    continue
+                
+                # STEP 4: Check differential threshold (EXACT SAME AS HOURLY HTC)
+                if min_differential is not None:
+                    diff = strike.get('yes_diff') if active_side == 'yes' else strike.get('no_diff')
+                    if diff is None or diff < (min_differential - 0.5):
+                        continue
+                
+                # STEP 4.5: Check max differential threshold (EXACT SAME AS HOURLY HTC)
+                max_differential = settings.get("max_differential")
+                if max_differential is not None:
+                    diff = strike.get('yes_diff') if active_side == 'yes' else strike.get('no_diff')
+                    if diff is None or diff > max_differential:
+                        continue
+                
+                # STEP 5: Check volume threshold (EXACT SAME AS HOURLY HTC)
+                min_volume = settings.get("min_volume", 1000)
+                volume = strike.get('volume', 0)
+                if volume is None or volume < min_volume:
+                    continue
+                
+                # STEP 6: Check max ask price threshold (EXACT SAME AS HOURLY HTC)
+                max_ask = settings.get("max_ask", 0.9800)  # Default in dollars
+                yes_ask_dollars = strike.get('yes_ask_dollars')
+                no_ask_dollars = strike.get('no_ask_dollars')
+                if not yes_ask_dollars or not no_ask_dollars:
+                    continue
+                # Convert _dollars to cents for comparison
+                yes_ask_cents = float(yes_ask_dollars) * 100
+                no_ask_cents = float(no_ask_dollars) * 100
+                max_ask_price = max(yes_ask_cents, no_ask_cents)
+                # Convert max_ask from dollars to cents if it's less than 1 (indicating dollars format)
+                # Otherwise assume it's already in cents (legacy support)
+                max_ask_cents = max_ask * 100 if max_ask < 1 else max_ask
+                if max_ask_price > max_ask_cents:
+                    continue
+                
+                # STEP 7: Determine buy price based on active_side (EXACT SAME AS HOURLY HTC)
+                if active_side == 'yes':
+                    side = 'yes'
+                    # Use yes_ask_dollars directly (no conversion needed)
+                    yes_ask_dollars = strike.get('yes_ask_dollars')
+                    if not yes_ask_dollars:
+                        log(f"⚠️ Missing yes_ask_dollars for strike {strike.get('strike')}, skipping")
+                        continue
+                    buy_price = float(yes_ask_dollars)
+                elif active_side == 'no':
+                    side = 'no'
+                    # Use no_ask_dollars directly (no conversion needed)
+                    no_ask_dollars = strike.get('no_ask_dollars')
+                    if not no_ask_dollars:
+                        log(f"⚠️ Missing no_ask_dollars for strike {strike.get('strike')}, skipping")
+                        continue
+                    buy_price = float(no_ask_dollars)
+                else:
+                    continue
+                
+                # STEP 8: Get diff value for the active side (EXACT SAME AS HOURLY HTC)
+                diff = strike.get('yes_diff') if active_side == 'yes' else strike.get('no_diff')
+                
+                # REVERSE HTC: ONLY DIFFERENCE - flip the side when submitting the order
+                # (opposite_side was already calculated at Step 2)
+                opposite_buy_price = float(strike.get('no_ask_dollars') if opposite_side == 'no' else strike.get('yes_ask_dollars'))
+                opposite_diff = strike.get('no_diff') if opposite_side == 'no' else strike.get('yes_diff')
+                
+                # STEP 9: Prepare strike data for trade trigger (using OPPOSITE side - ONLY DIFFERENCE)
+                strike_data = {
+                    'strike': f"${int(strike.get('strike')):,}",
+                    'side': opposite_side,
+                    'ticker': strike.get('ticker'),
+                    'buy_price': opposite_buy_price,
+                    'probability': prob,
+                    'diff': opposite_diff
+                }
+                
+                # STEP 10: Trigger the trade (with opposite side - ONLY DIFFERENCE)
+                log(f"[AUTO ENTRY REVERSE HTC] 🚀 TRIGGERING TRADE (OPPOSITE SIDE) | {strike_key} | Active Side: {active_side} → Trading: {opposite_side} | Prob: {prob}% | Buy Price: ${opposite_buy_price:.2f} | Ticker: {strike.get('ticker')}")
+                if trigger_auto_entry_trade(strike_data):
+                    log(f"[AUTO ENTRY REVERSE HTC] ✅ TRADE SUCCESSFUL | {strike_key} | Trade triggered and sent to trade_manager")
+                else:
+                    log(f"[AUTO ENTRY REVERSE HTC] ❌ TRADE FAILED | {strike_key} | Failed to trigger trade")
+                    # Remove from cooldown if trade failed
+                    if strike_key in last_trade_times:
+                        del last_trade_times[strike_key]
+                
+            except Exception as e:
+                log(f"[AUTO ENTRY REVERSE HTC] Error processing strike {strike.get('strike')}: {e}")
+                
+    except Exception as e:
+        log(f"[AUTO ENTRY REVERSE HTC] Error checking auto entry conditions: {e}")
+
+def check_auto_entry_conditions_momentum_breakout():
+    """Check if auto entry conditions are met and trigger trades for Momentum Breakout strategy
+    
+    Momentum Breakout activates when momentum spike is detected (same as Reverse HTC).
+    When activated, it immediately opens TWO trades:
+    - YES trade at strike immediately above the money line
+    - NO trade at strike immediately below the money line
+    Uses strike_tier to find the correct strikes.
+    After entering these two trades, it opens no more trades and holds until expiration.
+    """
+    global momentum_breakout_trades_entered, momentum_breakout_last_contract
+    global auto_entry_indicator_state
+    
+    try:
+        # Get strike table data
+        check_spike_alert_conditions()
+        
+        strike_table_data = get_master_strike_table_data()
+        
+        # Failsafe: Skip 5pm cycles (daily 5pm cycles are excluded)
+        # Check hour_24 directly (17 = 5pm) - most reliable method
+        if strike_table_data:
+            symbol = (strike_table_data or {}).get("symbol") or MONITOR_SYMBOL or "BTC"
+            market_title = (strike_table_data or {}).get("market_title")
+            event_ticker = (strike_table_data or {}).get("event_ticker")
+            
+            # Resolve the hour directly to check for 5pm (hour_24 == 17)
+            _, hour_24 = _resolve_event_time(symbol, market_title, event_ticker)
+            if hour_24 == 17:  # 5pm in 24-hour format
+                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⏸️ Skipping 5pm cycle (hour_24={hour_24})")
+                return
+            
+            # Also check contract label and market_title as additional failsafe
+            current_contract = _LAST_MONITOR_STATE.get("contract")
+            contract_to_check = current_contract or market_title or ""
+            if contract_to_check and "5pm" in contract_to_check.lower():
+                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⏸️ Skipping 5pm cycle (contract check): {contract_to_check}")
+                return
+            
+            update_monitor_current_state(strike_table_data)
+        
+        # Get current contract from monitor state (after update)
+        current_contract = _LAST_MONITOR_STATE.get("contract")
+        
+        # Reset trades_entered flag when a new cycle starts (contract changes)
+        if current_contract and current_contract != momentum_breakout_last_contract:
+            momentum_breakout_trades_entered = False
+            if momentum_breakout_last_contract:
+                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] 🔄 New cycle detected: {momentum_breakout_last_contract} → {current_contract} - resetting entry flag")
+            momentum_breakout_last_contract = current_contract
+        
+        # Check if AUTO TRADE is enabled for this monitor
+        auto_trade_enabled = is_auto_trade_enabled()
+        
+        # Check if service is healthy (monitoring thread is running)
+        service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
+        
+        # Check if spike alert is active (REQUIRED for Momentum Breakout to activate)
+        spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
+        
+        if not auto_trade_enabled:
+            auto_entry_indicator_state.update({
+                "enabled": False,
+                "ttc_within_window": False,
+                "scanning_active": False,
+                "service_healthy": service_healthy,
+                "spike_alert_active": spike_alert_active,
+                "current_ttc": 0,
+                "last_updated": datetime.now().isoformat()
+            })
+            broadcast_auto_entry_indicator_change()
+            return
+        
+        # Get auto entry settings
+        settings = get_auto_entry_settings()
+        required_settings = ["min_time", "max_time"]
+        missing_settings = [setting for setting in required_settings if setting not in settings]
+        if missing_settings:
+            log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ❌ Missing required settings: {missing_settings}")
+            return
+        
+        min_time = settings["min_time"]
+        max_time = settings["max_time"]
+        
+        # Get current TTC
+        current_ttc = get_current_ttc()
+        
+        # Check if TTC is within the time window
+        ttc_within_window = min_time <= current_ttc <= max_time
+        
+        # Determine if scanning is actually active
+        # Scanning is active if: auto_trade enabled + service healthy + TTC in window + spike alert active
+        scanning_active = (auto_trade_enabled and 
+                          service_healthy and 
+                          ttc_within_window and
+                          spike_alert_active)
+        
+        # Update indicator state for frontend
+        auto_entry_indicator_state.update({
+            "enabled": True,
+            "ttc_within_window": ttc_within_window,
+            "scanning_active": scanning_active,
+            "service_healthy": service_healthy,
+            "spike_alert_active": spike_alert_active,
+            "current_ttc": current_ttc,
+            "min_time": min_time,
+            "max_time": max_time,
+            "last_updated": datetime.now().isoformat()
+        })
+        
+        # Broadcast indicator state change
+        broadcast_auto_entry_indicator_change()
+        
+        if not ttc_within_window:
+            return
+        
+        # SPIKE ALERT CHECK - Momentum Breakout REQUIRES spike alert to be active
+        if not spike_alert_active:
+            return
+        
+        # If we've already entered trades for this spike activation, do nothing
+        if momentum_breakout_trades_entered:
+            return
+        
+        if not strike_table_data:
+            log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ No strike table data available")
+            return
+        
+        current_price = strike_table_data.get("current_price")
+        strike_tier = strike_table_data.get("strike_tier")
+        
+        if not current_price or not strike_tier:
+            log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Missing current_price or strike_tier")
+            return
+        
+        try:
+            strike_tier = int(strike_tier)
+        except (ValueError, TypeError):
+            log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Invalid strike_tier: {strike_tier}")
+            return
+        
+        # Find the actual available strikes from the strike table
+        # We need the strike immediately above and immediately below the current price
+        strikes = strike_table_data.get("strikes", [])
+        strike_above_data = None
+        strike_below_data = None
+        
+        # Find the closest strike above current price (>= current_price)
+        closest_above = None
+        closest_above_distance = float('inf')
+        
+        # Find the closest strike below current price (<= current_price)
+        closest_below = None
+        closest_below_distance = float('inf')
+        
+        for strike in strikes:
+            strike_value = strike.get("strike")
+            if strike_value is None:
+                continue
+            
+            # Check if this strike is above the current price
+            if strike_value >= current_price:
+                distance = strike_value - current_price
+                if distance < closest_above_distance:
+                    closest_above_distance = distance
+                    closest_above = strike
+            
+            # Check if this strike is below the current price
+            if strike_value <= current_price:
+                distance = current_price - strike_value
+                if distance < closest_below_distance:
+                    closest_below_distance = distance
+                    closest_below = strike
+        
+        strike_above_data = closest_above
+        strike_below_data = closest_below
+        
+        # Log the found strikes for debugging
+        above_strike = strike_above_data.get('strike') if strike_above_data else None
+        below_strike = strike_below_data.get('strike') if strike_below_data else None
+        below_str = f"${below_strike:,.0f}" if below_strike else "N/A"
+        above_str = f"${above_strike:,.0f}" if above_strike else "N/A"
+        log(f"[AUTO ENTRY MOMENTUM BREAKOUT] 🎯 Current price: ${current_price:,.2f}, Strike tier: ${strike_tier:,}, Found below: {below_str}, Found above: {above_str}")
+        
+        # Check if we already have active trades on these strikes
+        if strike_above_data:
+            strike_above_key = f"{strike_above_data.get('strike')}-yes"
+            strike_data_for_check = {
+                'strike': strike_above_data.get('strike'),
+                'side': 'yes',
+                'ticker': strike_above_data.get('ticker')
+            }
+            if is_strike_already_traded(strike_data_for_check):
+                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⏸️ YES trade already exists at strike ${strike_above_data.get('strike'):,.0f}")
+                momentum_breakout_trades_entered = True
+                return
+        
+        if strike_below_data:
+            strike_below_key = f"{strike_below_data.get('strike')}-no"
+            strike_data_for_check = {
+                'strike': strike_below_data.get('strike'),
+                'side': 'no',
+                'ticker': strike_below_data.get('ticker')
+            }
+            if is_strike_already_traded(strike_data_for_check):
+                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⏸️ NO trade already exists at strike ${strike_below_data.get('strike'):,.0f}")
+                momentum_breakout_trades_entered = True
+                return
+        
+        # Enter the two trades
+        trades_entered = 0
+        
+        # Enter YES trade at strike above
+        if strike_above_data:
+            yes_ask_dollars = strike_above_data.get('yes_ask_dollars')
+            if yes_ask_dollars:
+                strike_data = {
+                    'strike': f"${int(strike_above_data.get('strike')):,}",
+                    'side': 'yes',
+                    'ticker': strike_above_data.get('ticker'),
+                    'buy_price': float(yes_ask_dollars),
+                    'probability': strike_above_data.get('probability'),
+                    'diff': strike_above_data.get('yes_diff')
+                }
+                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] 🚀 TRIGGERING YES TRADE | Strike: ${strike_above_data.get('strike'):,.0f} | Buy Price: ${float(yes_ask_dollars):.2f} | Ticker: {strike_above_data.get('ticker')}")
+                if trigger_auto_entry_trade(strike_data):
+                    log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ✅ YES TRADE SUCCESSFUL | Strike: ${strike_above_data.get('strike'):,.0f}")
+                    trades_entered += 1
+                else:
+                    log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ❌ YES TRADE FAILED | Strike: ${strike_above_data.get('strike'):,.0f}")
+            else:
+                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Missing yes_ask_dollars for strike above ${strike_above_data.get('strike'):,.0f}")
+        else:
+            log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Could not find strike above money line (current price: ${current_price:,.2f})")
+        
+        # Enter NO trade at strike below
+        if strike_below_data:
+            no_ask_dollars = strike_below_data.get('no_ask_dollars')
+            if no_ask_dollars:
+                strike_data = {
+                    'strike': f"${int(strike_below_data.get('strike')):,}",
+                    'side': 'no',
+                    'ticker': strike_below_data.get('ticker'),
+                    'buy_price': float(no_ask_dollars),
+                    'probability': strike_below_data.get('probability'),
+                    'diff': strike_below_data.get('no_diff')
+                }
+                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] 🚀 TRIGGERING NO TRADE | Strike: ${strike_below_data.get('strike'):,.0f} | Buy Price: ${float(no_ask_dollars):.2f} | Ticker: {strike_below_data.get('ticker')}")
+                if trigger_auto_entry_trade(strike_data):
+                    log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ✅ NO TRADE SUCCESSFUL | Strike: ${strike_below_data.get('strike'):,.0f}")
+                    trades_entered += 1
+                else:
+                    log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ❌ NO TRADE FAILED | Strike: ${strike_below_data.get('strike'):,.0f}")
+            else:
+                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Missing no_ask_dollars for strike below ${strike_below_data.get('strike'):,.0f}")
+        else:
+            log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Could not find strike below money line (current price: ${current_price:,.2f})")
+        
+        # Mark trades as entered if at least one trade was successful
+        if trades_entered > 0:
+            momentum_breakout_trades_entered = True
+            # Update last contract to current contract to track which cycle we entered trades for
+            if current_contract:
+                momentum_breakout_last_contract = current_contract
+            log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ✅ Entered {trades_entered} trade(s) for cycle {current_contract} - will hold until expiration")
+        
+    except Exception as e:
+        import traceback
+        log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ❌ Error checking auto entry conditions: {e}")
+        log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ❌ Traceback: {traceback.format_exc()}")
+
+def check_auto_entry_conditions_momentum_contain():
+    """Check if auto entry conditions are met and trigger trades for Momentum Contain strategy
+    
+    Momentum Contain activates when momentum spike is detected (same as Momentum Breakout).
+    When activated, it immediately opens TWO trades with FLIPPED SIDES compared to Momentum Breakout:
+    - NO trade at strike immediately above the money line (contrarian to Breakout)
+    - YES trade at strike immediately below the money line (contrarian to Breakout)
+    Uses strike_tier to find the correct strikes.
+    After entering these two trades, it opens no more trades and holds until expiration.
+    """
+    global momentum_contain_trades_entered, momentum_contain_last_contract
+    global auto_entry_indicator_state
+    
+    try:
+        # Get strike table data
+        check_spike_alert_conditions()
+        
+        strike_table_data = get_master_strike_table_data()
+        
+        # Failsafe: Skip 5pm cycles (daily 5pm cycles are excluded)
+        # Check hour_24 directly (17 = 5pm) - most reliable method
+        if strike_table_data:
+            symbol = (strike_table_data or {}).get("symbol") or MONITOR_SYMBOL or "BTC"
+            market_title = (strike_table_data or {}).get("market_title")
+            event_ticker = (strike_table_data or {}).get("event_ticker")
+            
+            # Resolve the hour directly to check for 5pm (hour_24 == 17)
+            _, hour_24 = _resolve_event_time(symbol, market_title, event_ticker)
+            if hour_24 == 17:  # 5pm in 24-hour format
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ Skipping 5pm cycle (hour_24={hour_24})")
+                return
+            
+            # Also check contract label and market_title as additional failsafe
+            current_contract = _LAST_MONITOR_STATE.get("contract")
+            contract_to_check = current_contract or market_title or ""
+            if contract_to_check and "5pm" in contract_to_check.lower():
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ Skipping 5pm cycle (contract check): {contract_to_check}")
+                return
+            
+            update_monitor_current_state(strike_table_data)
+        
+        # Get current contract from monitor state (after update)
+        current_contract = _LAST_MONITOR_STATE.get("contract")
+        
+        # Reset trades_entered flag when a new cycle starts (contract changes)
+        if current_contract and current_contract != momentum_contain_last_contract:
+            momentum_contain_trades_entered = False
+            if momentum_contain_last_contract:
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] 🔄 New cycle detected: {momentum_contain_last_contract} → {current_contract} - resetting entry flag")
+            momentum_contain_last_contract = current_contract
+        
+        # Check if AUTO TRADE is enabled for this monitor
+        auto_trade_enabled = is_auto_trade_enabled()
+        
+        # Check if service is healthy (monitoring thread is running)
+        service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
+        
+        # Check if spike alert is active (REQUIRED for Momentum Contain to activate)
+        spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
+        
+        if not auto_trade_enabled:
+            auto_entry_indicator_state.update({
+                "enabled": False,
+                "ttc_within_window": False,
+                "scanning_active": False,
+                "service_healthy": service_healthy,
+                "spike_alert_active": spike_alert_active,
+                "current_ttc": 0,
+                "last_updated": datetime.now().isoformat()
+            })
+            broadcast_auto_entry_indicator_change()
+            return
+        
+        # Get auto entry settings
+        settings = get_auto_entry_settings()
+        required_settings = ["min_time", "max_time"]
+        missing_settings = [setting for setting in required_settings if setting not in settings]
+        if missing_settings:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ Missing required settings: {missing_settings}")
+            return
+        
+        min_time = settings["min_time"]
+        max_time = settings["max_time"]
+        
+        # Get current TTC
+        current_ttc = get_current_ttc()
+        
+        # Check if TTC is within the time window
+        ttc_within_window = min_time <= current_ttc <= max_time
+        
+        # Determine if scanning is actually active
+        # Scanning is active if: auto_trade enabled + service healthy + TTC in window + spike alert active
+        scanning_active = (auto_trade_enabled and 
+                          service_healthy and 
+                          ttc_within_window and
+                          spike_alert_active)
+        
+        # Update indicator state for frontend
+        auto_entry_indicator_state.update({
+            "enabled": True,
+            "ttc_within_window": ttc_within_window,
+            "scanning_active": scanning_active,
+            "service_healthy": service_healthy,
+            "spike_alert_active": spike_alert_active,
+            "current_ttc": current_ttc,
+            "min_time": min_time,
+            "max_time": max_time,
+            "last_updated": datetime.now().isoformat()
+        })
+        
+        # Broadcast indicator state change
+        broadcast_auto_entry_indicator_change()
+        
+        if not ttc_within_window:
+            return
+        
+        # SPIKE ALERT CHECK - Momentum Contain REQUIRES spike alert to be active
+        if not spike_alert_active:
+            return
+        
+        # COOLDOWN TIMER CHECK - Validate cooldown_timer is within activation window
+        # This prevents entry when cooldown_timer is outside min/max parameters
+        min_cooldown_timer = settings.get("min_cooldown_timer")
+        max_cooldown_timer = settings.get("max_cooldown_timer")
+        
+        # If either min or max is set, check cooldown_timer is within window
+        if min_cooldown_timer is not None or max_cooldown_timer is not None:
+            # Get cooldown_timer from database
+            cooldown_timer = None
+            try:
+                import psycopg2
+                conn = psycopg2.connect(
+                    host=os.getenv('POSTGRES_HOST', 'localhost'),
+                    database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+                    user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+                    password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+                )
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+                    result = cursor.fetchone()
+                    cooldown_timer = result[0] if result and result[0] is not None else None
+                conn.close()
+            except Exception as e:
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ Error getting cooldown timer: {e}")
+            
+            # If cooldown_timer is NULL, cannot determine - skip entry
+            if cooldown_timer is None:
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ cooldown_timer is NULL - skipping entry")
+                return
+            
+            # Check if cooldown_timer is within the activation window
+            # If min is set, cooldown_timer must be >= min (not too close to spike)
+            if min_cooldown_timer is not None and cooldown_timer < min_cooldown_timer:
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ cooldown_timer ({cooldown_timer}) < min_cooldown_timer ({min_cooldown_timer}) - too close to momentum spike - skipping entry")
+                return
+            
+            # If max is set, cooldown_timer must be <= max (not too far after spike)
+            if max_cooldown_timer is not None and cooldown_timer > max_cooldown_timer:
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ cooldown_timer ({cooldown_timer}) > max_cooldown_timer ({max_cooldown_timer}) - too far after spike regime has ended - skipping entry")
+                return
+        
+        # If we've already entered trades for this spike activation, do nothing
+        if momentum_contain_trades_entered:
+            return
+        
+        if not strike_table_data:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ No strike table data available")
+            return
+        
+        current_price = strike_table_data.get("current_price")
+        strike_tier = strike_table_data.get("strike_tier")
+        
+        if not current_price or not strike_tier:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Missing current_price or strike_tier")
+            return
+        
+        try:
+            strike_tier = int(strike_tier)
+        except (ValueError, TypeError):
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Invalid strike_tier: {strike_tier}")
+            return
+        
+        # Find the actual available strikes from the strike table
+        # We need the strike immediately above and immediately below the current price
+        strikes = strike_table_data.get("strikes", [])
+        strike_above_data = None
+        strike_below_data = None
+        
+        # Find the closest strike above current price (>= current_price)
+        closest_above = None
+        closest_above_distance = float('inf')
+        
+        # Find the closest strike below current price (<= current_price)
+        closest_below = None
+        closest_below_distance = float('inf')
+        
+        for strike in strikes:
+            strike_value = strike.get("strike")
+            if strike_value is None:
+                continue
+            
+            # Check if this strike is above the current price
+            if strike_value >= current_price:
+                distance = strike_value - current_price
+                if distance < closest_above_distance:
+                    closest_above_distance = distance
+                    closest_above = strike
+            
+            # Check if this strike is below the current price
+            if strike_value <= current_price:
+                distance = current_price - strike_value
+                if distance < closest_below_distance:
+                    closest_below_distance = distance
+                    closest_below = strike
+        
+        strike_above_data = closest_above
+        strike_below_data = closest_below
+        
+        # Log the found strikes for debugging
+        above_strike = strike_above_data.get('strike') if strike_above_data else None
+        below_strike = strike_below_data.get('strike') if strike_below_data else None
+        below_str = f"${below_strike:,.0f}" if below_strike else "N/A"
+        above_str = f"${above_strike:,.0f}" if above_strike else "N/A"
+        log(f"[AUTO ENTRY MOMENTUM CONTAIN] 🎯 Current price: ${current_price:,.2f}, Strike tier: ${strike_tier:,}, Found below: {below_str}, Found above: {above_str}")
+        
+        # Check if we already have active trades on these strikes (FLIPPED SIDES from Breakout)
+        # Momentum Contain: NO at strike above, YES at strike below
+        if strike_above_data:
+            strike_data_for_check = {
+                'strike': strike_above_data.get('strike'),
+                'side': 'no',  # FLIPPED: Breakout uses 'yes' here
+                'ticker': strike_above_data.get('ticker')
+            }
+            if is_strike_already_traded(strike_data_for_check):
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ NO trade already exists at strike ${strike_above_data.get('strike'):,.0f}")
+                momentum_contain_trades_entered = True
+                return
+        
+        if strike_below_data:
+            strike_data_for_check = {
+                'strike': strike_below_data.get('strike'),
+                'side': 'yes',  # FLIPPED: Breakout uses 'no' here
+                'ticker': strike_below_data.get('ticker')
+            }
+            if is_strike_already_traded(strike_data_for_check):
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ YES trade already exists at strike ${strike_below_data.get('strike'):,.0f}")
+                momentum_contain_trades_entered = True
+                return
+        
+        # VALIDATION CHECKS: Volume, Momentum, and Ask Price checks before entering trades
+        # Get required settings
+        min_volume = settings.get("min_volume", 1000)
+        min_ask = settings.get("min_ask", 0.0000)
+        max_ask = settings.get("max_ask", 0.9800)
+        cooldown_threshold = settings.get("spike_alert_cooldown_threshold")
+        
+        # VOLUME CHECK: Ensure both strikes meet minimum volume requirement
+        if not strike_above_data or not strike_below_data:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ Missing strike data - cannot perform volume check")
+            return
+        
+        volume_above = strike_above_data.get('volume', 0) or 0
+        volume_below = strike_below_data.get('volume', 0) or 0
+        
+        if volume_above < min_volume:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ Strike above volume ({volume_above}) below minimum ({min_volume}) - skipping entry")
+            return
+        
+        if volume_below < min_volume:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ Strike below volume ({volume_below}) below minimum ({min_volume}) - skipping entry")
+            return
+        
+        # MOMENTUM CHECK: Both 30s average and current momentum_percentile must be below cooldown threshold
+        current_symbol = get_current_monitor_symbol()
+        momentum_30s_avg = get_momentum_30s_avg(current_symbol)
+        if momentum_30s_avg is None:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ Cannot determine momentum_30s_avg - skipping entry")
+            return
+        
+        momentum_percentile = get_momentum_percentile(current_symbol)
+        if momentum_percentile is None:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ Cannot determine momentum_percentile - skipping entry")
+            return
+        
+        if cooldown_threshold is None:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Missing spike_alert_cooldown_threshold setting - skipping entry")
+            return
+        
+        abs_momentum_30s = abs(momentum_30s_avg)
+        abs_momentum_percentile = abs(momentum_percentile)
+        
+        # Both must be below threshold to allow entry
+        if abs_momentum_30s >= cooldown_threshold:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ 30s average momentum ({momentum_30s_avg:.2f}, abs: {abs_momentum_30s:.2f}) still above cooldown threshold ({cooldown_threshold:.2f}) - skipping entry")
+            return
+        
+        if abs_momentum_percentile >= cooldown_threshold:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ Current momentum_percentile ({momentum_percentile:.2f}, abs: {abs_momentum_percentile:.2f}) still above cooldown threshold ({cooldown_threshold:.2f}) - skipping entry")
+            return
+        
+        # ASK PRICE CHECK: Ensure both legs have ask prices within min_ask and max_ask range
+        no_ask_dollars_above = strike_above_data.get('no_ask_dollars')
+        yes_ask_dollars_below = strike_below_data.get('yes_ask_dollars')
+        
+        if not no_ask_dollars_above:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ Missing no_ask_dollars for strike above - skipping entry")
+            return
+        
+        if not yes_ask_dollars_below:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ Missing yes_ask_dollars for strike below - skipping entry")
+            return
+        
+        try:
+            no_ask_price_above = float(no_ask_dollars_above)
+            yes_ask_price_below = float(yes_ask_dollars_below)
+        except (ValueError, TypeError):
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ Invalid ask price data - skipping entry")
+            return
+        
+        # Check NO ask price at strike above
+        if no_ask_price_above < min_ask or no_ask_price_above > max_ask:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ Strike above NO ask (${no_ask_price_above:.4f}) outside range [{min_ask:.4f}, {max_ask:.4f}] - skipping entry")
+            return
+        
+        # Check YES ask price at strike below
+        if yes_ask_price_below < min_ask or yes_ask_price_below > max_ask:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ Strike below YES ask (${yes_ask_price_below:.4f}) outside range [{min_ask:.4f}, {max_ask:.4f}] - skipping entry")
+            return
+        
+        log(f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ All checks passed | Above: vol={volume_above}>={min_volume}, NO ask=${no_ask_price_above:.4f} in [{min_ask:.4f}, {max_ask:.4f}] | Below: vol={volume_below}>={min_volume}, YES ask=${yes_ask_price_below:.4f} in [{min_ask:.4f}, {max_ask:.4f}] | Momentum 30s: {momentum_30s_avg:.2f} (abs: {abs_momentum_30s:.2f}) < {cooldown_threshold:.2f}, Momentum %ile: {momentum_percentile:.2f} (abs: {abs_momentum_percentile:.2f}) < {cooldown_threshold:.2f}")
+        
+        # Enter the two trades (FLIPPED SIDES from Momentum Breakout)
+        trades_entered = 0
+        
+        # Enter NO trade at strike above (FLIPPED: Breakout enters YES here)
+        if strike_above_data:
+            no_ask_dollars = strike_above_data.get('no_ask_dollars')
+            if no_ask_dollars:
+                strike_data = {
+                    'strike': f"${int(strike_above_data.get('strike')):,}",
+                    'side': 'no',  # FLIPPED: Breakout uses 'yes' here
+                    'ticker': strike_above_data.get('ticker'),
+                    'buy_price': float(no_ask_dollars),
+                    'probability': strike_above_data.get('probability'),
+                    'diff': strike_above_data.get('no_diff')
+                }
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] 🚀 TRIGGERING NO TRADE | Strike: ${strike_above_data.get('strike'):,.0f} | Buy Price: ${float(no_ask_dollars):.2f} | Ticker: {strike_above_data.get('ticker')}")
+                if trigger_auto_entry_trade(strike_data):
+                    log(f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ NO TRADE SUCCESSFUL | Strike: ${strike_above_data.get('strike'):,.0f}")
+                    trades_entered += 1
+                else:
+                    log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ NO TRADE FAILED | Strike: ${strike_above_data.get('strike'):,.0f}")
+            else:
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Missing no_ask_dollars for strike above ${strike_above_data.get('strike'):,.0f}")
+        else:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Could not find strike above money line (current price: ${current_price:,.2f})")
+        
+        # Enter YES trade at strike below (FLIPPED: Breakout enters NO here)
+        if strike_below_data:
+            yes_ask_dollars = strike_below_data.get('yes_ask_dollars')
+            if yes_ask_dollars:
+                strike_data = {
+                    'strike': f"${int(strike_below_data.get('strike')):,}",
+                    'side': 'yes',  # FLIPPED: Breakout uses 'no' here
+                    'ticker': strike_below_data.get('ticker'),
+                    'buy_price': float(yes_ask_dollars),
+                    'probability': strike_below_data.get('probability'),
+                    'diff': strike_below_data.get('yes_diff')
+                }
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] 🚀 TRIGGERING YES TRADE | Strike: ${strike_below_data.get('strike'):,.0f} | Buy Price: ${float(yes_ask_dollars):.2f} | Ticker: {strike_below_data.get('ticker')}")
+                if trigger_auto_entry_trade(strike_data):
+                    log(f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ YES TRADE SUCCESSFUL | Strike: ${strike_below_data.get('strike'):,.0f}")
+                    trades_entered += 1
+                else:
+                    log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ YES TRADE FAILED | Strike: ${strike_below_data.get('strike'):,.0f}")
+            else:
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Missing yes_ask_dollars for strike below ${strike_below_data.get('strike'):,.0f}")
+        else:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Could not find strike below money line (current price: ${current_price:,.2f})")
+        
+        # Mark trades as entered if at least one trade was successful
+        if trades_entered > 0:
+            momentum_contain_trades_entered = True
+            # Update last contract to current contract to track which cycle we entered trades for
+            if current_contract:
+                momentum_contain_last_contract = current_contract
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ Entered {trades_entered} trade(s) for cycle {current_contract} - will hold until expiration")
+        
+    except Exception as e:
+        import traceback
+        log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ Error checking auto entry conditions: {e}")
+        log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ Traceback: {traceback.format_exc()}")
 
 def check_auto_entry_conditions_momentum_scalp():
     """Check if auto entry conditions are met and trigger trades for Momentum Scalp strategy"""
@@ -2877,7 +4329,9 @@ def start_monitoring_loop():
                 time.sleep(1)
                 
             except Exception as e:
+                import traceback
                 log(f"❌ Error in monitoring worker: {e}")
+                log(f"❌ Traceback: {traceback.format_exc()}")
                 time.sleep(5)  # Wait longer on error
         
         # Clear the global monitoring thread reference when done

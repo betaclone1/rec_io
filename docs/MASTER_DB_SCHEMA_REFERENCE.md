@@ -1,84 +1,71 @@
 # Master Database Schema Reference
 
-**Generated:** 2025-11-12 10:22:44
+**Generated:** 2026-03-03 (schema review, includes maintenance-mode system_state)
 
 This document provides a complete reference of all database schemas, tables, and columns.
 Update this document whenever schema changes are made during development.
 
 ---
 
-## Updating Your Local Database to Match This Reference
+## How to Check and Update Your Database (No Scripts)
 
-A utility script is available to automatically update your local database schema to match this reference document. This script will:
+Use this document as the source of truth. Do both steps whenever you pull schema changes or need to sync the DB.
 
-- ✅ Preserve all existing data
-- ✅ Add missing columns with appropriate defaults
-- ✅ Handle monitor-specific tables (discovers all instances automatically)
-- ✅ Skip type changes to prevent data issues
+### 1. Run code-defined migrations
 
-### Quick Start
+From the project root (e.g. `/opt/rec_io_server`), run once:
 
-**Preview changes (dry run):**
 ```bash
-cd /opt/rec_io_server
-python3 scripts/update_db_schema_to_reference.py --dry-run
+python3 -c "
+from backend.core.config.database import init_database
+ok, msg = init_database()
+print('OK:', ok, msg)
+"
 ```
 
-**Apply migrations:**
-```bash
-cd /opt/rec_io_server
-python3 scripts/update_db_schema_to_reference.py
+This applies all schema and column changes defined in `backend/core/config/database.py` (new schemas, new tables, new columns on existing tables).
+
+### 2. Check for anything still missing
+
+List what your database has and compare to this document.
+
+**List schemas and tables:**
+
+```sql
+SELECT nspname AS schema, relname AS table
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind = 'r'
+  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY 1, 2;
 ```
 
-The script will:
-1. Parse this schema reference document
-2. Compare with your existing database tables
-3. Show you all changes that will be made
-4. Ask for confirmation before applying (unless using `--dry-run`)
+Run that in `psql` or any SQL client connected to your DB. Then:
 
-### What Gets Updated
+- **Tables:** Every `Schema: X` / `Table: X.Y` in this doc should have a matching schema and table. If a table in the doc is missing, create it (step 3).
+- **Columns:** For each table that exists, open its **Columns** section in this doc and compare to your table. If a column is missing, add it (step 3).
 
-- **Missing Columns**: Added with appropriate data types and defaults
-- **Monitor-Specific Tables**: Automatically discovers and updates all instances (e.g., `monitor_list_0001`, `active_trades_0001_10002`, etc.)
-- **Column Types**: Detected but not changed (to preserve data safety)
-- **Constraints & Indexes**: Not modified (preserves existing structure)
+**Optional – list columns for one table:**
 
-### Safety Features
-
-- All existing data is preserved
-- New columns are added as nullable (if no default specified)
-- NOT NULL columns without defaults are added as nullable to prevent data issues
-- Transaction-based execution (rolls back on error)
-- Confirmation prompt before applying changes
-
-### Example Output
-
-```
-📖 Parsing schema reference...
-✅ Parsed 154 table definitions
-
-🔌 Connecting to database...
-🔍 Analyzing database schema...
-📋 Found 2 instance(s) for pattern: users.active_trades_0001_10002
-
-================================================================================
-Found 24 migration(s) to apply
-================================================================================
-
-📋 Table: users.monitor_list_0001
-   6 column(s) to add:
-   • ALTER TABLE users.monitor_list_0001 ADD COLUMN min_ask NUMERIC(6,4) DEFAULT 0.0000
-   ...
-
-⚠️  Ready to apply 24 migration(s)
-Continue? (yes/no): yes
-
-✅ Successfully applied 24 migration(s)
+```sql
+SELECT column_name, data_type, is_nullable, column_default
+FROM information_schema.columns
+WHERE table_schema = 'users' AND table_name = 'trades_0001'
+ORDER BY ordinal_position;
 ```
 
-### Documentation
+Change `table_schema` and `table_name` as needed.
 
-For more details, see: `scripts/README_db_schema_migration.md`
+### 3. Add missing tables or columns directly
+
+- **Missing table:** In this doc, find the table’s **Columns** (and **Constraints** if any). Write a `CREATE TABLE schema.name ( ... );` that matches (use `SERIAL` for integer IDs with no default, and `CREATE SCHEMA IF NOT EXISTS schema;` if the schema might not exist). Run it against your DB.
+- **Missing column:** From the table’s **Columns** section, note name, type, nullable, and default. Run:
+
+  `ALTER TABLE schema.table_name ADD COLUMN column_name type [DEFAULT value] [NOT NULL];`
+
+  Use the exact types from the doc (e.g. `NUMERIC(5,2)`, `TEXT`, `TIMESTAMP WITH TIME ZONE`). Omit NOT NULL if the column is nullable or you’re not sure.
+
+Re-run the check (step 2) until nothing is missing.
 
 ---
 
@@ -8046,6 +8033,8 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `momentum_percentile` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(15,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `movement` | `numeric(10,4)` | YES | - | Composite intra-candle range score (weighted (H-L)/O and rolling means). NULL for first 30 rows. |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile of movement vs analytics.btc_movement_profile (0.5–99.5). Movement profile tables use column **movement_value** for the value at each percentile. |
 
 #### Constraints
 
@@ -8080,6 +8069,8 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `momentum_percentile` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(15,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `movement` | `numeric(10,4)` | YES | - | Composite intra-candle range score (weighted (H-L)/O and rolling means). NULL for first 30 rows. |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile of movement vs analytics.eth_movement_profile (0.5–99.5). Movement profile tables use column **movement_value** for the value at each percentile. |
 
 #### Constraints
 
@@ -8114,6 +8105,8 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `momentum_percentile` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(15,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `movement` | `numeric(10,4)` | YES | - | Composite intra-candle range score (weighted (H-L)/O and rolling means). NULL for first 30 rows. |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile of movement vs analytics.ndx_movement_profile (0.5–99.5). Movement profile tables use column **movement_value** for the value at each percentile. |
 
 #### Constraints
 
@@ -8148,6 +8141,8 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `momentum_percentile` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(15,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `movement` | `numeric(10,4)` | YES | - | Composite intra-candle range score (weighted (H-L)/O and rolling means). NULL for first 30 rows. |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile of movement vs analytics.spx_movement_profile (0.5–99.5). Movement profile tables use column **movement_value** for the value at each percentile. |
 
 #### Constraints
 
@@ -8243,6 +8238,8 @@ For more details, see: `scripts/README_db_schema_migration.md`
 
 ### Table: `live_data.live_price_log_1s_btc`
 
+**Population (movement columns):** `move_1m` … `move_30m`, `movement`, and `movement_percentile` are written by `backend/symbol_price_watchdog.py` on each tick. High/low/open per window are derived from ticks in the same table; the weighted composite and percentile use `analytics.{symbol}_movement_profile` (which has column **movement_value** at each percentile). Same applies to `live_price_log_1s_eth`, `live_price_log_1s_spx`, and `live_price_log_1s_ndx`.
+
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
@@ -8259,8 +8256,17 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `delta_30m` | `numeric(10,4)` | YES | - | |
 | `momentum_percentile` | `numeric(5,1)` | YES | - | |
 | `momentum_5s_avg` | `numeric(5,1)` | YES | - | |
+| `momentum_30s_avg` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(10,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `move_1m` | `numeric(10,4)` | YES | - | Raw movement (high-low)/open for last 1m window. |
+| `move_2m` | `numeric(10,4)` | YES | - | Raw movement for last 2m window. |
+| `move_3m` | `numeric(10,4)` | YES | - | Raw movement for last 3m window. |
+| `move_4m` | `numeric(10,4)` | YES | - | Raw movement for last 4m window. |
+| `move_15m` | `numeric(10,4)` | YES | - | Raw movement for last 15m window. |
+| `move_30m` | `numeric(10,4)` | YES | - | Raw movement for last 30m window. |
+| `movement` | `numeric(10,4)` | YES | - | Weighted composite of move_1m..move_30m (same weights as momentum). |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile from analytics movement profile (0.5–99.5). |
 
 #### Constraints
 
@@ -8297,8 +8303,17 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `delta_30m` | `numeric(10,4)` | YES | - | |
 | `momentum_percentile` | `numeric(5,1)` | YES | - | |
 | `momentum_5s_avg` | `numeric(5,1)` | YES | - | |
+| `momentum_30s_avg` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(10,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `move_1m` | `numeric(10,4)` | YES | - | Raw movement (high-low)/open for last 1m window. |
+| `move_2m` | `numeric(10,4)` | YES | - | Raw movement for last 2m window. |
+| `move_3m` | `numeric(10,4)` | YES | - | Raw movement for last 3m window. |
+| `move_4m` | `numeric(10,4)` | YES | - | Raw movement for last 4m window. |
+| `move_15m` | `numeric(10,4)` | YES | - | Raw movement for last 15m window. |
+| `move_30m` | `numeric(10,4)` | YES | - | Raw movement for last 30m window. |
+| `movement` | `numeric(10,4)` | YES | - | Weighted composite of move_1m..move_30m (same weights as momentum). |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile from analytics movement profile (0.5–99.5). |
 
 #### Constraints
 
@@ -8335,8 +8350,17 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `delta_30m` | `numeric(10,4)` | YES | - | |
 | `momentum_percentile` | `numeric(5,1)` | YES | - | |
 | `momentum_5s_avg` | `numeric(5,1)` | YES | - | |
+| `momentum_30s_avg` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(10,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `move_1m` | `numeric(10,4)` | YES | - | Raw movement (high-low)/open for last 1m window. |
+| `move_2m` | `numeric(10,4)` | YES | - | Raw movement for last 2m window. |
+| `move_3m` | `numeric(10,4)` | YES | - | Raw movement for last 3m window. |
+| `move_4m` | `numeric(10,4)` | YES | - | Raw movement for last 4m window. |
+| `move_15m` | `numeric(10,4)` | YES | - | Raw movement for last 15m window. |
+| `move_30m` | `numeric(10,4)` | YES | - | Raw movement for last 30m window. |
+| `movement` | `numeric(10,4)` | YES | - | Weighted composite of move_1m..move_30m (same weights as momentum). |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile from analytics movement profile (0.5–99.5). |
 
 #### Constraints
 
@@ -8373,8 +8397,17 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `delta_30m` | `numeric(10,4)` | YES | - | |
 | `momentum_percentile` | `numeric(5,1)` | YES | - | |
 | `momentum_5s_avg` | `numeric(5,1)` | YES | - | |
+| `momentum_30s_avg` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(10,6)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `move_1m` | `numeric(10,4)` | YES | - | Raw movement (high-low)/open for last 1m window. |
+| `move_2m` | `numeric(10,4)` | YES | - | Raw movement for last 2m window. |
+| `move_3m` | `numeric(10,4)` | YES | - | Raw movement for last 3m window. |
+| `move_4m` | `numeric(10,4)` | YES | - | Raw movement for last 4m window. |
+| `move_15m` | `numeric(10,4)` | YES | - | Raw movement for last 15m window. |
+| `move_30m` | `numeric(10,4)` | YES | - | Raw movement for last 30m window. |
+| `movement` | `numeric(10,4)` | YES | - | Weighted composite of move_1m..move_30m (same weights as momentum). |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile from analytics movement profile (0.5–99.5). |
 
 #### Constraints
 
@@ -8393,15 +8426,65 @@ For more details, see: `scripts/README_db_schema_migration.md`
 
 ---
 
-### Table: `live_data.market_kalshi_btc`
+### Table: `live_data.live_symbol_status`
 
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_btc_id_seq'::r... | |
+| `id` | `integer(32)` | NO | nextval('live_data.live_symbol_status_id_seq'::regclass) | |
+| `symbol` | `character varying(20)` | YES | - | |
+| `timestamp` | `text` | YES | - | |
+| `price` | `numeric(10,2)` | YES | - | |
+| `one_minute_avg` | `numeric(10,2)` | YES | - | |
+| `momentum` | `numeric(10,4)` | YES | - | |
+| `delta_1m` | `numeric(10,4)` | YES | - | |
+| `delta_2m` | `numeric(10,4)` | YES | - | |
+| `delta_3m` | `numeric(10,4)` | YES | - | |
+| `delta_4m` | `numeric(10,4)` | YES | - | |
+| `delta_15m` | `numeric(10,4)` | YES | - | |
+| `delta_30m` | `numeric(10,4)` | YES | - | |
+| `momentum_percentile` | `numeric(5,1)` | YES | - | |
+| `momentum_5s_avg` | `numeric(5,1)` | YES | - | |
+| `volatility` | `numeric(10,6)` | YES | - | |
+| `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `momentum_30s_avg` | `numeric(5,1)` | YES | - | |
+| `move_1m` | `numeric(10,4)` | YES | - | |
+| `move_2m` | `numeric(10,4)` | YES | - | |
+| `move_3m` | `numeric(10,4)` | YES | - | |
+| `move_4m` | `numeric(10,4)` | YES | - | |
+| `move_15m` | `numeric(10,4)` | YES | - | |
+| `move_30m` | `numeric(10,4)` | YES | - | |
+| `movement` | `numeric(10,4)` | YES | - | |
+| `movement_percentile` | `numeric(5,1)` | YES | - | |
+| `prev_day_avg_momentum_percentile` | `numeric(5,1)` | YES | - | |
+| `prev_day_avg_volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `prev_day_avg_movement_percentile` | `numeric(5,1)` | YES | - | |
+| `daily_update` | `text` | YES | - | |
+
+#### Constraints
+
+- **Primary Key:** `live_symbol_status_pkey` on `id`
+
+#### Indexes
+
+- `live_symbol_status_pkey`
+  ```sql
+  CREATE UNIQUE INDEX live_symbol_status_pkey ON live_data.live_symbol_status USING btree (id)
+  ```
+
+---
+
+### Table: `live_data.market_kalshi_hourly_btc`
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_hourly_btc_id_seq'::r... | |
 | `event_ticker` | `character varying(50)` | NO | - | |
 | `market_ticker` | `character varying(100)` | NO | - | |
+| `market` | `text` | YES | 'hourly' | Interval: hourly or 15m |
 | `strike` | `character varying(20)` | YES | - | |
 | `yes_bid` | `integer(32)` | YES | - | |
 | `yes_ask` | `integer(32)` | YES | - | |
@@ -8432,24 +8515,25 @@ For more details, see: `scripts/README_db_schema_migration.md`
 
 - `market_kalshi_btc_event_market_unique`
   ```sql
-  CREATE UNIQUE INDEX market_kalshi_btc_event_market_unique ON live_data.market_kalshi_btc USING btree (event_ticker, market_ticker)
+  CREATE UNIQUE INDEX market_kalshi_btc_event_market_unique ON live_data.market_kalshi_hourly_btc USING btree (event_ticker, market_ticker)
   ```
 - `market_kalshi_btc_pkey`
   ```sql
-  CREATE UNIQUE INDEX market_kalshi_btc_pkey ON live_data.market_kalshi_btc USING btree (id)
+  CREATE UNIQUE INDEX market_kalshi_btc_pkey ON live_data.market_kalshi_hourly_btc USING btree (id)
   ```
 
 ---
 
-### Table: `live_data.market_kalshi_eth`
+### Table: `live_data.market_kalshi_hourly_eth`
 
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_eth_id_seq'::r... | |
+| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_hourly_eth_id_seq'::r... | |
 | `event_ticker` | `character varying(50)` | NO | - | |
 | `market_ticker` | `character varying(100)` | NO | - | |
+| `market` | `text` | YES | - | Interval: 'hourly' or '15m' |
 | `strike` | `character varying(20)` | YES | - | |
 | `yes_bid` | `integer(32)` | YES | - | |
 | `yes_ask` | `integer(32)` | YES | - | |
@@ -8480,24 +8564,25 @@ For more details, see: `scripts/README_db_schema_migration.md`
 
 - `market_kalshi_eth_event_market_unique`
   ```sql
-  CREATE UNIQUE INDEX market_kalshi_eth_event_market_unique ON live_data.market_kalshi_eth USING btree (event_ticker, market_ticker)
+  CREATE UNIQUE INDEX market_kalshi_eth_event_market_unique ON live_data.market_kalshi_hourly_eth USING btree (event_ticker, market_ticker)
   ```
 - `market_kalshi_eth_pkey`
   ```sql
-  CREATE UNIQUE INDEX market_kalshi_eth_pkey ON live_data.market_kalshi_eth USING btree (id)
+  CREATE UNIQUE INDEX market_kalshi_eth_pkey ON live_data.market_kalshi_hourly_eth USING btree (id)
   ```
 
 ---
 
-### Table: `live_data.market_kalshi_ndx`
+### Table: `live_data.market_kalshi_hourly_ndx`
 
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_spx_id_seq'::r... | |
+| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_hourly_ndx_id_seq'::r... | |
 | `event_ticker` | `character varying(50)` | NO | - | |
 | `market_ticker` | `character varying(100)` | NO | - | |
+| `market` | `text` | YES | - | Interval: 'hourly' or '15m' |
 | `strike` | `character varying(20)` | YES | - | |
 | `yes_bid` | `integer(32)` | YES | - | |
 | `yes_ask` | `integer(32)` | YES | - | |
@@ -8532,28 +8617,29 @@ For more details, see: `scripts/README_db_schema_migration.md`
 
 - `market_kalshi_ndx_event_market_unique`
   ```sql
-  CREATE UNIQUE INDEX market_kalshi_ndx_event_market_unique ON live_data.market_kalshi_ndx USING btree (event_ticker, market_ticker)
+  CREATE UNIQUE INDEX market_kalshi_ndx_event_market_unique ON live_data.market_kalshi_hourly_ndx USING btree (event_ticker, market_ticker)
   ```
 - `market_kalshi_ndx_event_ticker_market_ticker_key`
   ```sql
-  CREATE UNIQUE INDEX market_kalshi_ndx_event_ticker_market_ticker_key ON live_data.market_kalshi_ndx USING btree (event_ticker, market_ticker)
+  CREATE UNIQUE INDEX market_kalshi_ndx_event_ticker_market_ticker_key ON live_data.market_kalshi_hourly_ndx USING btree (event_ticker, market_ticker)
   ```
 - `market_kalshi_ndx_pkey`
   ```sql
-  CREATE UNIQUE INDEX market_kalshi_ndx_pkey ON live_data.market_kalshi_ndx USING btree (id)
+  CREATE UNIQUE INDEX market_kalshi_ndx_pkey ON live_data.market_kalshi_hourly_ndx USING btree (id)
   ```
 
 ---
 
-### Table: `live_data.market_kalshi_spx`
+### Table: `live_data.market_kalshi_hourly_spx`
 
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_spx_id_seq'::r... | |
+| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_hourly_spx_id_seq'::r... | |
 | `event_ticker` | `character varying(50)` | NO | - | |
 | `market_ticker` | `character varying(100)` | NO | - | |
+| `market` | `text` | YES | - | Interval: 'hourly' or '15m' |
 | `strike` | `character varying(20)` | YES | - | |
 | `yes_bid` | `integer(32)` | YES | - | |
 | `yes_ask` | `integer(32)` | YES | - | |
@@ -8584,11 +8670,107 @@ For more details, see: `scripts/README_db_schema_migration.md`
 
 - `market_kalshi_spx_event_market_unique`
   ```sql
-  CREATE UNIQUE INDEX market_kalshi_spx_event_market_unique ON live_data.market_kalshi_spx USING btree (event_ticker, market_ticker)
+  CREATE UNIQUE INDEX market_kalshi_spx_event_market_unique ON live_data.market_kalshi_hourly_spx USING btree (event_ticker, market_ticker)
   ```
 - `market_kalshi_spx_pkey`
   ```sql
-  CREATE UNIQUE INDEX market_kalshi_spx_pkey ON live_data.market_kalshi_spx USING btree (id)
+  CREATE UNIQUE INDEX market_kalshi_spx_pkey ON live_data.market_kalshi_hourly_spx USING btree (id)
+  ```
+
+---
+
+### Table: `live_data.market_kalshi_15m_btc`
+
+Kalshi 15-minute market data for BTC. One row per current 15m window; truncated and repopulated on each rollover. `strike` is backfilled from `live_data.live_price_log_1s_btc`.`one_minute_avg` at the market's opening time (start of the 15m window).
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_15m_btc_id_seq'::regclass) | |
+| `event_ticker` | `character varying(50)` | NO | - | |
+| `market_ticker` | `character varying(100)` | NO | - | |
+| `market` | `text` | YES | '15m' | Interval: 'hourly' or '15m' |
+| `strike` | `character varying(20)` | YES | - | Backfilled from 1s price log at opening time |
+| `yes_bid` | `integer(32)` | YES | - | |
+| `yes_ask` | `integer(32)` | YES | - | |
+| `no_bid` | `integer(32)` | YES | - | |
+| `no_ask` | `integer(32)` | YES | - | |
+| `last_price` | `integer(32)` | YES | - | |
+| `volume` | `integer(32)` | YES | - | |
+| `volume_24h` | `integer(32)` | YES | - | |
+| `open_interest` | `integer(32)` | YES | - | |
+| `liquidity` | `integer(32)` | YES | - | |
+| `created_at` | `timestamp with time zone` | YES | now() | |
+| `updated_at` | `timestamp with time zone` | YES | now() | |
+| `yes_bid_dollars` | `text` | YES | - | |
+| `yes_ask_dollars` | `text` | YES | - | |
+| `no_bid_dollars` | `text` | YES | - | |
+| `no_ask_dollars` | `text` | YES | - | |
+| `last_price_dollars` | `text` | YES | - | |
+
+#### Constraints
+
+- **Primary Key:** `market_kalshi_15m_btc_pkey` on `id`
+- **Unique:** `market_kalshi_15m_btc_event_market_unique` on `(event_ticker, market_ticker)`
+
+#### Indexes
+
+- `market_kalshi_15m_btc_event_market_unique`
+  ```sql
+  CREATE UNIQUE INDEX market_kalshi_15m_btc_event_market_unique ON live_data.market_kalshi_15m_btc USING btree (event_ticker, market_ticker)
+  ```
+- `market_kalshi_15m_btc_pkey`
+  ```sql
+  CREATE UNIQUE INDEX market_kalshi_15m_btc_pkey ON live_data.market_kalshi_15m_btc USING btree (id)
+  ```
+
+---
+
+### Table: `live_data.market_kalshi_15m_eth`
+
+Kalshi 15-minute market data for ETH. One row per current 15m window; truncated and repopulated on each rollover. `strike` is backfilled from `live_data.live_price_log_1s_eth`.`one_minute_avg` at the market's opening time (start of the 15m window).
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_15m_eth_id_seq'::regclass) | |
+| `event_ticker` | `character varying(50)` | NO | - | |
+| `market_ticker` | `character varying(100)` | NO | - | |
+| `market` | `text` | YES | '15m' | Interval: 'hourly' or '15m' |
+| `strike` | `character varying(20)` | YES | - | Backfilled from 1s price log at opening time |
+| `yes_bid` | `integer(32)` | YES | - | |
+| `yes_ask` | `integer(32)` | YES | - | |
+| `no_bid` | `integer(32)` | YES | - | |
+| `no_ask` | `integer(32)` | YES | - | |
+| `last_price` | `integer(32)` | YES | - | |
+| `volume` | `integer(32)` | YES | - | |
+| `volume_24h` | `integer(32)` | YES | - | |
+| `open_interest` | `integer(32)` | YES | - | |
+| `liquidity` | `integer(32)` | YES | - | |
+| `created_at` | `timestamp with time zone` | YES | now() | |
+| `updated_at` | `timestamp with time zone` | YES | now() | |
+| `yes_bid_dollars` | `text` | YES | - | |
+| `yes_ask_dollars` | `text` | YES | - | |
+| `no_bid_dollars` | `text` | YES | - | |
+| `no_ask_dollars` | `text` | YES | - | |
+| `last_price_dollars` | `text` | YES | - | |
+
+#### Constraints
+
+- **Primary Key:** `market_kalshi_15m_eth_pkey` on `id`
+- **Unique:** `market_kalshi_15m_eth_event_market_unique` on `(event_ticker, market_ticker)`
+
+#### Indexes
+
+- `market_kalshi_15m_eth_event_market_unique`
+  ```sql
+  CREATE UNIQUE INDEX market_kalshi_15m_eth_event_market_unique ON live_data.market_kalshi_15m_eth USING btree (event_ticker, market_ticker)
+  ```
+- `market_kalshi_15m_eth_pkey`
+  ```sql
+  CREATE UNIQUE INDEX market_kalshi_15m_eth_pkey ON live_data.market_kalshi_15m_eth USING btree (id)
   ```
 
 ---
@@ -8657,15 +8839,16 @@ For more details, see: `scripts/README_db_schema_migration.md`
 
 ---
 
-### Table: `live_data.strike_table_btc`
+### Table: `live_data.strike_table_hourly_btc`
 
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.strike_table_btc_id_seq'::re... | |
+| `id` | `integer(32)` | NO | nextval('live_data.strike_table_hourly_btc_id_seq'::re... | |
 | `timestamp` | `timestamp with time zone` | YES | now() | |
 | `symbol` | `character varying(10)` | YES | - | |
+| `market` | `text` | YES | 'hourly' | Interval: 'hourly' or '15m' |
 | `current_price` | `numeric(10,2)` | YES | - | |
 | `ttc_seconds` | `integer(32)` | YES | - | |
 | `broker` | `character varying(20)` | YES | - | |
@@ -8693,6 +8876,10 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `no_bid_dollars` | `text` | YES | - | |
 | `yes_price_spread` | `numeric(6,4)` | YES | - | |
 | `no_price_spread` | `numeric(6,4)` | YES | - | |
+| `volatility` | `numeric(10,6)` | YES | - | From live price log; current-minute volatility. |
+| `volatility_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics volatility profile. |
+| `movement` | `numeric(10,4)` | YES | - | From live price log; weighted composite (H-L)/O. |
+| `movement_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics movement profile. |
 
 #### Constraints
 
@@ -8703,28 +8890,29 @@ For more details, see: `scripts/README_db_schema_migration.md`
 
 - `idx_strike_table_btc_lookup`
   ```sql
-  CREATE INDEX idx_strike_table_btc_lookup ON live_data.strike_table_btc USING btree ("timestamp", symbol, current_price)
+  CREATE INDEX idx_strike_table_btc_lookup ON live_data.strike_table_hourly_btc USING btree ("timestamp", symbol, current_price)
   ```
 - `strike_table_btc_pkey`
   ```sql
-  CREATE UNIQUE INDEX strike_table_btc_pkey ON live_data.strike_table_btc USING btree (id)
+  CREATE UNIQUE INDEX strike_table_btc_pkey ON live_data.strike_table_hourly_btc USING btree (id)
   ```
 - `strike_table_btc_strike_unique`
   ```sql
-  CREATE UNIQUE INDEX strike_table_btc_strike_unique ON live_data.strike_table_btc USING btree (strike)
+  CREATE UNIQUE INDEX strike_table_btc_strike_unique ON live_data.strike_table_hourly_btc USING btree (strike)
   ```
 
 ---
 
-### Table: `live_data.strike_table_eth`
+### Table: `live_data.strike_table_hourly_eth`
 
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.strike_table_eth_id_seq'::re... | |
+| `id` | `integer(32)` | NO | nextval('live_data.strike_table_hourly_eth_id_seq'::re... | |
 | `timestamp` | `timestamp with time zone` | YES | now() | |
 | `symbol` | `character varying(10)` | YES | - | |
+| `market` | `text` | YES | 'hourly' | Interval: 'hourly' or '15m' |
 | `current_price` | `numeric(10,2)` | YES | - | |
 | `ttc_seconds` | `integer(32)` | YES | - | |
 | `broker` | `character varying(20)` | YES | - | |
@@ -8752,6 +8940,10 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `no_bid_dollars` | `text` | YES | - | |
 | `yes_price_spread` | `numeric(6,4)` | YES | - | |
 | `no_price_spread` | `numeric(6,4)` | YES | - | |
+| `volatility` | `numeric(10,6)` | YES | - | From live price log; current-minute volatility. |
+| `volatility_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics volatility profile. |
+| `movement` | `numeric(10,4)` | YES | - | From live price log; weighted composite (H-L)/O. |
+| `movement_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics movement profile. |
 
 #### Constraints
 
@@ -8761,24 +8953,25 @@ For more details, see: `scripts/README_db_schema_migration.md`
 
 - `idx_strike_table_eth_lookup`
   ```sql
-  CREATE INDEX idx_strike_table_eth_lookup ON live_data.strike_table_eth USING btree ("timestamp", symbol, current_price)
+  CREATE INDEX idx_strike_table_eth_lookup ON live_data.strike_table_hourly_eth USING btree ("timestamp", symbol, current_price)
   ```
 - `strike_table_eth_pkey`
   ```sql
-  CREATE UNIQUE INDEX strike_table_eth_pkey ON live_data.strike_table_eth USING btree (id)
+  CREATE UNIQUE INDEX strike_table_eth_pkey ON live_data.strike_table_hourly_eth USING btree (id)
   ```
 
 ---
 
-### Table: `live_data.strike_table_ndx`
+### Table: `live_data.strike_table_hourly_ndx`
 
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.strike_table_btc_id_seq'::re... | |
+| `id` | `integer(32)` | NO | nextval('live_data.strike_table_hourly_ndx_id_seq'::re... | |
 | `timestamp` | `timestamp with time zone` | YES | now() | |
 | `symbol` | `character varying(10)` | YES | - | |
+| `market` | `text` | YES | 'hourly' | Interval: 'hourly' or '15m' |
 | `current_price` | `numeric(10,2)` | YES | - | |
 | `ttc_seconds` | `integer(32)` | YES | - | |
 | `broker` | `character varying(20)` | YES | - | |
@@ -8806,6 +8999,10 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `no_bid_dollars` | `text` | YES | - | |
 | `yes_price_spread` | `numeric(6,4)` | YES | - | |
 | `no_price_spread` | `numeric(6,4)` | YES | - | |
+| `volatility` | `numeric(10,6)` | YES | - | From live price log; current-minute volatility. |
+| `volatility_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics volatility profile. |
+| `movement` | `numeric(10,4)` | YES | - | From live price log; weighted composite (H-L)/O. |
+| `movement_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics movement profile. |
 
 #### Constraints
 
@@ -8816,36 +9013,37 @@ For more details, see: `scripts/README_db_schema_migration.md`
 
 - `idx_strike_table_ndx_lookup`
   ```sql
-  CREATE INDEX idx_strike_table_ndx_lookup ON live_data.strike_table_ndx USING btree ("timestamp", symbol, current_price)
+  CREATE INDEX idx_strike_table_ndx_lookup ON live_data.strike_table_hourly_ndx USING btree ("timestamp", symbol, current_price)
   ```
 - `strike_table_ndx_pkey`
   ```sql
-  CREATE UNIQUE INDEX strike_table_ndx_pkey ON live_data.strike_table_ndx USING btree (id)
+  CREATE UNIQUE INDEX strike_table_ndx_pkey ON live_data.strike_table_hourly_ndx USING btree (id)
   ```
 - `strike_table_ndx_strike_key`
   ```sql
-  CREATE UNIQUE INDEX strike_table_ndx_strike_key ON live_data.strike_table_ndx USING btree (strike)
+  CREATE UNIQUE INDEX strike_table_ndx_strike_key ON live_data.strike_table_hourly_ndx USING btree (strike)
   ```
 - `strike_table_ndx_timestamp_symbol_current_price_idx`
   ```sql
-  CREATE INDEX strike_table_ndx_timestamp_symbol_current_price_idx ON live_data.strike_table_ndx USING btree ("timestamp", symbol, current_price)
+  CREATE INDEX strike_table_ndx_timestamp_symbol_current_price_idx ON live_data.strike_table_hourly_ndx USING btree ("timestamp", symbol, current_price)
   ```
 - `strike_table_ndx_timestamp_symbol_current_price_idx1`
   ```sql
-  CREATE INDEX strike_table_ndx_timestamp_symbol_current_price_idx1 ON live_data.strike_table_ndx USING btree ("timestamp", symbol, current_price)
+  CREATE INDEX strike_table_ndx_timestamp_symbol_current_price_idx1 ON live_data.strike_table_hourly_ndx USING btree ("timestamp", symbol, current_price)
   ```
 
 ---
 
-### Table: `live_data.strike_table_spx`
+### Table: `live_data.strike_table_hourly_spx`
 
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.strike_table_btc_id_seq'::re... | |
+| `id` | `integer(32)` | NO | nextval('live_data.strike_table_hourly_spx_id_seq'::re... | |
 | `timestamp` | `timestamp with time zone` | YES | now() | |
 | `symbol` | `character varying(10)` | YES | - | |
+| `market` | `text` | YES | 'hourly' | Interval: 'hourly' or '15m' |
 | `current_price` | `numeric(10,2)` | YES | - | |
 | `ttc_seconds` | `integer(32)` | YES | - | |
 | `broker` | `character varying(20)` | YES | - | |
@@ -8873,6 +9071,10 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `no_bid_dollars` | `text` | YES | - | |
 | `yes_price_spread` | `numeric(6,4)` | YES | - | |
 | `no_price_spread` | `numeric(6,4)` | YES | - | |
+| `volatility` | `numeric(10,6)` | YES | - | From live price log; current-minute volatility. |
+| `volatility_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics volatility profile. |
+| `movement` | `numeric(10,4)` | YES | - | From live price log; weighted composite (H-L)/O. |
+| `movement_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics movement profile. |
 
 #### Constraints
 
@@ -8883,20 +9085,40 @@ For more details, see: `scripts/README_db_schema_migration.md`
 
 - `idx_strike_table_spx_lookup`
   ```sql
-  CREATE INDEX idx_strike_table_spx_lookup ON live_data.strike_table_spx USING btree ("timestamp", symbol, current_price)
+  CREATE INDEX idx_strike_table_spx_lookup ON live_data.strike_table_hourly_spx USING btree ("timestamp", symbol, current_price)
   ```
 - `strike_table_spx_pkey`
   ```sql
-  CREATE UNIQUE INDEX strike_table_spx_pkey ON live_data.strike_table_spx USING btree (id)
+  CREATE UNIQUE INDEX strike_table_spx_pkey ON live_data.strike_table_hourly_spx USING btree (id)
   ```
 - `strike_table_spx_strike_key`
   ```sql
-  CREATE UNIQUE INDEX strike_table_spx_strike_key ON live_data.strike_table_spx USING btree (strike)
+  CREATE UNIQUE INDEX strike_table_spx_strike_key ON live_data.strike_table_hourly_spx USING btree (strike)
   ```
 - `strike_table_spx_timestamp_symbol_current_price_idx`
   ```sql
-  CREATE INDEX strike_table_spx_timestamp_symbol_current_price_idx ON live_data.strike_table_spx USING btree ("timestamp", symbol, current_price)
+  CREATE INDEX strike_table_spx_timestamp_symbol_current_price_idx ON live_data.strike_table_hourly_spx USING btree ("timestamp", symbol, current_price)
   ```
+
+---
+
+### Table: `live_data.strike_table_15m_btc`
+
+15-minute strike table for BTC. Single strike per table; `market` = '15m'. Same column set as `strike_table_hourly_btc` with `market` TEXT DEFAULT '15m'.
+
+#### Columns
+
+Same as `live_data.strike_table_hourly_btc` with the addition of `market` (TEXT, default '15m') after `symbol`.
+
+---
+
+### Table: `live_data.strike_table_15m_eth`
+
+15-minute strike table for ETH. Single strike per table; `market` = '15m'. Same column set as `strike_table_hourly_eth` with `market` TEXT DEFAULT '15m'.
+
+#### Columns
+
+Same as `live_data.strike_table_hourly_eth` with the addition of `market` (TEXT, default '15m') after `symbol`.
 
 ---
 
@@ -9356,6 +9578,7 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `id` | `integer(32)` | NO | nextval('testing.market_kalshi_btc_websocket_id... | |
 | `event_ticker` | `character varying(50)` | NO | - | |
 | `market_ticker` | `character varying(100)` | NO | - | |
+| `market` | `text` | YES | - | Interval: 'hourly' or '15m' |
 | `strike` | `character varying(20)` | YES | - | |
 | `yes_bid` | `integer(32)` | YES | - | |
 | `yes_ask` | `integer(32)` | YES | - | |
@@ -9539,6 +9762,7 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `monitor_view_mode` | `character varying(10)` | YES | 'tile'::character varying | |
 | `monitor_sort_by` | `character varying(20)` | YES | 'name'::character varying | |
 | `allocation_view` | `character varying(10)` | YES | 'pie'::character varying | |
+| `portfolio_view` | `text` | YES | 'portfolio' | Which portfolio panel tab is active: `bankroll`, `portfolio`, or `pnl`. Persisted when user changes the tab. |
 
 #### Constraints
 
@@ -9786,6 +10010,7 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `id` | `integer(32)` | NO | nextval('users.monitor_list_0001_id_seq'::regcl... | |
 | `name` | `character varying(255)` | NO | - | |
 | `symbol` | `character varying(20)` | NO | - | |
+| `market` | `text` | YES | 'hourly' | Market interval: 'hourly' or '15m'. |
 | `strategy` | `character varying(100)` | YES | - | |
 | `auto_trade` | `boolean` | YES | false | |
 | `auto_trade_status` | `character varying(20)` | YES | 'inactive'::character varying | |
@@ -9804,6 +10029,8 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `dashboard_order` | `integer(32)` | YES | 1 | |
 | `cooldown_timer` | `integer(32)` | YES | 0 | |
 | `cooldown_start_time` | `timestamp with time zone` | YES | - | |
+| `min_cooldown_timer` | `integer(32)` | YES | 300 | Minimum cooldown timer value (in seconds) required for auto entry activation. Strategy will not activate if cooldown_timer is below this value. |
+| `max_cooldown_timer` | `integer(32)` | YES | 3300 | Maximum cooldown timer value (in seconds) allowed for auto entry activation. Strategy will not activate if cooldown_timer is above this value. |
 | `updated_at` | `timestamp with time zone` | YES | CURRENT_TIMESTAMP | |
 | `created_strategy` | `timestamp without time zone` | YES | - | |
 | `updated_strategy` | `timestamp without time zone` | YES | - | |
@@ -9844,6 +10071,8 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `current_max_pct_exposure` | `numeric(10,2)` | YES | 0.25 | |
 | `performance_based_allocation` | `boolean` | NO | false | |
 | `max_price_spread` | `numeric(6,4)` | YES | 0.0300 | |
+| `paper_trade` | `boolean` | YES | false | |
+| `prob_adj` | `numeric(5,2)` | YES | 5.00 | |
 
 #### Constraints
 
@@ -10029,6 +10258,21 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `momentum_scalp_entry_threshold` | `numeric(5,2)` | YES | NULL::numeric | |
 | `momentum_scalp_trailing_stop_amount` | `numeric(5,2)` | YES | 0.10 | |
 | `momentum_scalp_profit_target` | `numeric(5,2)` | YES | 0.99 | |
+| `win_streak_threshold` | `integer(32)` | YES | 22 | |
+| `loss_prevention` | `character varying(50)` | YES | 'none'::character varying | |
+| `loss_prevention_toggle` | `boolean` | YES | true | |
+| `performance_based_allocation` | `boolean` | NO | false | |
+| `max_price_spread` | `numeric(6,4)` | YES | 0.0300 | |
+| `paper_trade` | `boolean` | YES | false | |
+| `prob_adj` | `numeric(5,2)` | YES | 5.00 | |
+| `min_ask` | `numeric(6,4)` | YES | 0.0000 | |
+| `max_ask` | `numeric(6,4)` | YES | 0.9800 | |
+| `position_size` | `integer(32)` | YES | 1 | |
+| `position_type` | `character varying(20)` | YES | 'percent'::character varying | |
+| `multiplier` | `numeric(3,2)` | YES | 1.00 | |
+| `max_profit` | `numeric(6,4)` | YES | 0.9900 | |
+| `min_cooldown_timer` | `integer(32)` | YES | 300 | Minimum cooldown timer value (in seconds) required for auto entry activation. Strategy will not activate if cooldown_timer is below this value. |
+| `max_cooldown_timer` | `integer(32)` | YES | 3300 | Maximum cooldown timer value (in seconds) allowed for auto entry activation. Strategy will not activate if cooldown_timer is above this value. |
 
 #### Constraints
 
@@ -10039,6 +10283,37 @@ For more details, see: `scripts/README_db_schema_migration.md`
 - `strategy_list_0001_pkey`
   ```sql
   CREATE UNIQUE INDEX strategy_list_0001_pkey ON users.strategy_list_0001 USING btree (id)
+  ```
+
+---
+
+### Table: `users.subaccounts_0001`
+
+Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Master Trading Bankroll, Cash Transfer) sum to PRIMARY. Updated by kalshi_account_sync when positions = 0. Balances in cents.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | nextval('users.subaccounts_0001_id_seq'::regclass) | |
+| `subaccount` | `text` | NO | '*** SUBACCOUNT NAME ***'::text | Name: PRIMARY, Master Trading Bankroll, Cash Transfer |
+| `balance` | `integer(32)` | NO | 0 | Balance in cents. PRIMARY = total portfolio; MTB = PRIMARY − Cash Transfer |
+| `base_value` | `integer(32)` | YES | - | Starting value in cents (MTB). Used for realized_pnl and rake reset |
+| `realized_pnl` | `integer(32)` | YES | - | balance − base_value in cents (MTB) |
+| `realized_pnl_pct` | `real(24)` | YES | - | (balance − base_value) / base_value as fraction, 4 decimal places (e.g. 0.0148) |
+| `target_pnl__pct` | `real(24)` | YES | - | Target fraction (e.g. 0.01 = 1%). When realized_pnl_pct ≥ this, internal transfer runs (if automatic_transfers) |
+| `transfer_amt` | `real(24)` | YES | - | Transfer as fraction of base_value (e.g. 0.005 = 0.5%). Amount raked = transfer_amt × base_value |
+| `automatic_transfers` | `boolean` | NO | false | If TRUE, target-based internal transfers are initiated by account sync; user-definable per subaccount |
+
+#### Constraints
+
+- **Primary Key:** `subaccounts_0001_pkey` on `id`
+
+#### Indexes
+
+- `subaccounts_0001_pkey`
+  ```sql
+  CREATE UNIQUE INDEX subaccounts_0001_pkey ON users.subaccounts_0001 USING btree (id)
   ```
 
 ---
@@ -10094,6 +10369,8 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `day_saturday` | `boolean` | YES | true | |
 | `chart_view` | `text` | YES | 'pnl'::text | |
 | `pct_mode` | `boolean` | YES | false | |
+| `live_filter` | `boolean` | YES | true | |
+| `paper_filter` | `boolean` | YES | false | |
 
 #### Constraints
 
@@ -10162,6 +10439,9 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `symbol_close` | `real(24)` | YES | - | |
 | `momentum` | `integer(32)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `volatility` | `numeric(10,4)` | YES | - | Raw volatility at trade time (same format as momentum in price history). |
+| `movement` | `numeric(10,4)` | YES | - | Composite intra-candle movement at trade time (same format as momentum). |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Movement percentile 0.5–99.5 (same format as momentum_percentile). |
 | `win_loss` | `text` | YES | - | |
 | `ticker` | `text` | YES | - | |
 | `ticket_id` | `text` | YES | - | |
@@ -10187,6 +10467,48 @@ For more details, see: `scripts/README_db_schema_migration.md`
 | `loss_prevention` | `boolean` | YES | false | |
 | `multiplier` | `numeric(10,2)` | YES | - | |
 | `price_spread` | `numeric(6,4)` | YES | - | |
+| `paper_trade` | `boolean` | YES | false | |
+| `cooldown_timer` | `integer(32)` | YES | - | |
+| `monitor_confirmed` | `boolean` | YES | false | |
+| `cycle_win_loss` | `text` | YES | - | |
+| `cycle_pnl` | `real(24)` | YES | - | |
+| `cycle_ret_pct` | `real(24)` | YES | - | |
+
+**Note on cycle-level columns (`cycle_win_loss`, `cycle_pnl`, `cycle_ret_pct`):**
+These columns store cycle-level metrics grouped by monitor + contract + date combination. For backfilling:
+- `cycle_pnl` = SUM(pnl) for all trades in that monitor+contract+date cycle
+- `cycle_ret_pct` = SUM(ret_pct) for all trades in that monitor+contract+date cycle (simple sum, not recalculated)
+- `cycle_win_loss` = 'W' if cycle_pnl > 0, 'L' otherwise
+
+Example backfill SQL:
+```sql
+WITH cycle_stats AS (
+    SELECT 
+        monitor,
+        contract,
+        date,
+        SUM(pnl) as total_pnl,
+        SUM(ret_pct) as total_ret_pct
+    FROM users.trades_0001
+    WHERE monitor IS NOT NULL 
+      AND contract IS NOT NULL
+      AND date IS NOT NULL
+      AND status IN ('closed', 'expired')
+      AND pnl IS NOT NULL
+      AND ret_pct IS NOT NULL
+    GROUP BY monitor, contract, date
+)
+UPDATE users.trades_0001 t
+SET 
+    cycle_pnl = cs.total_pnl,
+    cycle_ret_pct = cs.total_ret_pct,
+    cycle_win_loss = CASE WHEN cs.total_pnl > 0 THEN 'W' ELSE 'L' END
+FROM cycle_stats cs
+WHERE t.monitor = cs.monitor 
+  AND t.contract = cs.contract
+  AND t.date = cs.date
+  AND t.status IN ('closed', 'expired');
+```
 
 #### Constraints
 
@@ -10233,6 +10555,35 @@ For more details, see: `scripts/README_db_schema_migration.md`
 - `trades_0001_weekly_cycle_idx`
   ```sql
   CREATE INDEX trades_0001_weekly_cycle_idx ON users.trades_0001 USING btree (weekly_cycle)
+  ```
+
+---
+
+### Table: `users.transfers_0001`
+
+Log of transfers: internal (between subaccounts, e.g. Master Trading Bankroll → Cash Transfer) or external (to bank; not used yet). Rows created by kalshi_account_sync when it runs an internal transfer, or (future) when a manual transfer is recorded.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | nextval('users.transfers_0001_id_seq'::regclass) | |
+| `timestamp` | `text` | NO | - | When the transfer occurred; EST with date (e.g. YYYY-MM-DD HH:MM:SS) |
+| `type` | `text` | YES | - | `internal` (between subaccounts) or `external` (to bank; future) |
+| `from` | `text` | YES | - | Source subaccount name (e.g. Master Trading Bankroll) |
+| `to` | `text` | YES | - | Destination subaccount name (e.g. Cash Transfer) |
+| `amount` | `integer(32)` | YES | - | Transfer amount in cents |
+| `initiated` | `text` | YES | - | `automatic` (script) or `manual` (future) |
+
+#### Constraints
+
+- **Primary Key:** `transfers_0001_pkey` on `id`
+
+#### Indexes
+
+- `transfers_0001_pkey`
+  ```sql
+  CREATE UNIQUE INDEX transfers_0001_pkey ON users.transfers_0001 USING btree (id)
   ```
 
 ---
@@ -10378,6 +10729,32 @@ For more details, see: `scripts/README_db_schema_migration.md`
 
 ---
 
+### Table: `work_progress.ttc_progress_eth`
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `ttc_seconds` | `integer(32)` | NO | - | |
+| `status` | `character varying(20)` | YES | 'pending'::character varying | |
+| `started_at` | `timestamp without time zone` | YES | - | |
+| `completed_at` | `timestamp without time zone` | YES | - | |
+| `rows_generated` | `integer(32)` | YES | 0 | |
+| `error_message` | `text` | YES | - | |
+
+#### Constraints
+
+- **Primary Key:** `ttc_progress_eth_pkey` on `ttc_seconds`
+
+#### Indexes
+
+- `ttc_progress_eth_pkey`
+  ```sql
+  CREATE UNIQUE INDEX ttc_progress_eth_pkey ON work_progress.ttc_progress_eth USING btree (ttc_seconds)
+  ```
+
+---
+
 ### Table: `work_progress.ttc_progress_incremental`
 
 #### Columns
@@ -10404,3 +10781,22 @@ For more details, see: `scripts/README_db_schema_migration.md`
   ```
 
 ---
+
+## Schema: `core`
+
+### Table: `core.system_state`
+
+Global system mode flag controlling whether new trades may be opened. This table is managed primarily by `scripts/MASTER_RESTART.sh` and read by `backend/trade_manager.py`.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | - | Primary key, always `1` for the singleton row. |
+| `mode` | `text` | NO | 'normal' | System mode: `'normal'` (trading enabled) or `'maintenance'` (new trade opens blocked). |
+| `updated_at` | `timestamp with time zone` | NO | now() | Last time the mode was updated. |
+
+#### Constraints
+
+- **Primary Key:** `system_state_pkey` on `id`
+- **Check:** `system_state_mode_check` enforcing `mode IN ('normal', 'maintenance')`

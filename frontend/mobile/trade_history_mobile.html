@@ -252,6 +252,14 @@
                             <input type="checkbox" id="filter-loss" checked style="width: 14px; height: 14px;">
                             Loss
                         </label>
+                        <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
+                            <input type="checkbox" id="filter-live" checked style="width: 14px; height: 14px;">
+                            LIVE
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
+                            <input type="checkbox" id="filter-paper" style="width: 14px; height: 14px;">
+                            PAPER
+                        </label>
                     </div>
                     <div style="flex: 1; display: flex; justify-content: flex-end;">
                         <a href="#" onclick="resetAllFilters(); return false;" style="color: #ccc; text-decoration: none; font-size: 12px; opacity: 0.6; transition: opacity 0.2s ease;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">Reset</a>
@@ -285,10 +293,46 @@
                             <button id="contract-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
                                 Select Contracts
                             </button>
-                            <div id="contract-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 200px; overflow-y: auto;">
+                            <div id="contract-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 320px; overflow-y: auto;">
                                 <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
                                     <input type="checkbox" id="contract-all" style="width: 14px; height: 14px;">
                                     Select All
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-12am" checked style="width: 14px; height: 14px;">
+                                    12am
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-1am" checked style="width: 14px; height: 14px;">
+                                    1am
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-2am" checked style="width: 14px; height: 14px;">
+                                    2am
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-3am" checked style="width: 14px; height: 14px;">
+                                    3am
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-4am" checked style="width: 14px; height: 14px;">
+                                    4am
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-5am" checked style="width: 14px; height: 14px;">
+                                    5am
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-6am" checked style="width: 14px; height: 14px;">
+                                    6am
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-7am" checked style="width: 14px; height: 14px;">
+                                    7am
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                                    <input type="checkbox" id="contract-8am" checked style="width: 14px; height: 14px;">
+                                    8am
                                 </label>
                                 <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
                                     <input type="checkbox" id="contract-9am" checked style="width: 14px; height: 14px;">
@@ -349,10 +393,6 @@
                                 <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer;">
                                     <input type="checkbox" id="contract-11pm" checked style="width: 14px; height: 14px;">
                                     11pm
-                                </label>
-                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer;">
-                                    <input type="checkbox" id="contract-12am" checked style="width: 14px; height: 14px;">
-                                    12am
                                 </label>
                             </div>
                         </div>
@@ -673,6 +713,39 @@
             });
         }
         
+        // === PAPER TRADE FILTER LOGIC ===
+        function filterTradesByPaperTrade(trades) {
+            const liveCheckbox = document.getElementById('filter-live');
+            const paperCheckbox = document.getElementById('filter-paper');
+            
+            // If checkboxes don't exist yet, return all trades (no filtering)
+            if (!liveCheckbox || !paperCheckbox) {
+                return trades;
+            }
+            
+            const showLive = liveCheckbox.checked;
+            const showPaper = paperCheckbox.checked;
+            
+            return trades.filter(trade => {
+                const paperTrade = trade.paper_trade;
+                
+                // Convert to boolean - handle various formats (boolean, string, number, null)
+                let isPaperTrade = false;
+                if (paperTrade === true || paperTrade === 1 || paperTrade === 'true' || paperTrade === '1' || paperTrade === 'True') {
+                    isPaperTrade = true;
+                } else if (paperTrade === false || paperTrade === 0 || paperTrade === 'false' || paperTrade === '0' || paperTrade === 'False' || paperTrade === null || paperTrade === undefined) {
+                    isPaperTrade = false;
+                }
+                
+                // If it's a paper trade (paper_trade = TRUE), show only if PAPER checkbox is checked
+                if (isPaperTrade) {
+                    return showPaper;
+                }
+                // If it's a live trade (paper_trade = FALSE), show only if LIVE checkbox is checked
+                return showLive;
+            });
+        }
+        
         // Helper function to format date as YYYY-MM-DD
         function formatDate(date) {
             const year = date.getFullYear();
@@ -932,6 +1005,14 @@
         // === CONTRACT FILTER LOGIC ===
         function filterTradesByContract(trades) {
             const contract12amChecked = document.getElementById('contract-12am').checked;
+            const contract1amChecked = document.getElementById('contract-1am').checked;
+            const contract2amChecked = document.getElementById('contract-2am').checked;
+            const contract3amChecked = document.getElementById('contract-3am').checked;
+            const contract4amChecked = document.getElementById('contract-4am').checked;
+            const contract5amChecked = document.getElementById('contract-5am').checked;
+            const contract6amChecked = document.getElementById('contract-6am').checked;
+            const contract7amChecked = document.getElementById('contract-7am').checked;
+            const contract8amChecked = document.getElementById('contract-8am').checked;
             const contract9amChecked = document.getElementById('contract-9am').checked;
             const contract10amChecked = document.getElementById('contract-10am').checked;
             const contract11amChecked = document.getElementById('contract-11am').checked;
@@ -949,10 +1030,11 @@
             const contract11pmChecked = document.getElementById('contract-11pm').checked;
             
             // If no contracts are selected, show no trades
-            if (!contract12amChecked && !contract9amChecked && !contract10amChecked && !contract11amChecked && !contract12pmChecked && 
-                !contract1pmChecked && !contract2pmChecked && !contract3pmChecked && !contract4pmChecked && 
-                !contract5pmChecked && !contract6pmChecked && !contract7pmChecked && !contract8pmChecked && 
-                !contract9pmChecked && !contract10pmChecked && !contract11pmChecked) {
+            if (!contract12amChecked && !contract1amChecked && !contract2amChecked && !contract3amChecked && !contract4amChecked &&
+                !contract5amChecked && !contract6amChecked && !contract7amChecked && !contract8amChecked && !contract9amChecked &&
+                !contract10amChecked && !contract11amChecked && !contract12pmChecked && !contract1pmChecked && !contract2pmChecked &&
+                !contract3pmChecked && !contract4pmChecked && !contract5pmChecked && !contract6pmChecked && !contract7pmChecked &&
+                !contract8pmChecked && !contract9pmChecked && !contract10pmChecked && !contract11pmChecked) {
                 return [];
             }
             
@@ -962,6 +1044,14 @@
                 
                 // Check if contract contains any of the selected times
                 if (contract12amChecked && contract.includes('12am')) return true;
+                if (contract1amChecked && contract.includes('1am')) return true;
+                if (contract2amChecked && contract.includes('2am')) return true;
+                if (contract3amChecked && contract.includes('3am')) return true;
+                if (contract4amChecked && contract.includes('4am')) return true;
+                if (contract5amChecked && contract.includes('5am')) return true;
+                if (contract6amChecked && contract.includes('6am')) return true;
+                if (contract7amChecked && contract.includes('7am')) return true;
+                if (contract8amChecked && contract.includes('8am')) return true;
                 if (contract9amChecked && contract.includes('9am')) return true;
                 if (contract10amChecked && contract.includes('10am')) return true;
                 if (contract11amChecked && contract.includes('11am')) return true;
@@ -1102,6 +1192,7 @@
             filtered = filterTradesBySymbol(filtered);
             filtered = filterTradesByMonitor(filtered);
             filtered = filterTradesByDay(filtered);
+            filtered = filterTradesByPaperTrade(filtered);
             
             filteredTrades = [...filtered];
             applyCurrentSort();
@@ -1329,13 +1420,7 @@
             if (endDate) endDateInput.value = endDate;
         }
 
-        // Event listeners
-        document.getElementById('date-filter-picker').addEventListener('change', () => {
-            updateDateRangeDisplay();
-            applyFilters();
-        });
-        document.getElementById('filter-win').addEventListener('change', applyFilters);
-        document.getElementById('filter-loss').addEventListener('change', applyFilters);
+        // Event listeners will be set up in DOMContentLoaded
         
         // Date range inputs
         const startDateInput = document.getElementById('start-date');
@@ -1606,9 +1691,104 @@
             }
         }
 
+        // Save paper trade preferences to database
+        async function savePaperTradePreferences() {
+            try {
+                const filterLive = document.getElementById('filter-live');
+                const filterPaper = document.getElementById('filter-paper');
+                
+                if (!filterLive || !filterPaper) return;
+                
+                const response = await fetch('/api/set_trade_history_preferences', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        live_filter: filterLive.checked,
+                        paper_filter: filterPaper.checked
+                    })
+                });
+                
+                if (response.ok) {
+                    console.log('✅ Paper trade preferences saved');
+                } else {
+                    console.error('❌ Failed to save paper trade preferences');
+                }
+            } catch (error) {
+                console.error('❌ Error saving paper trade preferences:', error);
+            }
+        }
+
+        // Load paper trade preferences from database
+        async function loadPaperTradePreferences() {
+            try {
+                const response = await fetch('/api/get_trade_history_preferences');
+                
+                if (response.ok) {
+                    const preferences = await response.json();
+                    const filterLive = document.getElementById('filter-live');
+                    const filterPaper = document.getElementById('filter-paper');
+                    
+                    if (filterLive && preferences.live_filter !== undefined) {
+                        filterLive.checked = preferences.live_filter;
+                    }
+                    if (filterPaper && preferences.paper_filter !== undefined) {
+                        filterPaper.checked = preferences.paper_filter;
+                    }
+                    
+                    // Return promise for chaining
+                    return Promise.resolve();
+                }
+            } catch (error) {
+                console.error('❌ Error loading paper trade preferences:', error);
+                return Promise.resolve(); // Return resolved promise even on error
+            }
+        }
+
         // Initialize when DOM is loaded
         document.addEventListener('DOMContentLoaded', function() {
             console.log('Mobile trade history initialized');
+            
+            // Set up event listeners
+            const dateFilterPicker = document.getElementById('date-filter-picker');
+            if (dateFilterPicker) {
+                dateFilterPicker.addEventListener('change', () => {
+                    updateDateRangeDisplay();
+                    applyFilters();
+                });
+            }
+            
+            const filterWin = document.getElementById('filter-win');
+            const filterLoss = document.getElementById('filter-loss');
+            if (filterWin) {
+                filterWin.addEventListener('change', () => {
+                    applyFilters();
+                    savePaperTradePreferences();
+                });
+            }
+            if (filterLoss) {
+                filterLoss.addEventListener('change', () => {
+                    applyFilters();
+                    savePaperTradePreferences();
+                });
+            }
+            
+            // Paper trade filter checkboxes
+            const filterLive = document.getElementById('filter-live');
+            const filterPaper = document.getElementById('filter-paper');
+            if (filterLive) {
+                filterLive.addEventListener('change', () => {
+                    applyFilters();
+                    savePaperTradePreferences();
+                });
+            }
+            if (filterPaper) {
+                filterPaper.addEventListener('change', () => {
+                    applyFilters();
+                    savePaperTradePreferences();
+                });
+            }
             
             // Add event listener for % Mode toggle
             const percentModeToggle = document.getElementById('percent-mode-toggle');
@@ -1624,16 +1804,26 @@
             // Initial load
             updateDateRangeDisplay(); // Populate date inputs
             loadPercentModePreference(); // Load % Mode preference
+            loadPaperTradePreferences().then(() => {
+                // Apply filters after preferences are loaded
+                applyFilters();
+            }); // Load paper trade preferences
             fetchAllTrades();
 
-            // Auto-refresh every 30 seconds
-            setInterval(fetchAllTrades, 10000); // Reduced from 30 seconds to 10 seconds for more responsive updates
+            function startTradeHistoryMobilePolling() {
+                if (window._thmRefreshInterval) clearInterval(window._thmRefreshInterval);
+                window._thmRefreshInterval = setInterval(fetchAllTrades, 10000);
+            }
+            window.startTradeHistoryMobilePolling = startTradeHistoryMobilePolling;
+            startTradeHistoryMobilePolling();
         });
         
-        // Add WebSocket connection for real-time trade updates
+        // Add WebSocket connection for real-time trade updates (paused when tab hidden)
         function setupTradeHistoryWebSocket() {
+            if (window.TRADE_HISTORY_MOBILE_PAUSED) return;
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const ws = new WebSocket(`${protocol}//${window.location.host}/ws/db_changes`);
+            const ws = new WebSocket(`${protocol}//${window.location.host}/ws/db_changes`);
+            window._thmDbChangesWs = ws;
             
             ws.onopen = function() {
                 console.log('🔗 Connected to trade history WebSocket (mobile)');
@@ -1644,7 +1834,6 @@
                     const data = JSON.parse(event.data);
                     console.log('📡 Received database change notification (trade history mobile):', data);
                     
-                    // Refresh trades immediately on any database change
                     if (data.database === 'trades' || data.database === 'fills' || data.database === 'positions') {
                         console.log('🔄 Refreshing trade history due to database change (mobile)');
                         fetchAllTrades();
@@ -1659,17 +1848,29 @@
             };
             
             ws.onclose = function() {
+                window._thmDbChangesWs = null;
                 console.log('🔌 Trade history WebSocket connection closed (mobile)');
-                // Attempt to reconnect after a delay
-                setTimeout(() => {
-                    console.log('🔄 Attempting to reconnect trade history WebSocket (mobile)...');
-                    setupTradeHistoryWebSocket();
-                }, 5000);
+                if (!window.TRADE_HISTORY_MOBILE_PAUSED) {
+                    setTimeout(() => setupTradeHistoryWebSocket(), 5000);
+                }
             };
         }
         
-        // Set up WebSocket for real-time trade updates
         setupTradeHistoryWebSocket();
+        
+        window.addEventListener('message', function(event) {
+            if (event.data && event.data.type === 'tab-visibility') {
+                const visible = event.data.visible === true;
+                window.TRADE_HISTORY_MOBILE_PAUSED = !visible;
+                if (visible) {
+                    if (typeof window.startTradeHistoryMobilePolling === 'function') window.startTradeHistoryMobilePolling();
+                    setupTradeHistoryWebSocket();
+                } else {
+                    if (window._thmRefreshInterval) { clearInterval(window._thmRefreshInterval); window._thmRefreshInterval = null; }
+                    if (window._thmDbChangesWs) { try { window._thmDbChangesWs.close(); } catch (e) {} window._thmDbChangesWs = null; }
+                }
+            }
+        });
         
         // Mobile iframe coordination message handling
         window.addEventListener('message', function(event) {
@@ -1685,6 +1886,40 @@
                 }, '*');
             }
         });
+    </script>
+    <script>
+    (function() {
+      if (window.parent === window) return;
+      var threshold = 216;
+      var startY = 0, currentPull = 0;
+      function atTop() { var se = document.scrollingElement || document.documentElement; return se && se.scrollTop <= 0; }
+      document.addEventListener('touchstart', function(e) { if (e.touches.length === 1) { startY = e.touches[0].clientY; currentPull = 0; } }, { passive: true });
+      document.addEventListener('touchmove', function(e) {
+        if (e.touches.length !== 1 || !atTop()) return;
+        var pull = e.touches[0].clientY - startY;
+        if (pull <= 0) return;
+        currentPull = Math.min(pull, 280);
+        window.parent.postMessage({ type: 'pull-to-refresh-progress', pull: currentPull >= threshold ? currentPull : 0 }, window.location.origin);
+      }, { passive: true });
+      document.addEventListener('touchend', function() {
+        if (currentPull >= threshold) {
+          window.parent.postMessage({ type: 'pull-to-refresh-triggered' }, window.location.origin);
+        } else {
+          window.parent.postMessage({ type: 'pull-to-refresh-progress', pull: 0 }, window.location.origin);
+        }
+        currentPull = 0;
+      }, { passive: true });
+      window.addEventListener('message', function(e) {
+        if (e.origin !== window.location.origin || !e.data || e.data.type !== 'pull-to-refresh-do') return;
+        var p = typeof window.__onPullToRefresh === 'function' ? window.__onPullToRefresh() : null;
+        if (p && typeof p.then === 'function') {
+          p.then(function() { window.parent.postMessage({ type: 'pull-to-refresh-done' }, window.location.origin); }).catch(function() { window.parent.postMessage({ type: 'pull-to-refresh-done' }, window.location.origin); });
+        } else {
+          window.parent.postMessage({ type: 'pull-to-refresh-done' }, window.location.origin);
+          if (p === null || p === undefined) location.reload();
+        }
+      });
+    })();
     </script>
 </body>
 </html> 

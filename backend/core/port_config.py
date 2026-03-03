@@ -32,10 +32,16 @@ DEFAULT_PORTS = {
     "active_trade_supervisor": 6000,
 
     "kalshi_account_sync": 8004,
-    "kalshi_market_watchdog_btc": 8005,
-    "kalshi_market_watchdog_eth": 8011,
-    "strike_table_generator_btc": 8014,
-    "strike_table_generator_eth": 8015
+    "kalshi_market_watchdog_hourly_btc": 8005,
+    "kalshi_market_watchdog_hourly_eth": 8011,
+    "kalshi_market_watchdog_15m_btc": 8021,
+    "kalshi_market_watchdog_15m_eth": 8022,
+    "strike_table_generator_hourly_btc": 8014,
+    "strike_table_generator_hourly_eth": 8015,
+    "strike_table_generator_hourly_spx": 8016,
+    "strike_table_generator_hourly_ndx": 8017,
+    "strike_table_generator_15m_btc": 8023,
+    "strike_table_generator_15m_eth": 8024
 }
 
 def ensure_port_config_exists():
@@ -74,14 +80,54 @@ def ensure_port_config_exists():
                     "description": "Kalshi account synchronization",
                     "status": "RUNNING"
                 },
-                "kalshi_market_watchdog_btc": {
+                "kalshi_market_watchdog_hourly_btc": {
                     "port": 8005,
-                    "description": "Kalshi BTC market data monitoring",
+                    "description": "Kalshi BTC hourly market data monitoring",
                     "status": "RUNNING"
                 },
-                "kalshi_market_watchdog_eth": {
+                "kalshi_market_watchdog_hourly_eth": {
                     "port": 8011,
-                    "description": "Kalshi ETH market data monitoring",
+                    "description": "Kalshi ETH hourly market data monitoring",
+                    "status": "RUNNING"
+                },
+                "kalshi_market_watchdog_15m_btc": {
+                    "port": 8021,
+                    "description": "Kalshi BTC 15m market data monitoring",
+                    "status": "RUNNING"
+                },
+                "kalshi_market_watchdog_15m_eth": {
+                    "port": 8022,
+                    "description": "Kalshi ETH 15m market data monitoring",
+                    "status": "RUNNING"
+                },
+                "strike_table_generator_hourly_btc": {
+                    "port": 8014,
+                    "description": "Strike table generator hourly BTC",
+                    "status": "RUNNING"
+                },
+                "strike_table_generator_hourly_eth": {
+                    "port": 8015,
+                    "description": "Strike table generator hourly ETH",
+                    "status": "RUNNING"
+                },
+                "strike_table_generator_hourly_spx": {
+                    "port": 8016,
+                    "description": "Strike table generator hourly SPX",
+                    "status": "RUNNING"
+                },
+                "strike_table_generator_hourly_ndx": {
+                    "port": 8017,
+                    "description": "Strike table generator hourly NDX",
+                    "status": "RUNNING"
+                },
+                "strike_table_generator_15m_btc": {
+                    "port": 8023,
+                    "description": "Strike table generator 15m BTC",
+                    "status": "RUNNING"
+                },
+                "strike_table_generator_15m_eth": {
+                    "port": 8024,
+                    "description": "Strike table generator 15m ETH",
                     "status": "RUNNING"
                 },
                 "monitor_manager": {
@@ -109,8 +155,11 @@ def ensure_port_config_exists():
         }
         
         os.makedirs(os.path.dirname(PORT_CONFIG_FILE), exist_ok=True)
-        with open(PORT_CONFIG_FILE, 'w') as f:
+        # Atomic write: write to a temp file then replace
+        temp_path = PORT_CONFIG_FILE + ".tmp"
+        with open(temp_path, "w") as f:
             json.dump(master_manifest, f, indent=2)
+        os.replace(temp_path, PORT_CONFIG_FILE)
         print(f"[PORT_CONFIG] Created master port manifest: {PORT_CONFIG_FILE}")
 
 def get_port(service_name: str) -> int:
@@ -344,17 +393,20 @@ def register_monitor_ports(monitor_identifier: str) -> Dict[str, int]:
     
     # Update manifest with assigned ports
     try:
-        with open(PORT_CONFIG_FILE, 'r') as f:
+        with open(PORT_CONFIG_FILE, "r") as f:
             manifest = json.load(f)
-        
+
         if "monitor_instances" not in manifest:
             manifest["monitor_instances"] = {}
-        
+
         manifest["monitor_instances"][monitor_identifier] = ports
-        
-        with open(PORT_CONFIG_FILE, 'w') as f:
+
+        # Atomic write: write updated manifest to a temp file then replace
+        temp_path = PORT_CONFIG_FILE + ".tmp"
+        with open(temp_path, "w") as f:
             json.dump(manifest, f, indent=2)
-            
+        os.replace(temp_path, PORT_CONFIG_FILE)
+
         print(f"[PORT_CONFIG] Registered ports for monitor {monitor_identifier}: {ports}")
         
     except Exception as e:

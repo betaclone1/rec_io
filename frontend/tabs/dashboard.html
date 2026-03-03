@@ -29,17 +29,152 @@
     /* Portfolio Panel */
     .portfolio-panel {
       min-height: 300px;
-      width: 75%;
+      width: 70%;
+      display: flex;
+      flex-direction: column;
     }
 
-    /* New Panel */
+    .portfolio-panel .panel-header {
+      flex-shrink: 0;
+    }
+
+    .portfolio-panel .panel-tab {
+      color: #fff;
+    }
+
+    .portfolio-tabs-body {
+      flex: 1;
+      min-height: 0;
+      position: relative;
+    }
+
+    .portfolio-panel .tab-content {
+      min-height: 0;
+      height: 100%;
+      display: none;
+      flex-direction: column;
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+    }
+
+    .portfolio-panel .tab-content.active {
+      display: flex;
+    }
+
+    .portfolio-panel .tab-content .portfolio-chart-container {
+      flex: 1;
+      min-height: 0;
+      height: auto;
+    }
+
+    /* Performance Panel - realized PnL to-date */
     .new-panel {
       min-height: 300px;
-      width: 25%;
+      width: 30%;
       padding: 8px;
+      display: flex;
+      flex-direction: column;
     }
 
-    /* Markets List */
+    .performance-periods {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-top: 8px;
+      width: fit-content;
+      align-self: center;
+    }
+
+    .performance-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .performance-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: #a0aec0;
+      width: 48px;
+      text-align: right;
+    }
+
+    .performance-box {
+      display: inline-block;
+      background-color: #1a1d24;
+      border-radius: 8px;
+      border: 1px solid #3d4552;
+      padding: 9px 14px;
+      min-width: 72px;
+      text-align: center;
+    }
+
+    .performance-pnl {
+      font-size: 14px;
+      font-weight: 600;
+      color: #ffffff;
+    }
+
+    .performance-pnl.positive { color: #48bb78; }
+    .performance-pnl.negative { color: #e53e3e; }
+
+    .performance-ret {
+      font-size: 13px;
+      font-weight: 600;
+      text-align: right;
+    }
+
+    .performance-ret.positive { color: #48bb78; }
+    .performance-ret.negative { color: #e53e3e; }
+    .performance-ret.neutral { color: #a0aec0; }
+
+    .performance-compare {
+      font-size: 12px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      color: #ffffff;
+      margin-left: 4px;
+    }
+
+    .performance-compare::before {
+      content: '';
+      width: 0;
+      height: 0;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+    }
+
+    .performance-compare.positive::before { border-bottom: 5px solid #48bb78; }
+    .performance-compare.negative::before { border-top: 5px solid #e53e3e; }
+
+    .performance-compare.neutral::before { display: none; }
+
+    .performance-cash-balance {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid #3d4552;
+      font-size: 15.6px;
+      font-weight: 600;
+      color: #ffffff;
+      text-align: center;
+      width: fit-content;
+      align-self: center;
+    }
+
+    .performance-cash-label {
+      margin-right: 6px;
+    }
+
+    .performance-cash-value {
+      color: #ffffff;
+    }
+
+    /* Markets List - commented out with symbol price panel content
     .markets-list {
       padding: 0;
     }
@@ -112,6 +247,7 @@
       color: #dc3545;
       background-color: rgba(220, 53, 69, 0.1);
     }
+    */
 
 
 
@@ -211,10 +347,8 @@
     }
 
     .tile-view .monitor-name {
-      position: absolute;
-      bottom: 16px;
-      right: 16px;
       font-size: 9px;
+      text-align: right;
     }
 
     /* Monitor Controls */
@@ -434,8 +568,73 @@
 
     .tile-view .monitor-uptime {
       text-align: left;
+    }
+
+    /* Monitor Bottom Row */
+    .tile-view .monitor-bottom-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
       margin-top: 10px;
     }
+
+    .tile-view .monitor-bottom-row .monitor-uptime {
+      margin-top: 0;
+      display: flex;
+      align-items: center;
+    }
+
+    .tile-view .monitor-bottom-row .monitor-name {
+      margin-top: 0;
+      display: flex;
+      align-items: center;
+    }
+
+    /* Paper Trading Toggle Switch */
+    .paper-trading-toggle {
+      display: flex;
+      position: relative;
+      background-color: #2d3748;
+      border-radius: 4px;
+      padding: 2px;
+      min-width: 100px;
+      height: 22px;
+      cursor: pointer;
+      flex: 0 0 auto;
+      border: 1px solid #4a5568;
+    }
+
+    .paper-trading-toggle-option {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9px;
+      font-weight: 500;
+      letter-spacing: 0.5px;
+      z-index: 2;
+      transition: color 0.3s ease;
+      position: relative;
+      color: #a0aec0; /* Default inactive color */
+    }
+
+    .paper-trading-toggle-slider {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: calc(50% - 2px);
+      height: calc(100% - 4px);
+      background-color: #48bb78;
+      border-radius: 3px;
+      transition: transform 0.3s ease;
+      z-index: 1;
+    }
+
+    .paper-trading-toggle.paper-mode .paper-trading-toggle-slider {
+      transform: translateX(calc(100% + 2px));
+      background-color: #fbbf24;
+    }
+
 
     /* Auto Trade Label */
     .auto-trade-label {
@@ -592,6 +791,17 @@
     .monitor-tile.inactive {
       opacity: 0.4;
       filter: brightness(0.7);
+    }
+
+    /* Paper Trading Border Colors */
+    .monitor-tile.live-mode {
+      border: 2px solid #48bb78;
+      box-shadow: 0 0 0 0 #48bb78;
+    }
+
+    .monitor-tile.paper-mode {
+      border: 2px solid #fbbf24;
+      box-shadow: 0 0 0 0 #fbbf24;
     }
 
     /* List View Tile Layout */
@@ -988,6 +1198,45 @@
       border-color: #4299e1;
       box-shadow: 0 0 0 2px rgba(66, 153, 225, 0.2);
     }
+
+    /* CRITICAL: Active text (underneath slider) MUST be FULL WHITE - placed at end to override everything */
+    /* Use maximum specificity and !important to ensure white text */
+    .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child,
+    .monitor-tile .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child,
+    .list-view .monitor-tile .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child,
+    .tile-view .monitor-tile .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child,
+    .monitor-bottom-row .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child,
+    .tile-view .monitor-bottom-row .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child {
+      color: #ffffff !important;
+      font-weight: 600 !important;
+      text-shadow: none !important;
+      opacity: 1 !important;
+      filter: none !important;
+      -webkit-font-smoothing: antialiased !important;
+    }
+
+    .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child,
+    .monitor-tile .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child,
+    .list-view .monitor-tile .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child,
+    .tile-view .monitor-tile .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child,
+    .monitor-bottom-row .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child,
+    .tile-view .monitor-bottom-row .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child {
+      color: #ffffff !important;
+      font-weight: 600 !important;
+      text-shadow: none !important;
+      opacity: 1 !important;
+      filter: none !important;
+      -webkit-font-smoothing: antialiased !important;
+    }
+
+    /* Ensure inactive options stay grey */
+    .paper-trading-toggle.live-mode .paper-trading-toggle-option:last-child {
+      color: #a0aec0 !important;
+    }
+
+    .paper-trading-toggle.paper-mode .paper-trading-toggle-option:first-child {
+      color: #a0aec0 !important;
+    }
   </style>
 </head>
 <body>
@@ -997,7 +1246,11 @@
       <!-- Portfolio Panel -->
       <div class="panel-container portfolio-panel">
         <div class="panel-header">
-          Portfolio
+          <div style="display: flex; gap: 20px;">
+            <span id="bankroll-tab" class="panel-tab" style="cursor: pointer; opacity: 0.3; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="if(!this.classList.contains('active')) this.style.opacity='0.3'">Bankroll</span>
+            <span id="portfolio-tab" class="panel-tab" style="cursor: pointer; opacity: 0.3; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="if(!this.classList.contains('active')) this.style.opacity='0.3'">Portfolio</span>
+            <span id="pnl-tab" class="panel-tab" style="cursor: pointer; opacity: 0.3; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="if(!this.classList.contains('active')) this.style.opacity='0.3'">PNL</span>
+          </div>
           <div class="portfolio-controls">
             <div class="portfolio-info">
               <span class="portfolio-value" id="portfolio-value" style="padding-left: 20px; margin-right: 15px;"">Loading...</span>
@@ -1014,13 +1267,61 @@
             </div>
           </div>
         </div>
-        <div class="portfolio-chart-container">
-          <canvas id="portfolio-chart"></canvas>
+        <div class="portfolio-tabs-body">
+          <div id="bankroll-tab-content" class="tab-content">
+            <div class="portfolio-chart-container">
+              <canvas id="bankroll-chart"></canvas>
+            </div>
+          </div>
+          <div id="portfolio-tab-content" class="tab-content">
+            <div class="portfolio-chart-container">
+              <canvas id="portfolio-chart"></canvas>
+            </div>
+          </div>
+          <div id="pnl-tab-content" class="tab-content">
+            <div class="portfolio-chart-container">
+              <canvas id="pnl-chart"></canvas>
+            </div>
+          </div>
         </div>
       </div>
 
-      <!-- New Panel -->
+      <!-- Performance Panel: realized PnL to-date (Day / Week / Month / Year) -->
       <div class="panel-container new-panel">
+        <div class="panel-header">
+          <span>Performance</span>
+        </div>
+        <div class="performance-periods">
+          <div class="performance-row" data-period="day">
+            <span class="performance-label">Day</span>
+            <div class="performance-box"><span class="performance-pnl" id="perf-pnl-day">—</span></div>
+            <div class="performance-box"><span class="performance-ret" id="perf-ret-day">—</span></div>
+            <div class="performance-compare" id="perf-compare-day"></div>
+          </div>
+          <div class="performance-row" data-period="week">
+            <span class="performance-label">Week</span>
+            <div class="performance-box"><span class="performance-pnl" id="perf-pnl-week">—</span></div>
+            <div class="performance-box"><span class="performance-ret" id="perf-ret-week">—</span></div>
+            <div class="performance-compare" id="perf-compare-week"></div>
+          </div>
+          <div class="performance-row" data-period="month">
+            <span class="performance-label">Month</span>
+            <div class="performance-box"><span class="performance-pnl" id="perf-pnl-month">—</span></div>
+            <div class="performance-box"><span class="performance-ret" id="perf-ret-month">—</span></div>
+            <div class="performance-compare" id="perf-compare-month"></div>
+          </div>
+          <div class="performance-row" data-period="year">
+            <span class="performance-label">Year</span>
+            <div class="performance-box"><span class="performance-pnl" id="perf-pnl-year">—</span></div>
+            <div class="performance-box"><span class="performance-ret" id="perf-ret-year">—</span></div>
+            <div class="performance-compare" id="perf-compare-year"></div>
+          </div>
+        </div>
+        <div class="performance-cash-balance">
+          <span class="performance-cash-label">Cash Balance:</span>
+          <span class="performance-cash-value" id="perf-cash-balance">—</span>
+        </div>
+        <!-- Symbol prices and change data commented out - may move elsewhere later
         <div class="markets-list">
           <div class="market-item" data-symbol="BTC">
             <div class="market-info">
@@ -1074,6 +1375,7 @@
             </div>
           </div>
         </div>
+        -->
       </div>
     </div>
 
@@ -1167,8 +1469,13 @@
     // Load account mode and fetch portfolio data
     let GLOBAL_ACCOUNT_MODE = 'prod'; // Default to production mode
     let portfolioChart = null;
+    let bankrollChart = null;
+    let pnlChart = null;
     let allHistoryData = []; // Store all data
+    let allBankrollHistoryData = []; // Store bankroll history for Bankroll tab
+    let allPnlHistoryData = []; // Store cumulative PnL series for PNL tab
     let currentView = 'all'; // Current view
+    let portfolioPanelActiveTab = 'portfolio'; // 'portfolio' | 'bankroll' | 'pnl'
     let currentViewMode = 'tile'; // Current view mode (tile/list)
     let currentSortBy = 'name'; // Current sort criteria
     let currentChartType = 'pie'; // Current chart type (pie/bar)
@@ -1180,20 +1487,20 @@
         GLOBAL_ACCOUNT_MODE = savedMode;
       }
       
-      // STEP 1: Load dashboard preferences FIRST - this sets currentView
+      // STEP 1: Load dashboard preferences FIRST - this sets currentView and portfolioPanelActiveTab
       await loadDashboardPreferences();
-      console.log('Dashboard: Preferences loaded, currentView is:', currentView);
-      
-      // STEP 2: Load portfolio data and history
-      await loadPortfolioData();
-      await loadPortfolioHistory();
-      
+
+      // STEP 2: One path to refresh portfolio panel (top line + chart + delta for active tab)
+      await refreshPortfolioPanel();
+
       // STEP 3: Load monitors data
       await loadMonitors();
       
       // STEP 3.5: Load allocation data
       await loadAllocationData();
-      
+      loadPerformanceData();
+      loadPerformancePanelCashBalance();
+
       // STEP 4: Initialize monitor history display with correct view BEFORE rendering
       if (window.monitorHistoryDisplay) {
         console.log('Dashboard: Initializing monitor history display with view:', currentView);
@@ -1215,6 +1522,9 @@
           setChartView(view);
         });
       });
+
+      // Portfolio panel tabs (Bankroll, Portfolio, PNL)
+      initializePortfolioPanelTabs();
       
       // Connect to WebSocket after everything is loaded
       console.log('Dashboard: All monitors loaded, now connecting to WebSocket...');
@@ -1223,6 +1533,51 @@
 
     // Monitors data - will be loaded from API
     let monitors = [];
+
+    // Portfolio panel tab switching (Bankroll, Portfolio, PNL)
+    function initializePortfolioPanelTabs() {
+      const bankrollTab = document.getElementById('bankroll-tab');
+      const portfolioTab = document.getElementById('portfolio-tab');
+      const pnlTab = document.getElementById('pnl-tab');
+      const bankrollContent = document.getElementById('bankroll-tab-content');
+      const portfolioContent = document.getElementById('portfolio-tab-content');
+      const pnlContent = document.getElementById('pnl-tab-content');
+
+      function switchTo(tabEl, contentEl, tabId) {
+        portfolioPanelActiveTab = tabId;
+        [bankrollTab, portfolioTab, pnlTab].forEach(el => {
+          if (el) {
+            el.classList.remove('active');
+            el.style.opacity = '0.3';
+          }
+        });
+        [bankrollContent, portfolioContent, pnlContent].forEach(el => {
+          if (el) el.classList.remove('active');
+        });
+        tabEl.classList.add('active');
+        tabEl.style.opacity = '1';
+        contentEl.classList.add('active');
+
+        saveDashboardPreferences();
+
+        setTimeout(async () => {
+          await refreshPortfolioPanel();
+        }, 50);
+      }
+
+      if (bankrollTab) bankrollTab.addEventListener('click', () => switchTo(bankrollTab, bankrollContent, 'bankroll'));
+      if (portfolioTab) portfolioTab.addEventListener('click', () => switchTo(portfolioTab, portfolioContent, 'portfolio'));
+      if (pnlTab) pnlTab.addEventListener('click', () => switchTo(pnlTab, pnlContent, 'pnl'));
+
+      // Apply saved portfolio view only (no default tab in HTML; set by loadDashboardPreferences)
+      const tabMap = { bankroll: [bankrollTab, bankrollContent], portfolio: [portfolioTab, portfolioContent], pnl: [pnlTab, pnlContent] };
+      const initial = tabMap[portfolioPanelActiveTab];
+      if (initial && initial[0] && initial[1]) {
+        switchTo(initial[0], initial[1], portfolioPanelActiveTab);
+      } else {
+        switchTo(portfolioTab, portfolioContent, 'portfolio');
+      }
+    }
 
     // Function to update only stat values without re-rendering tiles
     function updateMonitorStatValues(oldMonitors, newMonitors) {
@@ -1427,7 +1782,7 @@
       if (isListView) {
         // List view layout - horizontal data arrangement
         return `
-          <div class="monitor-tile list-view ${monitor.status === 'inactive' ? 'inactive' : ''}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
+          <div class="monitor-tile list-view ${monitor.status === 'inactive' ? 'inactive' : ''} ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
             <!-- Column 1: Status Light -->
             <div class="status-light list-status-light ${monitor.status === 'active' ? 'active' : 'inactive'}" onclick="toggleMonitorStatus('${monitor.id}', '${monitor.name}', '${monitor.status}')" style="cursor: pointer;" title="${monitor.status === 'active' ? 'Click to deactivate monitor' : 'Click to activate monitor'}"></div>
             
@@ -1483,8 +1838,7 @@
       } else {
         // Tile view layout - original vertical arrangement
         return `
-          <div class="monitor-tile tile-view ${monitor.status === 'inactive' ? 'inactive' : ''}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
-            <div class="monitor-name">${monitor.id === 'NEW_MONITOR' ? monitor.name : `Monitor ${monitor.name.slice(-5)}`}</div>
+          <div class="monitor-tile tile-view ${monitor.status === 'inactive' ? 'inactive' : ''} ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
             <div style="display: flex; align-items: flex-start; margin-bottom: 10px;">
               <!-- Column 1: Status Light -->
               <div class="status-light ${monitor.status === 'active' ? 'active' : 'inactive'}" onclick="toggleMonitorStatus('${monitor.id}', '${monitor.name}', '${monitor.status}')" style="cursor: pointer;" title="${monitor.status === 'active' ? 'Click to deactivate monitor' : 'Click to activate monitor'}"></div>
@@ -1539,7 +1893,15 @@
                 <div class="stat-label">PnL</div>
               </div>
             </div>
-            <div class="monitor-uptime">${monitor.uptime}</div>
+            <div class="monitor-bottom-row">
+              <div class="monitor-uptime">${monitor.uptime}</div>
+              <div class="paper-trading-toggle ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}" onclick="togglePaperTrade('${monitor.id}')" title="Click to toggle between LIVE and PAPER trading">
+                <div class="paper-trading-toggle-slider"></div>
+                <div class="paper-trading-toggle-option">LIVE</div>
+                <div class="paper-trading-toggle-option">PAPER</div>
+              </div>
+              <div class="monitor-name">${monitor.id === 'NEW_MONITOR' ? monitor.name : `Monitor ${monitor.name.slice(-5)}`}</div>
+            </div>
           </div>
         `;
       }
@@ -1620,6 +1982,29 @@
         }
         
         grid.innerHTML = visibleMonitors.map((monitor, index) => createMonitorTile(monitor, index)).join('');
+        
+        // Force white color on active toggle options after rendering
+        visibleMonitors.forEach(monitor => {
+          const tile = document.querySelector(`[data-monitor-id="${monitor.id}"]`);
+          if (tile) {
+            const toggle = tile.querySelector('.paper-trading-toggle');
+            if (toggle) {
+              const options = toggle.querySelectorAll('.paper-trading-toggle-option');
+              const isPaperMode = monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1;
+              if (options.length >= 2) {
+                if (isPaperMode) {
+                  options[0].style.color = '#a0aec0'; // LIVE inactive
+                  options[1].style.color = '#ffffff'; // PAPER active - FORCE WHITE
+                  options[1].style.fontWeight = '600';
+                } else {
+                  options[0].style.color = '#ffffff'; // LIVE active - FORCE WHITE
+                  options[0].style.fontWeight = '600';
+                  options[1].style.color = '#a0aec0'; // PAPER inactive
+                }
+              }
+            }
+          }
+        });
         
         // Update status displays to show cooldown timers if available
         visibleMonitors.forEach(monitor => {
@@ -2409,8 +2794,11 @@
           currentViewMode = data.monitor_view_mode || 'tile';
           currentSortBy = data.monitor_sort_by || 'name';
           currentChartType = data.allocation_view || 'pie';
-          
-          console.log('Dashboard: Preferences loaded, currentView set to:', currentView);
+          const savedPortfolioView = data.portfolio_view || 'portfolio';
+          if (['bankroll', 'portfolio', 'pnl'].includes(savedPortfolioView)) {
+            portfolioPanelActiveTab = savedPortfolioView;
+          }
+          console.log('Dashboard: Preferences loaded, currentView set to:', currentView, ', portfolio_view:', portfolioPanelActiveTab);
           
           
           // Update portfolio chart button states
@@ -2488,7 +2876,8 @@
             portfolio_chart_view: currentView,
             monitor_view_mode: currentViewMode,
             monitor_sort_by: currentSortBy,
-            allocation_view: currentChartType
+            allocation_view: currentChartType,
+            portfolio_view: portfolioPanelActiveTab
           })
         });
         
@@ -2535,37 +2924,35 @@
       changeElement.className = `change-element ${isPositive ? 'positive' : 'negative'}`;
     }
 
-    function setChartView(view) {
-      console.log('setChartView called with view:', view);
-      console.log('Current allHistoryData length:', allHistoryData.length);
-      
+    async function setChartView(view) {
       currentView = view;
-      
-      // Update button styles
-      document.querySelectorAll('.view-btn').forEach(btn => {
-        btn.classList.remove('active');
-      });
-      
-      // Find and activate the correct button
+
+      document.querySelectorAll('.view-btn').forEach(btn => btn.classList.remove('active'));
       const targetButton = document.querySelector(`button[data-view="${view}"]`);
-      if (targetButton) {
-        targetButton.classList.add('active');
-      }
-      
-      // Save preferences to database
+      if (targetButton) targetButton.classList.add('active');
+
       saveDashboardPreferences();
-      
-      // Re-render chart with new view
-      console.log('About to re-render chart with view:', currentView);
-      renderPortfolioChart(allHistoryData);
-      
-      // Update the change indicator
-      updatePortfolioChange();
-      
-      // Refresh monitor statistics with new time filter
+
+      // Time-window only: reapply filter from existing data (instant). Full refresh does refetch on interval/tab.
+      if (portfolioPanelActiveTab === 'portfolio') {
+        applyPortfolioView();
+      } else {
+        await refreshPortfolioPanel();
+      }
+
       if (window.monitorHistoryDisplay) {
-        console.log(`Dashboard: Refreshing monitor statistics for time view: ${view}`);
         window.monitorHistoryDisplay.refresh(view);
+      }
+    }
+
+    /** Refresh panel for current (view type + time window). Top line, delta, and chart all come from that combination. */
+    async function refreshPortfolioPanel() {
+      if (portfolioPanelActiveTab === 'bankroll') {
+        await loadBankrollHistory();
+      } else if (portfolioPanelActiveTab === 'portfolio') {
+        await loadPortfolioHistory(); // always refetch so top line + delta + chart get fresh data on interval
+      } else if (portfolioPanelActiveTab === 'pnl') {
+        await loadPnlHistory();
       }
     }
 
@@ -2593,6 +2980,7 @@
         const portfolioElement = document.getElementById('portfolio-value');
         if (portfolioElement) {
           portfolioElement.textContent = formattedValue;
+          portfolioElement.style.color = '';
         }
         
       } catch (error) {
@@ -2605,35 +2993,617 @@
       }
     }
 
+    /** Set top line, chart, and delta from allHistoryData + currentView (no fetch). */
+    function applyPortfolioView() {
+      const filteredData = filterDataByView(allHistoryData, currentView);
+      const lastVal = filteredData.length > 0 ? (filteredData[filteredData.length - 1].portfolio || 0) : 0;
+      const formatted = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(lastVal);
+      const el = document.getElementById('portfolio-value');
+      if (el) { el.textContent = formatted; el.style.color = ''; }
+      renderPortfolioChart(allHistoryData);
+      updatePortfolioChange();
+    }
+
     async function loadPortfolioHistory() {
       try {
         const response = await fetch(`${window.location.origin}/api/portfolio/history?period=1y`);
-        
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
-        const history = data.data || []; // The portfolio/history endpoint returns data in 'data' field
-        
-        console.log('Portfolio history loaded:', history.length, 'data points');
-        if (history.length > 0) {
-          console.log('First data point:', history[0]);
-          console.log('Last data point:', history[history.length - 1]);
-          console.log('Date range:', new Date(history[0].timestamp), 'to', new Date(history[history.length - 1].timestamp));
-        }
-        
-        if (history.length > 0) {
-          allHistoryData = history; // Store all history data
-          renderPortfolioChart(history);
-          updatePortfolioChange(); // Update the change indicator
-        } else {
-          console.log('No historical data available');
-        }
-        
+        const history = data.data || [];
+        allHistoryData = history;
+        applyPortfolioView();
       } catch (error) {
         console.error('Error loading portfolio history:', error);
+        allHistoryData = [];
+        applyPortfolioView();
       }
+    }
+
+    async function loadBankrollData() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/account/balance?mode=${GLOBAL_ACCOUNT_MODE}`);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json();
+        const bankrollValue = data.bankroll_current != null ? data.bankroll_current : 0;
+        const bankrollInDollars = bankrollValue / 100;
+        const formattedValue = new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: 'USD',
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
+        }).format(bankrollInDollars);
+        const portfolioElement = document.getElementById('portfolio-value');
+        if (portfolioElement) { portfolioElement.textContent = formattedValue; portfolioElement.style.color = ''; }
+      } catch (error) {
+        console.error('Error loading bankroll data:', error);
+        const portfolioElement = document.getElementById('portfolio-value');
+        if (portfolioElement) {
+          portfolioElement.textContent = 'Error loading data';
+          portfolioElement.style.color = '#ff6b6b';
+        }
+      }
+    }
+
+    async function loadBankrollHistory() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/bankroll/history?period=${currentView}`);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json();
+        const history = data.data || [];
+        allBankrollHistoryData = history;
+        const lastVal = history.length > 0 ? (history[history.length - 1].bankroll || 0) : 0;
+        const formatted = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(lastVal);
+        const el = document.getElementById('portfolio-value');
+        if (el) { el.textContent = formatted; el.style.color = ''; }
+        renderBankrollChart(history);
+        updateBankrollChange();
+      } catch (error) {
+        console.error('Error loading bankroll history:', error);
+        allBankrollHistoryData = [];
+        const el = document.getElementById('portfolio-value');
+        if (el) el.textContent = '—';
+        renderBankrollChart([]);
+        updateBankrollChange();
+      }
+    }
+
+    function updateBankrollChange() {
+      const changeEl = document.getElementById('portfolio-change');
+      if (allBankrollHistoryData.length < 2) {
+        if (changeEl) changeEl.textContent = '';
+        return;
+      }
+      const filteredData = filterDataByView(allBankrollHistoryData, currentView);
+      if (filteredData.length < 2) {
+        if (changeEl) changeEl.textContent = '';
+        return;
+      }
+      const firstValue = filteredData[0].bankroll || 0;
+      const lastValue = filteredData[filteredData.length - 1].bankroll || 0;
+      const change = lastValue - firstValue;
+      const percentChange = firstValue !== 0 ? (change / firstValue) * 100 : 0;
+      const isPositive = change >= 0;
+      const changeText = `$${Math.abs(change).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${percentChange.toFixed(2)}%)`;
+      changeEl.textContent = changeText;
+      changeEl.className = `change-element ${isPositive ? 'positive' : 'negative'}`;
+    }
+
+    function renderBankrollChart(history) {
+      const ctx = document.getElementById('bankroll-chart');
+      if (!ctx) return;
+      if (bankrollChart) {
+        bankrollChart.destroy();
+        bankrollChart = null;
+      }
+      const filteredData = filterDataByView(history, currentView);
+      const labels = filteredData.map(item => {
+        const date = new Date(item.timestamp);
+        return formatLabel(date, currentView);
+      });
+      const bankrollData = filteredData.map(item => item.bankroll || 0);
+      const smoothingWindow = currentView === '1d' ? 4 : 60;
+      const smoothedData = applyMovingAverage(bankrollData, smoothingWindow);
+      if (smoothedData.length > 0 && bankrollData.length > 0) {
+        smoothedData[smoothedData.length - 1] = bankrollData[bankrollData.length - 1];
+      }
+      const customPlugin = {
+        id: 'customXAxisLabel',
+        afterDraw: function(chart) {
+          if (currentView === '1d') return;
+          const ctx = chart.ctx;
+          const chartArea = chart.chartArea;
+          const lastLabel = labels[labels.length - 1];
+          const x = chartArea.right - 30;
+          const y = chartArea.bottom + 20;
+          ctx.save();
+          ctx.font = '10px Arial';
+          ctx.fillStyle = '#ccc';
+          ctx.textAlign = 'right';
+          ctx.fillText(lastLabel, x, y);
+          ctx.restore();
+        }
+      };
+      const crosshairPlugin = {
+        id: 'crosshair',
+        afterDraw: function(chart) {
+          if (chart.tooltip && chart.tooltip.opacity > 0) {
+            const ctx = chart.ctx;
+            const chartArea = chart.chartArea;
+            const dataset = chart.getDatasetMeta(0);
+            if (chart.tooltip.dataPoints && chart.tooltip.dataPoints.length > 0) {
+              const dataPoint = dataset.data[chart.tooltip.dataPoints[0].dataIndex];
+              if (dataPoint) {
+                const opacity = chart.tooltip.opacity;
+                ctx.save();
+                ctx.globalAlpha = opacity;
+                ctx.strokeStyle = '#4a9eff';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([5, 5]);
+                ctx.beginPath();
+                ctx.moveTo(dataPoint.x, chartArea.top);
+                ctx.lineTo(dataPoint.x, chartArea.bottom);
+                ctx.stroke();
+                ctx.restore();
+                ctx.save();
+                ctx.globalAlpha = opacity;
+                ctx.strokeStyle = '#4a9eff';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([5, 5]);
+                ctx.beginPath();
+                ctx.moveTo(chartArea.left, dataPoint.y);
+                ctx.lineTo(chartArea.right, dataPoint.y);
+                ctx.stroke();
+                ctx.restore();
+                ctx.save();
+                ctx.globalAlpha = opacity;
+                ctx.fillStyle = '#4a9eff';
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(dataPoint.x, dataPoint.y, 4, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.stroke();
+                ctx.restore();
+              }
+            }
+          }
+        }
+      };
+      const yAxisLabelsPlugin = {
+        id: 'customYAxisLabels',
+        afterDraw: function(chart) {
+          const ctx = chart.ctx;
+          const chartArea = chart.chartArea;
+          const yScale = chart.scales.y;
+          if (!yScale) return;
+          const ticks = yScale.ticks;
+          const visibleTicks = ticks.filter((tick, index) => index % 2 === 0 && index < ticks.length - 1);
+          ctx.save();
+          ctx.font = '10px Arial';
+          ctx.fillStyle = '#ccc';
+          ctx.textAlign = 'left';
+          visibleTicks.forEach(tick => {
+            const y = yScale.getPixelForValue(tick.value);
+            if (y >= chartArea.top && y <= chartArea.bottom) {
+              ctx.fillText('$' + Math.round(tick.value).toLocaleString(), chartArea.left + 5, y + 3);
+            }
+          });
+          ctx.restore();
+        }
+      };
+      const glowPlugin = {
+        id: 'glowEffect',
+        beforeDraw: function(chart) {
+          const ctx = chart.ctx;
+          const dataset = chart.getDatasetMeta(0);
+          if (dataset && dataset.data && dataset.data.length > 0) {
+            ctx.save();
+            for (let i = 3; i >= 1; i--) {
+              ctx.shadowColor = 'rgba(74, 158, 255, 0.3)';
+              ctx.shadowBlur = i * 5;
+              ctx.shadowOffsetX = 0;
+              ctx.shadowOffsetY = 0;
+              ctx.strokeStyle = '#4a9eff';
+              ctx.lineWidth = 2;
+              ctx.lineCap = 'round';
+              ctx.lineJoin = 'round';
+              ctx.beginPath();
+              const firstPoint = dataset.data[0];
+              ctx.moveTo(firstPoint.x, firstPoint.y);
+              for (let j = 1; j < dataset.data.length; j++) {
+                ctx.lineTo(dataset.data[j].x, dataset.data[j].y);
+              }
+              ctx.stroke();
+            }
+            ctx.restore();
+          }
+        }
+      };
+      const config = {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Bankroll Value ($)',
+            data: smoothedData,
+            borderColor: '#4a9eff',
+            backgroundColor: 'rgba(74, 158, 255, 0.1)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.1,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            pointHoverBackgroundColor: '#4a9eff'
+          }]
+        },
+        plugins: [customPlugin, crosshairPlugin, yAxisLabelsPlugin, glowPlugin],
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { intersect: false, mode: 'index' },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                title: function(context) {
+                  const dataIndex = context[0].dataIndex;
+                  const originalTimestamp = filteredData[dataIndex].timestamp;
+                  return formatTooltipTitle(new Date(originalTimestamp), currentView);
+                },
+                label: function(context) {
+                  return `Bankroll: $${context.parsed.y.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                }
+              }
+            }
+          },
+          scales: {
+            y: {
+              display: true,
+              grid: { display: true, color: 'rgba(255, 255, 255, 0.10)', lineWidth: 1 },
+              ticks: { display: false },
+              border: { display: false },
+              beginAtZero: false,
+              grace: '10%'
+            },
+            x: {
+              grid: { display: false },
+              ticks: { color: '#ccc', font: { size: 10 }, maxRotation: 45, minRotation: 0, maxTicksLimit: 8 }
+            }
+          }
+        }
+      };
+      bankrollChart = new Chart(ctx, config);
+      observeChartResize(bankrollChart);
+      setTimeout(() => { if (bankrollChart) bankrollChart.resize(); }, 100);
+    }
+
+    async function loadPerformanceData() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/performance/realized`);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json();
+        if (data.status !== 'ok' || !data.periods) return;
+        const periods = data.periods;
+        ['day', 'week', 'month', 'year'].forEach(key => {
+          const p = periods[key];
+          if (!p) return;
+          const pnlEl = document.getElementById(`perf-pnl-${key}`);
+          const retEl = document.getElementById(`perf-ret-${key}`);
+          const compareEl = document.getElementById(`perf-compare-${key}`);
+          const pnl = Number(p.pnl) || 0;
+          const prevPnl = Number(p.prev_pnl) || 0;
+          const pnlStr = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(pnl);
+          if (pnlEl) {
+            pnlEl.textContent = pnlStr;
+            pnlEl.className = 'performance-pnl' + (pnl > 0 ? ' positive' : pnl < 0 ? ' negative' : '');
+          }
+          if (retEl) {
+            const retPct = p.ret_pct != null ? p.ret_pct : (pnl === 0 ? 0 : null);
+            if (retPct != null) {
+              retEl.textContent = retPct.toFixed(2) + '%';
+              retEl.className = 'performance-ret' + (retPct > 0 ? ' positive' : retPct < 0 ? ' negative' : ' neutral');
+            } else {
+              retEl.textContent = '—';
+              retEl.className = 'performance-ret neutral';
+            }
+          }
+          if (compareEl) {
+            const delta = pnl - prevPnl;
+            const isPositive = delta > 0;
+            const isNegative = delta < 0;
+            const deltaStr = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(delta);
+            let pctStr = '—';
+            if (prevPnl !== 0) {
+              const rawPct = (delta / prevPnl) * 100;
+              const pctSignMatchesDelta = delta >= 0 ? Math.abs(rawPct) : -Math.abs(rawPct);
+              pctStr = Math.round(pctSignMatchesDelta) + '%';
+            }
+            compareEl.textContent = deltaStr + ' (' + pctStr + ')';
+            compareEl.className = 'performance-compare' + (isPositive ? ' positive' : isNegative ? ' negative' : ' neutral');
+          }
+        });
+      } catch (error) {
+        console.error('Error loading performance data:', error);
+      }
+    }
+
+    async function loadPerformancePanelCashBalance() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/subaccounts`);
+        if (!response.ok) return;
+        const data = await response.json();
+        const subaccounts = data.subaccounts || [];
+        const cash = subaccounts.find(s => s.subaccount === 'Cash Transfer');
+        const el = document.getElementById('perf-cash-balance');
+        if (!el) return;
+        if (cash && cash.balance != null) {
+          const dollars = (Number(cash.balance) / 100).toFixed(2);
+          el.textContent = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(dollars));
+        } else {
+          el.textContent = '—';
+        }
+      } catch (error) {
+        console.error('Error loading cash balance:', error);
+        const el = document.getElementById('perf-cash-balance');
+        if (el) el.textContent = '—';
+      }
+    }
+
+    async function loadPnlData() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/pnl/history?period=${currentView}`);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json();
+        const totalPnl = data.total_pnl != null ? data.total_pnl : 0;
+        const formattedValue = new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: 'USD',
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+          signDisplay: 'auto'
+        }).format(totalPnl);
+        const portfolioElement = document.getElementById('portfolio-value');
+        if (portfolioElement) portfolioElement.textContent = formattedValue;
+      } catch (error) {
+        console.error('Error loading PnL data:', error);
+        const portfolioElement = document.getElementById('portfolio-value');
+        if (portfolioElement) {
+          portfolioElement.textContent = 'Error loading data';
+          portfolioElement.style.color = '#ff6b6b';
+        }
+      }
+    }
+
+    async function loadPnlHistory() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/pnl/history?period=${currentView}`);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json();
+        const history = data.data || [];
+        const totalPnl = data.total_pnl != null ? data.total_pnl : 0;
+        const formattedValue = new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: 'USD',
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+          signDisplay: 'auto'
+        }).format(totalPnl);
+        const portfolioElement = document.getElementById('portfolio-value');
+        if (portfolioElement) { portfolioElement.textContent = formattedValue; portfolioElement.style.color = ''; }
+        allPnlHistoryData = history.length > 0 ? history : [{ timestamp: new Date().toISOString(), pnl: 0 }];
+        renderPnlChart(allPnlHistoryData);
+        updatePnlChange();
+      } catch (error) {
+        console.error('Error loading PnL history:', error);
+        allPnlHistoryData = [];
+        renderPnlChart([{ timestamp: new Date().toISOString(), pnl: 0 }]);
+        updatePnlChange();
+      }
+    }
+
+    function updatePnlChange() {
+      const changeEl = document.getElementById('portfolio-change');
+      if (allPnlHistoryData.length < 2) {
+        if (changeEl) changeEl.textContent = '';
+        return;
+      }
+      const filteredData = filterDataByView(allPnlHistoryData, currentView);
+      if (filteredData.length < 2) {
+        if (changeEl) changeEl.textContent = '';
+        return;
+      }
+      const firstPnl = filteredData[0].pnl != null ? filteredData[0].pnl : 0;
+      const lastPnl = filteredData[filteredData.length - 1].pnl != null ? filteredData[filteredData.length - 1].pnl : 0;
+      const change = lastPnl - firstPnl;
+      const percentChange = firstPnl !== 0 ? (change / Math.abs(firstPnl)) * 100 : (lastPnl !== 0 ? 100 : 0);
+      const isPositive = change >= 0;
+      const changeText = `$${Math.abs(change).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${percentChange >= 0 ? '' : '-'}${Math.abs(percentChange).toFixed(2)}%)`;
+      changeEl.textContent = changeText;
+      changeEl.className = `change-element ${isPositive ? 'positive' : 'negative'}`;
+    }
+
+    function renderPnlChart(history) {
+      const ctx = document.getElementById('pnl-chart');
+      if (!ctx) return;
+      if (pnlChart) {
+        pnlChart.destroy();
+        pnlChart = null;
+      }
+      const data = history.length > 0 ? history : [{ timestamp: new Date().toISOString(), pnl: 0 }];
+      const labels = data.map(item => {
+        const date = new Date(item.timestamp);
+        return formatLabel(date, currentView);
+      });
+      const pnlValues = data.map(item => item.pnl != null ? item.pnl : 0);
+      const customPlugin = {
+        id: 'customXAxisLabel',
+        afterDraw: function(chart) {
+          if (currentView === '1d') return;
+          const ctx = chart.ctx;
+          const chartArea = chart.chartArea;
+          const lastLabel = labels[labels.length - 1];
+          const x = chartArea.right - 30;
+          const y = chartArea.bottom + 20;
+          ctx.save();
+          ctx.font = '10px Arial';
+          ctx.fillStyle = '#ccc';
+          ctx.textAlign = 'right';
+          ctx.fillText(lastLabel, x, y);
+          ctx.restore();
+        }
+      };
+      const crosshairPlugin = {
+        id: 'crosshair',
+        afterDraw: function(chart) {
+          if (chart.tooltip && chart.tooltip.opacity > 0) {
+            const ctx = chart.ctx;
+            const chartArea = chart.chartArea;
+            const dataset = chart.getDatasetMeta(0);
+            if (chart.tooltip.dataPoints && chart.tooltip.dataPoints.length > 0) {
+              const dataPoint = dataset.data[chart.tooltip.dataPoints[0].dataIndex];
+              if (dataPoint) {
+                const opacity = chart.tooltip.opacity;
+                ctx.save();
+                ctx.globalAlpha = opacity;
+                ctx.strokeStyle = '#4a9eff';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([5, 5]);
+                ctx.beginPath();
+                ctx.moveTo(dataPoint.x, chartArea.top);
+                ctx.lineTo(dataPoint.x, chartArea.bottom);
+                ctx.stroke();
+                ctx.restore();
+                ctx.save();
+                ctx.globalAlpha = opacity;
+                ctx.strokeStyle = '#4a9eff';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([5, 5]);
+                ctx.beginPath();
+                ctx.moveTo(chartArea.left, dataPoint.y);
+                ctx.lineTo(chartArea.right, dataPoint.y);
+                ctx.stroke();
+                ctx.restore();
+                ctx.save();
+                ctx.globalAlpha = opacity;
+                ctx.fillStyle = '#4a9eff';
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(dataPoint.x, dataPoint.y, 4, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.stroke();
+                ctx.restore();
+              }
+            }
+          }
+        }
+      };
+      const yAxisLabelsPlugin = {
+        id: 'customYAxisLabels',
+        afterDraw: function(chart) {
+          const ctx = chart.ctx;
+          const chartArea = chart.chartArea;
+          const yScale = chart.scales.y;
+          if (!yScale) return;
+          const ticks = yScale.ticks;
+          const visibleTicks = ticks.filter((tick, index) => index % 2 === 0 && index < ticks.length - 1);
+          ctx.save();
+          ctx.font = '10px Arial';
+          ctx.fillStyle = '#ccc';
+          ctx.textAlign = 'left';
+          visibleTicks.forEach(tick => {
+            const y = yScale.getPixelForValue(tick.value);
+            if (y >= chartArea.top && y <= chartArea.bottom) {
+              ctx.fillText('$' + Math.round(tick.value).toLocaleString(), chartArea.left + 5, y + 3);
+            }
+          });
+          ctx.restore();
+        }
+      };
+      const glowPlugin = {
+        id: 'glowEffect',
+        beforeDraw: function(chart) {
+          const ctx = chart.ctx;
+          const dataset = chart.getDatasetMeta(0);
+          if (dataset && dataset.data && dataset.data.length > 0) {
+            ctx.save();
+            for (let i = 3; i >= 1; i--) {
+              ctx.shadowColor = 'rgba(74, 158, 255, 0.3)';
+              ctx.shadowBlur = i * 5;
+              ctx.shadowOffsetX = 0;
+              ctx.shadowOffsetY = 0;
+              ctx.strokeStyle = '#4a9eff';
+              ctx.lineWidth = 2;
+              ctx.lineCap = 'round';
+              ctx.lineJoin = 'round';
+              ctx.beginPath();
+              const firstPoint = dataset.data[0];
+              ctx.moveTo(firstPoint.x, firstPoint.y);
+              for (let j = 1; j < dataset.data.length; j++) {
+                ctx.lineTo(dataset.data[j].x, dataset.data[j].y);
+              }
+              ctx.stroke();
+            }
+            ctx.restore();
+          }
+        }
+      };
+      const config = {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Cumulative PnL ($)',
+            data: pnlValues,
+            borderColor: '#4a9eff',
+            backgroundColor: 'rgba(74, 158, 255, 0.1)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.1,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            pointHoverBackgroundColor: '#4a9eff'
+          }]
+        },
+        plugins: [customPlugin, crosshairPlugin, yAxisLabelsPlugin, glowPlugin],
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { intersect: false, mode: 'index' },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                title: function(context) {
+                  const dataIndex = context[0].dataIndex;
+                  const originalTimestamp = data[dataIndex].timestamp;
+                  return formatTooltipTitle(new Date(originalTimestamp), currentView);
+                },
+                label: function(context) {
+                  return `PnL: $${context.parsed.y.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                }
+              }
+            }
+          },
+          scales: {
+            y: {
+              display: true,
+              grid: { display: true, color: 'rgba(255, 255, 255, 0.10)', lineWidth: 1 },
+              ticks: { display: false },
+              border: { display: false },
+              beginAtZero: true,
+              grace: '5%'
+            },
+            x: {
+              grid: { display: false },
+              ticks: { color: '#ccc', font: { size: 10 }, maxRotation: 45, minRotation: 0, maxTicksLimit: 8 }
+            }
+          }
+        }
+      };
+      pnlChart = new Chart(ctx, config);
+      observeChartResize(pnlChart);
+      setTimeout(() => { if (pnlChart) pnlChart.resize(); }, 100);
     }
 
     // Function to apply a simple moving average
@@ -2652,20 +3622,26 @@
       return smoothedData;
     }
 
+    function observeChartResize(chart) {
+      if (!chart || !chart.canvas || !chart.canvas.parentElement) return;
+      const ro = new ResizeObserver(() => {
+        if (chart.canvas.offsetParent !== null) chart.resize();
+      });
+      ro.observe(chart.canvas.parentElement);
+    }
+
     function renderPortfolioChart(history) {
-      console.log('renderPortfolioChart called with history length:', history.length, 'currentView:', currentView);
-      
       const ctx = document.getElementById('portfolio-chart');
-      
-      // Destroy existing chart if it exists
+      if (!ctx) return;
+
       if (portfolioChart) {
         portfolioChart.destroy();
+        portfolioChart = null;
       }
-      
-      // Filter data based on current view
+
       const filteredData = filterDataByView(history, currentView);
-      console.log('After filtering, filteredData length:', filteredData.length);
-      
+      if (filteredData.length === 0) return;
+
       // Prepare data for chart with appropriate labels
       const labels = filteredData.map(item => {
         const date = new Date(item.timestamp);
@@ -2931,6 +3907,8 @@
       
       // Create the chart
       portfolioChart = new Chart(ctx, config);
+      observeChartResize(portfolioChart);
+      setTimeout(() => { if (portfolioChart) portfolioChart.resize(); }, 100);
     }
 
     function filterDataByView(data, view) {
@@ -3807,11 +4785,15 @@
       return 1871.27; // Default value from your dummy data
     }
 
-    // Refresh portfolio data every 30 seconds
-    setInterval(loadPortfolioData, 30000);
-    
-    // Refresh portfolio history every 5 minutes
-    setInterval(loadPortfolioHistory, 300000);
+    setInterval(() => { refreshPortfolioPanel(); }, 30000);
+
+    // Refresh Performance panel (realized PnL + cash balance) at same rate as Portfolio panel
+    setInterval(() => {
+      loadPerformanceData();
+      loadPerformancePanelCashBalance();
+    }, 30000);
+
+    setInterval(() => { refreshPortfolioPanel(); }, 300000);
     
     // TODO: Re-enable allocation data refresh when ready
     // setInterval(loadAllocationData, 30000);
@@ -3851,7 +4833,8 @@
       }
     }, 30000);
 
-    // Market data functions
+    // Market data functions - commented out with symbol price panel (may move elsewhere later)
+    /*
     function formatUSD(val) {
       if (typeof val !== "number" || isNaN(val)) return "$0.00";
       return "$" + val.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
@@ -3869,14 +4852,11 @@
       el.className = num >= 0 ? "" : "negative";
     }
 
-    // Fetch BTC price changes from backend API and update markets panel
     async function fetchBTCPriceChanges() {
       try {
         const res = await fetch(window.location.origin + '/btc_price_changes');
         if (!res.ok) throw new Error('Failed to fetch BTC price changes');
         const data = await res.json();
-        
-        // Update 1h, 1d change numbers in the markets panel
         if ('change1h' in data) {
           const el = document.getElementById('btc-change-1h');
           if (el) decorateChange(el, data.change1h);
@@ -3890,14 +4870,11 @@
       }
     }
 
-    // Fetch ETH price changes from backend API and update markets panel
     async function fetchETHPriceChanges() {
       try {
         const res = await fetch(window.location.origin + '/eth_price_changes');
         if (!res.ok) throw new Error('Failed to fetch ETH price changes');
         const data = await res.json();
-        
-        // Update 1h, 1d change numbers in the markets panel
         if ('change1h' in data) {
           const el = document.getElementById('eth-change-1h');
           if (el) decorateChange(el, data.change1h);
@@ -3911,13 +4888,11 @@
       }
     }
 
-    // Fetch current BTC price from backend API
     async function fetchBTCCurrentPrice() {
       try {
         const res = await fetch(window.location.origin + '/api/btc_price');
         if (!res.ok) throw new Error('Failed to fetch BTC current price');
         const data = await res.json();
-        
         if (data.price) {
           const el = document.getElementById('btc-price');
           if (el) el.textContent = formatUSD(data.price);
@@ -3927,13 +4902,11 @@
       }
     }
 
-    // Fetch current ETH price from backend API
     async function fetchETHCurrentPrice() {
       try {
         const res = await fetch(window.location.origin + '/api/eth_price');
         if (!res.ok) throw new Error('Failed to fetch ETH current price');
         const data = await res.json();
-        
         if (data.price) {
           const el = document.getElementById('eth-price');
           if (el) el.textContent = formatUSD(data.price);
@@ -3942,6 +4915,7 @@
         console.error('Error fetching ETH current price:', error);
       }
     }
+    */
 
     // Helper function to extract numeric monitor ID from full monitor ID
     function extractMonitorId(fullMonitorId) {
@@ -4176,15 +5150,13 @@
       }
     }
 
-    // Initialize market data on page load
+    // Initialize market data on page load - commented out with symbol price panel
+    /*
     document.addEventListener('DOMContentLoaded', function() {
-      // Fetch initial data
       fetchBTCCurrentPrice();
       fetchETHCurrentPrice();
       fetchBTCPriceChanges();
       fetchETHPriceChanges();
-      
-      // Update data every 30 seconds
       setInterval(() => {
         fetchBTCCurrentPrice();
         fetchETHCurrentPrice();
@@ -4192,6 +5164,7 @@
         fetchETHPriceChanges();
       }, 30000);
     });
+    */
 
     // Archive confirmation modal functions
     function showArchiveConfirmation(monitorId, monitorName) {
@@ -4372,6 +5345,89 @@
       }
     }
 
+    // Paper Trading Functions
+    async function togglePaperTrade(monitorId) {
+      try {
+        // Extract numeric ID from format like "mon_0001_10019" or "10019"
+        const parts = monitorId.split('_');
+        const numericId = parts.length >= 3 ? parts[2] : monitorId;
+        const formattedMonitorId = `MON_0001_${numericId}`;
+        
+        // Get current state
+        const monitor = monitors.find(m => m.id === monitorId);
+        const currentPaperTrade = monitor ? (monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) : false;
+        const newPaperTrade = !currentPaperTrade;
+        
+        // Optimistically update UI
+        updatePaperTradingUI(monitorId, newPaperTrade);
+        
+        // Send API request
+        const response = await fetch('/api/monitor/toggle-paper-trade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            monitor_id: formattedMonitorId,
+            paper_trade: newPaperTrade
+          })
+        });
+        
+        const data = await response.json();
+        if (data.status !== 'ok') {
+          // Revert UI on error
+          updatePaperTradingUI(monitorId, currentPaperTrade);
+          console.error('Failed to toggle paper trade:', data.message);
+        }
+      } catch (error) {
+        console.error('Error toggling paper trade:', error);
+      }
+    }
+
+    function updatePaperTradingUI(monitorId, paperTrade) {
+      const tile = document.querySelector(`[data-monitor-id="${monitorId}"]`);
+      if (tile) {
+        // Update tile border color
+        if (paperTrade) {
+          tile.classList.remove('live-mode');
+          tile.classList.add('paper-mode');
+        } else {
+          tile.classList.remove('paper-mode');
+          tile.classList.add('live-mode');
+        }
+        
+        // Update toggle switch state
+        const toggle = tile.querySelector('.paper-trading-toggle');
+        if (toggle) {
+          if (paperTrade) {
+            toggle.classList.remove('live-mode');
+            toggle.classList.add('paper-mode');
+            // Force white color on PAPER option
+            const options = toggle.querySelectorAll('.paper-trading-toggle-option');
+            if (options.length >= 2) {
+              options[0].style.color = '#a0aec0'; // LIVE inactive
+              options[1].style.color = '#ffffff'; // PAPER active - FORCE WHITE
+              options[1].style.fontWeight = '600';
+            }
+          } else {
+            toggle.classList.remove('paper-mode');
+            toggle.classList.add('live-mode');
+            // Force white color on LIVE option
+            const options = toggle.querySelectorAll('.paper-trading-toggle-option');
+            if (options.length >= 2) {
+              options[0].style.color = '#ffffff'; // LIVE active - FORCE WHITE
+              options[0].style.fontWeight = '600';
+              options[1].style.color = '#a0aec0'; // PAPER inactive
+            }
+          }
+        }
+        
+        // Update monitor data
+        const monitor = monitors.find(m => m.id === monitorId);
+        if (monitor) {
+          monitor.paper_trade = paperTrade;
+        }
+      }
+    }
+
     // New Monitor Modal Functions
     function showNewMonitorModal() {
       const modal = document.getElementById('newMonitorModal');
@@ -4435,13 +5491,15 @@
 
     function confirmNewMonitor() {
       const symbol = document.getElementById('newMonitorSymbol').value;
+      const marketSelect = document.getElementById('newMonitorMarket');
+      const market = marketSelect ? marketSelect.value : 'hourly';
       const strategy = document.getElementById('newMonitorStrategy').value;
       const bankrollPct = document.getElementById('newMonitorBankroll').value;
       const positionSize = document.getElementById('newMonitorPositionSize').value;
       const multiplier = document.getElementById('newMonitorMultiplier').value;
       
-      if (!symbol || !strategy) {
-        alert('Please select both Symbol and Strategy');
+      if (!symbol || !strategy || !market) {
+        alert('Please select Symbol, Market, and Strategy');
         return;
       }
       
@@ -4450,12 +5508,13 @@
         return;
       }
       
-      createNewMonitor(symbol, strategy, bankrollPct, positionSize, multiplier);
+      createNewMonitor(symbol, strategy, bankrollPct, positionSize, multiplier, market);
       hideNewMonitorModal();
     }
 
-    async function createNewMonitor(symbol, strategy, bankrollPct, positionSize, multiplier) {
+    async function createNewMonitor(symbol, strategy, bankrollPct, positionSize, multiplier, market) {
       try {
+        const marketVal = (market === '15m') ? '15m' : 'hourly';
         const response = await fetch('/api/monitor/create', {
           method: 'POST',
           headers: {
@@ -4467,6 +5526,7 @@
             bankroll_allotment_pct: parseInt(bankrollPct),
             position_size: parseInt(positionSize),
             multiplier: parseFloat(multiplier),
+            market: marketVal,
             user_id: 'user_0001'
           })
         });
@@ -4514,11 +5574,21 @@
     // Helper function to get status text with optional timer
     function getStatusText(status, monitorId) {
       const statusUpper = status.toUpperCase();
-      if (statusUpper === 'PAUSED') {
-        const timer = cooldownTimers.get(monitorId);
-        if (timer && timer > 0) {
-          return formatCooldownTimer(timer);
+      const timer = cooldownTimers.get(monitorId);
+      
+      // Show cooldown timer if available, regardless of status (for cooldown mode during ACTIVE state)
+      if (timer && timer > 0) {
+        const timerDisplay = formatCooldownTimer(timer);
+        if (statusUpper === 'PAUSED') {
+          return timerDisplay; // For PAUSED, show only timer
+        } else {
+          return `${statusUpper} (${timerDisplay})`; // For ACTIVE/other, show status with timer
         }
+      }
+      
+      // No timer, return status only
+      if (statusUpper === 'PAUSED') {
+        return statusUpper;
       }
       return statusUpper;
     }
@@ -4592,17 +5662,22 @@
             const monitorId = data.data.monitor_id;
             const cooldownTimer = data.data.cooldown_timer;
             
-            // Store the cooldown timer value
-            cooldownTimers.set(monitorId, cooldownTimer);
-            console.log(`Stored cooldown timer for ${monitorId}: ${cooldownTimer}s`);
+            // Store the cooldown timer value (or remove if timer is 0 or null)
+            if (cooldownTimer && cooldownTimer > 0) {
+              cooldownTimers.set(monitorId, cooldownTimer);
+              console.log(`Stored cooldown timer for ${monitorId}: ${cooldownTimer}s`);
+            } else {
+              cooldownTimers.delete(monitorId);
+              console.log(`Cleared cooldown timer for ${monitorId}`);
+            }
             
-            // Update the display if monitor is currently PAUSED
+            // Update the display for any status (ACTIVE, PAUSED, etc.) if monitor exists
             const monitor = monitors.find(m => m.id === monitorId);
-            if (monitor && (monitor.auto_trade_status === 'PAUSED' || monitor.auto_trade_status === 'paused')) {
+            if (monitor) {
               const statusElement = document.querySelector(`[data-monitor-id="${monitorId}"] .monitor-status`);
               if (statusElement) {
-                statusElement.textContent = getStatusText('PAUSED', monitorId);
-                console.log(`Updated timer display for ${monitorId}`);
+                statusElement.textContent = getStatusText(monitor.auto_trade_status, monitorId);
+                console.log(`Updated timer display for ${monitorId} (status: ${monitor.auto_trade_status})`);
               }
             }
           }
@@ -4618,10 +5693,8 @@
             if (monitor) {
               monitor.auto_trade_status = data.data.auto_trade_status;
               
-              // Clear cooldown timer if status is not PAUSED
-              if (data.data.auto_trade_status.toUpperCase() !== 'PAUSED') {
-                cooldownTimers.delete(data.data.monitor_id);
-              }
+              // Don't clear cooldown timer on status change - let cooldown_timer_change messages handle it
+              // Cooldown can exist during ACTIVE status (for Hourly HTC during spike cooldown)
               
               // Update the visual status indicator
               const statusElement = document.querySelector(`[data-monitor-id="${data.data.monitor_id}"] .monitor-status`);
@@ -4635,6 +5708,17 @@
             } else {
               console.warn(`Monitor ${data.data.monitor_id} not found for status update`);
             }
+          }
+          
+          // Handle paper trade toggle updates
+          if (data.type === 'paper_trade_toggled') {
+            console.log('Paper trade toggle received:', data);
+            
+            // Convert backend format (MON_0001_10002) to frontend format (mon_0001_10002)
+            const backendMonitorId = data.monitor_id; // e.g., MON_0001_10002
+            const frontendMonitorId = backendMonitorId.replace('MON_', 'mon_'); // e.g., mon_0001_10002
+            
+            updatePaperTradingUI(frontendMonitorId, data.paper_trade);
           }
         } catch (error) {
           console.error('Error parsing WebSocket message in dashboard:', error);
@@ -4738,7 +5822,7 @@
         <!-- Spike Alert Settings (Entry) -->
         <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
           <input type="checkbox" id="spikeAlertEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
-          <span style="font-size:13px; color:#666;">Pause auto entry during market spikes</span>
+          <span style="font-size:13px; color:#666;">Monitor for momentum spikes</span>
         </div>
 
         <label for="spikeAlertMomentumSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Spike Level (±):</label>
@@ -4754,9 +5838,32 @@
         </div>
 
         <label for="spikeAlertTimeSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Time (minutes):</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
           <input type="range" id="spikeAlertTimeSlider" min="0" max="180" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
           <div id="spikeAlertTimeValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <label for="cooldownWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Window:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-top:4px; padding-bottom:28px;">
+          <!-- Cooldown Window Slider Container -->
+          <div id="cooldownWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:0px; box-sizing: border-box;">
+            <!-- Min Cooldown Window Handle -->
+            <div id="minCooldownWindowHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Max Cooldown Window Handle -->
+            <div id="maxCooldownWindowHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Selected Range -->
+            <div id="cooldownWindowRange" style="position:absolute; top:0; height:6px; background:#007bff; border-radius:3px; z-index:5;"></div>
+            <!-- Min Cooldown Window Display (BELOW slider) -->
+            <div id="cooldownWindowMinDisplay" style="position:absolute; top:16px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+            <!-- Max Cooldown Window Display (ABOVE slider) -->
+            <div id="cooldownWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+          </div>
+        </div>
+
+        <label id="probAdjLabel" for="probAdjSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Probability Adjustment (%):</label>
+        <div id="probAdjContainer" class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="probAdjSlider" min="0" max="20" step="0.5" value="5" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="probAdjValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
         </div>
 
         <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0 16px 0;">
@@ -4953,6 +6060,17 @@
     let dashboardMSMaxAsk = 0.9800;
     let dashboardMSAskIsDragging = false;
     let dashboardMSAskCurrentHandle = null;
+    
+    // Momentum Breakout/Contain Ask Window Variables (reuse probability slider)
+    let dashboardContainMinAsk = 0.0000;
+    let dashboardContainMaxAsk = 0.9800;
+    
+    // Cooldown Window Slider Variables (Momentum Contain)
+    let dashboardCooldownWindowSliderWidth = 0;
+    let dashboardMinCooldownTimerSeconds = 300; // 5 minutes default
+    let dashboardMaxCooldownTimerSeconds = 3300; // 55 minutes default
+    let dashboardCooldownWindowIsDragging = false;
+    let dashboardCooldownWindowCurrentHandle = null;
 
     // Initialize Time Window slider
     function initDashboardTimeWindowSlider() {
@@ -4974,8 +6092,9 @@
       
       if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
       
-      const minPercent = (dashboardMinTimeSeconds / 3600) * 100;
-      const maxPercent = (dashboardMaxTimeSeconds / 3600) * 100;
+      const maxScale = window.dashboardTimeWindowMaxSeconds || 3600;
+      const minPercent = (dashboardMinTimeSeconds / maxScale) * 100;
+      const maxPercent = (dashboardMaxTimeSeconds / maxScale) * 100;
       
       minHandle.style.left = `${minPercent}%`;
       maxHandle.style.left = `${maxPercent}%`;
@@ -5009,9 +6128,10 @@
       const x = e.clientX - rect.left;
       const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
       
-      // Map percentage to 15-second intervals (0-3600 seconds)
-      const intervalIndex = Math.round((percent / 100) * 240);
-      const snappedSeconds = Math.max(0, Math.min(3600, intervalIndex * 15));
+      const maxScale = window.dashboardTimeWindowMaxSeconds || 3600;
+      const numIntervals = maxScale / 15;
+      const intervalIndex = Math.round((percent / 100) * numIntervals);
+      const snappedSeconds = Math.max(0, Math.min(maxScale, intervalIndex * 15));
       
       const minHandle = document.getElementById('minTimeHandle');
       const maxHandle = document.getElementById('maxTimeHandle');
@@ -5045,17 +6165,14 @@
     function updateDashboardProbabilityWindowSlider() {
       if (!dashboardProbSliderWidth) return;
       
-      // Enforce minimum separation (0.5%)
-      const MIN_SEPARATION = 0.5;
-      if (dashboardMaxProbability - dashboardMinProbability < MIN_SEPARATION) {
-        // If too close, adjust max to maintain minimum separation
-        if (dashboardMaxProbability < 100) {
-          dashboardMaxProbability = parseFloat((dashboardMinProbability + MIN_SEPARATION).toFixed(1));
-        } else {
-          // If max is at 100, adjust min down
-          dashboardMinProbability = parseFloat((dashboardMaxProbability - MIN_SEPARATION).toFixed(1));
-        }
-      }
+      // Get current strategy from modal
+      const modal = document.getElementById('unifiedAutoTradeModal');
+      if (!modal || modal.style.display !== 'block') return;
+      const tileId = modal.getAttribute('data-tile-id');
+      const monitor = monitors && monitors.find(m => m.id === tileId);
+      const currentStrategy = monitor ? monitor.strategy : '';
+      const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+      const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
       
       const minHandle = document.getElementById('minProbabilityHandle');
       const maxHandle = document.getElementById('maxProbabilityHandle');
@@ -5065,20 +6182,51 @@
       
       if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
       
-      const minPercent = (dashboardMinProbability / 100) * 100;
-      const maxPercent = (dashboardMaxProbability / 100) * 100;
-      
-      minHandle.style.left = `${minPercent}%`;
-      maxHandle.style.left = `${maxPercent}%`;
-      
-      range.style.left = `${minPercent}%`;
-      range.style.width = `${maxPercent - minPercent}%`;
-      
-      minDisplay.textContent = dashboardMinProbability.toFixed(1) + '%';
-      maxDisplay.textContent = dashboardMaxProbability.toFixed(1) + '%';
-      
-      minDisplay.style.left = `${minPercent}%`;
-      maxDisplay.style.left = `${maxPercent}%`;
+      if (isMomentumBreakout || isMomentumContain) {
+        // Use ask price values (0.0000 to 1.0000)
+        const MIN_ASK_SEPARATION = 0.01;
+        if (dashboardContainMaxAsk - dashboardContainMinAsk < MIN_ASK_SEPARATION) {
+          if (dashboardContainMaxAsk < 1.0) {
+            dashboardContainMaxAsk = parseFloat((dashboardContainMinAsk + MIN_ASK_SEPARATION).toFixed(4));
+          } else {
+            dashboardContainMinAsk = parseFloat((dashboardContainMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
+          }
+        }
+        
+        const minPercent = (dashboardContainMinAsk / 1.0) * 100;
+        const maxPercent = (dashboardContainMaxAsk / 1.0) * 100;
+        
+        minHandle.style.left = `${minPercent}%`;
+        maxHandle.style.left = `${maxPercent}%`;
+        range.style.left = `${minPercent}%`;
+        range.style.width = `${maxPercent - minPercent}%`;
+        minDisplay.textContent = '$' + dashboardContainMinAsk.toFixed(4);
+        maxDisplay.textContent = '$' + dashboardContainMaxAsk.toFixed(4);
+        minDisplay.style.left = `${minPercent}%`;
+        maxDisplay.style.left = `${maxPercent}%`;
+      } else {
+        // Use probability values (0 to 100)
+        const MIN_SEPARATION = 0.5;
+        if (dashboardMaxProbability - dashboardMinProbability < MIN_SEPARATION) {
+          if (dashboardMaxProbability < 100) {
+            dashboardMaxProbability = parseFloat((dashboardMinProbability + MIN_SEPARATION).toFixed(1));
+          } else {
+            dashboardMinProbability = parseFloat((dashboardMaxProbability - MIN_SEPARATION).toFixed(1));
+          }
+        }
+        
+        const minPercent = (dashboardMinProbability / 100) * 100;
+        const maxPercent = (dashboardMaxProbability / 100) * 100;
+        
+        minHandle.style.left = `${minPercent}%`;
+        maxHandle.style.left = `${maxPercent}%`;
+        range.style.left = `${minPercent}%`;
+        range.style.width = `${maxPercent - minPercent}%`;
+        minDisplay.textContent = dashboardMinProbability.toFixed(1) + '%';
+        maxDisplay.textContent = dashboardMaxProbability.toFixed(1) + '%';
+        minDisplay.style.left = `${minPercent}%`;
+        maxDisplay.style.left = `${maxPercent}%`;
+      }
     }
     
     function handleDashboardProbMouseDown(e) {
@@ -5095,28 +6243,57 @@
       const container = document.getElementById('probabilityWindowSliderContainer');
       if (!container) return;
       
+      // Get current strategy from modal
+      const modal = document.getElementById('unifiedAutoTradeModal');
+      if (!modal) return;
+      const tileId = modal.getAttribute('data-tile-id');
+      const monitor = monitors && monitors.find(m => m.id === tileId);
+      const currentStrategy = monitor ? monitor.strategy : '';
+      const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+      const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
+      
       const rect = container.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
-      const probability = parseFloat((Math.round(percent * 10) / 10).toFixed(1)); // Round to 1 decimal place and ensure float
       
-      const MIN_SEPARATION = 0.5; // Minimum separation between min and max (0.5%)
       const minHandle = document.getElementById('minProbabilityHandle');
       const maxHandle = document.getElementById('maxProbabilityHandle');
       
-      if (dashboardProbCurrentHandle === minHandle) {
-        // Ensure min doesn't get too close to max
-        if (probability >= dashboardMaxProbability - MIN_SEPARATION) {
-          dashboardMinProbability = parseFloat((dashboardMaxProbability - MIN_SEPARATION).toFixed(1));
-        } else {
-          dashboardMinProbability = probability;
+      if (isMomentumBreakout || isMomentumContain) {
+        // Use ask price values (0.0000 to 1.0000)
+        const askPrice = parseFloat((percent / 100).toFixed(4));
+        const MIN_ASK_SEPARATION = 0.01;
+        
+        if (dashboardProbCurrentHandle === minHandle) {
+          if (askPrice >= dashboardContainMaxAsk - MIN_ASK_SEPARATION) {
+            dashboardContainMinAsk = parseFloat((dashboardContainMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
+          } else {
+            dashboardContainMinAsk = askPrice;
+          }
+        } else if (dashboardProbCurrentHandle === maxHandle) {
+          if (askPrice <= dashboardContainMinAsk + MIN_ASK_SEPARATION) {
+            dashboardContainMaxAsk = parseFloat((dashboardContainMinAsk + MIN_ASK_SEPARATION).toFixed(4));
+          } else {
+            dashboardContainMaxAsk = askPrice;
+          }
         }
-      } else if (dashboardProbCurrentHandle === maxHandle) {
-        // Ensure max doesn't get too close to min
-        if (probability <= dashboardMinProbability + MIN_SEPARATION) {
-          dashboardMaxProbability = parseFloat((dashboardMinProbability + MIN_SEPARATION).toFixed(1));
-        } else {
-          dashboardMaxProbability = probability;
+      } else {
+        // Use probability values (0 to 100)
+        const probability = parseFloat((Math.round(percent * 10) / 10).toFixed(1));
+        const MIN_SEPARATION = 0.5;
+        
+        if (dashboardProbCurrentHandle === minHandle) {
+          if (probability >= dashboardMaxProbability - MIN_SEPARATION) {
+            dashboardMinProbability = parseFloat((dashboardMaxProbability - MIN_SEPARATION).toFixed(1));
+          } else {
+            dashboardMinProbability = probability;
+          }
+        } else if (dashboardProbCurrentHandle === maxHandle) {
+          if (probability <= dashboardMinProbability + MIN_SEPARATION) {
+            dashboardMaxProbability = parseFloat((dashboardMinProbability + MIN_SEPARATION).toFixed(1));
+          } else {
+            dashboardMaxProbability = probability;
+          }
         }
       }
       
@@ -5136,6 +6313,94 @@
     if (minProbHandle && maxProbHandle) {
       minProbHandle.addEventListener('mousedown', handleDashboardProbMouseDown);
       maxProbHandle.addEventListener('mousedown', handleDashboardProbMouseDown);
+    }
+    
+    // COOLDOWN WINDOW SLIDER (Momentum Contain)
+    function initDashboardCooldownWindowSlider() {
+      const container = document.getElementById('cooldownWindowSliderContainer');
+      if (!container) return;
+      dashboardCooldownWindowSliderWidth = container.offsetWidth;
+      updateDashboardCooldownWindowSlider();
+    }
+    
+    function updateDashboardCooldownWindowSlider() {
+      if (!dashboardCooldownWindowSliderWidth) return;
+      
+      const minHandle = document.getElementById('minCooldownWindowHandle');
+      const maxHandle = document.getElementById('maxCooldownWindowHandle');
+      const range = document.getElementById('cooldownWindowRange');
+      const minDisplay = document.getElementById('cooldownWindowMinDisplay');
+      const maxDisplay = document.getElementById('cooldownWindowMaxDisplay');
+      
+      if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
+      
+      // Max range is 0-3600 seconds (0-60 minutes)
+      const minPercent = (dashboardMinCooldownTimerSeconds / 3600) * 100;
+      const maxPercent = (dashboardMaxCooldownTimerSeconds / 3600) * 100;
+      
+      minHandle.style.left = `${minPercent}%`;
+      maxHandle.style.left = `${maxPercent}%`;
+      
+      range.style.left = `${minPercent}%`;
+      range.style.width = `${maxPercent - minPercent}%`;
+      
+      // Update time display boxes - min BELOW, max ABOVE (matching Price Window)
+      minDisplay.textContent = formatSecondsToMMSS(dashboardMinCooldownTimerSeconds);
+      minDisplay.style.left = `${minPercent}%`;
+      
+      maxDisplay.textContent = formatSecondsToMMSS(dashboardMaxCooldownTimerSeconds);
+      maxDisplay.style.left = `${maxPercent}%`;
+    }
+    
+    function handleDashboardCooldownWindowMouseDown(e) {
+      dashboardCooldownWindowIsDragging = true;
+      dashboardCooldownWindowCurrentHandle = e.target;
+      document.addEventListener('mousemove', handleDashboardCooldownWindowMouseMove);
+      document.addEventListener('mouseup', handleDashboardCooldownWindowMouseUp);
+      e.preventDefault();
+    }
+    
+    function handleDashboardCooldownWindowMouseMove(e) {
+      if (!dashboardCooldownWindowIsDragging || !dashboardCooldownWindowCurrentHandle) return;
+      
+      const container = document.getElementById('cooldownWindowSliderContainer');
+      if (!container) return;
+      
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
+      
+      // Map percentage to seconds (0-3600, snapped to 15-second intervals)
+      const intervalIndex = Math.round((percent / 100) * 240);
+      const snappedSeconds = Math.max(0, Math.min(3600, intervalIndex * 15));
+      
+      const minHandle = document.getElementById('minCooldownWindowHandle');
+      const maxHandle = document.getElementById('maxCooldownWindowHandle');
+      
+      if (dashboardCooldownWindowCurrentHandle === minHandle) {
+        if (snappedSeconds >= dashboardMaxCooldownTimerSeconds) return;
+        dashboardMinCooldownTimerSeconds = snappedSeconds;
+      } else if (dashboardCooldownWindowCurrentHandle === maxHandle) {
+        if (snappedSeconds <= dashboardMinCooldownTimerSeconds) return;
+        dashboardMaxCooldownTimerSeconds = snappedSeconds;
+      }
+      
+      updateDashboardCooldownWindowSlider();
+    }
+    
+    function handleDashboardCooldownWindowMouseUp() {
+      dashboardCooldownWindowIsDragging = false;
+      dashboardCooldownWindowCurrentHandle = null;
+      document.removeEventListener('mousemove', handleDashboardCooldownWindowMouseMove);
+      document.removeEventListener('mouseup', handleDashboardCooldownWindowMouseUp);
+    }
+    
+    // Add event listeners for cooldown window slider
+    const minCooldownWindowHandle = document.getElementById('minCooldownWindowHandle');
+    const maxCooldownWindowHandle = document.getElementById('maxCooldownWindowHandle');
+    if (minCooldownWindowHandle && maxCooldownWindowHandle) {
+      minCooldownWindowHandle.addEventListener('mousedown', handleDashboardCooldownWindowMouseDown);
+      maxCooldownWindowHandle.addEventListener('mousedown', handleDashboardCooldownWindowMouseDown);
     }
     
     // MOMENTUM SCALP Ask Window Slider
@@ -5386,6 +6651,15 @@
       const percent = (value - min) / (max - min);
       display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
     }
+    function updateProbAdjDisplay(value){
+      const display = document.getElementById('probAdjValueDisplay');
+      const slider = document.getElementById('probAdjSlider');
+      if (!display || !slider) return;
+      display.textContent = `${parseFloat(value).toFixed(1)}%`;
+      const min = parseFloat(slider.min), max = parseFloat(slider.max);
+      const percent = (parseFloat(value) - min) / (max - min);
+      display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
+    }
     function updateSliderDisplay(value){
       const display = document.getElementById('sliderValueDisplay');
       const slider = document.getElementById('autoStopProbabilitySlider');
@@ -5600,6 +6874,7 @@
       const modal = document.getElementById('unifiedAutoTradeModal');
       const dim = document.getElementById('unifiedAutoTradeDim');
       modal.style.display = 'block';
+      modal.setAttribute('data-tile-id', tileId); // Store for slider functions
       document.body.style.overflow = 'hidden';
       
       // Get monitor strategy from monitors array
@@ -5607,7 +6882,13 @@
       const currentStrategy = monitor ? monitor.strategy : '';
       const isMomentumScalp = currentStrategy && (currentStrategy.toUpperCase().includes('MOMENTUM SCALP') || currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL'));
       const isMomentumReversal = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL');
-      
+      const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+      const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
+      const isReverseHTC = currentStrategy && currentStrategy.toUpperCase().includes('REVERSE HTC');
+      const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
+      const is15mHTC = currentStrategy && currentStrategy.toUpperCase().includes('15M HTC');
+      window.dashboardTimeWindowMaxSeconds = is15mHTC ? 900 : 3600;
+
       // Update modal title with strategy name and show/hide strategy sections
       const modalTitle = document.getElementById('unifiedAutoTradeModalTitle');
       const dashboardMSStrategyLabel = document.getElementById('dashboardMSStrategyLabel');
@@ -5631,6 +6912,8 @@
       // Show/hide strategy sections
       const htcSection = document.getElementById('htcStrategySection');
       const msSection = document.getElementById('msStrategySection');
+      const probAdjContainer = document.getElementById('probAdjContainer');
+      const probAdjLabel = document.getElementById('probAdjLabel');
       if (htcSection && msSection) {
         if (isMomentumScalp) {
           htcSection.style.display = 'none';
@@ -5638,6 +6921,67 @@
         } else {
           htcSection.style.display = 'contents';
           msSection.style.display = 'none';
+        }
+      }
+      // Show/hide Probability Adjustment slider (Hourly HTC and 15m HTC — same strategy, different strike table)
+      if (probAdjContainer && probAdjLabel) {
+        const displayValue = (isHourlyHTC || is15mHTC) ? 'block' : 'none';
+        probAdjContainer.style.display = displayValue;
+        probAdjLabel.style.display = displayValue;
+      }
+      
+      // Hide Min Differential, Max Differential for Momentum Breakout and Momentum Contain
+      const minDiffLabel = document.querySelector('label[for="autoEntryDifferentialSlider"]');
+      const minDiffSlider = document.getElementById('autoEntryDifferentialSlider');
+      const minDiffContainer = minDiffSlider ? minDiffSlider.closest('.value-bubble-container') : null;
+      const maxDiffLabel = document.querySelector('label[for="autoEntryMaxDifferentialSlider"]');
+      const maxDiffSlider = document.getElementById('autoEntryMaxDifferentialSlider');
+      const maxDiffContainer = maxDiffSlider ? maxDiffSlider.closest('.value-bubble-container') : null;
+      // Hide Allow Re-Entry for Momentum Contain only
+      const allowReEntryLabel = document.querySelector('label[for="autoEntryAllowReEntry"]');
+      const allowReEntryContainer = allowReEntryLabel ? allowReEntryLabel.nextElementSibling : null;
+      
+      if (isMomentumBreakout || isMomentumContain) {
+        if (minDiffLabel) minDiffLabel.style.display = 'none';
+        if (minDiffContainer) minDiffContainer.style.display = 'none';
+        if (maxDiffLabel) maxDiffLabel.style.display = 'none';
+        if (maxDiffContainer) maxDiffContainer.style.display = 'none';
+      } else {
+        if (minDiffLabel) minDiffLabel.style.display = '';
+        if (minDiffContainer) minDiffContainer.style.display = '';
+        if (maxDiffLabel) maxDiffLabel.style.display = '';
+        if (maxDiffContainer) maxDiffContainer.style.display = '';
+      }
+      
+      // Hide Allow Re-Entry label and container for Momentum Contain only
+      if (isMomentumContain) {
+        if (allowReEntryLabel) allowReEntryLabel.style.display = 'none';
+        if (allowReEntryContainer) allowReEntryContainer.style.display = 'none';
+      } else {
+        if (allowReEntryLabel) allowReEntryLabel.style.display = '';
+        if (allowReEntryContainer) allowReEntryContainer.style.display = '';
+      }
+      
+      // Change "Win Probability Window" label to "Price Window" for Momentum Breakout/Contain
+      const probWindowLabel = document.querySelector('label[for="probabilityWindowSlider"]');
+      if (probWindowLabel) {
+        if (isMomentumBreakout || isMomentumContain) {
+          probWindowLabel.textContent = 'Price Window:';
+        } else {
+          probWindowLabel.textContent = 'Win Probability Window:';
+        }
+      }
+      
+      // Show/hide Cooldown Window slider (Momentum Contain only)
+      const cooldownWindowLabel = document.querySelector('label[for="cooldownWindowSlider"]');
+      const cooldownWindowValueContainer = document.querySelector('label[for="cooldownWindowSlider"]')?.nextElementSibling;
+      if (cooldownWindowLabel && cooldownWindowValueContainer) {
+        if (isMomentumContain) {
+          cooldownWindowLabel.style.display = '';
+          cooldownWindowValueContainer.style.display = '';
+        } else {
+          cooldownWindowLabel.style.display = 'none';
+          cooldownWindowValueContainer.style.display = 'none';
         }
       }
 
@@ -5654,24 +6998,57 @@
         // Determine which strategy section to populate (use the strategy from monitor data)
         const isMomentumScalp = currentStrategy && (currentStrategy.toUpperCase().includes('MOMENTUM SCALP') || currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL'));
       const isMomentumReversal = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL');
+      const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+      const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
         
-        // Common settings (both strategies)
-        dashboardMinTimeSeconds = data.min_time !== undefined ? data.min_time : 0;
-        dashboardMaxTimeSeconds = data.max_time !== undefined ? data.max_time : 3600;
+        // Common settings (both strategies) — 15m HTC uses 0:00–15:00 (900s)
+        const timeMax = (currentStrategy && currentStrategy.toUpperCase().includes('15M HTC')) ? 900 : 3600;
+        dashboardMinTimeSeconds = data.min_time !== undefined ? Math.max(0, Math.min(timeMax, data.min_time)) : 0;
+        dashboardMaxTimeSeconds = data.max_time !== undefined ? Math.max(0, Math.min(timeMax, data.max_time)) : timeMax;
         
-        // Probability window (both strategies)
-        dashboardMinProbability = data.min_probability !== undefined ? parseFloat(data.min_probability) : 95.00;
-        dashboardMaxProbability = data.max_probability !== undefined ? parseFloat(data.max_probability) : 100.00;
-        
-        // Enforce minimum separation (0.5%) when loading from database
-        const MIN_SEPARATION = 0.5;
-        if (dashboardMaxProbability - dashboardMinProbability < MIN_SEPARATION) {
-          // If too close, adjust max to maintain minimum separation
-          if (dashboardMaxProbability < 100) {
-            dashboardMaxProbability = parseFloat((dashboardMinProbability + MIN_SEPARATION).toFixed(1));
-          } else {
-            // If max is at 100, adjust min down
-            dashboardMinProbability = parseFloat((dashboardMaxProbability - MIN_SEPARATION).toFixed(1));
+        // Probability window (for Hourly HTC) or Ask Price window (for Momentum Breakout/Contain)
+        if (isMomentumBreakout || isMomentumContain) {
+          // Load min_ask/max_ask for Momentum Breakout/Contain
+          dashboardContainMinAsk = data.min_ask !== undefined ? parseFloat(data.min_ask) : 0.0000;
+          dashboardContainMaxAsk = data.max_ask !== undefined ? parseFloat(data.max_ask) : 0.9800;
+          
+          // Enforce minimum separation (0.01 = 1 cent) when loading from database
+          const MIN_ASK_SEPARATION = 0.01;
+          if (dashboardContainMaxAsk - dashboardContainMinAsk < MIN_ASK_SEPARATION) {
+            if (dashboardContainMaxAsk < 1.0) {
+              dashboardContainMaxAsk = parseFloat((dashboardContainMinAsk + MIN_ASK_SEPARATION).toFixed(4));
+            } else {
+              dashboardContainMinAsk = parseFloat((dashboardContainMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
+            }
+          }
+          
+          // Load cooldown timer window values (Momentum Contain only)
+          if (isMomentumContain) {
+            dashboardMinCooldownTimerSeconds = data.min_cooldown_timer !== undefined && data.min_cooldown_timer !== null ? parseInt(data.min_cooldown_timer, 10) : 300;
+            dashboardMaxCooldownTimerSeconds = data.max_cooldown_timer !== undefined && data.max_cooldown_timer !== null ? parseInt(data.max_cooldown_timer, 10) : 3300;
+            
+            // Initialize slider after values are loaded
+            setTimeout(() => {
+              if (typeof initDashboardCooldownWindowSlider === 'function') {
+                initDashboardCooldownWindowSlider();
+              }
+            }, 100);
+          }
+        } else {
+          // Probability window (for Hourly HTC)
+          dashboardMinProbability = data.min_probability !== undefined ? parseFloat(data.min_probability) : 95.00;
+          dashboardMaxProbability = data.max_probability !== undefined ? parseFloat(data.max_probability) : 100.00;
+          
+          // Enforce minimum separation (0.5%) when loading from database
+          const MIN_SEPARATION = 0.5;
+          if (dashboardMaxProbability - dashboardMinProbability < MIN_SEPARATION) {
+            // If too close, adjust max to maintain minimum separation
+            if (dashboardMaxProbability < 100) {
+              dashboardMaxProbability = parseFloat((dashboardMinProbability + MIN_SEPARATION).toFixed(1));
+            } else {
+              // If max is at 100, adjust min down
+              dashboardMinProbability = parseFloat((dashboardMaxProbability - MIN_SEPARATION).toFixed(1));
+            }
           }
         }
         
@@ -5796,6 +7173,7 @@
         setVal('spikeAlertMomentumSlider', data.spike_alert_momentum_threshold ?? 60);
         setVal('spikeAlertCooldownSlider', data.spike_alert_cooldown_threshold ?? 55);
         setVal('spikeAlertTimeSlider', data.spike_alert_cooldown_minutes ?? 15);
+        setVal('probAdjSlider', data.prob_adj ?? 5.00);
           
           // Auto Stop settings
         setVal('autoStopProbabilitySlider', data.current_probability ?? 40);
@@ -5824,6 +7202,11 @@
           // Initialize probability window slider
           if (typeof initDashboardProbabilityWindowSlider === 'function') {
             initDashboardProbabilityWindowSlider();
+            updateDashboardProbabilityWindowSlider(); // Update to show correct values based on strategy
+          }
+          // Initialize cooldown window slider (Momentum Contain only)
+          if (typeof initDashboardCooldownWindowSlider === 'function') {
+            initDashboardCooldownWindowSlider();
           }
         }, 100);
         // Update value bubbles after a short delay to ensure modal is rendered
@@ -5858,6 +7241,7 @@
         updateSpikeAlertMomentumDisplay(document.getElementById('spikeAlertMomentumSlider').value);
         updateSpikeAlertCooldownDisplay(document.getElementById('spikeAlertCooldownSlider').value);
         updateSpikeAlertTimeDisplay(document.getElementById('spikeAlertTimeSlider').value);
+        updateProbAdjDisplay(document.getElementById('probAdjSlider').value);
         updateSliderDisplay(document.getElementById('autoStopProbabilitySlider').value);
         updateMomentumSpikeThresholdDisplay(document.getElementById('momentumSpikeThresholdSlider').value);
         updateVerificationPeriodDisplay(document.getElementById('verificationPeriodSlider').value);
@@ -5925,6 +7309,7 @@
           ['spikeAlertMomentumSlider', updateSpikeAlertMomentumDisplay],
           ['spikeAlertCooldownSlider', updateSpikeAlertCooldownDisplay],
           ['spikeAlertTimeSlider', updateSpikeAlertTimeDisplay],
+          ['probAdjSlider', updateProbAdjDisplay],
           ['autoStopProbabilitySlider', updateSliderDisplay],
           ['momentumSpikeThresholdSlider', updateMomentumSpikeThresholdDisplay],
           ['verificationPeriodSlider', updateVerificationPeriodDisplay]
@@ -5954,6 +7339,10 @@
         // Determine which strategy is active (use the strategy from monitor data)
         const isMomentumScalp = currentStrategy && (currentStrategy.toUpperCase().includes('MOMENTUM SCALP') || currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL'));
       const isMomentumReversal = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL');
+      const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
+      const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
+      const isReverseHTC = currentStrategy && currentStrategy.toUpperCase().includes('REVERSE HTC');
+      const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
         
         const payload = {
           monitor_id: apiId,
@@ -6003,6 +7392,37 @@
           if (msLossPreventionToggle) {
             payload.loss_prevention_toggle = msLossPreventionToggle.checked;
           }
+        } else if (isMomentumBreakout || isMomentumContain) {
+          // MOMENTUM BREAKOUT/CONTAIN specific fields
+          payload.min_volume = parseInt(document.getElementById('autoEntryMinVolumeSlider').value,10);
+          // Use ask price window values (ensure they're floats with 4 decimal places)
+          payload.min_ask = parseFloat(parseFloat(dashboardContainMinAsk).toFixed(4));
+          payload.max_ask = parseFloat(parseFloat(dashboardContainMaxAsk).toFixed(4));
+          // Win Streak Threshold and Loss Prevention Toggle (same as Hourly HTC)
+          payload.win_streak_threshold = parseInt(document.getElementById('autoEntryWinStreakThresholdSlider').value,10);
+          const lossPreventionToggle = document.getElementById('autoEntryLossPreventionToggle');
+          if (lossPreventionToggle) {
+            payload.loss_prevention_toggle = lossPreventionToggle.checked;
+          }
+          // Spike Alert settings
+          payload.spike_alert_enabled = document.getElementById('spikeAlertEnabled').checked;
+          payload.spike_alert_momentum_threshold = parseInt(document.getElementById('spikeAlertMomentumSlider').value,10);
+          payload.spike_alert_cooldown_threshold = parseInt(document.getElementById('spikeAlertCooldownSlider').value,10);
+          payload.spike_alert_cooldown_minutes = parseInt(document.getElementById('spikeAlertTimeSlider').value,10);
+          // Cooldown Timer Window (Momentum Contain only)
+          if (isMomentumContain) {
+            payload.min_cooldown_timer = dashboardMinCooldownTimerSeconds;
+            payload.max_cooldown_timer = dashboardMaxCooldownTimerSeconds;
+          }
+          // Auto Stop settings
+          payload.current_probability = parseInt(document.getElementById('autoStopProbabilitySlider').value,10);
+          payload.min_ttc_seconds = parseInt(document.getElementById('autoStopMinTTCInput') ? document.getElementById('autoStopMinTTCInput').value : '60',10);
+          payload.momentum_spike_enabled = document.getElementById('momentumSpikeEnabled').checked;
+          payload.momentum_spike_threshold = parseInt(document.getElementById('momentumSpikeThresholdSlider').value,10);
+          payload.verification_period_enabled = document.getElementById('verificationPeriodEnabled').checked;
+          payload.verification_period_seconds = parseInt(document.getElementById('verificationPeriodSlider').value,10);
+          // Performance Based Allocation (same as Hourly HTC)
+          payload.performance_based_allocation = document.getElementById('performanceBasedAllocation').checked;
         } else {
           // HOURLY HTC specific fields
           payload.min_volume = parseInt(document.getElementById('autoEntryMinVolumeSlider').value,10);
@@ -6027,6 +7447,10 @@
           payload.spike_alert_momentum_threshold = parseInt(document.getElementById('spikeAlertMomentumSlider').value,10);
           payload.spike_alert_cooldown_threshold = parseInt(document.getElementById('spikeAlertCooldownSlider').value,10);
           payload.spike_alert_cooldown_minutes = parseInt(document.getElementById('spikeAlertTimeSlider').value,10);
+          // Include prob_adj for Hourly HTC and 15m HTC (not Reverse HTC)
+          if (isHourlyHTC || is15mHTC) {
+            payload.prob_adj = parseFloat(document.getElementById('probAdjSlider').value);
+          }
           payload.performance_based_allocation = document.getElementById('performanceBasedAllocation').checked;
         }
         try{
@@ -6101,6 +7525,14 @@
           <label for="newMonitorSymbol">Symbol:</label>
           <select id="newMonitorSymbol" class="modal-dropdown">
             <option value="">Select Symbol</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="newMonitorMarket">Market:</label>
+          <select id="newMonitorMarket" class="modal-dropdown">
+            <option value="">Select Market</option>
+            <option value="hourly">Hourly</option>
+            <option value="15m">15 Minute</option>
           </select>
         </div>
         <div class="form-group">

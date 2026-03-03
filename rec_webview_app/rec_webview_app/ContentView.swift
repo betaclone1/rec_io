@@ -38,15 +38,15 @@ struct WebView: UIViewRepresentable {
         webView.scrollView.contentInset = .zero
         webView.scrollView.scrollIndicatorInsets = .zero
         
+        var request = URLRequest(url: url)
+        request.cachePolicy = .useProtocolCachePolicy
+        webView.load(request)
         print("🔧 WebView configured for URL: \(url.absoluteString)")
         return webView
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
-        var request = URLRequest(url: url)
-        // CHANGED: Allow caching to preserve authentication cookies
-        request.cachePolicy = .useProtocolCachePolicy
-        uiView.load(request)
+        // Do not load here. SwiftUI calls this when the keyboard appears; loading would reload the page and kill the text fields.
     }
 
     func makeCoordinator() -> Coordinator {

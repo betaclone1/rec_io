@@ -23,15 +23,26 @@ async function fetchWatchlistData() {
   }
 }
 
-// === WATCHLIST TABLE INITIALIZATION ===
+// === WATCHLIST TABLE INITIALIZATION (pause when Trade Monitor tab hidden) ===
+
+let watchlistIntervalId = null;
+
+function startWatchlistPolling() {
+  if (watchlistIntervalId != null) clearInterval(watchlistIntervalId);
+  updateWatchlistTable();
+  watchlistIntervalId = setInterval(updateWatchlistTable, 1000);
+}
+
+function stopWatchlistPolling() {
+  if (watchlistIntervalId != null) {
+    clearInterval(watchlistIntervalId);
+    watchlistIntervalId = null;
+  }
+}
 
 function initializeWatchlistTable() {
   console.log('[WATCHLIST] Initializing watchlist table...');
-  // Initial load
-  updateWatchlistTable();
-  
-  // Set up periodic updates (every 1 second)
-  setInterval(updateWatchlistTable, 1000);
+  startWatchlistPolling();
   console.log('[WATCHLIST] Watchlist table initialized and periodic updates set up');
 }
 
@@ -180,6 +191,14 @@ function updateWatchlistBuyButton(spanEl, strike, side, askPrice, isActive, tick
   }
   spanEl.setAttribute('data-strike', strike);
   spanEl.setAttribute('data-side', side);
+  
+  // Store diff value as data attribute
+  if (diffValue !== null && diffValue !== undefined) {
+    spanEl.setAttribute('data-diff', diffValue);
+  } else {
+    spanEl.removeAttribute('data-diff');
+  }
+  
   if (askPrice && askPrice !== '—' && askPrice !== 0) {
     spanEl.setAttribute('data-ask-price', askPrice);
   } else {
@@ -205,12 +224,14 @@ function updateWatchlistBuyButton(spanEl, strike, side, askPrice, isActive, tick
             ticker: tradeData.ticker,
             buy_price: tradeData.buy_price,
             prob: tradeData.prob,
+            diff: tradeData.diff,
             symbol_open: tradeData.symbol_open,
             momentum: tradeData.momentum,
             contract: tradeData.contract,
             symbol: tradeData.symbol,
             position: tradeData.position,
-            trade_strategy: tradeData.trade_strategy
+            trade_strategy: tradeData.trade_strategy,
+            paper_trade: tradeData.paper_trade
           })
         });
         
@@ -287,6 +308,16 @@ document.addEventListener('DOMContentLoaded', function() {
     console.log('[WATCHLIST] Initializing watchlist table...');
     initializeWatchlistTable();
   }, 500);
+});
+
+window.addEventListener('message', function(event) {
+  if (event.data && event.data.type === 'tab-visibility') {
+    if (event.data.visible) {
+      startWatchlistPolling();
+    } else {
+      stopWatchlistPolling();
+    }
+  }
 });
 
 // Export functions for global access

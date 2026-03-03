@@ -13,6 +13,7 @@ import json
 import time
 import threading
 import signal
+import subprocess
 from datetime import datetime, timezone, time as datetime_time, timedelta
 from zoneinfo import ZoneInfo
 import requests
@@ -153,7 +154,7 @@ def get_monitor_symbol():
         cursor = conn.cursor()
         
         cursor.execute(f"""
-            SELECT symbol FROM users.monitor_list_{USER_NUMBER} 
+            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{USER_NUMBER}
             WHERE id = %s
         """, (MONITOR_ID,))
         
@@ -161,25 +162,31 @@ def get_monitor_symbol():
         conn.close()
         
         if result and result[0]:
-            return result[0].upper()  # Return uppercase (BTC, ETH, etc.)
+            return result[0].upper(), (result[1] or 'hourly').strip().lower()
         else:
             log(f"[ACTIVE_TRADE_SUPERVISOR] ⚠️ No symbol found for monitor {MONITOR_IDENTIFIER}, defaulting to BTC")
-            return "BTC"  # Default fallback
+            return "BTC", "hourly"
     except Exception as e:
         log(f"[ACTIVE_TRADE_SUPERVISOR] ❌ Error getting monitor symbol: {e}, defaulting to BTC")
-        return "BTC"  # Default fallback
+        return "BTC", "hourly"
 
-MONITOR_SYMBOL = get_monitor_symbol()
-print(f"[ACTIVE_TRADE_SUPERVISOR_{MONITOR_IDENTIFIER}] 📊 Initial symbol: {MONITOR_SYMBOL}")
+def get_strike_table_name(symbol: str, market: str) -> str:
+    """Strike table name from symbol and market (hourly or 15m)."""
+    m = (market or 'hourly').strip().lower()
+    if m not in ('hourly', '15m'):
+        m = 'hourly'
+    return f"strike_table_{m}_{symbol.lower()}"
 
-def get_current_monitor_symbol():
-    """Get the current symbol for this monitor (dynamic lookup)"""
-    global MONITOR_SYMBOL
-    
+_sym_mkt = get_monitor_symbol()
+MONITOR_SYMBOL = _sym_mkt[0] if isinstance(_sym_mkt, tuple) else _sym_mkt
+MONITOR_MARKET = _sym_mkt[1] if isinstance(_sym_mkt, tuple) else 'hourly'
+print(f"[ACTIVE_TRADE_SUPERVISOR_{MONITOR_IDENTIFIER}] 📊 Initial symbol: {MONITOR_SYMBOL}, market: {MONITOR_MARKET}")
+
+def get_current_monitor_symbol_and_market():
+    """Get (symbol, market) for this monitor from database. market is 'hourly' or '15m'."""
+    global MONITOR_SYMBOL, MONITOR_MARKET
     try:
         import psycopg2
-        
-        # PostgreSQL connection parameters
         postgres_config = {
             'host': os.getenv('POSTGRES_HOST', 'localhost'),
             'port': int(os.getenv('POSTGRES_PORT', '5432')),
@@ -187,31 +194,37 @@ def get_current_monitor_symbol():
             'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
             'password': os.getenv('POSTGRES_PASSWORD', '')
         }
-        
         conn = psycopg2.connect(**postgres_config)
         cursor = conn.cursor()
-        
         cursor.execute(f"""
-            SELECT symbol FROM users.monitor_list_{USER_NUMBER} 
+            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{USER_NUMBER}
             WHERE id = %s
         """, (MONITOR_ID,))
-        
         result = cursor.fetchone()
         conn.close()
-        
         if result and result[0]:
-            new_symbol = result[0].upper()  # Return uppercase (BTC, ETH, etc.)
-            
-            # Check if symbol has changed
-            if new_symbol != MONITOR_SYMBOL:
-                log(f"[ACTIVE_TRADE_SUPERVISOR] 🔄 Symbol changed from {MONITOR_SYMBOL} to {new_symbol}")
-                MONITOR_SYMBOL = new_symbol
-            
-            return new_symbol
-        else:
-            return "BTC"  # Default fallback
+            sym = result[0].upper()
+            mkt = (result[1] or 'hourly').strip().lower()
+            if mkt not in ('hourly', '15m'):
+                mkt = 'hourly'
+            if sym != MONITOR_SYMBOL or mkt != MONITOR_MARKET:
+                log(f"[ACTIVE_TRADE_SUPERVISOR] 🔄 Monitor symbol/market: {MONITOR_SYMBOL}/{MONITOR_MARKET} -> {sym}/{mkt}")
+                MONITOR_SYMBOL, MONITOR_MARKET = sym, mkt
+            return sym, mkt
+        return "BTC", "hourly"
     except Exception as e:
-        return "BTC"  # Default fallback
+        return "BTC", "hourly"
+
+def get_current_monitor_symbol():
+    """Get the current symbol for this monitor (dynamic lookup)"""
+    sym, _ = get_current_monitor_symbol_and_market()
+    return sym
+
+def _get_symbol_and_market_for_strike(symbol: str = None):
+    """Resolve (symbol, market) for strike table. Always use this monitor's market (hourly or 15m)."""
+    sym, mkt = get_current_monitor_symbol_and_market()
+    s = (symbol or sym).upper() if (symbol or sym) else "BTC"
+    return s, mkt
 
 # Get port from monitor-specific system
 from backend.core.port_config import get_monitor_port, register_monitor_ports
@@ -489,7 +502,7 @@ def handle_trade_manager_notification():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({"error": "No data received"}), 400
+            return jsonify({"error": "No data received", "success": False}), 200
         
         trade_id = data.get('trade_id')
         ticket_id = data.get('ticket_id')
@@ -497,17 +510,22 @@ def handle_trade_manager_notification():
         monitor_identifier = data.get('monitor_identifier')
         
         if not all([trade_id, ticket_id, status]):
-            return jsonify({"error": "Missing required fields: trade_id, ticket_id, status"}), 400
+            return jsonify({
+                "error": "Missing required fields: trade_id, ticket_id, status",
+                "success": False
+            }), 200
         
         # Validate that this notification is for the correct monitor
         if monitor_identifier and monitor_identifier != MONITOR_IDENTIFIER:
             log(f"📡 DIRECT NOTIFICATION: Ignoring notification for different monitor")
             log(f"📡 DIRECT NOTIFICATION: Expected: {MONITOR_IDENTIFIER}, Received: {monitor_identifier}")
-            return jsonify({
-                "status": "ignored",
-                "message": f"Notification for different monitor: {monitor_identifier}",
-                "success": True
-            }), 200
+            return jsonify(
+                {
+                    "status": "ignored",
+                    "message": f"Notification for different monitor: {monitor_identifier}",
+                    "success": True,
+                }
+            ), 200
         
         log(f"📡 DIRECT NOTIFICATION: Received from trade_manager for monitor {MONITOR_IDENTIFIER}")
         log(f"📡 DIRECT NOTIFICATION: Trade ID: {trade_id}, Ticket ID: {ticket_id}, Status: {status}")
@@ -523,12 +541,17 @@ def handle_trade_manager_notification():
                 log(f"❌ Failed to add pending trade: {trade_id}")
                 
         elif status == 'open':
-            # Confirm pending trade as open
+            # Try to confirm pending trade first, if that fails, add as new active trade
             success = confirm_pending_trade(trade_id, ticket_id)
             if success:
                 log(f"✅ Successfully confirmed pending trade as open: {trade_id}")
             else:
-                log(f"❌ Failed to confirm pending trade as open: {trade_id}")
+                # Trade was created directly as 'open', add it as new active trade
+                success = add_new_active_trade(trade_id, ticket_id)
+                if success:
+                    log(f"✅ Successfully added new active trade: {trade_id}")
+                else:
+                    log(f"❌ Failed to add new active trade: {trade_id}")
                 
         elif status == 'error':
             # Remove failed trade (any status) from active_trades.db
@@ -580,17 +603,23 @@ def handle_trade_manager_notification():
                 
         else:
             log(f"⚠️ Unknown status in trade_manager notification: {status}")
-            return jsonify({"error": f"Unknown status: {status}"}), 400
-        
-        return jsonify({
-            "status": "success" if success else "error",
-            "message": f"Trade {trade_id} {status} notification processed",
-            "success": success
-        }), 200 if success else 500
-        
+            return jsonify(
+                {"error": f"Unknown status: {status}", "success": False}
+            ), 200
+
+        # Always return 200 to trade_manager; surface failures in the JSON payload and logs
+        return jsonify(
+            {
+                "status": "success" if success else "error",
+                "message": f"Trade {trade_id} {status} notification processed",
+                "success": success,
+            }
+        ), 200
+
     except Exception as e:
         log(f"❌ Error handling trade_manager notification: {e}")
-        return jsonify({"error": str(e)}), 500
+        # Do not propagate HTTP 500 back to trade_manager; report error in payload instead
+        return jsonify({"status": "error", "error": str(e), "success": False}), 200
 
 def migrate_database_schema():
     """Migrate the database schema if needed"""
@@ -1151,12 +1180,23 @@ def get_current_symbol_price(symbol: str = None) -> Optional[float]:
         log(f"Error getting current {symbol} price: {e}")
         return None
 
-def get_kalshi_market_snapshot(symbol: str = None) -> Optional[Dict[str, Any]]:
-    """Get the latest Kalshi market snapshot data from PostgreSQL"""
+def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Optional[Dict[str, Any]]:
+    """Get the latest Kalshi market snapshot data from PostgreSQL.
+    Uses monitor's symbol and market so 15m monitors read from market_kalshi_15m_* (required for
+    closing price lookup and auto-stop); hourly monitors read from market_kalshi_hourly_*."""
     try:
-        # Use current monitor symbol if no symbol specified
-        if symbol is None:
-            symbol = get_current_monitor_symbol()
+        # Use current monitor symbol and market if not specified
+        if symbol is None or market is None:
+            sym, mkt = get_current_monitor_symbol_and_market()
+            if symbol is None:
+                symbol = sym
+            if market is None:
+                market = mkt or "hourly"
+        market = (market or "hourly").strip().lower()
+        if market not in ("hourly", "15m"):
+            market = "hourly"
+        table_suffix = f"15m_{symbol.lower()}" if market == "15m" else f"hourly_{symbol.lower()}"
+        table_name = f"market_kalshi_{table_suffix}"
             
         conn = get_postgresql_connection()
         if not conn:
@@ -1165,7 +1205,7 @@ def get_kalshi_market_snapshot(symbol: str = None) -> Optional[Dict[str, Any]]:
             
         cursor = conn.cursor()
         
-        # Get market data from PostgreSQL
+        # Get market data from PostgreSQL (hourly or 15m table per monitor)
         cursor.execute(f"""
             SELECT 
                 market_ticker,
@@ -1176,7 +1216,7 @@ def get_kalshi_market_snapshot(symbol: str = None) -> Optional[Dict[str, Any]]:
                 volume,
                 event_ticker,
                 strike
-            FROM live_data.market_kalshi_{symbol.lower()}
+            FROM live_data.{table_name}
             ORDER BY updated_at DESC
         """)
         
@@ -1268,10 +1308,8 @@ def get_current_probability(strike: float, current_price: float, ttc_seconds: fl
     Fallback to the old API if PostgreSQL data is not available.
     """
     try:
-        # Use current monitor symbol if no symbol specified
-        if symbol is None:
-            symbol = get_current_monitor_symbol()
-            
+        sym, mkt = _get_symbol_and_market_for_strike(symbol)
+        table_name = get_strike_table_name(sym, mkt)
         conn = get_postgresql_connection()
         if not conn:
             log("⚠️ Failed to connect to PostgreSQL for probability lookup")
@@ -1279,10 +1317,10 @@ def get_current_probability(strike: float, current_price: float, ttc_seconds: fl
             
         cursor = conn.cursor()
         
-        # Get probability from PostgreSQL strike table
+        # Get probability from PostgreSQL strike table (hourly or 15m per monitor)
         cursor.execute(f"""
             SELECT probability 
-            FROM live_data.strike_table_{symbol.lower()} 
+            FROM live_data.{table_name} 
             WHERE strike = %s
             ORDER BY timestamp DESC 
             LIMIT 1
@@ -1485,10 +1523,16 @@ def update_active_trade_monitoring_data():
 
 def check_monitoring_failsafe():
     """
-    Simple failsafe: Check if monitoring should be running and restart if needed.
-    This runs periodically to catch any monitoring loop failures.
+    Bulletproof failsafe: Check if monitoring should be running and restart if needed.
+    First attempts thread restart, then escalates to process restart if that fails.
     """
     global monitoring_thread
+    
+    # Track restart attempts to prevent infinite loops
+    if not hasattr(check_monitoring_failsafe, 'restart_attempts'):
+        check_monitoring_failsafe.restart_attempts = {}
+        check_monitoring_failsafe.last_process_restart = 0
+        check_monitoring_failsafe.process_restart_cooldown = 300  # 5 minutes between process restarts
     
     try:
         # Check if there are active trades
@@ -1502,12 +1546,123 @@ def check_monitoring_failsafe():
         # If there are active trades but no monitoring thread, restart it
         if active_count > 0:
             with monitoring_thread_lock:
-                if monitoring_thread is None or not monitoring_thread.is_alive():
-                    log(f"🔄 FAILSAFE: Found {active_count} active trades but monitoring not running, restarting...")
-                    start_monitoring_loop()
+                thread_alive = False
+                try:
+                    thread_alive = monitoring_thread is not None and monitoring_thread.is_alive()
+                except Exception as e:
+                    log(f"⚠️ FAILSAFE: Thread object corrupted ({e}), forcing cleanup")
+                    monitoring_thread = None
+                    thread_alive = False
+                
+                if not thread_alive:
+                    log(f"🔄 FAILSAFE: Found {active_count} active trades but monitoring not running")
+                    
+                    # Step 1: Try thread restart first (quick recovery)
+                    log("🔄 FAILSAFE: Attempting thread restart...")
+                    thread_restart_succeeded = False
+                    try:
+                        start_monitoring_loop()
+                        
+                        # Verify thread restart succeeded
+                        time.sleep(1)  # Give thread time to start
+                        with monitoring_thread_lock:
+                            if monitoring_thread is not None:
+                                try:
+                                    if monitoring_thread.is_alive():
+                                        log("✅ FAILSAFE: Thread restart succeeded and verified")
+                                        thread_restart_succeeded = True
+                                        # Reset restart attempts on success
+                                        check_monitoring_failsafe.restart_attempts = {}
+                                except Exception as e:
+                                    log(f"⚠️ FAILSAFE: Thread verification failed ({e}), escalating to process restart")
+                    except Exception as e:
+                        log(f"❌ FAILSAFE: Thread restart failed ({e}), escalating to process restart")
+                        import traceback
+                        log(f"❌ FAILSAFE: Thread restart stack trace: {traceback.format_exc()}")
+                    
+                    # Step 2: Thread restart failed or verification failed - restart entire process
+                    if not thread_restart_succeeded:
+                        current_time = time.time()
+                        time_since_last_restart = current_time - check_monitoring_failsafe.last_process_restart
+                        
+                        if time_since_last_restart < check_monitoring_failsafe.process_restart_cooldown:
+                            log(f"⏳ FAILSAFE: Process restart on cooldown ({int(check_monitoring_failsafe.process_restart_cooldown - time_since_last_restart)}s remaining)")
+                            return
+                        
+                        log(f"🚨 CRITICAL FAILSAFE: Thread restart failed, restarting entire process!")
+                        log(f"🚨 CRITICAL: {active_count} active trades are UNPROTECTED - process restart required!")
+                        
+                        # Restart this process via supervisorctl
+                        restart_active_trade_supervisor_process()
+                        
+                        # Update cooldown
+                        check_monitoring_failsafe.last_process_restart = current_time
         
     except Exception as e:
-        log(f"❌ Error in monitoring failsafe check: {e}")
+        log(f"❌ CRITICAL: Failsafe check itself failed: {e}")
+        import traceback
+        log(f"❌ CRITICAL: Failsafe stack trace: {traceback.format_exc()}")
+        # Even the failsafe failed - try process restart as last resort
+        try:
+            restart_active_trade_supervisor_process()
+        except Exception as restart_error:
+            log(f"❌ CATASTROPHIC: Process restart also failed: {restart_error}")
+
+def restart_active_trade_supervisor_process():
+    """
+    Restart the entire active_trade_supervisor process via supervisorctl.
+    This will cause this process to exit and supervisor will restart it.
+    """
+    try:
+        from backend.util.paths import get_supervisorctl_path, get_supervisor_config_path
+        
+        service_name = f"active_trade_supervisor_{MONITOR_IDENTIFIER}"
+        
+        log(f"🔄 PROCESS RESTART: Restarting {service_name} via supervisorctl...")
+        log(f"🚨 CRITICAL: Process restart initiated due to monitoring failure")
+        
+        supervisorctl_path = get_supervisorctl_path()
+        supervisor_config_path = get_supervisor_config_path()
+        
+        # Restart the service
+        result = subprocess.run(
+            [supervisorctl_path, "-c", supervisor_config_path, "restart", service_name],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode == 0:
+            log(f"✅ PROCESS RESTART: Successfully initiated restart of {service_name}")
+            log(f"✅ PROCESS RESTART: Supervisor output: {result.stdout}")
+            
+            # Give supervisor time to restart the process
+            time.sleep(2)
+            
+            # This process will be terminated by supervisor, so we can exit
+            log("🔄 PROCESS RESTART: Process restart initiated, supervisor will handle termination")
+        else:
+            log(f"❌ PROCESS RESTART: Failed to restart {service_name}")
+            log(f"❌ PROCESS RESTART: Return code: {result.returncode}")
+            log(f"❌ PROCESS RESTART: stderr: {result.stderr}")
+            log(f"❌ PROCESS RESTART: stdout: {result.stdout}")
+            
+            # If supervisorctl fails, try alternative: exit and let supervisor auto-restart
+            log("🔄 PROCESS RESTART: Falling back to process exit (supervisor will auto-restart)")
+            sys.exit(1)  # Exit with error code, supervisor will restart
+            
+    except subprocess.TimeoutExpired:
+        log(f"❌ PROCESS RESTART: Timeout waiting for supervisorctl")
+        # Fall back to exit
+        log("🔄 PROCESS RESTART: Falling back to process exit (supervisor will auto-restart)")
+        sys.exit(1)
+    except Exception as e:
+        log(f"❌ PROCESS RESTART: Exception during restart: {e}")
+        import traceback
+        log(f"❌ PROCESS RESTART: Stack trace: {traceback.format_exc()}")
+        # Fall back to exit
+        log("🔄 PROCESS RESTART: Falling back to process exit (supervisor will auto-restart)")
+        sys.exit(1)
 
 def start_monitoring_loop():
     """
@@ -1516,11 +1671,30 @@ def start_monitoring_loop():
     """
     global monitoring_thread
     
+    # Clean up any corrupted state first
+    try:
+        with monitoring_thread_lock:
+            if monitoring_thread is not None:
+                try:
+                    if not monitoring_thread.is_alive():
+                        log("🧹 CLEANUP: Clearing dead thread reference")
+                        monitoring_thread = None
+                except Exception as e:
+                    log(f"🧹 CLEANUP: Thread object corrupted ({e}), forcing cleanup")
+                    monitoring_thread = None
+    except Exception as e:
+        log(f"⚠️ Cleanup check failed: {e}")
+    
     # Check if monitoring thread is already running
     with monitoring_thread_lock:
-        if monitoring_thread is not None and monitoring_thread.is_alive():
-            log("📊 MONITORING: Monitoring thread already running, skipping")
-            return
+        if monitoring_thread is not None:
+            try:
+                if monitoring_thread.is_alive():
+                    log("📊 MONITORING: Monitoring thread already running, skipping")
+                    return
+            except Exception as e:
+                log(f"⚠️ Thread object corrupted ({e}), clearing and continuing")
+                monitoring_thread = None
     
     def monitoring_worker():
         global monitoring_thread
@@ -1824,11 +1998,26 @@ def start_monitoring_loop():
             monitoring_thread = None
         log("📊 MONITORING: Monitoring thread finished")
     
-    # Start monitoring in a separate thread
+    # Start monitoring in a separate thread WITH EXCEPTION HANDLING
     with monitoring_thread_lock:
-        monitoring_thread = threading.Thread(target=monitoring_worker, daemon=True)
-        monitoring_thread.start()
-        log("📊 MONITORING: Monitoring thread started")
+        try:
+            monitoring_thread = threading.Thread(target=monitoring_worker, daemon=True)
+            monitoring_thread.start()
+            
+            # Verify thread actually started
+            if not monitoring_thread.is_alive():
+                raise RuntimeError("Thread failed to start after start() call")
+            
+            log("📊 MONITORING: Monitoring thread started and verified alive")
+            
+        except Exception as e:
+            log(f"❌ CRITICAL: Failed to start monitoring thread: {e}")
+            log(f"❌ CRITICAL: Exception type: {type(e).__name__}")
+            import traceback
+            log(f"❌ CRITICAL: Stack trace: {traceback.format_exc()}")
+            # Clear thread reference on failure
+            monitoring_thread = None
+            raise  # Re-raise to let caller know it failed
 
 def update_monitoring_on_demand():
     """
@@ -1975,8 +2164,36 @@ def start_event_driven_supervisor():
             # If there are active trades but no monitoring thread, restart it
             if active_count > 0 and not monitoring_thread_alive:
                 log(f"🚨 BRUTE FORCE FAILSAFE: Found {active_count} active trades but monitoring thread is dead!")
-                log("🔄 BRUTE FORCE FAILSAFE: Restarting monitoring loop...")
-                start_monitoring_loop()
+                
+                # Try thread restart first
+                thread_restart_succeeded = False
+                try:
+                    log("🔄 BRUTE FORCE FAILSAFE: Attempting thread restart...")
+                    start_monitoring_loop()
+                    time.sleep(1)  # Give thread time to start
+                    
+                    # Verify
+                    with monitoring_thread_lock:
+                        if monitoring_thread is not None:
+                            try:
+                                if monitoring_thread.is_alive():
+                                    log("✅ BRUTE FORCE FAILSAFE: Thread restart succeeded and verified")
+                                    thread_restart_succeeded = True
+                            except Exception as e:
+                                log(f"⚠️ BRUTE FORCE FAILSAFE: Thread verification failed ({e})")
+                    
+                except Exception as e:
+                    log(f"❌ BRUTE FORCE FAILSAFE: Thread restart exception: {e}")
+                    import traceback
+                    log(f"❌ BRUTE FORCE FAILSAFE: Stack trace: {traceback.format_exc()}")
+                
+                # If thread restart failed, restart process
+                if not thread_restart_succeeded:
+                    log("🚨 BRUTE FORCE FAILSAFE: Thread restart failed, restarting process...")
+                    try:
+                        restart_active_trade_supervisor_process()
+                    except Exception as e:
+                        log(f"❌ BRUTE FORCE FAILSAFE: Process restart failed: {e}")
             
             # Log failsafe status every 5 minutes (30 iterations)
             if not hasattr(start_event_driven_supervisor, 'failsafe_log_counter'):
@@ -2038,12 +2255,17 @@ def trigger_auto_stop_close(trade):
     # Invert side
     side = trade['side']
     inverted_side = 'N' if side.upper() in ['Y', 'YES'] else 'Y' if side.upper() in ['N', 'NO'] else side
-    # Use current market price for symbol_close and buy_price
-    sell_price = trade.get('current_close_price')
+    # Get current_close_price (opposite side's ask) and convert to actual sell_price
+    # current_close_price is the opposite side's ask, so sell_price = 1 - current_close_price
+    current_close_price = trade.get('current_close_price')
     symbol_close = trade.get('current_symbol_price')
-    if sell_price is None or symbol_close is None:
+    if current_close_price is None or symbol_close is None:
         log(f"[AUTO STOP] Skipping close for trade {trade['trade_id']} due to missing price data.")
         return False
+    
+    # Convert current_close_price (opposite side's ask) to actual sell_price
+    # For both YES and NO trades: sell_price = 1 - opposite_side_ask
+    sell_price = 1.0 - float(current_close_price) if hasattr(current_close_price, '__float__') else 1.0 - current_close_price
     
     # Convert Decimal objects to float for JSON serialization
     sell_price_float = float(sell_price) if hasattr(sell_price, '__float__') else sell_price
@@ -2370,15 +2592,13 @@ def get_auto_stop_threshold():
         return 40
 
 def get_unified_ttc_seconds(symbol: str = None):
-    """Get unified TTC from master strike table"""
+    """Get unified TTC from master strike table (uses monitor symbol+market when symbol is None)."""
     try:
-        # Use current monitor symbol if no symbol specified
-        if symbol is None:
-            symbol = get_current_monitor_symbol()
-            
+        sym, mkt = _get_symbol_and_market_for_strike(symbol)
+        table_name = get_strike_table_name(sym, mkt)
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute(f"SELECT ttc_seconds FROM live_data.strike_table_{symbol.lower()} LIMIT 1")
+        cursor.execute(f"SELECT ttc_seconds FROM live_data.{table_name} LIMIT 1")
         result = cursor.fetchone()
         conn.close()
         
@@ -2544,6 +2764,9 @@ def check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verifi
         check_auto_stop_conditions_momentum_scalp(active_trades, auto_stop_triggered_trades, verification_pending_trades)
     elif strategy == "Momentum Reversal":
         check_auto_stop_conditions_momentum_reversal(active_trades, auto_stop_triggered_trades, verification_pending_trades)
+    elif strategy == "Reverse HTC":
+        # Reverse HTC uses the same auto-stop logic as Hourly HTC
+        check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_trades, verification_pending_trades)
     else:
         # Default to Hourly HTC (fallback for any other strategy or missing strategy)
         check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_trades, verification_pending_trades)

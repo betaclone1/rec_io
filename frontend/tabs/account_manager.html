@@ -29,6 +29,94 @@
     .group-even {
       background-color: #1f2633;
     }
+    .refresh-button {
+      background: var(--accent-color, #3b82f6);
+      color: white;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      transition: background-color 0.2s;
+    }
+    .refresh-button:hover {
+      background: var(--accent-hover, #2563eb);
+    }
+    .refresh-button:disabled {
+      background: #6b7280;
+      color: #9ca3af;
+      cursor: not-allowed;
+    }
+    /* Compact number inputs for Target % / Transfer Amt */
+    .pct-number-input {
+      width: 52px;
+      padding: 2px 4px;
+      text-align: right;
+      font-size: 12px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      height: 22px;
+      box-sizing: border-box;
+    }
+    #initiate-transfer-modal,
+    #manage-transfers-modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 10000;
+      background: rgba(0,0,0,0.5);
+      align-items: center;
+      justify-content: center;
+    }
+    #initiate-transfer-modal .modal-box,
+    #manage-transfers-modal .modal-box {
+      background: #1f2633;
+      border: 1px solid #4a5568;
+      border-radius: 8px;
+      padding: 20px;
+      min-width: 320px;
+    }
+    #initiate-transfer-modal .modal-box select,
+    #initiate-transfer-modal .modal-box input[type="number"],
+    #manage-transfers-modal .modal-box select,
+    #manage-transfers-modal .modal-box input[type="number"] {
+      background: #2a3441;
+      color: #fff;
+      border: 1px solid #4a5568;
+      border-radius: 4px;
+      padding: 6px 10px;
+      font-size: 12px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    #manage-transfers-modal .modal-box input[type="number"] {
+      width: 84px;
+      padding-right: 20px;
+      text-align: right;
+      box-sizing: border-box;
+    }
+    /* Space between number and native spinner arrows (WebKit/Chrome/Safari) */
+    #manage-transfers-modal .modal-box input[type="number"]::-webkit-outer-spin-button,
+    #manage-transfers-modal .modal-box input[type="number"]::-webkit-inner-spin-button {
+      margin-left: 10px;
+    }
+    #initiate-transfer-modal .modal-box .row,
+    #manage-transfers-modal .modal-box .row { margin-bottom: 12px; }
+    #initiate-transfer-modal .modal-box .row label,
+    #manage-transfers-modal .modal-box .row label { display: block; margin-bottom: 4px; font-size: 12px; color: #c4c4c4; }
+    #initiate-transfer-modal .modal-box .modal-buttons,
+    #manage-transfers-modal .modal-box .modal-buttons { margin-top: 16px; display: flex; gap: 10px; justify-content: flex-end; }
+    #manage-transfers-modal .modal-box #manage-transfers-fields.manage-transfers-fields-disabled {
+      opacity: 0.5;
+      pointer-events: none;
+    }
+    #manage-transfers-modal .modal-box #manage-transfers-fields.manage-transfers-fields-disabled input {
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
@@ -43,14 +131,60 @@
           <a href="https://kalshi.com/portfolio" target="_blank" style="color: #4a9eff; text-decoration: none; font-size: 12px;">Portfolio</a>
         </div>
         <div style="display: flex; font-size: 12px; align-items: center; margin-bottom: 4px;">
-          <div style="font-weight: bold; width: 320px;">Portfolio</div>
+          <div style="font-weight: bold; width: 320px;">Total Holdings</div>
           <div style="font-weight: bold; width: 320px;">Cash</div>
           <div style="font-weight: bold; width: 320px;">Positions</div>
         </div>
-        <div style="display: flex; align-items: center;">
-          <span id="portfolio-value" style="width: 320px;">Loading...</span>
+        <div style="display: flex; align-items: center; margin-bottom: 12px;">
+          <span id="total-holdings-value" style="width: 320px;">Loading...</span>
           <span id="cash-value" style="width: 320px;">Loading...</span>
           <span id="positions-value" style="width: 320px;">Loading...</span>
+        </div>
+        <div style="margin-top: 8px;">
+          <table class="data-table" style="width: 100%; max-width: 400px; font-size: 12px;">
+            <thead>
+              <tr>
+                <th style="text-align: left;">Subaccount</th>
+                <th style="text-align: right;">Balance</th>
+              </tr>
+            </thead>
+            <tbody id="subaccounts-body">
+              <tr><td colspan="2">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Transfers expandable section -->
+        <div style="margin-top: 12px;">
+          <div class="panel-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; padding-bottom: 4px;" onclick="toggleTransfersPanel()">
+            <div style="display: flex; align-items: center;">
+              <span>Transfers</span>
+              <span id="transfers-expand-icon" style="font-size: 8px; transition: transform 0.3s ease; margin-left: 8px; transform: rotate(180deg);">▼</span>
+            </div>
+          </div>
+          <div id="transfers-content" style="height: 180px; overflow: hidden; transition: height 0.3s ease;">
+            <div style="height: 136px; overflow-y: auto;">
+              <table class="data-table" style="width: 100%; font-size: 12px; text-align: center;">
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Type</th>
+                    <th>From</th>
+                    <th>To</th>
+                    <th>Amount</th>
+                    <th>Initiated</th>
+                  </tr>
+                </thead>
+                <tbody id="transfers-body">
+                  <tr><td colspan="6">Loading...</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div style="margin-top: 6px; display: flex; gap: 8px;">
+              <button type="button" class="refresh-button" id="manage-transfers-btn">Manage</button>
+              <button type="button" class="refresh-button" id="initiate-transfer-btn">Initiate Transfer</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -128,6 +262,78 @@
     </div>
   </div>
 
+  <!-- Manage Transfers modal -->
+  <div id="manage-transfers-modal">
+    <div class="modal-box">
+      <form id="manage-transfers-form" style="display: contents;">
+        <div style="font-size: 14px; font-weight: bold; margin-bottom: 16px; color: #c4c4c4;">Manage</div>
+      <div class="row">
+        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+          <input type="checkbox" id="manage-transfers-automatic-checkbox" />
+          <span>Automatic Transfers</span>
+        </label>
+      </div>
+      <div id="manage-transfers-fields" class="row">
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
+          <label style="min-width: 70px; margin: 0;">Target %</label>
+          <input type="number" id="manage-transfers-target-pct" class="pct-number-input" min="0" step="0.5" placeholder="e.g. 11.5" />
+          <span style="font-size: 12px;">%</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <label style="min-width: 70px; margin: 0;">Transfer Amt</label>
+          <input type="number" id="manage-transfers-transfer-amt" class="pct-number-input" min="0" step="0.5" placeholder="e.g. 10" />
+          <span style="font-size: 12px;">%</span>
+        </div>
+      </div>
+      <div class="row" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #4a5568;">
+        <div style="font-size: 12px; color: #c4c4c4;">
+          <div style="margin-bottom: 4px;"><span style="min-width: 90px; display: inline-block;">Master Trading Bankroll</span></div>
+          <div style="margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
+            <span style="min-width: 90px;">Base value</span>
+            <input type="text" id="manage-mtb-base-value" placeholder="$0.00" style="width: 110px; padding: 4px 8px; font-size: 12px; background: #2a3441; color: #fff; border: 1px solid #4a5568; border-radius: 4px; box-sizing: border-box;" />
+            <button type="button" id="manage-mtb-base-value-reset" style="background: #4a5568; color: white; border: none; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;">Reset</button>
+          </div>
+          <br>
+          <div style="margin-bottom: 2px;"><span style="min-width: 90px; display: inline-block;">Balance</span><span id="manage-mtb-balance">—</span></div>
+          <div style="margin-bottom: 2px;"><span style="min-width: 90px; display: inline-block;">PnL</span><span id="manage-mtb-pnl">—</span></div>
+          <div><span style="min-width: 90px; display: inline-block;">PnL %</span><span id="manage-mtb-pnl-pct">—</span></div>
+        </div>
+      </div>
+        <div class="modal-buttons">
+          <button type="submit" class="refresh-button" id="manage-transfers-submit">Submit</button>
+          <button type="button" id="manage-transfers-cancel" style="background: #4a5568; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Initiate Transfer modal -->
+  <div id="initiate-transfer-modal">
+    <div class="modal-box">
+      <div style="font-size: 14px; font-weight: bold; margin-bottom: 16px; color: #c4c4c4;">Initiate Transfer</div>
+      <div class="row">
+        <label>From</label>
+        <select id="initiate-transfer-from">
+          <option value="">--</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>To</label>
+        <select id="initiate-transfer-to">
+          <option value="">--</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>Amount ($)</label>
+        <input type="number" id="initiate-transfer-amount" min="0" step="0.01" placeholder="0.00" />
+        <div id="initiate-transfer-available" style="font-size: 12px; color: #9ca3af; margin-top: 4px;"></div>
+      </div>
+      <div class="modal-buttons">
+        <button type="button" class="refresh-button" id="initiate-transfer-submit">Submit</button>
+        <button type="button" id="initiate-transfer-cancel" style="background: #4a5568; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;">Cancel</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     let GLOBAL_ACCOUNT_MODE = "prod";  // Will be updated by backend
@@ -161,22 +367,29 @@
       .catch(console.error);
 
     async function loadAccountData() {
-      const [balanceRes, settlementsRes, fillsRes, positionsRes, emailRes] = await Promise.all([
+      const [balanceRes, subaccountsRes, settlementsRes, fillsRes, positionsRes, emailRes, transfersRes] = await Promise.all([
         fetch(`${window.location.origin}/api/account/balance?mode=${GLOBAL_ACCOUNT_MODE}`),
+        fetch(window.location.origin + "/api/subaccounts"),
         fetch(window.location.origin + "/api/db/settlements"),
         fetch(window.location.origin + "/api/db/fills"),
         fetch(window.location.origin + "/api/db/positions"),
         fetch(window.location.origin + "/api/get_kalshi_email"),
+        fetch(window.location.origin + "/api/db/transfers"),
       ]);
 
       const settlementsJson = await settlementsRes.json();
+      const subaccountsJson = await subaccountsRes.json();
       const fillsJson = await fillsRes.json();
       const positionsJson = await positionsRes.json();
       const emailJson = await emailRes.json();
+      const transfersJson = await transfersRes.json();
+      const subaccounts = subaccountsJson.subaccounts || [];
+      window.subaccountsForTransfer = (subaccounts || []).filter(s => s.subaccount !== "PRIMARY");
 
       const settlements = settlementsJson.settlements;
       const fills = fillsJson.fills;
       const positions = positionsJson.positions || [];
+      const transfers = transfersJson.transfers || [];
       
       // Update brokerage info with email
       const brokerageInfoEl = document.getElementById("brokerage-info");
@@ -196,13 +409,13 @@
       const demoBalJson = await demoBalRes.json();
 
       const activeBal = GLOBAL_ACCOUNT_MODE === "prod" ? prodBalJson : demoBalJson;
-      
-      // Update Portfolio value
-      const portfolioVal = activeBal.portfolio ?? 0;
-      const portfolioInDollars = portfolioVal / 100; // Convert cents to dollars
-      const portfolioEl = document.getElementById("portfolio-value");
-      if (portfolioEl) {
-        portfolioEl.textContent = `$${Number(portfolioInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+
+      // Total Holdings = PRIMARY balance from subaccounts (cents → $D.CC)
+      const primaryRow = subaccounts.find(s => s.subaccount === "PRIMARY");
+      const totalHoldingsCents = primaryRow && primaryRow.balance != null ? primaryRow.balance : 0;
+      const totalHoldingsEl = document.getElementById("total-holdings-value");
+      if (totalHoldingsEl) {
+        totalHoldingsEl.textContent = `$${Number(totalHoldingsCents / 100).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
       }
       
       // Update Positions value
@@ -213,12 +426,44 @@
         positionsEl.textContent = `$${Number(positionsInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
       }
       
-      // Calculate Cash as difference between portfolio and positions
+      // Cash = portfolio - positions (from balance API)
+      const portfolioVal = activeBal.portfolio ?? 0;
       const cashVal = portfolioVal - positionsVal;
       const cashInDollars = cashVal / 100; // Convert cents to dollars
       const cashEl = document.getElementById("cash-value");
       if (cashEl) {
         cashEl.textContent = `$${Number(cashInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+      }
+
+      // Subaccounts table: Master Trading Bankroll and Cash Transfer only (balance as $D.CC)
+      const subaccountsBody = document.getElementById("subaccounts-body");
+      if (subaccountsBody) {
+        const displayNames = ["Master Trading Bankroll", "Cash Transfer"];
+        const toShow = subaccounts.filter(s => displayNames.includes(s.subaccount));
+        subaccountsBody.innerHTML = toShow.map(s => {
+          const cents = s.balance != null ? s.balance : 0;
+          const dollars = (cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          return `<tr><td style="text-align: left;">${s.subaccount}</td><td style="text-align: right;">$${dollars}</td></tr>`;
+        }).join("") || "<tr><td colspan=\"2\">No data</td></tr>";
+      }
+
+      // Transfers table (expandable section)
+      const transfersBody = document.getElementById("transfers-body");
+      if (transfersBody) {
+        transfersBody.innerHTML = transfers.length === 0
+          ? "<tr><td colspan=\"6\">No transfers</td></tr>"
+          : transfers.map(t => {
+              const amountCents = t.amount != null ? t.amount : 0;
+              const amountStr = "$" + (amountCents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+              return `<tr>
+                <td>${t.timestamp ?? ""}</td>
+                <td>${t.type ?? ""}</td>
+                <td>${t.from ?? ""}</td>
+                <td>${t.to ?? ""}</td>
+                <td>${amountStr}</td>
+                <td>${t.initiated ?? ""}</td>
+              </tr>`;
+            }).join("");
       }
 
             const settlementsBody = document.getElementById("settlements-body");
@@ -300,9 +545,10 @@
           const data = JSON.parse(event.data);
           console.log('📡 Received database change notification (account manager):', data);
           
-          // Handle different database change types and refresh immediately
+          // Handle different database change types and refresh immediately (Account Information panel)
           if (data.database === 'fills' || data.database === 'positions' || 
-              data.database === 'settlements' || data.database === 'account_balance') {
+              data.database === 'settlements' || data.database === 'account_balance' ||
+              data.database === 'subaccounts' || data.database === 'transfers') {
             console.log('🔄 Refreshing account data due to database change (account manager)');
             loadAccountData();
           }
@@ -325,6 +571,255 @@
       };
     }
     
+    function toggleTransfersPanel() {
+      const content = document.getElementById('transfers-content');
+      const icon = document.getElementById('transfers-expand-icon');
+      if (!content || !icon) return;
+      if (content.style.height === '0px' || content.style.height === '') {
+        content.style.height = '180px';
+        icon.style.transform = 'rotate(180deg)';
+      } else {
+        content.style.height = '0px';
+        icon.style.transform = 'rotate(0deg)';
+      }
+    }
+
+    function updateInitiateTransferAvailable() {
+      const fromVal = document.getElementById("initiate-transfer-from")?.value;
+      const availableEl = document.getElementById("initiate-transfer-available");
+      if (!availableEl) return;
+      if (!fromVal || fromVal === "External") {
+        availableEl.textContent = "";
+        return;
+      }
+      const sub = (window.subaccountsForTransfer || []).find(s => s.subaccount === fromVal);
+      if (!sub || sub.balance == null) {
+        availableEl.textContent = "";
+        return;
+      }
+      const dollars = (Number(sub.balance) / 100).toFixed(2);
+      availableEl.textContent = "Available: $" + dollars;
+    }
+
+    function openInitiateTransferModal() {
+      const list = (window.subaccountsForTransfer || []).map(s => s.subaccount);
+      const options = [...list, "External"];
+      const fromEl = document.getElementById("initiate-transfer-from");
+      const toEl = document.getElementById("initiate-transfer-to");
+      const amountEl = document.getElementById("initiate-transfer-amount");
+      if (fromEl) {
+        fromEl.innerHTML = "<option value=\"\">--</option>" + options.map(o => `<option value="${o}">${o}</option>`).join("");
+      }
+      if (toEl) {
+        toEl.innerHTML = "<option value=\"\">--</option>" + options.map(o => `<option value="${o}">${o}</option>`).join("");
+      }
+      if (amountEl) amountEl.value = "";
+      updateInitiateTransferAvailable();
+      const modal = document.getElementById("initiate-transfer-modal");
+      modal.style.display = "flex";
+      const escHandler = function(e) {
+        if (e.key === "Escape") {
+          closeInitiateTransferModal();
+        } else if (e.key === "Enter" && e.target.id !== "initiate-transfer-cancel") {
+          e.preventDefault();
+          document.getElementById("initiate-transfer-submit")?.click();
+        }
+      };
+      document.addEventListener("keydown", escHandler);
+      modal._escHandler = escHandler;
+    }
+
+    function closeInitiateTransferModal() {
+      const modal = document.getElementById("initiate-transfer-modal");
+      modal.style.display = "none";
+      if (modal._escHandler) {
+        document.removeEventListener("keydown", modal._escHandler);
+        delete modal._escHandler;
+      }
+      document.getElementById("initiate-transfer-btn")?.blur();
+    }
+
+    function setManageTransfersFieldsEnabled(enabled) {
+      const fieldsEl = document.getElementById("manage-transfers-fields");
+      const targetPct = document.getElementById("manage-transfers-target-pct");
+      const transferAmt = document.getElementById("manage-transfers-transfer-amt");
+      if (fieldsEl) fieldsEl.classList.toggle("manage-transfers-fields-disabled", !enabled);
+      if (targetPct) targetPct.disabled = !enabled;
+      if (transferAmt) transferAmt.disabled = !enabled;
+    }
+
+    async function openManageTransfersModal() {
+      const modal = document.getElementById("manage-transfers-modal");
+      modal.style.display = "flex";
+      const escHandler = function(e) {
+        if (e.key === "Escape") closeManageTransfersModal();
+      };
+      document.addEventListener("keydown", escHandler);
+      modal._escHandler = escHandler;
+      document.getElementById("manage-mtb-balance").textContent = "…";
+      document.getElementById("manage-mtb-pnl").textContent = "…";
+      document.getElementById("manage-mtb-pnl-pct").textContent = "…";
+      const baseValueInput = document.getElementById("manage-mtb-base-value");
+      if (baseValueInput) baseValueInput.value = "";
+      let subaccounts = [];
+      try {
+        const res = await fetch(window.location.origin + "/api/subaccounts");
+        const data = await res.json();
+        subaccounts = data.subaccounts || [];
+      } catch (e) {
+        console.error("Failed to fetch subaccounts:", e);
+      }
+      const mtb = subaccounts.find(s => s.subaccount === "Master Trading Bankroll");
+      const checkbox = document.getElementById("manage-transfers-automatic-checkbox");
+      const targetPct = document.getElementById("manage-transfers-target-pct");
+      const transferAmt = document.getElementById("manage-transfers-transfer-amt");
+      if (checkbox) checkbox.checked = !!(mtb && mtb.automatic_transfers);
+      if (targetPct) targetPct.value = mtb?.target_pnl__pct != null ? (Number(mtb.target_pnl__pct) * 100).toFixed(1) : "";
+      if (transferAmt) transferAmt.value = mtb?.transfer_amt != null ? (Number(mtb.transfer_amt) * 100).toFixed(1) : "";
+      setManageTransfersFieldsEnabled(checkbox ? checkbox.checked : false);
+      const fmt = (cents) => cents != null ? "$" + (Number(cents) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—";
+      const fmtPct = (frac) => frac != null ? (Number(frac) * 100).toFixed(2) + "%" : "—";
+      if (baseValueInput && mtb && mtb.base_value != null) {
+        const dollars = Number(mtb.base_value) / 100;
+        baseValueInput.value = "$" + dollars.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      } else if (baseValueInput) {
+        baseValueInput.value = "";
+      }
+      document.getElementById("manage-mtb-balance").textContent = mtb ? fmt(mtb.balance) : "—";
+      document.getElementById("manage-mtb-pnl").textContent = mtb ? fmt(mtb.realized_pnl) : "—";
+      document.getElementById("manage-mtb-pnl-pct").textContent = mtb ? fmtPct(mtb.realized_pnl_pct) : "—";
+      modal._mtbBalanceCents = mtb && mtb.balance != null ? Number(mtb.balance) : null;
+    }
+
+    function closeManageTransfersModal() {
+      const modal = document.getElementById("manage-transfers-modal");
+      modal.style.display = "none";
+      if (modal._escHandler) {
+        document.removeEventListener("keydown", modal._escHandler);
+        delete modal._escHandler;
+      }
+      document.getElementById("manage-transfers-btn")?.blur();
+    }
+
+    function formatManageTransferNumberTo1Decimal(inputEl) {
+      if (!inputEl || inputEl.value === "") return;
+      const v = parseFloat(inputEl.value);
+      if (!isNaN(v)) inputEl.value = Number(v.toFixed(1)).toFixed(1);
+    }
+    document.getElementById("manage-transfers-target-pct")?.addEventListener("change", function() { formatManageTransferNumberTo1Decimal(this); });
+    document.getElementById("manage-transfers-transfer-amt")?.addEventListener("change", function() { formatManageTransferNumberTo1Decimal(this); });
+
+    document.getElementById("manage-transfers-automatic-checkbox")?.addEventListener("change", function() {
+      setManageTransfersFieldsEnabled(this.checked);
+    });
+
+    document.getElementById("manage-mtb-base-value-reset")?.addEventListener("click", function() {
+      const modal = document.getElementById("manage-transfers-modal");
+      const baseValueInput = document.getElementById("manage-mtb-base-value");
+      const cents = modal._mtbBalanceCents;
+      if (baseValueInput && cents != null) {
+        const dollars = cents / 100;
+        baseValueInput.value = "$" + dollars.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+    });
+
+    document.getElementById("manage-transfers-btn")?.addEventListener("click", openManageTransfersModal);
+    document.getElementById("manage-transfers-cancel")?.addEventListener("click", closeManageTransfersModal);
+    document.getElementById("manage-transfers-form")?.addEventListener("submit", async function(e) {
+      e.preventDefault();
+      const automaticChecked = document.getElementById("manage-transfers-automatic-checkbox")?.checked ?? false;
+      const targetPctVal = document.getElementById("manage-transfers-target-pct")?.value;
+      const transferAmtVal = document.getElementById("manage-transfers-transfer-amt")?.value;
+      const baseValueRaw = document.getElementById("manage-mtb-base-value")?.value?.trim() || "";
+      const targetPctNum = targetPctVal !== "" && targetPctVal != null ? parseFloat(targetPctVal) : null;
+      const transferAmtNum = transferAmtVal !== "" && transferAmtVal != null ? parseFloat(transferAmtVal) : null;
+      const baseValueDollars = baseValueRaw.replace(/[$,\s]/g, "") ? parseFloat(baseValueRaw.replace(/[$,\s]/g, "")) : NaN;
+      const baseValueCents = (!isNaN(baseValueDollars) && baseValueDollars >= 0) ? Math.round(baseValueDollars * 100) : null;
+      try {
+        const resAuto = await fetch(window.location.origin + "/api/subaccounts/automatic-transfers", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ subaccount: "Master Trading Bankroll", automatic_transfers: automaticChecked })
+        });
+        const dataAuto = await resAuto.json();
+        if (!dataAuto.ok) {
+          alert(dataAuto.error || "Failed to update automatic transfers.");
+          return;
+        }
+        if (targetPctNum !== null || transferAmtNum !== null) {
+          const body = { subaccount: "Master Trading Bankroll" };
+          if (targetPctNum !== null) body.target_pnl__pct = targetPctNum / 100;
+          if (transferAmtNum !== null) body.transfer_amt = transferAmtNum / 100;
+          const resSettings = await fetch(window.location.origin + "/api/subaccounts/transfer-settings", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body)
+          });
+          const dataSettings = await resSettings.json();
+          if (!dataSettings.ok) {
+            alert(dataSettings.error || "Failed to update transfer settings.");
+            return;
+          }
+        }
+        if (baseValueCents !== null) {
+          const resBase = await fetch(window.location.origin + "/api/subaccounts/base-value", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ subaccount: "Master Trading Bankroll", base_value: baseValueCents })
+          });
+          const dataBase = await resBase.json();
+          if (!dataBase.ok) {
+            alert(dataBase.error || "Failed to update base value.");
+            return;
+          }
+        }
+        closeManageTransfersModal();
+        loadAccountData();
+      } catch (e) {
+        console.error("Manage transfers submit error:", e);
+        alert("Request failed.");
+      }
+    });
+
+    document.getElementById("initiate-transfer-from")?.addEventListener("change", updateInitiateTransferAvailable);
+    document.getElementById("initiate-transfer-btn")?.addEventListener("click", openInitiateTransferModal);
+    document.getElementById("initiate-transfer-cancel")?.addEventListener("click", closeInitiateTransferModal);
+    document.getElementById("initiate-transfer-submit")?.addEventListener("click", async function() {
+      const fromVal = document.getElementById("initiate-transfer-from")?.value;
+      const toVal = document.getElementById("initiate-transfer-to")?.value;
+      const amountVal = document.getElementById("initiate-transfer-amount")?.value;
+      if (!fromVal || !toVal) {
+        alert("Please select From and To.");
+        return;
+      }
+      if (fromVal === "External" || toVal === "External") {
+        alert("External transfers are not supported yet.");
+        return;
+      }
+      const amount = parseFloat(amountVal);
+      if (isNaN(amount) || amount <= 0) {
+        alert("Please enter a positive amount.");
+        return;
+      }
+      try {
+        const res = await fetch(window.location.origin + "/api/subaccounts/initiate-transfer", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ from: fromVal, to: toVal, amount: amount })
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          alert(data.error || "Transfer failed.");
+          return;
+        }
+        closeInitiateTransferModal();
+        loadAccountData();
+      } catch (e) {
+        console.error("Initiate transfer error:", e);
+        alert("Request failed.");
+      }
+    });
+
     // Set up WebSocket connection for database change notifications
     setupDatabaseChangeListener();
 

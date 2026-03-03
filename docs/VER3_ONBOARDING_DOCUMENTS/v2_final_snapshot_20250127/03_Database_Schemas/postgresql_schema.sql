@@ -1,6 +1,7 @@
 -- REC.IO v2 PostgreSQL Database Schema
 -- Generated: 2025-01-27
--- Version: 2.0
+-- Updated: 2025-12-19
+-- Version: 2.1
 
 -- Create schemas
 CREATE SCHEMA IF NOT EXISTS users;
@@ -13,14 +14,14 @@ CREATE SCHEMA IF NOT EXISTS historical_data;
 
 -- Trades table - Complete trade lifecycle tracking
 CREATE TABLE IF NOT EXISTS users.trades_0001 (
-    id INTEGER PRIMARY KEY,
-    status TEXT DEFAULT 'pending',
+    id SERIAL PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'pending',
     date TEXT NOT NULL,
     time TEXT NOT NULL,
-    symbol TEXT DEFAULT 'BTC',
+    symbol TEXT,
     market TEXT DEFAULT 'Kalshi',
     trade_strategy TEXT DEFAULT 'Hourly HTC',
-    contract TEXT,
+    contract TEXT NOT NULL,
     strike TEXT NOT NULL,
     side TEXT NOT NULL,
     prob REAL,
@@ -33,22 +34,40 @@ CREATE TABLE IF NOT EXISTS users.trades_0001 (
     pnl REAL,
     symbol_open REAL,
     symbol_close REAL,
-    momentum REAL,
-    volatility REAL,
+    momentum INTEGER,
     win_loss TEXT,
     ticker TEXT,
     ticket_id TEXT,
-    market_id TEXT DEFAULT 'BTC-USD',
-    momentum_delta REAL,
+    market_id TEXT,
+    momentum_percentile REAL,
     entry_method TEXT DEFAULT 'manual',
-    close_method TEXT
+    close_method TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    test_filter BOOLEAN DEFAULT FALSE,
+    notes TEXT,
+    monitor TEXT,
+    bankroll REAL,
+    ret_pct REAL,
+    momentum_5s_avg NUMERIC,
+    order_id TEXT,
+    order_id_open TEXT,
+    order_id_close TEXT,
+    high_price NUMERIC DEFAULT NULL,
+    low_price NUMERIC DEFAULT NULL,
+    hour_idx SMALLINT,
+    weekly_cycle SMALLINT,
+    loss_prevention BOOLEAN DEFAULT FALSE,
+    multiplier NUMERIC,
+    price_spread NUMERIC,
+    volatility_percentile NUMERIC,
+    paper_trade BOOLEAN DEFAULT FALSE,
+    cooldown_timer INTEGER,
+    monitor_confirmed BOOLEAN DEFAULT FALSE,
+    cycle_win_loss TEXT,
+    cycle_pnl REAL,
+    cycle_ret_pct REAL
 );
-
--- Auto-incrementing sequence for trades
-CREATE SEQUENCE IF NOT EXISTS users.trades_0001_id_seq1
-    INCREMENT 1
-    START 1
-    OWNED BY users.trades_0001.id;
 
 -- Fills table - Order execution details
 CREATE TABLE IF NOT EXISTS users.fills_0001 (

@@ -27,8 +27,8 @@
         .mobile-container {
             display: flex;
             flex-direction: column;
-            height: 92vh;
-            width: 100vw;
+            height: 98vh;
+            width: 100%;
         }
 
         .content-area {
@@ -54,6 +54,8 @@
             border-top: 1px solid #444;
             height: 60px;
             min-height: 60px;
+            padding-bottom: env(safe-area-inset-bottom, 0);
+            box-sizing: border-box;
         }
 
         .tab-item {
@@ -131,9 +133,45 @@
             color: #c4c4c4;
             font-size: 14px;
         }
+
+        /* Pull-to-refresh: bar slides down with pull; Chrome-style copy */
+        #pull-to-refresh {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 52px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            background: #1a1d24;
+            color: #a0aec0;
+            font-size: 14px;
+            z-index: 10000;
+            transform: translateY(-100%);
+            transition: transform 0.15s ease-out;
+            border-bottom: 1px solid #3d4552;
+        }
+        #pull-to-refresh.visible { transition: none; }
+        #pull-to-refresh.release .ptr-text { color: #63b3ed; }
+        #pull-to-refresh .ptr-spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid #3d4552;
+            border-top-color: #63b3ed;
+            border-radius: 50%;
+            animation: ptr-spin 0.8s linear infinite;
+        }
+        #pull-to-refresh:not(.refreshing) .ptr-spinner { display: none; }
+        @keyframes ptr-spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
+    <div id="pull-to-refresh" aria-live="polite">
+        <span class="ptr-spinner"></span>
+        <span class="ptr-text">Release to refresh</span>
+    </div>
     <div class="mobile-container">
         <!-- Content Area -->
         <div class="content-area">
@@ -198,7 +236,7 @@
                 return;
             }
             
-            // Set up iframe sources with authentication tokens
+            // Lazy-load iframe URLs (only load the visible tab to avoid 6 blocking requests at once)
             const iframeSources = {
                 dashboard: `/mobile/dashboard?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`,
                 monitor: `/mobile/trade_monitor?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`,
@@ -207,28 +245,49 @@
                 user: `/mobile/user?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`,
                 system: `/mobile/system?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`
             };
-            
-            // Set initial iframe sources
-            Object.keys(iframeSources).forEach(tabName => {
-                const frame = document.getElementById(`${tabName}-frame`);
-                if (frame) {
-                    frame.src = iframeSources[tabName];
-                }
-            });
+
+            // Load only the dashboard iframe on startup; other tabs load when first opened
+            const dashboardFrame = document.getElementById('dashboard-frame');
+            if (dashboardFrame && iframeSources.dashboard) {
+                dashboardFrame.src = iframeSources.dashboard;
+                dashboardFrame.dataset.srcSet = 'true';
+            }
+
+            function broadcastTabVisibility() {
+                const frames = document.querySelectorAll('.page-frame');
+                const origin = window.location.origin;
+                frames.forEach(frame => {
+                    if (!frame.src) return;
+                    try {
+                        if (frame.contentWindow) {
+                            frame.contentWindow.postMessage(
+                                { type: 'tab-visibility', visible: frame.classList.contains('active') },
+                                origin
+                            );
+                        }
+                    } catch (e) { /* cross-origin or not loaded */ }
+                });
+            }
 
             function switchTab(tabName) {
-                // Remove active class from all tabs and frames
+                const activeTab = document.querySelector(`[data-tab="${tabName}"]`);
+                const activeFrame = document.getElementById(`${tabName}-frame`);
+                if (!activeFrame) return;
+
+                // Remove active class from all tabs and frames first
                 tabItems.forEach(tab => tab.classList.remove('active'));
                 pageFrames.forEach(frame => frame.classList.remove('active'));
 
-                // Add active class to selected tab and frame
-                const activeTab = document.querySelector(`[data-tab="${tabName}"]`);
-                const activeFrame = document.getElementById(`${tabName}-frame`);
-                
-                if (activeTab && activeFrame) {
-                    activeTab.classList.add('active');
-                    activeFrame.classList.add('active');
+                // Make the target tab and frame visible (needed before setting src on some mobile browsers)
+                if (activeTab) activeTab.classList.add('active');
+                activeFrame.classList.add('active');
+
+                // Lazy-load: set iframe src only when user first opens this tab (use data attr; .src can resolve to about:blank when HTML has src="")
+                if (activeFrame.dataset.srcSet !== 'true' && iframeSources[tabName]) {
+                    activeFrame.src = iframeSources[tabName];
+                    activeFrame.dataset.srcSet = 'true';
                 }
+                broadcastTabVisibility();
             }
 
             // Add click handlers to tabs
@@ -242,6 +301,38 @@
 
             // Initialize with dashboard tab active
             switchTab('dashboard');
+            // After iframes have had time to load, tell each tab whether it's visible (heavy tabs pause when hidden)
+            setTimeout(broadcastTabVisibility, 800);
+
+            // Pull-to-refresh: bar only appears when pull >= PTR_THRESHOLD, shows "Release to refresh" only
+            const ptrEl = document.getElementById('pull-to-refresh');
+            const ptrText = ptrEl && ptrEl.querySelector('.ptr-text');
+            const PTR_THRESHOLD = 216; // 50% beyond previous 144
+            window.addEventListener('message', function(e) {
+                if (!e.data || e.origin !== window.location.origin) return;
+                if (e.data.type === 'pull-to-refresh-progress') {
+                    var pull = Math.max(0, Number(e.data.pull) || 0);
+                    if (pull < PTR_THRESHOLD) {
+                        if (ptrEl) {
+                            ptrEl.classList.remove('visible', 'release');
+                            ptrEl.style.transform = 'translateY(-100%)';
+                        }
+                    } else {
+                        if (ptrEl) {
+                            ptrEl.classList.add('visible', 'release');
+                            ptrEl.style.transform = 'translateY(0)';
+                        }
+                        if (ptrText) ptrText.textContent = 'Release to refresh';
+                    }
+                } else if (e.data.type === 'pull-to-refresh-triggered') {
+                    if (ptrEl) { ptrEl.classList.add('visible', 'refreshing'); ptrEl.style.transform = 'translateY(0)'; }
+                    if (ptrText) ptrText.textContent = 'Refreshing...';
+                    if (e.source && e.source.postMessage) e.source.postMessage({ type: 'pull-to-refresh-do' }, e.origin);
+                } else if (e.data.type === 'pull-to-refresh-done') {
+                    if (ptrEl) { ptrEl.classList.remove('visible', 'refreshing'); ptrEl.style.transform = 'translateY(-100%)'; }
+                    if (ptrText) ptrText.textContent = 'Release to refresh';
+                }
+            });
         });
 
         // Auto-refresh functionality for frontend changes
@@ -264,6 +355,7 @@
             function refreshAllIframes() {
                 const iframes = document.querySelectorAll('.page-frame');
                 iframes.forEach(iframe => {
+                    if (!iframe.src) return;
                     try {
                         if (iframe.contentWindow) {
                             iframe.contentWindow.postMessage({

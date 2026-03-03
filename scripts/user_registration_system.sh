@@ -221,6 +221,7 @@ setup_database_tables() {
             win_streak_threshold INTEGER DEFAULT 22,
             loss_prevention VARCHAR(50) DEFAULT 'none',
             last_processed_cycle VARCHAR(100),
+            paper_trade BOOLEAN DEFAULT FALSE,
             created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         

@@ -6,9 +6,18 @@
 // Global data holders
 window.momentumData = {
   weightedScore: null,
-  deltas: {}, // New: to store individual minute deltas
-  momentumPercentile: null, // New: to store momentum percentile
-  rollingPercentiles: [], // New: to store rolling momentum percentiles for chart
+  deltas: {}, // individual minute deltas (decimal)
+  momentumPercentile: null,
+  rollingPercentiles: [],
+};
+
+// Movement data from live price log (same shape for panel charts)
+window.movementData = {
+  weightedScore: null,
+  deltas: {},
+  momentumPercentile: null,
+  rollingScores: [],
+  rollingPercentiles: [],
 };
 
 // === UTILITY FUNCTIONS ===
@@ -61,13 +70,21 @@ function fetchCore(symbol = 'BTC') {
       if (data.delta_30m !== undefined) window.momentumData.deltas['30m'] = data.delta_30m;
 
       // Update momentum percentile (now using 5s average)
-      console.log('Received momentum_5s_avg from API:', data.momentum_5s_avg);
       if (data.momentum_5s_avg !== undefined) {
         window.momentumData.momentumPercentile = data.momentum_5s_avg;
-        console.log('Set window.momentumData.momentumPercentile to (5s avg):', data.momentum_5s_avg);
       }
 
-      // Trigger momentum panel update if function exists
+      // Update movement data from live price log (for Movement tab)
+      if (window.movementData) {
+        if (data.move_1m !== undefined) window.movementData.deltas['1m'] = data.move_1m;
+        if (data.move_2m !== undefined) window.movementData.deltas['2m'] = data.move_2m;
+        if (data.move_3m !== undefined) window.movementData.deltas['3m'] = data.move_3m;
+        if (data.move_4m !== undefined) window.movementData.deltas['4m'] = data.move_4m;
+        if (data.movement !== undefined) window.movementData.weightedScore = data.movement;
+        if (data.movement_percentile !== undefined) window.movementData.momentumPercentile = data.movement_percentile;
+      }
+
+      // Trigger momentum panel update (uses active tab: momentum or movement)
       if (typeof updateMomentumPanel === 'function') {
         console.log('Calling updateMomentumPanel()');
         updateMomentumPanel();
@@ -112,6 +129,14 @@ async function fetchBTCPriceChanges() {
 
 // === AUTO ENTRY INDICATOR FUNCTIONS ===
 
+// Helper function to format cooldown timer as MM:SS
+function formatCooldownTimer(seconds) {
+  if (!seconds || seconds <= 0) return '';
+  const minutes = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
+
 // Update the auto entry indicator display
 function updateAutoEntryIndicator(data) {
   const indicator = document.getElementById('autoEntryIndicator');
@@ -124,32 +149,23 @@ function updateAutoEntryIndicator(data) {
   const indicatorDot = indicator.querySelector('div');
   const indicatorText = indicator.querySelector('span');
   
-  // Check for SPIKE ALERT state first
-  if (data.spike_alert_active) {
-    // SPIKE ALERT MODE - Show red indicator
-    indicator.style.display = 'flex';
-    indicator.style.backgroundColor = '#dc3545'; // Red background
-    indicator.style.border = '1px solid #c82333';
-    
-    if (indicatorDot) {
-      indicatorDot.style.background = '#ff6b6b'; // Red dot
-    }
-    
-    if (indicatorText) {
-      const recoveryCountdown = data.spike_alert_recovery_countdown;
-      if (recoveryCountdown !== null && recoveryCountdown > 0) {
-        indicatorText.textContent = `SPIKE ALERT - AUTO TRADING PAUSED (${recoveryCountdown.toFixed(1)}m)`;
-      } else {
-        indicatorText.textContent = 'SPIKE ALERT - AUTO TRADING PAUSED';
-      }
-    }
-    
-    
-    return;
+  // Check for cooldown timer (in seconds) - priority field
+  const cooldownTimer = data.cooldown_timer || (data.cooldown_timer === 0 ? 0 : null);
+  
+  // Fallback to spike_alert_recovery_countdown (in minutes) if cooldown_timer not available
+  let cooldownSeconds = null;
+  if (cooldownTimer !== null && cooldownTimer !== undefined) {
+    cooldownSeconds = cooldownTimer;
+  } else if (data.spike_alert_recovery_countdown !== null && data.spike_alert_recovery_countdown !== undefined) {
+    // Convert minutes to seconds
+    cooldownSeconds = Math.floor(data.spike_alert_recovery_countdown * 60);
   }
   
-  // Use the new scanning_active field as the primary condition
-  // This provides the true system-wide scanning status
+  const hasCooldown = cooldownSeconds !== null && cooldownSeconds > 0;
+  const cooldownDisplay = hasCooldown ? formatCooldownTimer(cooldownSeconds) : '';
+  
+  // Use scanning_active as the primary condition - if scanning is active, monitor is active
+  // (Hourly HTC monitors continue trading during spike cooldown, they're not paused)
   if (data.scanning_active) {
     // Show the indicator when scanning is actually active
     indicator.style.display = 'flex';
@@ -161,36 +177,86 @@ function updateAutoEntryIndicator(data) {
     }
     
     if (indicatorText) {
-      indicatorText.textContent = 'Automated Trading ON';
+      // Show cooldown timer if available (for Hourly HTC during spike cooldown)
+      if (hasCooldown) {
+        indicatorText.textContent = `Automated Trading ON (${cooldownDisplay})`;
+      } else {
+        indicatorText.textContent = 'Automated Trading ON';
+      }
     }
     
+    return;
+  }
+  
+  // If not scanning, check if spike alert is active (for Reverse HTC or truly paused monitors)
+  if (data.spike_alert_active || hasCooldown) {
+    // SPIKE ALERT/COOLDOWN MODE - Show red indicator (for monitors that are actually paused)
+    indicator.style.display = 'flex';
+    indicator.style.backgroundColor = '#dc3545'; // Red background
+    indicator.style.border = '1px solid #c82333';
     
-  } else {
-    // Hide the indicator when scanning is not active
-    indicator.style.display = 'none';
+    if (indicatorDot) {
+      indicatorDot.style.background = '#ff6b6b'; // Red dot
+    }
     
+    if (indicatorText) {
+      if (hasCooldown) {
+        indicatorText.textContent = `SPIKE ALERT - AUTO TRADING PAUSED (${cooldownDisplay})`;
+      } else {
+        indicatorText.textContent = 'SPIKE ALERT - AUTO TRADING PAUSED';
+      }
+    }
+    
+    return;
+  }
+  
+  // Hide the indicator when scanning is not active and no spike alert/cooldown
+  indicator.style.display = 'none';
+}
+
+// === POLLING SETUP (pause when Trade Monitor tab hidden) ===
+
+let liveDataCoreIntervalId = null;
+let liveDataPriceIntervalId = null;
+
+function getCurrentSymbolForLiveData() {
+  const symbolPicker = document.getElementById('ticker-picker');
+  return symbolPicker ? symbolPicker.value : 'BTC';
+}
+
+function startLiveDataPolling() {
+  if (liveDataCoreIntervalId != null) clearInterval(liveDataCoreIntervalId);
+  if (liveDataPriceIntervalId != null) clearInterval(liveDataPriceIntervalId);
+  fetchCore(getCurrentSymbolForLiveData());
+  fetchSymbolPriceChanges(getCurrentSymbolForLiveData());
+  liveDataCoreIntervalId = setInterval(() => fetchCore(getCurrentSymbolForLiveData()), 5000);
+  liveDataPriceIntervalId = setInterval(() => fetchSymbolPriceChanges(getCurrentSymbolForLiveData()), 60000);
+}
+
+function stopLiveDataPolling() {
+  if (liveDataCoreIntervalId != null) {
+    clearInterval(liveDataCoreIntervalId);
+    liveDataCoreIntervalId = null;
+  }
+  if (liveDataPriceIntervalId != null) {
+    clearInterval(liveDataPriceIntervalId);
+    liveDataPriceIntervalId = null;
   }
 }
 
-// === POLLING SETUP ===
-
 // Initialize polling when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
-  // Get current symbol and fetch price changes
-  const getCurrentSymbol = () => {
-    const symbolPicker = document.getElementById('ticker-picker');
-    return symbolPicker ? symbolPicker.value : 'BTC';
-  };
-  
-  // Initial data fetches
-  fetchCore(getCurrentSymbol());
-  
-  // Initial price changes fetch
-  fetchSymbolPriceChanges(getCurrentSymbol());
+  startLiveDataPolling();
+});
 
-  // Set up polling intervals
-  setInterval(() => fetchCore(getCurrentSymbol()), 5000);                 // Momentum data every 5 seconds for live updates
-  setInterval(() => fetchSymbolPriceChanges(getCurrentSymbol()), 60000);    // Price changes every minute with current symbol
+window.addEventListener('message', function(event) {
+  if (event.data && event.data.type === 'tab-visibility') {
+    if (event.data.visible) {
+      startLiveDataPolling();
+    } else {
+      stopLiveDataPolling();
+    }
+  }
 });
 
 // Export functions for use by other modules

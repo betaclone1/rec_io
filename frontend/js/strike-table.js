@@ -28,18 +28,41 @@ if (!window._rowFlashStyleInjected) {
 // Global strike table state
 window.strikeRowsMap = new Map();
 
+// Last seen market identity (symbol|market|market_title) — when this changes (e.g. rollover), redraw strike table
+let lastSeenMarketKey = '';
+
 // === UNIFIED DATA FETCHING ===
 
-// Get current symbol from the symbol picker
+// Get current symbol from monitor context (read-only display / body.dataset), not from an editable control
 function getCurrentSymbol() {
-  const symbolPicker = document.getElementById('ticker-picker');
-  return symbolPicker ? symbolPicker.value : 'BTC';
+  const fromBody = document.body && document.body.dataset && document.body.dataset.currentSymbol;
+  if (fromBody && fromBody.trim()) return fromBody.trim();
+  const display = document.getElementById('monitor-symbol-display');
+  if (display && display.textContent && display.textContent.trim() && display.textContent.trim() !== '—') return display.textContent.trim();
+  const picker = document.getElementById('monitor-picker');
+  if (picker && picker.value && picker.selectedOptions && picker.selectedOptions[0] && picker.selectedOptions[0].dataset.symbol) return picker.selectedOptions[0].dataset.symbol;
+  return 'BTC';
 }
 
-// Fetch unified TTC data
-async function fetchUnifiedTTC(symbol = 'BTC') {
+// Get current market from monitor only. Source of truth: body.dataset (set by trade_monitor from monitor list), then picker option. No window fallback.
+function getCurrentMarket() {
+  const bodyMarket = document.body && document.body.dataset && document.body.dataset.currentMarket;
+  if (bodyMarket === '15m' || bodyMarket === 'hourly') return bodyMarket;
+  const picker = document.getElementById('monitor-picker');
+  if (picker && picker.value && picker.selectedOptions && picker.selectedOptions[0]) {
+    const m = picker.selectedOptions[0].dataset.market;
+    if (m === '15m' || m === 'hourly') return m;
+  }
+  return null;
+}
+
+// Fetch unified TTC data. Requires market from monitor (hourly or 15m).
+async function fetchUnifiedTTC(symbol = 'BTC', market = null) {
+  const m = market || getCurrentMarket();
+  if (!m || (m !== '15m' && m !== 'hourly')) return 0;
   try {
-    const response = await apiCall(`/api/unified_ttc/${symbol.toLowerCase()}`);
+    const url = `/api/unified_ttc/${symbol.toLowerCase()}?market=${encodeURIComponent(m)}`;
+    const response = await apiCall(url);
     const data = await response.json();
     return data.ttc_seconds || 0;
   } catch (error) {
@@ -104,10 +127,13 @@ async function apiCall(endpoint, options = {}) {
   }
 }
 
-// Fetch strike table data from PostgreSQL endpoint
-async function fetchStrikeTableData(symbol = 'BTC') {
+// Fetch strike table data from PostgreSQL. Requires market from monitor (hourly or 15m).
+async function fetchStrikeTableData(symbol = 'BTC', market = null) {
+  const m = market || getCurrentMarket();
+  if (!m || (m !== '15m' && m !== 'hourly')) return null;
   try {
-    const response = await apiCall(`/api/postgresql/strike_table/${symbol.toLowerCase()}`);
+    const url = `/api/postgresql/strike_table/${symbol.toLowerCase()}?market=${encodeURIComponent(m)}`;
+    const response = await apiCall(url);
     const data = await response.json();
     return data;
   } catch (error) {
@@ -182,36 +208,16 @@ function updateSymbolPriceDisplay(currentPrice) {
   }
 }
 
-// Update market title from strike table data
+// Update market title from strike table data — display strike table market_title directly (hourly or 15m).
 function updateMarketTitle(strikeTableData) {
   if (!strikeTableData) return;
   
   const cell = document.getElementById('strikePanelMarketTitleCell');
   if (!cell) return;
   
-  // Extract time from market_title (e.g., "BTC price on Aug 25 at 5pm" -> "5pm")
-  const marketTitle = strikeTableData.market_title || '';
-  
-  // Try new format first: "BTC price on Aug 25 at 5pm"
-  let timeMatch = marketTitle.match(/at\s+(\d{1,2}(?:am|pm))$/i);
-  let timeStr = '11pm'; // default
-  
-  if (timeMatch) {
-    timeStr = timeMatch[1].trim();
-  } else {
-    // Fallback to old format: "Bitcoin price on Jul 22, 2025 at 3pm EDT?"
-    timeMatch = marketTitle.match(/at\s+(.+?)\s+(?:EDT|EST)\?/i);
-    if (timeMatch) {
-      timeStr = timeMatch[1].trim();
-    }
-  }
-  
-  // Format as "<symbol> price today at <time>?"
-  const symbol = strikeTableData.symbol || 'BTC';
-  const formattedTitle = `${symbol} price today at ${timeStr}?`;
-  
-  cell.textContent = formattedTitle;
-  cell.style.color = "white";
+  const marketTitle = strikeTableData.market_title;
+  cell.textContent = (marketTitle != null && String(marketTitle).trim() !== '') ? String(marketTitle).trim() : '—';
+  cell.style.color = 'white';
 }
 
 // Main function to update middle column data
@@ -219,12 +225,23 @@ async function updateMiddleColumnData() {
   try {
     // Get current symbol
     const currentSymbol = getCurrentSymbol();
+    const currentMarket = getCurrentMarket();
     
     // Fetch strike table data (includes market title)
     const strikeTableData = await fetchStrikeTableData(currentSymbol);
     
     // Update market title
     updateMarketTitle(strikeTableData);
+    
+    // When market ticker changes (hour rollover for hourlies, 15m for 15m), redraw strike table like the title
+    const marketTitle = (strikeTableData && strikeTableData.market_title != null) ? String(strikeTableData.market_title).trim() : '';
+    const marketKey = (currentSymbol || '') + '|' + (currentMarket || '') + '|' + marketTitle;
+    if (marketKey !== lastSeenMarketKey) {
+      lastSeenMarketKey = marketKey;
+      if (typeof updateStrikeTable === 'function') {
+        updateStrikeTable();
+      }
+    }
     
     // Update TTC display from strike table data
     if (strikeTableData && strikeTableData.ttc_seconds !== undefined) {
@@ -809,6 +826,13 @@ function updateYesNoButton(spanEl, strike, side, askPrice, isActive, ticker = nu
   spanEl.setAttribute('data-strike', strike);
   spanEl.setAttribute('data-side', side);
   
+  // Store diff value as data attribute
+  if (diffValue !== null && diffValue !== undefined) {
+    spanEl.setAttribute('data-diff', diffValue);
+  } else {
+    spanEl.removeAttribute('data-diff');
+  }
+  
   // Store the actual ask price for trade execution (not the display value)
   // Use the _dollars value for trade execution (no fallback)
   if (askPriceForTrade && askPriceForTrade !== '—' && askPriceForTrade !== 0) {
@@ -838,6 +862,7 @@ function updateYesNoButton(spanEl, strike, side, askPrice, isActive, ticker = nu
             ticker: tradeData.ticker,
             buy_price: tradeData.buy_price,
             prob: tradeData.prob,
+            diff: tradeData.diff,
             symbol_open: tradeData.symbol_open,
             momentum: tradeData.momentum,
             contract: tradeData.contract,
@@ -845,7 +870,8 @@ function updateYesNoButton(spanEl, strike, side, askPrice, isActive, ticker = nu
             position: tradeData.position,
             trade_strategy: tradeData.trade_strategy,
             monitor: tradeData.monitor,
-            entry_method: tradeData.entry_method
+            entry_method: tradeData.entry_method,
+            paper_trade: tradeData.paper_trade
           })
         });
         
@@ -1024,6 +1050,28 @@ function loadDiffModeFromPreferences() {
   window.diffMode = true;
 }
 
+// Interval IDs for pause-when-hidden (Trade Monitor tab)
+let middleColumnIntervalId = null;
+let strikeTableIntervalId = null;
+
+function startStrikeTablePolling() {
+  if (middleColumnIntervalId != null) clearInterval(middleColumnIntervalId);
+  if (strikeTableIntervalId != null) clearInterval(strikeTableIntervalId);
+  middleColumnIntervalId = setInterval(updateMiddleColumnData, 1000);
+  strikeTableIntervalId = setInterval(updateStrikeTable, 1000);
+}
+
+function stopStrikeTablePolling() {
+  if (middleColumnIntervalId != null) {
+    clearInterval(middleColumnIntervalId);
+    middleColumnIntervalId = null;
+  }
+  if (strikeTableIntervalId != null) {
+    clearInterval(strikeTableIntervalId);
+    strikeTableIntervalId = null;
+  }
+}
+
 // Attach handlers after table is rendered
 if (typeof window !== 'undefined') {
   document.addEventListener('DOMContentLoaded', async () => {
@@ -1032,23 +1080,22 @@ if (typeof window !== 'undefined') {
     // Initialize strike table container first
     initializeStrikeTableContainer();
     
-    // Initialize middle column data immediately
-    await updateMiddleColumnData();
-    
-    // Set up polling for middle column data
-    setInterval(updateMiddleColumnData, 1000); // Poll every 1 second (unchanged frequency)
-    
-    // Initialize and poll strike table data
-    await updateStrikeTable();
-    setInterval(updateStrikeTable, 1000); // Poll every 1 second (unchanged frequency)
+    // Only fetch when market is already set (e.g. by trade_monitor after populateMonitorPicker). Avoids using wrong/missing market.
+    if (getCurrentMarket()) {
+      await updateMiddleColumnData();
+      await updateStrikeTable();
+    }
+    startStrikeTablePolling();
   });
 } 
 
 // === STRIKE TABLE WEBSOCKET UPDATES ===
 // WebSocket connection for real-time database change notifications
 let dbChangeWebSocket = null;
+let strikeTableTabPaused = false;
 
 function connectDbChangeWebSocket() {
+  if (strikeTableTabPaused) return;
   if (dbChangeWebSocket && dbChangeWebSocket.readyState === WebSocket.OPEN) {
 
     return; // Already connected
@@ -1083,16 +1130,25 @@ function connectDbChangeWebSocket() {
   
   dbChangeWebSocket.onclose = function(event) {
     
-    // Try to reconnect after 5 seconds
-    setTimeout(() => {
-      
-      connectDbChangeWebSocket();
-    }, 5000);
+    // Reconnect after 5 seconds only if tab is not paused
+    if (!strikeTableTabPaused) {
+      setTimeout(() => {
+
+        connectDbChangeWebSocket();
+      }, 5000);
+    }
   };
   
   dbChangeWebSocket.onerror = function(error) {
     console.error("[WEBSOCKET] ❌ Connection error:", error);
   };
+}
+
+function disconnectDbChangeWebSocket() {
+  if (dbChangeWebSocket) {
+    try { dbChangeWebSocket.close(); } catch (e) {}
+    dbChangeWebSocket = null;
+  }
 }
 
 // Function to fetch and render strike table (called by WebSocket)
@@ -1102,9 +1158,23 @@ function fetchAndRenderStrikeTable() {
   }
 }
 
-// Initialize WebSocket connection
+// Initialize WebSocket connection and tab-visibility pause/resume
 if (typeof window !== 'undefined') {
   connectDbChangeWebSocket();
+
+  window.addEventListener('message', function(event) {
+    if (event.data && event.data.type === 'tab-visibility') {
+      const visible = event.data.visible === true;
+      strikeTableTabPaused = !visible;
+      if (visible) {
+        startStrikeTablePolling();
+        connectDbChangeWebSocket();
+      } else {
+        stopStrikeTablePolling();
+        disconnectDbChangeWebSocket();
+      }
+    }
+  });
   
   // Add a test function to manually trigger a database change notification
   window.testWebSocketConnection = function() {
