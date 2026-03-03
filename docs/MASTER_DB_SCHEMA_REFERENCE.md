@@ -1,6 +1,6 @@
 # Master Database Schema Reference
 
-**Generated:** 2026-02-19 (schema review)
+**Generated:** 2026-03-03 (schema review, includes maintenance-mode system_state)
 
 This document provides a complete reference of all database schemas, tables, and columns.
 Update this document whenever schema changes are made during development.
@@ -10823,3 +10823,22 @@ Kalshi v1 account/history entries (deposits and withdrawals) synced from the API
   ```
 
 ---
+
+## Schema: `core`
+
+### Table: `core.system_state`
+
+Global system mode flag controlling whether new trades may be opened. This table is managed primarily by `scripts/MASTER_RESTART.sh` and read by `backend/trade_manager.py`.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | - | Primary key, always `1` for the singleton row. |
+| `mode` | `text` | NO | 'normal' | System mode: `'normal'` (trading enabled) or `'maintenance'` (new trade opens blocked). |
+| `updated_at` | `timestamp with time zone` | NO | now() | Last time the mode was updated. |
+
+#### Constraints
+
+- **Primary Key:** `system_state_pkey` on `id`
+- **Check:** `system_state_mode_check` enforcing `mode IN ('normal', 'maintenance')`

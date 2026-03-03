@@ -1700,6 +1700,8 @@ def create_monitor():
         position_size = data.get("position_size", 100)
         multiplier = data.get("multiplier", 1.0)
         user_id = data.get("user_id", "user_0001")
+        raw_market = data.get("market", "hourly")
+        market = "15m" if (raw_market and str(raw_market).strip().lower() == "15m") else "hourly"
         
         if not symbol or not strategy:
             return jsonify({"status": "error", "message": "Missing symbol or strategy parameter"}), 400
@@ -1808,7 +1810,7 @@ def create_monitor():
             """, (
                 f"mon_{user_number}_temp",  # Temporary name
                 symbol,
-                'hourly',  # market: hourly or 15m
+                market,  # market: hourly or 15m
                 strategy,
                 False,  # auto_trade defaults to False
                 'off',  # auto_trade_status defaults to 'off'

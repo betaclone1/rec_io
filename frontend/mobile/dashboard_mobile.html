@@ -6189,8 +6189,9 @@
         const maxDisplay = document.getElementById('m_timeWindowMaxDisplay');
         if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
 
-        const minPercent = (state.minTimeSeconds / 3600) * 100;
-        const maxPercent = (state.maxTimeSeconds / 3600) * 100;
+        const maxScale = window.dashboardMobileTimeWindowMaxSeconds || 3600;
+        const minPercent = (state.minTimeSeconds / maxScale) * 100;
+        const maxPercent = (state.maxTimeSeconds / maxScale) * 100;
 
         minHandle.style.left = `${minPercent}%`;
         maxHandle.style.left = `${maxPercent}%`;
@@ -6209,10 +6210,12 @@
         const rect = container.getBoundingClientRect();
         if (rect.width === 0) return;
 
+        const maxScale = window.dashboardMobileTimeWindowMaxSeconds || 3600;
         const clamped = Math.max(rect.left, Math.min(rect.right, clientX));
         const percent = ((clamped - rect.left) / rect.width) * 100;
-        const intervalIndex = Math.round((percent / 100) * 240);
-        const snappedSeconds = Math.max(0, Math.min(3600, intervalIndex * 15));
+        const numIntervals = maxScale / 15;
+        const intervalIndex = Math.round((percent / 100) * numIntervals);
+        const snappedSeconds = Math.max(0, Math.min(maxScale, intervalIndex * 15));
 
         if (state.currentHandle === 'min') {
           if (snappedSeconds < state.maxTimeSeconds) state.minTimeSeconds = snappedSeconds;
@@ -6573,6 +6576,8 @@
         const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
         const isReverseHTC = currentStrategy && currentStrategy.toUpperCase().includes('REVERSE HTC');
         const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
+        const is15mHTC = currentStrategy && currentStrategy.toUpperCase().includes('15M HTC');
+        window.dashboardMobileTimeWindowMaxSeconds = is15mHTC ? 900 : 3600;
         
         // Update modal title with strategy name and show/hide strategy sections
         const modalTitle = document.getElementById('mobileUnifiedAutoTradeModalTitle');
@@ -6647,11 +6652,11 @@
           if (probLabel) probLabel.textContent = 'Win Probability Window:';
         }
         
-        // Show/hide Probability Adjustment slider (only for Hourly HTC, not Reverse HTC)
+        // Show/hide Probability Adjustment slider (Hourly HTC and 15m HTC — same strategy, different strike table)
         const probAdjContainer = document.getElementById('m_probAdjContainer');
         const probAdjLabel = document.getElementById('m_probAdjLabel');
         if (probAdjContainer && probAdjLabel) {
-          const displayValue = isHourlyHTC ? 'block' : 'none';
+          const displayValue = (isHourlyHTC || is15mHTC) ? 'block' : 'none';
           probAdjContainer.style.display = displayValue;
           probAdjLabel.style.display = displayValue;
         }
@@ -6668,12 +6673,14 @@
           if (el) el.checked = !!value;
         };
 
-        // Common settings (both strategies)
+        // Common settings (both strategies) — 15m HTC uses 0:00–15:00 (900s)
+        const timeMax = (currentStrategy && currentStrategy.toUpperCase().includes('15M HTC')) ? 900 : 3600;
+        window.dashboardMobileTimeWindowMaxSeconds = timeMax;
         const minTime = Number.isFinite(Number(data.min_time)) ? Number(data.min_time) : 0;
-        const maxTime = Number.isFinite(Number(data.max_time)) ? Number(data.max_time) : 3600;
-        const minTimeRounded = Math.max(0, Math.min(3600, Math.round(minTime / 15) * 15));
-        const maxTimeRounded = Math.max(0, Math.min(3600, Math.round(maxTime / 15) * 15));
-        const finalMaxTime = maxTimeRounded <= minTimeRounded ? Math.min(3600, minTimeRounded + 900) : maxTimeRounded;
+        const maxTime = Number.isFinite(Number(data.max_time)) ? Number(data.max_time) : timeMax;
+        const minTimeRounded = Math.max(0, Math.min(timeMax, Math.round(minTime / 15) * 15));
+        const maxTimeRounded = Math.max(0, Math.min(timeMax, Math.round(maxTime / 15) * 15));
+        const finalMaxTime = maxTimeRounded <= minTimeRounded ? Math.min(timeMax, minTimeRounded + 900) : maxTimeRounded;
         
         // Probability window (for HOURLY HTC) or Ask Price window (for Momentum Breakout/Contain)
         if (isMomentumBreakout || isMomentumContain) {
@@ -6854,7 +6861,7 @@
             const saveIsMB = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
             const saveIsMC = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
             const saveIsRHTC = currentStrategy && currentStrategy.toUpperCase().includes('REVERSE HTC');
-            const saveIsHHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !saveIsRHTC;
+            const saveIsHHTC = (currentStrategy && (currentStrategy.toUpperCase().includes('HOURLY HTC') || currentStrategy.toUpperCase().includes('15M HTC')) && !saveIsRHTC);
             
             if (saveIsMS) {
               // MOMENTUM SCALP specific fields
@@ -6934,7 +6941,7 @@
               payload.spike_alert_momentum_threshold = parseInt(document.getElementById('m_spikeMomentum').value, 10);
               payload.spike_alert_cooldown_threshold = parseInt(document.getElementById('m_spikeCooldown').value, 10);
               payload.spike_alert_cooldown_minutes = parseInt(document.getElementById('m_spikeTime').value, 10);
-              // Only include prob_adj for Hourly HTC (not Reverse HTC)
+              // Include prob_adj for Hourly HTC and 15m HTC (not Reverse HTC)
               if (saveIsHHTC) {
                 payload.prob_adj = parseFloat(document.getElementById('m_probAdjSlider').value);
               }

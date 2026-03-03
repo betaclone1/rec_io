@@ -11,6 +11,7 @@ import psutil
 import time
 import subprocess
 import platform
+import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, List
@@ -207,6 +208,12 @@ class SystemMonitor:
         }
         
         try:
+            from backend.util.paths import (
+                get_supervisorctl_path,
+                get_supervisor_config_path,
+                get_dynamic_project_root,
+            )
+            
             # Get all Python processes
             python_processes = []
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
@@ -239,18 +246,29 @@ class SystemMonitor:
                         "processes": matching_processes
                     })
                     
-                    # Kill all but the supervisor-managed one
-                    # Supervisor processes will have the project directory in their cmdline
-                    supervisor_process = None
+                    # Determine which PID (if any) is managed by supervisor
+                    supervisor_pid = None
+                    try:
+                        result = subprocess.run(
+                            [get_supervisorctl_path(), "-c", get_supervisor_config_path(), "status", service_name],
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                        )
+                        if "RUNNING" in result.stdout:
+                            m = re.search(r"pid\s+(\d+)", result.stdout)
+                            if m:
+                                supervisor_pid = int(m.group(1))
+                    except Exception as e:
+                        print(f"⚠️ Error determining supervisor PID for {service_name}: {e}")
+                        sys.stdout.flush()
+                    
+                    # Anything that is not the supervisor PID is considered rogue and should be killed.
+                    # If we couldn't determine a supervisor PID, treat ALL matches as rogue; supervisor
+                    # will automatically restart managed services due to autorestart.
                     rogue_processes = []
-                    
-                    from backend.util.paths import get_dynamic_project_root
-                    project_root = get_dynamic_project_root()
-                    
                     for proc in matching_processes:
-                        if project_root in proc['cmdline']:
-                            supervisor_process = proc
-                        else:
+                        if supervisor_pid is None or proc["pid"] != supervisor_pid:
                             rogue_processes.append(proc)
                     
                     # Kill rogue processes

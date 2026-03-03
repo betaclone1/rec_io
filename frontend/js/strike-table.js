@@ -28,24 +28,40 @@ if (!window._rowFlashStyleInjected) {
 // Global strike table state
 window.strikeRowsMap = new Map();
 
+// Last seen market identity (symbol|market|market_title) — when this changes (e.g. rollover), redraw strike table
+let lastSeenMarketKey = '';
+
 // === UNIFIED DATA FETCHING ===
 
-// Get current symbol from the symbol picker
+// Get current symbol from monitor context (read-only display / body.dataset), not from an editable control
 function getCurrentSymbol() {
-  const symbolPicker = document.getElementById('ticker-picker');
-  return symbolPicker ? symbolPicker.value : 'BTC';
+  const fromBody = document.body && document.body.dataset && document.body.dataset.currentSymbol;
+  if (fromBody && fromBody.trim()) return fromBody.trim();
+  const display = document.getElementById('monitor-symbol-display');
+  if (display && display.textContent && display.textContent.trim() && display.textContent.trim() !== '—') return display.textContent.trim();
+  const picker = document.getElementById('monitor-picker');
+  if (picker && picker.value && picker.selectedOptions && picker.selectedOptions[0] && picker.selectedOptions[0].dataset.symbol) return picker.selectedOptions[0].dataset.symbol;
+  return 'BTC';
 }
 
-// Get current market (hourly or 15m) from monitor context; used for strike table API calls
+// Get current market from monitor only. Source of truth: body.dataset (set by trade_monitor from monitor list), then picker option. No window fallback.
 function getCurrentMarket() {
-  return (typeof window.currentMarket !== 'undefined' && window.currentMarket) ? window.currentMarket : 'hourly';
+  const bodyMarket = document.body && document.body.dataset && document.body.dataset.currentMarket;
+  if (bodyMarket === '15m' || bodyMarket === 'hourly') return bodyMarket;
+  const picker = document.getElementById('monitor-picker');
+  if (picker && picker.value && picker.selectedOptions && picker.selectedOptions[0]) {
+    const m = picker.selectedOptions[0].dataset.market;
+    if (m === '15m' || m === 'hourly') return m;
+  }
+  return null;
 }
 
-// Fetch unified TTC data (optional market: hourly or 15m)
+// Fetch unified TTC data. Requires market from monitor (hourly or 15m).
 async function fetchUnifiedTTC(symbol = 'BTC', market = null) {
+  const m = market || getCurrentMarket();
+  if (!m || (m !== '15m' && m !== 'hourly')) return 0;
   try {
-    const m = market || getCurrentMarket();
-    const url = `/api/unified_ttc/${symbol.toLowerCase()}${m && m !== 'hourly' ? '?market=' + encodeURIComponent(m) : ''}`;
+    const url = `/api/unified_ttc/${symbol.toLowerCase()}?market=${encodeURIComponent(m)}`;
     const response = await apiCall(url);
     const data = await response.json();
     return data.ttc_seconds || 0;
@@ -111,11 +127,12 @@ async function apiCall(endpoint, options = {}) {
   }
 }
 
-// Fetch strike table data from PostgreSQL endpoint (optional market: hourly or 15m)
+// Fetch strike table data from PostgreSQL. Requires market from monitor (hourly or 15m).
 async function fetchStrikeTableData(symbol = 'BTC', market = null) {
+  const m = market || getCurrentMarket();
+  if (!m || (m !== '15m' && m !== 'hourly')) return null;
   try {
-    const m = market || getCurrentMarket();
-    const url = `/api/postgresql/strike_table/${symbol.toLowerCase()}${m && m !== 'hourly' ? '?market=' + encodeURIComponent(m) : ''}`;
+    const url = `/api/postgresql/strike_table/${symbol.toLowerCase()}?market=${encodeURIComponent(m)}`;
     const response = await apiCall(url);
     const data = await response.json();
     return data;
@@ -191,36 +208,16 @@ function updateSymbolPriceDisplay(currentPrice) {
   }
 }
 
-// Update market title from strike table data
+// Update market title from strike table data — display strike table market_title directly (hourly or 15m).
 function updateMarketTitle(strikeTableData) {
   if (!strikeTableData) return;
   
   const cell = document.getElementById('strikePanelMarketTitleCell');
   if (!cell) return;
   
-  // Extract time from market_title (e.g., "BTC price on Aug 25 at 5pm" -> "5pm")
-  const marketTitle = strikeTableData.market_title || '';
-  
-  // Try new format first: "BTC price on Aug 25 at 5pm"
-  let timeMatch = marketTitle.match(/at\s+(\d{1,2}(?:am|pm))$/i);
-  let timeStr = '11pm'; // default
-  
-  if (timeMatch) {
-    timeStr = timeMatch[1].trim();
-  } else {
-    // Fallback to old format: "Bitcoin price on Jul 22, 2025 at 3pm EDT?"
-    timeMatch = marketTitle.match(/at\s+(.+?)\s+(?:EDT|EST)\?/i);
-    if (timeMatch) {
-      timeStr = timeMatch[1].trim();
-    }
-  }
-  
-  // Format as "<symbol> price today at <time>?"
-  const symbol = strikeTableData.symbol || 'BTC';
-  const formattedTitle = `${symbol} price today at ${timeStr}?`;
-  
-  cell.textContent = formattedTitle;
-  cell.style.color = "white";
+  const marketTitle = strikeTableData.market_title;
+  cell.textContent = (marketTitle != null && String(marketTitle).trim() !== '') ? String(marketTitle).trim() : '—';
+  cell.style.color = 'white';
 }
 
 // Main function to update middle column data
@@ -228,12 +225,23 @@ async function updateMiddleColumnData() {
   try {
     // Get current symbol
     const currentSymbol = getCurrentSymbol();
+    const currentMarket = getCurrentMarket();
     
     // Fetch strike table data (includes market title)
     const strikeTableData = await fetchStrikeTableData(currentSymbol);
     
     // Update market title
     updateMarketTitle(strikeTableData);
+    
+    // When market ticker changes (hour rollover for hourlies, 15m for 15m), redraw strike table like the title
+    const marketTitle = (strikeTableData && strikeTableData.market_title != null) ? String(strikeTableData.market_title).trim() : '';
+    const marketKey = (currentSymbol || '') + '|' + (currentMarket || '') + '|' + marketTitle;
+    if (marketKey !== lastSeenMarketKey) {
+      lastSeenMarketKey = marketKey;
+      if (typeof updateStrikeTable === 'function') {
+        updateStrikeTable();
+      }
+    }
     
     // Update TTC display from strike table data
     if (strikeTableData && strikeTableData.ttc_seconds !== undefined) {
@@ -1072,11 +1080,11 @@ if (typeof window !== 'undefined') {
     // Initialize strike table container first
     initializeStrikeTableContainer();
     
-    // Initialize middle column data immediately
-    await updateMiddleColumnData();
-    
-    // Set up polling for middle column data and strike table (started when tab visible)
-    await updateStrikeTable();
+    // Only fetch when market is already set (e.g. by trade_monitor after populateMonitorPicker). Avoids using wrong/missing market.
+    if (getCurrentMarket()) {
+      await updateMiddleColumnData();
+      await updateStrikeTable();
+    }
     startStrikeTablePolling();
   });
 } 
