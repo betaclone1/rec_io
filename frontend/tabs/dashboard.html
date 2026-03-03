@@ -5491,13 +5491,15 @@
 
     function confirmNewMonitor() {
       const symbol = document.getElementById('newMonitorSymbol').value;
+      const marketSelect = document.getElementById('newMonitorMarket');
+      const market = marketSelect ? marketSelect.value : 'hourly';
       const strategy = document.getElementById('newMonitorStrategy').value;
       const bankrollPct = document.getElementById('newMonitorBankroll').value;
       const positionSize = document.getElementById('newMonitorPositionSize').value;
       const multiplier = document.getElementById('newMonitorMultiplier').value;
       
-      if (!symbol || !strategy) {
-        alert('Please select both Symbol and Strategy');
+      if (!symbol || !strategy || !market) {
+        alert('Please select Symbol, Market, and Strategy');
         return;
       }
       
@@ -5506,12 +5508,13 @@
         return;
       }
       
-      createNewMonitor(symbol, strategy, bankrollPct, positionSize, multiplier);
+      createNewMonitor(symbol, strategy, bankrollPct, positionSize, multiplier, market);
       hideNewMonitorModal();
     }
 
-    async function createNewMonitor(symbol, strategy, bankrollPct, positionSize, multiplier) {
+    async function createNewMonitor(symbol, strategy, bankrollPct, positionSize, multiplier, market) {
       try {
+        const marketVal = (market === '15m') ? '15m' : 'hourly';
         const response = await fetch('/api/monitor/create', {
           method: 'POST',
           headers: {
@@ -5523,6 +5526,7 @@
             bankroll_allotment_pct: parseInt(bankrollPct),
             position_size: parseInt(positionSize),
             multiplier: parseFloat(multiplier),
+            market: marketVal,
             user_id: 'user_0001'
           })
         });
@@ -6088,8 +6092,9 @@
       
       if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
       
-      const minPercent = (dashboardMinTimeSeconds / 3600) * 100;
-      const maxPercent = (dashboardMaxTimeSeconds / 3600) * 100;
+      const maxScale = window.dashboardTimeWindowMaxSeconds || 3600;
+      const minPercent = (dashboardMinTimeSeconds / maxScale) * 100;
+      const maxPercent = (dashboardMaxTimeSeconds / maxScale) * 100;
       
       minHandle.style.left = `${minPercent}%`;
       maxHandle.style.left = `${maxPercent}%`;
@@ -6123,9 +6128,10 @@
       const x = e.clientX - rect.left;
       const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
       
-      // Map percentage to 15-second intervals (0-3600 seconds)
-      const intervalIndex = Math.round((percent / 100) * 240);
-      const snappedSeconds = Math.max(0, Math.min(3600, intervalIndex * 15));
+      const maxScale = window.dashboardTimeWindowMaxSeconds || 3600;
+      const numIntervals = maxScale / 15;
+      const intervalIndex = Math.round((percent / 100) * numIntervals);
+      const snappedSeconds = Math.max(0, Math.min(maxScale, intervalIndex * 15));
       
       const minHandle = document.getElementById('minTimeHandle');
       const maxHandle = document.getElementById('maxTimeHandle');
@@ -6880,7 +6886,9 @@
       const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
       const isReverseHTC = currentStrategy && currentStrategy.toUpperCase().includes('REVERSE HTC');
       const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
-      
+      const is15mHTC = currentStrategy && currentStrategy.toUpperCase().includes('15M HTC');
+      window.dashboardTimeWindowMaxSeconds = is15mHTC ? 900 : 3600;
+
       // Update modal title with strategy name and show/hide strategy sections
       const modalTitle = document.getElementById('unifiedAutoTradeModalTitle');
       const dashboardMSStrategyLabel = document.getElementById('dashboardMSStrategyLabel');
@@ -6915,9 +6923,9 @@
           msSection.style.display = 'none';
         }
       }
-      // Show/hide Probability Adjustment slider (only for Hourly HTC, not Reverse HTC)
+      // Show/hide Probability Adjustment slider (Hourly HTC and 15m HTC — same strategy, different strike table)
       if (probAdjContainer && probAdjLabel) {
-        const displayValue = isHourlyHTC ? 'block' : 'none';
+        const displayValue = (isHourlyHTC || is15mHTC) ? 'block' : 'none';
         probAdjContainer.style.display = displayValue;
         probAdjLabel.style.display = displayValue;
       }
@@ -6993,9 +7001,10 @@
       const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
       const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
         
-        // Common settings (both strategies)
-        dashboardMinTimeSeconds = data.min_time !== undefined ? data.min_time : 0;
-        dashboardMaxTimeSeconds = data.max_time !== undefined ? data.max_time : 3600;
+        // Common settings (both strategies) — 15m HTC uses 0:00–15:00 (900s)
+        const timeMax = (currentStrategy && currentStrategy.toUpperCase().includes('15M HTC')) ? 900 : 3600;
+        dashboardMinTimeSeconds = data.min_time !== undefined ? Math.max(0, Math.min(timeMax, data.min_time)) : 0;
+        dashboardMaxTimeSeconds = data.max_time !== undefined ? Math.max(0, Math.min(timeMax, data.max_time)) : timeMax;
         
         // Probability window (for Hourly HTC) or Ask Price window (for Momentum Breakout/Contain)
         if (isMomentumBreakout || isMomentumContain) {
@@ -7438,8 +7447,8 @@
           payload.spike_alert_momentum_threshold = parseInt(document.getElementById('spikeAlertMomentumSlider').value,10);
           payload.spike_alert_cooldown_threshold = parseInt(document.getElementById('spikeAlertCooldownSlider').value,10);
           payload.spike_alert_cooldown_minutes = parseInt(document.getElementById('spikeAlertTimeSlider').value,10);
-          // Only include prob_adj for Hourly HTC (not Reverse HTC)
-          if (isHourlyHTC) {
+          // Include prob_adj for Hourly HTC and 15m HTC (not Reverse HTC)
+          if (isHourlyHTC || is15mHTC) {
             payload.prob_adj = parseFloat(document.getElementById('probAdjSlider').value);
           }
           payload.performance_based_allocation = document.getElementById('performanceBasedAllocation').checked;
@@ -7516,6 +7525,14 @@
           <label for="newMonitorSymbol">Symbol:</label>
           <select id="newMonitorSymbol" class="modal-dropdown">
             <option value="">Select Symbol</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="newMonitorMarket">Market:</label>
+          <select id="newMonitorMarket" class="modal-dropdown">
+            <option value="">Select Market</option>
+            <option value="hourly">Hourly</option>
+            <option value="15m">15 Minute</option>
           </select>
         </div>
         <div class="form-group">

@@ -355,8 +355,8 @@ class StrikeTableGenerator:
     def generate_market_title(self, event_ticker: str) -> str:
         """
         Generate a human-readable market title from event ticker.
-        Hourly: KXBTCD-25AUG1515 -> "BTC price today at 3pm"
-        15m:    KXBTC15M-26FEB271745 -> "BTC price today at 5:45pm" (DDMMMYY + HHMM)
+        Hourly: YYMMMDDHH e.g. 26MAR2514 -> "BTC price on Mar 25 at 2pm"
+        15m:    DDMMMYY + HHMM e.g. 26FEB271745 -> "BTC price today at 5:45pm"
         """
         if not event_ticker:
             return f"{self.symbol.upper()} price today"
@@ -387,13 +387,13 @@ class StrikeTableGenerator:
                     return f"{self.symbol.upper()} price today at {time_str}"
                 return f"{self.symbol.upper()} price today"
             
-            # Hourly: 25AUG1515 -> date 25AUG15, hour 15
-            if len(date_time_part) >= 7:
-                date_part = date_time_part[:-2]  # 25AUG15
-                hour_part = date_time_part[-2:]  # 15
-                day = date_part[:2]
-                month = date_part[2:5]
-                year = date_part[5:]
+            # Hourly: YYMMMDDHH e.g. 26MAR2514 -> 2026 Mar 25, 2pm
+            if len(date_time_part) >= 9:
+                date_part = date_time_part[:7]   # 26MAR25 (YYMMMDD)
+                hour_part = date_time_part[7:9]  # 14
+                year_2 = date_part[:2]   # 26
+                month = date_part[2:5]   # MAR
+                day = date_part[5:7]      # 25
                 hour_24 = int(hour_part)
                 if hour_24 == 0:
                     time_str = "12am"
@@ -404,7 +404,7 @@ class StrikeTableGenerator:
                 else:
                     time_str = f"{hour_24 - 12}pm"
                 today = datetime.now()
-                event_date = datetime.strptime(f"{day}{month}20{year}", "%d%b%Y")
+                event_date = datetime.strptime(f"{day}{month}20{year_2}", "%d%b%Y")
                 if event_date.date() == today.date():
                     return f"{self.symbol.upper()} price today at {time_str}"
                 month_name = event_date.strftime("%b")

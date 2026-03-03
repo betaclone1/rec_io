@@ -577,17 +577,14 @@
 <body>
     <div class="top-half">
       <div class="column" id="col1">
-      <div class="panel-container" style="height: 50px; min-height: 50px; max-height: 50px; margin-bottom: 10px; display: flex; align-items: center; justify-content: flex-start; gap: 10px;">
-        <select id="monitor-picker" class="dropdown-picker" name="monitor">
+      <div class="panel-container" style="height: 50px; min-height: 50px; max-height: 50px; margin-bottom: 10px; display: flex; align-items: center; justify-content: flex-start; gap: 6px; flex-wrap: nowrap; min-width: 0;">
+        <select id="monitor-picker" class="dropdown-picker" name="monitor" style="font-size: 12px; padding: 4px 6px; max-width: 140px;">
           <option value="">Select Monitor</option>
         </select>
-        <select id="ticker-picker" class="dropdown-picker" name="ticker">
-          <option value="">Loading...</option>
-        </select>
-        <select id="trade-strategy-picker" class="dropdown-picker" name="trade-strategy">
-          <option value="">Loading...</option>
-        </select>
-        <div style="display: flex; align-items: center; gap: 6px; margin-left: auto;">
+        <span id="monitor-symbol-display" class="monitor-setting-display">—</span>
+        <span id="monitor-market-display" class="monitor-setting-display">—</span>
+        <span id="monitor-strategy-display" class="monitor-setting-display">—</span>
+        <div style="display: flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0;">
           <label style="font-size: 12px; text-align: right; user-select: none; color: white;">AUTO TRADE</label>
           <div id="autoTradeToggle" class="auto-trade-toggle"></div>
         </div>
@@ -795,14 +792,15 @@ async function showUnifiedAutoTradeSettingsModal() {
   modal.style.display = 'block';
   document.body.style.overflow = 'hidden';
   
-  // Update modal title with strategy name and show/hide strategy sections
-  const strategyPicker = document.getElementById('trade-strategy-picker');
-  const currentStrategy = strategyPicker ? strategyPicker.value : '';
+  // Update modal title with strategy name and show/hide strategy sections (strategy is read-only from monitor)
+  var stratEl = document.getElementById('monitor-strategy-display');
+  const currentStrategy = stratEl && stratEl.textContent ? stratEl.textContent.trim() : '';
   const isMomentumScalp = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
   const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
   const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
   const isReverseHTC = currentStrategy && currentStrategy.toUpperCase().includes('REVERSE HTC');
   const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
+  const is15mHTC = currentStrategy && currentStrategy.toUpperCase().includes('15M HTC');
   
   const modalTitle = document.getElementById('unifiedAutoTradeModalTitle');
   if (modalTitle) {
@@ -828,9 +826,9 @@ async function showUnifiedAutoTradeSettingsModal() {
       msSection.style.display = 'none';
     }
   }
-  // Show/hide Probability Adjustment slider (only for Hourly HTC, not Reverse HTC)
+  // Show/hide Probability Adjustment slider (Hourly HTC and 15m HTC — same strategy, different strike table)
   if (probAdjContainer && probAdjLabel) {
-    const displayValue = isHourlyHTC ? 'block' : 'none';
+    const displayValue = (isHourlyHTC || is15mHTC) ? 'block' : 'none';
     probAdjContainer.style.display = displayValue;
     probAdjLabel.style.display = displayValue;
   }
@@ -893,8 +891,8 @@ async function showUnifiedAutoTradeSettingsModal() {
   // Function to populate all fields and update value bubbles
   const populateAndUpdateAllFields = (data) => {
     // Re-detect strategy for populate function
-    const strategyPicker = document.getElementById('trade-strategy-picker');
-    const currentStrategy = strategyPicker ? strategyPicker.value : '';
+    var stratD = document.getElementById('monitor-strategy-display');
+    const currentStrategy = stratD && stratD.textContent ? stratD.textContent.trim() : '';
     const isMomentumScalp = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
     const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
     const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
@@ -912,9 +910,11 @@ async function showUnifiedAutoTradeSettingsModal() {
       if (el) el.checked = !!v; 
     };
     
-    // Auto Entry settings
-    minTimeSeconds = data.min_time !== undefined ? data.min_time : 0;
-    maxTimeSeconds = data.max_time !== undefined ? data.max_time : 3600;
+    // Auto Entry settings — 15m HTC uses 0:00–15:00 (900s), others use 0:00–60:00 (3600s)
+    const is15mHTC = currentStrategy && currentStrategy.toUpperCase().includes('15M HTC');
+    const timeWindowMax = is15mHTC ? 900 : 3600;
+    minTimeSeconds = data.min_time !== undefined ? Math.max(0, Math.min(timeWindowMax, data.min_time)) : 0;
+    maxTimeSeconds = data.max_time !== undefined ? Math.max(0, Math.min(timeWindowMax, data.max_time)) : timeWindowMax;
     
     // Probability window (for HOURLY HTC) or Ask Price window (for Momentum Breakout/Contain)
     if (isMomentumBreakout || isMomentumContain) {
@@ -1296,13 +1296,14 @@ async function showUnifiedAutoTradeSettingsModal() {
     saveBtn._wired = true;
     saveBtn.onclick = async function() {
       // Re-detect strategy in case it changed
-      const strategyPicker = document.getElementById('trade-strategy-picker');
-      const currentStrategy = strategyPicker ? strategyPicker.value : '';
+      var stratD = document.getElementById('monitor-strategy-display');
+      const currentStrategy = stratD && stratD.textContent ? stratD.textContent.trim() : '';
       const isMomentumScalp = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
       const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
       const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
       const isReverseHTC = currentStrategy && currentStrategy.toUpperCase().includes('REVERSE HTC');
       const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
+      const is15mHTC = currentStrategy && currentStrategy.toUpperCase().includes('15M HTC');
       
       const payload = {
         monitor_id: window.currentMonitorId,
@@ -1405,8 +1406,8 @@ async function showUnifiedAutoTradeSettingsModal() {
         payload.spike_alert_momentum_threshold = parseInt(document.getElementById('spikeAlertMomentumSlider').value, 10);
         payload.spike_alert_cooldown_threshold = parseInt(document.getElementById('spikeAlertCooldownSlider').value, 10);
         payload.spike_alert_cooldown_minutes = parseInt(document.getElementById('spikeAlertTimeSlider').value, 10);
-        // Only include prob_adj for Hourly HTC (not Reverse HTC)
-        if (isHourlyHTC) {
+        // Include prob_adj for Hourly HTC and 15m HTC (not Reverse HTC)
+        if (isHourlyHTC || is15mHTC) {
           payload.prob_adj = parseFloat(document.getElementById('probAdjSlider').value);
         }
         payload.performance_based_allocation = document.getElementById('autoEntryPerformanceBasedAllocation').checked;
@@ -2359,17 +2360,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Trade Strategy Picker
-  const tradeStrategyPicker = document.getElementById('trade-strategy-picker');
-  if (tradeStrategyPicker) {
-    tradeStrategyPicker.addEventListener('change', () => {
-      if (ignoreWsUpdates) {
-        return;
-      }
-      const value = tradeStrategyPicker.value;
-      // Trade strategy updates are handled by monitor_manager when monitor is selected
-    });
-  }
+  // Strategy is read-only (monitor setting); no change listener
 
   if (positionInput) {
     positionInput.addEventListener('input', () => {
@@ -3432,17 +3423,11 @@ document.addEventListener('DOMContentLoaded', () => {
 </script>
 
 <script>
-  // Listen for change events on the ticker-picker select and update ticker-display cell
+  // Symbol is read-only from monitor; ticker-display updated when monitor loads (loadMonitorDetails)
   document.addEventListener('DOMContentLoaded', function() {
-    const tickerSelect = document.getElementById('ticker-picker');
-    const tickerDisplay = document.getElementById('ticker-display');
-    if (tickerSelect && tickerDisplay) {
-      // Set initial display to selected value
-      tickerDisplay.textContent = tickerSelect.value;
-      tickerSelect.addEventListener('change', function() {
-        tickerDisplay.textContent = tickerSelect.value;
-      });
-    }
+    var tickerDisplay = document.getElementById('ticker-display');
+    var symDisp = document.getElementById('monitor-symbol-display');
+    if (tickerDisplay && symDisp) tickerDisplay.textContent = symDisp.textContent.trim() || '—';
   });
 </script>
 </div>
@@ -3479,12 +3464,11 @@ function formatDateTime(isoString) {
   return [date.toLocaleDateString(), time];
 }
 
-// Utility function to get selected symbol from ticker panel
+// Utility function to get selected symbol (from monitor, read-only display)
 function getSelectedSymbol() {
-  const tickerSelect = document.getElementById('ticker-picker');
-  if (tickerSelect) {
-    return tickerSelect.value;
-  }
+  var el = document.getElementById('monitor-symbol-display');
+  if (el && el.textContent && el.textContent.trim() !== '—') return el.textContent.trim();
+  if (document.body && document.body.dataset.currentSymbol) return document.body.dataset.currentSymbol;
   return "";
 }
 
@@ -5580,6 +5564,12 @@ let sliderWidth = 0;
 let minTimeSeconds = 0;
 let maxTimeSeconds = 3600;
 
+function getTimeWindowMaxSeconds() {
+  var stratD = document.getElementById('monitor-strategy-display');
+  var s = stratD && stratD.textContent ? stratD.textContent.trim().toUpperCase() : '';
+  return (s && s.includes('15M HTC')) ? 900 : 3600;
+}
+
 // Initialize slider
 function initTimeWindowSlider() {
   if (!timeWindowSliderContainer) return;
@@ -5593,8 +5583,9 @@ function initTimeWindowSlider() {
 function updateTimeWindowSlider() {
   if (!sliderWidth) return;
   
-  const minPercent = (minTimeSeconds / 3600) * 100;
-  const maxPercent = (maxTimeSeconds / 3600) * 100;
+  const maxScale = getTimeWindowMaxSeconds();
+  const minPercent = (minTimeSeconds / maxScale) * 100;
+  const maxPercent = (maxTimeSeconds / maxScale) * 100;
   
   minTimeHandle.style.left = `${minPercent}%`;
   maxTimeHandle.style.left = `${maxPercent}%`;
@@ -5626,9 +5617,10 @@ function handleMouseMove(e) {
   const x = e.clientX - rect.left;
   const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
   
-  // Map percentage directly to 15-second intervals (240 total intervals: 0-3600 seconds)
-  const intervalIndex = Math.round((percent / 100) * 240);
-  const snappedSeconds = Math.max(0, Math.min(3600, intervalIndex * 15));
+  const maxScale = getTimeWindowMaxSeconds();
+  const numIntervals = maxScale / 15;
+  const intervalIndex = Math.round((percent / 100) * numIntervals);
+  const snappedSeconds = Math.max(0, Math.min(maxScale, intervalIndex * 15));
   
   // Debug logging
   console.log({
@@ -5701,9 +5693,8 @@ function initProbabilityWindowSlider() {
 function updateProbabilityWindowSlider() {
   if (!tradeMonitorProbSliderWidth) return;
   
-  // Get current strategy
-  const strategyPicker = document.getElementById('trade-strategy-picker');
-  const currentStrategy = strategyPicker ? strategyPicker.value : '';
+  var stratD = document.getElementById('monitor-strategy-display');
+  const currentStrategy = stratD && stratD.textContent ? stratD.textContent.trim() : '';
   const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
   const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
   
@@ -5792,9 +5783,8 @@ function handleProbMouseMove(e) {
   const container = document.getElementById('probabilityWindowSliderContainer');
   if (!container) return;
   
-  // Get current strategy
-  const strategyPicker = document.getElementById('trade-strategy-picker');
-  const currentStrategy = strategyPicker ? strategyPicker.value : '';
+  var stratD = document.getElementById('monitor-strategy-display');
+  const currentStrategy = stratD && stratD.textContent ? stratD.textContent.trim() : '';
   const isMomentumBreakout = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
   const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
   
@@ -6546,7 +6536,9 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Test API call directly
         setTimeout(function() {
-          const marketParam = (window.currentMarket && window.currentMarket !== 'hourly') ? '?market=' + encodeURIComponent(window.currentMarket) : '';
+          const m = window.currentMarket || (document.getElementById('monitor-picker') && document.getElementById('monitor-picker').selectedOptions && document.getElementById('monitor-picker').selectedOptions[0] && document.getElementById('monitor-picker').selectedOptions[0].dataset.market);
+          const marketParam = (m === '15m' || m === 'hourly') ? '?market=' + encodeURIComponent(m) : '';
+          if (!marketParam) return;
           fetch(window.location.origin + `/api/strike_tables/${currentSymbol.toLowerCase()}${marketParam}`)
             .then(response => response.json())
             .then(data => {
@@ -6921,78 +6913,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // === DROPDOWN POPULATION FUNCTIONS ===
     
-    // Function to populate symbol picker dropdown
-    async function populateSymbolPicker() {
-      console.log('[SYMBOL PICKER] Populating symbol picker...');
-      
-      // Test if element exists
-      const symbolPicker = document.getElementById('ticker-picker');
-      console.log('[SYMBOL PICKER] Element found:', symbolPicker);
-      
-      try {
-        const response = await fetch('/api/symbols');
-        const data = await response.json();
-        console.log('[SYMBOL PICKER] Symbols data received:', data);
-        
-        if (data.status === 'ok') {
-          const symbolPicker = document.getElementById('ticker-picker');
-          if (symbolPicker) {
-            symbolPicker.innerHTML = '';
-            
-            data.symbols.forEach(symbol => {
-              const option = document.createElement('option');
-              option.value = symbol;
-              option.textContent = symbol;
-              symbolPicker.appendChild(option);
-            });
-            
-            console.log('[SYMBOL PICKER] Populated with', data.symbols.length, 'symbols');
-            
-            // Set default to BTC
-            const defaultOption = symbolPicker.querySelector('option[value="BTC"]');
-            if (defaultOption) {
-              defaultOption.selected = true;
-              console.log('[SYMBOL PICKER] Set default to BTC');
-            }
-          } else {
-            console.error('[SYMBOL PICKER] Symbol picker element not found');
-          }
-        } else {
-          console.error('[SYMBOL PICKER] Failed to load symbols:', data.message);
-        }
-      } catch (error) {
-        console.error('[SYMBOL PICKER] Error loading symbols:', error);
-      }
-    }
-    
-    // Function to populate strategy picker dropdown
-    async function populateStrategyPicker() {
-      try {
-        const response = await fetch('/api/strategies');
-        const data = await response.json();
-        
-        if (data.status === 'ok') {
-          const strategyPicker = document.getElementById('trade-strategy-picker');
-          if (strategyPicker) {
-            strategyPicker.innerHTML = '';
-            
-
-            
-            // Add strategy options
-            data.strategies.forEach(strategy => {
-              const option = document.createElement('option');
-              option.value = strategy;
-              option.textContent = strategy;
-              strategyPicker.appendChild(option);
-            });
-          }
-        } else {
-          console.error('Failed to load strategies:', data.message);
-        }
-      } catch (error) {
-        console.error('Error loading strategies:', error);
-      }
-    }
+    // Symbol and strategy are read-only displays; set from selected monitor in populateMonitorPicker / loadMonitorDetails
     
     // === MONITOR PICKER FUNCTIONALITY ===
     
@@ -7010,11 +6931,12 @@ document.addEventListener('DOMContentLoaded', () => {
             // Clear existing options
             monitorPicker.innerHTML = '';
             
-            // Add monitor options
+            // Add monitor options (data-market from monitor only; no fallback)
             data.monitors.forEach(monitor => {
               const option = document.createElement('option');
               option.value = monitor.id;
-              // Format display name as "Monitor " + last 5 digits of the name
+              if (monitor.market === '15m' || monitor.market === 'hourly') option.dataset.market = monitor.market;
+              if (monitor.symbol) option.dataset.symbol = monitor.symbol;
               let displayName = "Monitor ";
               if (monitor.name && monitor.name.length >= 5) {
                 displayName += monitor.name.slice(-5);
@@ -7036,6 +6958,20 @@ document.addEventListener('DOMContentLoaded', () => {
               
               console.log('Setting monitor:', selectedMonitorId, storedMonitorId ? '(from localStorage)' : '(first monitor default)');
               monitorPicker.value = selectedMonitorId;
+              var selectedMonitor = data.monitors.find(function(m) { return m.id == selectedMonitorId; });
+              if (selectedMonitor) {
+                var symEl = document.getElementById('monitor-symbol-display');
+                var mktEl = document.getElementById('monitor-market-display');
+                if (symEl) symEl.textContent = selectedMonitor.symbol || '—';
+                if (mktEl) mktEl.textContent = selectedMonitor.market === '15m' ? '15 Minute' : (selectedMonitor.market === 'hourly' ? 'Hourly' : '—');
+                if (selectedMonitor.symbol) document.body.dataset.currentSymbol = selectedMonitor.symbol;
+                if (selectedMonitor.market === '15m' || selectedMonitor.market === 'hourly') {
+                  document.body.dataset.currentMarket = selectedMonitor.market;
+                  window.currentMarket = selectedMonitor.market;
+                }
+              }
+              if (typeof window.updateStrikeTable === 'function') window.updateStrikeTable();
+              if (typeof window.updateMiddleColumnData === 'function') window.updateMiddleColumnData();
               loadMonitorDetails(selectedMonitorId);
             }
           }
@@ -7062,8 +6998,8 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Function to get current symbol from picker
     function getCurrentSymbol() {
-      const symbolPicker = document.getElementById('ticker-picker');
-      return symbolPicker ? symbolPicker.value : currentSymbol;
+      var sym = document.body.dataset.currentSymbol || (document.getElementById('monitor-symbol-display') && document.getElementById('monitor-symbol-display').textContent.trim());
+      return sym || currentSymbol || 'BTC';
     }
     
     // Simple symbol switching - page reload ensures clean initialization
@@ -7084,38 +7020,36 @@ document.addEventListener('DOMContentLoaded', () => {
             auto_stop: monitor.auto_stop
           });
           
-          // Update symbol picker and current symbol
-          const symbolPicker = document.getElementById('ticker-picker');
-          if (symbolPicker && monitor.symbol) {
-            console.log('[MONITOR] Setting symbol picker to:', monitor.symbol);
-            symbolPicker.value = monitor.symbol;
-            currentSymbol = monitor.symbol; // Update current symbol
-            window.currentMarket = (monitor.market && (monitor.market === '15m' || monitor.market === 'hourly')) ? monitor.market : 'hourly';
-            console.log('[MONITOR] Current symbol set to:', currentSymbol, ', market:', window.currentMarket);
-            
-            // Refresh price changes for the new symbol
-            if (window.liveData && typeof window.liveData.fetchSymbolPriceChanges === 'function') {
-              window.liveData.fetchSymbolPriceChanges(currentSymbol);
-            }
-            
-            // Initialize or update TradingView chart to show current symbol
-            if (window.initializeTradingViewWidget) {
-              console.log('[MONITOR] Initializing/updating TradingView to symbol:', currentSymbol);
-              // Add a small delay to ensure DOM is ready
-              setTimeout(() => {
-                window.initializeTradingViewWidget(currentSymbol);
-              }, 100);
-            } else {
-              console.warn('[MONITOR] TradingView initialization function not available yet');
-            }
+          // Set market from monitor only. Sync to body so strike-table.js uses correct table.
+          // When API returns valid market, set it. When API returns null/invalid, do NOT clear body — leave picker-set value so correct table is used.
+          if (monitor.market === '15m' || monitor.market === 'hourly') {
+            window.currentMarket = monitor.market;
+            if (document.body) document.body.dataset.currentMarket = monitor.market;
+            console.log('[MONITOR] Market set to:', window.currentMarket);
           } else {
-            console.warn('[MONITOR] Symbol picker not found or monitor.symbol is empty:', monitor.symbol);
+            window.currentMarket = null;
+            // Do not delete body.dataset.currentMarket — keep value from populateMonitorPicker so strike table stays correct
+            console.warn('[MONITOR] Monitor API returned no valid market:', monitor.market);
           }
           
-          // Update strategy picker
-          const strategyPicker = document.getElementById('trade-strategy-picker');
-          if (strategyPicker && monitor.strategy) {
-            strategyPicker.value = monitor.strategy;
+          // Update read-only symbol, market, strategy displays (monitor settings are fixed after creation)
+          var symDisp = document.getElementById('monitor-symbol-display');
+          var mktDisp = document.getElementById('monitor-market-display');
+          var stratDisp = document.getElementById('monitor-strategy-display');
+          if (symDisp) symDisp.textContent = monitor.symbol || '—';
+          if (mktDisp) mktDisp.textContent = monitor.market === '15m' ? '15 Minute' : (monitor.market === 'hourly' ? 'Hourly' : '—');
+          if (stratDisp) stratDisp.textContent = monitor.strategy || '—';
+          if (monitor.symbol) document.body.dataset.currentSymbol = monitor.symbol;
+          currentSymbol = monitor.symbol || currentSymbol;
+          var tickerDisplay = document.getElementById('ticker-display');
+          if (tickerDisplay) tickerDisplay.textContent = currentSymbol || '—';
+          console.log('[MONITOR] Current symbol set to:', currentSymbol);
+          
+          if (currentSymbol && window.liveData && typeof window.liveData.fetchSymbolPriceChanges === 'function') {
+            window.liveData.fetchSymbolPriceChanges(currentSymbol);
+          }
+          if (window.initializeTradingViewWidget && currentSymbol) {
+            setTimeout(function() { window.initializeTradingViewWidget(currentSymbol); }, 100);
           }
           
           // Update position size input
@@ -7172,6 +7106,14 @@ document.addEventListener('DOMContentLoaded', () => {
           
           // Update global variable
           currentMonitorId = monitorId;
+          
+          // Force strike table and middle column (title, TTC) to refresh with this monitor's symbol + market
+          if (typeof window.updateStrikeTable === 'function') {
+            window.updateStrikeTable();
+          }
+          if (typeof window.updateMiddleColumnData === 'function') {
+            window.updateMiddleColumnData();
+          }
           window.currentMonitorId = monitorId; // Make it globally accessible
           window.currentMonitorName = monitor.name; // Store the full monitor name for table lookup
           console.log('currentMonitorId set to:', currentMonitorId);
@@ -7368,85 +7310,13 @@ document.addEventListener('DOMContentLoaded', () => {
       // Start pre-loading auto trade settings immediately
       preloadAutoTradeSettings();
       
-      // Initialize all dropdowns in the correct order
-      // First populate symbol and strategy pickers, then monitor picker
-      console.log('[INIT] Starting dropdown initialization...');
-      Promise.all([
-        populateSymbolPicker(),
-        populateStrategyPicker()
-      ]).then(() => {
-        // After symbol and strategy pickers are populated, load monitor picker
-        console.log('[INIT] Symbol and strategy pickers populated, now loading monitor picker');
-        populateMonitorPicker();
-        
-        // TradingView chart will initialize with correct symbol on page load
-      });
+      // Only monitor is selectable; symbol, market, strategy are read-only displays of the selected monitor
+      console.log('[INIT] Loading monitor picker...');
+      populateMonitorPicker();
       
-      // Add event listeners
       const monitorPicker = document.getElementById('monitor-picker');
       if (monitorPicker) {
         monitorPicker.addEventListener('change', handleMonitorChange);
-      }
-      
-      // Add event listeners for symbol and strategy pickers
-      const symbolPicker = document.getElementById('ticker-picker');
-      if (symbolPicker) {
-        symbolPicker.addEventListener('change', function() {
-          if (currentMonitorId) {
-            const newSymbol = this.value;
-            console.log('Symbol changed to:', newSymbol);
-            
-            // Update current symbol and TradingView widget immediately
-            currentSymbol = newSymbol;
-            if (window.initializeTradingViewWidget) {
-              window.initializeTradingViewWidget(newSymbol);
-            }
-            
-            // Update backend monitor symbol
-            fetch(`/api/monitor/${currentMonitorId}/update?user_id=user_0001`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ symbol: newSymbol })
-            })
-            .then(response => response.json())
-            .then(data => {
-              if (data.status === 'ok') {
-                console.log('Symbol updated successfully, reloading both iframes...');
-                
-                // Reload the dashboard iframe in the background
-                const dashboardIframe = window.parent.document.querySelector('iframe[src*="dashboard"]');
-                if (dashboardIframe) {
-                  console.log('Reloading dashboard iframe...');
-                  dashboardIframe.src = dashboardIframe.src; // Force reload
-                }
-                
-                // Reload the trade monitor iframe
-                window.location.reload();
-              } else {
-                console.error('Error updating symbol:', data.message);
-              }
-            })
-            .catch(error => {
-              console.error('Error updating symbol:', error);
-            });
-          }
-        });
-      }
-      
-      const strategyPicker = document.getElementById('trade-strategy-picker');
-      if (strategyPicker) {
-        strategyPicker.addEventListener('change', function() {
-          if (currentMonitorId) {
-            // Update monitor strategy
-            fetch(`/api/monitor/${currentMonitorId}/update?user_id=user_0001`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ strategy: this.value })
-            });
-            
-            // Strategy updates are handled by monitor_manager
-          }
-        });
       }
       
       // Monitor loading is now handled in populateMonitorPicker()

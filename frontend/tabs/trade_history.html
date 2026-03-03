@@ -1186,7 +1186,8 @@
       
       filtered = filterTradesByDate(filtered, dateFilterPicker ? dateFilterPicker.value : 'TODAY');
       filtered = filterTradesByWinLoss(filtered);
-      filtered = filterTradesByContract(filtered);
+      // Contract filtering disabled – show all contracts
+      // filtered = filterTradesByContract(filtered);
       filtered = filterTradesBySymbol(filtered);
       filtered = filterTradesByStrategy(filtered);
       filtered = filterTradesByMonitor(filtered);

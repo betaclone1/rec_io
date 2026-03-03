@@ -155,8 +155,11 @@ def ensure_port_config_exists():
         }
         
         os.makedirs(os.path.dirname(PORT_CONFIG_FILE), exist_ok=True)
-        with open(PORT_CONFIG_FILE, 'w') as f:
+        # Atomic write: write to a temp file then replace
+        temp_path = PORT_CONFIG_FILE + ".tmp"
+        with open(temp_path, "w") as f:
             json.dump(master_manifest, f, indent=2)
+        os.replace(temp_path, PORT_CONFIG_FILE)
         print(f"[PORT_CONFIG] Created master port manifest: {PORT_CONFIG_FILE}")
 
 def get_port(service_name: str) -> int:
@@ -390,17 +393,20 @@ def register_monitor_ports(monitor_identifier: str) -> Dict[str, int]:
     
     # Update manifest with assigned ports
     try:
-        with open(PORT_CONFIG_FILE, 'r') as f:
+        with open(PORT_CONFIG_FILE, "r") as f:
             manifest = json.load(f)
-        
+
         if "monitor_instances" not in manifest:
             manifest["monitor_instances"] = {}
-        
+
         manifest["monitor_instances"][monitor_identifier] = ports
-        
-        with open(PORT_CONFIG_FILE, 'w') as f:
+
+        # Atomic write: write updated manifest to a temp file then replace
+        temp_path = PORT_CONFIG_FILE + ".tmp"
+        with open(temp_path, "w") as f:
             json.dump(manifest, f, indent=2)
-            
+        os.replace(temp_path, PORT_CONFIG_FILE)
+
         print(f"[PORT_CONFIG] Registered ports for monitor {monitor_identifier}: {ports}")
         
     except Exception as e:

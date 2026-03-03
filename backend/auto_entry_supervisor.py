@@ -139,6 +139,8 @@ _LAST_MONITOR_STATE = {
 }
 
 MARKET_TITLE_TODAY_PATTERN = re.compile(r"price today at\s+(\d{1,2})\s*(am|pm)", re.IGNORECASE)
+# 15m market title: "BTC price today at 12:45pm" -> capture 12, 45, pm
+MARKET_TITLE_TODAY_15M_PATTERN = re.compile(r"price today at\s+(\d{1,2}):(\d{2})\s*(am|pm)", re.IGNORECASE)
 MARKET_TITLE_DATE_PATTERN = re.compile(r"price on\s+([A-Za-z]{3})\s+(\d{1,2})\s+at\s+(\d{1,2})\s*(am|pm)", re.IGNORECASE)
 
 
@@ -161,22 +163,38 @@ def _hour_label_to_hour24(hour_value: int, period: str) -> int:
 
 
 def _resolve_event_time(symbol: str, market_title: Optional[str], event_ticker: Optional[str]) -> tuple[Optional[str], Optional[int]]:
-    """Return (contract_label, hour_24) if we can parse a time from the market metadata."""
+    """Return (contract_label, hour_24) if we can parse a time from the market metadata.
+    Contract label is simplified for DB: hourly e.g. 'BTC 2pm', 15m e.g. 'BTC 12:45pm'."""
     now_est = datetime.now(ZoneInfo("America/New_York"))
     time_hour_24 = None
+    contract_label = None
 
     title = market_title or ""
 
-    match = MARKET_TITLE_DATE_PATTERN.search(title)
-    if match:
-        _, _, hour_str, period = match.groups()
+    # 15m: "price today at 12:45pm" -> "BTC 12:45pm"
+    match_15m = MARKET_TITLE_TODAY_15M_PATTERN.search(title)
+    if match_15m:
+        hour_str, minute_str, period = match_15m.groups()
         try:
             hour_val = int(hour_str)
+            minute_val = int(minute_str)
             time_hour_24 = _hour_label_to_hour24(hour_val, period)
+            time_label = f"{hour_val}:{minute_str}{period.lower()}"
+            contract_label = f"{symbol.upper()} {time_label}"
         except Exception:
-            time_hour_24 = None
+            pass
 
-    if time_hour_24 is None:
+    if contract_label is None:
+        match = MARKET_TITLE_DATE_PATTERN.search(title)
+        if match:
+            _, _, hour_str, period = match.groups()
+            try:
+                hour_val = int(hour_str)
+                time_hour_24 = _hour_label_to_hour24(hour_val, period)
+            except Exception:
+                time_hour_24 = None
+
+    if contract_label is None and time_hour_24 is None:
         match_today = MARKET_TITLE_TODAY_PATTERN.search(title)
         if match_today:
             hour_str, period = match_today.groups()
@@ -186,7 +204,7 @@ def _resolve_event_time(symbol: str, market_title: Optional[str], event_ticker: 
             except Exception:
                 time_hour_24 = None
 
-    if time_hour_24 is None and event_ticker:
+    if contract_label is None and time_hour_24 is None and event_ticker:
         parts = event_ticker.split("-")
         if len(parts) >= 2:
             dt_part = parts[-1]
@@ -198,10 +216,10 @@ def _resolve_event_time(symbol: str, market_title: Optional[str], event_ticker: 
                 except Exception:
                     time_hour_24 = None
 
-    if time_hour_24 is None:
-        return None, None
-
-    contract_label = f"{symbol.upper()} {_format_time_label(time_hour_24)}"
+    if contract_label is None and time_hour_24 is not None:
+        contract_label = f"{symbol.upper()} {_format_time_label(time_hour_24)}"
+    if contract_label is None:
+        return None, time_hour_24
     return contract_label, time_hour_24
 
 
@@ -994,7 +1012,7 @@ def start_cooldown_period_in_db():
         with conn.cursor() as cursor:
             # Update the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
-                "UPDATE users.monitor_list_0001 SET cooldown_start_time = NOW(), updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                f"UPDATE users.monitor_list_{USER_NUMBER} SET cooldown_start_time = NOW(), updated_at = CURRENT_TIMESTAMP WHERE id = %s",
                 (MONITOR_ID,)
             )
             
@@ -1017,7 +1035,7 @@ def reset_cooldown_period_in_db():
         with conn.cursor() as cursor:
             # Reset the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
-                "UPDATE users.monitor_list_0001 SET cooldown_start_time = NULL, cooldown_timer = 0, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                f"UPDATE users.monitor_list_{USER_NUMBER} SET cooldown_start_time = NULL, cooldown_timer = 0, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
                 (MONITOR_ID,)
             )
             
@@ -1665,11 +1683,13 @@ def get_auto_entry_settings():
         return {}
 
 def get_current_ttc():
-    """Get current TTC from unified TTC endpoint"""
+    """Get current TTC from unified TTC endpoint (requires market: hourly or 15m)."""
     try:
         port = get_port("main_app")
-        current_symbol = get_current_monitor_symbol()
-        url = f"http://localhost:{port}/api/unified_ttc/{current_symbol.lower()}"
+        current_symbol, current_market = get_current_monitor_symbol_and_market()
+        if not current_market or current_market not in ("hourly", "15m"):
+            return 0
+        url = f"http://localhost:{port}/api/unified_ttc/{current_symbol.lower()}?market={current_market}"
         response = requests.get(url, timeout=2)
         if response.ok:
             data = response.json()
@@ -2156,10 +2176,15 @@ def trigger_auto_entry_trade(strike_data):
         port = get_port("trade_manager")
         url = f"http://localhost:{port}/trades"
         
-        # Get contract name from strike table market_title
+        # Get contract name in same simplified form as hourly (e.g. "BTC 2pm", "BTC 12:45pm" for 15m)
         strike_table_data = get_master_strike_table_data()
         current_symbol = get_current_monitor_symbol()
-        contract_name = strike_table_data.get("market_title", f"{current_symbol} Market") if strike_table_data else f"{current_symbol} Market"
+        contract_label, _ = _resolve_event_time(
+            current_symbol,
+            strike_table_data.get("market_title") if strike_table_data else None,
+            strike_table_data.get("event_ticker") if strike_table_data else None,
+        )
+        contract_name = contract_label or (strike_table_data.get("market_title") if strike_table_data else None) or f"{current_symbol} Market"
         
         # Get position size from trade preferences
         position_size = get_position_size()

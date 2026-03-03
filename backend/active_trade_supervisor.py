@@ -221,10 +221,10 @@ def get_current_monitor_symbol():
     return sym
 
 def _get_symbol_and_market_for_strike(symbol: str = None):
-    """Resolve (symbol, market) for strike table: from monitor if symbol is None, else symbol + hourly."""
-    if symbol is None:
-        return get_current_monitor_symbol_and_market()
-    return symbol.upper(), 'hourly'
+    """Resolve (symbol, market) for strike table. Always use this monitor's market (hourly or 15m)."""
+    sym, mkt = get_current_monitor_symbol_and_market()
+    s = (symbol or sym).upper() if (symbol or sym) else "BTC"
+    return s, mkt
 
 # Get port from monitor-specific system
 from backend.core.port_config import get_monitor_port, register_monitor_ports
@@ -502,7 +502,7 @@ def handle_trade_manager_notification():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({"error": "No data received"}), 400
+            return jsonify({"error": "No data received", "success": False}), 200
         
         trade_id = data.get('trade_id')
         ticket_id = data.get('ticket_id')
@@ -510,17 +510,22 @@ def handle_trade_manager_notification():
         monitor_identifier = data.get('monitor_identifier')
         
         if not all([trade_id, ticket_id, status]):
-            return jsonify({"error": "Missing required fields: trade_id, ticket_id, status"}), 400
+            return jsonify({
+                "error": "Missing required fields: trade_id, ticket_id, status",
+                "success": False
+            }), 200
         
         # Validate that this notification is for the correct monitor
         if monitor_identifier and monitor_identifier != MONITOR_IDENTIFIER:
             log(f"📡 DIRECT NOTIFICATION: Ignoring notification for different monitor")
             log(f"📡 DIRECT NOTIFICATION: Expected: {MONITOR_IDENTIFIER}, Received: {monitor_identifier}")
-            return jsonify({
-                "status": "ignored",
-                "message": f"Notification for different monitor: {monitor_identifier}",
-                "success": True
-            }), 200
+            return jsonify(
+                {
+                    "status": "ignored",
+                    "message": f"Notification for different monitor: {monitor_identifier}",
+                    "success": True,
+                }
+            ), 200
         
         log(f"📡 DIRECT NOTIFICATION: Received from trade_manager for monitor {MONITOR_IDENTIFIER}")
         log(f"📡 DIRECT NOTIFICATION: Trade ID: {trade_id}, Ticket ID: {ticket_id}, Status: {status}")
@@ -598,17 +603,23 @@ def handle_trade_manager_notification():
                 
         else:
             log(f"⚠️ Unknown status in trade_manager notification: {status}")
-            return jsonify({"error": f"Unknown status: {status}"}), 400
-        
-        return jsonify({
-            "status": "success" if success else "error",
-            "message": f"Trade {trade_id} {status} notification processed",
-            "success": success
-        }), 200 if success else 500
-        
+            return jsonify(
+                {"error": f"Unknown status: {status}", "success": False}
+            ), 200
+
+        # Always return 200 to trade_manager; surface failures in the JSON payload and logs
+        return jsonify(
+            {
+                "status": "success" if success else "error",
+                "message": f"Trade {trade_id} {status} notification processed",
+                "success": success,
+            }
+        ), 200
+
     except Exception as e:
         log(f"❌ Error handling trade_manager notification: {e}")
-        return jsonify({"error": str(e)}), 500
+        # Do not propagate HTTP 500 back to trade_manager; report error in payload instead
+        return jsonify({"status": "error", "error": str(e), "success": False}), 200
 
 def migrate_database_schema():
     """Migrate the database schema if needed"""
@@ -1169,12 +1180,23 @@ def get_current_symbol_price(symbol: str = None) -> Optional[float]:
         log(f"Error getting current {symbol} price: {e}")
         return None
 
-def get_kalshi_market_snapshot(symbol: str = None) -> Optional[Dict[str, Any]]:
-    """Get the latest Kalshi market snapshot data from PostgreSQL"""
+def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Optional[Dict[str, Any]]:
+    """Get the latest Kalshi market snapshot data from PostgreSQL.
+    Uses monitor's symbol and market so 15m monitors read from market_kalshi_15m_* (required for
+    closing price lookup and auto-stop); hourly monitors read from market_kalshi_hourly_*."""
     try:
-        # Use current monitor symbol if no symbol specified
-        if symbol is None:
-            symbol = get_current_monitor_symbol()
+        # Use current monitor symbol and market if not specified
+        if symbol is None or market is None:
+            sym, mkt = get_current_monitor_symbol_and_market()
+            if symbol is None:
+                symbol = sym
+            if market is None:
+                market = mkt or "hourly"
+        market = (market or "hourly").strip().lower()
+        if market not in ("hourly", "15m"):
+            market = "hourly"
+        table_suffix = f"15m_{symbol.lower()}" if market == "15m" else f"hourly_{symbol.lower()}"
+        table_name = f"market_kalshi_{table_suffix}"
             
         conn = get_postgresql_connection()
         if not conn:
@@ -1183,7 +1205,7 @@ def get_kalshi_market_snapshot(symbol: str = None) -> Optional[Dict[str, Any]]:
             
         cursor = conn.cursor()
         
-        # Get market data from PostgreSQL
+        # Get market data from PostgreSQL (hourly or 15m table per monitor)
         cursor.execute(f"""
             SELECT 
                 market_ticker,
@@ -1194,7 +1216,7 @@ def get_kalshi_market_snapshot(symbol: str = None) -> Optional[Dict[str, Any]]:
                 volume,
                 event_ticker,
                 strike
-            FROM live_data.market_kalshi_hourly_{symbol.lower()}
+            FROM live_data.{table_name}
             ORDER BY updated_at DESC
         """)
         

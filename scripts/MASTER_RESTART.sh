@@ -173,13 +173,15 @@ start_supervisor() {
 }
 
 # Function to restart all services
+# Restarts each program in sequence so we never have old + new instances (e.g. duplicate
+# auto_entry_supervisor per monitor). Supervisor "uncaptured python exception" / FileNotFoundError
+# in the log during restart is known noise on macOS (kqueue) and can be ignored if services end up RUNNING.
 restart_all_services() {
     print_status "Restarting all services..."
     
     # Wait a moment for supervisor to fully initialize
     /bin/sleep 2
     
-    # Get list of all programs
     local programs=$(supervisorctl -c "$SUPERVISOR_CONFIG" status | awk '{print $1}' | grep -v "supervisorctl")
     
     for program in $programs; do
@@ -288,7 +290,25 @@ master_restart() {
     
     # Check for external connections first
     check_external_connections
-    
+
+    # Step 0: Put system into maintenance mode to block new trades
+    print_status "Step 0: Setting system_state.mode to 'maintenance' (trading disabled)..."
+    PGPASSWORD="rec_io_password" psql -h localhost -U rec_io_user -d rec_io_db <<'EOF' >/dev/null 2>&1
+CREATE SCHEMA IF NOT EXISTS core;
+CREATE TABLE IF NOT EXISTS core.system_state (
+    id INTEGER PRIMARY KEY,
+    mode TEXT NOT NULL CHECK (mode IN ('normal', 'maintenance')),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO core.system_state (id, mode)
+VALUES (1, 'maintenance')
+ON CONFLICT (id) DO UPDATE
+SET mode = EXCLUDED.mode,
+    updated_at = now();
+EOF
+    print_success "System state set to maintenance; new trades will be rejected during restart."
+    echo ""
+
     # Step 1: Stop supervisor first to prevent auto-restart
     print_status "Step 1: Stopping supervisor..."
     stop_supervisor
@@ -356,7 +376,19 @@ master_restart() {
     print_status "Step 7: Verifying all services..."
     verify_services
     echo ""
-    
+
+    # Step 8: Return system to normal trading mode
+    print_status "Step 8: Setting system_state.mode back to 'normal' (trading enabled)..."
+    PGPASSWORD="rec_io_password" psql -h localhost -U rec_io_user -d rec_io_db <<'EOF' >/dev/null 2>&1
+INSERT INTO core.system_state (id, mode)
+VALUES (1, 'normal')
+ON CONFLICT (id) DO UPDATE
+SET mode = EXCLUDED.mode,
+    updated_at = now();
+EOF
+    print_success "System state set to normal; trading operations re-enabled."
+    echo ""
+
     print_success "MASTER RESTART completed successfully!"
     echo ""
     print_status "System is now ready for trading operations."

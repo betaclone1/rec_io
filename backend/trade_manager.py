@@ -20,7 +20,10 @@ from backend.util.paths import get_project_root, get_trade_history_dir, get_logs
 from backend.account_mode import get_account_mode
 from backend.util.paths import get_accounts_data_dir
 EST_ZONE = ZoneInfo("America/New_York")
+# Hourly: "BTC 2pm" -> hour 2, pm
 CONTRACT_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2})(am|pm)$", re.IGNORECASE)
+# 15m: "BTC 2:15pm" or "BTC 12:45pm" -> capture hour (2 or 12) and am/pm; all 4 cycles in that hour share same hour_idx/weekly_cycle
+CONTRACT_15M_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2}):[0-9]{2}\s*(am|pm)", re.IGNORECASE)
 MONITOR_KEY_PATTERN = re.compile(r"^mon_(\d+?)_(\d+)$", re.IGNORECASE)
 
 
@@ -123,11 +126,26 @@ def _normalize_trade_date(value):
 
 
 def _extract_hour_idx(contract):
-    """Parse contract string into hour_idx following EST rules."""
+    """Parse contract string into hour_idx following EST rules.
+    Hourly: 'BTC 2pm' -> 14. 15m: 'BTC 2:15pm' -> 14 (hour of the cycle; all 4 cycles in that hour share same hour_idx)."""
     if not contract:
         return None
 
-    match = CONTRACT_HOUR_PATTERN.match(contract.strip())
+    s = contract.strip()
+
+    # 15m: "BTC 12:45pm" or "BTC 2:30pm" -> use hour so all 4 cycles in that hour get same hour_idx/weekly_cycle
+    match_15m = CONTRACT_15M_HOUR_PATTERN.search(s)
+    if match_15m:
+        hour_raw = int(match_15m.group(1))
+        mer = match_15m.group(2).lower()
+        if mer == "am":
+            return 24 if hour_raw == 12 else hour_raw
+        if hour_raw == 12:
+            return 12
+        return hour_raw + 12
+
+    # Hourly: "BTC 2pm"
+    match = CONTRACT_HOUR_PATTERN.match(s)
     if not match:
         return None
 
@@ -266,7 +284,7 @@ def get_momentum_data_from_postgresql(symbol):
 # Get port from centralized system
 TRADE_MANAGER_PORT = get_port("trade_manager")
 
-# Thread-safe set to track trades being processed
+    # Thread-safe set to track trades being processed
 processing_trades = set()
 processing_lock = threading.Lock()
 
@@ -284,6 +302,76 @@ def get_postgresql_connection():
     except Exception as e:
         print(f"❌ Failed to connect to PostgreSQL: {e}")
         return None
+
+
+def _get_system_mode() -> str:
+    """
+    Read the global system mode from core.system_state.
+
+    Returns:
+        'normal' or 'maintenance'. On any error, defaults to 'maintenance'
+        so we fail closed and avoid opening new trades when state is unknown.
+    """
+    conn = None
+    try:
+        conn = get_postgresql_connection()
+        if not conn:
+            # If we cannot talk to the DB at all, treat as maintenance for safety.
+            print("⚠️ SYSTEM_STATE: No DB connection; treating mode as 'maintenance'")
+            return "maintenance"
+
+        with conn.cursor() as cursor:
+            # Ensure schema/table exist and there is always a row with id=1.
+            cursor.execute("CREATE SCHEMA IF NOT EXISTS core")
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS core.system_state (
+                    id INTEGER PRIMARY KEY,
+                    mode TEXT NOT NULL CHECK (mode IN ('normal', 'maintenance')),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """
+            )
+            cursor.execute(
+                """
+                INSERT INTO core.system_state (id, mode)
+                VALUES (1, 'normal')
+                ON CONFLICT (id) DO NOTHING
+                """
+            )
+            cursor.execute("SELECT mode FROM core.system_state WHERE id = 1")
+            row = cursor.fetchone()
+
+        if row and row[0] in ("normal", "maintenance"):
+            return row[0]
+
+        # If row missing or invalid, default to normal so healthy systems keep trading.
+        return "normal"
+    except Exception as e:
+        # On any unexpected error, fail closed.
+        print(f"⚠️ SYSTEM_STATE error: {e}")
+        return "maintenance"
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _is_trading_enabled() -> bool:
+    """
+    Global gate for opening new trades.
+
+    Returns:
+        True if system_state.mode == 'normal', False otherwise.
+    """
+    mode = _get_system_mode()
+    if mode != "normal":
+        # Use plain print here; log() may not yet be defined at import time when this runs.
+        print(f"[TRADE_MANAGER] Trading disabled (system_mode={mode}); rejecting new trade request")
+    return mode == "normal"
+
 
 def get_executor_port():
     return get_port("trade_executor")
@@ -2552,6 +2640,15 @@ async def add_trade(request: Request):
     
     # OPEN TRADE
     log("OPEN TICKET RECEIVED")
+
+    # Global maintenance guard: never open new trades while the system is in maintenance mode.
+    try:
+        if not _is_trading_enabled():
+            return {"error": "trading_disabled", "id": None}
+    except Exception as e:
+        log(f"⚠️ Error checking system trading mode: {e}")
+        return {"error": "trading_disabled", "id": None}
+
     required_fields = {"date", "time", "strike", "side", "buy_price", "position"}
     if not required_fields.issubset(data.keys()):
         raise HTTPException(status_code=400, detail="Missing required trade fields")
@@ -2915,7 +3012,13 @@ async def manual_settlement_poll():
 # ---------- EXPIRATION FUNCTIONS ----------------------------------------------------
 
 def check_expired_trades():
-    """Check for expired trades at top of every hour"""
+    """Check for expired trades.
+    
+    Runs on a 15-minute schedule. At minute 0 (top of the hour) it processes all
+    eligible trades (backwards-compatible hourly behavior). At minutes 15, 30,
+    and 45 it processes only 15m strategies (e.g. '15m HTC') so 15m markets are
+    expired on their own cadence without affecting hourly contracts.
+    """
     try:
         # Step 1: Delete trades with status ERROR
         delete_error_trades()
@@ -2924,7 +3027,11 @@ def check_expired_trades():
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
-                cursor.execute("SELECT id, ticker, symbol FROM users.trades_0001 WHERE status IN ('open', 'closing', 'close_failed')")
+                cursor.execute(
+                    "SELECT id, ticker, symbol, trade_strategy, contract "
+                    "FROM users.trades_0001 "
+                    "WHERE status IN ('open', 'closing', 'close_failed')"
+                )
                 active_trades = cursor.fetchall()
         else:
             active_trades = []
@@ -2934,10 +3041,35 @@ def check_expired_trades():
         
         now_est = datetime.now(ZoneInfo("America/New_York"))
         closed_at = now_est.strftime("%H:%M:%S")
+        current_minute = now_est.minute
+
+        # Decide which trades to process on this run.
+        # - At minute 0: process all active trades (original hourly behavior).
+        # - At minutes 15/30/45: process only trades whose strategy clearly
+        #   indicates a 15m cadence (e.g. '15m HTC').
+        def _is_15m_strategy(strategy: Optional[str]) -> bool:
+            if not strategy:
+                return False
+            return "15m" in strategy.lower()
+
+        if current_minute % 15 != 0:
+            # Safety guard: scheduler should only call us at multiples of 15.
+            return
+
+        if current_minute == 0:
+            trades_to_process = active_trades
+        else:
+            trades_to_process = [
+                row for row in active_trades
+                if _is_15m_strategy(row[3])  # trade_strategy column
+            ]
+
+        if not trades_to_process:
+            return
         
-        # Get symbol-specific closing prices for each trade
+        # Get symbol-specific closing prices for each trade we plan to process
         symbol_prices = {}
-        for trade_id, ticker, symbol in active_trades:
+        for trade_id, ticker, symbol, trade_strategy, contract in trades_to_process:
             if symbol not in symbol_prices:
                 try:
                     # Get one_minute_avg from symbol-specific price log
@@ -2967,7 +3099,7 @@ def check_expired_trades():
             pg_conn = get_postgresql_connection()
             if pg_conn:
                 with pg_conn.cursor() as cursor:
-                    for trade_id, ticker, symbol in active_trades:
+                    for trade_id, ticker, symbol, trade_strategy, contract in trades_to_process:
                         symbol_close = symbol_prices.get(symbol)
                         
                         # CRITICAL: Re-check trade status before UPDATE to prevent race condition
@@ -3023,7 +3155,7 @@ def check_expired_trades():
                             WHERE id = %s AND status IN ('open', 'closing', 'close_failed')
                         """, (closed_at, symbol_close, high_price, low_price, monitor_confirmed, trade_id))
                     pg_conn.commit()
-                    print(f"💾 Expired trades update written to PostgreSQL users.trades_0001 for {len(active_trades)} trades (open, closing, and close_failed)")
+                    print(f"💾 Expired trades update written to PostgreSQL users.trades_0001 for {len(trades_to_process)} trades (open, closing, and close_failed)")
                 pg_conn.close()
             else:
                 print(f"⚠️ Skipping PostgreSQL expired trades update - no connection available")
@@ -3032,7 +3164,7 @@ def check_expired_trades():
         
         notify_frontend_trade_change()
         
-        # Separate paper trades from live trades
+        # Separate paper trades from live trades (only for trades we just expired)
         paper_trade_ids = []
         live_trade_tickers = []
         
@@ -3040,7 +3172,7 @@ def check_expired_trades():
             pg_conn_check = get_postgresql_connection()
             if pg_conn_check:
                 with pg_conn_check.cursor() as cursor:
-                    for trade_id, ticker, symbol in active_trades:
+                    for trade_id, ticker, symbol, trade_strategy, contract in trades_to_process:
                         cursor.execute("SELECT paper_trade FROM users.trades_0001 WHERE id = %s", (trade_id,))
                         result = cursor.fetchone()
                         if result and result[0] is True:
@@ -3050,15 +3182,15 @@ def check_expired_trades():
                 pg_conn_check.close()
             else:
                 # If we can't check, treat all as live trades
-                for trade_id, ticker, symbol in active_trades:
+                for trade_id, ticker, symbol, trade_strategy, contract in trades_to_process:
                     live_trade_tickers.append(ticker)
         except Exception as e:
             log(f"⚠️ Error separating paper/live trades: {e}, treating all as live")
-            for trade_id, ticker, symbol in active_trades:
+            for trade_id, ticker, symbol, trade_strategy, contract in trades_to_process:
                 live_trade_tickers.append(ticker)
         
         # Notify active_trade_supervisor for all expired trades (both paper and live)
-        for trade_id, ticker, symbol in active_trades:
+        for trade_id, ticker, symbol, trade_strategy, contract in trades_to_process:
             notify_active_trade_supervisor_direct(trade_id, str(ticker), "expired")
         
         # Process paper trades immediately (manual settlement)
@@ -3443,7 +3575,7 @@ def notify_monitor_manager_trades_closed_by_ticker(ticker: str, status: str) -> 
 # ---------- APScheduler Setup ----------------------------------------------------
 
 _scheduler = BackgroundScheduler(timezone=ZoneInfo("America/New_York"))
-_scheduler.add_job(check_expired_trades, CronTrigger(minute=0, second=0), max_instances=1, coalesce=True)
+_scheduler.add_job(check_expired_trades, CronTrigger(minute="*/15", second=0), max_instances=1, coalesce=True)
 _scheduler.add_job(check_expired_trades_for_settlements, CronTrigger(minute="*/5", second=0), max_instances=1, coalesce=True)
 _scheduler.add_job(
     refresh_all_monitor_cycle_performance,

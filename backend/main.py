@@ -2572,13 +2572,25 @@ async def get_momentum_score():
         print(f"Error getting momentum score: {e}")
         return {"weighted_score": 0, "error": str(e)}
 
+def _strike_table_name(symbol: str, market: str) -> str:
+    """Build strike table name from symbol and market. Market must be 'hourly' or '15m'."""
+    s = (symbol or "btc").lower()
+    m = (market or "").strip().lower()
+    if m not in ("hourly", "15m"):
+        raise ValueError("market must be 'hourly' or '15m'")
+    return f"strike_table_{m}_{s}"
+
+
 @app.get("/api/strike_table")
-async def get_strike_table_mobile():
-    """Get strike table data for mobile from PostgreSQL."""
+async def get_strike_table_mobile(request: Request):
+    """Get strike table data for mobile. Query params: symbol, market (required: hourly or 15m)."""
     try:
         import psycopg2
-        
-        # Connect to PostgreSQL
+        symbol = (request.query_params.get("symbol") or "btc").lower()
+        market = (request.query_params.get("market") or "").strip().lower()
+        if market not in ("hourly", "15m"):
+            return {"strikes": [], "error": "market required (hourly or 15m)"}
+        table_name = _strike_table_name(symbol, market)
         conn = psycopg2.connect(
             host="localhost",
             database="rec_io_db",
@@ -2588,7 +2600,7 @@ async def get_strike_table_mobile():
         
         with conn.cursor() as cursor:
             # Get strike table data from PostgreSQL
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT 
                     strike,
                     buffer,
@@ -2603,7 +2615,7 @@ async def get_strike_table_mobile():
                     yes_diff,
                     no_diff,
                     active_side
-                FROM live_data.strike_table_hourly_btc
+                    FROM live_data.{table_name}
                 ORDER BY strike
             """)
             
@@ -3345,12 +3357,15 @@ def frontend_changes():
     return {"last_modified": latest}
 
 @app.get("/api/live_probabilities")
-async def get_live_probabilities():
-    """Get live probabilities from PostgreSQL strike table"""
+async def get_live_probabilities(request: Request):
+    """Get live probabilities. Query params: symbol, market (required: hourly or 15m)."""
     try:
         import psycopg2
-        
-        # Connect to PostgreSQL
+        symbol = (request.query_params.get("symbol") or "btc").lower()
+        market = (request.query_params.get("market") or "").strip().lower()
+        if market not in ("hourly", "15m"):
+            return {"error": "market required (hourly or 15m)"}
+        table_name = _strike_table_name(symbol, market)
         conn = psycopg2.connect(
             host="localhost",
             database="rec_io_db",
@@ -3360,11 +3375,11 @@ async def get_live_probabilities():
         
         with conn.cursor() as cursor:
             # Get probability data from PostgreSQL strike table
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT 
                     strike,
                     probability
-                FROM live_data.strike_table_hourly_btc
+                    FROM live_data.{table_name}
                 ORDER BY strike
             """)
             
@@ -3412,15 +3427,17 @@ def safe_read_json(filepath: str, timeout: float = 0.1):
             return None
 
 @app.get("/api/strike_tables/{symbol}")
-async def get_strike_table(symbol: str):
-    """Get strike table data for a specific symbol from PostgreSQL"""
+async def get_strike_table(symbol: str, request: Request):
+    """Get strike table data. Query param: market (required: hourly or 15m)."""
     try:
         import psycopg2
         
-        # Convert symbol to lowercase for consistency
+        # Convert symbol to lowercase for consistency (used for error messages/logs)
         symbol_lower = symbol.lower()
-        
-        # Connect to PostgreSQL
+        market = (request.query_params.get("market") or "").strip().lower()
+        if market not in ("hourly", "15m"):
+            return {"error": "market required (hourly or 15m)"}
+        table_name = _strike_table_name(symbol, market)
         conn = psycopg2.connect(
             host="localhost",
             database="rec_io_db",
@@ -3440,7 +3457,7 @@ async def get_strike_table(symbol: str):
                     strike_tier,
                     market_status,
                     momentum_percentile
-                FROM live_data.strike_table_hourly_{symbol_lower}
+                    FROM live_data.{table_name}
                 LIMIT 1
             """)
             
@@ -3465,7 +3482,7 @@ async def get_strike_table(symbol: str):
                     yes_diff,
                     no_diff,
                     active_side
-                FROM live_data.strike_table_hourly_{symbol_lower}
+                    FROM live_data.{table_name}
                 ORDER BY strike
             """)
             
@@ -3509,12 +3526,14 @@ async def get_strike_table(symbol: str):
         return {"error": f"Error loading strike table for {symbol} from PostgreSQL: {str(e)}"}
 
 @app.get("/api/postgresql/strike_table/{symbol}")
-async def get_postgresql_strike_table(symbol: str):
-    """Get strike table data from PostgreSQL for a specific symbol"""
+async def get_postgresql_strike_table(symbol: str, request: Request):
+    """Get strike table data. Query param: market (required: hourly or 15m)."""
     try:
         import psycopg2
-        
-        # Connect to PostgreSQL
+        market = (request.query_params.get("market") or "").strip().lower()
+        if market not in ("hourly", "15m"):
+            return {"error": "market required (hourly or 15m)"}
+        table_name = _strike_table_name(symbol, market)
         conn = psycopg2.connect(
             host="localhost",
             database="rec_io_db",
@@ -3532,7 +3551,7 @@ async def get_postgresql_strike_table(symbol: str):
                     momentum_percentile,
                     market_title,
                     timestamp
-                FROM live_data.strike_table_hourly_{symbol.lower()} 
+                    FROM live_data.{table_name}
                 LIMIT 1
             """)
             
@@ -3557,7 +3576,7 @@ async def get_postgresql_strike_table(symbol: str):
                     yes_diff,
                     no_diff,
                     active_side
-                FROM live_data.strike_table_hourly_{symbol.lower()} 
+                    FROM live_data.{table_name}
                 ORDER BY strike
             """)
             
@@ -3788,21 +3807,24 @@ async def get_active_trades_for_monitor(monitor_name: str):
         return {"error": f"Error loading active trades for monitor {monitor_name} from PostgreSQL: {str(e)}"}
 
 @app.get("/api/unified_ttc/{symbol}")
-async def get_unified_ttc(symbol: str):
-    """Get unified TTC data for a specific symbol from strike table"""
+async def get_unified_ttc(symbol: str, request: Request):
+    """Get unified TTC data. Query param: market (required: hourly or 15m)."""
     try:
         import psycopg2
+        market = (request.query_params.get("market") or "").strip().lower()
+        if market not in ("hourly", "15m"):
+            return {"error": "market required (hourly or 15m)", "ttc_seconds": 0}
+        table_name = _strike_table_name(symbol, market)
         conn = psycopg2.connect(
             host="localhost",
             database="rec_io_db",
             user="rec_io_user",
             password="rec_io_password"
         )
-        symbol_lower = symbol.lower()
         with conn.cursor() as cursor:
             cursor.execute(f"""
                 SELECT ttc_seconds, event_ticker, market_title, market_status
-                FROM live_data.strike_table_hourly_{symbol_lower}
+                    FROM live_data.{table_name}
                 WHERE market_status = 'active'
                 ORDER BY ttc_seconds ASC
                 LIMIT 1
@@ -5391,7 +5413,8 @@ async def get_monitors(user_id: str = "user_0001"):
                     current_performance_modifier,
                     current_max_pct_exposure,
                     performance_based_allocation,
-                    paper_trade
+                    paper_trade,
+                    market
                 FROM users.monitor_list_{user_number}
                 WHERE status != 'ARCHIVED'
                 ORDER BY dashboard_order, id
@@ -5428,6 +5451,7 @@ async def get_monitors(user_id: str = "user_0001"):
                 current_max_pct_exposure,
                 performance_based_allocation,
                 paper_trade,
+                market,
             ) = row
             
             # Calculate uptime from created timestamp
@@ -5475,6 +5499,7 @@ async def get_monitors(user_id: str = "user_0001"):
                 "current_max_pct_exposure": current_max_pct_exposure,
                 "performance_based_allocation": performance_based_allocation,
                 "paper_trade": paper_trade or False,
+                "market": (market or "").strip().lower() if market else None,
             }
             monitors.append(formatted_monitor)
         
@@ -5603,7 +5628,7 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
         
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade, paper_trade
+            SELECT id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade, paper_trade, market
             FROM users.monitor_list_{user_number}
             WHERE id = %s AND status = 'active'
         """, (monitor_id,))
@@ -5612,7 +5637,10 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
         conn.close()
         
         if result:
-            monitor_id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade, paper_trade = result
+            monitor_id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade, paper_trade, market = result
+            mkt = (market or "").strip().lower()
+            if mkt not in ("hourly", "15m"):
+                mkt = None
             return {
                 "status": "ok",
                 "monitor": {
@@ -5626,7 +5654,8 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
                     "position_type": position_type,
                     "bankroll_allotment_total": bankroll_allotment_total,
                     "auto_trade": auto_trade,
-                    "paper_trade": paper_trade or False
+                    "paper_trade": paper_trade or False,
+                    "market": mkt,
                 }
             }
         else:
@@ -5750,22 +5779,24 @@ async def get_monitor_names(user_id: str = "user_0001"):
         
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT id, name
+            SELECT id, name, symbol, market
             FROM users.monitor_list_{user_number}
             WHERE status = 'active'
             ORDER BY name
         """)
-        
         results = cursor.fetchall()
         conn.close()
-        
-        # Transform to simple format for dropdown
         monitors = []
         for row in results:
-            monitor_id, name = row
+            monitor_id, name, symbol, market = row
+            mkt = (market or "").strip().lower() if market else None
+            if mkt not in ("hourly", "15m"):
+                mkt = None
             monitors.append({
                 "id": monitor_id,
-                "name": name
+                "name": name,
+                "symbol": symbol,
+                "market": mkt
             })
         
         return {
