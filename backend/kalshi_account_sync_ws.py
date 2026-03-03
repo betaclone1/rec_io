@@ -339,6 +339,178 @@ def notify_monitor_manager():
         print(f"❌ Error notifying monitor manager: {e}")
 
 
+# --- Kalshi v1 account/history (deposits/withdrawals) ---
+KALSHI_V1_BASE_URL = "https://api.elections.kalshi.com"
+
+
+def fetch_v1_account_history_page(kalshi_user_id, page_number=1, page_size=200):
+    """GET one page of v1 account/history. Returns (entries list, None) or ([], error string)."""
+    path = f"/v1/users/{kalshi_user_id}/account/history"
+    url = KALSHI_V1_BASE_URL + path
+    params = {"deposits": "true", "withdrawals": "true", "page_size": page_size, "page_number": page_number}
+    timestamp = str(int(time.time() * 1000))
+    signature = generate_kalshi_signature("GET", path, timestamp, str(KEY_PATH))
+    headers = {
+        "Accept": "application/json",
+        "KALSHI-ACCESS-KEY": KEY_ID,
+        "KALSHI-ACCESS-TIMESTAMP": timestamp,
+        "KALSHI-ACCESS-SIGNATURE": signature,
+    }
+    try:
+        r = requests.get(url, params=params, headers=headers, timeout=15)
+        if r.status_code != 200:
+            return [], f"HTTP {r.status_code}"
+        body = r.json()
+        return body.get("entries") or [], None
+    except Exception as e:
+        return [], str(e)
+
+
+def _account_history_entry_to_row(entry):
+    """Convert one v1 API entry to a dict for account_history_0001."""
+    entry_type = entry.get("type") or ""
+    data = entry.get("data") or {}
+    dep = (data.get("Deposit") or {}) if entry_type == "Deposit" else {}
+    wd = (data.get("Withdrawal") or {}) if entry_type == "Withdrawal" else {}
+    payload = dep or wd
+    amount = payload.get("amount")
+    if amount is None:
+        return None
+    fee = payload.get("fee") or 0
+    created_at = payload.get("created_at")
+    updated_at = payload.get("updated_at") or created_at
+    status = payload.get("status")
+    returned_amount = payload.get("returned_amount") or 0
+    deposit_type = dep.get("deposit_type") if dep else None
+    immediate_amount = dep.get("immediate_amount") if dep else None
+    immediate_status = dep.get("immediate_status") if dep else None
+    return {
+        "entry_type": entry_type,
+        "amount": int(amount),
+        "fee": int(fee),
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "status": status,
+        "returned_amount": int(returned_amount),
+        "deposit_type": deposit_type,
+        "immediate_amount": int(immediate_amount) if immediate_amount is not None else None,
+        "immediate_status": immediate_status,
+    }
+
+
+def _upsert_account_history(conn, rows):
+    """Insert or update rows in users.account_history_0001."""
+    if not rows:
+        return 0
+    from psycopg2.extras import execute_values
+    cols = ["entry_type", "amount", "fee", "created_at", "updated_at", "status", "returned_amount", "deposit_type", "immediate_amount", "immediate_status"]
+    sql = f"""
+        INSERT INTO users.account_history_0001 ({", ".join(cols)})
+        VALUES %s
+        ON CONFLICT (created_at, entry_type, amount)
+        DO UPDATE SET updated_at = EXCLUDED.updated_at, status = EXCLUDED.status, returned_amount = EXCLUDED.returned_amount,
+            deposit_type = EXCLUDED.deposit_type, immediate_amount = EXCLUDED.immediate_amount, immediate_status = EXCLUDED.immediate_status, synced_at = CURRENT_TIMESTAMP
+    """
+    values = [(r["entry_type"], r["amount"], r["fee"], r["created_at"], r["updated_at"], r["status"], r["returned_amount"], r["deposit_type"], r["immediate_amount"], r["immediate_status"]) for r in rows]
+    with conn.cursor() as cur:
+        execute_values(cur, sql, values, page_size=100)
+    conn.commit()
+    return len(rows)
+
+
+def _ensure_external_transfers_from_account_history(conn):
+    """Create transfer rows for account_history entries that don't have one. Returns (inserted_count, new_deposit_amounts, new_withdrawal_amounts)."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT id, entry_type, amount, fee, created_at, status, deposit_type
+            FROM users.account_history_0001
+            WHERE id NOT IN (SELECT external_transfer_id FROM users.transfers_0001 WHERE external_transfer_id IS NOT NULL)
+            ORDER BY id
+        """)
+        rows = cur.fetchall()
+    if not rows:
+        return 0, [], []
+    inserted = 0
+    new_deposit_amounts = []
+    new_withdrawal_amounts = []
+    for row in rows:
+        ah_id, entry_type, amount, fee, created_at, status, deposit_type = row
+        amount_net = int(amount) - int(fee or 0)
+        if created_at:
+            try:
+                ts_est = created_at.astimezone(EST) if hasattr(created_at, "astimezone") else datetime.fromisoformat(str(created_at).replace("Z", "+00:00")).astimezone(EST)
+            except Exception:
+                ts_est = datetime.now(EST)
+            timestamp_str = ts_est.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            timestamp_str = datetime.now(EST).strftime("%Y-%m-%d %H:%M:%S")
+        status_str = (status or "").strip() or None
+        if entry_type == "Deposit":
+            raw = (deposit_type or "External").strip()
+            from_str = "ACH" if raw.lower() == "ach" else (raw.title() or "External")
+            to_str = "Cash Transfer"
+        else:
+            from_str = "Cash Transfer"
+            to_str = "ACH"  # no deposit_type for withdrawals; assume destination is ACH
+        # Deposits: positive amount. Withdrawals: negative amount.
+        amount_for_transfer = amount_net if entry_type == "Deposit" else -amount_net
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO users.transfers_0001 (timestamp, type, "from", "to", amount, initiated, status, external_transfer_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (timestamp_str, "external", from_str, to_str, amount_for_transfer, "manual", status_str, ah_id))
+        inserted += 1
+        if entry_type == "Deposit":
+            new_deposit_amounts.append(amount_net)
+        elif entry_type == "Withdrawal":
+            new_withdrawal_amounts.append(amount_net)
+    conn.commit()
+    return inserted, new_deposit_amounts, new_withdrawal_amounts
+
+
+def _update_external_transfer_status_from_account_history(conn):
+    """Refresh status (and other synced fields) on existing external transfers from their account_history row.
+    When a withdrawal is first reported it may have status other than 'applied'; when Kalshi updates it
+    we update account_history on next sync, then this updates the transfer row via external_transfer_id."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE users.transfers_0001 t
+            SET status = ah.status
+            FROM users.account_history_0001 ah
+            WHERE t.external_transfer_id = ah.id AND t.external_transfer_id IS NOT NULL
+        """)
+    conn.commit()
+
+
+def sync_account_history(conn, kalshi_user_id):
+    """Fetch v1 account/history, upsert account_history_0001, create external transfers. Returns (n_upserted, error_str, new_deposit_amounts, new_withdrawal_amounts)."""
+    all_entries = []
+    page_number = 1
+    page_size = 200
+    while True:
+        entries, err = fetch_v1_account_history_page(kalshi_user_id, page_number=page_number, page_size=page_size)
+        if err:
+            return 0, err, [], []
+        all_entries.extend(entries)
+        if len(entries) < page_size:
+            break
+        page_number += 1
+    rows = []
+    for entry in all_entries:
+        r = _account_history_entry_to_row(entry)
+        if r is not None:
+            rows.append(r)
+    if not rows:
+        return 0, None, [], []
+    try:
+        n = _upsert_account_history(conn, rows)
+        _, new_deposit_amounts, new_withdrawal_amounts = _ensure_external_transfers_from_account_history(conn)
+        _update_external_transfer_status_from_account_history(conn)
+        return n, None, new_deposit_amounts, new_withdrawal_amounts
+    except Exception as e:
+        return 0, str(e), [], []
+
+
 def get_current_event_ticker():
     global last_failed_ticker
     now = datetime.now(EST)
@@ -493,6 +665,7 @@ def sync_balance():
         # Write to PostgreSQL only
         try:
             pg_conn = get_postgresql_connection()
+            kalshi_user_id_for_history = None
             if pg_conn:
                 with pg_conn.cursor() as cursor:
                     current_timestamp = datetime.now(EST).isoformat()
@@ -558,7 +731,53 @@ def sync_balance():
                     
                     # Notify monitor_manager of bankroll update
                     notify_monitor_manager()
-                pg_conn.close()
+                    # Sync Kalshi v1 account/history (deposits/withdrawals) into users.account_history_0001
+                    cursor.execute("SELECT kalshi_user_id FROM users.user_info_0001 WHERE user_no = '0001'")
+                    kalshi_user_row = cursor.fetchone()
+                    kalshi_user_id_for_history = (kalshi_user_row[0] or "").strip() if kalshi_user_row and kalshi_user_row[0] else None
+                if pg_conn and kalshi_user_id_for_history:
+                    try:
+                        n_upserted, sync_err, new_deposit_amounts, new_withdrawal_amounts = sync_account_history(pg_conn, kalshi_user_id_for_history)
+                        if sync_err:
+                            print(f"⚠️ Account history sync failed: {sync_err}")
+                        else:
+                            print(f"💾 Account history: {n_upserted} entries synced to users.account_history_0001")
+                        if new_deposit_amounts:
+                            with pg_conn.cursor() as cur:
+                                for amount_net in new_deposit_amounts:
+                                    cur.execute("UPDATE users.subaccounts_0001 SET balance = balance + %s WHERE subaccount = 'Cash Transfer'", (amount_net,))
+                                # PRIMARY is always a direct copy of account_balance.portfolio; never derive from subaccount sums or increments
+                                cur.execute("SELECT portfolio FROM users.account_balance_0001 ORDER BY id DESC LIMIT 1")
+                                row = cur.fetchone()
+                                if row and row[0] is not None:
+                                    cur.execute("UPDATE users.subaccounts_0001 SET balance = %s WHERE subaccount = 'PRIMARY'", (int(row[0]),))
+                            pg_conn.commit()
+                            notify_frontend_db_change("subaccounts", {"source": "external_deposit"})
+                            notify_frontend_db_change("transfers", {"source": "external_deposit"})
+                            notify_monitor_manager()
+                            print(f"💾 New deposit(s) applied to Cash Transfer + PRIMARY: {sum(new_deposit_amounts)} cents total")
+                        if new_withdrawal_amounts:
+                            with pg_conn.cursor() as cur:
+                                for amount_net in new_withdrawal_amounts:
+                                    cur.execute("SELECT COALESCE(balance, 0) FROM users.subaccounts_0001 WHERE subaccount = 'Cash Transfer'")
+                                    cash_balance = (cur.fetchone() or (0,))[0]
+                                    amount_subtracted = min(amount_net, cash_balance)
+                                    new_cash = cash_balance - amount_subtracted
+                                    cur.execute("UPDATE users.subaccounts_0001 SET balance = %s WHERE subaccount = 'Cash Transfer'", (new_cash,))
+                                # PRIMARY is always a direct copy of account_balance.portfolio; never derive from subaccount sums or decrements
+                                cur.execute("SELECT portfolio FROM users.account_balance_0001 ORDER BY id DESC LIMIT 1")
+                                row = cur.fetchone()
+                                if row and row[0] is not None:
+                                    cur.execute("UPDATE users.subaccounts_0001 SET balance = %s WHERE subaccount = 'PRIMARY'", (int(row[0]),))
+                            pg_conn.commit()
+                            notify_frontend_db_change("subaccounts", {"source": "external_withdrawal"})
+                            notify_frontend_db_change("transfers", {"source": "external_withdrawal"})
+                            notify_monitor_manager()
+                            print(f"💾 New withdrawal(s) applied: Cash Transfer reduced (PRIMARY adjusted), {sum(new_withdrawal_amounts)} cents total")
+                    except Exception as sync_exc:
+                        print(f"⚠️ Account history sync error: {sync_exc}")
+                if pg_conn:
+                    pg_conn.close()
             else:
                 print(f"⚠️ Skipping PostgreSQL write - no connection available")
         except Exception as pg_err:
