@@ -1,0 +1,586 @@
+[
+  {
+    "name": "Vol 10-25th + Momentum Mom -99--80",
+    "sample_size": 301,
+    "conditions": {
+      "volatility_percentile": [
+        10,
+        25
+      ],
+      "momentum_percentile": [
+        -99,
+        -80
+      ]
+    },
+    "2min": {
+      "positive_rate": 55.48172757475083,
+      "avg_return": 0.0015678063251783143,
+      "median_return": 0.005123396532055307,
+      "win_rate_01pct": 5.647840531561462,
+      "win_rate_02pct": 0.33222591362126247
+    },
+    "5min": {
+      "positive_rate": 54.15282392026578,
+      "avg_return": -0.003026872462087163,
+      "median_return": 0.006959149199404482,
+      "win_rate_01pct": 14.61794019933555,
+      "win_rate_02pct": 2.6578073089700998
+    },
+    "10min": {
+      "positive_rate": 56.810631229235874,
+      "avg_return": -0.0001428789062357723,
+      "median_return": 0.014477427089754942,
+      "win_rate_01pct": 24.916943521594686,
+      "win_rate_02pct": 8.305647840531561
+    }
+  },
+  {
+    "name": "High Volatility (90th+) + Strong Downward Trend (Mean Reversion)",
+    "sample_size": 16193,
+    "conditions": {
+      "volatility_percentile": {
+        "gt": 90
+      },
+      "trend_5min": {
+        "lt": -0.2
+      },
+      "range_5min": {
+        "gt": 1.0
+      }
+    },
+    "2min": {
+      "positive_rate": 54.02951892793182,
+      "avg_return": 0.020747891324036673,
+      "median_return": 0.03644227921896979,
+      "win_rate_01pct": 42.75304143765825,
+      "win_rate_02pct": 32.05088618538875
+    },
+    "5min": {
+      "positive_rate": 55.24609399123078,
+      "avg_return": 0.05306532314689242,
+      "median_return": 0.07153111743099345,
+      "win_rate_01pct": 47.61316618291854,
+      "win_rate_02pct": 39.20212437472983
+    },
+    "10min": {
+      "positive_rate": 55.82041622923486,
+      "avg_return": 0.07691392899709468,
+      "median_return": 0.0930747817930084,
+      "win_rate_01pct": 49.620206261965045,
+      "win_rate_02pct": 43.31501265979127
+    }
+  },
+  {
+    "name": "Vol 25-50th + Momentum Mom -99--80",
+    "sample_size": 11505,
+    "conditions": {
+      "volatility_percentile": [
+        25,
+        50
+      ],
+      "momentum_percentile": [
+        -99,
+        -80
+      ]
+    },
+    "2min": {
+      "positive_rate": 53.342025206431984,
+      "avg_return": 0.0032915902276458298,
+      "median_return": 0.0051060915858295005,
+      "win_rate_01pct": 8.69187309865276,
+      "win_rate_02pct": 0.8604954367666232
+    },
+    "5min": {
+      "positive_rate": 53.49847892220774,
+      "avg_return": 0.003478578527898897,
+      "median_return": 0.008590855820138011,
+      "win_rate_01pct": 18.365927857453283,
+      "win_rate_02pct": 4.3024771838331155
+    },
+    "10min": {
+      "positive_rate": 53.40286831812256,
+      "avg_return": 0.0027100002863184956,
+      "median_return": 0.012473238096420928,
+      "win_rate_01pct": 26.492829204693614,
+      "win_rate_02pct": 10.039113428943937
+    }
+  },
+  {
+    "name": "High Volatility (90th+) + Strong Downward Trend (Continuation)",
+    "sample_size": 111868,
+    "conditions": {
+      "volatility_percentile": {
+        "gt": 90
+      },
+      "trend_5min": {
+        "lt": -0.2
+      }
+    },
+    "2min": {
+      "positive_rate": 52.945435692065644,
+      "avg_return": 0.004388511930830302,
+      "median_return": 0.014311555088299292,
+      "win_rate_01pct": 32.466835913755496,
+      "win_rate_02pct": 17.529588443522723
+    },
+    "5min": {
+      "positive_rate": 54.012765044516755,
+      "avg_return": 0.013919571440175355,
+      "median_return": 0.029058348816609725,
+      "win_rate_01pct": 39.88450674008653,
+      "win_rate_02pct": 27.02023813780527
+    },
+    "10min": {
+      "positive_rate": 54.089641363035,
+      "avg_return": 0.020715651699455783,
+      "median_return": 0.03870100682947404,
+      "win_rate_01pct": 43.474452032752886,
+      "win_rate_02pct": 33.44209246612079
+    }
+  },
+  {
+    "name": "Vol 75-90th + Momentum Mom -99--80",
+    "sample_size": 109899,
+    "conditions": {
+      "volatility_percentile": [
+        75,
+        90
+      ],
+      "momentum_percentile": [
+        -99,
+        -80
+      ]
+    },
+    "2min": {
+      "positive_rate": 52.860353597393974,
+      "avg_return": 0.0013312839206473036,
+      "median_return": 0.007576195215832462,
+      "win_rate_01pct": 20.025659924112137,
+      "win_rate_02pct": 5.501414935531716
+    },
+    "5min": {
+      "positive_rate": 52.82759624746358,
+      "avg_return": 0.0009643002684302036,
+      "median_return": 0.011736879985424298,
+      "win_rate_01pct": 29.71728587157299,
+      "win_rate_02pct": 13.760816749924931
+    },
+    "10min": {
+      "positive_rate": 53.28619914648905,
+      "avg_return": 0.002902908833306543,
+      "median_return": 0.01872055507814939,
+      "win_rate_01pct": 36.201421305016424,
+      "win_rate_02pct": 21.814575200866248
+    }
+  },
+  {
+    "name": "Vol 95-100th + Momentum Mom -99--80",
+    "sample_size": 80465,
+    "conditions": {
+      "volatility_percentile": [
+        95,
+        100
+      ],
+      "momentum_percentile": [
+        -99,
+        -80
+      ]
+    },
+    "2min": {
+      "positive_rate": 52.74715714907102,
+      "avg_return": 0.00390048989580914,
+      "median_return": 0.01541837767829629,
+      "win_rate_01pct": 34.76915429068539,
+      "win_rate_02pct": 20.529422730379668
+    },
+    "5min": {
+      "positive_rate": 53.78363263530728,
+      "avg_return": 0.01238434938965537,
+      "median_return": 0.031703378242484925,
+      "win_rate_01pct": 41.4925744112347,
+      "win_rate_02pct": 29.708568943018705
+    },
+    "10min": {
+      "positive_rate": 54.32548312931088,
+      "avg_return": 0.023954981883920732,
+      "median_return": 0.04676285227658492,
+      "win_rate_01pct": 45.06307090039147,
+      "win_rate_02pct": 35.92742186043621
+    }
+  },
+  {
+    "name": "Vol 90-95th + Momentum Mom -99--80",
+    "sample_size": 57846,
+    "conditions": {
+      "volatility_percentile": [
+        90,
+        95
+      ],
+      "momentum_percentile": [
+        -99,
+        -80
+      ]
+    },
+    "2min": {
+      "positive_rate": 52.58099090689071,
+      "avg_return": 0.0006967991011738937,
+      "median_return": 0.009543500087447898,
+      "win_rate_01pct": 26.4408947896138,
+      "win_rate_02pct": 10.370639283615116
+    },
+    "5min": {
+      "positive_rate": 53.020087819382496,
+      "avg_return": 0.0014437092032062587,
+      "median_return": 0.016612910155609718,
+      "win_rate_01pct": 34.7941084949694,
+      "win_rate_02pct": 20.156968502575808
+    },
+    "10min": {
+      "positive_rate": 53.15147114752965,
+      "avg_return": 0.004821869722177612,
+      "median_return": 0.023199309770575216,
+      "win_rate_01pct": 39.759015316530096,
+      "win_rate_02pct": 27.702866231027212
+    }
+  },
+  {
+    "name": "Extreme Volatility (95th+) + Low Momentum (\u226410th percentile)",
+    "sample_size": 100230,
+    "conditions": {
+      "volatility_percentile": {
+        "gt": 95
+      },
+      "momentum_percentile": {
+        "lt": 10
+      }
+    },
+    "2min": {
+      "positive_rate": 52.26878180185574,
+      "avg_return": 0.0029836322826424706,
+      "median_return": 0.012358906768791419,
+      "win_rate_01pct": 34.02673850144667,
+      "win_rate_02pct": 19.929162925271875
+    },
+    "5min": {
+      "positive_rate": 53.10984735109249,
+      "avg_return": 0.009932632758507516,
+      "median_return": 0.025493399961281887,
+      "win_rate_01pct": 40.68841664172403,
+      "win_rate_02pct": 29.038212112142077
+    },
+    "10min": {
+      "positive_rate": 53.66756460141674,
+      "avg_return": 0.019294964538829548,
+      "median_return": 0.03918396095839322,
+      "win_rate_01pct": 44.32106155841564,
+      "win_rate_02pct": 35.11024643320363
+    }
+  },
+  {
+    "name": "High Volatility (90th+) + Low Momentum (\u22645th percentile) - Oversold",
+    "sample_size": 188616,
+    "conditions": {
+      "volatility_percentile": {
+        "gt": 90
+      },
+      "momentum_percentile": {
+        "lt": 5
+      }
+    },
+    "2min": {
+      "positive_rate": 52.06557237986173,
+      "avg_return": 0.0016214856037631386,
+      "median_return": 0.009165248577829726,
+      "win_rate_01pct": 30.178775925690292,
+      "win_rate_02pct": 15.305700470797811
+    },
+    "5min": {
+      "positive_rate": 52.61960809263265,
+      "avg_return": 0.005286781243735988,
+      "median_return": 0.01745642009859741,
+      "win_rate_01pct": 37.61186749798532,
+      "win_rate_02pct": 24.692496924969248
+    },
+    "10min": {
+      "positive_rate": 52.996564448403106,
+      "avg_return": 0.011331433817040238,
+      "median_return": 0.026855263447563484,
+      "win_rate_01pct": 41.847987445391695,
+      "win_rate_02pct": 31.37803791831022
+    }
+  },
+  {
+    "name": "Vol 75-90th + Momentum Mom 80-99",
+    "sample_size": 111159,
+    "conditions": {
+      "volatility_percentile": [
+        75,
+        90
+      ],
+      "momentum_percentile": [
+        80,
+        99
+      ]
+    },
+    "2min": {
+      "positive_rate": 47.615577686017325,
+      "avg_return": 5.899661422892307e-05,
+      "median_return": -0.005844933038210181,
+      "win_rate_01pct": 17.934670157162262,
+      "win_rate_02pct": 6.015707230183791
+    },
+    "5min": {
+      "positive_rate": 47.59218776707239,
+      "avg_return": 0.00027556536236584373,
+      "median_return": -0.00980948846463512,
+      "win_rate_01pct": 26.06446621506131,
+      "win_rate_02pct": 13.090258098759437
+    },
+    "10min": {
+      "positive_rate": 47.515720724367796,
+      "avg_return": -0.0005128093683476262,
+      "median_return": -0.013824843937197082,
+      "win_rate_01pct": 31.20125226027582,
+      "win_rate_02pct": 19.337165681591234
+    }
+  },
+  {
+    "name": "Vol 95-100th + Momentum Mom 80-99",
+    "sample_size": 75912,
+    "conditions": {
+      "volatility_percentile": [
+        95,
+        100
+      ],
+      "momentum_percentile": [
+        80,
+        99
+      ]
+    },
+    "2min": {
+      "positive_rate": 47.47865950047424,
+      "avg_return": 0.002224754884930266,
+      "median_return": -0.012919210795303249,
+      "win_rate_01pct": 30.17704710717673,
+      "win_rate_02pct": 18.118347560333017
+    },
+    "5min": {
+      "positive_rate": 47.51817894404047,
+      "avg_return": 0.0011669373079619366,
+      "median_return": -0.018838184215557698,
+      "win_rate_01pct": 35.22368005058489,
+      "win_rate_02pct": 25.217356939614287
+    },
+    "10min": {
+      "positive_rate": 48.009537359047314,
+      "avg_return": 0.001394312158278248,
+      "median_return": -0.020733719938908074,
+      "win_rate_01pct": 38.63684265992202,
+      "win_rate_02pct": 30.444462008641587
+    }
+  },
+  {
+    "name": "Vol 90-95th + Momentum Mom 80-99",
+    "sample_size": 56787,
+    "conditions": {
+      "volatility_percentile": [
+        90,
+        95
+      ],
+      "momentum_percentile": [
+        80,
+        99
+      ]
+    },
+    "2min": {
+      "positive_rate": 47.38056245267403,
+      "avg_return": -0.0007042983103294382,
+      "median_return": -0.008910039756274983,
+      "win_rate_01pct": 22.894324405233593,
+      "win_rate_02pct": 10.111469174282846
+    },
+    "5min": {
+      "positive_rate": 47.276665433990175,
+      "avg_return": -0.000621804126579265,
+      "median_return": -0.014098379589684308,
+      "win_rate_01pct": 30.080828358603203,
+      "win_rate_02pct": 17.787521791959428
+    },
+    "10min": {
+      "positive_rate": 47.472132706429285,
+      "avg_return": -0.002564724105760497,
+      "median_return": -0.018535681186283594,
+      "win_rate_01pct": 34.58009755753958,
+      "win_rate_02pct": 23.93329459207213
+    }
+  },
+  {
+    "name": "High Volatility (90th+) + Strong Trend (Continuation)",
+    "sample_size": 106889,
+    "conditions": {
+      "volatility_percentile": {
+        "gt": 90
+      },
+      "trend_5min": {
+        "gt": 0.2
+      }
+    },
+    "2min": {
+      "positive_rate": 47.360345779266346,
+      "avg_return": 0.000589088864943622,
+      "median_return": -0.011815940551373761,
+      "win_rate_01pct": 27.943006296251248,
+      "win_rate_02pct": 15.663913031275436
+    },
+    "5min": {
+      "positive_rate": 46.84017999981289,
+      "avg_return": -0.004380494005203026,
+      "median_return": -0.02142638362555122,
+      "win_rate_01pct": 33.3495495326928,
+      "win_rate_02pct": 22.705797603120995
+    },
+    "10min": {
+      "positive_rate": 47.75327676374557,
+      "avg_return": -0.001920656391931167,
+      "median_return": -0.02050963838698499,
+      "win_rate_01pct": 37.36399442412222,
+      "win_rate_02pct": 28.5754380712702
+    }
+  },
+  {
+    "name": "Extreme Volatility (95th+) + High Momentum (\u226590th percentile) - Overbought",
+    "sample_size": 63051,
+    "conditions": {
+      "volatility_percentile": {
+        "gt": 95
+      },
+      "momentum_percentile": {
+        "gt": 90
+      }
+    },
+    "2min": {
+      "positive_rate": 47.179267577040804,
+      "avg_return": 0.0026350904181786775,
+      "median_return": -0.01483845004400305,
+      "win_rate_01pct": 30.39920064709521,
+      "win_rate_02pct": 18.60715928375442
+    },
+    "5min": {
+      "positive_rate": 47.266498548793834,
+      "avg_return": 0.0024107608852035525,
+      "median_return": -0.021525467553746257,
+      "win_rate_01pct": 35.234968517549284,
+      "win_rate_02pct": 25.457169592869267
+    },
+    "10min": {
+      "positive_rate": 47.69313730154954,
+      "avg_return": 0.002630412502800681,
+      "median_return": -0.024559565718142044,
+      "win_rate_01pct": 38.52912721447717,
+      "win_rate_02pct": 30.54352825490476
+    }
+  },
+  {
+    "name": "Vol 25-50th + Momentum Mom 80-99",
+    "sample_size": 12703,
+    "conditions": {
+      "volatility_percentile": [
+        25,
+        50
+      ],
+      "momentum_percentile": [
+        80,
+        99
+      ]
+    },
+    "2min": {
+      "positive_rate": 47.177832008187046,
+      "avg_return": 0.0003519522769708751,
+      "median_return": -0.004053001999110386,
+      "win_rate_01pct": 8.572778083917184,
+      "win_rate_02pct": 1.960166889711092
+    },
+    "5min": {
+      "positive_rate": 47.319530819491455,
+      "avg_return": 0.0017601487657392678,
+      "median_return": -0.006463064949243339,
+      "win_rate_01pct": 16.460678579863025,
+      "win_rate_02pct": 5.541997953239393
+    },
+    "10min": {
+      "positive_rate": 47.099110446351254,
+      "avg_return": 0.00294458435291187,
+      "median_return": -0.009845916015270628,
+      "win_rate_01pct": 22.593088246870817,
+      "win_rate_02pct": 10.367629693773123
+    }
+  },
+  {
+    "name": "Vol 10-25th + Momentum Mom 80-99",
+    "sample_size": 333,
+    "conditions": {
+      "volatility_percentile": [
+        10,
+        25
+      ],
+      "momentum_percentile": [
+        80,
+        99
+      ]
+    },
+    "2min": {
+      "positive_rate": 45.34534534534534,
+      "avg_return": -0.0028501061987709587,
+      "median_return": -0.00420771217468255,
+      "win_rate_01pct": 6.306306306306306,
+      "win_rate_02pct": 3.003003003003003
+    },
+    "5min": {
+      "positive_rate": 43.84384384384384,
+      "avg_return": -0.0050048064140071095,
+      "median_return": -0.011721937773992172,
+      "win_rate_01pct": 11.11111111111111,
+      "win_rate_02pct": 5.105105105105105
+    },
+    "10min": {
+      "positive_rate": 45.94594594594595,
+      "avg_return": -0.0020296369956111847,
+      "median_return": -0.010120576908402325,
+      "win_rate_01pct": 20.12012012012012,
+      "win_rate_02pct": 9.30930930930931
+    }
+  },
+  {
+    "name": "Low Volatility (\u226425th) + High Momentum (\u226580th percentile) - Breakout",
+    "sample_size": 232,
+    "conditions": {
+      "volatility_percentile": {
+        "lt": 25
+      },
+      "momentum_percentile": {
+        "gt": 80
+      }
+    },
+    "2min": {
+      "positive_rate": 43.96551724137931,
+      "avg_return": -0.0027240230891337745,
+      "median_return": -0.0077741784848555364,
+      "win_rate_01pct": 6.896551724137931,
+      "win_rate_02pct": 2.586206896551724
+    },
+    "5min": {
+      "positive_rate": 44.827586206896555,
+      "avg_return": -0.0011251012667158249,
+      "median_return": -0.011685942944417813,
+      "win_rate_01pct": 12.068965517241379,
+      "win_rate_02pct": 6.0344827586206895
+    },
+    "10min": {
+      "positive_rate": 47.41379310344828,
+      "avg_return": 0.0010756293685236919,
+      "median_return": -0.00645214792036012,
+      "win_rate_01pct": 21.120689655172413,
+      "win_rate_02pct": 9.913793103448276
+    }
+  }
+]

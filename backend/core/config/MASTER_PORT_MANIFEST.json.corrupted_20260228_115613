@@ -1,0 +1,110 @@
+{
+  "system_name": "REC.IO Trading System",
+  "created": "2025-01-27",
+  "description": "MASTER PORT MANIFEST - Single source of truth for ALL port assignments",
+  "core_services": {
+    "main_app": {
+      "port": 3000,
+      "description": "Main web application",
+      "status": "RUNNING"
+    },
+    "trade_manager": {
+      "port": 4000,
+      "description": "Trade management service",
+      "status": "RUNNING"
+    },
+    "trade_executor": {
+      "port": 8001,
+      "description": "Trade execution service",
+      "status": "RUNNING"
+    },
+    "active_trade_supervisor": {
+      "port": 6000,
+      "description": "Active trade monitoring",
+      "status": "RUNNING"
+    }
+  },
+  "watchdog_services": {
+    "kalshi_account_sync": {
+      "port": 8004,
+      "description": "Kalshi account synchronization",
+      "status": "RUNNING"
+    },
+    "kalshi_market_watchdog_hourly_btc": {
+      "port": 8005,
+      "description": "Kalshi BTC hourly market data monitoring",
+      "status": "RUNNING"
+    },
+    "kalshi_market_watchdog_hourly_eth": {
+      "port": 8011,
+      "description": "Kalshi ETH hourly market data monitoring",
+      "status": "RUNNING"
+    },
+    "kalshi_market_watchdog_15m_btc": {
+      "port": 8021,
+      "description": "Kalshi BTC 15m market data monitoring",
+      "status": "RUNNING"
+    },
+    "kalshi_market_watchdog_15m_eth": {
+      "port": 8022,
+      "description": "Kalshi ETH 15m market data monitoring",
+      "status": "RUNNING"
+    },
+    "strike_table_generator_hourly_btc": {
+      "port": 8014,
+      "description": "Strike table generator hourly BTC",
+      "status": "RUNNING"
+    },
+    "strike_table_generator_hourly_eth": {
+      "port": 8015,
+      "description": "Strike table generator hourly ETH",
+      "status": "RUNNING"
+    },
+    "strike_table_generator_hourly_spx": {
+      "port": 8016,
+      "description": "Strike table generator hourly SPX",
+      "status": "RUNNING"
+    },
+    "strike_table_generator_hourly_ndx": {
+      "port": 8017,
+      "description": "Strike table generator hourly NDX",
+      "status": "RUNNING"
+    },
+    "strike_table_generator_15m_btc": {
+      "port": 8023,
+      "description": "Strike table generator 15m BTC",
+      "status": "RUNNING"
+    },
+    "strike_table_generator_15m_eth": {
+      "port": 8024,
+      "description": "Strike table generator 15m ETH",
+      "status": "RUNNING"
+    },
+    "monitor_manager": {
+      "port": 8012,
+      "description": "Core monitor management system",
+      "status": "RUNNING"
+    }
+  },
+  "port_ranges": {
+    "safe_range_start": 8000,
+    "safe_range_end": 9000,
+    "description": "Safe port range avoiding system services. Supports up to ~500 monitors (monitor ID 10500) with current allocation scheme"
+  },
+  "monitor_process_ports": {
+    "start_port": 8013,
+    "description": "Dynamic port range for monitor-specific processes",
+    "auto_entry_supervisor_offset": 0,
+    "active_trade_supervisor_offset": 1,
+    "note": "Port calculation: start_port + ((monitor_id - 10000) * 2) + service_offset. Each monitor uses 2 consecutive ports."
+  },
+  "notes": {
+    "avoid_ports": [
+      5000,
+      7000,
+      9000,
+      10000
+    ],
+    "reason": "These ports conflict with macOS AirPlay, ControlCenter, and other system services"
+  }
+}

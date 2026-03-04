@@ -1,0 +1,92 @@
+{
+  "system_name": "REC.IO Trading System",
+  "created": "2025-01-27",
+  "description": "MASTER PORT MANIFEST - Single source of truth for ALL port assignments",
+  "core_services": {
+    "main_app": {
+      "port": 3000,
+      "description": "Main web application",
+      "status": "RUNNING"
+    },
+    "trade_manager": {
+      "port": 4000,
+      "description": "Trade management service",
+      "status": "RUNNING"
+    },
+    "trade_executor": {
+      "port": 8001,
+      "description": "Trade execution service",
+      "status": "RUNNING"
+    },
+    "active_trade_supervisor": {
+      "port": 6000,
+      "description": "Active trade monitoring",
+      "status": "RUNNING"
+    }
+  },
+  "watchdog_services": {
+    "kalshi_account_sync": {
+      "port": 8004,
+      "description": "Kalshi account synchronization",
+      "status": "RUNNING"
+    },
+    "kalshi_market_watchdog_btc": {
+      "port": 8005,
+      "description": "Kalshi BTC market data monitoring",
+      "status": "RUNNING"
+    },
+    "kalshi_market_watchdog_eth": {
+      "port": 8011,
+      "description": "Kalshi ETH market data monitoring",
+      "status": "RUNNING"
+    },
+    "monitor_manager": {
+      "port": 8012,
+      "description": "Core monitor management system",
+      "status": "RUNNING"
+    }
+  },
+  "port_ranges": {
+    "safe_range_start": 8000,
+    "safe_range_end": 9000,
+    "description": "Safe port range avoiding system services. Supports up to ~500 monitors (monitor ID 10500) with current allocation scheme"
+  },
+  "monitor_process_ports": {
+    "start_port": 8013,
+    "description": "Dynamic port range for monitor-specific processes",
+    "auto_entry_supervisor_offset": 0,
+    "active_trade_supervisor_offset": 1,
+    "note": "Port calculation: start_port + ((monitor_id - 10000) * 2) + service_offset. Each monitor uses 2 consecutive ports."
+  },
+  "notes": {
+    "avoid_ports": [
+      5000,
+      7000,
+      9000,
+      10000
+    ],
+    "reason": "These ports conflict with macOS AirPlay, ControlCenter, and other system services"
+  },
+  "monitor_instances": {
+    "0001_10032": {
+      "auto_entry_supervisor": 8077,
+      "active_trade_supervisor": 8078
+    },
+    "0001_10019": {
+      "auto_entry_supervisor": 8051,
+      "active_trade_supervisor": 8052
+    },
+    "0001_10026": {
+      "auto_entry_supervisor": 8065,
+      "active_trade_supervisor": 8066
+    },
+    "0001_10031": {
+      "auto_entry_supervisor": 8075,
+      "active_trade_supervisor": 8076
+    },
+    "0001_10033": {
+      "auto_entry_supervisor": 8079,
+      "active_trade_supervisor": 8080
+    }
+  }
+}
