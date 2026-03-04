@@ -614,11 +614,17 @@ def subaccounts_update(cursor, portfolio_value):
             UPDATE users.subaccounts_0001 SET balance = %s WHERE subaccount = 'Cash Transfer'
         """, (new_cash_transfer_balance,))
         new_mtb_balance = portfolio_value - new_cash_transfer_balance
+        # New base_value = old base_value raised by (target_pnl_pct - transfer_amt), not set to new_mtb_balance
+        base_step_pct = target_pnl_pct - transfer_amt
+        new_base_value = int(round(base_value * (1 + base_step_pct)))
+        post_transfer_realized_pnl = new_mtb_balance - new_base_value
+        post_transfer_ratio = (new_mtb_balance - new_base_value) / new_base_value if new_base_value else 0
+        post_transfer_realized_pnl_pct = float(int(post_transfer_ratio * 10000)) / 10000.0
         cursor.execute("""
             UPDATE users.subaccounts_0001
-            SET balance = %s, base_value = %s, realized_pnl = 0, realized_pnl_pct = 0
+            SET balance = %s, base_value = %s, realized_pnl = %s, realized_pnl_pct = %s
             WHERE subaccount = 'Master Trading Bankroll'
-        """, (new_mtb_balance, new_mtb_balance))
+        """, (new_mtb_balance, new_base_value, post_transfer_realized_pnl, post_transfer_realized_pnl_pct))
         master_bankroll_balance = new_mtb_balance
         transfer_triggered = True
         # Record the transfer in users.transfers_0001
@@ -627,8 +633,10 @@ def subaccounts_update(cursor, portfolio_value):
             INSERT INTO users.transfers_0001 (timestamp, type, "from", "to", amount, initiated)
             VALUES (%s, %s, %s, %s, %s, %s)
         """, (transfer_timestamp_est, "internal", "Master Trading Bankroll", "Cash Transfer", transfer_amount, "automatic"))
-        print(f"💾 Internal transfer: {transfer_amount} to Cash Transfer (target_pnl_pct={target_pnl_pct} reached). MTB base_value reset to {new_mtb_balance}, PnL reset to 0. Recorded in users.transfers_0001.")
-    print(f"💾 PRIMARY={portfolio_value}, Master Trading Bankroll={master_bankroll_balance} (Cash Transfer={new_cash_transfer_balance if transfer_triggered else cash_transfer_balance}), realized_pnl={0 if transfer_triggered else realized_pnl}, realized_pnl_pct={0 if transfer_triggered else realized_pnl_pct} (users.subaccounts_0001)")
+        print(f"💾 Internal transfer: {transfer_amount} to Cash Transfer (target_pnl_pct={target_pnl_pct} reached). MTB balance={new_mtb_balance}, base_value={new_base_value} (stepped by {base_step_pct}), realized_pnl={post_transfer_realized_pnl}. Recorded in users.transfers_0001.")
+    _pnl = post_transfer_realized_pnl if transfer_triggered else realized_pnl
+    _pnl_pct = post_transfer_realized_pnl_pct if transfer_triggered else realized_pnl_pct
+    print(f"💾 PRIMARY={portfolio_value}, Master Trading Bankroll={master_bankroll_balance} (Cash Transfer={new_cash_transfer_balance if transfer_triggered else cash_transfer_balance}), realized_pnl={_pnl}, realized_pnl_pct={_pnl_pct} (users.subaccounts_0001)")
     return (master_bankroll_balance, transfer_triggered)
 
 
