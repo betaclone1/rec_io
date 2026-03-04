@@ -373,6 +373,74 @@ def init_database():
             );
         """)
         
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users.account_history_0001 (
+                id SERIAL PRIMARY KEY,
+                entry_type VARCHAR(20) NOT NULL,
+                amount INTEGER NOT NULL,
+                fee INTEGER DEFAULT 0,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                updated_at TIMESTAMP WITH TIME ZONE,
+                status VARCHAR(50),
+                returned_amount INTEGER DEFAULT 0,
+                deposit_type VARCHAR(50),
+                immediate_amount INTEGER,
+                immediate_status VARCHAR(50),
+                synced_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT account_history_0001_created_type_amount_key UNIQUE (created_at, entry_type, amount)
+            );
+        """)
+        # Ensure account_history_0001 columns and constraint exist (for tables created manually)
+        cursor.execute("""
+            DO $$
+            DECLARE
+                col TEXT;
+                cols_add TEXT[] := ARRAY['entry_type', 'amount', 'fee', 'created_at', 'updated_at', 'status', 'returned_amount', 'deposit_type', 'immediate_amount', 'immediate_status', 'synced_at'];
+                col_defs TEXT[] := ARRAY[
+                    'VARCHAR(20) NOT NULL', 'INTEGER NOT NULL', 'INTEGER DEFAULT 0', 'TIMESTAMP WITH TIME ZONE NOT NULL',
+                    'TIMESTAMP WITH TIME ZONE', 'VARCHAR(50)', 'INTEGER DEFAULT 0', 'VARCHAR(50)', 'INTEGER', 'VARCHAR(50)',
+                    'TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP'
+                ];
+                i INT;
+            BEGIN
+                FOR i IN 1..array_length(cols_add, 1) LOOP
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'users' AND table_name = 'account_history_0001' AND column_name = cols_add[i]) THEN
+                        EXECUTE format('ALTER TABLE users.account_history_0001 ADD COLUMN %I ' || col_defs[i], cols_add[i]);
+                    END IF;
+                END LOOP;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'account_history_0001_created_type_amount_key') THEN
+                    ALTER TABLE users.account_history_0001 ADD CONSTRAINT account_history_0001_created_type_amount_key UNIQUE (created_at, entry_type, amount);
+                END IF;
+            EXCEPTION WHEN OTHERS THEN
+                NULL;
+            END $$;
+        """)
+        # Add status and external_transfer_id to transfers_0001 if table exists
+        cursor.execute("""
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'users' AND table_name = 'transfers_0001') THEN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'users' AND table_name = 'transfers_0001' AND column_name = 'status') THEN
+                        ALTER TABLE users.transfers_0001 ADD COLUMN status VARCHAR(50);
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'users' AND table_name = 'transfers_0001' AND column_name = 'external_transfer_id') THEN
+                        ALTER TABLE users.transfers_0001 ADD COLUMN external_transfer_id INTEGER;
+                    END IF;
+                END IF;
+            END $$;
+        """)
+        # Add kalshi_user_id to user_info_0001 if table exists (MASTER_DB_SCHEMA_REFERENCE)
+        cursor.execute("""
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'users' AND table_name = 'user_info_0001') THEN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'users' AND table_name = 'user_info_0001' AND column_name = 'kalshi_user_id') THEN
+                        ALTER TABLE users.user_info_0001 ADD COLUMN kalshi_user_id VARCHAR(50);
+                    END IF;
+                END IF;
+            END $$;
+        """)
+        
         # Create sequence for 5-digit IDs starting with 10001
         cursor.execute("""
             CREATE SEQUENCE IF NOT EXISTS users.monitor_list_0001_id_seq

@@ -1807,6 +1807,19 @@ async def get_kalshi_snapshot():
         return {"markets": []}
 
 # API endpoints for account data
+@app.post("/api/account/sync")
+async def trigger_account_sync():
+    """Trigger a full account retrieval cycle from kalshi_account_sync (balance, subaccounts, account history). Runs in background; returns immediately."""
+    import threading
+    def _run_sync():
+        try:
+            from backend.kalshi_account_sync_ws import sync_balance
+            sync_balance()
+        except Exception as e:
+            print(f"account/sync: sync_balance failed: {e}")
+    threading.Thread(target=_run_sync, daemon=True).start()
+    return {"ok": True}
+
 @app.get("/api/account/balance")
 async def get_account_balance(mode: str = "prod"):
     """Get account balance from PostgreSQL database."""
@@ -2622,7 +2635,6 @@ async def get_strike_table_mobile(request: Request):
             user="rec_io_user",
             password="rec_io_password"
         )
-        
         with conn.cursor() as cursor:
             # Get strike table data from PostgreSQL
             cursor.execute(f"""
@@ -3399,7 +3411,6 @@ async def get_live_probabilities(request: Request):
             user="rec_io_user",
             password="rec_io_password"
         )
-        
         with conn.cursor() as cursor:
             # Get probability data from PostgreSQL strike table
             cursor.execute(f"""
@@ -3471,9 +3482,7 @@ async def get_strike_table(symbol: str, request: Request):
             user="rec_io_user",
             password="rec_io_password"
         )
-        
         with conn.cursor() as cursor:
-            # Get header data
             cursor.execute(f"""
                 SELECT 
                     symbol,
@@ -3487,13 +3496,9 @@ async def get_strike_table(symbol: str, request: Request):
                     FROM live_data.{table_name}
                 LIMIT 1
             """)
-            
             header_data = cursor.fetchone()
-            
             if not header_data:
                 return {"error": f"No strike table data found for {symbol}"}
-            
-            # Get all strike rows
             cursor.execute(f"""
                 SELECT 
                     strike,
@@ -3567,7 +3572,6 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
             user="rec_io_user",
             password="rec_io_password"
         )
-        
         with conn.cursor() as cursor:
             # Hourly: ttc_hourly/probability_hourly; 15m: ttc_15m/probability_15m (same column set).
             ttc_column = "ttc_15m" if market == "15m" else "ttc_hourly"
@@ -3585,13 +3589,9 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
                     FROM live_data.{table_name}
                 LIMIT 1
             """)
-            
             header_data = cursor.fetchone()
-            
             if not header_data:
                 return {"error": f"No strike table data found for {symbol}"}
-            
-            # Get all strike rows
             cursor.execute(f"""
                 SELECT 
                     strike,
@@ -5665,10 +5665,8 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
             FROM users.monitor_list_{user_number}
             WHERE id = %s AND status = 'active'
         """, (monitor_id,))
-        
         result = cursor.fetchone()
         conn.close()
-        
         if result:
             monitor_id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade, paper_trade, market = result
             mkt = (market or "").strip().lower()

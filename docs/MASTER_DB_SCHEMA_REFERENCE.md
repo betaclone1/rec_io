@@ -10309,7 +10309,7 @@ Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m va
 
 ### Table: `users.subaccounts_0001`
 
-Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Master Trading Bankroll, Cash Transfer) sum to PRIMARY. Updated by kalshi_account_sync when positions = 0. Balances in cents.
+Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Master Trading Bankroll, Cash Transfer) sum to PRIMARY. Updated by kalshi_account_sync when positions = 0; also on external deposits (add to Cash Transfer + PRIMARY) and external withdrawals (subtract from Cash Transfer, floor at 0, and reduce PRIMARY by same amount). Balances in cents.
 
 #### Columns
 
@@ -10660,7 +10660,7 @@ None as of last check. Add the same indexes as `users.trades_0001` (e.g. on `dat
 
 ### Table: `users.transfers_0001`
 
-Log of transfers: internal (between subaccounts, e.g. Master Trading Bankroll â†’ Cash Transfer) or external (to bank; not used yet). Rows created by kalshi_account_sync when it runs an internal transfer, or (future) when a manual transfer is recorded.
+Log of transfers: internal (between subaccounts, e.g. Master Trading Bankroll â†’ Cash Transfer) or external (deposits/withdrawals from Kalshi). Internal rows are created by kalshi_account_sync when it runs an internal transfer. External rows are created when new entries appear in users.account_history_0001 (_ensure_external_transfers_from_account_history in kalshi_account_sync_ws.py). External deposits have positive amount; external withdrawals have negative amount. Status for external transfers is refreshed from account_history on each sync so later status changes (e.g. withdrawal pending â†’ applied) are reflected via external_transfer_id.
 
 #### Columns
 
@@ -10668,11 +10668,13 @@ Log of transfers: internal (between subaccounts, e.g. Master Trading Bankroll â†
 |-------------|-----------|----------|---------|-------------|
 | `id` | `integer(32)` | NO | nextval('users.transfers_0001_id_seq'::regclass) | |
 | `timestamp` | `text` | NO | - | When the transfer occurred; EST with date (e.g. YYYY-MM-DD HH:MM:SS) |
-| `type` | `text` | YES | - | `internal` (between subaccounts) or `external` (to bank; future) |
-| `from` | `text` | YES | - | Source subaccount name (e.g. Master Trading Bankroll) |
-| `to` | `text` | YES | - | Destination subaccount name (e.g. Cash Transfer) |
-| `amount` | `integer(32)` | YES | - | Transfer amount in cents |
-| `initiated` | `text` | YES | - | `automatic` (script) or `manual` (future) |
+| `type` | `text` | YES | - | `internal` (between subaccounts) or `external` (deposit/withdrawal from Kalshi) |
+| `from` | `text` | YES | - | Source (e.g. Master Trading Bankroll, Cash Transfer; external deposits: deposit type e.g. Crypto, ACH; external withdrawals: Cash Transfer) |
+| `to` | `text` | YES | - | Destination (e.g. Cash Transfer for deposits; ACH for external withdrawals) |
+| `amount` | `integer(32)` | YES | - | Transfer amount in cents. External deposits: positive (amount âˆ’ fee). External withdrawals: negative. |
+| `initiated` | `text` | YES | - | `automatic` (script) or `manual` |
+| `status` | `character varying(50)` | YES | - | For external: from account_history.status (e.g. applied, pending). Refreshed from account_history on each sync so withdrawal status updates are reflected. |
+| `external_transfer_id` | `integer` | YES | - | For external only: id of users.account_history_0001 row. Links transfer to account history so status (and future fields) can be updated when Kalshi updates the entry. |
 
 #### Constraints
 
@@ -10687,6 +10689,45 @@ Log of transfers: internal (between subaccounts, e.g. Master Trading Bankroll â†
 
 ---
 
+### Table: `users.account_history_0001`
+
+Kalshi v1 account/history entries (deposits and withdrawals) synced from the API. Populated by kalshi_account_sync_ws (sync_account_history when balance is synced). One row per Deposit or Withdrawal; columns match the API response.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer` | NO | nextval('users.account_history_0001_id_seq'::regclass) | |
+| `entry_type` | `character varying(20)` | NO | - | `Deposit` or `Withdrawal` |
+| `amount` | `integer` | NO | - | Amount in cents |
+| `fee` | `integer` | YES | 0 | Fee in cents |
+| `created_at` | `timestamp with time zone` | NO | - | From Kalshi API |
+| `updated_at` | `timestamp with time zone` | YES | - | From Kalshi API |
+| `status` | `character varying(50)` | YES | - | e.g. `applied` |
+| `returned_amount` | `integer` | YES | 0 | Returned amount in cents (withdrawals) |
+| `deposit_type` | `character varying(50)` | YES | - | e.g. `crypto`, `ach` (deposits only; recorded in transfers as Crypto, ACH) |
+| `immediate_amount` | `integer` | YES | - | Deposits only |
+| `immediate_status` | `character varying(50)` | YES | - | Deposits only |
+| `synced_at` | `timestamp with time zone` | YES | CURRENT_TIMESTAMP | When the row was inserted/updated by sync script |
+
+#### Constraints
+
+- **Primary Key:** `account_history_0001_pkey` on `id`
+- **Unique:** `account_history_0001_created_type_amount_key` on `(created_at, entry_type, amount)` for upsert deduplication
+
+#### Indexes
+
+- `account_history_0001_pkey`
+  ```sql
+  CREATE UNIQUE INDEX account_history_0001_pkey ON users.account_history_0001 USING btree (id)
+  ```
+- `account_history_0001_created_type_amount_key` (unique constraint backing index)
+  ```sql
+  CREATE UNIQUE INDEX account_history_0001_created_type_amount_key ON users.account_history_0001 USING btree (created_at, entry_type, amount)
+  ```
+
+---
+
 ### Table: `users.user_info_0001`
 
 #### Columns
@@ -10695,6 +10736,7 @@ Log of transfers: internal (between subaccounts, e.g. Master Trading Bankroll â†
 |-------------|-----------|----------|---------|-------------|
 | `user_no` | `character varying(10)` | NO | - | |
 | `user_id` | `character varying(50)` | NO | - | |
+| `kalshi_user_id` | `character varying(50)` | YES | - | Kalshi API user UUID (e.g. for account/history and other v1 endpoints). |
 | `email` | `character varying(255)` | YES | - | |
 | `first_name` | `character varying(50)` | YES | - | |
 | `last_name` | `character varying(50)` | YES | - | |
