@@ -8850,7 +8850,8 @@ Kalshi 15-minute market data for ETH. One row per current 15m window; truncated 
 | `symbol` | `character varying(10)` | YES | - | |
 | `market` | `text` | YES | 'hourly' | Interval: 'hourly' or '15m' |
 | `current_price` | `numeric(10,2)` | YES | - | |
-| `ttc_seconds` | `integer(32)` | YES | - | |
+| `ttc_hourly` | `integer(32)` | YES | - | Time to close for the hourly contract, in seconds. |
+| `ttc_15m` | `integer(32)` | YES | - | Time to close for the next 15-minute boundary, in seconds (simulated cycles). |
 | `broker` | `character varying(20)` | YES | - | |
 | `event_ticker` | `character varying(50)` | YES | - | |
 | `market_title` | `text` | YES | - | |
@@ -8859,7 +8860,8 @@ Kalshi 15-minute market data for ETH. One row per current 15m window; truncated 
 | `strike` | `integer(32)` | YES | - | |
 | `buffer` | `numeric(10,2)` | YES | - | |
 | `buffer_pct` | `numeric(5,2)` | YES | - | |
-| `probability` | `numeric(5,2)` | YES | - | |
+| `probability_hourly` | `numeric(5,2)` | YES | - | Hourly probability from TTC×buffer×momentum lookup. |
+| `probability_15m` | `numeric(5,2)` | YES | - | 15m probability from TTC×buffer×momentum lookup (simulated cycles). |
 | `yes_ask` | `numeric(5,2)` | YES | - | |
 | `no_ask` | `numeric(5,2)` | YES | - | |
 | `yes_diff` | `numeric(5,2)` | YES | - | |
@@ -8914,7 +8916,7 @@ Kalshi 15-minute market data for ETH. One row per current 15m window; truncated 
 | `symbol` | `character varying(10)` | YES | - | |
 | `market` | `text` | YES | 'hourly' | Interval: 'hourly' or '15m' |
 | `current_price` | `numeric(10,2)` | YES | - | |
-| `ttc_seconds` | `integer(32)` | YES | - | |
+| `ttc_hourly` | `integer(32)` | YES | - | Time to close for the hourly contract, in seconds. |
 | `broker` | `character varying(20)` | YES | - | |
 | `event_ticker` | `character varying(50)` | YES | - | |
 | `market_title` | `text` | YES | - | |
@@ -8923,7 +8925,7 @@ Kalshi 15-minute market data for ETH. One row per current 15m window; truncated 
 | `strike` | `integer(32)` | YES | - | |
 | `buffer` | `numeric(10,2)` | YES | - | |
 | `buffer_pct` | `numeric(5,2)` | YES | - | |
-| `probability` | `numeric(5,2)` | YES | - | |
+| `probability_hourly` | `numeric(5,2)` | YES | - | Hourly probability from TTC×buffer×momentum lookup. |
 | `yes_ask` | `numeric(5,2)` | YES | - | |
 | `no_ask` | `numeric(5,2)` | YES | - | |
 | `yes_diff` | `numeric(5,2)` | YES | - | |
@@ -9104,21 +9106,21 @@ Kalshi 15-minute market data for ETH. One row per current 15m window; truncated 
 
 ### Table: `live_data.strike_table_15m_btc`
 
-15-minute strike table for BTC. Single strike per table; `market` = '15m'. Same column set as `strike_table_hourly_btc` with `market` TEXT DEFAULT '15m'.
+15-minute strike table for BTC. Single strike per table; `market` = '15m'. Same column set as `strike_table_hourly_btc`: `ttc_hourly`, `ttc_15m`, `probability_hourly`, `probability_15m`. For 15m tables `ttc_hourly` and `probability_hourly` are NULL; readers use `ttc_15m` and `probability_15m` only. Legacy columns `ttc_seconds` and `probability` have been removed.
 
 #### Columns
 
-Same as `live_data.strike_table_hourly_btc` with the addition of `market` (TEXT, default '15m') after `symbol`.
+Same as `live_data.strike_table_hourly_btc` (including `ttc_hourly`, `ttc_15m`, `probability_hourly`, `probability_15m`); `market` TEXT DEFAULT '15m'. 15m-specific values are in `ttc_15m` and `probability_15m`.
 
 ---
 
 ### Table: `live_data.strike_table_15m_eth`
 
-15-minute strike table for ETH. Single strike per table; `market` = '15m'. Same column set as `strike_table_hourly_eth` with `market` TEXT DEFAULT '15m'.
+15-minute strike table for ETH. Single strike per table; `market` = '15m'. Same column set as hourly; 15m readers use `ttc_15m` and `probability_15m` only. Legacy `ttc_seconds` and `probability` removed.
 
 #### Columns
 
-Same as `live_data.strike_table_hourly_eth` with the addition of `market` (TEXT, default '15m') after `symbol`.
+Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m values in `ttc_15m` and `probability_15m`.
 
 ---
 
@@ -10413,6 +10415,8 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 
 ### Table: `users.trades_0001`
 
+**Schema sync:** When changing this table (columns, types, indexes), apply the same changes to `users.trades_simulated_0001` so both stay in sync.
+
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
@@ -10462,8 +10466,8 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `order_id_close` | `text` | YES | - | |
 | `high_price` | `numeric(10,4)` | YES | NULL::numeric | |
 | `low_price` | `numeric(10,4)` | YES | NULL::numeric | |
-| `hour_idx` | `smallint(16)` | YES | - | |
-| `weekly_cycle` | `smallint(16)` | YES | - | |
+| `hour_idx` | `smallint(16)` | YES | - | Hour of contract (1–24). |
+| `weekly_cycle` | `numeric(5,1)` | YES | - | Day+hour bucket with 15m specificity: integer part = 1–168 (Sunday 12am … Saturday 11pm); decimal: hourly = .4 (fourth quarter), 15m = .0 ( :00), .1 ( :15), .2 ( :30), .3 ( :45). Cycle performance logic uses FLOOR(weekly_cycle). |
 | `loss_prevention` | `boolean` | YES | false | |
 | `multiplier` | `numeric(10,2)` | YES | - | |
 | `price_spread` | `numeric(6,4)` | YES | - | |
@@ -10556,6 +10560,83 @@ WHERE t.monitor = cs.monitor
   ```sql
   CREATE INDEX trades_0001_weekly_cycle_idx ON users.trades_0001 USING btree (weekly_cycle)
   ```
+
+---
+
+### Table: `users.trades_simulated_0001`
+
+**Maintenance note:** This table was created as a copy of `users.trades_0001` for storing simulated 15m-cycle trades (e.g. from the simulated path on hourly strike tables). **Any future schema changes to `users.trades_0001` (new columns, type changes, indexes, constraints) must be applied to `users.trades_simulated_0001` as well** so the two tables stay in sync.
+
+Same column set as `users.trades_0001` (see that table for column descriptions). Currently empty; will be written to by the simulated-trade path. As of the last DB check, this table has no primary key or indexes; add them to mirror `trades_0001` when needed (e.g. `id` as primary key, indexes on `date`, `status`, `ticker`, etc.).
+
+#### Columns (from DB)
+
+| Column | Type |
+|--------|------|
+| `id` | integer |
+| `status` | text |
+| `date` | text |
+| `time` | text |
+| `symbol` | text |
+| `market` | text |
+| `trade_strategy` | text |
+| `contract` | text |
+| `strike` | text |
+| `side` | text |
+| `prob` | real |
+| `diff` | text |
+| `buy_price` | real |
+| `position` | integer |
+| `sell_price` | real |
+| `closed_at` | text |
+| `fees` | real |
+| `pnl` | real |
+| `symbol_open` | real |
+| `symbol_close` | real |
+| `momentum` | integer |
+| `win_loss` | text |
+| `ticker` | text |
+| `ticket_id` | text |
+| `market_id` | text |
+| `momentum_percentile` | real |
+| `entry_method` | text |
+| `close_method` | text |
+| `created_at` | timestamp with time zone |
+| `updated_at` | timestamp with time zone |
+| `test_filter` | boolean |
+| `notes` | text |
+| `monitor` | text |
+| `bankroll` | real |
+| `ret_pct` | real |
+| `momentum_5s_avg` | numeric(10,4) |
+| `order_id` | text |
+| `order_id_open` | text |
+| `order_id_close` | text |
+| `high_price` | numeric(10,4) |
+| `low_price` | numeric(10,4) |
+| `hour_idx` | smallint |
+| `weekly_cycle` | numeric(5,1) |
+| `loss_prevention` | boolean |
+| `multiplier` | numeric(10,2) |
+| `price_spread` | numeric(6,4) |
+| `volatility_percentile` | numeric(5,1) |
+| `paper_trade` | boolean |
+| `cooldown_timer` | integer |
+| `monitor_confirmed` | boolean |
+| `cycle_win_loss` | text |
+| `cycle_pnl` | real |
+| `cycle_ret_pct` | real |
+| `volatility` | numeric(10,4) |
+| `movement` | numeric(10,4) |
+| `movement_percentile` | numeric(5,1) |
+
+#### Constraints
+
+None defined as of last check. Add primary key on `id` (and any other constraints) to match `trades_0001` when needed.
+
+#### Indexes
+
+None as of last check. Add the same indexes as `users.trades_0001` (e.g. on `date`, `status`, `ticker`, `order_id_open`, `order_id_close`, `symbol`, `ticket_id`, `weekly_cycle`) when the table is used.
 
 ---
 

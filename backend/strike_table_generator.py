@@ -425,7 +425,7 @@ class StrikeTableGenerator:
             # Create live_data schema
             cursor.execute("CREATE SCHEMA IF NOT EXISTS live_data")
             
-            # Create strike table (hourly or 15m)
+            # Create strike table (hourly or 15m). Same column set: ttc_hourly, ttc_15m, probability_hourly, probability_15m.
             table_name = self._strike_table_name()
             strike_table_sql = f"""
             CREATE TABLE IF NOT EXISTS live_data.{table_name} (
@@ -434,7 +434,8 @@ class StrikeTableGenerator:
                 symbol VARCHAR(10),
                 market TEXT,
                 current_price DECIMAL(10,2),
-                ttc_seconds INTEGER,
+                ttc_hourly INTEGER,
+                ttc_15m INTEGER,
                 broker VARCHAR(20),
                 event_ticker VARCHAR(50),
                 market_title TEXT,
@@ -443,7 +444,8 @@ class StrikeTableGenerator:
                 strike INTEGER,
                 buffer DECIMAL(10,2),
                 buffer_pct DECIMAL(5,2),
-                probability DECIMAL(5,2),
+                probability_hourly DECIMAL(5,2),
+                probability_15m DECIMAL(5,2),
                 yes_ask DECIMAL(5,2),
                 no_ask DECIMAL(5,2),
                 yes_ask_dollars TEXT,
@@ -694,17 +696,7 @@ class StrikeTableGenerator:
         try:
             from datetime import datetime, timedelta
             if self.interval == "15m":
-                import pytz
-                est = pytz.timezone("America/New_York")
-                now = datetime.now(est)
-                minute = now.minute
-                # Next 15m boundary: :00, :15, :30, :45
-                next_min = ((minute // 15) + 1) * 15
-                if next_min >= 60:
-                    next_boundary = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-                else:
-                    next_boundary = now.replace(minute=next_min, second=0, microsecond=0)
-                ttc_seconds = int((next_boundary - now).total_seconds())
+                ttc_seconds = self._seconds_to_next_15m_boundary_est()
             else:
                 now = datetime.now()
                 next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
@@ -712,6 +704,24 @@ class StrikeTableGenerator:
             return max(0, ttc_seconds)
         except Exception as e:
             logger.warning(f"⚠️ Error calculating TTC, using default: {e}")
+            return 300
+
+    def _seconds_to_next_15m_boundary_est(self) -> int:
+        """Seconds until the next 15-minute boundary in EST (:00, :15, :30, :45). Used for ttc_15m column."""
+        try:
+            from datetime import datetime, timedelta
+            import pytz
+            est = pytz.timezone("America/New_York")
+            now = datetime.now(est)
+            minute = now.minute
+            next_min = ((minute // 15) + 1) * 15
+            if next_min >= 60:
+                next_boundary = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            else:
+                next_boundary = now.replace(minute=next_min, second=0, microsecond=0)
+            return max(0, int((next_boundary - now).total_seconds()))
+        except Exception as e:
+            logger.warning(f"⚠️ Error calculating 15m TTC, using default: {e}")
             return 300
     
     def generate_strike_table(self) -> bool:
@@ -736,10 +746,11 @@ class StrikeTableGenerator:
             market_data = market_info["market_data"]
             logger.info(f"✅ Got market data - Price: ${current_price:,.2f}, Momentum: {momentum_percentile:.1f}")
             
-            # Calculate TTC
+            # Calculate TTC (hourly or 15m depending on interval) and always 15m boundary for ttc_15m column
             ttc_seconds = self.calculate_ttc_seconds(market_data["strike_date"])
+            ttc_15m_seconds = self._seconds_to_next_15m_boundary_est()
             
-            logger.info(f"📊 Current data - Price: ${current_price:,.2f}, TTC: {ttc_seconds}s, Momentum Percentile: {momentum_percentile:.1f}")
+            logger.info(f"📊 Current data - Price: ${current_price:,.2f}, TTC: {ttc_seconds}s, TTC_15m: {ttc_15m_seconds}s, Momentum Percentile: {momentum_percentile:.1f}")
             
             # Get available market strikes
             markets = market_data.get("markets", [])
@@ -749,18 +760,27 @@ class StrikeTableGenerator:
                 if floor_strike:
                     market_strike = int(float(floor_strike) + 0.01)
                     available_strikes.append(market_strike)
-            if not available_strikes:
-                raise ValueError("No valid strikes found in market data")
-            available_strikes.sort(key=lambda x: abs(x - current_price))
+
             if self.interval == "15m":
-                # Single strike only; strike_tier 0
+                # Single strike only; strike_tier 0.
+                # For 15m we do NOT depend on Kalshi strikes existing; if none are usable,
+                # synthesize a strike from the current price.
+                if available_strikes:
+                    available_strikes.sort(key=lambda x: abs(x - current_price))
+                    single = available_strikes[0]
+                else:
+                    single = int(round(current_price))
+                    logger.warning(f"15m: no valid strikes from market data, using synthetic strike {single} based on current_price {current_price}")
+
                 max_buffer = self.calculator.max_buffer
-                single = available_strikes[0]
                 if abs(current_price - single) > max_buffer:
                     logger.warning(f"15m strike {single} outside lookup buffer {max_buffer}, using anyway")
                 strikes = [single]
-                logger.info(f"🎯 Processing 1 strike (15m) from market data: {single}")
+                logger.info(f"🎯 Processing 1 strike (15m): {single}")
             else:
+                if not available_strikes:
+                    raise ValueError("No valid strikes found in market data")
+                available_strikes.sort(key=lambda x: abs(x - current_price))
                 max_buffer = self.calculator.max_buffer
                 filtered_strikes = [s for s in available_strikes if abs(current_price - s) <= max_buffer]
                 max_strikes = min(21, len(filtered_strikes))
@@ -776,6 +796,7 @@ class StrikeTableGenerator:
             cursor = conn.cursor()
             
             table_name = self._strike_table_name()
+            # All strike tables use ttc_hourly, ttc_15m, probability_hourly, probability_15m (15m tables leave hourly cols NULL).
             # Clear ALL previous strike table data - only keep current iteration
             try:
                 cursor.execute(f"DELETE FROM live_data.{table_name}")
@@ -793,21 +814,27 @@ class StrikeTableGenerator:
                     buffer = abs(current_price - strike)
                     buffer_pct = (buffer / current_price) * 100
                     
-                    # Get probability from lookup table
+                    # Probability lookups: hourly uses both TTCs; 15m uses only ttc_15m (same as probability_15m).
                     pos_prob, neg_prob = self.calculator.get_probability(
                         ttc_seconds, int(buffer), momentum_bucket, conn
                     )
-                    
-                    # Handle case where no probability found
-                    if pos_prob is None or neg_prob is None:
-                        logger.warning(f"⚠️ No probability found for strike {strike}, skipping")
-                        continue
-                    
-                    # Determine probability based on strike position
                     if strike < current_price:
                         probability = pos_prob
                     else:
                         probability = neg_prob
+                    if pos_prob is None or neg_prob is None:
+                        logger.warning(f"⚠️ No probability found for strike {strike}, skipping")
+                        continue
+                    
+                    pos_prob_15m, neg_prob_15m = self.calculator.get_probability(
+                        ttc_15m_seconds, int(buffer), momentum_bucket, conn
+                    )
+                    if strike < current_price:
+                        probability_15m = pos_prob_15m if pos_prob_15m is not None else None
+                    else:
+                        probability_15m = neg_prob_15m if neg_prob_15m is not None else None
+                    if self.interval == "15m":
+                        probability = probability_15m or probability  # 15m row uses 15m probability for diff calc
                     
                     # Get market data for this strike
                     yes_ask = None
@@ -879,21 +906,23 @@ class StrikeTableGenerator:
                     # 15m: strike_tier 0; hourly: from market_data
                     strike_tier_val = 0 if self.interval == "15m" else market_data.get("strike_tier")
                     market_val = "15m" if self.interval == "15m" else "hourly"
-                    # Insert into database
+                    ttc_hourly_val = ttc_seconds if self.interval == "hourly" else None
+                    prob_hourly_val = probability if self.interval == "hourly" else None
+                    # Insert: all tables use ttc_hourly, ttc_15m, probability_hourly, probability_15m (15m leaves hourly NULL)
                     cursor.execute(f"""
                     INSERT INTO live_data.{table_name}
-                    (symbol, market, current_price, ttc_seconds, broker, event_ticker, market_title,
-                     strike_tier, market_status, strike, buffer, buffer_pct, probability,
+                    (symbol, market, current_price, ttc_hourly, ttc_15m, broker, event_ticker, market_title,
+                     strike_tier, market_status, strike, buffer, buffer_pct, probability_hourly, probability_15m,
                      yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
                      yes_price_spread, no_price_spread, yes_diff, no_diff, volume, ticker, active_side,
                      momentum_weighted_score, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile,
                      timestamp, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
-                        self.symbol.upper(), market_val, current_price, ttc_seconds, "Kalshi",
+                        self.symbol.upper(), market_val, current_price, ttc_hourly_val, ttc_15m_seconds, "Kalshi",
                         market_data.get("event_ticker"), market_title,
                         strike_tier_val, market_data.get("market_status"),
-                        strike, buffer, buffer_pct, probability,
+                        strike, buffer, buffer_pct, prob_hourly_val, probability_15m,
                         yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
                         yes_price_spread, no_price_spread, yes_diff, no_diff,
                         volume, ticker, active_side, momentum_score, momentum_percentile,
@@ -943,10 +972,13 @@ class StrikeTableGenerator:
             if not latest_timestamp:
                 return None
 
-            # Get all data for the latest timestamp
+            # Get all data for the latest timestamp. 15m tables use ttc_15m/probability_15m; hourly use ttc_hourly/probability_hourly.
+            ttc_col = "ttc_15m" if self.interval == "15m" else "ttc_hourly"
+            prob_col = "probability_15m" if self.interval == "15m" else "probability_hourly"
+
             cursor.execute(f"""
-            SELECT symbol, current_price, ttc_seconds, broker, event_ticker, market_title,
-                   strike_tier, market_status, strike, buffer, buffer_pct, probability,
+            SELECT symbol, current_price, {ttc_col}, broker, event_ticker, market_title,
+                   strike_tier, market_status, strike, buffer, buffer_pct, {prob_col},
                    yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume, ticker, active_side,
                    momentum_percentile, volatility, volatility_percentile, movement, movement_percentile
             FROM live_data.{table_name}
@@ -1075,12 +1107,12 @@ def run_continuous_generation(interval_seconds: int = 30, symbol: str = "btc", i
                 try:
                     conn = psycopg2.connect(**POSTGRES_CONFIG)
                     cursor = conn.cursor()
-                    
+                    prob_col = "probability_15m" if generator.interval == "15m" else "probability_hourly"
                     cursor.execute(f"""
                     SELECT COUNT(*) as total_strikes, 
-                           MIN(probability) as min_prob, 
-                           MAX(probability) as max_prob,
-                           AVG(probability) as avg_prob
+                           MIN({prob_col}) as min_prob, 
+                           MAX({prob_col}) as max_prob,
+                           AVG({prob_col}) as avg_prob
                     FROM live_data.{generator._strike_table_name()}
                     """)
                     
@@ -1159,8 +1191,9 @@ def main():
                 logger.info(f"📊 Latest update: {latest_update}")
                 
                 # Show sample strike table data
+                prob_col = "probability_15m" if generator.interval == "15m" else "probability_hourly"
                 cursor.execute(f"""
-                SELECT strike, buffer, probability, yes_ask, no_ask, active_side 
+                SELECT strike, buffer, {prob_col}, yes_ask, no_ask, active_side 
                 FROM live_data.{generator._strike_table_name()} 
                 ORDER BY strike 
                 LIMIT 5

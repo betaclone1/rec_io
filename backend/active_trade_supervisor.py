@@ -1317,12 +1317,13 @@ def get_current_probability(strike: float, current_price: float, ttc_seconds: fl
             
         cursor = conn.cursor()
         
-        # Get probability from PostgreSQL strike table (hourly or 15m per monitor)
+        # Get probability from PostgreSQL strike table (hourly: probability_hourly; 15m: probability_15m)
+        prob_col = "probability_15m" if mkt == "15m" else "probability_hourly"
         cursor.execute(f"""
-            SELECT probability 
-            FROM live_data.{table_name} 
+            SELECT {prob_col}
+            FROM live_data.{table_name}
             WHERE strike = %s
-            ORDER BY timestamp DESC 
+            ORDER BY timestamp DESC
             LIMIT 1
         """, (strike,))
         
@@ -2598,7 +2599,9 @@ def get_unified_ttc_seconds(symbol: str = None):
         table_name = get_strike_table_name(sym, mkt)
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute(f"SELECT ttc_seconds FROM live_data.{table_name} LIMIT 1")
+        # Hourly strike tables use ttc_hourly; 15m strike tables use ttc_15m.
+        ttc_column = "ttc_15m" if mkt == "15m" else "ttc_hourly"
+        cursor.execute(f"SELECT {ttc_column} FROM live_data.{table_name} LIMIT 1")
         result = cursor.fetchone()
         conn.close()
         

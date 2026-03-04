@@ -88,7 +88,7 @@ def init_database():
                 bankroll DECIMAL(12,2),
                 monitor VARCHAR(50),
                 hour_idx INTEGER,
-                weekly_cycle INTEGER,
+                weekly_cycle NUMERIC(5,1),
                 order_id TEXT,
                 order_id_open TEXT,
                 order_id_close TEXT,
@@ -144,6 +144,23 @@ def init_database():
                       AND column_name = 'price_spread'
                 ) THEN
                     ALTER TABLE users.trades_0001 ADD COLUMN price_spread DECIMAL(6,4);
+                END IF;
+
+                -- weekly_cycle: migrate INTEGER to NUMERIC(5,1) for 15m-window record-keeping (hourly=.4, 15m :00/.15/.30/.45 = .0/.1/.2/.3)
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns c
+                    WHERE c.table_schema = 'users' AND c.table_name = 'trades_0001' AND c.column_name = 'weekly_cycle'
+                      AND c.data_type IN ('integer', 'smallint', 'bigint')
+                ) THEN
+                    ALTER TABLE users.trades_0001 ALTER COLUMN weekly_cycle TYPE NUMERIC(5,1) USING weekly_cycle::numeric(5,1);
+                END IF;
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'users' AND table_name = 'trades_simulated_0001')
+                  AND EXISTS (
+                    SELECT 1 FROM information_schema.columns c
+                    WHERE c.table_schema = 'users' AND c.table_name = 'trades_simulated_0001' AND c.column_name = 'weekly_cycle'
+                      AND c.data_type IN ('integer', 'smallint', 'bigint')
+                ) THEN
+                    ALTER TABLE users.trades_simulated_0001 ALTER COLUMN weekly_cycle TYPE NUMERIC(5,1) USING weekly_cycle::numeric(5,1);
                 END IF;
 
                 -- Migrate from volatility to volatility_percentile
@@ -649,7 +666,8 @@ def init_database():
             );
         """)
         
-        # New naming convention for strike table
+        # New naming convention for hourly strike table (BTC)
+        # NOTE: Hourly and 15m strike tables share the same column set (ttc_hourly, ttc_15m, probability_hourly, probability_15m); 15m tables use ttc_15m/probability_15m only.
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS live_data.strike_table_hourly_btc (
                 id SERIAL PRIMARY KEY,
@@ -657,7 +675,7 @@ def init_database():
                 symbol VARCHAR(10),
                 market TEXT DEFAULT 'hourly',
                 current_price DECIMAL(10,2),
-                ttc_seconds INTEGER,
+                ttc_hourly INTEGER,
                 broker VARCHAR(20),
                 event_ticker VARCHAR(50),
                 market_title TEXT,
@@ -666,7 +684,7 @@ def init_database():
                 strike INTEGER,
                 buffer DECIMAL(10,2),
                 buffer_pct DECIMAL(5,2),
-                probability DECIMAL(5,2),
+                probability_hourly DECIMAL(5,2),
                 yes_ask DECIMAL(5,2),
                 no_ask DECIMAL(5,2),
                 yes_diff DECIMAL(5,2),
@@ -678,8 +696,75 @@ def init_database():
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
             );
         """)
+
+        # Backward-compatible column changes for existing hourly strike tables:
+        # - Rename ttc_seconds -> ttc_hourly, probability -> probability_hourly.
+        # - Add ttc_15m and probability_15m for simulated 15m cycles (initially NULL).
+        cursor.execute("""
+            DO $$
+            DECLARE
+                tbl TEXT;
+            BEGIN
+                FOR tbl IN SELECT unnest(ARRAY[
+                    'strike_table_hourly_btc',
+                    'strike_table_hourly_eth',
+                    'strike_table_hourly_spx',
+                    'strike_table_hourly_ndx'
+                ]) LOOP
+                    -- Rename ttc_seconds to ttc_hourly if old column exists and new one does not
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'live_data'
+                          AND table_name = tbl
+                          AND column_name = 'ttc_seconds'
+                    ) AND NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'live_data'
+                          AND table_name = tbl
+                          AND column_name = 'ttc_hourly'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE live_data.%I RENAME COLUMN ttc_seconds TO ttc_hourly;', tbl);
+                    END IF;
+
+                    -- Rename probability to probability_hourly if old column exists and new one does not
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'live_data'
+                          AND table_name = tbl
+                          AND column_name = 'probability'
+                    ) AND NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'live_data'
+                          AND table_name = tbl
+                          AND column_name = 'probability_hourly'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE live_data.%I RENAME COLUMN probability TO probability_hourly;', tbl);
+                    END IF;
+
+                    -- Add 15m TTC/probability columns for simulated cycles if missing
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'live_data'
+                          AND table_name = tbl
+                          AND column_name = 'ttc_15m'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE live_data.%I ADD COLUMN ttc_15m INTEGER;', tbl);
+                    END IF;
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'live_data'
+                          AND table_name = tbl
+                          AND column_name = 'probability_15m'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE live_data.%I ADD COLUMN probability_15m DECIMAL(5,2);', tbl);
+                    END IF;
+                END LOOP;
+            END
+            $$;
+        """)
         
-        # 15m strike tables (single strike per table; strike_tier 0)
+        # 15m strike tables (single strike per table; strike_tier 0).
+        # Same column set as hourly: ttc_hourly/probability_hourly (NULL for 15m), ttc_15m/probability_15m (used).
         for sym in ('btc', 'eth'):
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS live_data.strike_table_15m_{sym} (
@@ -688,16 +773,10 @@ def init_database():
                     symbol VARCHAR(10),
                     market TEXT DEFAULT '15m',
                     current_price DECIMAL(10,2),
-                    ttc_seconds INTEGER,
-                    broker VARCHAR(20),
-                    event_ticker VARCHAR(50),
-                    market_title TEXT,
-                    strike_tier INTEGER,
-                    market_status VARCHAR(20),
-                    strike INTEGER,
-                    buffer DECIMAL(10,2),
-                    buffer_pct DECIMAL(5,2),
-                    probability DECIMAL(5,2),
+                    ttc_hourly INTEGER,
+                    probability_hourly DECIMAL(5,2),
+                    ttc_15m INTEGER,
+                    probability_15m DECIMAL(5,2),
                     yes_ask DECIMAL(5,2),
                     no_ask DECIMAL(5,2),
                     yes_ask_dollars TEXT,
@@ -720,6 +799,20 @@ def init_database():
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
                 );
             """)
+
+            # Ensure hourly-aligned columns exist on existing 15m tables
+            cursor.execute(f"""
+                ALTER TABLE live_data.strike_table_15m_{sym}
+                ADD COLUMN IF NOT EXISTS ttc_hourly INTEGER,
+                ADD COLUMN IF NOT EXISTS probability_hourly DECIMAL(5,2),
+                ADD COLUMN IF NOT EXISTS ttc_15m INTEGER,
+                ADD COLUMN IF NOT EXISTS probability_15m DECIMAL(5,2);
+            """)
+        
+        # Remove legacy columns from 15m strike tables (use ttc_15m / probability_15m only)
+        for sym in ('btc', 'eth'):
+            cursor.execute(f"ALTER TABLE live_data.strike_table_15m_{sym} DROP COLUMN IF EXISTS ttc_seconds")
+            cursor.execute(f"ALTER TABLE live_data.strike_table_15m_{sym} DROP COLUMN IF EXISTS probability")
         
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS system.health_status (

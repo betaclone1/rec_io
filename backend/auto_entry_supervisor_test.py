@@ -1043,11 +1043,12 @@ def get_master_strike_table_data():
         )
         with conn.cursor() as cursor:
             current_symbol = get_current_monitor_symbol()
+            # Hourly test strike tables follow production naming: ttc_hourly/probability_hourly.
             cursor.execute(f"""
                 SELECT
                     symbol,
                     current_price,
-                    ttc_seconds,
+                    ttc_hourly,
                     event_ticker,
                     market_title,
                     strike_tier,
@@ -1064,7 +1065,7 @@ def get_master_strike_table_data():
                     strike,
                     buffer,
                     buffer_pct,
-                    probability,
+                    probability_hourly,
                     yes_ask,
                     no_ask,
                     volume,

@@ -1725,11 +1725,14 @@ def get_master_strike_table_data():
         with conn.cursor() as cursor:
             current_symbol, current_market = get_current_monitor_symbol_and_market()
             table_name = get_strike_table_name(current_symbol, current_market)
+            # Hourly: ttc_hourly/probability_hourly; 15m: ttc_15m/probability_15m (same column set).
+            ttc_column = "ttc_15m" if current_market == "15m" else "ttc_hourly"
+            prob_column = "probability_15m" if current_market == "15m" else "probability_hourly"
             cursor.execute(f"""
                 SELECT
                     symbol,
                     current_price,
-                    ttc_seconds,
+                    {ttc_column},
                     event_ticker,
                     market_title,
                     strike_tier,
@@ -1746,7 +1749,7 @@ def get_master_strike_table_data():
                     strike,
                     buffer,
                     buffer_pct,
-                    probability,
+                    {prob_column},
                     yes_ask,
                     no_ask,
                     yes_ask_dollars,

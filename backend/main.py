@@ -3542,12 +3542,16 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
         )
         
         with conn.cursor() as cursor:
+            # Hourly: ttc_hourly/probability_hourly; 15m: ttc_15m/probability_15m (same column set).
+            ttc_column = "ttc_15m" if market == "15m" else "ttc_hourly"
+            prob_column = "probability_15m" if market == "15m" else "probability_hourly"
+
             # Get the latest strike table data from PostgreSQL
             cursor.execute(f"""
                 SELECT 
                     symbol,
                     current_price,
-                    ttc_seconds,
+                    {ttc_column},
                     momentum_percentile,
                     market_title,
                     timestamp
@@ -3566,7 +3570,7 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
                     strike,
                     buffer,
                     buffer_pct,
-                    probability,
+                    {prob_column},
                     yes_ask,
                     no_ask,
                     yes_ask_dollars,
@@ -3822,11 +3826,13 @@ async def get_unified_ttc(symbol: str, request: Request):
             password="rec_io_password"
         )
         with conn.cursor() as cursor:
+            # Hourly tables use ttc_hourly; 15m tables use ttc_15m.
+            ttc_column = "ttc_15m" if market == "15m" else "ttc_hourly"
             cursor.execute(f"""
-                SELECT ttc_seconds, event_ticker, market_title, market_status
+                SELECT {ttc_column}, event_ticker, market_title, market_status
                     FROM live_data.{table_name}
                 WHERE market_status = 'active'
-                ORDER BY ttc_seconds ASC
+                ORDER BY {ttc_column} ASC
                 LIMIT 1
             """)
             result = cursor.fetchone()

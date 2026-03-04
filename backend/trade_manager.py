@@ -22,8 +22,9 @@ from backend.util.paths import get_accounts_data_dir
 EST_ZONE = ZoneInfo("America/New_York")
 # Hourly: "BTC 2pm" -> hour 2, pm
 CONTRACT_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2})(am|pm)$", re.IGNORECASE)
-# 15m: "BTC 2:15pm" or "BTC 12:45pm" -> capture hour (2 or 12) and am/pm; all 4 cycles in that hour share same hour_idx/weekly_cycle
+# 15m: "BTC 2:15pm" or "BTC 12:45pm" -> capture hour, minutes, and am/pm
 CONTRACT_15M_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2}):[0-9]{2}\s*(am|pm)", re.IGNORECASE)
+CONTRACT_15M_FULL_PATTERN = re.compile(r".*\s([0-9]{1,2}):([0-9]{2})\s*(am|pm)", re.IGNORECASE)
 MONITOR_KEY_PATTERN = re.compile(r"^mon_(\d+?)_(\d+)$", re.IGNORECASE)
 
 
@@ -174,8 +175,22 @@ def _normalize_boolean_flag(value):
     return False
 
 
+def _extract_quarter_from_contract(contract):
+    """Extract 15m quarter from contract for weekly_cycle decimal.
+    Hourly contracts (no :MM) -> 4 (fourth quarter of hour; stored as .4).
+    15m contracts: :00->0 (.0), :15->1 (.1), :30->2 (.2), :45->3 (.3)."""
+    if not contract:
+        return 4  # default hourly
+    s = contract.strip()
+    match = CONTRACT_15M_FULL_PATTERN.search(s)
+    if match:
+        minutes = int(match.group(2))
+        return min(3, minutes // 15)  # 0, 15, 30, 45 -> 0, 1, 2, 3
+    return 4  # hourly: fourth quarter of the hour
+
+
 def _compute_weekly_cycle(trade_date, hour_idx):
-    """Compute 1-168 weekly cycle bucket; returns None when inputs unavailable."""
+    """Compute 1-168 weekly cycle bucket (integer); returns None when inputs unavailable."""
     if hour_idx is None:
         return None
 
@@ -429,7 +444,9 @@ def insert_trade(trade):
     contract_name = truncate_contract_name(contract_original, symbol)
 
     hour_idx_for_db = _extract_hour_idx(contract_original)
-    weekly_cycle_for_db = _compute_weekly_cycle(trade.get('date'), hour_idx_for_db)
+    base_weekly_cycle = _compute_weekly_cycle(trade.get('date'), hour_idx_for_db)
+    quarter = _extract_quarter_from_contract(contract_original)
+    weekly_cycle_for_db = round(base_weekly_cycle + (quarter / 10.0), 1) if base_weekly_cycle is not None else None
     
     # Write to PostgreSQL only
     try:
@@ -1216,13 +1233,13 @@ def refresh_monitor_cycle_performance_for_monitor(
                     t.win_loss,
                     t.status,
                     t.hour_idx,
-                    t.weekly_cycle,
+                    FLOOR(t.weekly_cycle)::int AS weekly_cycle,
                     (t.date || ' ' || COALESCE(NULLIF(t.time, ''), '00:00:00'))::timestamptz AS trade_ts
                 FROM users.trades_0001 t
                 CROSS JOIN params p
                 WHERE t.monitor = %s
                   AND (t.date || ' ' || COALESCE(NULLIF(t.time, ''), '00:00:00'))::timestamptz BETWEEN p.win_start AND p.now_ts
-                  AND t.weekly_cycle BETWEEN 1 AND 168
+                  AND t.weekly_cycle >= 1 AND t.weekly_cycle < 169
             ),
             cycle_counts AS (
                 SELECT
@@ -1382,10 +1399,11 @@ def refresh_monitor_cycle_performance_for_trade(trade_id: int, *, window_days: i
             log(f"⚠️ Trade {trade_id} not found when refreshing performance table")
             return
 
-        monitor_key, weekly_cycle = row
-        if not monitor_key or weekly_cycle is None:
+        monitor_key, weekly_cycle_raw = row
+        if not monitor_key or weekly_cycle_raw is None:
             log(f"⚠️ Trade {trade_id} missing monitor or weekly_cycle for performance update")
             return
+        weekly_cycle = int(float(weekly_cycle_raw))  # use integer part for performance lookup
 
         refresh_monitor_cycle_performance_for_monitor(
             monitor_key,
