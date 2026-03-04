@@ -3476,6 +3476,8 @@ async def get_strike_table(symbol: str, request: Request):
         if market not in ("hourly", "15m"):
             return {"error": "market required (hourly or 15m)"}
         table_name = _strike_table_name(symbol, market)
+        ttc_col = "ttc_15m" if market == "15m" else "ttc_hourly"
+        prob_col = "probability_15m" if market == "15m" else "probability_hourly"
         conn = psycopg2.connect(
             host="localhost",
             database="rec_io_db",
@@ -3487,7 +3489,7 @@ async def get_strike_table(symbol: str, request: Request):
                 SELECT 
                     symbol,
                     current_price,
-                    ttc_seconds,
+                    {ttc_col},
                     event_ticker,
                     market_title,
                     strike_tier,
@@ -3504,7 +3506,7 @@ async def get_strike_table(symbol: str, request: Request):
                     strike,
                     buffer,
                     buffer_pct,
-                    probability,
+                    {prob_col},
                     yes_ask,
                     no_ask,
                     yes_ask_dollars,
@@ -3566,6 +3568,8 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
         if market not in ("hourly", "15m"):
             return {"error": "market required (hourly or 15m)"}
         table_name = _strike_table_name(symbol, market)
+        ttc_column = "ttc_15m" if market == "15m" else "ttc_hourly"
+        prob_column = "probability_15m" if market == "15m" else "probability_hourly"
         conn = psycopg2.connect(
             host="localhost",
             database="rec_io_db",
@@ -3573,10 +3577,6 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
             password="rec_io_password"
         )
         with conn.cursor() as cursor:
-            # Hourly: ttc_hourly/probability_hourly; 15m: ttc_15m/probability_15m (same column set).
-            ttc_column = "ttc_15m" if market == "15m" else "ttc_hourly"
-            prob_column = "probability_15m" if market == "15m" else "probability_hourly"
-
             # Get the latest strike table data from PostgreSQL
             cursor.execute(f"""
                 SELECT 
@@ -3586,7 +3586,7 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
                     momentum_percentile,
                     market_title,
                     timestamp
-                    FROM live_data.{table_name}
+                FROM live_data.{table_name}
                 LIMIT 1
             """)
             header_data = cursor.fetchone()
