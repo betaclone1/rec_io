@@ -1683,24 +1683,35 @@ def get_auto_entry_settings():
         return {}
 
 def get_current_ttc():
-    """Get current TTC from unified TTC endpoint (requires market: hourly or 15m)."""
+    """Get current TTC from strike table (PostgreSQL). Uses ttc_hourly or ttc_15m per monitor market; no HTTP to main app."""
     try:
-        port = get_port("main_app")
         current_symbol, current_market = get_current_monitor_symbol_and_market()
         if not current_market or current_market not in ("hourly", "15m"):
             return 0
-        url = f"http://localhost:{port}/api/unified_ttc/{current_symbol.lower()}?market={current_market}"
-        response = requests.get(url, timeout=2)
-        if response.ok:
-            data = response.json()
-            ttc = data.get("ttc_seconds", 0)
-            return ttc
-        else:
-            # Don't log TTC request failures - they're expected when main app is down
-            return 0
+        import psycopg2
+        conn = psycopg2.connect(
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
+            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+        )
+        with conn.cursor() as cursor:
+            table_name = get_strike_table_name(current_symbol, current_market)
+            ttc_column = "ttc_15m" if current_market == "15m" else "ttc_hourly"
+            cursor.execute(f"SELECT {ttc_column} FROM live_data.{table_name} LIMIT 1")
+            result = cursor.fetchone()
+        conn.close()
+        if result and result[0] is not None:
+            return int(result[0])
+        # Fallback when strike table has no row (e.g. generator not yet run)
+        now = datetime.now(ZoneInfo("America/New_York"))
+        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        return max(1, int((next_hour - now).total_seconds()))
     except Exception as e:
-        # Don't log connection errors every second - they're expected when main app is down
-        return 0
+        log(f"[AUTO ENTRY] get_current_ttc fallback after error: {e}")
+        now = datetime.now(ZoneInfo("America/New_York"))
+        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        return max(1, int((next_hour - now).total_seconds()))
 
 def get_strike_table_path():
     """Get the path to the master strike table JSON file"""
