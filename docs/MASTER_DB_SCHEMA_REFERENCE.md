@@ -67,6 +67,16 @@ Change `table_schema` and `table_name` as needed.
 
 Re-run the check (step 2) until nothing is missing.
 
+### 4. After updating portfolio-level user tables (fills, orders, positions, settlements)
+
+If you added or changed columns on `users.fills_0001`, `users.orders_0001`, `users.positions_0001`, or `users.settlements_0001`, run the historical ingest once so those tables get (or backfill) data into the new columns from the Kalshi API:
+
+```bash
+PYTHONPATH=$(pwd) python3 backend/api/kalshi-api/kalshi_historical_ingest.py
+```
+
+This syncs settlements, fills, and orders (with cursor pagination) and writes to PostgreSQL; positions are fetched and written as well. Ensures _fp and other API-sourced columns are populated consistently with the live account sync.
+
 ---
 
 ## Schema: `analytics`
@@ -9797,6 +9807,7 @@ Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m va
 | `side` | `text` | YES | - | |
 | `action` | `text` | YES | - | |
 | `count` | `integer(32)` | YES | - | |
+| `count_fp` | `numeric(12,2)` | YES | - | Fixed-point contract count (Kalshi migration). |
 | `yes_price` | `real(24)` | YES | - | |
 | `no_price` | `real(24)` | YES | - | |
 | `is_taker` | `boolean` | YES | - | |
@@ -10106,8 +10117,11 @@ Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m va
 | `yes_price` | `integer(32)` | YES | - | |
 | `no_price` | `integer(32)` | YES | - | |
 | `initial_count` | `integer(32)` | YES | - | |
+| `initial_count_fp` | `numeric(12,2)` | YES | - | Fixed-point (Kalshi migration). |
 | `remaining_count` | `integer(32)` | YES | - | |
+| `remaining_count_fp` | `numeric(12,2)` | YES | - | Fixed-point (Kalshi migration). |
 | `fill_count` | `integer(32)` | YES | - | |
+| `fill_count_fp` | `numeric(12,2)` | YES | - | Fixed-point (Kalshi migration). |
 | `created_time` | `text` | YES | - | |
 | `expiration_time` | `text` | YES | - | |
 | `last_update_time` | `text` | YES | - | |
@@ -10152,7 +10166,9 @@ Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m va
 | `id` | `integer(32)` | NO | nextval('users.positions_0001_id_seq'::regclass) | |
 | `ticker` | `text` | YES | - | |
 | `total_traded` | `integer(32)` | YES | - | |
+| `total_traded_fp` | `numeric(12,2)` | YES | - | Fixed-point (Kalshi migration). |
 | `position` | `integer(32)` | YES | - | |
+| `position_fp` | `numeric(12,2)` | YES | - | Fixed-point (Kalshi migration). |
 | `market_exposure` | `integer(32)` | YES | - | |
 | `realized_pnl` | `real(24)` | YES | - | |
 | `fees_paid` | `real(24)` | YES | - | |
@@ -10196,8 +10212,10 @@ Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m va
 | `ticker` | `text` | YES | - | |
 | `market_result` | `text` | YES | - | |
 | `yes_count` | `integer(32)` | YES | - | |
+| `yes_count_fp` | `numeric(12,2)` | YES | - | Fixed-point (Kalshi migration). |
 | `yes_total_cost` | `numeric(10,2)` | YES | - | |
 | `no_count` | `integer(32)` | YES | - | |
+| `no_count_fp` | `numeric(12,2)` | YES | - | Fixed-point (Kalshi migration). |
 | `no_total_cost` | `numeric(10,2)` | YES | - | |
 | `revenue` | `numeric(10,2)` | YES | - | |
 | `settled_time` | `text` | YES | - | |

@@ -144,7 +144,16 @@ def trigger_trade():
         ticker = data.get("ticker")
         raw_side = data.get("side", "yes")
         side = "yes" if raw_side in ["Y", "yes"] else "no"
-        count = data.get("count", data.get("position", 1))
+        # Kalshi fixed-point: send only count_fp (legacy count deprecated). Accept count_fp from caller or derive from count/position.
+        count_fp_in = data.get("count_fp")
+        if count_fp_in is not None and str(count_fp_in).strip() != "":
+            try:
+                count_fp = f"{float(count_fp_in):.2f}"
+            except (TypeError, ValueError):
+                count_fp = f"{float(data.get('count', data.get('position', 1))):.2f}"
+        else:
+            count_val = data.get("count", data.get("position", 1))
+            count_fp = f"{float(count_val):.2f}"
         # Always use limit orders - Kalshi no longer accepts market orders
         order_type = "limit"
         buy_price = data.get("buy_price")
@@ -153,7 +162,7 @@ def trigger_trade():
             "ticker": ticker,
             "side": side,
             "type": order_type,
-            "count": count,
+            "count_fp": count_fp,
             "time_in_force": "fill_or_kill",
             "action": "buy",
             "client_order_id": str(uuid.uuid4())

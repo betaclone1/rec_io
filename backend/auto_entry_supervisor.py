@@ -2262,7 +2262,7 @@ def trigger_auto_entry_trade(strike_data):
         except Exception as e:
             log(f"[AUTO ENTRY] ⚠️ Could not get paper_trade setting: {e}, defaulting to False")
         
-        # Prepare the trade data exactly like trade_initiator does
+        # Prepare the trade data exactly like trade_initiator does (count_fp for full-chain consistency)
         trade_payload = {
             "ticket_id": ticket_id,
             "status": "pending",
@@ -2279,6 +2279,7 @@ def trigger_auto_entry_trade(strike_data):
             "diff": strike_data.get("diff"),
             "buy_price": strike_data.get("buy_price"),
             "position": position_size,
+            "count_fp": f"{float(position_size):.2f}",
             "monitor": f"mon_0001_{MONITOR_ID}",
             "bankroll_allotment_total": bankroll_allotment,
             "entry_method": "auto_entry",

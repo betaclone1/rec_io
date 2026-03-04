@@ -2197,10 +2197,15 @@ def get_fills():
             """)
             fills = cursor.fetchall()
             
-            # Convert RealDictRow objects to regular dictionaries
+            # Convert RealDictRow to dict; prefer _fp for count (rounded for display)
             fills_list = []
             for fill in fills:
                 fill_dict = dict(fill)
+                if fill_dict.get("count_fp") is not None:
+                    try:
+                        fill_dict["count"] = int(round(float(fill_dict["count_fp"])))
+                    except (TypeError, ValueError):
+                        pass
                 fills_list.append(fill_dict)
             
             conn.close()
@@ -2233,10 +2238,20 @@ def get_positions():
             """)
             positions = cursor.fetchall()
             
-            # Convert RealDictRow objects to regular dictionaries
+            # Convert to dict; prefer _fp for position/total_traded (rounded for display)
             positions_list = []
             for position in positions:
                 position_dict = dict(position)
+                if position_dict.get("position_fp") is not None:
+                    try:
+                        position_dict["position"] = int(round(float(position_dict["position_fp"])))
+                    except (TypeError, ValueError):
+                        pass
+                if position_dict.get("total_traded_fp") is not None:
+                    try:
+                        position_dict["total_traded"] = int(round(float(position_dict["total_traded_fp"])))
+                    except (TypeError, ValueError):
+                        pass
                 positions_list.append(position_dict)
             
             conn.close()
@@ -2269,10 +2284,20 @@ def get_settlements():
             """)
             settlements = cursor.fetchall()
             
-            # Convert RealDictRow objects to regular dictionaries
+            # Convert to dict; prefer _fp for yes_count/no_count (rounded for display)
             settlements_list = []
             for settlement in settlements:
                 settlement_dict = dict(settlement)
+                if settlement_dict.get("yes_count_fp") is not None:
+                    try:
+                        settlement_dict["yes_count"] = int(round(float(settlement_dict["yes_count_fp"])))
+                    except (TypeError, ValueError):
+                        pass
+                if settlement_dict.get("no_count_fp") is not None:
+                    try:
+                        settlement_dict["no_count"] = int(round(float(settlement_dict["no_count_fp"])))
+                    except (TypeError, ValueError):
+                        pass
                 settlements_list.append(settlement_dict)
             
             conn.close()
@@ -3288,7 +3313,8 @@ async def trigger_open_trade(request: Request):
             if conn:
                 conn.close()
         
-        # Prepare the trade data exactly like trade_initiator does
+        # Prepare the trade data exactly like trade_initiator does (count_fp for full-chain consistency)
+        position_val = position or 1
         trade_data = {
             "ticket_id": ticket_id,
             "status": "pending",
@@ -3302,7 +3328,8 @@ async def trigger_open_trade(request: Request):
             "side": converted_side,
             "ticker": ticker,
             "buy_price": buy_price,
-            "position": position or 1,
+            "position": position_val,
+            "count_fp": f"{float(position_val):.2f}",
             "symbol_open": symbol_open,
             "symbol_close": None,
             "momentum": momentum,

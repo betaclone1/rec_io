@@ -3,6 +3,7 @@ import requests
 import json
 import time
 import os
+from decimal import Decimal
 from dotenv import dotenv_values
 from pathlib import Path
 from cryptography.hazmat.primitives import serialization
@@ -26,6 +27,17 @@ ENV_VARS = dotenv_values(CREDENTIALS_DIR / ".env")
 
 KEY_ID = ENV_VARS.get("KALSHI_API_KEY_ID")
 KEY_PATH = CREDENTIALS_DIR / Path(ENV_VARS.get("KALSHI_PRIVATE_KEY_PATH")).name
+
+
+def _fp_to_numeric(v):
+    """Convert API _fp string to Decimal for NUMERIC columns; None/empty -> None."""
+    if v is None or (isinstance(v, str) and v.strip() == ""):
+        return None
+    try:
+        return Decimal(str(v))
+    except Exception:
+        return None
+
 
 def generate_kalshi_signature(method, full_path, timestamp, key_path):
     from cryptography.hazmat.primitives import serialization, hashes
@@ -105,6 +117,7 @@ def sync_settlements():
             break
 
     output_path = os.path.join(get_accounts_data_dir(), "kalshi", mode, "settlements.json")
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w") as f:
         json.dump({"settlements": all_settlements}, f, indent=2)
     print(f"💾 All settlements written to {output_path}")
@@ -153,14 +166,65 @@ def sync_fills():
 
     output_path = os.path.join(get_accounts_data_dir(), "kalshi", mode, "fills.json")
     if all_fills:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, "w") as f:
             json.dump({"fills": all_fills}, f, indent=2)
         print(f"💾 All fills written to {output_path}")
     else:
         print("⚠️ No fills found, skipping file write.")
 
-    # SQLite insertion will be handled later by write_fills_to_db()
+    # PostgreSQL insertion via write_fills_to_db()
 
+
+def sync_orders():
+    """Paginate through all orders from API and save to orders.json."""
+    print("⏱ Syncing all orders...")
+    method = "GET"
+    path = "/portfolio/orders"
+    all_orders = []
+    cursor = ""
+
+    while True:
+        print(f"➡️ Orders cursor: {cursor or '(start)'}")
+        timestamp = str(int(time.time() * 1000))
+        query = "?limit=100"
+        if cursor:
+            query += f"&cursor={cursor}"
+        url = f"{BASE_URL}{path}{query}"
+        print(f"🔗 Requesting: {url}")
+
+        full_path_for_signature = f"/trade-api/v2{path}"
+        signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
+
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "KalshiWatcher/1.0",
+            "KALSHI-ACCESS-KEY": KEY_ID,
+            "KALSHI-ACCESS-TIMESTAMP": timestamp,
+            "KALSHI-ACCESS-SIGNATURE": signature,
+        }
+
+        try:
+            response = requests.get(url, headers=headers, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            if "error" in data:
+                print("⚠️ API error:", data["error"])
+                break
+            orders = data.get("orders", [])
+            all_orders.extend(orders)
+            cursor = data.get("cursor")
+            if not cursor:
+                break
+        except Exception as e:
+            print(f"❌ Failed to fetch orders: {e}")
+            break
+
+    output_path = os.path.join(get_accounts_data_dir(), "kalshi", mode, "orders.json")
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump({"orders": all_orders}, f, indent=2)
+    print(f"💾 All orders ({len(all_orders)}) written to {output_path}")
 
 
 def write_settlements_to_db():
@@ -203,8 +267,10 @@ def write_settlements_to_db():
             ticker = s.get("ticker")
             market_result = s.get("market_result")
             yes_count = s.get("yes_count")
+            yes_count_fp = _fp_to_numeric(s.get("yes_count_fp"))
             yes_total_cost = s.get("yes_total_cost")
             no_count = s.get("no_count")
+            no_count_fp = _fp_to_numeric(s.get("no_count_fp"))
             no_total_cost = s.get("no_total_cost")
             revenue = s.get("revenue")
             settled_time = s.get("settled_time")
@@ -221,10 +287,10 @@ def write_settlements_to_db():
             try:
                 c.execute("""
                     INSERT INTO users.settlements_0001
-                    (ticker, market_result, yes_count, yes_total_cost, no_count, no_total_cost, revenue, settled_time, raw_json)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (ticker, market_result, yes_count, yes_count_fp, yes_total_cost, no_count, no_count_fp, no_total_cost, revenue, settled_time, raw_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (ticker, settled_time) DO NOTHING
-                """, (ticker, market_result, yes_count, yes_total_cost, no_count, no_total_cost, revenue, settled_time, raw_json))
+                """, (ticker, market_result, yes_count, yes_count_fp, yes_total_cost, no_count, no_count_fp, no_total_cost, revenue, settled_time, raw_json))
             except Exception as e:
                 print(f"❌ Failed to insert settlement {ticker} at {settled_time}: {e}")
 
@@ -277,8 +343,11 @@ def write_fills_to_db():
             side = fill.get("side")
             action = fill.get("action")
             count = fill.get("count")
+            count_fp = _fp_to_numeric(fill.get("count_fp"))
             yes_price = float(fill.get("yes_price")) / 100 if fill.get("yes_price") is not None else None
             no_price = float(fill.get("no_price")) / 100 if fill.get("no_price") is not None else None
+            yes_price_fixed = fill.get("yes_price_fixed")
+            no_price_fixed = fill.get("no_price_fixed")
             is_taker = fill.get("is_taker")
             created_time = fill.get("created_time")
             raw_json = json.dumps(fill)
@@ -286,10 +355,10 @@ def write_fills_to_db():
             try:
                 c.execute("""
                     INSERT INTO users.fills_0001
-                    (trade_id, ticker, order_id, side, action, count, yes_price, no_price, is_taker, created_time, raw_json)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (trade_id, ticker, order_id, side, action, count, count_fp, yes_price, no_price, yes_price_fixed, no_price_fixed, is_taker, created_time, raw_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (trade_id) DO NOTHING
-                """, (trade_id, ticker, order_id, side, action, count, yes_price, no_price, is_taker, created_time, raw_json))
+                """, (trade_id, ticker, order_id, side, action, count, count_fp, yes_price, no_price, yes_price_fixed, no_price_fixed, is_taker, created_time, raw_json))
             except Exception as e:
                 print(f"❌ Failed to insert fill {trade_id}: {e}")
 
@@ -347,6 +416,7 @@ def write_positions_to_db():
     positions = market_positions
     # Save positions JSON to file
     json_output_path = os.path.join(get_accounts_data_dir(), "kalshi", mode, "positions.json")
+    os.makedirs(os.path.dirname(json_output_path), exist_ok=True)
     with open(json_output_path, "w") as f:
         json.dump({"market_positions": market_positions, "event_positions": event_positions}, f, indent=2)
     print(f"💾 All positions written to {json_output_path}")
@@ -383,7 +453,9 @@ def write_positions_to_db():
             try:
                 ticker = p.get("ticker")
                 total_traded = p.get("total_traded")
+                total_traded_fp = _fp_to_numeric(p.get("total_traded_fp"))
                 position_value = p.get("position")
+                position_fp = _fp_to_numeric(p.get("position_fp"))
                 market_exposure = p.get("market_exposure")
                 realized_pnl = float(p.get("realized_pnl")) / 100 if p.get("realized_pnl") is not None else None
                 fees_paid = float(p.get("fees_paid")) / 100 if p.get("fees_paid") is not None else None
@@ -392,9 +464,9 @@ def write_positions_to_db():
 
                 c.execute("""
                     INSERT INTO users.positions_0001
-                    (ticker, total_traded, position, market_exposure, realized_pnl, fees_paid, last_updated_ts, raw_json)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """, (ticker, total_traded, position_value, market_exposure, realized_pnl, fees_paid, last_updated_ts, raw_json))
+                    (ticker, total_traded, total_traded_fp, position, position_fp, market_exposure, realized_pnl, fees_paid, last_updated_ts, raw_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (ticker, total_traded, total_traded_fp, position_value, position_fp, market_exposure, realized_pnl, fees_paid, last_updated_ts, raw_json))
             except Exception as e:
                 print(f"❌ Failed to insert position {p.get('ticker')}: {e}")
 
@@ -403,6 +475,95 @@ def write_positions_to_db():
         print(f"✅ Positions written to PostgreSQL database")
     except Exception as e:
         print(f"❌ Failed to connect to PostgreSQL: {e}")
+
+
+def write_orders_to_db():
+    """Read orders.json and upsert into users.orders_0001 (matches account sync schema, includes _fp)."""
+    global mode
+    print("💾 Writing orders to PostgreSQL database...")
+    orders_path = os.path.join(get_accounts_data_dir(), "kalshi", mode, "orders.json")
+    if not os.path.exists(orders_path):
+        print("⚠️ No orders.json found; run sync_orders() first.")
+        return
+    with open(orders_path, "r") as f:
+        data = json.load(f)
+    orders = data.get("orders", [])
+
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host="localhost",
+            database="rec_io_db",
+            user="rec_io_user",
+            password="rec_io_password"
+        )
+        c = conn.cursor()
+
+        for order in orders:
+            order_id = order.get("order_id")
+            if not order_id:
+                continue
+            try:
+                c.execute("""
+                    INSERT INTO users.orders_0001
+                    (order_id, user_id, ticker, status, action, side, type, yes_price, no_price, yes_price_dollars, no_price_dollars,
+                     initial_count, initial_count_fp, remaining_count, remaining_count_fp, fill_count, fill_count_fp,
+                     created_time, expiration_time, last_update_time, client_order_id, order_group_id, queue_position,
+                     self_trade_prevention_type, maker_fees, taker_fees, maker_fill_cost, taker_fill_cost, raw_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (order_id) DO UPDATE SET
+                        status = EXCLUDED.status,
+                        fill_count = EXCLUDED.fill_count,
+                        remaining_count = EXCLUDED.remaining_count,
+                        fill_count_fp = EXCLUDED.fill_count_fp,
+                        remaining_count_fp = EXCLUDED.remaining_count_fp,
+                        last_update_time = EXCLUDED.last_update_time,
+                        maker_fees = EXCLUDED.maker_fees,
+                        taker_fees = EXCLUDED.taker_fees,
+                        maker_fill_cost = EXCLUDED.maker_fill_cost,
+                        taker_fill_cost = EXCLUDED.taker_fill_cost,
+                        queue_position = EXCLUDED.queue_position,
+                        raw_json = EXCLUDED.raw_json
+                """, (
+                    order_id,
+                    order.get("user_id"),
+                    order.get("ticker"),
+                    order.get("status"),
+                    order.get("action"),
+                    order.get("side"),
+                    order.get("type"),
+                    order.get("yes_price"),
+                    order.get("no_price"),
+                    order.get("yes_price_dollars"),
+                    order.get("no_price_dollars"),
+                    order.get("initial_count"),
+                    _fp_to_numeric(order.get("initial_count_fp")),
+                    order.get("remaining_count"),
+                    _fp_to_numeric(order.get("remaining_count_fp")),
+                    order.get("fill_count"),
+                    _fp_to_numeric(order.get("fill_count_fp")),
+                    order.get("created_time"),
+                    order.get("expiration_time"),
+                    order.get("last_update_time"),
+                    order.get("client_order_id"),
+                    order.get("order_group_id"),
+                    order.get("queue_position"),
+                    order.get("self_trade_prevention_type"),
+                    order.get("maker_fees"),
+                    order.get("taker_fees"),
+                    order.get("maker_fill_cost"),
+                    order.get("taker_fill_cost"),
+                    json.dumps(order),
+                ))
+            except Exception as e:
+                print(f"❌ Failed to insert/update order {order_id}: {e}")
+
+        conn.commit()
+        conn.close()
+        print(f"✅ Orders written to PostgreSQL database")
+    except Exception as e:
+        print(f"❌ Failed to connect to PostgreSQL: {e}")
+
 
 def ingest_settlements():
     """Ingest settlements data."""
@@ -602,6 +763,8 @@ def main():
     write_settlements_to_db()
     sync_fills()
     write_fills_to_db()
+    sync_orders()
+    write_orders_to_db()
     write_positions_to_db()
 
 if __name__ == "__main__":

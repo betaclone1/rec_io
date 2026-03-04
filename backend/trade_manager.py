@@ -319,6 +319,27 @@ def get_postgresql_connection():
         return None
 
 
+def _order_count_val(legacy, fp):
+    """Prefer _fp (NUMERIC) for order counts; fall back to legacy integer. Returns float for math."""
+    if fp is not None:
+        return float(fp)
+    if legacy is not None:
+        return float(legacy)
+    return 0.0
+
+
+def _format_count_fp(payload: dict, for_close: bool = False) -> str:
+    """Format contract count as Kalshi fixed-point string (e.g. '100.00'). For open use position/count; for close use count/position."""
+    fp = payload.get("count_fp")
+    if fp is not None and str(fp).strip() != "":
+        try:
+            return f"{float(fp):.2f}"
+        except (TypeError, ValueError):
+            pass
+    raw = payload.get("count", payload.get("position", 1)) if for_close else payload.get("position", payload.get("count", 1))
+    return f"{float(raw):.2f}"
+
+
 def _get_system_mode() -> str:
     """
     Read the global system mode from core.system_state.
@@ -618,10 +639,11 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                 time.sleep(1)
                 continue
             
-            # Check ORDERS table for our specific order_id
+            # Check ORDERS table for our specific order_id (prefer _fp columns for counts)
             with pg_conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT remaining_count, fill_count, initial_count, status, 
+                    SELECT remaining_count, remaining_count_fp, fill_count, fill_count_fp,
+                           initial_count, initial_count_fp, status,
                            taker_fees, maker_fees, taker_fill_cost, side
                     FROM users.orders_0001 
                     WHERE order_id = %s
@@ -629,22 +651,26 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                 order_row = cursor.fetchone()
             
             if order_row:
-                remaining_count, fill_count, initial_count, order_status, taker_fees, maker_fees, taker_fill_cost, side = order_row
+                (remaining_count, remaining_count_fp, fill_count, fill_count_fp,
+                 initial_count, initial_count_fp, order_status, taker_fees, maker_fees, taker_fill_cost, side) = order_row
+                remaining_val = _order_count_val(remaining_count, remaining_count_fp)
+                fill_val = _order_count_val(fill_count, fill_count_fp)
+                initial_val = _order_count_val(initial_count, initial_count_fp)
+                log_event(ticket_id, f"MANAGER: Opening order {stored_order_id_open} status: {order_status}, remaining: {remaining_val}, filled: {fill_val}/{initial_val}")
                 
-                log_event(ticket_id, f"MANAGER: Opening order {stored_order_id_open} status: {order_status}, remaining: {remaining_count}, filled: {fill_count}/{initial_count}")
-                
-                # Check if order is completely filled (remaining_count = 0) and executed
-                if order_status == "executed" and remaining_count == 0 and fill_count > 0:
+                # Check if order is completely filled (remaining = 0) and executed
+                if order_status == "executed" and remaining_val == 0 and fill_val > 0:
                     # Calculate fees from orders table (already in cents, convert to dollars)
                     total_fees_cents = (taker_fees or 0) + (maker_fees or 0)
                     total_fees_dollars = total_fees_cents / 100.0
                     
-                    # Calculate position size and buy price from order data
-                    position_size = fill_count
+                    # Calculate position size and buy price from order data (use _fp for precision)
+                    position_size = fill_val
                     # taker_fill_cost is in cents, convert to price per share
                     buy_price = (taker_fill_cost / 100.0) / position_size if position_size > 0 else 0.0
-                    
-                    log_event(ticket_id, f"MANAGER: Order completely filled - pos={position_size}, price={buy_price:.4f}, fees=${total_fees_dollars:.4f}")
+                    # trades_0001.position is integer; round for DB write
+                    position_for_db = int(round(position_size))
+                    log_event(ticket_id, f"MANAGER: Order completely filled - pos={position_for_db}, price={buy_price:.4f}, fees=${total_fees_dollars:.4f}")
                 
                     # Get current trade status
                     pg_conn_status = get_postgresql_connection()
@@ -713,7 +739,7 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                                             diff = %s,
                                             symbol_open = %s
                                         WHERE id = %s
-                                    """, (position_size, buy_price, total_fees_dollars, diff_formatted, symbol_open, id))
+                                    """, (position_for_db, buy_price, total_fees_dollars, diff_formatted, symbol_open, id))
                                     
                                     if cursor.rowcount > 0:
                                         print(f"💾 Trade additional fields updated in PostgreSQL users.trades_0001 from ORDERS data")
@@ -730,7 +756,7 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                         # Update trade status to open (this will also update PostgreSQL and notify ATS)
                         update_trade_status(id, 'open')
                         
-                        log_event(ticket_id, f"MANAGER: OPEN TRADE CONFIRMED via ORDERS table — pos={position_size}, price={buy_price:.4f}, fees=${total_fees_dollars:.4f}, diff={diff_formatted}")
+                        log_event(ticket_id, f"MANAGER: OPEN TRADE CONFIRMED via ORDERS table — pos={position_for_db}, price={buy_price:.4f}, fees=${total_fees_dollars:.4f}, diff={diff_formatted}")
                         # Notify strike table for display update (lowest priority)
                         notify_strike_table_trade_change(id, "open")
                         pg_conn.close()
@@ -740,7 +766,7 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                         pg_conn.close()
                         break
                 else:
-                    log_event(ticket_id, f"MANAGER: Order not yet completely filled - status: {order_status}, remaining: {remaining_count}")
+                    log_event(ticket_id, f"MANAGER: Order not yet completely filled - status: {order_status}, remaining: {remaining_val}")
             else:
                 log_event(ticket_id, f"MANAGER: Opening order {stored_order_id_open} not found in ORDERS table yet")
             
@@ -807,18 +833,20 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
         try:
             with pg_conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT remaining_count, fill_count, status, taker_fees, maker_fees
+                    SELECT remaining_count, remaining_count_fp, fill_count, fill_count_fp, status, taker_fees, maker_fees
                     FROM users.orders_0001 
                     WHERE order_id = %s
                 """, (stored_order_id_close,))
                 order_row = cursor.fetchone()
             
             if order_row:
-                remaining_count, fill_count, order_status, taker_fees, maker_fees = order_row
-                log_event(ticket_id, f"MANAGER: Close order {stored_order_id_close} status: {order_status}, remaining: {remaining_count}, filled: {fill_count}")
+                remaining_count, remaining_count_fp, fill_count, fill_count_fp, order_status, taker_fees, maker_fees = order_row
+                remaining_val = _order_count_val(remaining_count, remaining_count_fp)
+                fill_val = _order_count_val(fill_count, fill_count_fp)
+                log_event(ticket_id, f"MANAGER: Close order {stored_order_id_close} status: {order_status}, remaining: {remaining_val}, filled: {fill_val}")
                 
-                # Check if close order is completely filled (remaining_count = 0) and executed
-                if order_status == "executed" and remaining_count == 0 and fill_count > 0:
+                # Check if close order is completely filled (remaining = 0) and executed
+                if order_status == "executed" and remaining_val == 0 and fill_val > 0:
                     log_event(ticket_id, f"MANAGER: CLOSE ORDER COMPLETELY FILLED - Trade {id} confirmed closed")
                     log(f"CLOSE ORDER COMPLETELY FILLED: {expected_ticker}")
                     
@@ -848,7 +876,7 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                     if pg_conn_close_order:
                         with pg_conn_close_order.cursor() as cursor:
                             cursor.execute("""
-                                SELECT side, taker_fill_cost, fill_count
+                                SELECT side, taker_fill_cost, fill_count, fill_count_fp
                                 FROM users.orders_0001 
                                 WHERE order_id = %s
                             """, (stored_order_id_close,))
@@ -858,9 +886,10 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                         close_order_data = None
                     
                     if close_order_data:
-                        close_side, close_fill_cost, close_fill_count = close_order_data
+                        close_side, close_fill_cost, close_fill_count, close_fill_count_fp = close_order_data
+                        close_fill_val = _order_count_val(close_fill_count, close_fill_count_fp)
                         # Calculate sell price from close order (cost per share)
-                        sell_price = (close_fill_cost / 100.0) / close_fill_count if close_fill_count > 0 else 0.0
+                        sell_price = (close_fill_cost / 100.0) / close_fill_val if close_fill_val > 0 else 0.0
                         # For close orders, sell_price should be 1 - the price we paid to close
                         sell_price = 1 - sell_price
                         log_event(ticket_id, f"MANAGER: Calculated sell_price from close order: {sell_price}")
@@ -983,7 +1012,7 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                     pg_conn.close()
                     return
                 else:
-                    log_event(ticket_id, f"MANAGER: Close order not yet completely filled - status: {order_status}, remaining: {remaining_count}")
+                    log_event(ticket_id, f"MANAGER: Close order not yet completely filled - status: {order_status}, remaining: {remaining_val}")
             else:
                 log_event(ticket_id, f"MANAGER: Close order {stored_order_id_close} not found in ORDERS table yet")
             
@@ -2606,7 +2635,7 @@ async def add_trade(request: Request):
                             "id": trade_id,  # Include trade_id for close orders
                             "ticker": verified_ticker,  # Use verified ticker from database
                             "side": data.get("side"),
-                            "count": data.get("count"),
+                            "count_fp": _format_count_fp(data, for_close=True),
                             "action": "close",
                             "type": "market",
                             "time_in_force": "IOC",
@@ -2730,10 +2759,12 @@ async def add_trade(request: Request):
         return {"id": trade_id}
     else:
         # LIVE TRADE: Send to executor as normal
-        # IMMEDIATELY send to executor first
+        # IMMEDIATELY send to executor first (use count_fp for full-chain consistency)
         try:
             import requests
             executor_port = get_executor_port()
+            if "count_fp" not in data or (data.get("count_fp") is None or str(data.get("count_fp", "")).strip() == ""):
+                data["count_fp"] = _format_count_fp(data, for_close=False)
             log(f"SENDING TO EXECUTOR")
             response = requests.post(f"http://localhost:{executor_port}/trigger_trade", json=data, timeout=5)
             log(f"EXECUTOR RESPONSE: {response.status_code}")

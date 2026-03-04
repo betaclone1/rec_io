@@ -2272,13 +2272,15 @@ def trigger_auto_stop_close(trade):
     sell_price_float = float(sell_price) if hasattr(sell_price, '__float__') else sell_price
     symbol_close_float = float(symbol_close) if hasattr(symbol_close, '__float__') else symbol_close
     
+    position_val = trade.get('position', 1)
     payload = {
         'id': trade['trade_id'],  # Include the specific trade_id from active_trades table
         'ticket_id': ticket_id,
         'intent': 'close',
         'ticker': trade['ticker'],
         'side': inverted_side,
-        'count': trade['position'],
+        'count': position_val,
+        'count_fp': f"{float(position_val):.2f}",
         'action': 'close',
         'type': 'market',
         'time_in_force': 'IOC',

@@ -102,7 +102,7 @@ window.closeTrade = async function(tradeId, sellPrice, event) {
       }
     }
 
-    // Compose payload to match open ticket, plus intent: 'close'
+    // Compose payload to match open ticket, plus intent: 'close' (count_fp for full-chain consistency)
     const payload = {
       id:               tradeId,  // Include the specific trade_id
       ticket_id:        ticket_id,
@@ -110,6 +110,7 @@ window.closeTrade = async function(tradeId, sellPrice, event) {
       ticker:           trade.ticker,
       side:             invertedSide,
       count:            count,
+      count_fp:         Number(count).toFixed(2),
       action:           'close',
       type:             'market',
       time_in_force:    'IOC',

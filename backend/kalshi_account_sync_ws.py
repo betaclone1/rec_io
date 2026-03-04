@@ -56,6 +56,7 @@ import websockets
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import schedule
+from decimal import Decimal
 
 # Add project root to path for imports
 import sys
@@ -238,6 +239,17 @@ def get_postgresql_connection():
     except Exception as e:
         print(f"❌ Failed to connect to PostgreSQL: {e}")
         return None
+
+
+def _fp_to_numeric(v):
+    """Convert API _fp string to Decimal for NUMERIC columns; None/empty -> None."""
+    if v is None or (isinstance(v, str) and v.strip() == ""):
+        return None
+    try:
+        return Decimal(str(v))
+    except Exception:
+        return None
+
 
 def generate_kalshi_signature(method, full_path, timestamp, key_path):
     from cryptography.hazmat.primitives import serialization, hashes
@@ -745,14 +757,19 @@ def sync_positions():
                         market_exposure_dollars = p.get("market_exposure_dollars")
                         realized_pnl_dollars = p.get("realized_pnl_dollars")
                         fees_paid_dollars = p.get("fees_paid_dollars")
+                        # Fixed-point contract counts (Kalshi migration); store as NUMERIC
+                        total_traded_fp = _fp_to_numeric(p.get("total_traded_fp"))
+                        position_fp = _fp_to_numeric(p.get("position_fp"))
 
                         cursor.execute("""
                             INSERT INTO users.positions_0001
                             (ticker, total_traded, position, market_exposure, realized_pnl, fees_paid, last_updated_ts, raw_json,
-                             total_traded_dollars, market_exposure_dollars, realized_pnl_dollars, fees_paid_dollars)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                             total_traded_dollars, market_exposure_dollars, realized_pnl_dollars, fees_paid_dollars,
+                             total_traded_fp, position_fp)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """, (ticker, total_traded, position_value, market_exposure, realized_pnl, fees_paid, last_updated_ts, raw_json,
-                              total_traded_dollars, market_exposure_dollars, realized_pnl_dollars, fees_paid_dollars))
+                              total_traded_dollars, market_exposure_dollars, realized_pnl_dollars, fees_paid_dollars,
+                              total_traded_fp, position_fp))
                     except Exception as e:
                         print(f"❌ Failed to insert position {p.get('ticker')} to PostgreSQL: {e}")
                 
@@ -892,6 +909,7 @@ def sync_fills():
                         side = fill.get("side")
                         action = fill.get("action")
                         count = fill.get("count")
+                        count_fp = _fp_to_numeric(fill.get("count_fp"))
                         # Legacy cent values - no longer used, kept for database compatibility only
                         yes_price = None
                         no_price = None
@@ -906,10 +924,10 @@ def sync_fills():
                         try:
                             cursor.execute("""
                                 INSERT INTO users.fills_0001
-                                (trade_id, ticker, order_id, side, action, count, yes_price, no_price, yes_price_fixed, no_price_fixed, is_taker, created_time, raw_json)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                (trade_id, ticker, order_id, side, action, count, count_fp, yes_price, no_price, yes_price_fixed, no_price_fixed, is_taker, created_time, raw_json)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                                 ON CONFLICT (trade_id) DO NOTHING
-                            """, (trade_id, ticker, order_id, side, action, count, yes_price, no_price, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json))
+                            """, (trade_id, ticker, order_id, side, action, count, count_fp, yes_price, no_price, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json))
                             pg_new_count += 1
                         except Exception as e:
                             print(f"❌ Failed to insert fill {trade_id} to PostgreSQL: {e}")
@@ -1055,8 +1073,10 @@ def sync_settlements():
                         ticker = settlement.get("ticker")
                         market_result = settlement.get("market_result")
                         yes_count = settlement.get("yes_count")
+                        yes_count_fp = _fp_to_numeric(settlement.get("yes_count_fp"))
                         yes_total_cost = settlement.get("yes_total_cost")
                         no_count = settlement.get("no_count")
+                        no_count_fp = _fp_to_numeric(settlement.get("no_count_fp"))
                         no_total_cost = settlement.get("no_total_cost")
                         revenue = settlement.get("revenue")
                         settled_time = settlement.get("settled_time")
@@ -1073,10 +1093,10 @@ def sync_settlements():
 
                         cursor.execute("""
                             INSERT INTO users.settlements_0001
-                            (ticker, market_result, yes_count, yes_total_cost, no_count, no_total_cost, revenue, settled_time, raw_json)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            (ticker, market_result, yes_count, yes_count_fp, yes_total_cost, no_count, no_count_fp, no_total_cost, revenue, settled_time, raw_json)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             ON CONFLICT (ticker, settled_time) DO NOTHING
-                        """, (ticker, market_result, yes_count, yes_total_cost, no_count, no_total_cost, revenue, settled_time, raw_json))
+                        """, (ticker, market_result, yes_count, yes_count_fp, yes_total_cost, no_count, no_count_fp, no_total_cost, revenue, settled_time, raw_json))
                     except Exception as e:
                         print(f"❌ Failed to insert settlement {settlement.get('ticker')} to PostgreSQL: {e}")
                 
@@ -1187,21 +1207,23 @@ def sync_orders():
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
-                # Get existing orders with key fields for delta comparison
+                # Get existing orders with key fields for delta comparison (use _fp for counts so we don't depend on legacy)
                 cursor.execute("""
-                    SELECT order_id, status, fill_count, remaining_count, last_update_time, 
-                           taker_fees, maker_fees, taker_fill_cost, maker_fill_cost
+                    SELECT order_id, status, fill_count, remaining_count, fill_count_fp, remaining_count_fp,
+                           last_update_time, taker_fees, maker_fees, taker_fill_cost, maker_fill_cost
                     FROM users.orders_0001
                 """)
                 existing_orders = {row[0]: {
                     'status': row[1],
-                    'fill_count': row[2], 
+                    'fill_count': row[2],
                     'remaining_count': row[3],
-                    'last_update_time': row[4],
-                    'taker_fees': row[5],
-                    'maker_fees': row[6], 
-                    'taker_fill_cost': row[7],
-                    'maker_fill_cost': row[8]
+                    'fill_count_fp': row[4],
+                    'remaining_count_fp': row[5],
+                    'last_update_time': row[6],
+                    'taker_fees': row[7],
+                    'maker_fees': row[8],
+                    'taker_fill_cost': row[9],
+                    'maker_fill_cost': row[10]
                 } for row in cursor.fetchall()}
                 
                 pg_new_count = 0
@@ -1218,10 +1240,12 @@ def sync_orders():
                         existing = existing_orders[order_id]
                         needs_update = False
                         
-                        # Check for changes in critical fields
+                        # Check for changes in critical fields (use _fp for counts so API can omit legacy)
+                        api_fill_fp = _fp_to_numeric(order.get("fill_count_fp"))
+                        api_remaining_fp = _fp_to_numeric(order.get("remaining_count_fp"))
                         if (existing['status'] != order.get("status") or
-                            existing['fill_count'] != order.get("fill_count") or
-                            existing['remaining_count'] != order.get("remaining_count") or
+                            existing['fill_count_fp'] != api_fill_fp or
+                            existing['remaining_count_fp'] != api_remaining_fp or
                             existing['last_update_time'] != order.get("last_update_time") or
                             existing['taker_fees'] != order.get("taker_fees") or
                             existing['maker_fees'] != order.get("maker_fees") or
@@ -1235,6 +1259,7 @@ def sync_orders():
                                 cursor.execute("""
                                     UPDATE users.orders_0001 SET
                                         status = %s, fill_count = %s, remaining_count = %s,
+                                        fill_count_fp = %s, remaining_count_fp = %s,
                                         last_update_time = %s, taker_fees = %s, maker_fees = %s,
                                         taker_fill_cost = %s, maker_fill_cost = %s, queue_position = %s,
                                         raw_json = %s, updated_at = CURRENT_TIMESTAMP
@@ -1242,7 +1267,9 @@ def sync_orders():
                                 """, (
                                     order.get("status"),
                                     order.get("fill_count"),
-                                    order.get("remaining_count"), 
+                                    order.get("remaining_count"),
+                                    _fp_to_numeric(order.get("fill_count_fp")),
+                                    _fp_to_numeric(order.get("remaining_count_fp")),
                                     order.get("last_update_time"),
                                     order.get("taker_fees"),
                                     order.get("maker_fees"),
@@ -1262,11 +1289,11 @@ def sync_orders():
                             cursor.execute("""
                                 INSERT INTO users.orders_0001
                                 (order_id, user_id, ticker, status, action, side, type, yes_price, no_price, yes_price_dollars, no_price_dollars,
-                                 initial_count, remaining_count, fill_count, created_time, expiration_time,
-                                 last_update_time, client_order_id, order_group_id, queue_position,
+                                 initial_count, initial_count_fp, remaining_count, remaining_count_fp, fill_count, fill_count_fp,
+                                 created_time, expiration_time, last_update_time, client_order_id, order_group_id, queue_position,
                                  self_trade_prevention_type, maker_fees, taker_fees, maker_fill_cost,
                                  taker_fill_cost, raw_json)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """, (
                                 order_id,
                                 order.get("user_id"),
@@ -1280,8 +1307,11 @@ def sync_orders():
                                 order.get("yes_price_dollars"),
                                 order.get("no_price_dollars"),
                                 order.get("initial_count"),
+                                _fp_to_numeric(order.get("initial_count_fp")),
                                 order.get("remaining_count"),
+                                _fp_to_numeric(order.get("remaining_count_fp")),
                                 order.get("fill_count"),
+                                _fp_to_numeric(order.get("fill_count_fp")),
                                 order.get("created_time"),
                                 order.get("expiration_time"),
                                 order.get("last_update_time"),
