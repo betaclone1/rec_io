@@ -16,6 +16,33 @@ Each entry below uses:
 
 ---
 
+## 2026-03-05 — Simulated 15m trade system (production)
+
+**Summary**
+
+- **Simulated 15m trades on hourly markets:** `auto_entry_supervisor` now runs a simulated 15m entry path for all hourly monitors with `auto_trade=TRUE`, excluding Momentum Breakout/Contain (for testing). It reuses each monitor’s existing `min_time` / `max_time` window and reads `ttc_15m` / `probability_15m` from the hourly strike tables. Simulated trades ignore price/diff/volume/momentum spike rules, are always `paper_trade = TRUE` / `test_filter = FALSE`, and never call the executor or send real orders.
+- **Contract + weekly_cycle per 15m window:** Simulated trades use contract labels at the *next* 15-minute boundary (e.g. `BTC 2:15pm`, `BTC 2:30pm`), so `trade_manager` can derive `hour_idx` and `weekly_cycle` with the correct decimal (.0 / .1 / .2 / .3) via the existing contract parsing logic. This ensures every simulated trade is tagged to the correct 15m window for later calibration.
+- **15m expiration + symbol-close settlement (simulated):** `trade_manager`’s 15-minute expiration job now always calls `check_expired_simulated_trades()` at :00/:15/:30/:45, regardless of whether there are live trades. This function closes *only* `users.trades_simulated_0001` rows (no impact on `trades_0001`), using the latest `one_minute_avg` (or `price` fallback) from `live_data.live_price_log_1s_{symbol}` as `symbol_close` and setting `status = 'closed'`, `close_method = 'expired'`, and `win_loss` based on a YES/NO vs strike comparison. `sell_price` is recorded as `NULL` for simulated trades.
+- **Simulated cycle_win_loss per 15m window:** For each 15m window (grouped by `monitor`, `date`, `weekly_cycle`) that has simulated trades closed in a given expiration run, `trade_manager` sets `cycle_win_loss` on `users.trades_simulated_0001` to `L` if **any** trade in that window is a loss, otherwise `W`. This gives a single, conservative win/loss flag per monitor per 15m cycle for downstream Strategy Health Score (SHS) work.
+- **DB schema + load characteristics:** No new columns were added for this feature; it relies on the existing `users.trades_simulated_0001` schema (including `weekly_cycle NUMERIC(5,1)`, `cycle_win_loss`, `cycle_pnl`, `cycle_ret_pct`) and the `live_data.live_price_log_1s_{symbol}` tables. `insert_simulated_trade` explicitly records `diff`, `buy_price`, `position`, `fees`, `bankroll`, `price_spread`, and `sell_price` as `NULL` and touches only `users.trades_simulated_0001`. The system leverages existing CPU-intensive processes (strike generators, price logs, auto-entry loops); the new work is limited to light `SELECT` / `INSERT` / `UPDATE` statements and does not introduce new schedulers or external API calls.
+
+**Production agent checklist**
+
+- [ ] Confirm codebase changes (pull latest `main` on production).
+- [ ] Update local database schema to latest (id sequences, PKs, numeric weekly_cycle, simulated table shape) by running from project root:
+  - `PYTHONPATH=$(pwd) venv/bin/python -c "from backend.core.config.database import init_database; init_database()"`
+  - This ensures `users.trades_simulated_0001` exists with a working `id` sequence / primary key and matches the definition in `docs/MASTER_DB_SCHEMA_REFERENCE.md` (including `weekly_cycle NUMERIC(5,1)`, `cycle_win_loss`, `cycle_pnl`, `cycle_ret_pct`, and boolean flags).
+- [ ] Restart application services in the standard order (or run `scripts/MASTER_RESTART.sh`): at minimum `main_app`, `trade_manager`, `monitor_manager` (which runs `auto_entry_supervisor` / `active_trade_supervisor`), and strike table / price watchdog services.
+- [ ] Verify simulated trades path:
+  - Confirm `users.trades_simulated_0001` is receiving new rows for hourly monitors with `auto_trade=TRUE` (excluding Momentum Breakout / Momentum Contain), with `position`, `fees`, `bankroll`, `price_spread`, and `sell_price` recorded as `NULL`.
+  - After at least one 15m boundary, confirm those simulated trades transition to `status='closed'` with `symbol_close` populated and `win_loss` correctly reflecting YES/NO vs strike.
+  - For a given monitor/date/`weekly_cycle`, confirm all simulated trades share the same `cycle_win_loss` (`L` if any loss in that 15m window, otherwise `W`).
+- [ ] Verify no impact to live trading:
+  - Confirm `users.trades_0001` behavior is unchanged (entries, expirations, cycle metrics, and pnl/ret_pct), and that real orders are still executed only from live paths.
+  - Scan logs for `AUTO ENTRY`, `TRADE MANAGER`, and `SIMULATED 15m` messages to ensure there are no new errors or unexpected restarts.
+
+---
+
 ## 2026-03-03 — Strike table alignment, simulated trades table, weekly_cycle 15m decimal
 
 **Summary**
