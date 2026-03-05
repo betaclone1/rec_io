@@ -605,6 +605,168 @@ def insert_trade(trade):
     notify_frontend_trade_change()
     return last_id
 
+
+def _ensure_trades_simulated_id_sequence():
+    """One-time: ensure trades_simulated_0001.id has a sequence default so INSERT ... RETURNING id works."""
+    if getattr(_ensure_trades_simulated_id_sequence, "_done", False):
+        return
+    try:
+        pg_conn = get_postgresql_connection()
+        if not pg_conn:
+            return
+        with pg_conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM information_schema.tables WHERE table_schema = 'users' AND table_name = 'trades_simulated_0001'")
+            if not cur.fetchone():
+                pg_conn.close()
+                return
+            cur.execute("CREATE SEQUENCE IF NOT EXISTS users.trades_simulated_0001_id_seq")
+            cur.execute("ALTER TABLE users.trades_simulated_0001 ALTER COLUMN id SET DEFAULT nextval('users.trades_simulated_0001_id_seq'::regclass)")
+            cur.execute("SELECT setval('users.trades_simulated_0001_id_seq', GREATEST(1, (SELECT COALESCE(MAX(id), 0) + 1 FROM users.trades_simulated_0001)))")
+        pg_conn.commit()
+        pg_conn.close()
+        _ensure_trades_simulated_id_sequence._done = True
+    except Exception:
+        pass
+
+
+def insert_simulated_trade(trade):
+    """Insert a simulated (virtual 15m) trade into users.trades_simulated_0001. paper_trade=True, test_filter=False."""
+    _ensure_trades_simulated_id_sequence()
+    symbol = trade.get('symbol')
+    if not symbol:
+        raise ValueError("Trade symbol must be provided")
+    symbol_lower = symbol.lower()
+    contract_original = trade.get('contract')
+    contract_name = truncate_contract_name(contract_original, symbol)
+    hour_idx_for_db = _extract_hour_idx(contract_original)
+    base_weekly_cycle = _compute_weekly_cycle(trade.get('date'), hour_idx_for_db)
+    quarter = _extract_quarter_from_contract(contract_original)
+    weekly_cycle_for_db = round(base_weekly_cycle + (quarter / 10.0), 1) if base_weekly_cycle is not None else None
+
+    symbol_open = None
+    momentum_for_db = 0
+    momentum_percentile_for_db = None
+    momentum_5s_avg_for_db = None
+    volatility_for_db = None
+    volatility_percentile_for_db = None
+    movement_for_db = None
+    movement_percentile_for_db = None
+    try:
+        pg_conn = get_postgresql_connection()
+        if pg_conn:
+            with pg_conn.cursor() as cursor:
+                cursor.execute(f"""
+                    SELECT price, momentum, momentum_percentile, momentum_5s_avg,
+                           volatility, volatility_percentile, movement, movement_percentile
+                    FROM live_data.live_price_log_1s_{symbol_lower} ORDER BY timestamp DESC LIMIT 1
+                """)
+                result = cursor.fetchone()
+            pg_conn.close()
+            if result and len(result) >= 8 and result[0] is not None:
+                symbol_open = int(float(result[0]))
+                if result[1] is not None:
+                    momentum_for_db = round(float(result[1]) * 100)
+                momentum_percentile_for_db = float(result[2]) if result[2] is not None else None
+                momentum_5s_avg_for_db = float(result[3]) if result[3] is not None else None
+                volatility_for_db = float(result[4]) if result[4] is not None else None
+                volatility_percentile_for_db = float(result[5]) if result[5] is not None else None
+                movement_for_db = float(result[6]) if result[6] is not None else None
+                movement_percentile_for_db = float(result[7]) if result[7] is not None else None
+    except Exception:
+        pass
+
+    # Simulated trades: do not record diff, buy_price, position, fees, or bankroll
+    diff_formatted = None
+    buy_price_for_db = None
+    position_for_db = None
+    bankroll_for_db = None
+    fees_for_db = None
+
+    last_id = None
+    try:
+        pg_conn = get_postgresql_connection()
+        if not pg_conn:
+            return None
+        with pg_conn.cursor() as cursor:
+            monitor_key = trade.get('monitor')
+            cooldown_timer = None
+            if monitor_key:
+                try:
+                    match = MONITOR_KEY_PATTERN.match(str(monitor_key))
+                    if match:
+                        user_number, monitor_id = match.group(1), match.group(2)
+                        cursor.execute(
+                            "SELECT cooldown_timer FROM users.monitor_list_{} WHERE id = %s".format(user_number),
+                            (monitor_id,)
+                        )
+                        row = cursor.fetchone()
+                        if row and len(row) > 0 and row[0] is not None:
+                            cooldown_timer = int(row[0])
+                except Exception:
+                    pass
+            loss_prevention_flag = _normalize_boolean_flag(trade.get('loss_prevention', False))
+            multiplier_for_db = trade.get('multiplier')
+            if multiplier_for_db is None:
+                multiplier_for_db = 1.0
+            try:
+                multiplier_for_db = float(multiplier_for_db)
+            except (TypeError, ValueError):
+                multiplier_for_db = 1.0
+            # Simulated: do not record price_spread
+            price_spread = None
+            ticker, side = trade.get('ticker'), trade.get('side')
+
+            cursor.execute("""
+                INSERT INTO users.trades_simulated_0001 (
+                    status, date, time, symbol, market, trade_strategy,
+                    contract, strike, side, prob, diff, buy_price, position,
+                    sell_price, closed_at, fees, pnl, symbol_open, symbol_close,
+                    momentum, volatility, volatility_percentile, movement, movement_percentile,
+                    win_loss, ticker, ticket_id, market_id,
+                    momentum_percentile, momentum_5s_avg, entry_method, close_method, monitor, bankroll,
+                    hour_idx, weekly_cycle, loss_prevention, multiplier, price_spread, paper_trade, cooldown_timer, test_filter
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (
+                trade.get('status', 'pending'), trade['date'], trade['time'],
+                symbol, trade.get('market', 'Kalshi'), trade.get('trade_strategy', 'Hourly HTC'),
+                contract_name, trade['strike'], trade['side'], trade.get('prob'),
+                diff_formatted, buy_price_for_db, position_for_db, None, None,
+                fees_for_db, None, symbol_open, None, momentum_for_db,
+                volatility_for_db, volatility_percentile_for_db, movement_for_db, movement_percentile_for_db,
+                None, ticker, trade.get('ticket_id'), trade.get('market_id', f'{symbol}-USD'),
+                momentum_percentile_for_db, momentum_5s_avg_for_db, trade.get('entry_method', 'simulated_15m'), trade.get('close_method'),
+                monitor_key, bankroll_for_db,
+                hour_idx_for_db, weekly_cycle_for_db,
+                loss_prevention_flag, multiplier_for_db, price_spread,
+                True, cooldown_timer, False
+            ))
+            row = cursor.fetchone()
+            try:
+                last_id = row[0] if row and len(row) > 0 else None
+            except (TypeError, IndexError):
+                last_id = None
+            if last_id is None:
+                try:
+                    cursor.execute("SELECT lastval()")
+                    r = cursor.fetchone()
+                    if r and len(r) > 0 and r[0] is not None:
+                        last_id = int(r[0])
+                except Exception:
+                    pass
+        pg_conn.commit()
+        pg_conn.close()
+        if last_id is None:
+            print("❌ Simulated trade INSERT returned no id (RETURNING id gave no row)")
+            return None
+    except Exception as e:
+        import traceback
+        print(f"❌ Failed to write simulated trade: {e}")
+        traceback.print_exc()
+        return None
+    return last_id
+
+
 def confirm_open_trade(id: int, ticket_id: str) -> None:
     """Confirms a PENDING trade has been opened by checking ORDERS table for complete fill"""
     # Get initial trade info including the order_id_open we stored
@@ -2688,6 +2850,32 @@ async def add_trade(request: Request):
     # OPEN TRADE
     log("OPEN TICKET RECEIVED")
 
+    simulated = data.get("simulated_trade", False)
+    if isinstance(simulated, str):
+        simulated = simulated.lower() in ("true", "1", "yes")
+    if simulated:
+        required = {"date", "time", "strike", "side", "symbol", "contract"}
+        if not required.issubset(data.keys()):
+            raise HTTPException(status_code=400, detail="Missing required fields for simulated trade")
+        trade_id = insert_simulated_trade(data)
+        if trade_id is None:
+            raise HTTPException(status_code=500, detail="Failed to insert simulated trade")
+        # Paper trade rule: confirm as open immediately (no executor)
+        try:
+            pg_conn = get_postgresql_connection()
+            if pg_conn:
+                with pg_conn.cursor() as cursor:
+                    cursor.execute("""
+                        UPDATE users.trades_simulated_0001
+                        SET status = 'open', fees = NULL, order_id_open = NULL
+                        WHERE id = %s
+                    """, (trade_id,))
+                    pg_conn.commit()
+                pg_conn.close()
+        except Exception as e:
+            log(f"⚠️ Failed to confirm simulated trade {trade_id} as open: {e}")
+        return {"id": trade_id}
+
     # Global maintenance guard: never open new trades while the system is in maintenance mode.
     try:
         if not _is_trading_enabled():
@@ -3060,6 +3248,124 @@ async def manual_settlement_poll():
 
 # ---------- EXPIRATION FUNCTIONS ----------------------------------------------------
 
+def check_expired_simulated_trades():
+    """Expire and settle open simulated trades on the 15m schedule. All simulated trades are treated as 15m.
+    Records sell_price as NULL; sets cycle_win_loss per 15m window (L if any loss in that monitor/cycle, else W)."""
+    try:
+        pg_conn = get_postgresql_connection()
+        if not pg_conn:
+            return
+        with pg_conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, ticker, symbol, strike, side, monitor, date, weekly_cycle "
+                "FROM users.trades_simulated_0001 "
+                "WHERE status IN ('open', 'closing', 'close_failed')"
+            )
+            active = cursor.fetchall()
+        pg_conn.close()
+        if not active:
+            return
+        now_est = datetime.now(ZoneInfo("America/New_York"))
+        closed_at = now_est.strftime("%H:%M:%S")
+        symbol_prices = {}
+        cycles_closed = set()  # (monitor, date, weekly_cycle) for cycle_win_loss update
+        for row in active:
+            trade_id, ticker, symbol, strike, side = row[0], row[1], row[2], row[3], row[4]
+            monitor, trade_date, weekly_cycle = row[5], row[6], row[7]
+            if symbol not in symbol_prices:
+                try:
+                    conn = get_postgresql_connection()
+                    if conn:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                f"SELECT one_minute_avg FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1"
+                            )
+                            r = cur.fetchone()
+                            if r and r[0] is not None:
+                                symbol_prices[symbol] = float(r[0])
+                            else:
+                                cur.execute(
+                                    f"SELECT price FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1"
+                                )
+                                fb = cur.fetchone()
+                                symbol_prices[symbol] = float(fb[0]) if fb and fb[0] is not None else None
+                        conn.close()
+                    else:
+                        symbol_prices[symbol] = None
+                except Exception:
+                    symbol_prices[symbol] = None
+            symbol_close = symbol_prices.get(symbol)
+            if symbol_close is None:
+                continue
+            strike_clean = str(strike).replace("$", "").replace(",", "")
+            strike_float = float(strike_clean)
+            symbol_close_float = float(symbol_close)
+            is_winner = False
+            if side and str(side).upper() in ("Y", "YES"):
+                is_winner = symbol_close_float >= strike_float
+            elif side and str(side).upper() in ("N", "NO"):
+                is_winner = symbol_close_float <= strike_float
+            win_loss = "W" if is_winner else "L"
+            conn = get_postgresql_connection()
+            if not conn:
+                continue
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE users.trades_simulated_0001
+                        SET status = 'closed',
+                            closed_at = %s,
+                            symbol_close = %s,
+                            sell_price = NULL,
+                            win_loss = %s,
+                            close_method = 'expired',
+                            fees = NULL
+                        WHERE id = %s AND status IN ('open', 'closing', 'close_failed')
+                        """,
+                        (closed_at, symbol_close, win_loss, trade_id),
+                    )
+                conn.commit()
+                if monitor is not None and trade_date is not None and weekly_cycle is not None:
+                    cycles_closed.add((monitor, trade_date, weekly_cycle))
+                log(f"📝 SIMULATED TRADE EXPIRED/SETTLED: id={trade_id}, {ticker}, W/L={win_loss}")
+            except Exception as e:
+                log(f"⚠️ Failed to settle simulated trade {trade_id}: {e}")
+            finally:
+                conn.close()
+        # Set cycle_win_loss per 15m window: L if any loss in that monitor/cycle, else W
+        for monitor, trade_date, weekly_cycle in cycles_closed:
+            try:
+                conn = get_postgresql_connection()
+                if not conn:
+                    continue
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT 1 FROM users.trades_simulated_0001
+                        WHERE monitor = %s AND date = %s AND weekly_cycle = %s AND status = 'closed' AND win_loss = 'L'
+                        LIMIT 1
+                        """,
+                        (monitor, trade_date, weekly_cycle),
+                    )
+                    has_loss = cursor.fetchone() is not None
+                    cycle_win_loss = "L" if has_loss else "W"
+                    cursor.execute(
+                        """
+                        UPDATE users.trades_simulated_0001
+                        SET cycle_win_loss = %s
+                        WHERE monitor = %s AND date = %s AND weekly_cycle = %s
+                        """,
+                        (cycle_win_loss, monitor, trade_date, weekly_cycle),
+                    )
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                log(f"⚠️ Failed to set cycle_win_loss for simulated cycle {monitor}/{trade_date}/{weekly_cycle}: {e}")
+    except Exception as e:
+        log(f"⚠️ check_expired_simulated_trades: {e}")
+
+
 def check_expired_trades():
     """Check for expired trades.
     
@@ -3071,8 +3377,19 @@ def check_expired_trades():
     try:
         # Step 1: Delete trades with status ERROR
         delete_error_trades()
-        
-        # Step 2: Check for open, closing, and close_failed trades to mark as expired
+
+        now_est = datetime.now(ZoneInfo("America/New_York"))
+        closed_at = now_est.strftime("%H:%M:%S")
+        current_minute = now_est.minute
+
+        if current_minute % 15 != 0:
+            # Safety guard: scheduler should only call us at multiples of 15.
+            return
+
+        # Simulated trades: run every 15m regardless of live trade count; close and set W/L from symbol_close
+        check_expired_simulated_trades()
+
+        # Step 2: Check for open, closing, and close_failed trades (live) to mark as expired
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
@@ -3084,13 +3401,9 @@ def check_expired_trades():
                 active_trades = cursor.fetchall()
         else:
             active_trades = []
-        
+
         if not active_trades:
             return
-        
-        now_est = datetime.now(ZoneInfo("America/New_York"))
-        closed_at = now_est.strftime("%H:%M:%S")
-        current_minute = now_est.minute
 
         # Decide which trades to process on this run.
         # - At minute 0: process all active trades (original hourly behavior).
@@ -3100,10 +3413,6 @@ def check_expired_trades():
             if not strategy:
                 return False
             return "15m" in strategy.lower()
-
-        if current_minute % 15 != 0:
-            # Safety guard: scheduler should only call us at multiples of 15.
-            return
 
         if current_minute == 0:
             trades_to_process = active_trades

@@ -10583,9 +10583,11 @@ WHERE t.monitor = cs.monitor
 
 ### Table: `users.trades_simulated_0001`
 
-**Maintenance note:** This table was created as a copy of `users.trades_0001` for storing simulated 15m-cycle trades (e.g. from the simulated path on hourly strike tables). **Any future schema changes to `users.trades_0001` (new columns, type changes, indexes, constraints) must be applied to `users.trades_simulated_0001` as well** so the two tables stay in sync.
+**Creation:** If the table does not exist, it is created by `init_database()` in `backend/core/config/database.py` with the same column set as `users.trades_0001`. No manual creation is required.
 
-Same column set as `users.trades_0001` (see that table for column descriptions). Currently empty; will be written to by the simulated-trade path. As of the last DB check, this table has no primary key or indexes; add them to mirror `trades_0001` when needed (e.g. `id` as primary key, indexes on `date`, `status`, `ticker`, etc.).
+**Purpose:** Copy of `users.trades_0001` for storing simulated 15m-cycle trades (e.g. from the simulated path on hourly strike tables; SHS/calibration). **Any future schema changes to `users.trades_0001` (new columns, type changes, indexes, constraints) must be applied to `users.trades_simulated_0001` as well** so the two tables stay in sync.
+
+Same column set as `users.trades_0001` (see that table for column descriptions). Empty until the simulated-trade path writes to it. Created with `id SERIAL PRIMARY KEY`; add indexes to mirror `trades_0001` (e.g. on `date`, `status`, `ticker`) when needed.
 
 #### Columns (from DB)
 

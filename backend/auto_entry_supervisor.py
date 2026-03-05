@@ -162,6 +162,28 @@ def _hour_label_to_hour24(hour_value: int, period: str) -> int:
     return 12 if hour_value == 12 else hour_value + 12
 
 
+def _next_15m_boundary_est() -> tuple[int, int]:
+    """Return (hour_24, minute) for the next 15m boundary (expiry of current quarter). Minute in (0, 15, 30, 45)."""
+    now = datetime.now(ZoneInfo("America/New_York"))
+    m, h = now.minute, now.hour
+    next_m = ((m // 15) + 1) * 15
+    if next_m >= 60:
+        next_m = 0
+        h = (h + 1) % 24
+    return h, next_m
+
+
+def _format_15m_contract_label(symbol: str, hour_24: int, minute: int) -> str:
+    """Format contract label with minutes for 15m (e.g. 'BTC 2:15pm'). Matches CONTRACT_15M_FULL_PATTERN in trade_manager."""
+    if hour_24 == 0:
+        return f"{symbol.upper()} 12:{minute:02d}am"
+    if hour_24 == 12:
+        return f"{symbol.upper()} 12:{minute:02d}pm"
+    if hour_24 > 12:
+        return f"{symbol.upper()} {hour_24 - 12}:{minute:02d}pm"
+    return f"{symbol.upper()} {hour_24}:{minute:02d}am"
+
+
 def _resolve_event_time(symbol: str, market_title: Optional[str], event_ticker: Optional[str]) -> tuple[Optional[str], Optional[int]]:
     """Return (contract_label, hour_24) if we can parse a time from the market metadata.
     Contract label is simplified for DB: hourly e.g. 'BTC 2pm', 15m e.g. 'BTC 12:45pm'."""
@@ -523,6 +545,7 @@ monitoring_thread_lock = threading.Lock()
 
 # SIMPLIFIED: Track last trade time per strike (atomic)
 last_trade_times = {}  # strike_key -> timestamp
+last_simulated_trade_times = {}  # simulated 15m path only
 
 # Cooldown period (seconds)
 TRADE_COOLDOWN = 10
@@ -1811,6 +1834,58 @@ def get_master_strike_table_data():
         log(f"[WATCHLIST] Error reading master strike table data from PostgreSQL: {e}")
         return None
 
+
+def get_master_strike_table_data_simulated_15m():
+    """Read hourly strike table using ttc_15m and probability_15m for simulated 15m path."""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
+            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+        )
+        with conn.cursor() as cursor:
+            current_symbol, _ = get_current_monitor_symbol_and_market()
+            table_name = get_strike_table_name(current_symbol, "hourly")
+            cursor.execute("""
+                SELECT symbol, current_price, ttc_15m, event_ticker, market_title, strike_tier, market_status
+                FROM live_data.%s LIMIT 1
+            """ % (table_name,))
+            header = cursor.fetchone()
+            if not header:
+                conn.close()
+                return None
+            cursor.execute("""
+                SELECT strike, buffer, buffer_pct, probability_15m, yes_ask, no_ask, yes_ask_dollars, no_ask_dollars,
+                       volume, ticker, yes_diff, no_diff, active_side, yes_price_spread, no_price_spread
+                FROM live_data.%s ORDER BY strike
+            """ % (table_name,))
+            rows = cursor.fetchall()
+        conn.close()
+        out = {
+            "symbol": header[0], "current_price": float(header[1]) if header[1] else None,
+            "ttc": int(header[2]) if header[2] else None,
+            "event_ticker": header[3], "market_title": header[4], "strike_tier": header[5], "market_status": header[6],
+            "strikes": []
+        }
+        for r in rows:
+            out["strikes"].append({
+                "strike": float(r[0]) if r[0] else None, "buffer": float(r[1]) if r[1] else None,
+                "buffer_pct": float(r[2]) if r[2] else None, "probability": float(r[3]) if r[3] else None,
+                "yes_ask": int(r[4]) if r[4] else None, "no_ask": int(r[5]) if r[5] else None,
+                "yes_ask_dollars": r[6], "no_ask_dollars": r[7], "volume": int(r[8]) if r[8] else None,
+                "ticker": r[9], "yes_diff": float(r[10]) if r[10] is not None else None,
+                "no_diff": float(r[11]) if r[11] is not None else None, "active_side": r[12],
+                "yes_price_spread": float(r[13]) if r[13] is not None else None,
+                "no_price_spread": float(r[14]) if r[14] is not None else None
+            })
+        return out
+    except Exception as e:
+        log(f"[SIMULATED 15m] Error reading hourly strike table: {e}")
+        return None
+
+
 def generate_watchlist_from_strike_table_DELETED():
     """Generate watchlist by filtering the master strike table based on auto entry settings"""
     try:
@@ -2536,9 +2611,169 @@ def is_strike_already_traded(strike_data):
         log(f"Error checking trades_0001 table: {e}")
         return False
 
+
+def is_strike_already_simulated_traded(strike_data):
+    """True if we already have an open/pending simulated trade on this strike (trades_simulated_0001)."""
+    try:
+        import psycopg2
+        side = (strike_data.get('side') or '').lower()
+        db_side = 'Y' if side in ('yes', 'y') else 'N'
+        conn = psycopg2.connect(
+            host=os.getenv('POSTGRES_HOST', 'localhost'),
+            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
+            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
+            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
+        )
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 1 FROM users.trades_simulated_0001
+            WHERE status IN ('open', 'pending') AND monitor = %s AND ticker = %s AND side = %s
+        """, (f"mon_0001_{MONITOR_ID}", strike_data.get('ticker'), db_side))
+        found = cursor.fetchone() is not None
+        conn.close()
+        return found
+    except Exception as e:
+        log(f"[SIMULATED 15m] Error checking trades_simulated_0001: {e}")
+        return False
+
+
+def can_trade_strike_simulated(strike_key):
+    """Cooldown check for simulated path only."""
+    import time
+    t = time.time()
+    if strike_key in last_simulated_trade_times and (t - last_simulated_trade_times[strike_key]) < TRADE_COOLDOWN:
+        return False
+    last_simulated_trade_times[strike_key] = t
+    return True
+
+
+def trigger_simulated_trade(strike_data):
+    """POST to trade_manager with simulated_trade=True; writes to trades_simulated_0001, no executor.
+    Contract uses next 15m boundary (e.g. BTC 2:15pm) so weekly_cycle decimal reflects quarter (.0/.1/.2/.3)."""
+    import requests
+    import uuid
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    try:
+        port = get_port("trade_manager")
+        current_symbol = get_current_monitor_symbol()
+        hour_24, minute = _next_15m_boundary_est()
+        contract_name = _format_15m_contract_label(current_symbol, hour_24, minute)
+        position_size = get_position_size() or 1
+        bankroll_allotment = get_bankroll_allotment() or 0
+        side = strike_data.get("side")
+        conv_side = "Y" if side == "yes" else "N" if side == "no" else side
+        payload = {
+            "ticket_id": f"SIM-{uuid.uuid4().hex[:8]}-{int(datetime.now().timestamp() * 1000)}",
+            "status": "pending", "date": datetime.now(ZoneInfo("America/New_York")).strftime('%Y-%m-%d'),
+            "time": datetime.now(ZoneInfo("America/New_York")).strftime('%H:%M:%S'),
+            "symbol": current_symbol, "market": "Kalshi", "trade_strategy": get_trade_strategy(),
+            "contract": contract_name, "strike": strike_data.get("strike"), "side": conv_side,
+            "ticker": strike_data.get("ticker"), "prob": strike_data.get("probability"),
+            "position": 1,
+            "monitor": f"mon_0001_{MONITOR_ID}", "bankroll_allotment_total": bankroll_allotment,
+            "entry_method": "simulated_15m", "loss_prevention": False, "multiplier": get_current_multiplier(),
+            "paper_trade": True, "simulated_trade": True,
+        }
+        r = requests.post(f"http://localhost:{port}/trades", json=payload, timeout=10)
+        if r.status_code == 201:
+            log(f"[SIMULATED 15m] Recorded trade id={r.json().get('id')}")
+            return True
+        log(f"[SIMULATED 15m] trade_manager returned {r.status_code}: {r.text}")
+        return False
+    except Exception as e:
+        log(f"[SIMULATED 15m] Error: {e}")
+        return False
+
+
+def check_simulated_15m_entry_hourly_htc():
+    """Run simulated 15m path: ttc_15m and probability_15m from hourly table; record to trades_simulated_0001. No price/diff/volume checks."""
+    import time as _t
+    _throttle = getattr(check_simulated_15m_entry_hourly_htc, "_log_ts", 0)
+    _now = _t.time()
+    _do_log = (_now - _throttle) >= 90
+    try:
+        settings = get_auto_entry_settings()
+        for k in ("min_time", "max_time", "min_probability", "max_probability"):
+            if k not in settings:
+                if _do_log:
+                    log(f"[SIMULATED 15m] skip: missing setting {k}")
+                    check_simulated_15m_entry_hourly_htc._log_ts = _now
+                return
+        min_t = settings["min_time"]
+        max_t = settings["max_time"]
+        min_p = settings["min_probability"]
+        max_p = settings["max_probability"]
+        data = get_master_strike_table_data_simulated_15m()
+        if not data or "strikes" not in data:
+            if _do_log:
+                log(f"[SIMULATED 15m] skip: no strike data from hourly table")
+                check_simulated_15m_entry_hourly_htc._log_ts = _now
+            return
+        ttc = data.get("ttc")
+        if ttc is None or not (min_t <= ttc <= max_t):
+            if _do_log:
+                log(f"[SIMULATED 15m] skip: ttc_15m={ttc} outside window [{min_t},{max_t}]")
+                check_simulated_15m_entry_hourly_htc._log_ts = _now
+            return
+        if _do_log:
+            log(f"[SIMULATED 15m] in window ttc_15m={ttc} [{min_t},{max_t}] scanning {len(data['strikes'])} strikes prob=[{min_p},{max_p}]")
+            check_simulated_15m_entry_hourly_htc._log_ts = _now
+        processed = set()
+        for strike in data["strikes"]:
+            try:
+                active_side = strike.get("active_side")
+                if not active_side:
+                    continue
+                strike_key = f"{strike.get('strike')}-{active_side}"
+                if strike_key in processed:
+                    continue
+                processed.add(strike_key)
+                if not can_trade_strike_simulated(strike_key):
+                    continue
+                check_data = {"strike": strike.get("strike"), "side": active_side, "ticker": strike.get("ticker")}
+                if is_strike_already_simulated_traded(check_data):
+                    continue
+                prob = strike.get("probability")
+                if prob is None or prob < min_p or prob > max_p:
+                    continue
+                side = "yes" if active_side == "yes" else "no"
+                buy_price = float(strike.get("yes_ask_dollars") or 0) if active_side == "yes" else float(strike.get("no_ask_dollars") or 0)
+                diff = strike.get("yes_diff") if active_side == "yes" else strike.get("no_diff")
+                sd = {"strike": f"${int(strike.get('strike')):,}", "side": side, "ticker": strike.get("ticker"),
+                      "buy_price": buy_price, "probability": prob, "diff": diff}
+                if trigger_simulated_trade(sd):
+                    pass
+                elif strike_key in last_simulated_trade_times:
+                    del last_simulated_trade_times[strike_key]
+            except Exception as e:
+                log(f"[SIMULATED 15m] Strike {strike.get('strike')}: {e}")
+    except Exception as e:
+        log(f"[SIMULATED 15m] Error: {e}")
+
+
 def check_auto_entry_conditions():
     """Check if auto entry conditions are met and trigger trades - routes to strategy-specific logic"""
     try:
+        strategy = get_trade_strategy()
+        # Simulated 15m path: all hourly monitors with auto_trade=TRUE (Breakout/Contain excluded for testing; may re-include)
+        try:
+            import time as _t
+            _, market = get_current_monitor_symbol_and_market()
+            is_hourly = (market or "").strip().lower() == "hourly"
+            auto_on = is_auto_trade_enabled()
+            # Simulated 15m: exclude Momentum Breakout/Contain for testing; may re-include later
+            skip_sim = strategy in ("Momentum Breakout", "Momentum Contain")
+            if is_hourly and auto_on and not skip_sim:
+                if not hasattr(check_auto_entry_conditions, "_sim_log_ts"):
+                    check_auto_entry_conditions._sim_log_ts = 0
+                if (_t.time() - check_auto_entry_conditions._sim_log_ts) >= 90:
+                    log(f"[SIMULATED 15m] running (hourly + auto_trade)")
+                    check_auto_entry_conditions._sim_log_ts = _t.time()
+                check_simulated_15m_entry_hourly_htc()
+        except Exception as sim_e:
+            log(f"[SIMULATED 15m] {sim_e}")
+
         # ALWAYS check spike alert conditions first (even during closed hours) to monitor momentum spikes
         check_spike_alert_conditions()
         
@@ -2549,9 +2784,7 @@ def check_auto_entry_conditions():
         # current_hour = now_est.hour
         # if 0 <= current_hour < 8:  # Between midnight and 8am EST
         #     return  # Skip trade entry checks during closed hours (spike monitoring already done)
-        
-        strategy = get_trade_strategy()
-        
+
         if strategy == "Momentum Scalp":
             check_auto_entry_conditions_momentum_scalp()
         elif strategy == "Momentum Reversal":

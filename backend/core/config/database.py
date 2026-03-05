@@ -115,6 +115,68 @@ def init_database():
             );
         """)
 
+        # Simulated trades table: same structure as trades_0001 for 15m-cycle simulated path (SHS). Created if not present.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users.trades_simulated_0001 (
+                id SERIAL PRIMARY KEY,
+                status VARCHAR(50) DEFAULT 'pending',
+                date DATE,
+                time TIME,
+                symbol VARCHAR(50),
+                market VARCHAR(50),
+                trade_strategy VARCHAR(100),
+                contract VARCHAR(255),
+                strike VARCHAR(50),
+                side VARCHAR(10),
+                prob DECIMAL(10,4),
+                diff VARCHAR(50),
+                buy_price DECIMAL(10,4),
+                position INTEGER,
+                sell_price DECIMAL(10,4),
+                closed_at TIMESTAMP,
+                fees DECIMAL(10,4),
+                pnl DECIMAL(10,4),
+                symbol_open DECIMAL(10,4),
+                symbol_close DECIMAL(10,4),
+                momentum INTEGER,
+                volatility_percentile NUMERIC(5,1),
+                win_loss VARCHAR(10),
+                ticker VARCHAR(100),
+                ticket_id VARCHAR(100),
+                market_id VARCHAR(100),
+                momentum_percentile DECIMAL(10,4),
+                entry_method VARCHAR(50),
+                close_method VARCHAR(50),
+                bankroll DECIMAL(12,2),
+                monitor VARCHAR(50),
+                hour_idx INTEGER,
+                weekly_cycle NUMERIC(5,1),
+                order_id TEXT,
+                order_id_open TEXT,
+                order_id_close TEXT,
+                high_price DECIMAL(10,4),
+                low_price DECIMAL(10,4),
+                loss_prevention BOOLEAN DEFAULT FALSE,
+                multiplier DECIMAL(10,2),
+                price_spread DECIMAL(6,4),
+                paper_trade BOOLEAN DEFAULT FALSE,
+                cooldown_timer INTEGER,
+                monitor_confirmed BOOLEAN DEFAULT FALSE,
+                cycle_win_loss TEXT,
+                cycle_pnl REAL,
+                cycle_ret_pct REAL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                test_filter BOOLEAN DEFAULT FALSE,
+                notes TEXT,
+                ret_pct REAL,
+                momentum_5s_avg NUMERIC,
+                volatility NUMERIC(10,4),
+                movement NUMERIC(10,4),
+                movement_percentile NUMERIC(5,1)
+            );
+        """)
+
         # Ensure new columns exist for legacy databases
         cursor.execute("""
             DO $$
@@ -161,6 +223,17 @@ def init_database():
                       AND c.data_type IN ('integer', 'smallint', 'bigint')
                 ) THEN
                     ALTER TABLE users.trades_simulated_0001 ALTER COLUMN weekly_cycle TYPE NUMERIC(5,1) USING weekly_cycle::numeric(5,1);
+                END IF;
+
+                -- Ensure trades_simulated_0001.id has a sequence default so INSERT ... RETURNING id returns a value
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'users' AND table_name = 'trades_simulated_0001') THEN
+                    CREATE SEQUENCE IF NOT EXISTS users.trades_simulated_0001_id_seq;
+                    ALTER TABLE users.trades_simulated_0001 ALTER COLUMN id SET DEFAULT nextval('users.trades_simulated_0001_id_seq'::regclass);
+                    PERFORM setval('users.trades_simulated_0001_id_seq', (SELECT COALESCE(MAX(id), 0) + 1 FROM users.trades_simulated_0001 WHERE id IS NOT NULL));
+                    -- Add primary key if missing (enables row delete in TablePlus and other GUIs)
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_class t ON c.conrelid = t.oid JOIN pg_namespace n ON t.relnamespace = n.oid WHERE n.nspname = 'users' AND t.relname = 'trades_simulated_0001' AND c.contype = 'p') THEN
+                        ALTER TABLE users.trades_simulated_0001 ADD PRIMARY KEY (id);
+                    END IF;
                 END IF;
 
                 -- Migrate from volatility to volatility_percentile
