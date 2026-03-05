@@ -4290,7 +4290,7 @@ async def verify_auth(request: Request):
         if token.startswith("local_dev_"):
             return {"authenticated": True, "username": "local_dev", "name": "Local Development"}
         
-        # Check auth tokens
+        # Check auth tokens only (device token alone is not enough for verify)
         auth_tokens = load_auth_tokens()
         if token in auth_tokens:
             token_data = auth_tokens[token]
@@ -4300,19 +4300,6 @@ async def verify_auth(request: Request):
                 return {
                     "authenticated": True,
                     "username": token_data["username"],
-                    "name": get_user_credentials()["name"]
-                }
-        
-        # Check device tokens
-        device_tokens = load_device_tokens()
-        if device_id in device_tokens:
-            device_data = device_tokens[device_id]
-            expires = datetime.fromisoformat(device_data["expires"])
-            
-            if datetime.now() < expires:
-                return {
-                    "authenticated": True,
-                    "username": device_data["username"],
                     "name": get_user_credentials()["name"]
                 }
         
