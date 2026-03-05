@@ -752,13 +752,13 @@ class StrikeTableGenerator:
             
             logger.info(f"📊 Current data - Price: ${current_price:,.2f}, TTC: {ttc_seconds}s, TTC_15m: {ttc_15m_seconds}s, Momentum Percentile: {momentum_percentile:.1f}")
             
-            # Get available market strikes
+            # Get available market strikes (use same integer as match logic so we find ask prices)
             markets = market_data.get("markets", [])
             available_strikes = []
             for market in markets:
                 floor_strike = market.get("floor_strike")
                 if floor_strike:
-                    market_strike = int(float(floor_strike) + 0.01)
+                    market_strike = int(float(floor_strike))
                     available_strikes.append(market_strike)
 
             if self.interval == "15m":
