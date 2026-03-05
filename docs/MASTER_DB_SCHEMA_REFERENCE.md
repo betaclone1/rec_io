@@ -10587,6 +10587,8 @@ WHERE t.monitor = cs.monitor
 
 **Purpose:** Copy of `users.trades_0001` for storing simulated 15m-cycle trades (e.g. from the simulated path on hourly strike tables; SHS/calibration). **Any future schema changes to `users.trades_0001` (new columns, type changes, indexes, constraints) must be applied to `users.trades_simulated_0001` as well** so the two tables stay in sync.
 
+**Nullable columns for simulated trades:** The simulated-trade path intentionally stores **NULL** for `buy_price`, `position`, `fees`, `bankroll`, `price_spread`, and leaves `sell_price` NULL (no execution). So on this table those columns are **nullable** even though `trades_0001` may define some as NOT NULL. `database.py` creates the table with `buy_price` and `position` nullable and migrates existing tables to drop NOT NULL on them when present.
+
 Same column set as `users.trades_0001` (see that table for column descriptions). Empty until the simulated-trade path writes to it. Created with `id SERIAL PRIMARY KEY`; add indexes to mirror `trades_0001` (e.g. on `date`, `status`, `ticker`) when needed.
 
 #### Columns (from DB)

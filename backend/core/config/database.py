@@ -115,7 +115,7 @@ def init_database():
             );
         """)
 
-        # Simulated trades table: same structure as trades_0001 per MASTER_DB_SCHEMA_REFERENCE (text/real/smallint). Created if not present.
+        # Simulated trades table: same column set as trades_0001, but buy_price, position, fees, bankroll, price_spread (and sell_price) are nullable by design—the simulated path inserts NULL for those. See MASTER_DB_SCHEMA_REFERENCE.
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users.trades_simulated_0001 (
                 id SERIAL PRIMARY KEY,
@@ -130,8 +130,8 @@ def init_database():
                 side TEXT NOT NULL,
                 prob REAL,
                 diff TEXT,
-                buy_price REAL NOT NULL,
-                position INTEGER NOT NULL,
+                buy_price REAL,
+                position INTEGER,
                 sell_price REAL,
                 closed_at TEXT,
                 fees REAL,
@@ -233,6 +233,13 @@ def init_database():
                     -- Add primary key if missing (enables row delete in TablePlus and other GUIs)
                     IF NOT EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_class t ON c.conrelid = t.oid JOIN pg_namespace n ON t.relnamespace = n.oid WHERE n.nspname = 'users' AND t.relname = 'trades_simulated_0001' AND c.contype = 'p') THEN
                         ALTER TABLE users.trades_simulated_0001 ADD PRIMARY KEY (id);
+                    END IF;
+                    -- Simulated trades insert NULL for buy_price, position (and fees, bankroll, price_spread): ensure columns are nullable
+                    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'users' AND table_name = 'trades_simulated_0001' AND column_name = 'buy_price' AND is_nullable = 'NO') THEN
+                        ALTER TABLE users.trades_simulated_0001 ALTER COLUMN buy_price DROP NOT NULL;
+                    END IF;
+                    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'users' AND table_name = 'trades_simulated_0001' AND column_name = 'position' AND is_nullable = 'NO') THEN
+                        ALTER TABLE users.trades_simulated_0001 ALTER COLUMN position DROP NOT NULL;
                     END IF;
                 END IF;
 
