@@ -28,16 +28,16 @@ Each entry below uses:
 
 **Production agent checklist**
 
-- [ ] Confirm codebase changes (pull latest `main` on production).
-- [ ] Update local database schema to latest (id sequences, PKs, numeric weekly_cycle, simulated table shape) by running from project root:
-  - `PYTHONPATH=$(pwd) venv/bin/python -c "from backend.core.config.database import init_database; init_database()"`
+- [x] Confirm codebase changes (pull latest `main` on production).
+- [x] Update local database schema to latest (id sequences, PKs, numeric weekly_cycle, simulated table shape) by running from project root:
+  - `PYTHONPATH=$(pwd) venv/bin/python -c "from backend.core.config/database import init_database; init_database()"`
   - This ensures `users.trades_simulated_0001` exists with a working `id` sequence / primary key and matches the definition in `docs/MASTER_DB_SCHEMA_REFERENCE.md` (including `weekly_cycle NUMERIC(5,1)`, `cycle_win_loss`, `cycle_pnl`, `cycle_ret_pct`, and boolean flags).
-- [ ] Restart application services in the standard order (or run `scripts/MASTER_RESTART.sh`): at minimum `main_app`, `trade_manager`, `monitor_manager` (which runs `auto_entry_supervisor` / `active_trade_supervisor`), and strike table / price watchdog services.
-- [ ] Verify simulated trades path:
+- [x] Restart application services in the standard order (or run `scripts/MASTER_RESTART.sh`): at minimum `main_app`, `trade_manager`, `monitor_manager` (which runs `auto_entry_supervisor` / `active_trade_supervisor`), and strike table / price watchdog services.
+- [x] Verify simulated trades path:
   - Confirm `users.trades_simulated_0001` is receiving new rows for hourly monitors with `auto_trade=TRUE` (excluding Momentum Breakout / Momentum Contain), with `position`, `fees`, `bankroll`, `price_spread`, and `sell_price` recorded as `NULL`.
   - After at least one 15m boundary, confirm those simulated trades transition to `status='closed'` with `symbol_close` populated and `win_loss` correctly reflecting YES/NO vs strike.
   - For a given monitor/date/`weekly_cycle`, confirm all simulated trades share the same `cycle_win_loss` (`L` if any loss in that 15m window, otherwise `W`).
-- [ ] Verify no impact to live trading:
+- [x] Verify no impact to live trading:
   - Confirm `users.trades_0001` behavior is unchanged (entries, expirations, cycle metrics, and pnl/ret_pct), and that real orders are still executed only from live paths.
   - Scan logs for `AUTO ENTRY`, `TRADE MANAGER`, and `SIMULATED 15m` messages to ensure there are no new errors or unexpected restarts.
 
