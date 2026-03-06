@@ -17,6 +17,7 @@ from backend.core.port_config import get_port, get_port_info
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from backend.util.paths import get_project_root, get_trade_history_dir, get_logs_dir, get_host, get_data_dir
+from backend.core.config.database import get_postgresql_connection
 from backend.account_mode import get_account_mode
 from backend.util.paths import get_accounts_data_dir
 EST_ZONE = ZoneInfo("America/New_York")
@@ -302,21 +303,6 @@ TRADE_MANAGER_PORT = get_port("trade_manager")
     # Thread-safe set to track trades being processed
 processing_trades = set()
 processing_lock = threading.Lock()
-
-# PostgreSQL connection function
-def get_postgresql_connection():
-    """Get a connection to the PostgreSQL database"""
-    try:
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
-        return conn
-    except Exception as e:
-        print(f"❌ Failed to connect to PostgreSQL: {e}")
-        return None
 
 
 def _order_count_val(legacy, fp):
