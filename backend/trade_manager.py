@@ -445,8 +445,21 @@ def insert_trade(trade):
                 movement_for_db = float(result[6]) if result[6] is not None else None
                 movement_percentile_for_db = float(result[7]) if result[7] is not None else None
     except Exception as e:
-        pass
-    
+        print(f"⚠️ insert_trade: live_price_log_1s_{symbol_lower} failed for symbol_open: {e}")
+
+    # Fallback: if we still have no price, get it from the main app API (same source as confirm path)
+    if symbol_open is None:
+        try:
+            main_port = get_port("main_app")
+            response = requests.get(f"http://localhost:{main_port}/api/{symbol_lower}_price", timeout=5)
+            if response.ok:
+                symbol_data = response.json()
+                price = symbol_data.get("price")
+                if price is not None:
+                    symbol_open = round(float(price), 2)
+        except Exception as e:
+            print(f"⚠️ insert_trade: API fallback for symbol_open failed: {e}")
+
     contract_original = trade.get('contract')
     contract_name = truncate_contract_name(contract_original, symbol)
 
@@ -658,8 +671,21 @@ def insert_simulated_trade(trade):
                 volatility_percentile_for_db = float(result[5]) if result[5] is not None else None
                 movement_for_db = float(result[6]) if result[6] is not None else None
                 movement_percentile_for_db = float(result[7]) if result[7] is not None else None
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"⚠️ insert_simulated_trade: live_price_log_1s_{symbol_lower} failed for symbol_open: {e}")
+
+    # Fallback: if we still have no price, get it from the main app API
+    if symbol_open is None:
+        try:
+            main_port = get_port("main_app")
+            response = requests.get(f"http://localhost:{main_port}/api/{symbol_lower}_price", timeout=5)
+            if response.ok:
+                symbol_data = response.json()
+                price = symbol_data.get("price")
+                if price is not None:
+                    symbol_open = round(float(price), 2)
+        except Exception as e:
+            print(f"⚠️ insert_simulated_trade: API fallback for symbol_open failed: {e}")
 
     # Simulated trades: do not record diff, buy_price, position, fees, or bankroll
     diff_formatted = None
@@ -853,10 +879,9 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                         else:
                             diff_formatted = None
                     
-                        # Get current symbol price for symbol_open
+                        # Get current symbol price for symbol_open (never overwrite existing with NULL)
                         symbol_open = None
                         try:
-                            import requests
                             main_port = get_port("main_app")
                             response = requests.get(f"http://localhost:{main_port}/api/{symbol.lower()}_price", timeout=5)
                             if response.ok:
@@ -874,7 +899,39 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                         except Exception as e:
                             log_event(ticket_id, f"MANAGER: Failed to get current symbol price from unified endpoint: {e}")
                             symbol_open = None
-                        
+
+                        # Fallback: try live_price_log_1s table (same as insert_trade)
+                        if symbol_open is None:
+                            try:
+                                pg_conn_price = get_postgresql_connection()
+                                if pg_conn_price:
+                                    with pg_conn_price.cursor() as cur:
+                                        cur.execute(f"""
+                                            SELECT price FROM live_data.live_price_log_1s_{symbol.lower()}
+                                            ORDER BY timestamp DESC LIMIT 1
+                                        """)
+                                        row = cur.fetchone()
+                                        if row and row[0] is not None:
+                                            symbol_open = round(float(row[0]), 2)
+                                    pg_conn_price.close()
+                            except Exception as e:
+                                log_event(ticket_id, f"MANAGER: live_price_log_1s fallback for symbol_open failed: {e}")
+
+                        # If we still have no price, keep existing symbol_open from DB (do not overwrite with NULL)
+                        if symbol_open is None:
+                            try:
+                                pg_conn_exist = get_postgresql_connection()
+                                if pg_conn_exist:
+                                    with pg_conn_exist.cursor() as cur:
+                                        cur.execute("SELECT symbol_open FROM users.trades_0001 WHERE id = %s", (id,))
+                                        row = cur.fetchone()
+                                        if row and row[0] is not None:
+                                            symbol_open = round(float(row[0]), 2)
+                                            log_event(ticket_id, f"MANAGER: Keeping existing symbol_open: {symbol_open}")
+                                    pg_conn_exist.close()
+                            except Exception as e:
+                                log_event(ticket_id, f"MANAGER: Could not read existing symbol_open: {e}")
+
                         # Update additional fields in PostgreSQL BEFORE status change
                         try:
                             pg_conn_update = get_postgresql_connection()

@@ -26,15 +26,15 @@ Each entry below uses:
 
 **Production agent checklist**
 
-- [ ] Confirm codebase changes (pull latest `main` on production).
-- [ ] Update local database: run from project root  
+- [x] Confirm codebase changes (pull latest `main` on production).
+- [x] Update local database: run from project root  
   `PYTHONPATH=$(pwd) venv/bin/python -c "from backend.core.config.database import init_database; init_database()"`  
   if any schema migrations are pending.
-- [ ] **One-time dedupe of simulated trades table (after restart):** From project root, run once:  
+- [x] **One-time dedupe of simulated trades table (after restart):** From project root, run once:  
   `PYTHONPATH=$(pwd) venv/bin/python -m backend.util.dedupe_simulated_trades`  
   This removes duplicate rows in `users.trades_simulated_0001` that may exist from before the connection fix. If the script reports "No duplicate rows (by date, contract) found.", no action needed. Do not run the dedupe repeatedly.
-- [ ] Restart application services (main_app, strike_table_generator, trade_manager, active_trade_supervisor, auto_entry_supervisor as applicable).
-- [ ] Confirm: no errors in logs after restart; simulated trades no longer double up on the same strike per cycle.
+- [x] Restart application services (main_app, strike_table_generator, trade_manager, active_trade_supervisor, auto_entry_supervisor as applicable).
+- [x] Confirm: no errors in logs after restart; simulated trades no longer double up on the same strike per cycle.
 
 ---
 

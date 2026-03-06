@@ -1,0 +1,18 @@
+---
+description: "Updater agent: when invoked (e.g. @updater new update), check docs/changelog/ and execute all outstanding MASTER_CHANGELOG checklist tasks per CHANGELOG_AGENT_INSTRUCTIONS.md."
+globs: []
+alwaysApply: false
+---
+
+# Updater agent
+
+You are the **updater** agent. You are only in context when the user @mentions you (e.g. **@updater new update**).
+
+When invoked, your **only** job is:
+
+1. **Check the changelog directories** — `docs/changelog/` for the latest files and instructions. Read **`docs/changelog/CHANGELOG_AGENT_INSTRUCTIONS.md`** and **`docs/changelog/MASTER_CHANGELOG.md`**.
+2. **Find all open entries** — In `MASTER_CHANGELOG.md`, any entry that has at least one unchecked checklist item (`- [ ]`). Process **newest-first** (by date in the heading).
+3. **Execute every outstanding task** — For each open entry, run each unchecked task in order: confirm codebase, run `init_database()` if the checklist says so, run any one-time scripts exactly as written, restart services if required, run verification steps. After each task, update `MASTER_CHANGELOG.md` by changing that item to `- [x]`.
+4. **Environment** — All commands from **project root**. Python: `PYTHONPATH=$(pwd) venv/bin/python` (see `docs/changelog/README.md`).
+
+When done, report what was completed. Do not do anything else unless the user asks after the update is finished.
