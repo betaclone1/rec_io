@@ -34,6 +34,7 @@ if project_root not in sys.path:
 
 # Import the universal centralized port system
 from backend.core.port_config import get_port, get_monitor_port, register_monitor_ports
+from backend.core.config.database import get_postgresql_connection as get_db_connection
 from backend.util.paths import get_host, get_data_dir, get_service_url, get_trade_history_dir, get_logs_dir
 
 # Add these functions after the existing imports and before the get_monitor_identifier function
@@ -546,6 +547,7 @@ monitoring_thread_lock = threading.Lock()
 # SIMPLIFIED: Track last trade time per strike (atomic)
 last_trade_times = {}  # strike_key -> timestamp
 last_simulated_trade_times = {}  # simulated 15m path only
+_simulated_15m_lock = threading.Lock()  # prevent overlapping runs (duplicate inserts)
 
 # Cooldown period (seconds)
 TRADE_COOLDOWN = 10
@@ -1836,33 +1838,31 @@ def get_master_strike_table_data():
 
 
 def get_master_strike_table_data_simulated_15m():
-    """Read hourly strike table using ttc_15m and probability_15m for simulated 15m path."""
+    """Read hourly strike table using ttc_15m and probability_15m for simulated 15m path.
+    Uses same DB connection as duplicate check and trade_manager (server-agnostic)."""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
-        with conn.cursor() as cursor:
-            current_symbol, _ = get_current_monitor_symbol_and_market()
-            table_name = get_strike_table_name(current_symbol, "hourly")
-            cursor.execute("""
-                SELECT symbol, current_price, ttc_15m, event_ticker, market_title, strike_tier, market_status
-                FROM live_data.%s LIMIT 1
-            """ % (table_name,))
-            header = cursor.fetchone()
-            if not header:
-                conn.close()
-                return None
-            cursor.execute("""
-                SELECT strike, buffer, buffer_pct, probability_15m, yes_ask, no_ask, yes_ask_dollars, no_ask_dollars,
-                       volume, ticker, yes_diff, no_diff, active_side, yes_price_spread, no_price_spread
-                FROM live_data.%s ORDER BY strike
-            """ % (table_name,))
-            rows = cursor.fetchall()
-        conn.close()
+        conn = get_db_connection()
+        if not conn:
+            return None
+        try:
+            with conn.cursor() as cursor:
+                current_symbol, _ = get_current_monitor_symbol_and_market()
+                table_name = get_strike_table_name(current_symbol, "hourly")
+                cursor.execute("""
+                    SELECT symbol, current_price, ttc_15m, event_ticker, market_title, strike_tier, market_status
+                    FROM live_data.%s LIMIT 1
+                """ % (table_name,))
+                header = cursor.fetchone()
+                if not header:
+                    return None
+                cursor.execute("""
+                    SELECT strike, buffer, buffer_pct, probability_15m, yes_ask, no_ask, yes_ask_dollars, no_ask_dollars,
+                           volume, ticker, yes_diff, no_diff, active_side, yes_price_spread, no_price_spread
+                    FROM live_data.%s ORDER BY strike
+                """ % (table_name,))
+                rows = cursor.fetchall()
+        finally:
+            conn.close()
         out = {
             "symbol": header[0], "current_price": float(header[1]) if header[1] else None,
             "ttc": int(header[2]) if header[2] else None,
@@ -2613,25 +2613,24 @@ def is_strike_already_traded(strike_data):
 
 
 def is_strike_already_simulated_traded(strike_data):
-    """True if we already have an open/pending simulated trade on this strike (trades_simulated_0001)."""
+    """True if we already have an open/pending simulated trade on this strike (trades_simulated_0001).
+    Uses same DB connection config as main trades log (server-agnostic: DB_* / REC_DB_*)."""
     try:
-        import psycopg2
         side = (strike_data.get('side') or '').lower()
         db_side = 'Y' if side in ('yes', 'y') else 'N'
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT 1 FROM users.trades_simulated_0001
-            WHERE status IN ('open', 'pending') AND monitor = %s AND ticker = %s AND side = %s
-        """, (f"mon_0001_{MONITOR_ID}", strike_data.get('ticker'), db_side))
-        found = cursor.fetchone() is not None
-        conn.close()
-        return found
+        conn = get_db_connection()
+        if not conn:
+            log(f"[SIMULATED 15m] No DB connection for duplicate check")
+            return False
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT 1 FROM users.trades_simulated_0001
+                    WHERE status IN ('open', 'pending') AND monitor = %s AND ticker = %s AND side = %s
+                """, (f"mon_0001_{MONITOR_ID}", strike_data.get('ticker'), db_side))
+                return cursor.fetchone() is not None
+        finally:
+            conn.close()
     except Exception as e:
         log(f"[SIMULATED 15m] Error checking trades_simulated_0001: {e}")
         return False
@@ -2770,7 +2769,12 @@ def check_auto_entry_conditions():
                 if (_t.time() - check_auto_entry_conditions._sim_log_ts) >= 90:
                     log(f"[SIMULATED 15m] running (hourly + auto_trade)")
                     check_auto_entry_conditions._sim_log_ts = _t.time()
-                check_simulated_15m_entry_hourly_htc()
+                # Only one simulated scan at a time to avoid duplicate inserts (race on duplicate check)
+                if _simulated_15m_lock.acquire(blocking=False):
+                    try:
+                        check_simulated_15m_entry_hourly_htc()
+                    finally:
+                        _simulated_15m_lock.release()
         except Exception as sim_e:
             log(f"[SIMULATED 15m] {sim_e}")
 

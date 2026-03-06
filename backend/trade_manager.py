@@ -17,6 +17,7 @@ from backend.core.port_config import get_port, get_port_info
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from backend.util.paths import get_project_root, get_trade_history_dir, get_logs_dir, get_host, get_data_dir
+from backend.core.config.database import get_postgresql_connection
 from backend.account_mode import get_account_mode
 from backend.util.paths import get_accounts_data_dir
 EST_ZONE = ZoneInfo("America/New_York")
@@ -303,21 +304,6 @@ TRADE_MANAGER_PORT = get_port("trade_manager")
 processing_trades = set()
 processing_lock = threading.Lock()
 
-# PostgreSQL connection function
-def get_postgresql_connection():
-    """Get a connection to the PostgreSQL database"""
-    try:
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
-        return conn
-    except Exception as e:
-        print(f"❌ Failed to connect to PostgreSQL: {e}")
-        return None
-
 
 def _order_count_val(legacy, fp):
     """Prefer _fp (NUMERIC) for order counts; fall back to legacy integer. Returns float for math."""
@@ -448,7 +434,7 @@ def insert_trade(trade):
 
             if result:
                 if result[0] is not None:
-                    symbol_open = int(float(result[0]))
+                    symbol_open = round(float(result[0]), 2)
                 momentum_val = result[1]
                 if momentum_val is not None:
                     momentum_for_db = round(float(momentum_val) * 100)
@@ -663,7 +649,7 @@ def insert_simulated_trade(trade):
                 result = cursor.fetchone()
             pg_conn.close()
             if result and len(result) >= 8 and result[0] is not None:
-                symbol_open = int(float(result[0]))
+                symbol_open = round(float(result[0]), 2)
                 if result[1] is not None:
                     momentum_for_db = round(float(result[1]) * 100)
                 momentum_percentile_for_db = float(result[2]) if result[2] is not None else None
