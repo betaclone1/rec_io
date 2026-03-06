@@ -448,7 +448,7 @@ def insert_trade(trade):
 
             if result:
                 if result[0] is not None:
-                    symbol_open = int(float(result[0]))
+                    symbol_open = round(float(result[0]), 2)
                 momentum_val = result[1]
                 if momentum_val is not None:
                     momentum_for_db = round(float(momentum_val) * 100)
@@ -663,7 +663,7 @@ def insert_simulated_trade(trade):
                 result = cursor.fetchone()
             pg_conn.close()
             if result and len(result) >= 8 and result[0] is not None:
-                symbol_open = int(float(result[0]))
+                symbol_open = round(float(result[0]), 2)
                 if result[1] is not None:
                     momentum_for_db = round(float(result[1]) * 100)
                 momentum_percentile_for_db = float(result[2]) if result[2] is not None else None
@@ -875,8 +875,9 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                             response = requests.get(f"http://localhost:{main_port}/api/{symbol.lower()}_price", timeout=5)
                             if response.ok:
                                 symbol_data = response.json()
-                                symbol_open = symbol_data.get('price')
-                                if symbol_open:
+                                raw_price = symbol_data.get('price')
+                                if raw_price is not None:
+                                    symbol_open = round(float(raw_price), 2)
                                     log_event(ticket_id, f"MANAGER: Retrieved current symbol price for open: {symbol_open}")
                                 else:
                                     log_event(ticket_id, f"MANAGER: No price data in unified endpoint response")

@@ -231,16 +231,17 @@ class SupervisorConfigGenerator:
                 "script": "symbol_price_watchdog.py ETH",
                 "port": ports.get("symbol_price_watchdog_eth", 8009)
             },
-            {
-                "name": "symbol_price_watchdog_spx",
-                "script": "symbol_price_watchdog.py SPX",
-                "port": ports.get("symbol_price_watchdog_spx", 8017)
-            },
-            {
-                "name": "symbol_price_watchdog_ndx",
-                "script": "symbol_price_watchdog.py NDX",
-                "port": ports.get("symbol_price_watchdog_ndx", 8019)
-            },
+            # SPX/NDX not currently traded; uncomment to re-enable later.
+            # {
+            #     "name": "symbol_price_watchdog_spx",
+            #     "script": "symbol_price_watchdog.py SPX",
+            #     "port": ports.get("symbol_price_watchdog_spx", 8017)
+            # },
+            # {
+            #     "name": "symbol_price_watchdog_ndx",
+            #     "script": "symbol_price_watchdog.py NDX",
+            #     "port": ports.get("symbol_price_watchdog_ndx", 8019)
+            # },
             {
                 "name": "kalshi_account_sync",
                 "script": "kalshi_account_sync_ws.py",
@@ -256,16 +257,17 @@ class SupervisorConfigGenerator:
                 "script": "kalshi_market_watchdog.py ETH",
                 "port": ports.get("kalshi_market_watchdog_hourly_eth", 8010)
             },
-            {
-                "name": "kalshi_market_watchdog_hourly_spx",
-                "script": "kalshi_market_watchdog.py SPX",
-                "port": ports.get("kalshi_market_watchdog_hourly_spx", 8018)
-            },
-            {
-                "name": "kalshi_market_watchdog_hourly_ndx",
-                "script": "kalshi_market_watchdog.py NDX",
-                "port": ports.get("kalshi_market_watchdog_hourly_ndx", 8020)
-            },
+            # SPX/NDX not currently traded; uncomment to re-enable later.
+            # {
+            #     "name": "kalshi_market_watchdog_hourly_spx",
+            #     "script": "kalshi_market_watchdog.py SPX",
+            #     "port": ports.get("kalshi_market_watchdog_hourly_spx", 8018)
+            # },
+            # {
+            #     "name": "kalshi_market_watchdog_hourly_ndx",
+            #     "script": "kalshi_market_watchdog.py NDX",
+            #     "port": ports.get("kalshi_market_watchdog_hourly_ndx", 8020)
+            # },
             {
                 "name": "kalshi_market_watchdog_15m_btc",
                 "script": "kalshi_market_watchdog.py BTC --interval 15m",
@@ -316,8 +318,9 @@ class SupervisorConfigGenerator:
                 "port": active_trade_port
             })
         
-        # Add symbol-specific strike table generators (hourly)
-        supported_symbols = ['BTC', 'ETH', 'SPX', 'NDX']
+        # Add symbol-specific strike table generators (hourly).
+        # SPX/NDX not currently traded; add 'SPX', 'NDX' to supported_symbols to re-enable.
+        supported_symbols = ['BTC', 'ETH']  # was ['BTC', 'ETH', 'SPX', 'NDX']
         strike_table_default_ports = {
             'btc': 8014, 'eth': 8015, 'spx': 8016, 'ndx': 8017
         }

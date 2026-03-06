@@ -1,6 +1,9 @@
 # Changelog
 
-This folder holds the **MASTER_CHANGELOG.md**, which is the single internal changelog for production deployments.
+This folder holds:
+
+- **MASTER_CHANGELOG.md** — Single internal changelog for production deployments.
+- **TODO.md** — Timestamped backlog of tasks to return to (checklist format, technical notes, milestones/completion). Check and update periodically. Tasks marked totally completed and older than 3 months may be moved to an archival doc to keep TODO.md lean.
 
 - **When to update:** Add a new timestamped entry whenever you are about to push an update to production (e.g. after merging a feature branch to `main`).
 - **What to include:** Summary of the change plus a **Production agent checklist**: markdown checkboxes (`- [ ]`) for every task the production agent must complete. Always include at least minimal items (e.g. "Confirm codebase changes", "Update local database" when schema changes exist). The agent both completes the tasks **and updates the checklist in `MASTER_CHANGELOG.md`** by checking off each box (`- [x]`) when done.

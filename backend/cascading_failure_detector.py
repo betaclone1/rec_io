@@ -54,16 +54,17 @@ class CascadingFailureDetector:
             "trade_executor",      # Trade execution
             "symbol_price_watchdog_btc", # BTC price data
             "symbol_price_watchdog_eth", # ETH price data
-            "symbol_price_watchdog_spx", # SPX price data
+            # SPX/NDX not currently traded; uncomment to re-enable later.
+            # "symbol_price_watchdog_spx", # SPX price data
             "strike_table_generator_hourly_btc", # BTC strike table data
             "strike_table_generator_hourly_eth", # ETH strike table data
-            "strike_table_generator_hourly_spx", # SPX strike table data
-            "strike_table_generator_hourly_ndx", # NDX strike table data
+            # "strike_table_generator_hourly_spx", # SPX strike table data
+            # "strike_table_generator_hourly_ndx", # NDX strike table data
             "kalshi_account_sync", # Kalshi API sync
             "kalshi_market_watchdog_hourly_btc", # BTC Kalshi hourly market data
             "kalshi_market_watchdog_hourly_eth", # ETH Kalshi hourly market data
-            "kalshi_market_watchdog_hourly_spx", # SPX Kalshi hourly market data
-            "kalshi_market_watchdog_hourly_ndx", # NDX Kalshi hourly market data
+            # "kalshi_market_watchdog_hourly_spx", # SPX Kalshi hourly market data
+            # "kalshi_market_watchdog_hourly_ndx", # NDX Kalshi hourly market data
             "kalshi_market_watchdog_hourly_inx", # INX Kalshi hourly market data
             "kalshi_market_watchdog_hourly_nasdaq100", # NASDAQ100 Kalshi hourly market data
             "kalshi_market_watchdog_15m_btc", # BTC Kalshi 15m market data

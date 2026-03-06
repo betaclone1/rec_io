@@ -77,9 +77,14 @@ def main():
     r = requests.get(url, params=params, headers=headers, timeout=15)
     print(f"Status: {r.status_code}")
     if r.ok and "application/json" in r.headers.get("content-type", ""):
-        print(json.dumps(r.json(), indent=2))
+        data = r.json()
+        entries = data.get("entries") or []
+        print(f"Entries: {len(entries)}")
+        print(json.dumps(data, indent=2))
     else:
         print(r.text)
+        if r.status_code == 404:
+            print("(v1 account/history returns 404 on api.elections.kalshi.com; endpoint may be deprecated or path changed)")
 
 
 if __name__ == "__main__":

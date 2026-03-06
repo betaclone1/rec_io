@@ -1,7 +1,23 @@
 # Simulated 15-Minute Cycles for Hourly HTC — Technical Plan
 
-**Status:** Design / running reference. No implementation yet.  
-**Scope:** Hourly HTC monitors only. Uses existing 15m infrastructure (cycle boundaries, paper trades, test_filter, expiration) applied to the **hourly** strike table with 15m TTC/probability.
+**Status:** Phase 1 data collection in production; calibration (S, health tiers, sim_cycles) not yet implemented.  
+**Scope:** All hourly monitors with auto_trade=TRUE (excluding Momentum Breakout/Contain for now). Uses existing 15m infrastructure applied to the **hourly** strike table with 15m TTC/probability; simulated trades stored in `users.trades_simulated_0001` only.
+
+---
+
+## Progress (as of 2026-03)
+
+| Area | Status | Notes |
+|------|--------|--------|
+| **Strike table renames & 15m columns** | ✅ Done | Hourly: `ttc_hourly`, `probability_hourly`, `ttc_15m`, `probability_15m`. 15m tables: same column set; legacy `ttc_seconds`/`probability` removed. |
+| **users.trades_simulated_0001** | ✅ Done | Created; mirrors trades_0001. Simulated path writes here only; `paper_trade=TRUE`, `test_filter=FALSE`. `date`/`time`/`closed_at` TEXT; `weekly_cycle` NUMERIC(5,1) with decimal per 15m window. |
+| **weekly_cycle decimal** | ✅ Done | Hourly = `.4`; 15m = `.0`/`.1`/`.2`/`.3` from contract minutes. Simulated contract uses next 15m boundary (e.g. BTC 2:15pm) so decimal is correct. |
+| **Auto-entry simulated path** | ✅ Done | Runs for all hourly + auto_trade=TRUE (excl. Momentum Breakout/Contain). Uses `ttc_15m`/`probability_15m` from hourly table; same TTC window as live. No price/diff/momentum gates. **Spike detection is ignored for placement** (we place simulated trades regardless of spike/cooldown), but **`cooldown_timer` is recorded** on every simulated trade so we can categorize by spike vs normal for SHS/loss prevention (see §4.5). |
+| **Trade_manager simulated expiration** | ✅ Done | `check_expired_simulated_trades()` every 15m. Closes open rows in trades_simulated_0001; sets `symbol_close` from live price log, `win_loss` from strike vs close; `sell_price`/`price_spread` NULL; `cycle_win_loss` per 15m window (L if any loss in that monitor/date/weekly_cycle, else W). |
+| **cycle_win_streak (monitor_list)** | ⬜ Not done | Doc section 8.2 / 6.3. Not in scope for current production run. |
+| **cycle_win_streak_at_entry (trades)** | ⬜ Not done | Doc section 8.3 / 6.4. Not implemented. |
+| **sim_cycles, S, health tiers** | ⬜ Not done | Section 10. Calibration table and rolling S/tier computation deferred. |
+| **ATS monitoring of simulated** | N/A | Simulated trades live only in trades_simulated_0001; resolution is trade_manager-only (no ATS involvement). |
 
 ---
 
@@ -30,7 +46,7 @@
 
 ---
 
-## 3. Strike Table Changes (Hourly Only)
+## 3. Strike Table Changes (Hourly Only) ✅ Done
 
 **Tables affected:** `live_data.strike_table_hourly_btc`, `live_data.strike_table_hourly_eth`, etc. **Not** 15m strike tables.
 
@@ -43,12 +59,12 @@
 
 **Consumers to update:** strike_table_generator (hourly), active_trade_supervisor, auto_entry_supervisor, main.py (API that serves strike table), frontend (if it displays these), any analytics or other readers. Search for `ttc_seconds` and `probability` in the context of **hourly** strike tables only.
 
-### 3.2 New columns
+### 3.2 New columns (implemented as `ttc_15m`, `probability_15m`)
 
 | Column             | Type    | Description |
 |--------------------|---------|-------------|
-| `ttc_seconds_15m`  | INTEGER | Seconds to next **15-minute** boundary (:00, :15, :30, :45) in EST. |
-| `probability_15m`  | DECIMAL | Same probability lookup as today, but called with `ttc_seconds_15m` instead of `ttc_seconds_1h`. |
+| `ttc_15m`          | INTEGER | Seconds to next **15-minute** boundary (:00, :15, :30, :45) in EST. (Doc originally said `ttc_seconds_15m`; code uses `ttc_15m`.) |
+| `probability_15m`  | DECIMAL | Same probability lookup as hourly, but using `ttc_15m` and same buffers. |
 
 ### 3.3 Computation
 
@@ -67,7 +83,7 @@
 
 ---
 
-## 4. Auto-Entry Supervisor (Hourly HTC) — Simulated Path
+## 4. Auto-Entry Supervisor (Hourly HTC) — Simulated Path ✅ Done
 
 ### 4.1 When it runs
 
@@ -96,9 +112,18 @@
 
 - On **every** trade insert (real or simulated) for this monitor, read current `cycle_win_streak` from `users.monitor_list_{user_number}` and set on the trade row (e.g. `cycle_win_streak_at_entry`). So every trade carries a snapshot of the streak at entry for later analysis.
 
+### 4.5 Spike detection ignored for placement; cooldown_timer recorded for categorization
+
+- **Placement:** We deliberately **do not** use spike/cooldown logic to gate simulated trade placement. Simulated trades are placed whenever TTC/probability and “no double up” allow it, so we collect as much data as possible.
+- **Recording:** We **do** record `cooldown_timer` from the monitor on every simulated trade insert (same value that would apply to live trading at that moment).
+- **Purpose:** This allows downstream analysis and Strategy Health Score (SHS) work to split simulated trades into:
+  - **Momentum spike condition:** `cooldown_timer > 0` (trade placed during or shortly after a detected spike).
+  - **Normal condition:** `cooldown_timer` null or ≤ 0 (no active cooldown).
+- That split is important for data analysis, loss-prevention tuning, and position-sizing logic based on simulated outcomes: we can compare calibration and win rates in “spike” vs “normal” regimes and feed that into SHS and future integration.
+
 ---
 
-## 5. Active Trade Supervisor — Simulated Trades
+## 5. Active Trade Supervisor — Simulated Trades (N/A — resolution in trade_manager only)
 
 ### 5.1 Inclusion
 
@@ -118,7 +143,7 @@
 
 ---
 
-## 6. Trade Manager
+## 6. Trade Manager ✅ Done
 
 ### 6.1 15-minute expiration (existing)
 
@@ -133,7 +158,7 @@
   - Set `win_loss` = 'W' or 'L' from strike vs closing price (same rule as real trades: YES above strike = W, etc.).
   - Do **not** need real PnL/returns; can set to 0 or NULL.
 
-### 6.3 Cycle win streak update (after resolving simulated trades)
+### 6.3 Cycle win streak update (after resolving simulated trades) ⬜ Not done
 
 - After resolving all simulated trades for the current 15m boundary:
   - Group by monitor (e.g. `monitor` in trades).
@@ -142,7 +167,7 @@
     - If **all** are wins → increment `cycle_win_streak` by 1 (or by number of winning trades, per product decision; document in “Cycle win streak rules” below).
   - For monitors with **zero** simulated trades in this cycle → **no change** to `cycle_win_streak`. (Zero trades = no effect; we only care about recorded losses.)
 
-### 6.4 cycle_win_streak on insert
+### 6.4 cycle_win_streak on insert ⬜ Not done
 
 - In `insert_trade()` (and any other code path that creates a trade for a monitor), before INSERT:
   - Resolve monitor key → `users.monitor_list_{user_number}` and monitor id.
@@ -165,12 +190,12 @@ So: **zero trades in a cycle = no effect**. The streak is about **recorded losse
 
 ## 8. Schema Additions
 
-### 8.1 Hourly strike tables (live_data)
+### 8.1 Hourly strike tables (live_data) ✅ Done
 
 - Rename: `ttc_seconds` → `ttc_hourly`, `probability` → `probability_hourly`.
 - Add (for simulated 15m cycles): `ttc_15m` INTEGER, `probability_15m` DECIMAL(5,2).
 
-### 8.1a 15m strike tables (live_data)
+### 8.1a 15m strike tables (live_data) ✅ Done
 
 - Tables: `live_data.strike_table_15m_btc`, `live_data.strike_table_15m_eth`.
 - Columns (synced with hourly):
@@ -178,7 +203,7 @@ So: **zero trades in a cycle = no effect**. The streak is about **recorded losse
   - For 15m tables: `ttc_hourly` and `probability_hourly` are NULL; `ttc_15m` and `probability_15m` hold the values used for 15m markets. All readers for 15m use `ttc_15m` / `probability_15m`.
 - Rationale: hourly and 15m strike tables share one schema; 15m assets use `ttc_15m` and `probability_15m` only.
 
-### 8.2 Monitor list (users.monitor_list_*)
+### 8.2 Monitor list (users.monitor_list_*) ⬜ Not done
 
 - Add: `cycle_win_streak` INTEGER DEFAULT 0.  
   Stored alongside existing `win_streak` / `win_streak_threshold`. No UI or logic required to change it in phase 1 except write from trade_manager.
@@ -192,17 +217,21 @@ So: **zero trades in a cycle = no effect**. The streak is about **recorded losse
 
 ## 9. Data Flow Summary
 
-1. **Strike table (hourly):** Generator writes `ttc_seconds_1h`, `probability_1h` (unchanged behavior) and `ttc_seconds_15m`, `probability_15m`.
-2. **Auto_entry (Hourly HTC):** When outside real trading window, evaluates using `probability_15m` / `ttc_seconds_15m`; inserts with `paper_trade=TRUE`, `test_filter=TRUE`; includes current `cycle_win_streak` on the trade.
-3. **ATS:** Monitors simulated trades with 15m probability; can trigger “close” or rely on trade_manager to resolve at boundary.
-4. **Trade_manager (15m run):** Resolves real 15m trades as today; resolves simulated trades (close at boundary, set win_loss); then for each monitor with simulated trades this cycle, updates `cycle_win_streak` (0 on any L, +1 on all W); no change when no simulated trades.
-5. **Every trade insert:** Read monitor’s `cycle_win_streak` and set `cycle_win_streak_at_entry` on the new row.
+**Current (implemented):**
+
+1. **Strike table (hourly):** Generator writes `ttc_hourly`, `probability_hourly`, `ttc_15m`, `probability_15m`.
+2. **Auto_entry:** Every cycle for hourly + auto_trade (excl. Momentum Breakout/Contain), evaluates `ttc_15m`/`probability_15m` in same TTC window as live; inserts to trade_manager → `users.trades_simulated_0001` with `paper_trade=TRUE`, `test_filter=FALSE`; contract = next 15m boundary for `weekly_cycle` decimal.
+3. **ATS:** Does not see simulated trades; they live only in trades_simulated_0001.
+4. **Trade_manager (15m run):** Runs `check_expired_simulated_trades()` first; closes open simulated rows, sets `symbol_close`/`win_loss`/`cycle_win_loss` per 15m window. Then runs existing live expiration. No `cycle_win_streak` update on monitor_list yet.
+5. **cycle_win_streak / cycle_win_streak_at_entry:** Not implemented.
 
 ---
 
-## 10. Calibration & Health Telemetry (sim_cycles + S)
+## 10. Calibration & Health Telemetry (sim_cycles + S) ⬜ Not done
 
 **Purpose:** Attach a minimal, deterministic calibration and health layer to the simulated 15-minute cycles. This layer answers: **“Are ≥95% probability outputs behaving like ≥95% in current conditions?”** It is calibration infrastructure only, not a live trading or PnL engine.
+
+**Monitor-specific:** Calibration (S), health tier, and any downstream use (loss prevention, position sizing) are **computed per monitor only**. Simulated trade criteria (symbol, TTC window, strategy, thresholds) come from each monitor; what happens on an ETH hourly monitor has no impact on a BTC monitor. Rolling windows, S, and tier are always scoped to a single `monitor` (e.g. `monitor` in `trades_simulated_0001`). No cross-monitor aggregation.
 
 ### 10.1 Deterministic 15-minute cycle engine (calibration view)
 
@@ -251,7 +280,9 @@ This table is **separate from** `users.trades_*`. The `trades_*` tables remain t
 
 ### 10.3 Core calibration statistic S (rolling window)
 
-On a rolling window of the last **N** simulated trades with `trade_executed = TRUE` (recommendation: `N ≥ 30`, never below 20):
+**Per monitor:** The rolling window and S are computed **per monitor**. Use only that monitor's simulated trades (e.g. `WHERE monitor = %s` in `trades_simulated_0001`). ETH monitor S is independent of BTC monitor S.
+
+On a rolling window of the last **N** simulated trades with `trade_executed = TRUE` **for that monitor** (recommendation: `N ≥ 30`, never below 20):
 
 - Let `p_i` be `predicted_probability` for trade `i`.
 - Let `y_i` be the binary outcome (`1` = win, `0` = loss) for trade `i`.
@@ -347,13 +378,9 @@ Health tier output is **read-only in this phase**. It **must not** affect positi
 
 ## 13. Implementation Order (Suggested)
 
-1. **Schema:** Add `ttc_seconds_15m`, `probability_15m` to hourly strike tables; add `cycle_win_streak` to monitor_list; add `cycle_win_streak_at_entry` to trades. Do **not** rename 1h columns yet. Add `sim_cycles` and (if desired) a small `calibration_health` table (or equivalent) to store `S` and health tier over time.
-2. **Strike table generator (hourly):** Compute and write `ttc_seconds_15m` and `probability_15m`; keep writing existing `ttc_seconds` and `probability` so nothing breaks.
-3. **Trade_manager:** On 15m run, resolve simulated trades (paper_trade + test_filter + tag) and update `cycle_win_streak` per monitor; on insert_trade, set `cycle_win_streak_at_entry` from monitor. In parallel or as a follow-up, wire the simulator output into `sim_cycles` and implement the rolling computation of `S` and health tier.
-4. **Auto_entry:** Add siloed path (outside real window) that uses 15m columns and inserts simulated trades with paper_trade and test_filter.
-5. **ATS:** Add siloed handling for those trades (15m probability, no real executor); resolution can be in trade_manager only.
-6. **Historical calibration audit:** Run the deterministic simulator over historical OHLC data to populate `sim_cycles` for the backfill window and compute baseline `S` / tier distributions.
-7. **Rename columns:** Once all readers are updated to use `ttc_seconds_1h` and `probability_1h`, rename in DB and remove old names. (Alternatively, add _1h columns and migrate readers in one step, then drop old columns.)
+**Done:** 1 (strike columns + trades_simulated_0001; renames done), 2 (generator writes ttc_15m/probability_15m), 3 (trade_manager resolves simulated; no cycle_win_streak yet), 4 (auto_entry simulated path), 5 (resolution in trade_manager only; ATS not involved), 7 (columns renamed to ttc_hourly/probability_hourly; 15m use ttc_15m/probability_15m).
+
+**Remaining:** cycle_win_streak on monitor_list and cycle_win_streak_at_entry on trades (optional for current phase); sim_cycles table and S / health tier (Section 10); historical calibration audit.
 
 ---
 

@@ -105,13 +105,14 @@ class SystemMonitor:
                 {"name": "trade_executor", "script": "trade_executor.py"},
                 {"name": "symbol_price_watchdog_btc", "script": "symbol_price_watchdog.py BTC"},
                 {"name": "symbol_price_watchdog_eth", "script": "symbol_price_watchdog.py ETH"},
-                {"name": "symbol_price_watchdog_ndx", "script": "symbol_price_watchdog.py NDX"},
-                {"name": "symbol_price_watchdog_spx", "script": "symbol_price_watchdog.py SPX"},
+                # SPX/NDX not currently traded; uncomment to re-enable later.
+                # {"name": "symbol_price_watchdog_ndx", "script": "symbol_price_watchdog.py NDX"},
+                # {"name": "symbol_price_watchdog_spx", "script": "symbol_price_watchdog.py SPX"},
                 {"name": "kalshi_account_sync", "script": "kalshi_account_sync_ws.py"},
                 {"name": "kalshi_market_watchdog_hourly_btc", "script": "kalshi_market_watchdog.py BTC"},
                 {"name": "kalshi_market_watchdog_hourly_eth", "script": "kalshi_market_watchdog.py ETH"},
-                {"name": "kalshi_market_watchdog_hourly_ndx", "script": "kalshi_market_watchdog.py NDX"},
-                {"name": "kalshi_market_watchdog_hourly_spx", "script": "kalshi_market_watchdog.py SPX"},
+                # {"name": "kalshi_market_watchdog_hourly_ndx", "script": "kalshi_market_watchdog.py NDX"},
+                # {"name": "kalshi_market_watchdog_hourly_spx", "script": "kalshi_market_watchdog.py SPX"},
                 {"name": "kalshi_market_watchdog_15m_btc", "script": "kalshi_market_watchdog.py BTC --interval 15m"},
                 {"name": "kalshi_market_watchdog_15m_eth", "script": "kalshi_market_watchdog.py ETH --interval 15m"},
                 {"name": "system_monitor", "script": "system_monitor.py"},
@@ -141,8 +142,8 @@ class SystemMonitor:
                 active_trade_name = f"active_trade_supervisor_{monitor_identifier}"
                 discovered_services[active_trade_name] = active_trade_port
             
-            # Add strike table generators (hourly)
-            supported_symbols = ['BTC', 'ETH', 'NDX', 'SPX']
+            # Add strike table generators (hourly). SPX/NDX not currently traded; add to list to re-enable.
+            supported_symbols = ['BTC', 'ETH']  # was ['BTC', 'ETH', 'NDX', 'SPX']
             strike_table_default_ports = {'btc': 8014, 'eth': 8015, 'spx': 8016, 'ndx': 8017}
             for symbol in supported_symbols:
                 strike_table_name = f"strike_table_generator_hourly_{symbol.lower()}"
@@ -849,10 +850,11 @@ class SystemMonitor:
                 sys.stdout.flush()
                 
                 # Group services by category (updated to match current configuration)
+                # SPX/NDX services commented out; add back when re-enabling SPX/NDX trading.
                 service_categories = {
                     "Core Trading": ["main_app", "trade_manager", "trade_executor"],
-                    "Data Services": ["symbol_price_watchdog_btc", "symbol_price_watchdog_eth", "symbol_price_watchdog_spx", "symbol_price_watchdog_ndx", "strike_table_generator_hourly_btc", "strike_table_generator_hourly_eth", "strike_table_generator_hourly_spx", "strike_table_generator_hourly_ndx", "strike_table_generator_15m_btc", "strike_table_generator_15m_eth"],
-                    "Kalshi API": ["kalshi_account_sync", "kalshi_market_watchdog_hourly_btc", "kalshi_market_watchdog_hourly_eth", "kalshi_market_watchdog_hourly_spx", "kalshi_market_watchdog_hourly_ndx", "kalshi_market_watchdog_15m_btc", "kalshi_market_watchdog_15m_eth"],
+                    "Data Services": ["symbol_price_watchdog_btc", "symbol_price_watchdog_eth", "strike_table_generator_hourly_btc", "strike_table_generator_hourly_eth", "strike_table_generator_15m_btc", "strike_table_generator_15m_eth"],
+                    "Kalshi API": ["kalshi_account_sync", "kalshi_market_watchdog_hourly_btc", "kalshi_market_watchdog_hourly_eth", "kalshi_market_watchdog_15m_btc", "kalshi_market_watchdog_15m_eth"],
                     "Monitor Management": ["monitor_manager"],
                     "System Management": ["cascading_failure_detector", "system_monitor"]
                 }
