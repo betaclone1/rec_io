@@ -53,6 +53,9 @@ __pycache__/
 # Mac system files
 .DS_Store
 
+# Cursor MCP config (may contain Discord bot token)
+.cursor/mcp.json
+
 # Kalshi credentials and private info
 backend/api/kalshi-api/kalshi-credentials/
 *.pem
@@ -154,3 +157,4 @@ DIGITAL_OCEAN_CREDENTIALS.md
 backend/supervisord.conf
 # Runtime port configuration (environment-specific)
 backend/core/config/MASTER_PORT_MANIFEST.json
+backend/core/config/MASTER_PORT_MANIFEST.json.corrupted_*

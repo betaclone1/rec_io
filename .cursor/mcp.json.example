@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "discord-kalshi": {
+      "command": "npx",
+      "args": ["-y", "@missionsquad/mcp-discord"],
+      "env": {
+        "DISCORD_TOKEN": "YOUR_DISCORD_BOT_TOKEN"
+      }
+    }
+  }
+}
