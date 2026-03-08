@@ -307,8 +307,8 @@
                         <div style="font-weight: bold; margin-bottom: 4px; font-size: 12px;">Transfers</div>
                         <div style="max-height: 120px; overflow-y: auto; margin-bottom: 8px;">
                             <table class="data-table" style="width: 100%; font-size: 11px; text-align: center;">
-                                <thead><tr><th>Time</th><th>From</th><th>To</th><th>Amount</th></tr></thead>
-                                <tbody id="transfers-body"><tr><td colspan="4">Loading...</td></tr></tbody>
+                                <thead><tr><th>Time</th><th>From</th><th>To</th><th>Amount</th><th>Status</th></tr></thead>
+                                <tbody id="transfers-body"><tr><td colspan="5">Loading...</td></tr></tbody>
                             </table>
                         </div>
                         <div style="display: flex; gap: 8px;">
@@ -504,7 +504,7 @@
             const subaccountsBody = document.getElementById("subaccounts-body");
             if (subaccountsBody) subaccountsBody.innerHTML = "<tr><td colspan=\"2\">Syncing...</td></tr>";
             const transfersBody = document.getElementById("transfers-body");
-            if (transfersBody) transfersBody.innerHTML = "<tr><td colspan=\"4\">Syncing...</td></tr>";
+            if (transfersBody) transfersBody.innerHTML = "<tr><td colspan=\"5\">Syncing...</td></tr>";
         }
 
         async function loadAccountData() {
@@ -561,12 +561,12 @@
             const transfersBody = document.getElementById("transfers-body");
             if (transfersBody) {
                 transfersBody.innerHTML = transfers.length === 0
-                    ? "<tr><td colspan=\"4\">No transfers</td></tr>"
+                    ? "<tr><td colspan=\"5\">No transfers</td></tr>"
                     : transfers.slice(0, 20).map(t => {
                         const amountCents = t.amount != null ? t.amount : 0;
                         const amountStr = "$" + (amountCents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
                         const time = (t.timestamp || t.initiated || "").toString().slice(0, 16);
-                        return `<tr><td>${time}</td><td>${t.from ?? ""}</td><td>${t.to ?? ""}</td><td>${amountStr}</td></tr>`;
+                        return `<tr><td>${time}</td><td>${t.from ?? ""}</td><td>${t.to ?? ""}</td><td>${amountStr}</td><td>${t.status ?? ""}</td></tr>`;
                     }).join("");
             }
 

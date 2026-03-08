@@ -347,15 +347,21 @@ class LiveOrderbookSnapshot:
                 
                 market_ticker = delta_data.get('market_ticker')
                 side = delta_data.get('side')
-                price = delta_data.get('price')
+                # Kalshi fixed-point (March 12 2026): orderbook_delta may send price_dollars instead of price (cents)
+                price_raw = delta_data.get('price_dollars') or delta_data.get('price')
                 delta = delta_data.get('delta')
                 
-                if all([market_ticker, side, price is not None, delta is not None]):
-                    self.update_orderbook(market_ticker, side, price, delta)
+                if all([market_ticker, side, price_raw is not None, delta is not None]):
+                    if isinstance(price_raw, str):
+                        price_cents = int(round(float(price_raw) * 100))
+                    else:
+                        price_cents = int(price_raw)
+                    self.update_orderbook(market_ticker, side, price_cents, delta)
                     
                     # Print update every 100 messages
                     if self.update_count % 100 == 0:
-                        print(f"📊 Orderbook Update #{self.update_count} - {market_ticker} {side} ${price:.2f} ({delta:+d})")
+                        price_dollars_display = price_cents / 100.0
+                        print(f"📊 Orderbook Update #{self.update_count} - {market_ticker} {side} ${price_dollars_display:.2f} ({delta:+d})")
                         
                         # Build and save snapshot every 100 updates
                         snapshot = self.build_market_snapshot()

@@ -6,6 +6,40 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-08 — DigitalOcean integration and prepare-update prod snapshot
+
+**Summary**
+
+- **@digitalocean agent:** Rule and AGENTS.md entry; authority on DO API, snapshots, backups, droplets. MCP **digitalocean-droplets** (remote) in mcp.json with token; tool **snapshot-droplet** for autonomous snapshot create.
+- **Prepare-update:** Step 1 added: create prod snapshot **rec-io-prod-pre-update-YYYY-MM-DD** (droplet 513735057) before verify/audit/changelog so the update is revertable.
+- **/apply-update:** Slash command and APPLY_UPDATE_COMMAND.md for production to run open MASTER_CHANGELOG checklists and calibrate server.
+- **Scripts/docs:** scripts/do/snapshot_prod.sh, .cursor/pm/DIGITALOCEAN_INTEGRATION.md, DO_AGENT_SNAPSHOT_FIX.md, sandbox.json (optional .env read). .env.example and master .env include DIGITALOCEAN_API_TOKEN.
+
+**Production agent checklist**
+
+- [ ] Confirm codebase changes (pull latest on production).
+- [ ] No DB schema changes or migrations; no restart required.
+- [ ] Optional: On prod, if using Cursor/agents, add digitalocean-droplets MCP to mcp.json for snapshot/backup; token in env/headers.
+
+---
+
+## 2026-03-08 — PM and agent housekeeping (Cursor commands, brain, skills, archive)
+
+**Summary**
+
+- **Cursor / PM:** Slash commands and PM docs moved or added under `.cursor/`: commands (`verify`, `log-chat`, `system-restart`, `prepare-update`), PM brain (from `docs/pm_brain/` to `.cursor/pm/brain/`), new brain docs (INDEX, config/env, proposed tasks, context retention, chat summary log), PM command docs (VERIFY, LOG_CHAT, SYSTEM_RESTART, PREPARE_UPDATE, ORG_CHART, DB_REVERSIBLE_MIGRATIONS), and rules (db, kalshi, pm). Skills added for verify, log-chat, system-restart, prepare-update.
+- **CI:** `.github/workflows/db-schema-drift.yml` added (runs schema drift check on push/PR to main and master).
+- **Archive:** `docs/pm_brain/` content moved to `.cursor/pm/brain/`; many legacy docs and corrupted `MASTER_PORT_MANIFEST.json` snapshots moved to `archive/2026-03-housekeeping/` (docs and backend/core/config corrupt copies). `AGENTS.md` and `.gitignore` updated for new paths and ignores.
+- **No application or DB changes:** No backend code, schema, or migrations in this commit. Production behavior unchanged.
+
+**Production agent checklist**
+
+- [ ] Confirm codebase changes (pull latest on production).
+- [ ] No DB schema changes or migrations; no restart required for this release.
+- [ ] Optional: If using Cursor/agents on this repo, ensure local `.cursor` config (e.g. MCP paths) is set for your machine; `mcp.json` and credentials remain gitignored.
+
+---
+
 ## Entry format
 
 Each entry below uses:
@@ -13,6 +47,96 @@ Each entry below uses:
 - **Date** – When the update is intended for production (YYYY-MM-DD).
 - **Summary** – What the release contains.
 - **Production agent checklist** – A list of tasks with checkboxes (`- [ ]`). The production agent physically checks these off as each is completed. Every entry has at least a minimal checklist (e.g. "Confirm codebase changes", "Update local database" if applicable). Details or commands for a task can appear under the checklist or inline in the task text.
+
+---
+
+## 2026-03-07 — Kalshi fixed-point migration (March 12 2026 cutoff)
+
+**Summary**
+
+- **Kalshi API:** Legacy integer count fields and integer cents price fields are removed by Kalshi on **March 12, 2026**. All integration code now prefers `_fp` (e.g. `count_fp`) and `_dollars` (e.g. `yes_bid_dollars`) and derives legacy values when API omits them.
+- **trade_executor.py:** Already sent only `count_fp` and `yes_price_dollars` / `no_price_dollars`; no changes. No legacy `count` or `yes_price`/`no_price` in order payload.
+- **kalshi_account_sync_ws.py:** Added `_prefer_fp_or_legacy()` and `_prefer_dollars_or_legacy_cents()`. Positions, fills, orders, and settlements now prefer `*_fp` and `*_dollars` from API responses; legacy counts/prices derived when missing. Settlements support `yes_total_cost_dollars` / `no_total_cost_dollars` / `revenue_dollars` when present.
+- **kalshi_market_watchdog.py:** Market data: prefer `yes_bid_dollars` etc.; derive `yes_bid`/`no_bid`/… (cents) from `_dollars` when legacy cents not returned. Module-level helper `_market_cents_from_dollars()`.
+- **live_orderbook_snapshot.py:** Orderbook delta messages: accept `price_dollars` or `price` (cents); normalize to cents for internal orderbook.
+- **kalshi_market_ticker_websocket.py:** Orderbook delta: accept `price_dollars` and `delta_fp`; snapshot levels normalized from price_dollars/size_fp to cents/int for existing logic.
+
+**Production agent checklist**
+
+- [ ] Confirm codebase changes (pull latest on production).
+- [ ] No DB schema changes required; existing `_fp` and `_dollars` columns already used.
+- [ ] Restart services that talk to Kalshi: `trade_executor`, `kalshi_account_sync`, `kalshi_market_watchdog` (and any hourly/15m watchdog instances), plus `main_app` if it proxies Kalshi. Full restart: `scripts/MASTER_RESTART.sh` or equivalent.
+- [ ] After March 12 2026: confirm orders, fills, positions, and market data continue to sync and display; no reliance on deprecated integer/cents fields.
+
+---
+
+## 2026-03-07 — Kalshi account history: /deposits and /withdrawals only
+
+**Summary**
+
+- **Endpoints:** Account history sync no longer uses the legacy `account/history` endpoint (404). It uses only `GET /v1/users/{user_id}/deposits` and `GET /v1/users/{user_id}/withdrawals`. Legacy fetcher and converter removed from `kalshi_account_sync_ws.py`.
+- **Schema:** `users.account_history_0001` has new columns `kalshi_id`, `vendor`, `rail` (reversible migration `20260307_1600_account_history_vendor_rail_kalshi_id`). Upsert uses `kalshi_id` when present; backfill updates existing rows with NULLs by matching API data (UTC-normalized time + amount).
+- **Transfers:** `users.transfers_0001` From/To and status are derived from account_history (vendor/rail/deposit_type). `_refresh_transfer_from_to_from_account_history` keeps them in sync after backfill or sync.
+- **Backfill:** Sync runs `_backfill_account_history_vendor_rail` after each upsert so existing rows get `kalshi_id`/vendor/rail when the API delivers them. One-off script `scripts/db/backfill_account_history_vendor_rail.py` can be run manually to backfill existing rows (e.g. after first deploy): `PYTHONPATH=. python3 scripts/db/backfill_account_history_vendor_rail.py`.
+- **Rail:** Only withdrawals have `rail` in the API; deposits correctly have `rail` NULL.
+
+**Production agent checklist**
+
+- [ ] Confirm codebase changes (pull latest on production).
+- [ ] Apply migration if not already applied: `python3 scripts/db/run_migration.py up 20260307_1600_account_history_vendor_rail_kalshi_id` (from project root with PYTHONPATH set). If already applied, `run_migration.py list` will show it.
+- [ ] Optional one-time backfill for existing account_history rows with NULL kalshi_id/vendor/rail: `PYTHONPATH=. python3 scripts/db/backfill_account_history_vendor_rail.py`. Run once; sync will backfill on its own thereafter.
+- [ ] Restart `kalshi_account_sync` (or full restart: `scripts/MASTER_RESTART.sh`) so sync uses new code.
+- [ ] Confirm: Account manager transfers table shows From/To and Status; account_history rows have vendor/rail populated where API provides them.
+
+---
+
+## 2026-03-07 — Fix known bugs (get_port, main.py DB)
+
+**Summary**
+
+- **auto_entry_supervisor.py:** `get_port("main")` → `get_port("main_app")` at the `update_monitor_position` call so the correct port is used.
+- **main.py:** `get_trade_history_preferences_postgresql()` now uses `get_postgresql_connection()` from `backend.core.config.database` instead of hardcoded localhost/rec_io_user/rec_io_password. Aligns with server-agnostic config.
+
+**Production agent checklist**
+
+- [ ] Confirm codebase changes (pull latest on production).
+- [ ] Restart `auto_entry_supervisor` (or full restart: `scripts/MASTER_RESTART.sh`) and `main_app` so changes take effect.
+- [ ] Confirm: no errors in logs; monitor position updates and trade history preferences work.
+
+---
+
+## 2026-03-07 — Env conventions: DB_* / REC_DB_* only
+
+**Summary**
+
+- **Single pattern:** All DB access goes through `backend.core.config.database`: `get_postgresql_connection()` or `get_database_config()`. No POSTGRES_* or hardcoded credentials in application code.
+- **database.py:** Prefers DB_HOST, DB_NAME, DB_USER, DB_PASSWORD, DB_PORT; if unset, falls back to REC_DB_HOST, REC_DB_NAME, REC_DB_USER, REC_DB_PASS, REC_DB_PORT. One place for both conventions; scripts do not need to map REC_DB_* → DB_*.
+- **Updated modules:** symbol_price_watchdog_finance, strike_table_generator, backend/util/cleanup_temp_schemas, symbol_data_fetch_pg, symbol_profiler, live_table_viewer, probability_lookup_generator; scripts: update_position_to_100, rollback_position_update, generate_schema_doc, audit_db_schema.
+
+**Production agent checklist**
+
+- [ ] Confirm codebase changes (pull latest on production).
+- [ ] Ensure .env or deploy sets either DB_* or REC_DB_* (database.py uses both). No code changes required if already using DB_* or REC_DB_*.
+- [ ] Restart any services that were changed (full restart recommended: `scripts/MASTER_RESTART.sh`) so they load the new database module behavior.
+- [ ] Confirm: DB-dependent scripts and services connect successfully (e.g. run a script that uses get_postgresql_connection).
+
+---
+
+## 2026-03-07 — DB schema drift check and reversible migrations
+
+**Summary**
+
+- **Drift check:** `scripts/db/check_db_schema_drift.py` compares `backend/core/config/database.py` with `docs/MASTER_DB_SCHEMA_REFERENCE.md` for critical tables (trades_0001, trades_simulated_0001, monitor_list_0001, strategy_list_0001); exits with error if definitions drift. No DB connection required.
+- **CI:** `.github/workflows/db-schema-drift.yml` runs the drift check on push/PR to main and master.
+- **Reversible migrations:** `scripts/db/run_migration.py` (list / up / down); migrations live in `scripts/migrations/` as `YYYYMMDD_HHMM_slug.up.sql` and `.down.sql`; applied migrations tracked in `system.schema_migrations`. See `.cursor/pm/DB_REVERSIBLE_MIGRATIONS.md`.
+- **update_db_schema_to_reference.py:** Now uses `get_postgresql_connection()` from project config (env); docstring states type/default fixes are out of scope (use reversible migrations or manual ALTERs).
+- **Audit findings:** `docs/changelog/DB_MAINTENANCE_AUDIT_FINDINGS.md` documents local audit and single source of truth. **Local alignment complete:** drift check passes. Prod schema changes are part of the normal update process; @updater coordinates and verifies when pushing to production.
+
+**Production agent checklist**
+
+- [ ] Confirm codebase changes (pull latest on production).
+- [ ] No prod DDL required for this release. CI will run drift check on future push/PR.
+- [ ] Optional: to audit prod schema, set DB_* (or REC_DB_*) to point at prod and run `PYTHONPATH=. python3 scripts/audit_db_schema.py` from project root. Do not run migrations or ALTERs on prod without a maintenance window and backup.
 
 ---
 

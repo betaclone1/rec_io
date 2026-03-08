@@ -42,14 +42,6 @@ SYMBOL_CONFIG = {
     }
 }
 
-# PostgreSQL connection parameters
-POSTGRES_CONFIG = {
-    'host': os.getenv('POSTGRES_HOST', 'localhost'),
-    'port': int(os.getenv('POSTGRES_PORT', '5432')),
-    'database': os.getenv('POSTGRES_DB', 'rec_io_db'),
-    'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
-    'password': os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-}
 
 # Global momentum profile cache
 MOMENTUM_PROFILES = {}
@@ -146,8 +138,9 @@ def calculate_momentum_percentile(symbol: str, momentum_value: float) -> Optiona
     return closest_percentile
 
 def get_postgres_connection():
-    """Get a PostgreSQL connection"""
-    return psycopg2.connect(**POSTGRES_CONFIG)
+    """Get a PostgreSQL connection (uses backend.core.config.database; DB_* / REC_DB_* env)."""
+    from backend.core.config.database import get_postgresql_connection
+    return get_postgresql_connection()
 
 def get_1m_avg_price(symbol: str) -> float:
     """

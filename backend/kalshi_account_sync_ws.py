@@ -411,21 +411,23 @@ def _account_history_entry_to_row(entry):
 
 
 def _upsert_account_history(conn, rows):
-    """Insert or update rows in users.account_history_0001."""
+    """Insert or update rows in users.account_history_0001. Simple UPDATE-then-INSERT per row; no ON CONFLICT, no unique constraint required."""
     if not rows:
         return 0
-    from psycopg2.extras import execute_values
     cols = ["entry_type", "amount", "fee", "created_at", "updated_at", "status", "returned_amount", "deposit_type", "immediate_amount", "immediate_status"]
-    sql = f"""
-        INSERT INTO users.account_history_0001 ({", ".join(cols)})
-        VALUES %s
-        ON CONFLICT (created_at, entry_type, amount)
-        DO UPDATE SET updated_at = EXCLUDED.updated_at, status = EXCLUDED.status, returned_amount = EXCLUDED.returned_amount,
-            deposit_type = EXCLUDED.deposit_type, immediate_amount = EXCLUDED.immediate_amount, immediate_status = EXCLUDED.immediate_status, synced_at = CURRENT_TIMESTAMP
-    """
-    values = [(r["entry_type"], r["amount"], r["fee"], r["created_at"], r["updated_at"], r["status"], r["returned_amount"], r["deposit_type"], r["immediate_amount"], r["immediate_status"]) for r in rows]
     with conn.cursor() as cur:
-        execute_values(cur, sql, values, page_size=100)
+        for r in rows:
+            cur.execute("""
+                UPDATE users.account_history_0001 SET
+                    updated_at = %s, status = %s, returned_amount = %s, deposit_type = %s,
+                    immediate_amount = %s, immediate_status = %s, synced_at = CURRENT_TIMESTAMP
+                WHERE created_at = %s AND entry_type = %s AND amount = %s
+            """, (r["updated_at"], r["status"], r["returned_amount"], r["deposit_type"], r["immediate_amount"], r["immediate_status"], r["created_at"], r["entry_type"], r["amount"]))
+            if cur.rowcount == 0:
+                cur.execute(f"""
+                    INSERT INTO users.account_history_0001 ({", ".join(cols)})
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (r["entry_type"], r["amount"], r["fee"], r["created_at"], r["updated_at"], r["status"], r["returned_amount"], r["deposit_type"], r["immediate_amount"], r["immediate_status"]))
     conn.commit()
     return len(rows)
 
@@ -751,7 +753,7 @@ def sync_balance():
                     
                     # Notify monitor_manager of bankroll update
                     notify_monitor_manager()
-                    # Sync Kalshi v1 account/history (deposits/withdrawals) into users.account_history_0001
+                    # Sync Kalshi v1 account/history into users.account_history_0001 (simple UPDATE-then-INSERT, no ON CONFLICT)
                     cursor.execute("SELECT kalshi_user_id FROM users.user_info_0001 WHERE user_no = '0001'")
                     kalshi_user_row = cursor.fetchone()
                     kalshi_user_id_for_history = (kalshi_user_row[0] or "").strip() if kalshi_user_row and kalshi_user_row[0] else None
@@ -766,7 +768,6 @@ def sync_balance():
                             with pg_conn.cursor() as cur:
                                 for amount_net in new_deposit_amounts:
                                     cur.execute("UPDATE users.subaccounts_0001 SET balance = balance + %s WHERE subaccount = 'Cash Transfer'", (amount_net,))
-                                # PRIMARY is always a direct copy of account_balance.portfolio; never derive from subaccount sums or increments
                                 cur.execute("SELECT portfolio FROM users.account_balance_0001 ORDER BY id DESC LIMIT 1")
                                 row = cur.fetchone()
                                 if row and row[0] is not None:
@@ -784,7 +785,6 @@ def sync_balance():
                                     amount_subtracted = min(amount_net, cash_balance)
                                     new_cash = cash_balance - amount_subtracted
                                     cur.execute("UPDATE users.subaccounts_0001 SET balance = %s WHERE subaccount = 'Cash Transfer'", (new_cash,))
-                                # PRIMARY is always a direct copy of account_balance.portfolio; never derive from subaccount sums or decrements
                                 cur.execute("SELECT portfolio FROM users.account_balance_0001 ORDER BY id DESC LIMIT 1")
                                 row = cur.fetchone()
                                 if row and row[0] is not None:

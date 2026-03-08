@@ -9,7 +9,7 @@ Update this document whenever schema changes are made during development.
 
 ## How to Check and Update Your Database (No Scripts)
 
-Use this document as the source of truth. Do both steps whenever you pull schema changes or need to sync the DB.
+Use this document as the source of truth. Do both steps whenever you pull schema changes or need to sync the DB. To check that `database.py` table definitions have not drifted from this doc (for critical tables), run `PYTHONPATH=$(pwd) python3 scripts/db/check_db_schema_drift.py` (exit 1 = drift).
 
 ### 1. Run code-defined migrations
 
@@ -10031,6 +10031,7 @@ Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m va
 | `win_loss` | `numeric(5,1)` | YES | 0.0 | |
 | `ret_pct` | `numeric(5,1)` | YES | 0.0 | |
 | `pnl` | `numeric(10,2)` | YES | 0.00 | |
+| `bankroll_allotment` | `numeric(5,1)` | YES | 0.0 | |
 | `bankroll_allotment_pct` | `real(24)` | YES | 0.00 | |
 | `status` | `character varying(20)` | YES | 'active'::character varying | |
 | `created` | `timestamp without time zone` | YES | CURRENT_TIMESTAMP | |
@@ -10258,6 +10259,7 @@ Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m va
 | `updated` | `timestamp without time zone` | YES | - | |
 | `default` | `boolean` | NO | false | |
 | `min_probability` | `numeric(5,2)` | YES | 95.00 | |
+| `max_probability` | `numeric(5,2)` | YES | - | |
 | `min_differential` | `numeric(5,2)` | YES | 0.25 | |
 | `min_time` | `integer(32)` | YES | 120 | |
 | `max_time` | `integer(32)` | YES | 900 | |
@@ -10695,7 +10697,7 @@ Log of transfers: internal (between subaccounts, e.g. Master Trading Bankroll â†
 
 ### Table: `users.account_history_0001`
 
-Kalshi v1 account/history entries (deposits and withdrawals) synced from the API. Populated by kalshi_account_sync_ws (sync_account_history when balance is synced). One row per Deposit or Withdrawal; columns match the API response.
+Kalshi v1 /deposits and /withdrawals only (we do not use the account/history endpoint). Populated by kalshi_account_sync_ws (sync_account_history when balance is synced). One row per deposit or withdrawal; kalshi_id from API id, vendor/rail from API fields.
 
 #### Columns
 
@@ -10713,11 +10715,15 @@ Kalshi v1 account/history entries (deposits and withdrawals) synced from the API
 | `immediate_amount` | `integer` | YES | - | Deposits only |
 | `immediate_status` | `character varying(50)` | YES | - | Deposits only |
 | `synced_at` | `timestamp with time zone` | YES | CURRENT_TIMESTAMP | When the row was inserted/updated by sync script |
+| `kalshi_id` | `character varying(64)` | YES | - | Kalshi API id from /deposits or /withdrawals; used for upsert when present |
+| `vendor` | `character varying(100)` | YES | - | From new API (e.g. venmo, plaid, zerohash) |
+| `rail` | `character varying(100)` | YES | - | Withdrawals only (e.g. apm, ach) |
 
 #### Constraints
 
 - **Primary Key:** `account_history_0001_pkey` on `id`
-- **Unique:** `account_history_0001_created_type_amount_key` on `(created_at, entry_type, amount)` for upsert deduplication
+- **Unique:** `account_history_0001_created_type_amount_key` on `(created_at, entry_type, amount)` for upsert deduplication (legacy)
+- **Unique:** `account_history_0001_kalshi_id_key` on `(kalshi_id)` WHERE kalshi_id IS NOT NULL (for upsert from new /deposits and /withdrawals) for upsert deduplication
 
 #### Indexes
 

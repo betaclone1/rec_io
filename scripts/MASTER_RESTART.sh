@@ -149,7 +149,11 @@ stop_supervisor() {
 # Function to start supervisor
 start_supervisor() {
     print_status "Starting supervisor..."
-    
+
+    # Force Python to load current source (avoids stale .pyc; ensures account sync and all backend use disk code)
+    _REPO_ROOT="$(cd "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+    rm -rf "${_REPO_ROOT}/backend/__pycache__" 2>/dev/null || true
+
     # Start supervisor in background
     supervisord -c "$SUPERVISOR_CONFIG" &
     local supervisor_pid=$!
@@ -354,16 +358,18 @@ EOF
     
     # Step 4: Generate supervisor configuration
     print_status "Step 4: Generating unified supervisor configuration..."
-    if [ -f "$REC_PROJECT_ROOT/scripts/generate_unified_supervisor_config.py" ]; then
-        "$REC_PYTHON_EXECUTABLE" "$REC_PROJECT_ROOT/scripts/generate_unified_supervisor_config.py"
+    if [ -f "$REC_PROJECT_ROOT/scripts/config/generate_unified_supervisor_config.py" ]; then
+        "$REC_PYTHON_EXECUTABLE" "$REC_PROJECT_ROOT/scripts/config/generate_unified_supervisor_config.py"
     else
-        print_error "generate_unified_supervisor_config.py not found"
+        print_error "scripts/config/generate_unified_supervisor_config.py not found"
         exit 1
     fi
     echo ""
     
-    # Step 5: Start supervisor
+    # Step 5: Start supervisor (clear backend bytecode after config gen so processes load current .py)
     print_status "Step 5: Starting supervisor..."
+    _REPO_ROOT="$(cd "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+    rm -rf "${_REPO_ROOT}/backend/__pycache__" 2>/dev/null || true
     start_supervisor
     echo ""
     

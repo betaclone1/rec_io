@@ -1,18 +1,25 @@
 """
 Centralized Database Configuration
 Provides environment variable-based configuration for PostgreSQL connections.
+
+Single pattern: use DB_HOST, DB_NAME, DB_USER, DB_PASSWORD, DB_PORT. If unset,
+falls back to REC_DB_HOST, REC_DB_NAME, REC_DB_USER, REC_DB_PASS, REC_DB_PORT
+so .env or deploy can use either convention. Scripts should use
+get_postgresql_connection() or get_database_config() here; do not use POSTGRES_*
+or hardcoded credentials.
 """
 
 import os
 
+
 def get_database_config():
-    """Get database configuration from environment variables with defaults."""
+    """Get database configuration from environment variables. Prefer DB_*; fall back to REC_DB_*."""
     return {
-        'host': os.getenv('DB_HOST', 'localhost'),
-        'database': os.getenv('DB_NAME', 'rec_io_db'),
-        'user': os.getenv('DB_USER', 'rec_io_user'),
-        'password': os.getenv('DB_PASSWORD', 'rec_io_password'),
-        'port': int(os.getenv('DB_PORT', '5432'))
+        'host': os.getenv('DB_HOST') or os.getenv('REC_DB_HOST') or 'localhost',
+        'database': os.getenv('DB_NAME') or os.getenv('REC_DB_NAME') or 'rec_io_db',
+        'user': os.getenv('DB_USER') or os.getenv('REC_DB_USER') or 'rec_io_user',
+        'password': os.getenv('DB_PASSWORD') or os.getenv('REC_DB_PASS') or 'rec_io_password',
+        'port': int(os.getenv('DB_PORT') or os.getenv('REC_DB_PORT') or '5432'),
     }
 
 def get_postgresql_connection():
@@ -475,11 +482,11 @@ def init_database():
             DO $$
             DECLARE
                 col TEXT;
-                cols_add TEXT[] := ARRAY['entry_type', 'amount', 'fee', 'created_at', 'updated_at', 'status', 'returned_amount', 'deposit_type', 'immediate_amount', 'immediate_status', 'synced_at'];
+                cols_add TEXT[] := ARRAY['entry_type', 'amount', 'fee', 'created_at', 'updated_at', 'status', 'returned_amount', 'deposit_type', 'immediate_amount', 'immediate_status', 'synced_at', 'kalshi_id', 'vendor', 'rail'];
                 col_defs TEXT[] := ARRAY[
                     'VARCHAR(20) NOT NULL', 'INTEGER NOT NULL', 'INTEGER DEFAULT 0', 'TIMESTAMP WITH TIME ZONE NOT NULL',
                     'TIMESTAMP WITH TIME ZONE', 'VARCHAR(50)', 'INTEGER DEFAULT 0', 'VARCHAR(50)', 'INTEGER', 'VARCHAR(50)',
-                    'TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP'
+                    'TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP', 'VARCHAR(64)', 'VARCHAR(100)', 'VARCHAR(100)'
                 ];
                 i INT;
             BEGIN
@@ -490,6 +497,9 @@ def init_database():
                 END LOOP;
                 IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'account_history_0001_created_type_amount_key') THEN
                     ALTER TABLE users.account_history_0001 ADD CONSTRAINT account_history_0001_created_type_amount_key UNIQUE (created_at, entry_type, amount);
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'users' AND tablename = 'account_history_0001' AND indexname = 'account_history_0001_kalshi_id_key') THEN
+                    CREATE UNIQUE INDEX account_history_0001_kalshi_id_key ON users.account_history_0001 (kalshi_id) WHERE kalshi_id IS NOT NULL;
                 END IF;
             EXCEPTION WHEN OTHERS THEN
                 NULL;

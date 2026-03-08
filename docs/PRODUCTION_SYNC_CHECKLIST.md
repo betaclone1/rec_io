@@ -69,7 +69,7 @@ If you use the existing update script (it also pulls `origin/main` and restarts)
 
 ```bash
 cd /opt/rec_io
-./scripts/git_update_system.sh update
+./scripts/install_deploy/git_update_system.sh update
 ```
 
 ---
@@ -82,7 +82,7 @@ cd /opt/rec_io
 | Production has local changes | On server: `git stash` (or discard with `git checkout -- .` if you don’t need them), then pull. |
 | Your branch isn’t on GitHub | Locally: `git push -u origin <branch>`. Then merge that branch into `main` and `git push origin main`. |
 | `git pull` on production says “diverged” or “conflict” | On server: `git fetch origin` then `git reset --hard origin/main` (this makes production exactly match GitHub main; any local commits on the server are dropped). Then run `./scripts/MASTER_RESTART.sh`. |
-| You want production to run a branch that isn’t main | On server: `git fetch origin` then `git checkout <branch>` then `git pull origin <branch>`. You’ll need to change or bypass `git_update_system.sh` (it’s hardcoded to `main`) for future updates. |
+| You want production to run a branch that isn’t main | On server: `git fetch origin` then `git checkout <branch>` then `git pull origin <branch>`. You’ll need to change or bypass `scripts/install_deploy/git_update_system.sh` (it’s hardcoded to `main`) for future updates. |
 
 ---
 

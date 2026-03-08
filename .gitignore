@@ -55,11 +55,16 @@ __pycache__/
 
 # Cursor MCP config (may contain Discord bot token)
 .cursor/mcp.json
+# Google Drive MCP credentials (never commit)
+.cursor/gcp-oauth.keys.json
+.cursor/gdrive-server-credentials.json
 
 # Kalshi credentials and private info
 backend/api/kalshi-api/kalshi-credentials/
 *.pem
 .env
+.env.*
+!.env.example
 
 # Local configuration overrides
 backend/core/config/config.local.json
@@ -111,9 +116,9 @@ backend/supervisord.conf.backup
 rec_webview_app/
 rec_webview_app/**
 
-# Archive and backup folders (completely excluded - may contain sensitive data)
-archive/
-archive/**
+# Archive and backup folders (excluded except housekeeping archive)
+archive/*
+!archive/2026-03-housekeeping/
 backup/
 backup/**
 

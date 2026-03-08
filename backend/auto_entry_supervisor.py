@@ -325,7 +325,7 @@ def _apply_performance_based_multiplier(multiplier_value: float, position_size: 
     try:
         position_size_val = int(position_size) if position_size is not None else 1
         position_type_val = (position_type or "contracts").lower()
-        port = get_port("main")
+        port = get_port("main_app")
         url = f"http://localhost:{port}/api/update_monitor_position"
         monitor_id_value = int(MONITOR_ID)
         payload = {

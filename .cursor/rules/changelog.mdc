@@ -1,12 +1,12 @@
 ---
-description: "When user runs /changelog or asks to follow changelog instructions: read all open MASTER_CHANGELOG entries and execute each production checklist fully, then update checkboxes."
+description: "When user runs /apply-update or asks to follow changelog instructions: read all open MASTER_CHANGELOG entries and execute each production checklist fully, then update checkboxes."
 globs: []
 alwaysApply: false
 ---
 
-# Changelog workflow
+# Apply update (production) / changelog workflow
 
-When the user invokes this rule (e.g. by saying "changelog", "/changelog", or "follow the changelog instructions"), do the following.
+When the user invokes this rule (e.g. by saying "/apply-update", "apply update", "changelog", or "follow the changelog instructions"), do the following.
 
 ## 1. Read the agent instructions
 

@@ -95,14 +95,14 @@ handle_data_upload() {
     echo ""
     
     # Check if we're on the local machine (has the repository)
-    if [ -f "scripts/package_user_data.sh" ]; then
+    if [ -f "scripts/backup/package_user_data.sh" ]; then
         print_info "Great! You're on your local machine."
         print_info "Let's create the data package now."
         echo ""
         
         read -p "Press Enter to create the data package..."
         
-        if ./scripts/package_user_data.sh; then
+        if ./scripts/backup/package_user_data.sh; then
             print_success "Data package created successfully!"
             
             # Find the created package

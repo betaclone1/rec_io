@@ -6,23 +6,17 @@ from datetime import datetime, timedelta, timezone
 import time
 from typing import Optional, Tuple
 
+from backend.core.config.database import get_postgresql_connection as _get_conn
+
 # Use Coinbase (Kraken limits historical depth)
 exchange = ccxt.coinbase({'enableRateLimit': True})
 timeframe = '1m'
 limit = 1000  # max per fetch
 
+
 def get_postgresql_connection():
-    """Get PostgreSQL connection"""
-    try:
-        return psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
-    except Exception as e:
-        print(f"Failed to connect to PostgreSQL: {e}")
-        return None
+    """Get PostgreSQL connection (DB_* / REC_DB_* env via backend.core.config.database)."""
+    return _get_conn()
 
 def get_latest_timestamp_from_db(symbol: str) -> Optional[datetime]:
     """

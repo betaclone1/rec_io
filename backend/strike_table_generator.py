@@ -23,6 +23,7 @@ from decimal import Decimal
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.core.config.config_manager import config
+from backend.core.config.database import get_postgresql_connection
 from backend.util.paths import get_data_dir, get_kalshi_data_dir
 
 # Configure logging
@@ -32,21 +33,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# PostgreSQL connection parameters
-POSTGRES_CONFIG = {
-    'host': os.getenv('POSTGRES_HOST', 'localhost'),
-    'port': int(os.getenv('POSTGRES_PORT', '5432')),
-    'database': os.getenv('POSTGRES_DB', 'rec_io_db'),
-    'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
-    'password': os.getenv('POSTGRES_PASSWORD', '')
-        }
-
 class LookupProbabilityCalculator:
     """Probability calculator using the lookup table instead of live interpolation."""
     
     def __init__(self, symbol: str):
         self.symbol = symbol.lower()
-        self.db_config = POSTGRES_CONFIG
         self.lookup_table_name = self._find_latest_lookup_table()
         self.max_buffer = self._get_max_buffer_for_symbol()
     
@@ -54,7 +45,7 @@ class LookupProbabilityCalculator:
         """Find the most recent master lookup table for this symbol."""
         conn = None
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = get_postgresql_connection()
             cursor = conn.cursor()
             
             # Query to find all lookup tables for this symbol
@@ -86,7 +77,7 @@ class LookupProbabilityCalculator:
         """Get the maximum buffer value for this symbol's lookup table."""
         conn = None
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = get_postgresql_connection()
             cursor = conn.cursor()
             
             cursor.execute(f"""
@@ -138,7 +129,7 @@ class LookupProbabilityCalculator:
             conn = None
         try:
             if not use_external_conn:
-                conn = psycopg2.connect(**self.db_config)
+                conn = get_postgresql_connection()
             cursor = conn.cursor()
             
             # Calculate dynamic buffer range based on symbol's buffer spacing
@@ -342,7 +333,6 @@ class StrikeTableGenerator:
         self.interval = interval.lower()  # "hourly" or "15m"
         if self.interval == "15m" and self.symbol not in ("btc", "eth"):
             raise ValueError("15m interval only supported for BTC and ETH")
-        self.db_config = POSTGRES_CONFIG
         logger.info(f"🔧 Initializing strike table generator for {symbol.upper()} ({self.interval})")
         self.calculator = LookupProbabilityCalculator(symbol)
         logger.info(f"✅ Strike table generator initialized for {symbol.upper()} ({self.interval})")
@@ -419,7 +409,7 @@ class StrikeTableGenerator:
     def setup_live_data_schema(self):
         """Create live_data schema and tables if they don't exist."""
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = get_postgresql_connection()
             cursor = conn.cursor()
             
             # Create live_data schema
@@ -514,7 +504,7 @@ class StrikeTableGenerator:
         try:
             # Get current price and momentum from PostgreSQL
             logger.info(f"🔍 Connecting to database for {self.symbol.upper()} price data...")
-            conn = psycopg2.connect(**self.db_config)
+            conn = get_postgresql_connection()
             cursor = conn.cursor()
             
             cursor.execute(f"""
@@ -559,7 +549,7 @@ class StrikeTableGenerator:
     def get_kalshi_market_snapshot(self) -> Dict[str, Any]:
         """Get live Kalshi market snapshot from market_kalshi_hourly_{symbol} or market_kalshi_15m_{symbol}."""
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = get_postgresql_connection()
             cursor = conn.cursor()
             if self.interval == "15m":
                 market_table = f"market_kalshi_15m_{self.symbol}"
@@ -792,7 +782,7 @@ class StrikeTableGenerator:
             momentum_bucket = round(momentum_percentile)
             
             # Write to database
-            conn = psycopg2.connect(**self.db_config)
+            conn = get_postgresql_connection()
             cursor = conn.cursor()
             
             table_name = self._strike_table_name()
@@ -959,7 +949,7 @@ class StrikeTableGenerator:
     def get_latest_strike_table_json(self) -> Optional[Dict[str, Any]]:
         """Get the latest strike table data in JSON format compatible with frontend."""
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = get_postgresql_connection()
             cursor = conn.cursor()
             
             table_name = self._strike_table_name()
@@ -1048,7 +1038,7 @@ class StrikeTableGenerator:
         """
         conn = None
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = get_postgresql_connection()
             cursor = conn.cursor()
             table_name = self._strike_table_name()
             cursor.execute(f"""
@@ -1105,7 +1095,7 @@ def run_continuous_generation(interval_seconds: int = 30, symbol: str = "btc", i
                 
                 # Show summary of latest data
                 try:
-                    conn = psycopg2.connect(**POSTGRES_CONFIG)
+                    conn = get_postgresql_connection()
                     cursor = conn.cursor()
                     prob_col = "probability_15m" if generator.interval == "15m" else "probability_hourly"
                     cursor.execute(f"""
@@ -1176,7 +1166,7 @@ def main():
             
             # Test retrieval of strike table data
             logger.info("📊 Retrieving latest strike table data...")
-            conn = psycopg2.connect(**POSTGRES_CONFIG)
+            conn = get_postgresql_connection()
             cursor = conn.cursor()
             
             cursor.execute(f"""

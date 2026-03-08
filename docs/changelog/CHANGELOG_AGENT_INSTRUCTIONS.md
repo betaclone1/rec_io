@@ -1,6 +1,6 @@
 # Changelog agent instructions
 
-When the user runs the **/changelog** action (or asks to "follow the changelog instructions"), the agent must do **both** of the following.
+When the user runs **/apply-update** (or asks to "follow the changelog instructions"), the agent must do **both** of the following.
 
 ---
 
@@ -31,7 +31,7 @@ For **each open entry** (only those with unchecked boxes), in **newest-first ord
 
 ## 3. Optional: internal “what changed” summary
 
-If the /changelog command is also defined to produce a **daily/weekly summary** of merged PRs/commits for the team (fun internal changelog):
+If the /apply-update command is also defined to produce a **daily/weekly summary** of merged PRs/commits for the team (fun internal changelog):
 
 - Use the **time period** specified (e.g. last 24 hours, last 7 days).
 - Use `git log main --oneline`, and optionally `gh pr list --state merged`, to build the summary.

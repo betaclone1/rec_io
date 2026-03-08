@@ -228,11 +228,12 @@
                     <th>From</th>
                     <th>To</th>
                     <th>Amount</th>
+                    <th>Status</th>
                     <th>Initiated</th>
                   </tr>
                 </thead>
                 <tbody id="transfers-body">
-                  <tr><td colspan="6">Loading...</td></tr>
+                  <tr><td colspan="7">Loading...</td></tr>
                 </tbody>
               </table>
             </div>
@@ -432,7 +433,7 @@
       const subaccountsBody = document.getElementById("subaccounts-body");
       if (subaccountsBody) subaccountsBody.innerHTML = "<tr><td colspan=\"2\">Syncing...</td></tr>";
       const transfersBody = document.getElementById("transfers-body");
-      if (transfersBody) transfersBody.innerHTML = "<tr><td colspan=\"6\">Syncing...</td></tr>";
+      if (transfersBody) transfersBody.innerHTML = "<tr><td colspan=\"7\">Syncing...</td></tr>";
     }
 
     async function loadAccountData() {
@@ -520,7 +521,7 @@
       const transfersBody = document.getElementById("transfers-body");
       if (transfersBody) {
         transfersBody.innerHTML = transfers.length === 0
-          ? "<tr><td colspan=\"6\">No transfers</td></tr>"
+          ? "<tr><td colspan=\"7\">No transfers</td></tr>"
           : transfers.map(t => {
               const amountCents = t.amount != null ? t.amount : 0;
               const amountStr = "$" + (amountCents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -530,6 +531,7 @@
                 <td>${t.from ?? ""}</td>
                 <td>${t.to ?? ""}</td>
                 <td>${amountStr}</td>
+                <td>${t.status ?? ""}</td>
                 <td>${t.initiated ?? ""}</td>
               </tr>`;
             }).join("");

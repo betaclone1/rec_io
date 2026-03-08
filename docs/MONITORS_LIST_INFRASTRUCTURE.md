@@ -85,55 +85,55 @@ This means:
 
 ## Management Script
 
-The `scripts/manage_monitors_list.sh` script provides comprehensive management capabilities:
+The `scripts/manage/manage_monitors_list.sh` script provides comprehensive management capabilities:
 
 ### Usage
 
 ```bash
-./scripts/manage_monitors_list.sh <command> [options]
+./scripts/manage/manage_monitors_list.sh <command> [options]
 ```
 
 ### Commands
 
 #### Create Table
 ```bash
-./scripts/manage_monitors_list.sh create-table <user_id>
+./scripts/manage/manage_monitors_list.sh create-table <user_id>
 ```
 Creates the monitors_list table for a new user.
 
 #### List Monitors
 ```bash
-./scripts/manage_monitors_list.sh list <user_id>
+./scripts/manage/manage_monitors_list.sh list <user_id>
 ```
 Lists all monitors for a user.
 
 #### Add Monitor
 ```bash
-./scripts/manage_monitors_list.sh add <user_id> <name> <symbol> <strategy> [auto_trade] [bankroll]
+./scripts/manage/manage_monitors_list.sh add <user_id> <name> <symbol> <strategy> [auto_trade] [bankroll]
 ```
 Adds a new monitor.
 
 #### Update Status
 ```bash
-./scripts/manage_monitors_list.sh update-status <user_id> <monitor_id> <status>
+./scripts/manage/manage_monitors_list.sh update-status <user_id> <monitor_id> <status>
 ```
 Updates monitor status.
 
 #### Update Auto Trade Status
 ```bash
-./scripts/manage_monitors_list.sh update-auto-trade <user_id> <monitor_id> <status>
+./scripts/manage/manage_monitors_list.sh update-auto-trade <user_id> <monitor_id> <status>
 ```
 Updates auto-trade status.
 
 #### Delete Monitor
 ```bash
-./scripts/manage_monitors_list.sh delete <user_id> <monitor_id>
+./scripts/manage/manage_monitors_list.sh delete <user_id> <monitor_id>
 ```
 Deletes a monitor.
 
 #### Show Monitor Details
 ```bash
-./scripts/manage_monitors_list.sh show <user_id> <monitor_id>
+./scripts/manage/manage_monitors_list.sh show <user_id> <monitor_id>
 ```
 Shows detailed information for a specific monitor.
 
@@ -141,25 +141,25 @@ Shows detailed information for a specific monitor.
 
 ```bash
 # Create table for user_0001
-./scripts/manage_monitors_list.sh create-table user_0001
+./scripts/manage/manage_monitors_list.sh create-table user_0001
 
 # List all monitors for user_0001
-./scripts/manage_monitors_list.sh list user_0001
+./scripts/manage/manage_monitors_list.sh list user_0001
 
 # Add a new BTC momentum monitor
-./scripts/manage_monitors_list.sh add user_0001 "BTC Momentum" BTC momentum_based true 25.0
+./scripts/manage/manage_monitors_list.sh add user_0001 "BTC Momentum" BTC momentum_based true 25.0
 
 # Update monitor status
-./scripts/manage_monitors_list.sh update-status user_0001 10001 active
+./scripts/manage/manage_monitors_list.sh update-status user_0001 10001 active
 
 # Update auto-trade status
-./scripts/manage_monitors_list.sh update-auto-trade user_0001 10001 paused
+./scripts/manage/manage_monitors_list.sh update-auto-trade user_0001 10001 paused
 
 # Delete a monitor
-./scripts/manage_monitors_list.sh delete user_0001 10001
+./scripts/manage/manage_monitors_list.sh delete user_0001 10001
 
 # Show monitor details
-./scripts/manage_monitors_list.sh show user_0001 10001
+./scripts/manage/manage_monitors_list.sh show user_0001 10001
 ```
 
 ## Integration with User Registration
@@ -168,7 +168,7 @@ The monitors_list table creation is integrated into the user registration system
 
 ### User Registration Script Integration
 
-The `scripts/user_registration_system.sh` script includes monitors_list table creation:
+The `scripts/manage/user_registration_system.sh` script includes monitors_list table creation:
 
 ```bash
 # Create monitors_list table for new user
@@ -213,7 +213,7 @@ cursor.execute("""
 
 ## Testing
 
-A test script is available at `scripts/test_monitors_list_table.py` that:
+A test script is available at `scripts/manage/test_monitors_list_table.py` that:
 
 1. Tests table creation
 2. Tests sequence creation
@@ -223,7 +223,7 @@ A test script is available at `scripts/test_monitors_list_table.py` that:
 
 Run the test:
 ```bash
-python3 scripts/test_monitors_list_table.py
+python3 scripts/manage/test_monitors_list_table.py
 ```
 
 ## Future Enhancements

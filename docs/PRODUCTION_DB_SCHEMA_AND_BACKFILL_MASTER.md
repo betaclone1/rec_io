@@ -24,7 +24,7 @@ This document is the single source of truth for:
 - **Existing columns:** `momentum`, `momentum_percentile`, `volatility_percentile`, plus all other trade fields.
 - **Intent:** For each trade we store market context at entry: volatility and movement (and their percentiles).
 - **New trades (implemented):** `insert_trade()` in `backend/trade_manager.py` reads the **latest row** from `live_data.live_price_log_1s_{symbol}` and writes `volatility`, `volatility_percentile`, `movement`, `movement_percentile` (same pattern as momentum) into the new trade row. So every new trade (manual or auto) gets these at insert time from the live feed.
-- **Existing trades:** Backfill from historical price logs via `scripts/backfill_trades_volatility_movement.py` (top-of-minute lookup).
+- **Existing trades:** Backfill from historical price logs via `scripts/db/backfill_trades_volatility_movement.py` (top-of-minute lookup).
 
 ### 1.3 Backfill logic
 
@@ -37,14 +37,14 @@ This document is the single source of truth for:
 - **Tables:** `live_data.live_price_log_1s_btc`, `live_price_log_1s_eth`, `live_price_log_1s_spx`, `live_price_log_1s_ndx`.
 - **New columns (all four tables):** `move_1m`, `move_2m`, `move_3m`, `move_4m`, `move_15m`, `move_30m`, `movement`, `movement_percentile`.
 - **How they get populated:** The **symbol price watchdog** (`backend/symbol_price_watchdog.py`) writes these on every tick. For each window (1m, 2m, … 30m), high/low/open are derived from ticks in that window in the same table; raw move = (high − low) / open × 100. The weighted composite `movement` uses the same weights as momentum (0.3, 0.25, 0.2, 0.15, 0.05, 0.05). `movement_percentile` is looked up from `analytics.{symbol}_movement_profile` (or latest dated profile table). No backfill script: new data is filled as the watchdog runs after schema/ code deploy.
-- **Reference:** Schema and column descriptions in `docs/MASTER_DB_SCHEMA_REFERENCE.md`; change log in `DATABASE_CHANGES_LOG.md`. Test script: `python -m backend.test_watchdog_movement` (from repo root, with project deps). Movement profile tables use column **movement_value** (not momentum_value) for the percentile lookup value.
+- **Reference:** Schema and column descriptions in `docs/MASTER_DB_SCHEMA_REFERENCE.md`; change log (archived: `archive/2026-03-housekeeping/root/DATABASE_CHANGES_LOG.md`). Test script: `python -m backend.test_watchdog_movement` (from repo root, with project deps). Movement profile tables use column **movement_value** (not momentum_value) for the percentile lookup value.
 
 ### 1.5 Strike tables (real-time) — volatility and movement columns
 
 - **Tables:** `live_data.strike_table_hourly_btc`, `strike_table_hourly_eth`, `strike_table_hourly_spx`, `strike_table_hourly_ndx`.
 - **New columns (all four tables):** `volatility`, `volatility_percentile`, `movement`, `movement_percentile`.
 - **How they get populated:** The **strike table generator** (`backend/strike_table_generator.py`) reads the latest row from `live_data.live_price_log_1s_{symbol}` (same row used for price and momentum) and writes these four values into each strike table row it generates. No backfill: new snapshots get the values when the generator runs after schema/code deploy.
-- **Reference:** Schema in `docs/MASTER_DB_SCHEMA_REFERENCE.md`; change log in `DATABASE_CHANGES_LOG.md`. Schema migration: `init_database()` in `backend/core/config/database.py` adds the columns if missing.
+- **Reference:** Schema in `docs/MASTER_DB_SCHEMA_REFERENCE.md`; change log (archived: `archive/2026-03-housekeeping/root/DATABASE_CHANGES_LOG.md`). Schema migration: `init_database()` in `backend/core/config/database.py` adds the columns if missing.
 
 ### 1.6 Movement profile tables (analytics) — column rename
 
@@ -88,10 +88,10 @@ The same types are in the CREATE TABLE block for new installs.
 
 ### 3.1 Script
 
-- **Path:** `scripts/backfill_trades_volatility_movement.py`
+- **Path:** `scripts/db/backfill_trades_volatility_movement.py`
 - **Run from repo root:**
   ```bash
-  python3 scripts/backfill_trades_volatility_movement.py
+  python3 scripts/db/backfill_trades_volatility_movement.py
   ```
 - **Requires:** Project environment (so `backend.core.config.database.get_postgresql_connection` works). No extra CLI args.
 
@@ -164,7 +164,7 @@ From the **project root**:
 
 ```bash
 cd /path/to/repo
-python3 scripts/backfill_trades_volatility_movement.py
+python3 scripts/db/backfill_trades_volatility_movement.py
 ```
 
 - Expect output like: `Updated: N, skipped (no timestamp): 0, skipped (no historical row): M, errors: 0`.
@@ -192,7 +192,7 @@ python3 scripts/backfill_trades_volatility_movement.py
 | Historical tables (movement columns) | Already added via analytics pipeline / migration | No extra step if pipeline has been run |
 | Live 1s tables (movement columns) | `backend/core/config/database.py`; written by watchdog | Schema via `init_database()`; values filled on each tick by `symbol_price_watchdog.py` (no backfill) |
 | Strike tables (volatility/movement columns) | `backend/core/config/database.py`; written by generator | Schema via `init_database()`; values filled when `strike_table_generator.py` runs (reads from live 1s price log) |
-| Backfill trades from historical | `scripts/backfill_trades_volatility_movement.py` | Run script from repo root (§4.4) |
+| Backfill trades from historical | `scripts/db/backfill_trades_volatility_movement.py` | Run script from repo root (§4.4) |
 | New trades vol/movement at insert | `backend/trade_manager.py` `insert_trade()` | Reads latest `live_price_log_1s_{symbol}` row; no backfill for new trades |
 | Movement profile column | `analytics.*_movement_profile*` | Column is **movement_value** (renamed from momentum_value); migration in `init_database()`; profiler + watchdog use it |
 | Doc / schema reference | `docs/MASTER_DB_SCHEMA_REFERENCE.md` | Updated for new columns |

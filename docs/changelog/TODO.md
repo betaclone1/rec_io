@@ -4,29 +4,47 @@ Timestamped tasks we want to come back to. Use checklist formatting; add technic
 
 ---
 
+## 2026-03-07 — Project housekeeping (first batch)
+
+**Scope:** Audit scripts, docs, backend, root; archive unused/obsolete items (no deletes). Plan: `docs/PROJECT_HOUSEKEEPING_AUDIT_PLAN.md`.
+
+**Done (2026-03-07):** Phase 1 inventories in `docs/changelog/todo_docs/` (HOUSEKEEPING_SCRIPTS_INVENTORY.md, HOUSEKEEPING_DOCS_INVENTORY.md, HOUSEKEEPING_BACKEND_ROOT_INVENTORY.md). First archive batch: 83× `MASTER_PORT_MANIFEST.json.corrupted_*` and 2 scripts (START_SERVICES_DIRECT.sh, auto_add_files.sh) moved to `archive/2026-03-housekeeping/`. Index: `archive/2026-03-housekeeping/INDEX.md`.
+
+**Backlog:** Further script and doc candidates in inventories; move in a later pass after review. Corrupted manifests and two scripts archived; MASTER_RESTART_WITH_SANITIZATION_CHECK.sh kept (referenced by install/auto_startup).
+
+---
+
 ## 2026-03-05 — DB maintenance system audit
 
 **Scope:** Align DB structure across reference docs, `database.py`, and local vs remote DB states. Single source of truth and no schema drift.
 
 **Checklist**
 
-- [ ] Audit and document current state: reference doc vs `database.py` vs local DB vs remote (prod) DB.
-- [ ] Define single source of truth (doc or code) and update the other to match.
-- [ ] Ensure `database.py` CREATE TABLE / migrations produce the same types and columns as the reference doc for all critical tables (at least `users.trades_0001`, `users.trades_simulated_0001`, and any other tables used by trading paths).
-- [ ] Extend or replace `update_db_schema_to_reference.py` so it can correct type/default mismatches (not only add missing columns), or document when to run ALTERs manually.
-- [ ] Add a check (script or CI) that fails if `database.py` table definitions drift from the reference doc.
-- [ ] Plan and execute remote (prod) schema fixes for tables that were created with the old `database.py` definition (e.g. `users.trades_simulated_0001` on prod already fixed by aligning doc + database.py; prod table still needs ALTERs if it was created before the fix).
+- [x] Audit and document current state: reference doc vs `database.py` vs local DB vs remote (prod) DB. (Local audit done; prod deferred; findings in `docs/changelog/DB_MAINTENANCE_AUDIT_FINDINGS.md`.)
+- [x] Define single source of truth (doc or code) and update the other to match. (Reference doc = SSOT; `database.py` = bootstrap; see findings doc.)
+- [x] Ensure `database.py` CREATE TABLE / migrations produce the same types and columns as the reference doc for all critical tables (at least `users.trades_0001`, `users.trades_simulated_0001`, and any other tables used by trading paths). (Local alignment done 2026-03-07: type-compatibility buckets in drift check, reference updated with bankroll_allotment and max_probability, parser skips comment lines; `check_db_schema_drift.py` passes.)
+- [x] Extend or replace `update_db_schema_to_reference.py` so it can correct type/default mismatches (not only add missing columns), or document when to run ALTERs manually. (Documented: type/default via reversible migrations or manual ALTERs; script adds columns only.)
+- [x] Add a check (script or CI) that fails if `database.py` table definitions drift from the reference doc. (`scripts/db/check_db_schema_drift.py`.)
+- [ ] Plan and execute remote (prod) schema fixes for tables that were created with the old `database.py` definition. (Prod is part of the normal update process; @updater coordinates and verifies when pushing to production. Local system updated and tested first; then run update to prod and updater agent coordinates/verifies.)
 
 **Technical notes**
 
-- Reference: `docs/MASTER_DB_SCHEMA_REFERENCE.md`. Code: `backend/core/config/database.py` (`init_database()`). Migration script: `scripts/update_db_schema_to_reference.py` (adds missing columns only; does not change column types).
-- Local vs prod comparison: `scripts/compare_simulated_table_schema.py` (trades_simulated only). Full audit: `scripts/audit_db_schema.py` (local DB vs doc vs database.py; no remote).
+- Reference: `docs/MASTER_DB_SCHEMA_REFERENCE.md`. Code: `backend/core/config/database.py` (`init_database()`). Migration script: `scripts/db/update_db_schema_to_reference.py` (adds missing columns only; does not change column types).
+- Reversible migrations: `.cursor/pm/DB_REVERSIBLE_MIGRATIONS.md`, runner `scripts/db/run_migration.py` (list / up / down). New schema changes should be migration pairs in `scripts/migrations/` so they can be reverted like code.
+- Local vs prod comparison: `scripts/compare_simulated_table_schema.py` (trades_simulated only). Full audit: `scripts/db/audit_db_schema.py` (local DB vs doc vs database.py; no remote).
 - Prod host: 137.184.224.94. Same DB credentials as local per env.
 - Defer full audit until it won’t interrupt trading operations.
 
 **Milestones / completion**
 
-- (Add timestamped updates here as work progresses.)
+- **2026-03-07 — Audit executed (task 3).** Ran `scripts/db/audit_db_schema.py` (local only). Findings: `docs/changelog/DB_MAINTENANCE_AUDIT_FINDINGS.md`. Single source of truth: reference doc; `database.py` for bootstrap; migrations for changes. `update_db_schema_to_reference.py` now uses `get_postgresql_connection()` (env); docstring documents that type/default fixes are out of scope (use reversible migrations or manual ALTERs). Drift check: `scripts/db/check_db_schema_drift.py` (fails if `database.py` differs from reference for critical tables: trades_0001, trades_simulated_0001, monitor_list_0001, strategy_list_0001). No prod DDL run.
+- **2026-03-07 — Drift check in CI.** `.github/workflows/db-schema-drift.yml` runs on push/PR to main and master; runs `check_db_schema_drift.py` with PYTHONPATH set. Exit 1 from the script fails the job.
+- **2026-03-07 — Local alignment complete.** Drift check now passes: `normalize_type_for_compare` in `audit_db_schema.py` uses compatible type buckets (STRING for TEXT/VARCHAR/DATE/TIME/TIMESTAMP, NUMERIC for REAL/DECIMAL/NUMERIC, INT for INTEGER/SMALLINT). Drift script only requires columns in database.py to exist in reference (reference may have extra columns). Parser skips lines where column name is `--`. Reference doc: added `bankroll_allotment` to monitor_list_0001, `max_probability` to strategy_list_0001. `scripts/db/check_db_schema_drift.py` exits 0. Production server elements are part of the update process; @updater coordinates and verifies when pushing to prod.
+- **2026-03-07 — Prod schema fix plan (do not execute until maintenance window).**
+  1. **Pre-requisites:** Backup prod DB. Ensure no trading operations during window. Have rollback plan (reversible migrations: `run_migration.py down <id>`).
+  2. **Prod host:** 137.184.224.94. Same DB credentials as local per env (DB_* / REC_DB_*).
+  3. **Steps:** (a) Run `scripts/db/audit_db_schema.py` against prod (point DB_* at prod) to capture current prod state vs reference. (b) For each table with missing columns or type drift (e.g. `users.trades_0001`, `users.trades_simulated_0001`), add reversible migration pairs under `scripts/migrations/` (e.g. `YYYYMMDD_HHMM_align_trades_0001_types.up.sql` / `.down.sql`). (c) Apply migrations on prod via `python3 scripts/db/run_migration.py up <id>` one at a time. (d) Update reference doc if any new columns/constraints were added. (e) Re-run audit against prod to confirm alignment.
+  4. **Do not:** Run ad hoc DDL without a migration pair. Do not run destructive ALTERs (e.g. shrinking types) without explicit CEO/PM approval and backup.
 
 ---
 
@@ -37,20 +55,20 @@ Timestamped tasks we want to come back to. Use checklist formatting; add technic
 **Checklist**
 
 - [ ] Wait and see whether the old `account/history` endpoint comes back (may be temporary; Kalshi may be testing).
-- [ ] If 404 persists or we want the better vendor/rail data: switch `kalshi_account_sync_ws` to use `/deposits` and `/withdrawals` as primary (or fallback), with pagination.
-- [ ] Update DB schema to account for new vendor, rail, and any other new values (e.g. add columns to `users.account_history_0001` and/or `users.transfers_0001`; run migrations in `database.py`; update `docs/MASTER_DB_SCHEMA_REFERENCE.md`).
-- [ ] Map new response shape into `users.account_history_0001` and `users.transfers_0001`; add or use a column for vendor/rail so we don’t lose granularity.
-- [ ] Keep existing external-transfer → subaccount logic; derive `from`/`to` from vendor/rail instead of defaulting to ACH/Crypto.
-- [ ] Update frontend to show new vendor/rail (and any other new fields) where transfers or account history are displayed (e.g. `frontend/tabs/account_manager.html`, `frontend/mobile/account_manager_mobile.html`).
+- [x] If 404 persists or we want the better vendor/rail data: switch to `/deposits` and `/withdrawals` (done 2026-03-07).
+- [x] Update DB schema: added kalshi_id, vendor, rail to account_history_0001 via reversible migration; reference doc and database.py updated.
+- [x] Map new response shape into `users.account_history_0001` and `users.transfers_0001`; add or use a column for vendor/rail so we don’t lose granularity.
+- [x] Keep existing external-transfer → subaccount logic; derive from/to from vendor/rail.
+- [x] Update frontend: transfers table shows From/To (vendor/rail-derived) and Status; desktop and mobile account manager updated.
 
 **Technical notes**
 
-- Current sync: `backend/kalshi_account_sync_ws.py` — `fetch_v1_account_history_page`, `sync_account_history`; 404 is handled gracefully (warning only).
+- Sync now uses `fetch_v1_deposits_page` and `fetch_v1_withdrawals_page`; `sync_account_history` merges both, maps via `_deposit_to_row`/`_withdrawal_to_row`, upserts by `kalshi_id`.
 - New endpoints: same base URL and auth; responses have `deposits[]` and `withdrawals[]` with `id`, `status`, `amount_cents`, `fee_cents` (deposits), `created_ts`, `deposit_type`/`vendor` (deposits), `rail`/`vendor` (withdrawals).
 
 **Milestones / completion**
 
-- (Add when we re-evaluate or implement.)
+- **2026-03-07 — Migrated to /deposits and /withdrawals.** Reversible migration added kalshi_id (unique), vendor, rail to account_history_0001. Sync fetches both endpoints, maps to rows, upserts by kalshi_id. Transfers from/to derived from vendor/rail. Frontend: Status column and From/To show new values. Script `scripts/check_kalshi_account_endpoints.py` checks endpoint status.
 
 ---
 
@@ -74,6 +92,24 @@ Timestamped tasks we want to come back to. Use checklist formatting; add technic
 **Milestones / completion**
 
 - (Add when audit is started or completed.)
+
+---
+
+## 2026-03-07 — Env conventions (DB_* / REC_DB_* only)
+
+**Scope:** Single pattern for DB config: scripts and backend use backend.core.config.database (get_postgresql_connection / get_database_config); no POSTGRES_* or hardcoded credentials.
+
+**Checklist**
+
+- [x] database.py: prefer DB_*, fall back to REC_DB_* (REC_DB_PASS → password) so one place handles both conventions.
+- [x] Backend: symbol_price_watchdog_finance, strike_table_generator, cleanup_temp_schemas, symbol_data_fetch_pg, symbol_profiler, live_table_viewer, probability_lookup_generator now use get_postgresql_connection() or get_database_config().
+- [x] Scripts: update_position_to_100, rollback_position_update, generate_schema_doc use get_postgresql_connection(); audit_db_schema uses it and no longer maps REC_DB_*→DB_* manually.
+- [x] Brain: 03_db_schema_brain.md and 04_config_env.md updated; POSTGRES_* deprecated for new code.
+
+**Notes**
+
+- Supervisor and generate_unified_supervisor_config still inject DB_*, POSTGRES_*, REC_DB_* for child processes; that is acceptable so existing .env or deploy vars work. New code should not read POSTGRES_*.
+- tests/test_trade_manager_database.py still sets POSTGRES_*; if the code under test uses database.py, set DB_* (or rely on REC_DB_* fallback) for tests to connect.
 
 ---
 

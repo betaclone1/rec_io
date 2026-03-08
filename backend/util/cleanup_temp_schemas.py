@@ -9,10 +9,10 @@ import logging
 import sys
 import os
 
-# Add backend to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add project root to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from core.config.database import get_database_config
+from backend.core.config.database import get_postgresql_connection, get_database_config
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -20,7 +20,10 @@ logger = logging.getLogger(__name__)
 def cleanup_temp_schemas():
     """Clean up orphaned temporary schemas."""
     try:
-        conn = psycopg2.connect(**get_database_config())
+        conn = get_postgresql_connection()
+        if not conn:
+            logger.error("❌ Failed to connect to PostgreSQL")
+            return False
         cursor = conn.cursor()
         
         # Get all temporary schemas
@@ -81,7 +84,10 @@ def cleanup_temp_schemas():
 def check_temp_schemas():
     """Check current temporary schemas without cleaning them."""
     try:
-        conn = psycopg2.connect(**get_database_config())
+        conn = get_postgresql_connection()
+        if not conn:
+            logger.error("❌ Failed to connect to PostgreSQL")
+            return
         cursor = conn.cursor()
         
         cursor.execute("""

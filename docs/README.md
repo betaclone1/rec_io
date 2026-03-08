@@ -1,167 +1,48 @@
-# REC.IO Documentation
+# REC.IO documentation
+
+Minimal index for current system. Historical and one-off docs were moved to `archive/2026-03-housekeeping/` (see INDEX there).
 
 ## Overview
-This directory contains comprehensive documentation for the REC.IO trading system, including architecture guides, deployment procedures, and operational documentation.
 
----
+| Doc | Use |
+|-----|-----|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | High-level components, data flow, and key paths. |
 
-## 🔄 **RECENT MAJOR UPDATES (Latest)**
+## Runbooks and reference
 
-### **🛡️ Automatic Maintenance Protection Added**
-- **✅ CRITICAL FIX:** Installation script now automatically disables Ubuntu's automatic maintenance services
-- **✅ PROTECTED:** Prevents automatic deletion of virtual environment binaries and critical system files
-- **✅ PRODUCTION SAFE:** Eliminates risk of automatic system maintenance causing trading system failures
-- **✅ BUILT-IN:** All new installations are automatically protected from Digital Ocean's default cleanup operations
+| Doc | Use |
+|-----|-----|
+| [PRODUCTION_SYNC_CHECKLIST.md](PRODUCTION_SYNC_CHECKLIST.md) | Production deploy and sync steps |
+| [PRODUCTION_DB_SCHEMA_AND_BACKFILL_MASTER.md](PRODUCTION_DB_SCHEMA_AND_BACKFILL_MASTER.md) | DB schema and backfill (e.g. `backfill_trades_volatility_movement.py`) |
+| [MASTER_DB_SCHEMA_REFERENCE.md](MASTER_DB_SCHEMA_REFERENCE.md) | Schema reference; used by drift check and DB work |
+| [MASTER_DATABASE_REGISTRATION_GUIDE.md](MASTER_DATABASE_REGISTRATION_GUIDE.md) | DB registration |
 
-### **PostgreSQL Migration Complete**
-- **✅ Migrated:** All BTC price data from legacy SQLite to PostgreSQL `live_data.live_price_log_1s_btc`
-- **✅ Retired:** `btc_price_watchdog` service (archived to `archive/deprecated_services/`)
-- **✅ Retired:** `live_data_analysis.py` module (archived to `archive/deprecated_services/`)
-- **✅ Updated:** All services now read BTC price, momentum, and delta data directly from PostgreSQL
-- **✅ Enhanced:** `symbol_price_watchdog_btc` now writes live BTC price, momentum, and delta values to PostgreSQL
+**Agent command docs** (verify, system-restart, log-chat) live in **`.cursor/pm/`**, not in `docs/`. See [.cursor/pm/README.md](../.cursor/pm/README.md).
 
-### **System Architecture Updates**
-- **Active Services:** 12 services running under supervisor
-- **Data Architecture:** Centralized PostgreSQL `live_data` schema
-- **Frontend Enhancements:** Panel styling for system restart modals with countdown timers
+## Deploy and install
 
----
+| Doc | Use |
+|-----|-----|
+| [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) | Deployment procedures |
+| [AUTHENTICATION_GUIDE.md](AUTHENTICATION_GUIDE.md) | Auth setup |
+| [QUICK_INSTALL_GUIDE.md](QUICK_INSTALL_GUIDE.md) | Quick install |
+| [DIGITAL_OCEAN_DEPLOYMENT_GUIDE.md](DIGITAL_OCEAN_DEPLOYMENT_GUIDE.md) | Digital Ocean deploy |
+| [INSTALLATION_PACKAGE_SUMMARY.md](INSTALLATION_PACKAGE_SUMMARY.md) | Install package summary |
+| [AUTOMATIC_MAINTENANCE_DEPLOYMENT_PROTECTION.md](AUTOMATIC_MAINTENANCE_DEPLOYMENT_PROTECTION.md) | Maintenance protection |
+| [SYSTEM_DATA_PACKAGING.md](SYSTEM_DATA_PACKAGING.md) | Data export/import |
 
-## ⚖️ **Performance-Based Allocation (PBA)**
+## Product and operations
 
-Performance-Based Allocation dynamically scales each monitor's exposure according to historical cycle performance while honoring liquidity constraints.
+| Doc | Use |
+|-----|-----|
+| [MONITORS_LIST_INFRASTRUCTURE.md](MONITORS_LIST_INFRASTRUCTURE.md) | Monitor list behavior |
+| [PROJECT_HOUSEKEEPING_AUDIT_PLAN.md](PROJECT_HOUSEKEEPING_AUDIT_PLAN.md) | Housekeeping and archive plan |
 
-- **Cycle Analytics:** `monitor_cycle_performance_<user>_<monitor>` tables capture trade counts, win rates, and average/max exposure for all 168 hours per week.
-- **Modifiers:** `current_performance_modifier` mirrors the multiplier the user would pick manually. Auto Entry Supervisor (AES) updates it every cycle once `performance_based_allocation` is enabled.
-- **Exposure Guardrail:** `current_max_pct_exposure` reflects the typical leg count for the active cycle. Monitor manager caps the effective bankroll percentage at the lesser of `position_size * modifier` and this max, ensuring enough capital for all legs.
-- **Automation Flow:**
-  - AES populates `current_*` fields each cycle.
-  - If `performance_based_allocation` is true, AES calls `/api/update_monitor_position` with the modifier. Monitor manager recomputes `total_position`, applying the exposure cap.
-  - All multiplier/total changes broadcast to the frontend; dashboard badges and trade monitor buttons update live.
-- **Fail-Safe:** When performance degrades, modifiers drop toward zero and the exposure cap forces small positions, hedging drawdowns until performance improves.
+## Standards and changelog
 
----
+- **[PROFESSIONAL_DEV_STANDARDS_CHECKLIST.md](PROFESSIONAL_DEV_STANDARDS_CHECKLIST.md)** — Checklist for repo structure, tests, CI, env, and docs (research-backed).
+- **[changelog/](changelog/)** — [MASTER_CHANGELOG.md](changelog/MASTER_CHANGELOG.md) (releases), [TODO.md](changelog/TODO.md) (backlog), [todo_docs/](changelog/todo_docs/) (design and audit docs).
 
-## 📚 **Documentation Index**
+## Archived
 
-### **Core Documentation**
-- **[VER3_ONBOARDING_DOCUMENTS/](VER3_ONBOARDING_DOCUMENTS/)** - Complete v2 system snapshot and onboarding package
-- **[DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)** - Comprehensive deployment procedures
-- **[AUTHENTICATION_GUIDE.md](AUTHENTICATION_GUIDE.md)** - Authentication and security setup
-- **[README_FIREWALL.md](README_FIREWALL.md)** - Firewall configuration and network security
-- **[AUTOMATIC_MAINTENANCE_PROTECTION.md](AUTOMATIC_MAINTENANCE_PROTECTION.md)** - Critical protection against automatic system maintenance failures
-
-### **Migration & Architecture**
-- **[POSTGRESQL_MIGRATION_PLAN.md](POSTGRESQL_MIGRATION_PLAN.md)** - PostgreSQL migration strategy (COMPLETED)
-- **[POSTGRESQL_MIGRATION_ROADMAP_V7.md](POSTGRESQL_MIGRATION_ROADMAP_V7.md)** - Migration roadmap and timeline
-- **[SYSTEM_CLEANUP_PLAN.md](SYSTEM_CLEANUP_PLAN.md)** - System cleanup and optimization
-- **[PORTABILITY_AUDIT_REPORT.md](PORTABILITY_AUDIT_REPORT.md)** - System portability analysis
-
-### **Database & Schema**
-- **[BACKEND_SQLITE_MIGRATION_CHECKLIST.md](BACKEND_SQLITE_MIGRATION_CHECKLIST.md)** - SQLite migration checklist (COMPLETED)
-- **[LEGACY_SQLITE_DEPRECATION_CHECKLIST.md](LEGACY_SQLITE_DEPRECATION_CHECKLIST.md)** - Legacy cleanup procedures
-- **[SCHEMA_MAPPING_ANALYSIS.md](SCHEMA_MAPPING_ANALYSIS.md)** - Database schema analysis
-- **[AUTO_ENTRY_SUPERVISOR_SQLITE_MIGRATION_CHECKLIST.md](AUTO_ENTRY_SUPERVISOR_SQLITE_MIGRATION_CHECKLIST.md)** - Auto entry migration (COMPLETED)
-
-### **System Analysis & Audits**
-- **[SYSTEM_AUDIT_REPORT_THIRD_PARTY_REVIEW.md](SYSTEM_AUDIT_REPORT_THIRD_PARTY_REVIEW.md)** - Third-party system audit
-- **[BACKEND_SQLITE_MIGRATION_AUDIT_REPORT.md](BACKEND_SQLITE_MIGRATION_AUDIT_REPORT.md)** - Migration audit report
-
-### **Future Planning**
-- **[REDIS_INTEGRATION_PROPOSAL.md](REDIS_INTEGRATION_PROPOSAL.md)** - Redis integration strategy
-- **[REAL_TIME_DATABASE_SUBSCRIPTION_PROPOSAL.md](REAL_TIME_DATABASE_SUBSCRIPTION_PROPOSAL.md)** - Real-time data proposals
-
----
-
-## 🏗️ **Current System Architecture**
-
-### **Active Services (12 total)**
-1. **main_app** (port 3000) - Primary web application
-2. **trade_manager** (port 4000) - Core trade lifecycle management
-3. **trade_executor** (port 5000) - Trade execution engine
-4. **active_trade_supervisor** (port 8007) - Active trade monitoring
-5. **auto_entry_supervisor** (port 8008) - Automated trade entry
-6. **cascading_failure_detector** (port 8009) - System health monitoring
-7. **unified_production_coordinator** (port 8010) - Data production coordination
-8. **system_monitor** (port 8011) - System monitoring dashboard
-9. **kalshi_account_sync** (port 8012) - Kalshi account synchronization
-10. **kalshi_api_watchdog** (port 8013) - Kalshi API monitoring
-11. **symbol_price_watchdog_btc** (port 8014) - BTC price monitoring
-12. **symbol_price_watchdog_eth** (port 8015) - ETH price monitoring
-
-### **Data Architecture**
-- **Primary Database:** PostgreSQL with `live_data` schema
-- **Live Data Source:** `live_data.live_price_log_1s_btc` for BTC price, momentum, delta
-- **Legacy Data:** Archived SQLite databases in `archive/` directory
-- **Configuration:** Centralized port and path management via `MASTER_PORT_MANIFEST.json`
-
----
-
-## 📂 **Directory Structure**
-
-### **VER3_ONBOARDING_DOCUMENTS/**
-- **v2_final_snapshot_20250127/** - Complete system snapshot
-  - **01_Architecture_Map/** - System architecture and component documentation
-  - **02_Config/** - Configuration files and port manifests
-  - **03_Database_Schemas/** - Database schemas and migration plans
-  - **04_Infrastructure/** - Deployment and infrastructure guides
-  - **05_Security/** - Security policies and procedures
-  - **06_Strategy_and_Product_Logic/** - Trading strategy and product documentation
-  - **07_API_Contracts/** - API documentation and contracts
-
-### **archive/**
-- **deprecated_services/** - Archived services (`btc_price_watchdog`, `live_data_analysis.py`)
-- **old_logs/** - Historical log files
-- **old_scripts/** - Legacy scripts and utilities
-
----
-
-## 🔧 **Quick Reference**
-
-### **System Management**
-- **Master Restart:** 45-second countdown with panel-styled confirmation modal
-- **Service Monitoring:** Real-time health checks via `system_monitor`
-- **Data Flow:** Coinbase WebSocket → PostgreSQL → All services
-
-### **Data Sources**
-- **BTC Price:** PostgreSQL `live_data.live_price_log_1s_btc`
-- **ETH Price:** PostgreSQL `live_data.eth_price_log`
-- **Trade Data:** PostgreSQL core tables
-- **System Health:** PostgreSQL `system.health_status`
-
-### **Configuration**
-- **Ports:** `MASTER_PORT_MANIFEST.json`
-- **Paths:** `config.json`
-- **Environment:** `.env` files and supervisor configuration
-
----
-
-## 🚨 **Critical Safety Notice**
-
-> **NO AI AGENTS OR TEAM MEMBERS ARE PERMITTED TO PLACE LIVE TRADES FOR TESTING OR ANY OTHER PURPOSES.**  
-> **NO AI AGENTS OR TEAM MEMBERS ARE PERMITTED TO ENABLE AUTOMATED TRADING FUNCTIONS FOR TESTING OR ANY OTHER PURPOSES.**  
-> All testing must be performed in **read-only** or **simulation** modes only.
-
----
-
-## 📝 **Documentation Maintenance**
-
-### **Update Guidelines**
-- All production changes must be reflected in relevant documentation
-- Migration status should be updated in appropriate files
-- New services should be documented in component documentation
-- Port changes should be updated in `MASTER_PORT_MANIFEST.json`
-
-### **Review Schedule**
-- Quarterly review of all documentation by assigned owners
-- All updates must be reviewed before merging to `main`
-- Migration status updates as services are completed
-
----
-
-## 🔗 **Related Resources**
-
-- **Codebase:** `/backend/` - Main application code
-- **Frontend:** `/frontend/` - Web interface and mobile apps
-- **Scripts:** `/scripts/` - Deployment and utility scripts
-- **Configuration:** `/config/` - System configuration files
+Older docs, one-off reports, VER3 snapshot, and legacy archive: **`archive/2026-03-housekeeping/docs/`**. See **`archive/2026-03-housekeeping/INDEX.md`** for the full list.

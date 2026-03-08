@@ -32,7 +32,7 @@ A comprehensive, one-command installation package that transforms a git reposito
 
 ### 4. Archived Scripts: `scripts/archive/`
 - **Purpose**: Cleaned up old confusing scripts
-- **Kept**: `simple_deploy.sh` (working reference)
+- **Kept**: `scripts/install_deploy/simple_deploy.sh` (working reference)
 - **Kept**: `MASTER_RESTART.sh` (essential system control)
 - **Kept**: Installation-specific scripts (logging, testing)
 
@@ -184,7 +184,7 @@ cd rec-io-server
 
 ### Archived Files
 - 50+ old confusing scripts moved to `scripts/archive/`
-- Kept essential scripts: `simple_deploy.sh`, `MASTER_RESTART.sh`
+- Kept essential scripts: `scripts/install_deploy/simple_deploy.sh`, `MASTER_RESTART.sh`
 
 ## Next Steps for Testing
 

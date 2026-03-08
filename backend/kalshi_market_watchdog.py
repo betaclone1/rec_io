@@ -27,6 +27,19 @@ API_HEADERS = {
 
 EST = pytz.timezone("America/New_York")
 
+
+def _market_cents_from_dollars(dollars_val, legacy_cents):
+    """Kalshi fixed-point: after March 12 2026 legacy cents removed; derive from _dollars when missing."""
+    if legacy_cents is not None:
+        return legacy_cents
+    if dollars_val is not None and str(dollars_val).strip() != "":
+        try:
+            return int(round(float(dollars_val) * 100))
+        except (TypeError, ValueError):
+            pass
+    return 0
+
+
 # Database configuration
 DB_CONFIG = {
     'host': os.getenv('POSTGRES_HOST', 'localhost'),
@@ -353,18 +366,17 @@ def save_market_data_to_postgresql(event_ticker, markets_data, symbol, interval=
                     except (ValueError, TypeError):
                         pass  # Keep original strike if parsing fails
                 
-                yes_bid = market.get("yes_bid", 0)
-                yes_ask = market.get("yes_ask", 0)
-                no_bid = market.get("no_bid", 0)
-                no_ask = market.get("no_ask", 0)
-                last_price = market.get("last_price", 0)
-                
-                # Extract dollar values from API response (new subpenny pricing fields)
+                # Kalshi fixed-point (March 12 2026): legacy cents fields removed; prefer _dollars, derive cents when missing
                 yes_bid_dollars = market.get("yes_bid_dollars")
                 yes_ask_dollars = market.get("yes_ask_dollars")
                 no_bid_dollars = market.get("no_bid_dollars")
                 no_ask_dollars = market.get("no_ask_dollars")
                 last_price_dollars = market.get("last_price_dollars")
+                yes_bid = _market_cents_from_dollars(yes_bid_dollars, market.get("yes_bid"))
+                yes_ask = _market_cents_from_dollars(yes_ask_dollars, market.get("yes_ask"))
+                no_bid = _market_cents_from_dollars(no_bid_dollars, market.get("no_bid"))
+                no_ask = _market_cents_from_dollars(no_ask_dollars, market.get("no_ask"))
+                last_price = _market_cents_from_dollars(last_price_dollars, market.get("last_price"))
                 
                 volume = market.get("volume", 0)
                 volume_24h = market.get("volume_24h", 0)

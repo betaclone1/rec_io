@@ -41,13 +41,6 @@ class SymbolProfiler:
     
     def __init__(self, symbol: str = "btc"):
         self.symbol = symbol.lower()
-        self.db_config = {
-            'host': os.getenv('POSTGRES_HOST', 'localhost'),
-            'database': os.getenv('POSTGRES_DB', 'rec_io_db'),
-            'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
-            'password': os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        }
-        
         # Table names
         self.source_table = f"historical_data.{self.symbol}_price_history"
         self.momentum_profile_table = f"analytics.{self.symbol}_momentum_profile"
@@ -58,15 +51,12 @@ class SymbolProfiler:
         logger.info(f"✅ Initialized symbol profiler for {self.symbol.upper()}")
     
     def get_postgresql_connection(self):
-        """Get PostgreSQL connection"""
+        """Get PostgreSQL connection (DB_* / REC_DB_* env via backend.core.config.database)."""
         try:
-            # Force localhost connection for testing
-            conn = psycopg2.connect(
-                host='localhost',
-                database='rec_io_db',
-                user='rec_io_user',
-                password='rec_io_password'
-            )
+            from backend.core.config.database import get_postgresql_connection
+            conn = get_postgresql_connection()
+            if not conn:
+                return None
             # Debug: Check which database we're actually connected to
             cursor = conn.cursor()
             cursor.execute("SELECT current_database(), inet_server_addr();")

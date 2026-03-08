@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-One-off test: ping Kalshi v1 account/history endpoint to see what data comes back.
-All production account/history sync lives in kalshi_account_sync_ws.py.
+One-off test: ping Kalshi v1 account/history endpoint (deprecated; often 404).
+Production sync uses /deposits and /withdrawals only (kalshi_account_sync_ws.py).
 """
 import base64
 import json

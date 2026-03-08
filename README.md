@@ -4,6 +4,15 @@ A comprehensive automated trading platform for prediction markets, built with Py
 
 ## 🚀 Quick Start
 
+### **Local development (run from repo root)**
+
+1. **Clone and install dependencies:** `pip install -r requirements.txt` (and `pip install -r requirements-dev.txt` for tests/lint).
+2. **Environment variables:** Copy `.env.example` to `.env` and set at least the database credentials (see [Environment variables](#-environment-variables) below). Never commit `.env` or real secrets.
+3. **Start services:** `./scripts/MASTER_RESTART.sh` (requires PostgreSQL running and env configured).
+4. **Run tests:** `PYTHONPATH=$(pwd) pytest tests/unit -v` (unit only); see [docs/PROFESSIONAL_DEV_STANDARDS_CHECKLIST.md](docs/PROFESSIONAL_DEV_STANDARDS_CHECKLIST.md) for test layout.
+
+See [docs/](docs/) for runbooks and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a high-level overview of components and data flow.
+
 ### **ONE COMMAND INSTALLATION**
 
 **Copy and paste this command on your Digital Ocean droplet:**
@@ -93,15 +102,33 @@ echo "your_email@example.com" > backend/data/users/user_0001/credentials/kalshi-
 echo "your_api_key" >> backend/data/users/user_0001/credentials/kalshi-credentials/prod/credentials.json
 ```
 
+## 🔧 Environment variables
+
+Required for local run and DB scripts: **database connection**. Use either `DB_*` or `REC_DB_*` (see [backend/core/config/database.py](backend/core/config/database.py)).
+
+| Variable   | Description        | Example        |
+|-----------|--------------------|----------------|
+| DB_HOST   | PostgreSQL host    | localhost      |
+| DB_NAME   | Database name     | rec_io_db      |
+| DB_USER   | Database user     | rec_io_user    |
+| DB_PASSWORD | Database password | (set in .env)  |
+| DB_PORT   | PostgreSQL port   | 5432           |
+
+**Setup:** Copy [.env.example](.env.example) to `.env` and fill in values. Optional vars (runtime, Kalshi) are documented in `.env.example`. Do not commit `.env`.
+
 ## 📚 Documentation
 
+- **[Architecture overview](docs/ARCHITECTURE.md)** — Components, data flow, backend/frontend/scripts/DB.
+- **[Professional dev standards checklist](docs/PROFESSIONAL_DEV_STANDARDS_CHECKLIST.md)** — Repo structure, tests, CI, env, docs.
+- **[docs/](docs/)** — Runbooks, changelog, schema reference; see [docs/README.md](docs/README.md) for the index.
+
 ### **Installation**
-- [Installation Guide](INSTALL.md) - Complete setup instructions
+- [Installation Guide](INSTALL.md) - Complete setup instructions (if present)
 - [Detailed Documentation](docs/) - Comprehensive guides and references
 
 ### **System Management**
 - [Master Restart Script](scripts/MASTER_RESTART.sh) - Primary system control
-- [Package User Data](scripts/package_user_data.sh) - Backup and migration
+- [Package User Data](scripts/backup/package_user_data.sh) - Backup and migration
 
 ## 🔒 Security Features
 

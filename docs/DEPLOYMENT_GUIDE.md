@@ -40,7 +40,7 @@ curl -sSL https://raw.githubusercontent.com/betaclone1/rec_io/main/scripts/one_c
 
 ```bash
 # Package your database and credentials
-./scripts/package_user_data.sh
+./scripts/backup/package_user_data.sh
 ```
 
 #### 2. Upload Package to Server

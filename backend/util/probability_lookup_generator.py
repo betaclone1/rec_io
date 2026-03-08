@@ -23,6 +23,8 @@ import os
 import sys
 import psycopg2
 import logging
+
+from backend.core.config.database import get_postgresql_connection
 import numpy as np
 from scipy.interpolate import griddata
 from typing import Dict, List, Tuple, Optional
@@ -74,13 +76,6 @@ class ProbabilityLookupGenerator:
     
     def __init__(self, symbol: str = "btc"):
         self.symbol = symbol.lower()
-        self.db_config = {
-            'host': os.getenv('POSTGRES_HOST', 'localhost'),
-            'database': os.getenv('POSTGRES_DB', 'rec_io_db'),
-            'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
-            'password': os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        }
-        
         # Table names
         self.master_table_name = f"probability_lookup_{self.symbol}"
         self.fingerprint_table_prefix = f"{self.symbol}_fingerprint_directional_momentum_"
@@ -96,7 +91,7 @@ class ProbabilityLookupGenerator:
     def get_available_momentum_buckets(self) -> List[int]:
         """Get list of available momentum buckets from PostgreSQL."""
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = get_postgresql_connection()
             cursor = conn.cursor()
             
             query = """
@@ -135,7 +130,7 @@ class ProbabilityLookupGenerator:
     def setup_work_progress_schema(self, ttc_range: Tuple[int, int], ttc_step: int):
         """Create work_progress schema and progress tracking table."""
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = get_postgresql_connection()
             cursor = conn.cursor()
             
             # Create work_progress schema
@@ -177,7 +172,7 @@ class ProbabilityLookupGenerator:
     def get_pending_ttc_values(self) -> List[int]:
         """Get list of TTC values that need processing."""
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = get_postgresql_connection()
             cursor = conn.cursor()
             
             cursor.execute(f"""
@@ -200,7 +195,7 @@ class ProbabilityLookupGenerator:
     def update_ttc_status(self, ttc_seconds: int, status: str, rows_generated: int = 0, error_message: str = None):
         """Update the status of a TTC value in the progress table."""
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = get_postgresql_connection()
             cursor = conn.cursor()
             
             if status == 'processing':
@@ -233,7 +228,7 @@ class ProbabilityLookupGenerator:
     def load_fingerprint_data(self, momentum_bucket: int) -> Dict:
         """Load fingerprint data for a specific momentum bucket."""
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = get_postgresql_connection()
             
             # Format table name correctly for negative and positive momentum buckets
             if momentum_bucket < 0:
@@ -416,7 +411,7 @@ class ProbabilityLookupGenerator:
             logger.info(f"📊 Total combinations to generate: {total_combinations:,}")
             
             # Create table
-            conn = psycopg2.connect(**self.db_config)
+            conn = get_postgresql_connection()
             cursor = conn.cursor()
             
             # Drop existing table if it exists
@@ -522,7 +517,7 @@ class ProbabilityLookupGenerator:
             Number of combinations generated for this TTC value
         """
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = get_postgresql_connection()
             cursor = conn.cursor()
             
             rows_generated = 0
@@ -578,7 +573,7 @@ class ProbabilityLookupGenerator:
             self.setup_work_progress_schema(ttc_range, ttc_step)
             
             # Create main table if it doesn't exist
-            conn = psycopg2.connect(**self.db_config)
+            conn = get_postgresql_connection()
             cursor = conn.cursor()
             
             create_table_sql = f"""
@@ -656,7 +651,7 @@ class ProbabilityLookupGenerator:
                         continue
             
             # Create index for faster lookups
-            conn = psycopg2.connect(**self.db_config)
+            conn = get_postgresql_connection()
             cursor = conn.cursor()
             
             index_sql = f"""

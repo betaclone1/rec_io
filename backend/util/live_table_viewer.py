@@ -34,7 +34,6 @@ class LiveTableViewer:
         self.table = table
         self.port = port
         self.poll_interval = poll_interval
-        self.connection_params = self._get_connection_params()
         self.previous_data = []
         self.previous_count = 0
         self.start_time = datetime.now()
@@ -44,29 +43,15 @@ class LiveTableViewer:
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
     
-    def _get_connection_params(self) -> Dict[str, str]:
-        """Get database connection parameters from environment or defaults."""
-        return {
-            'host': os.getenv('POSTGRES_HOST', 'localhost'),
-            'port': os.getenv('POSTGRES_PORT', '5432'),
-            'database': os.getenv('POSTGRES_DB', 'rec_io_db'),
-            'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
-            'password': os.getenv('POSTGRES_PASSWORD', ''),
-        }
-    
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals gracefully."""
         print(f"\n🛑 Shutting down live table viewer...")
         self.running = False
     
     def _get_connection(self):
-        """Create a database connection."""
-        try:
-            conn = psycopg2.connect(**self.connection_params)
-            return conn
-        except psycopg2.Error as e:
-            print(f"❌ Database connection failed: {e}")
-            return None
+        """Create a database connection (DB_* / REC_DB_* env via backend.core.config.database)."""
+        from backend.core.config.database import get_postgresql_connection
+        return get_postgresql_connection()
     
     def _get_table_schema(self) -> Optional[List[Dict[str, Any]]]:
         """Get the table schema."""

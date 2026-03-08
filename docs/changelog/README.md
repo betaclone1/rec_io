@@ -3,7 +3,7 @@
 This folder holds:
 
 - **MASTER_CHANGELOG.md** — Single internal changelog for production deployments.
-- **CHANGELOG_AGENT_INSTRUCTIONS.md** — Instructions for the production agent (or `/changelog` action): read all open entries, execute each checklist fully, and update checkboxes. Use this when running the changelog workflow.
+- **CHANGELOG_AGENT_INSTRUCTIONS.md** — Instructions for the production agent (or `/apply-update` action): read all open entries, execute each checklist fully, and update checkboxes. Use this when running the changelog workflow.
 - **TODO.md** — Timestamped backlog of tasks to return to (checklist format, technical notes, milestones/completion). Check and update periodically. Tasks marked totally completed and older than 3 months may be moved to an archival doc to keep TODO.md lean.
 
 - **When to update:** Add a new timestamped entry whenever you are about to push an update to production (e.g. after merging a feature branch to `main`).

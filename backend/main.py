@@ -89,13 +89,8 @@ CACHE_TTL = 1.0  # 1 second cache TTL
 def get_trade_history_preferences_postgresql():
     """Get trade history preferences from PostgreSQL"""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        from backend.core.config.database import get_postgresql_connection
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             cursor.execute("""
                 SELECT date_filter, start_date, end_date, win_filter, loss_filter,
@@ -2337,7 +2332,7 @@ def get_transfers():
 
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute("""
-                SELECT id, timestamp, type, "from", "to", amount, initiated
+                SELECT id, timestamp, type, "from", "to", amount, initiated, status
                 FROM users.transfers_0001
                 ORDER BY id DESC
                 LIMIT 100
@@ -4752,7 +4747,7 @@ async def create_backup():
         
         # Execute the backup script
         result = subprocess.run(
-            ['bash', 'scripts/package_user_data.sh'],
+            ['bash', 'scripts/backup/package_user_data.sh'],
             capture_output=True,
             text=True,
             timeout=120,  # 2 minutes timeout for backup

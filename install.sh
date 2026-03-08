@@ -567,7 +567,7 @@ configure_system() {
     
     # Generate proper supervisor configuration
     log_info "Generating supervisor configuration for current environment..."
-    python3 scripts/generate_unified_supervisor_config.py || handle_error "System Configuration" "Failed to generate supervisor configuration"
+    python3 scripts/config/generate_unified_supervisor_config.py || handle_error "System Configuration" "Failed to generate supervisor configuration"
     
     # Verify supervisor configuration was created correctly
     if [[ ! -f "backend/supervisord.conf" ]]; then

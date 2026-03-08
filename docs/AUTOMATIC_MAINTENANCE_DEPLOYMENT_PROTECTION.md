@@ -22,7 +22,7 @@ Digital Ocean droplets come with **automatic maintenance services enabled by def
 
 ## Protection in Deployment Workflow
 
-### 1. First Boot Sanitization (`scripts/first_boot_sanitize.sh`)
+### 1. First Boot Sanitization (`scripts/install_deploy/first_boot_sanitize.sh`)
 
 **What happens automatically:**
 - Runs on first boot of any droplet created from production snapshot
@@ -56,7 +56,7 @@ Digital Ocean droplets come with **automatic maintenance services enabled by def
   Unattended-Upgrade::Automatic-Reboot "false";
   ```
 
-### 2. Collaborator Setup (`scripts/collaborator_setup.sh`)
+### 2. Collaborator Setup (`scripts/install_deploy/collaborator_setup.sh`)
 
 **What happens during setup:**
 - **Same automatic maintenance disable** as first boot sanitization

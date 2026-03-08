@@ -53,7 +53,7 @@ load_unified_config() {
     fi
     
     # Use the test script to load configuration
-    TEMP_SCRIPT="$SCRIPT_DIR/test_unified_config.py"
+    TEMP_SCRIPT="$SCRIPT_DIR/config/test_unified_config.py"
     
     # Run the Python script
     if python3 "$TEMP_SCRIPT" > /tmp/unified_config_output.json 2>/dev/null; then

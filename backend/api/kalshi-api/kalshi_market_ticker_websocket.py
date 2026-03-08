@@ -20,7 +20,7 @@ import sys
 # Add the backend directory to the Python path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 
-from backend.util.paths import get_project_root, get_kalshi_credentials_dir
+from backend.util.paths import get_project_root, get_kalshi_credentials_dir, get_logs_dir
 from backend.core.config.settings import config
 from backend.account_mode import get_account_mode
 from pathlib import Path
@@ -471,15 +471,23 @@ class KalshiMarketTickerWebSocket:
                 if msg_data.get('no'):
                     print(f"  NO orders (first 3): {msg_data.get('no', [])[:3]}")
                 
-                # Handle initial orderbook snapshot
+                # Handle initial orderbook snapshot (Kalshi fixed-point: normalize price_dollars/size_fp to cents/int)
                 market_ticker = msg_data.get("market_ticker")
                 orderbook_data = msg_data
-                
+                def _norm_snapshot_levels(levels):
+                    out = []
+                    for item in levels or []:
+                        p = item[0] if len(item) >= 1 else 0
+                        s = item[1] if len(item) >= 2 else 0
+                        p_cents = int(round(float(p) * 100)) if isinstance(p, str) else int(p)
+                        s_int = int(float(s)) if isinstance(s, str) else int(s)
+                        out.append((p_cents, s_int))
+                    return out
                 if market_ticker:
                     # Store the full orderbook state
                     self.orderbook_state[market_ticker] = {
-                        "yes": orderbook_data.get("yes", []),
-                        "no": orderbook_data.get("no", [])
+                        "yes": _norm_snapshot_levels(orderbook_data.get("yes", [])),
+                        "no": _norm_snapshot_levels(orderbook_data.get("no", []))
                     }
                     self.update_market_ticker(market_ticker, self.orderbook_state[market_ticker])
                     
@@ -492,11 +500,16 @@ class KalshiMarketTickerWebSocket:
                 print(f"  Price: {delta_data.get('price')}")
                 print(f"  Delta: {delta_data.get('delta')}")
                 
-                # Handle orderbook delta updates
+                # Handle orderbook delta updates (Kalshi fixed-point March 12 2026: accept price_dollars or price in cents)
                 market_ticker = delta_data.get("market_ticker", "")
                 side = delta_data.get("side", "")
-                price = delta_data.get("price", 0)
-                delta = delta_data.get("delta", 0)
+                price_raw = delta_data.get("price_dollars") or delta_data.get("price") or 0
+                if isinstance(price_raw, str):
+                    price = int(round(float(price_raw) * 100))
+                else:
+                    price = int(price_raw)
+                delta_raw = delta_data.get("delta_fp") or delta_data.get("delta") or 0
+                delta = int(float(delta_raw)) if isinstance(delta_raw, str) else int(delta_raw)
                 
                 if market_ticker:
                     # Apply delta to orderbook state
@@ -570,4 +583,15 @@ async def main():
     await watchdog.run_websocket()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Write log to logs/ instead of cwd (e.g. when run via nohup from project root)
+    log_dir = get_logs_dir()
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "kalshi_websocket_market.log")
+    log_file = open(log_path, "a", encoding="utf-8")
+    sys.stdout = log_file
+    sys.stderr = log_file
+    try:
+        asyncio.run(main())
+    finally:
+        log_file.flush()
+        log_file.close()
