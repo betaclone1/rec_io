@@ -53,11 +53,12 @@ __pycache__/
 # Mac system files
 .DS_Store
 
-# Cursor MCP config (may contain Discord bot token)
+# Cursor: track commands, skills, pm docs, rules (same on all servers). Ignore only secrets and local state:
 .cursor/mcp.json
-# Google Drive MCP credentials (never commit)
 .cursor/gcp-oauth.keys.json
 .cursor/gdrive-server-credentials.json
+.cursor/gdrive-auth-url.txt
+.cursor/pm/*reviewed_drive*.json
 
 # Kalshi credentials and private info
 backend/api/kalshi-api/kalshi-credentials/
