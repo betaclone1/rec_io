@@ -10,6 +10,41 @@ Chronological log of chat sessions. Each entry is a dated, timestamped summary (
 
 ---
 
+### 2026-03-08 (session: apply-update, confirm-update, account_history backfill, tracking) — **Production server**
+
+**Context**
+- User asked to check latest update and learn apply-update; then ran /apply-update. Requested apply-update be fully autonomous (migrations, restart, verify). Ran /verify; user corrected that diagnosis must come before status block and that when status is Investigate/Critical we must investigate and diagnose. User asked to note main_app DeprecationWarning (non-critical) and account_history backfill gap (prod had 12 rows, 0 with kalshi_id/vendor/rail; backfill script broken). User asked to fix backfill, make server-agnostic, and backfill data; done without reporting back until complete. User raised discrepancy: 17 files changed in chat vs 9 in changes panel; cause: *.sql in .gitignore hid migration files; added exception for scripts/migrations/*.sql and convention to stay on top of must-track paths. User asked to stage all update-related files so they show; staged 19 files. User requested confirm-update command create commit message starting with "UPDATE CONFIRMED" and rundown of what was done post pull; command/skill/PM doc updated. User ran /confirm-update; produced confirmation summary and commit message. User requested /log-chat and to note if production server.
+
+**Apply-update made autonomous**
+- CHANGELOG_AGENT_INSTRUCTIONS, apply-update command/skill, APPLY_UPDATE_COMMAND: workflow is fully autonomous (migrations, MASTER_RESTART when required, verify); no pause for permission.
+- Created migration pair 20260307_1600_account_history_vendor_rail_kalshi_id (up/down SQL); applied on prod. MASTER_RESTART run; verify run.
+
+**Account_history backfill (prod)**
+- kalshi_account_sync_ws: added _v1_request, fetch_v1_deposits_page, fetch_v1_withdrawals_page, _backfill_account_history_vendor_rail (match by entry_type/amount/created_ts within 2s; API uses amount_cents/created_ts), _refresh_transfer_from_to_from_account_history. Backfill script uses database.get_postgresql_connection (server-agnostic). Ran backfill on prod: 9/12 rows got kalshi_id/vendor/rail.
+- Memory: 14, 13 updated (backfill fixed and run; account_history task done).
+
+**Tracking and .gitignore**
+- .gitignore: added !scripts/migrations/ and !scripts/migrations/*.sql so migration SQL is tracked (was excluded by *.sql).
+- 06_conventions_insights: "Must-track paths (stay on top)" — when creating/editing under .cursor/commands, .cursor/skills, .cursor/pm, scripts/migrations/*.sql, etc., verify .gitignore doesn't exclude; run git status after new project files.
+
+**/confirm-update command**
+- Created .cursor/commands/confirm-update.md, .cursor/skills/confirm-update/SKILL.md, .cursor/pm/CONFIRM_UPDATE_COMMAND.md. Run after apply-update and any prod adjustments; review changes and notes, mark up, server-agnostic check, then create commit message starting with UPDATE CONFIRMED and rundown of what was done post pull. AGENTS.md, docs/changelog/README, PM README updated.
+
+**Verify command**
+- User corrected: diagnosis (Investigate/Critical) must appear before the status block; status block must be last with nothing after it. Confirmed when status is Investigate we must investigate (read code, logs, diagnostic) and provide diagnosis + recommended fix before the block.
+
+**Files touched (staged for commit)**
+- New: .cursor/commands/apply-update.md, confirm-update.md; .cursor/pm/APPLY_UPDATE_COMMAND.md, CONFIRM_UPDATE_COMMAND.md; .cursor/skills/apply-update/SKILL.md, confirm-update/SKILL.md; scripts/migrations/20260307_1600_account_history_vendor_rail_kalshi_id.up.sql, .down.sql.
+- Modified: .gitignore, .cursor/pm/README.md, .cursor/pm/brain/06_conventions_insights.md, 13_proposed_tasks.md, 14_context_retention.md, AGENTS.md, backend/kalshi_account_sync_ws.py, docs/changelog/CHANGELOG_AGENT_INSTRUCTIONS.md, MASTER_CHANGELOG.md, README.md, scripts/db/backfill_account_history_vendor_rail.py.
+
+**Outcomes**
+- Apply-update is autonomous; migration applied and backfill run on prod; 9/12 account_history rows filled. Confirm-update command in place; commit message format UPDATE CONFIRMED + rundown. Must-track paths and migration .sql exception documented; 19 files staged.
+
+**Open / follow-up**
+- main_app DeprecationWarning (on_event → lifespan): non-critical, fix when touching main.py or before FastAPI upgrade. Three account_history rows still NULL (legacy; optional to backfill if API ever returns matching entries).
+
+---
+
 ### 2026-03-08 (session: Google API context, Gmail/Calendar MCP, @assistant onboarding)
 
 **Context**
