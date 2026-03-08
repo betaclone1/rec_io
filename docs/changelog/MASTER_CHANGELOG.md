@@ -17,8 +17,8 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 **Production agent checklist**
 
-- [ ] Confirm codebase changes (pull latest on production).
-- [ ] No DB schema changes or migrations; no restart required.
+- [x] Confirm codebase changes (pull latest on production).
+- [x] No DB schema changes or migrations; no restart required.
 - [ ] Optional: On prod, if using Cursor/agents, add digitalocean-droplets MCP to mcp.json for snapshot/backup; token in env/headers.
 
 ---
@@ -34,8 +34,8 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 **Production agent checklist**
 
-- [ ] Confirm codebase changes (pull latest on production).
-- [ ] No DB schema changes or migrations; no restart required for this release.
+- [x] Confirm codebase changes (pull latest on production).
+- [x] No DB schema changes or migrations; no restart required for this release.
 - [ ] Optional: If using Cursor/agents on this repo, ensure local `.cursor` config (e.g. MCP paths) is set for your machine; `mcp.json` and credentials remain gitignored.
 
 ---
@@ -63,9 +63,9 @@ Each entry below uses:
 
 **Production agent checklist**
 
-- [ ] Confirm codebase changes (pull latest on production).
-- [ ] No DB schema changes required; existing `_fp` and `_dollars` columns already used.
-- [ ] Restart services that talk to Kalshi: `trade_executor`, `kalshi_account_sync`, `kalshi_market_watchdog` (and any hourly/15m watchdog instances), plus `main_app` if it proxies Kalshi. Full restart: `scripts/MASTER_RESTART.sh` or equivalent.
+- [x] Confirm codebase changes (pull latest on production).
+- [x] No DB schema changes required; existing `_fp` and `_dollars` columns already used.
+- [x] Restart services that talk to Kalshi: `trade_executor`, `kalshi_account_sync`, `kalshi_market_watchdog` (and any hourly/15m watchdog instances), plus `main_app` if it proxies Kalshi. Full restart: `scripts/MASTER_RESTART.sh` or equivalent.
 - [ ] After March 12 2026: confirm orders, fills, positions, and market data continue to sync and display; no reliance on deprecated integer/cents fields.
 
 ---
@@ -82,11 +82,11 @@ Each entry below uses:
 
 **Production agent checklist**
 
-- [ ] Confirm codebase changes (pull latest on production).
-- [ ] Apply migration if not already applied: `python3 scripts/db/run_migration.py up 20260307_1600_account_history_vendor_rail_kalshi_id` (from project root with PYTHONPATH set). If already applied, `run_migration.py list` will show it.
+- [x] Confirm codebase changes (pull latest on production).
+- [x] Apply migration if not already applied: `python3 scripts/db/run_migration.py up 20260307_1600_account_history_vendor_rail_kalshi_id` (from project root with PYTHONPATH set). If already applied, `run_migration.py list` will show it.
 - [ ] Optional one-time backfill for existing account_history rows with NULL kalshi_id/vendor/rail: `PYTHONPATH=. python3 scripts/db/backfill_account_history_vendor_rail.py`. Run once; sync will backfill on its own thereafter.
-- [ ] Restart `kalshi_account_sync` (or full restart: `scripts/MASTER_RESTART.sh`) so sync uses new code.
-- [ ] Confirm: Account manager transfers table shows From/To and Status; account_history rows have vendor/rail populated where API provides them.
+- [x] Restart `kalshi_account_sync` (or full restart: `scripts/MASTER_RESTART.sh`) so sync uses new code.
+- [x] Confirm: Account manager transfers table shows From/To and Status; account_history rows have vendor/rail populated where API provides them.
 
 ---
 
@@ -99,9 +99,9 @@ Each entry below uses:
 
 **Production agent checklist**
 
-- [ ] Confirm codebase changes (pull latest on production).
-- [ ] Restart `auto_entry_supervisor` (or full restart: `scripts/MASTER_RESTART.sh`) and `main_app` so changes take effect.
-- [ ] Confirm: no errors in logs; monitor position updates and trade history preferences work.
+- [x] Confirm codebase changes (pull latest on production).
+- [x] Restart `auto_entry_supervisor` (or full restart: `scripts/MASTER_RESTART.sh`) and `main_app` so changes take effect.
+- [x] Confirm: no errors in logs; monitor position updates and trade history preferences work.
 
 ---
 
@@ -115,10 +115,10 @@ Each entry below uses:
 
 **Production agent checklist**
 
-- [ ] Confirm codebase changes (pull latest on production).
-- [ ] Ensure .env or deploy sets either DB_* or REC_DB_* (database.py uses both). No code changes required if already using DB_* or REC_DB_*.
-- [ ] Restart any services that were changed (full restart recommended: `scripts/MASTER_RESTART.sh`) so they load the new database module behavior.
-- [ ] Confirm: DB-dependent scripts and services connect successfully (e.g. run a script that uses get_postgresql_connection).
+- [x] Confirm codebase changes (pull latest on production).
+- [x] Ensure .env or deploy sets either DB_* or REC_DB_* (database.py uses both). No code changes required if already using DB_* or REC_DB_*.
+- [x] Restart any services that were changed (full restart recommended: `scripts/MASTER_RESTART.sh`) so they load the new database module behavior.
+- [x] Confirm: DB-dependent scripts and services connect successfully (e.g. run a script that uses get_postgresql_connection).
 
 ---
 
@@ -134,8 +134,8 @@ Each entry below uses:
 
 **Production agent checklist**
 
-- [ ] Confirm codebase changes (pull latest on production).
-- [ ] No prod DDL required for this release. CI will run drift check on future push/PR.
+- [x] Confirm codebase changes (pull latest on production).
+- [x] No prod DDL required for this release. CI will run drift check on future push/PR.
 - [ ] Optional: to audit prod schema, set DB_* (or REC_DB_*) to point at prod and run `PYTHONPATH=. python3 scripts/audit_db_schema.py` from project root. Do not run migrations or ALTERs on prod without a maintenance window and backup.
 
 ---

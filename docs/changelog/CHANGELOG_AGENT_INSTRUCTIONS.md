@@ -1,6 +1,6 @@
 # Changelog agent instructions
 
-When the user runs **/apply-update** (or asks to "follow the changelog instructions"), the agent must do **both** of the following.
+When the user runs **/apply-update** (or asks to "follow the changelog instructions"), the agent must run the workflow **fully autonomously**: apply all necessary changes (including DB migrations), run `scripts/MASTER_RESTART.sh` when the checklist requires a restart (blocking until complete), and run the verify workflow to confirm the system is up. Do not pause for permission; execute with the permissions needed for migrations, restart, and verify to succeed. The agent must do **both** of the following.
 
 ---
 
@@ -22,7 +22,7 @@ For **each open entry** (only those with unchecked boxes), in **newest-first ord
    - **Update local database** — If the checklist says to run `init_database()`, run from project root:  
      `PYTHONPATH=$(pwd) venv/bin/python -c "from backend.core.config.database import init_database; init_database()"`
    - **Any one-time scripts** — If the checklist specifies a script (e.g. dedupe, historical ingest), run it exactly as written, from project root, with `PYTHONPATH=$(pwd) venv/bin/python` (or the exact command given). Run each such script only as many times as the entry says (e.g. "run once").
-   - **Restart application services** — If the checklist says to restart, run `scripts/MASTER_RESTART.sh` (or the services/order specified).
+   - **Restart application services** — If the checklist says to restart, run `scripts/MASTER_RESTART.sh` (or the services/order specified). Run it blocking until complete; use the permissions required for it to succeed (e.g. full/unrestricted so supervisor and ports can be managed). After all checklist tasks, run the verify workflow (health, supervisor status, recent logs, status block).
    - **Verification steps** — Run any DB queries, log checks, or UI checks the checklist asks for.
 3. **Update the checklist in MASTER_CHANGELOG.md** — After completing each task, change its `- [ ]` to `- [x]` in the file. Do this as you go (or immediately after finishing all tasks for that entry).
 4. If a task cannot be completed (e.g. missing env, user intervention required), report clearly and do not mark it `[x]` until it is done.

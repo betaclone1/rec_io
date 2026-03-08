@@ -147,6 +147,10 @@ backup/rec_io_db_backup_*
 rec_io_db_backup.sql
 *.sql
 !backend/data/historical_data/**
+# Reversible migrations must be tracked (identical codebase across envs).
+# When adding other must-track paths, add exceptions here; see .cursor/pm/brain/06_conventions_insights.md "Must-track paths".
+!scripts/migrations/
+!scripts/migrations/*.sql
 
 # Large historical data files (excluded from git due to size)
 backend/data/historical_data/eth_historical/eth_1m_master_5y.csv

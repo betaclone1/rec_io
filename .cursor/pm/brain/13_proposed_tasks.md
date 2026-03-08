@@ -20,13 +20,19 @@ Source: REC_IO / Cursor — "Cursor Notes" on Google Drive.
 
 ## Current proposed list (ongoing)
 
+**From 2026-03-08 (open):**
+
+1. **account_history backfill on prod** — Migration added kalshi_id, vendor, rail; prod has 12 rows, all NULL in those columns. Backfill script broken (imports fetch_v1_deposits_page, fetch_v1_withdrawals_page, _backfill_account_history_vendor_rail from kalshi_account_sync_ws; those don’t exist). Fix: add the missing fetchers and backfill helper to sync module (or implement backfill using current API), then run backfill once on prod. We spent hours on this yesterday.
+
+2. **main_app lifespan (non-critical)** — Replace @app.on_event("startup")/("shutdown") in backend/main.py with FastAPI lifespan context manager to clear DeprecationWarning. Do when touching that file or before FastAPI upgrade.
+
 **From 2026-03-07 (still open):**
 
 5. **Env conventions** — Normalize DB_* / REC_DB_* / POSTGRES_* usage across codebase so scripts and services use one pattern (e.g. load .env, map REC_DB_*→DB_*, use database.py). Reduces bugs and confusion.
 6. **Auto_entry_supervisor consolidation** — Single process, multi-monitor loop (per TODO/open items). Simplifies deployment and monitoring.
 7. **System-wide logging audit** — Identify high-volume log sources; define policy (INFO vs DEBUG); trim verbose per-tick/per-request output; keep operational/debug signal. Improves I/O and disk.
 
-**Done (archived):** 1–4 (Kalshi fixed-point, bugs, DB audit local, Kalshi account history). G Drive note items (2026-03-08): /prepare-update, Frontend agent, Backend master (doc only), /daily-briefing, MCP investigation, OpSec audit+upgrade, delegate/train agents — all addressed.
+**Done (archived):** 1–4 (Kalshi fixed-point, bugs, DB audit local, Kalshi account history). G Drive note items (2026-03-08): /prepare-update, Frontend agent, Backend master (doc only), /daily-briefing, MCP investigation, OpSec audit+upgrade, delegate/train agents — all addressed. **2026-03-08:** account_history backfill — added fetch_v1_deposits_page, fetch_v1_withdrawals_page, _backfill_account_history_vendor_rail, _refresh_transfer_from_to_from_account_history to kalshi_account_sync_ws; backfill script runs on any server; ran on prod, 9/12 rows filled.
 
 ---
 

@@ -34,7 +34,6 @@ def main():
         fetch_v1_deposits_page,
         fetch_v1_withdrawals_page,
         _backfill_account_history_vendor_rail,
-        _refresh_transfer_from_to_from_account_history,
     )
 
     page_size = 200
@@ -63,7 +62,6 @@ def main():
 
     print(f"Fetched {len(all_deposits)} deposits, {len(all_withdrawals)} withdrawals.")
     _backfill_account_history_vendor_rail(conn, all_deposits, all_withdrawals)
-    _refresh_transfer_from_to_from_account_history(conn)
     conn.close()
     print("Backfill and transfer refresh done.")
     return 0

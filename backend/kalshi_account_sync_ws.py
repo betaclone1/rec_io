@@ -378,6 +378,168 @@ def fetch_v1_account_history_page(kalshi_user_id, page_number=1, page_size=200):
         return [], str(e)
 
 
+def _v1_request(kalshi_user_id, path, page_number=1, page_size=200):
+    """GET v1 path with auth. Returns (response_dict, None) or (None, error string)."""
+    params = {"page_size": page_size, "page_number": page_number}
+    url = KALSHI_V1_BASE_URL + path
+    timestamp = str(int(time.time() * 1000))
+    signature = generate_kalshi_signature("GET", path, timestamp, str(KEY_PATH))
+    headers = {
+        "Accept": "application/json",
+        "KALSHI-ACCESS-KEY": KEY_ID,
+        "KALSHI-ACCESS-TIMESTAMP": timestamp,
+        "KALSHI-ACCESS-SIGNATURE": signature,
+    }
+    try:
+        r = requests.get(url, params=params, headers=headers, timeout=15)
+        if r.status_code != 200:
+            return None, f"HTTP {r.status_code}"
+        return r.json(), None
+    except Exception as e:
+        return None, str(e)
+
+
+def fetch_v1_deposits_page(kalshi_user_id, page_number=1, page_size=200):
+    """GET one page of v1 /deposits. Returns (deposits list, None) or ([], error string)."""
+    path = f"/v1/users/{kalshi_user_id}/deposits"
+    body, err = _v1_request(kalshi_user_id, path, page_number=page_number, page_size=page_size)
+    if err:
+        return [], err
+    return (body.get("deposits") or []), None
+
+
+def fetch_v1_withdrawals_page(kalshi_user_id, page_number=1, page_size=200):
+    """GET one page of v1 /withdrawals. Returns (withdrawals list, None) or ([], error string)."""
+    path = f"/v1/users/{kalshi_user_id}/withdrawals"
+    body, err = _v1_request(kalshi_user_id, path, page_number=page_number, page_size=page_size)
+    if err:
+        return [], err
+    return (body.get("withdrawals") or []), None
+
+
+def _normalize_created_at(created_at):
+    """Normalize API created_at to datetime for matching. Handles ISO string or datetime."""
+    if created_at is None:
+        return None
+    if hasattr(created_at, "replace") and hasattr(created_at, "hour"):
+        return created_at
+    s = str(created_at).replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
+
+
+def _backfill_account_history_vendor_rail(conn, all_deposits, all_withdrawals):
+    """Update existing account_history_0001 rows that have NULL kalshi_id/vendor/rail from API data.
+    Matches by (entry_type, amount) and created_at within 2 seconds. Then refreshes transfer from/to."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT id, created_at, entry_type, amount
+            FROM users.account_history_0001
+            WHERE kalshi_id IS NULL
+            ORDER BY id
+        """)
+        rows = cur.fetchall()
+    if not rows:
+        return
+    api_entries = []
+    for item in all_deposits or []:
+        created_at = _normalize_created_at(item.get("created_ts") or item.get("created_at"))
+        amount = item.get("amount_cents") if item.get("amount_cents") is not None else item.get("amount")
+        if amount is not None and created_at is not None:
+            try:
+                amount_int = int(amount)
+            except (TypeError, ValueError):
+                continue
+            api_entries.append((
+                created_at, "Deposit", amount_int,
+                str(item.get("id") or "").strip() or None,
+                (str(item.get("vendor") or "").strip() or None),
+                (str(item.get("rail") or "").strip() or None),
+            ))
+    for item in all_withdrawals or []:
+        created_at = _normalize_created_at(item.get("created_ts") or item.get("created_at"))
+        amount = item.get("amount_cents") if item.get("amount_cents") is not None else item.get("amount")
+        if amount is not None and created_at is not None:
+            try:
+                amount_int = int(amount)
+            except (TypeError, ValueError):
+                continue
+            api_entries.append((
+                created_at, "Withdrawal", amount_int,
+                str(item.get("id") or "").strip() or None,
+                (str(item.get("vendor") or "").strip() or None),
+                (str(item.get("rail") or "").strip() or None),
+            ))
+    updated = 0
+    for ah_id, db_created_at, entry_type, amount in rows:
+        if db_created_at is None or amount is None:
+            continue
+        try:
+            amount_int = int(amount)
+        except (TypeError, ValueError):
+            continue
+        db_ts = db_created_at
+        if hasattr(db_ts, "timestamp"):
+            db_seconds = db_ts.timestamp()
+        else:
+            continue
+        best = None
+        for api_created, api_type, api_amt, kalshi_id, vendor, rail in api_entries:
+            if api_type != entry_type or api_amt != amount_int:
+                continue
+            if api_created is None:
+                continue
+            if hasattr(api_created, "timestamp"):
+                api_seconds = api_created.timestamp()
+            else:
+                continue
+            if abs(api_seconds - db_seconds) < 2:
+                best = (kalshi_id, vendor, rail)
+                break
+        if best is None:
+            continue
+        kalshi_id, vendor, rail = best
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE users.account_history_0001
+                SET kalshi_id = %s, vendor = %s, rail = %s
+                WHERE id = %s
+            """, (kalshi_id, vendor, rail, ah_id))
+        updated += 1
+    conn.commit()
+    _refresh_transfer_from_to_from_account_history(conn)
+
+
+def _refresh_transfer_from_to_from_account_history(conn):
+    """Update transfers_0001 from/to and status from their linked account_history_0001 row (vendor/rail/deposit_type)."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT t.id, ah.entry_type, ah.deposit_type, ah.vendor, ah.rail, ah.status
+            FROM users.transfers_0001 t
+            JOIN users.account_history_0001 ah ON ah.id = t.external_transfer_id
+            WHERE t.external_transfer_id IS NOT NULL
+        """)
+        rows = cur.fetchall()
+    for t_id, entry_type, deposit_type, vendor, rail, status in rows:
+        if entry_type == "Deposit":
+            raw = (vendor or deposit_type or "External").strip()
+            from_str = "ACH" if raw and raw.lower() == "ach" else (raw.title() or "External")
+            to_str = "Cash Transfer"
+        else:
+            from_str = "Cash Transfer"
+            to_str = (rail or "ACH").strip() if rail else "ACH"
+        status_str = (status or "").strip() or None
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE users.transfers_0001
+                SET "from" = %s, "to" = %s, status = %s
+                WHERE id = %s
+            """, (from_str, to_str, status_str, t_id))
+    conn.commit()
+
+
 def _account_history_entry_to_row(entry):
     """Convert one v1 API entry to a dict for account_history_0001."""
     entry_type = entry.get("type") or ""

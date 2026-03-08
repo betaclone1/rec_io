@@ -14,6 +14,8 @@ Project-specific agents are in `.cursor/rules/`.
 
 **/apply-update** — Production: review latest MASTER_CHANGELOG entries and instruction docs, run each open production checklist, and calibrate this server with the latest update. See [.cursor/pm/APPLY_UPDATE_COMMAND.md](.cursor/pm/APPLY_UPDATE_COMMAND.md). Equivalent: @updater new update.
 
+**/confirm-update** — After apply-update and any prod adjustments: review all changes and notes, mark everything up so that when you push, pull on dev (and other envs) keeps codebases and docs in sync. See [.cursor/pm/CONFIRM_UPDATE_COMMAND.md](.cursor/pm/CONFIRM_UPDATE_COMMAND.md).
+
 **/daily-briefing** — Morning routine: memory, check G Drive for new/updated notes (track reviewed in .cursor/pm/daily_briefing_reviewed_drive.json), verify system, prod, news, tasks; deliver concise conversational briefing (high-level first, then next tasks to consider). See [.cursor/pm/DAILY_BRIEFING_COMMAND.md](.cursor/pm/DAILY_BRIEFING_COMMAND.md).
 
 ---
