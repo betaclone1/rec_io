@@ -294,10 +294,11 @@
                                 Select Contracts
                             </button>
                             <div id="contract-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 320px; overflow-y: auto;">
-                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                                    <input type="checkbox" id="contract-all" style="width: 14px; height: 14px;">
-                                    Select All
-                                </label>
+                                <div style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; border-bottom: 1px solid #4a5568;">
+                                    <span id="contract-select-all" style="cursor: pointer; color: #7dd3fc;">All</span>
+                                    <span style="color: #626262;">|</span>
+                                    <span id="contract-select-none" style="cursor: pointer; color: #7dd3fc;">None</span>
+                                </div>
                                 <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
                                     <input type="checkbox" id="contract-12am" checked style="width: 14px; height: 14px;">
                                     12am
@@ -405,49 +406,47 @@
                                 Select Monitors
                             </button>
                             <div id="monitor-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 150px; overflow-y: auto;">
-                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                                    <input type="checkbox" id="monitor-all" style="width: 14px; height: 14px;">
-                                    Select All
-                                </label>
+                                <div style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; border-bottom: 1px solid #4a5568;">
+                                    <span id="monitor-select-all" style="cursor: pointer; color: #7dd3fc;">All</span>
+                                    <span style="color: #626262;">|</span>
+                                    <span id="monitor-select-none" style="cursor: pointer; color: #7dd3fc;">None</span>
+                                </div>
                                 <!-- Monitor options will be populated dynamically -->
                             </div>
                         </div>
                     </div>
                 </div>
                 
-                <!-- Row 2: Symbols and Days -->
-                <div style="display: flex; gap: 15px;">
-                    <!-- Symbol Filter -->
+                <!-- Row 2: Strategy, Symbols, Days -->
+                <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+                    <!-- Strategy Filter -->
+                    <div>
+                        <div class="multi-select-dropdown" style="position: relative; width: 200px;">
+                            <button id="strategy-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
+                                Select Strategies
+                            </button>
+                            <div id="strategy-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 150px; overflow-y: auto;">
+                                <div id="strategy-select-all-none-row" style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; border-bottom: 1px solid #4a5568;">
+                                    <span id="strategy-select-all" style="cursor: pointer; color: #7dd3fc;">All</span>
+                                    <span style="color: #626262;">|</span>
+                                    <span id="strategy-select-none" style="cursor: pointer; color: #7dd3fc;">None</span>
+                                </div>
+                                <div id="strategy-checkboxes-container"></div>
+                            </div>
+                        </div>
+                    </div>
                     <div>
                         <div class="multi-select-dropdown" style="position: relative; width: 200px;">
                             <button id="symbol-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
                                 Select Symbols
                             </button>
                             <div id="symbol-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 150px; overflow-y: auto;">
-                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                                    <input type="checkbox" id="symbol-all" style="width: 14px; height: 14px;">
-                                    Select All
-                                </label>
-                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                                    <input type="checkbox" id="symbol-btc" checked style="width: 14px; height: 14px;">
-                                    BTC
-                                </label>
-                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                                    <input type="checkbox" id="symbol-eth" checked style="width: 14px; height: 14px;">
-                                    ETH
-                                </label>
-                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                                    <input type="checkbox" id="symbol-spy" checked style="width: 14px; height: 14px;">
-                                    SPY
-                                </label>
-                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                                    <input type="checkbox" id="symbol-ndx" checked style="width: 14px; height: 14px;">
-                                    NDX
-                                </label>
-                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer;">
-                                    <input type="checkbox" id="symbol-usd-eur" checked style="width: 14px; height: 14px;">
-                                    USD/EUR
-                                </label>
+                                <div id="symbol-select-all-none-row" style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; border-bottom: 1px solid #4a5568;">
+                                    <span id="symbol-select-all" style="cursor: pointer; color: #7dd3fc;">All</span>
+                                    <span style="color: #626262;">|</span>
+                                    <span id="symbol-select-none" style="cursor: pointer; color: #7dd3fc;">None</span>
+                                </div>
+                                <div id="symbol-checkboxes-container"></div>
                             </div>
                         </div>
                     </div>
@@ -459,10 +458,11 @@
                                 Select Days
                             </button>
                             <div id="day-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 150px; overflow-y: auto;">
-                                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                                    <input type="checkbox" id="day-all" checked style="width: 14px; height: 14px;">
-                                    Select All
-                                </label>
+                                <div style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; border-bottom: 1px solid #4a5568;">
+                                    <span id="day-select-all" style="cursor: pointer; color: #7dd3fc;">All</span>
+                                    <span style="color: #626262;">|</span>
+                                    <span id="day-select-none" style="cursor: pointer; color: #7dd3fc;">None</span>
+                                </div>
                                 <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
                                     <input type="checkbox" id="day-sunday" checked style="width: 14px; height: 14px;">
                                     Sunday
@@ -1074,21 +1074,15 @@
         
         // === DAY FILTER LOGIC ===
         function filterTradesByDay(trades) {
-            const dayAllChecked = document.getElementById('day-all').checked;
-            const sundayChecked = document.getElementById('day-sunday').checked;
-            const mondayChecked = document.getElementById('day-monday').checked;
-            const tuesdayChecked = document.getElementById('day-tuesday').checked;
-            const wednesdayChecked = document.getElementById('day-wednesday').checked;
-            const thursdayChecked = document.getElementById('day-thursday').checked;
-            const fridayChecked = document.getElementById('day-friday').checked;
-            const saturdayChecked = document.getElementById('day-saturday').checked;
-            
-            // If "Select All" is checked, return all trades
-            if (dayAllChecked) {
-                return trades;
-            }
-            
-            // If no individual days are selected, return empty array
+            const sundayChecked = document.getElementById('day-sunday')?.checked;
+            const mondayChecked = document.getElementById('day-monday')?.checked;
+            const tuesdayChecked = document.getElementById('day-tuesday')?.checked;
+            const wednesdayChecked = document.getElementById('day-wednesday')?.checked;
+            const thursdayChecked = document.getElementById('day-thursday')?.checked;
+            const fridayChecked = document.getElementById('day-friday')?.checked;
+            const saturdayChecked = document.getElementById('day-saturday')?.checked;
+            const allChecked = sundayChecked && mondayChecked && tuesdayChecked && wednesdayChecked && thursdayChecked && fridayChecked && saturdayChecked;
+            if (allChecked) return trades;
             if (!sundayChecked && !mondayChecked && !tuesdayChecked && !wednesdayChecked && !thursdayChecked && !fridayChecked && !saturdayChecked) {
                 return [];
             }
@@ -1119,50 +1113,164 @@
             });
         }
         
+        // Core strategy display order (same as desktop)
+        const STRATEGY_CORE_ORDER = ['Hourly HTC', '15m HTC', 'Momentum Contain', 'Momentum Breakout'];
+        let strategyDefaultNames = [];
+
+        function sortStrategiesForDisplay(names) {
+            const core = STRATEGY_CORE_ORDER.filter(n => names.includes(n));
+            const rest = names.filter(n => !STRATEGY_CORE_ORDER.includes(n));
+            return [...core, ...rest];
+        }
+
+        async function loadStrategyOptions() {
+            const container = document.getElementById('strategy-checkboxes-container');
+            if (!container) return [];
+            try {
+                const response = await fetch('/api/strategies?user_id=user_0001');
+                const data = await response.json();
+                if (data.status !== 'ok' || !Array.isArray(data.strategies)) return [];
+                strategyDefaultNames = Array.isArray(data.default_strategy_names) ? data.default_strategy_names : (data.strategies || []);
+                const names = data.strategies.filter(Boolean);
+                const ordered = sortStrategiesForDisplay(names);
+                container.innerHTML = '';
+                ordered.forEach(name => {
+                    const label = document.createElement('label');
+                    label.style.cssText = 'display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;';
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.checked = strategyDefaultNames.length === 0 || strategyDefaultNames.includes(name);
+                    checkbox.setAttribute('data-strategy-name', name);
+                    label.appendChild(checkbox);
+                    label.appendChild(document.createTextNode(name));
+                    container.appendChild(label);
+                });
+                return ordered;
+            } catch (e) {
+                console.error('Error loading strategies:', e);
+                return [];
+            }
+        }
+
+        async function loadSymbolOptions() {
+            const container = document.getElementById('symbol-checkboxes-container');
+            if (!container) return [];
+            try {
+                const response = await fetch('/api/symbols');
+                const data = await response.json();
+                if (data.status !== 'ok' || !Array.isArray(data.symbols)) return [];
+                const symbols = data.symbols.filter(Boolean);
+                container.innerHTML = '';
+                symbols.forEach(symbol => {
+                    const label = document.createElement('label');
+                    label.style.cssText = 'display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;';
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.checked = true;
+                    checkbox.setAttribute('data-symbol', symbol);
+                    label.appendChild(checkbox);
+                    label.appendChild(document.createTextNode(symbol));
+                    container.appendChild(label);
+                });
+                return symbols;
+            } catch (e) {
+                console.error('Error loading symbols:', e);
+                return [];
+            }
+        }
+
+        // === STRATEGY FILTER LOGIC ===
+        function filterTradesByStrategy(trades) {
+            const strategyCheckboxes = document.querySelectorAll('#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]');
+            const selectedNames = Array.from(strategyCheckboxes).filter(cb => cb.checked).map(cb => cb.getAttribute('data-strategy-name'));
+            if (selectedNames.length === 0) return trades;
+            return trades.filter(trade => {
+                const strategy = trade.trade_strategy;
+                if (!strategy) return true;
+                return selectedNames.includes(strategy);
+            });
+        }
+
         // === SYMBOL FILTER LOGIC ===
         function filterTradesBySymbol(trades) {
-            const btcChecked = document.getElementById('symbol-btc').checked;
-            const ethChecked = document.getElementById('symbol-eth').checked;
-            const spyChecked = document.getElementById('symbol-spy').checked;
-            const ndxChecked = document.getElementById('symbol-ndx').checked;
-            const usdEurChecked = document.getElementById('symbol-usd-eur').checked;
-            
-            // If no symbols are selected, show all trades
-            if (!btcChecked && !ethChecked && !spyChecked && !ndxChecked && !usdEurChecked) {
-                return trades;
-            }
-            
+            const symbolCheckboxes = document.querySelectorAll('#symbol-checkboxes-container input[type="checkbox"][data-symbol]');
+            const selectedSymbols = Array.from(symbolCheckboxes).filter(cb => cb.checked).map(cb => cb.getAttribute('data-symbol'));
+            if (selectedSymbols.length === 0) return trades;
             return trades.filter(trade => {
                 const symbol = trade.symbol;
-                if (!symbol) return true; // Show trades without symbol
-                
-                if (symbol === 'BTC') {
-                    return btcChecked;
-                } else if (symbol === 'ETH') {
-                    return ethChecked;
-                } else if (symbol === 'SPY') {
-                    return spyChecked;
-                } else if (symbol === 'NDX') {
-                    return ndxChecked;
-                } else if (symbol === 'USD/EUR') {
-                    return usdEurChecked;
-                }
-                
-                return false;
+                if (!symbol) return true;
+                return selectedSymbols.includes(symbol);
             });
+        }
+
+        function getStrategyCheckboxes() {
+            return Array.from(document.querySelectorAll('#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]'));
+        }
+        function getSymbolCheckboxes() {
+            return Array.from(document.querySelectorAll('#symbol-checkboxes-container input[type="checkbox"][data-symbol]'));
+        }
+        function updateStrategyButtonText() {
+            const btn = document.getElementById('strategy-dropdown-btn');
+            if (!btn) return;
+            const cbs = getStrategyCheckboxes();
+            const checked = cbs.filter(cb => cb.checked);
+            if (checked.length === 0) btn.textContent = 'Select Strategies';
+            else if (checked.length === cbs.length) btn.textContent = 'All Strategies';
+            else if (checked.length === 1) btn.textContent = checked[0].getAttribute('data-strategy-name');
+            else btn.textContent = 'Multiple';
+        }
+        function updateSymbolButtonText() {
+            const btn = document.getElementById('symbol-dropdown-btn');
+            if (!btn) return;
+            const cbs = getSymbolCheckboxes();
+            const checked = cbs.filter(cb => cb.checked);
+            if (checked.length === 0) btn.textContent = 'Select Symbols';
+            else if (checked.length === cbs.length) btn.textContent = 'All Symbols';
+            else if (checked.length === 1) btn.textContent = checked[0].getAttribute('data-symbol');
+            else btn.textContent = 'Multiple';
+        }
+        function updateContractButtonText() {
+            const btn = document.getElementById('contract-dropdown-btn');
+            const content = document.getElementById('contract-dropdown-content');
+            if (!btn || !content) return;
+            const cbs = Array.from(content.querySelectorAll('input[type="checkbox"]'));
+            const checked = cbs.filter(cb => cb.checked);
+            if (checked.length === 0) btn.textContent = 'Select Contracts';
+            else if (checked.length === cbs.length) btn.textContent = 'All Contracts';
+            else if (checked.length === 1) btn.textContent = checked[0].id.replace('contract-', '');
+            else btn.textContent = 'Multiple';
+        }
+        function updateDayButtonText() {
+            const btn = document.getElementById('day-dropdown-btn');
+            const content = document.getElementById('day-dropdown-content');
+            if (!btn || !content) return;
+            const cbs = Array.from(content.querySelectorAll('input[type="checkbox"]'));
+            const checked = cbs.filter(cb => cb.checked);
+            if (checked.length === 0) btn.textContent = 'Select Days';
+            else if (checked.length === cbs.length) btn.textContent = 'All Days';
+            else if (checked.length === 1) {
+                const label = checked[0].closest('label');
+                btn.textContent = label ? label.textContent.trim() : 'Multiple';
+            } else btn.textContent = 'Multiple';
+        }
+        function updateMonitorButtonText() {
+            const btn = document.getElementById('monitor-dropdown-btn');
+            const content = document.getElementById('monitor-dropdown-content');
+            if (!btn || !content) return;
+            const cbs = Array.from(content.querySelectorAll('input[type="checkbox"]'));
+            const checked = cbs.filter(cb => cb.checked);
+            if (checked.length === 0) btn.textContent = 'Select Monitors';
+            else if (checked.length === cbs.length) btn.textContent = 'All Monitors';
+            else if (checked.length === 1) {
+                const label = checked[0].closest('label');
+                btn.textContent = label ? label.textContent.trim() : 'Multiple';
+            } else btn.textContent = 'Multiple';
         }
         
         // === MONITOR FILTER LOGIC ===
         function filterTradesByMonitor(trades) {
-            const monitorAllCheckbox = document.getElementById('monitor-all');
-            const monitorCheckboxes = Array.from(document.querySelectorAll('#monitor-dropdown-content input[type="checkbox"]:not(#monitor-all)'));
-            
-            // If no monitors are selected or "Select All" is checked, show all trades
-            if (!monitorAllCheckbox || monitorCheckboxes.length === 0 || monitorAllCheckbox.checked) {
-                return trades;
-            }
-            
-            // Get selected monitor names using the data-monitor-id attribute
+            const monitorCheckboxes = Array.from(document.querySelectorAll('#monitor-dropdown-content input[type="checkbox"]'));
+            if (monitorCheckboxes.length === 0) return trades;
             const selectedMonitors = monitorCheckboxes
                 .filter(checkbox => checkbox.checked)
                 .map(checkbox => checkbox.getAttribute('data-monitor-id'));
@@ -1189,6 +1297,7 @@
             filtered = filterTradesByDate(filtered, dateFilterPicker ? dateFilterPicker.value : 'TODAY');
             filtered = filterTradesByWinLoss(filtered);
             filtered = filterTradesByContract(filtered);
+            filtered = filterTradesByStrategy(filtered);
             filtered = filterTradesBySymbol(filtered);
             filtered = filterTradesByMonitor(filtered);
             filtered = filterTradesByDay(filtered);
@@ -1210,33 +1319,24 @@
                 dateFilterPicker.dispatchEvent(new Event('change', { bubbles: true }));
             }
 
-            // Reset contract dropdown to ALL
-            const contractAllCheckbox = document.getElementById('contract-all');
-            if (contractAllCheckbox) {
-                contractAllCheckbox.checked = true;
-                contractAllCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
-            }
+            document.querySelectorAll('#contract-dropdown-content input[type="checkbox"]').forEach(cb => { cb.checked = true; });
+            if (typeof updateContractButtonText === 'function') updateContractButtonText();
 
-            // Reset symbol dropdown to ALL
-            const symbolAllCheckbox = document.getElementById('symbol-all');
-            if (symbolAllCheckbox) {
-                symbolAllCheckbox.checked = true;
-                symbolAllCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
-            }
+            // Reset strategy dropdown to default=TRUE only (from strategy_list)
+            document.querySelectorAll('#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]').forEach(cb => {
+                cb.checked = strategyDefaultNames.includes(cb.getAttribute('data-strategy-name'));
+            });
+            if (typeof updateStrategyButtonText === 'function') updateStrategyButtonText();
 
-            // Reset day dropdown to ALL
-            const dayAllCheckbox = document.getElementById('day-all');
-            if (dayAllCheckbox) {
-                dayAllCheckbox.checked = true;
-                dayAllCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
-            }
+            // Reset symbol dropdown to ALL (Select All)
+            document.querySelectorAll('#symbol-checkboxes-container input[type="checkbox"][data-symbol]').forEach(cb => { cb.checked = true; });
+            if (typeof updateSymbolButtonText === 'function') updateSymbolButtonText();
 
-            // Reset monitor dropdown to ALL
-            const monitorAllCheckbox = document.getElementById('monitor-all');
-            if (monitorAllCheckbox) {
-                monitorAllCheckbox.checked = true;
-                monitorAllCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
-            }
+            document.querySelectorAll('#day-dropdown-content input[type="checkbox"]').forEach(cb => { cb.checked = true; });
+            if (typeof updateDayButtonText === 'function') updateDayButtonText();
+
+            document.querySelectorAll('#monitor-dropdown-content input[type="checkbox"]').forEach(cb => { cb.checked = true; });
+            if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
 
             // Reset win/loss checkboxes
             const winFilterCheckbox = document.getElementById('filter-win');
@@ -1251,6 +1351,7 @@
             }
 
             applyFilters(); // Re-apply filters after reset
+            savePaperTradePreferences();
             console.log('All filters reset completed');
         }
 
@@ -1446,30 +1547,10 @@
             });
         }
         
-        // Contract filter checkboxes
-        const contractCheckboxes = document.querySelectorAll('#contract-dropdown-content input[type="checkbox"]');
-        contractCheckboxes.forEach(checkbox => {
-            checkbox.addEventListener('change', applyFilters);
-        });
-        
-        // Symbol filter checkboxes
-        const symbolCheckboxes = document.querySelectorAll('#symbol-dropdown-content input[type="checkbox"]');
-        symbolCheckboxes.forEach(checkbox => {
-            checkbox.addEventListener('change', applyFilters);
-        });
-        
-        // Day filter checkboxes
-        const dayCheckboxes = document.querySelectorAll('#day-dropdown-content input[type="checkbox"]');
-        dayCheckboxes.forEach(checkbox => {
-            checkbox.addEventListener('change', applyFilters);
-        });
-        
-        // Monitor filter checkboxes (will be populated dynamically)
-        // This will be handled when monitors are loaded
+        // Contract, day, monitor filter checkboxes use delegated change in setupDropdowns
 
         // Dropdown functionality
         function setupDropdowns() {
-            // Contract dropdown
             const contractBtn = document.getElementById('contract-dropdown-btn');
             const contractContent = document.getElementById('contract-dropdown-content');
             
@@ -1477,7 +1558,55 @@
                 e.stopPropagation();
                 contractContent.style.display = contractContent.style.display === 'none' ? 'block' : 'none';
             });
+            document.getElementById('contract-select-all')?.addEventListener('click', () => {
+                contractContent.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = true; });
+                if (typeof updateContractButtonText === 'function') updateContractButtonText();
+                applyFilters();
+                savePaperTradePreferences();
+            });
+            document.getElementById('contract-select-none')?.addEventListener('click', () => {
+                contractContent.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+                if (typeof updateContractButtonText === 'function') updateContractButtonText();
+                applyFilters();
+                savePaperTradePreferences();
+            });
+            contractContent.addEventListener('change', (e) => {
+                if (e.target.matches('input[type="checkbox"]')) {
+                    if (typeof updateContractButtonText === 'function') updateContractButtonText();
+                    applyFilters();
+                    savePaperTradePreferences();
+                }
+            });
             
+            // Strategy dropdown
+            const strategyBtn = document.getElementById('strategy-dropdown-btn');
+            const strategyContent = document.getElementById('strategy-dropdown-content');
+            if (strategyBtn && strategyContent) {
+                strategyBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    strategyContent.style.display = strategyContent.style.display === 'none' ? 'block' : 'none';
+                });
+                document.getElementById('strategy-select-all')?.addEventListener('click', () => {
+                    document.querySelectorAll('#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]').forEach(cb => { cb.checked = true; });
+                    if (typeof updateStrategyButtonText === 'function') updateStrategyButtonText();
+                    applyFilters();
+                    savePaperTradePreferences();
+                });
+                document.getElementById('strategy-select-none')?.addEventListener('click', () => {
+                    document.querySelectorAll('#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]').forEach(cb => { cb.checked = false; });
+                    if (typeof updateStrategyButtonText === 'function') updateStrategyButtonText();
+                    applyFilters();
+                    savePaperTradePreferences();
+                });
+                strategyContent.addEventListener('change', (e) => {
+                    if (e.target.matches('#strategy-checkboxes-container input[type="checkbox"]')) {
+                        if (typeof updateStrategyButtonText === 'function') updateStrategyButtonText();
+                        applyFilters();
+                        savePaperTradePreferences();
+                    }
+                });
+            }
+
             // Symbol dropdown
             const symbolBtn = document.getElementById('symbol-dropdown-btn');
             const symbolContent = document.getElementById('symbol-dropdown-content');
@@ -1486,6 +1615,27 @@
                 e.stopPropagation();
                 symbolContent.style.display = symbolContent.style.display === 'none' ? 'block' : 'none';
             });
+            document.getElementById('symbol-select-all')?.addEventListener('click', () => {
+                document.querySelectorAll('#symbol-checkboxes-container input[type="checkbox"][data-symbol]').forEach(cb => { cb.checked = true; });
+                if (typeof updateSymbolButtonText === 'function') updateSymbolButtonText();
+                applyFilters();
+                savePaperTradePreferences();
+            });
+            document.getElementById('symbol-select-none')?.addEventListener('click', () => {
+                document.querySelectorAll('#symbol-checkboxes-container input[type="checkbox"][data-symbol]').forEach(cb => { cb.checked = false; });
+                if (typeof updateSymbolButtonText === 'function') updateSymbolButtonText();
+                applyFilters();
+                savePaperTradePreferences();
+            });
+            if (symbolContent) {
+                symbolContent.addEventListener('change', (e) => {
+                    if (e.target.matches('#symbol-checkboxes-container input[type="checkbox"]')) {
+                        if (typeof updateSymbolButtonText === 'function') updateSymbolButtonText();
+                        applyFilters();
+                        savePaperTradePreferences();
+                    }
+                });
+            }
             
             // Day dropdown
             const dayBtn = document.getElementById('day-dropdown-btn');
@@ -1494,6 +1644,25 @@
             dayBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 dayContent.style.display = dayContent.style.display === 'none' ? 'block' : 'none';
+            });
+            document.getElementById('day-select-all')?.addEventListener('click', () => {
+                dayContent.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = true; });
+                if (typeof updateDayButtonText === 'function') updateDayButtonText();
+                applyFilters();
+                savePaperTradePreferences();
+            });
+            document.getElementById('day-select-none')?.addEventListener('click', () => {
+                dayContent.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+                if (typeof updateDayButtonText === 'function') updateDayButtonText();
+                applyFilters();
+                savePaperTradePreferences();
+            });
+            dayContent.addEventListener('change', (e) => {
+                if (e.target.matches('input[type="checkbox"]')) {
+                    if (typeof updateDayButtonText === 'function') updateDayButtonText();
+                    applyFilters();
+                    savePaperTradePreferences();
+                }
             });
             
             // Monitor dropdown
@@ -1504,43 +1673,33 @@
                 e.stopPropagation();
                 monitorContent.style.display = monitorContent.style.display === 'none' ? 'block' : 'none';
             });
+            document.getElementById('monitor-select-all')?.addEventListener('click', () => {
+                monitorContent.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = true; });
+                if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
+                applyFilters();
+                savePaperTradePreferences();
+            });
+            document.getElementById('monitor-select-none')?.addEventListener('click', () => {
+                monitorContent.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+                if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
+                applyFilters();
+                savePaperTradePreferences();
+            });
+            monitorContent.addEventListener('change', (e) => {
+                if (e.target.matches('input[type="checkbox"]')) {
+                    if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
+                    applyFilters();
+                    savePaperTradePreferences();
+                }
+            });
             
-            // Close dropdowns when clicking outside
             document.addEventListener('click', () => {
                 contractContent.style.display = 'none';
+                if (strategyContent) strategyContent.style.display = 'none';
                 symbolContent.style.display = 'none';
                 dayContent.style.display = 'none';
                 monitorContent.style.display = 'none';
             });
-            
-            // Contract "Select All" functionality
-            document.getElementById('contract-all').addEventListener('change', function() {
-                const contractCheckboxes = document.querySelectorAll('#contract-dropdown-content input[type="checkbox"]:not(#contract-all)');
-                contractCheckboxes.forEach(checkbox => {
-                    checkbox.checked = this.checked;
-                });
-                applyFilters();
-            });
-            
-            // Symbol "Select All" functionality
-            document.getElementById('symbol-all').addEventListener('change', function() {
-                const symbolCheckboxes = document.querySelectorAll('#symbol-dropdown-content input[type="checkbox"]:not(#symbol-all)');
-                symbolCheckboxes.forEach(checkbox => {
-                    checkbox.checked = this.checked;
-                });
-                applyFilters();
-            });
-            
-            // Day "Select All" functionality
-            document.getElementById('day-all').addEventListener('change', function() {
-                const dayCheckboxes = document.querySelectorAll('#day-dropdown-content input[type="checkbox"]:not(#day-all)');
-                dayCheckboxes.forEach(checkbox => {
-                    checkbox.checked = this.checked;
-                });
-                applyFilters();
-            });
-            
-            // Monitor "Select All" functionality (will be set up when monitors are loaded)
         }
         
         // Initialize dropdowns
@@ -1554,12 +1713,9 @@
                 
                 if (data.status === 'ok' && data.monitors) {
                     const monitorDropdownContent = document.getElementById('monitor-dropdown-content');
-                    
-                    // Clear existing options except "Select All"
-                    const existingOptions = monitorDropdownContent.querySelectorAll('label:not(:first-child)');
+                    const existingOptions = monitorDropdownContent.querySelectorAll('label');
                     existingOptions.forEach(option => option.remove());
                     
-                    // Add monitor options
                     data.monitors.forEach(monitor => {
                         const label = document.createElement('label');
                         label.style.cssText = 'display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;';
@@ -1568,9 +1724,7 @@
                         checkbox.type = 'checkbox';
                         checkbox.id = `monitor-${monitor.name.replace(/[^a-zA-Z0-9]/g, '-')}`;
                         checkbox.style.cssText = 'width: 14px; height: 14px;';
-                        checkbox.checked = true; // Default to checked
-                        
-                        // Add data-monitor-id attribute for matching with dashboard monitor IDs
+                        checkbox.checked = true;
                         checkbox.setAttribute('data-monitor-id', monitor.name);
                         
                         const text = document.createElement('span');
@@ -1579,24 +1733,8 @@
                         label.appendChild(checkbox);
                         label.appendChild(text);
                         monitorDropdownContent.appendChild(label);
-                        
-                        // Add event listener for this checkbox
-                        checkbox.addEventListener('change', () => {
-                            applyFilters();
-                        });
                     });
-                    
-                    // Update monitor "Select All" functionality
-                    const monitorAllCheckbox = document.getElementById('monitor-all');
-                    if (monitorAllCheckbox) {
-                        monitorAllCheckbox.addEventListener('change', function() {
-                            const monitorCheckboxes = document.querySelectorAll('#monitor-dropdown-content input[type="checkbox"]:not(#monitor-all)');
-                            monitorCheckboxes.forEach(checkbox => {
-                                checkbox.checked = this.checked;
-                            });
-                            applyFilters();
-                        });
-                    }
+                    if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
                 }
             } catch (error) {
                 console.error('Error loading monitor options:', error);
@@ -1699,6 +1837,14 @@
                 
                 if (!filterLive || !filterPaper) return;
                 
+                const strategySelection = {};
+                document.querySelectorAll('#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]').forEach(cb => {
+                    strategySelection[cb.getAttribute('data-strategy-name')] = cb.checked;
+                });
+                const symbolSelection = {};
+                document.querySelectorAll('#symbol-checkboxes-container input[type="checkbox"][data-symbol]').forEach(cb => {
+                    symbolSelection[cb.getAttribute('data-symbol')] = cb.checked;
+                });
                 const response = await fetch('/api/set_trade_history_preferences', {
                     method: 'POST',
                     headers: {
@@ -1706,7 +1852,9 @@
                     },
                     body: JSON.stringify({
                         live_filter: filterLive.checked,
-                        paper_filter: filterPaper.checked
+                        paper_filter: filterPaper.checked,
+                        strategy_selection: strategySelection,
+                        symbol_selection: symbolSelection
                     })
                 });
                 
@@ -1736,6 +1884,20 @@
                     if (filterPaper && preferences.paper_filter !== undefined) {
                         filterPaper.checked = preferences.paper_filter;
                     }
+                    if (preferences.strategy_selection && typeof preferences.strategy_selection === 'object') {
+                        document.querySelectorAll('#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]').forEach(cb => {
+                            const name = cb.getAttribute('data-strategy-name');
+                            if (preferences.strategy_selection[name] !== undefined) cb.checked = !!preferences.strategy_selection[name];
+                        });
+                        if (typeof updateStrategyButtonText === 'function') updateStrategyButtonText();
+                    }
+                    if (preferences.symbol_selection && typeof preferences.symbol_selection === 'object') {
+                        document.querySelectorAll('#symbol-checkboxes-container input[type="checkbox"][data-symbol]').forEach(cb => {
+                            const sym = cb.getAttribute('data-symbol');
+                            if (preferences.symbol_selection[sym] !== undefined) cb.checked = !!preferences.symbol_selection[sym];
+                        });
+                        if (typeof updateSymbolButtonText === 'function') updateSymbolButtonText();
+                    }
                     
                     // Return promise for chaining
                     return Promise.resolve();
@@ -1747,8 +1909,15 @@
         }
 
         // Initialize when DOM is loaded
-        document.addEventListener('DOMContentLoaded', function() {
+        document.addEventListener('DOMContentLoaded', async function() {
             console.log('Mobile trade history initialized');
+            
+            await loadStrategyOptions();
+            await loadSymbolOptions();
+            updateStrategyButtonText();
+            updateSymbolButtonText();
+            updateContractButtonText();
+            updateDayButtonText();
             
             // Set up event listeners
             const dateFilterPicker = document.getElementById('date-filter-picker');

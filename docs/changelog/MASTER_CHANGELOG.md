@@ -6,6 +6,24 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-10 — Trade history filters and preferences (dynamic Strategy/Symbol, All/None, migrations)
+
+**Summary**
+
+- **Trade history (desktop + mobile):** Strategy and Symbol dropdowns are populated from the database (`strategy_list`, `symbols_list`). Contract, Monitor, and Day dropdowns use **All | None** links instead of a single "Select All" checkbox. Reset sets Strategy to only strategies with `default=TRUE` in `strategy_list`; Symbol and other dropdowns reset to all selected. Preferences persist per-strategy and per-symbol selection via JSONB.
+- **Backend:** `/api/strategies` returns `strategies` and `default_strategy_names`. `get_trade_history_preferences` and `save_trade_history_preferences` read/write `strategy_selection` and `symbol_selection` (JSONB); fallbacks when columns are missing for backward compatibility.
+- **Migrations:** Three reversible migrations: `20260310_1200_trade_history_preferences_strategy_selection` (strategy_selection JSONB), `20260310_1210_trade_history_preferences_symbol_selection` (symbol_selection JSONB), `20260310_1220_strategy_list_default_column` (`"default"` boolean on strategy_list_0001). Apply in order from project root with `PYTHONPATH=. venv/bin/python scripts/db/run_migration.py up <slug>`.
+- **PM:** One-time migration/backfill script cleanup tracking documented in `.cursor/pm/brain/06_conventions_insights.md` and INDEX (HOUSEKEEPING_SCRIPTS_INVENTORY + MASTER_CHANGELOG).
+
+**Production agent checklist**
+
+- [ ] Confirm codebase changes (pull latest on production).
+- [ ] Apply migrations if not already applied: `20260310_1200_trade_history_preferences_strategy_selection`, `20260310_1210_trade_history_preferences_symbol_selection`, `20260310_1220_strategy_list_default_column` (from project root with `PYTHONPATH=. venv/bin/python scripts/db/run_migration.py up <slug>` for each, or run all pending via your usual process).
+- [ ] Run `scripts/MASTER_RESTART.sh` so frontend and main_app load the new code.
+- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status; optional: open Trade History and confirm Strategy/Symbol dropdowns load and Reset sets Strategy to defaults only.
+
+---
+
 ## 2026-03-10 — Ghost monitor guard and MASTER_RESTART startup order
 
 **Summary**
@@ -16,10 +34,10 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 **Production agent checklist**
 
-- [ ] Confirm codebase changes (pull latest on production).
-- [ ] No DB schema changes or migrations.
-- [ ] Run `scripts/MASTER_RESTART.sh` so all processes load the new code; ghost monitors (if any) will self-exit on next start.
-- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status, and that no "Error notifying trade_manager" appears in `kalshi_account_sync.out.log` for the current process start.
+- [x] Confirm codebase changes (pull latest on production).
+- [x] No DB schema changes or migrations.
+- [x] Run `scripts/MASTER_RESTART.sh` so all processes load the new code; ghost monitors (if any) will self-exit on next start.
+- [x] Verify: health (main_app :3000, trade_executor :8001), supervisor status, and that no "Error notifying trade_manager" appears in `kalshi_account_sync.out.log` for the current process start.
 
 ---
 

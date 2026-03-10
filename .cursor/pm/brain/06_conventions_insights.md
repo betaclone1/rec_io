@@ -38,6 +38,10 @@ When doing **production-relevant work**, maintain **both**:
 
 Do not state procedures or commitments in chat (e.g. "going forward I'll maintain both...") without writing them into memory or the relevant doc. Verbal commitments are not retained; only what is written here (or in 05, TODO, MASTER_CHANGELOG) will be followed in future sessions.
 
+## One-time migration and backfill scripts (cleanup tracking)
+
+We keep track of one-time migration and backfill scripts so they can eventually be archived or removed after they have been run everywhere they are needed. **Where we track:** (1) **MASTER_CHANGELOG.md** — each update that includes a one-time script has a checklist task (e.g. "Optional one-time backfill... run once"); (2) **docs/changelog/todo_docs/HOUSEKEEPING_SCRIPTS_INVENTORY.md** — classifies scripts as active, archived, or archive candidate; one-off migrations and backfills are marked there and many have already been moved to archive/2026-03-housekeeping/scripts/. **Practice:** When adding a new one-time script to a changelog entry, note it in the checklist and add or update its row in HOUSEKEEPING_SCRIPTS_INVENTORY with status (e.g. "Changelog; one-off backfill for account_history"). After the script has been run on all relevant envs and is no longer needed in the active path, mark it archived and move to the housekeeping archive so we eventually clean it up.
+
 ## Restart required (mandatory)
 
 When you edit **critical scripts**—code that runs as a long-lived process (supervisor-managed services, main_app, trade_executor, kalshi_account_sync_ws, auto_entry_supervisor, watchdogs, etc.)—you **must call out in your summary** that a restart is required and which service(s). Example: "**Restart required:** kalshi_account_sync_ws, main_app (MASTER_RESTART or supervisorctl restart <program>)." Do not leave it implied; state it explicitly so the user knows changes will not be live until restart.

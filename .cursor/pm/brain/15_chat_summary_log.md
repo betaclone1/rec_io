@@ -10,6 +10,27 @@ Chronological log of chat sessions. Each entry is a dated, timestamped summary (
 
 ---
 
+### 2026-03-10 ~19:15 EDT (session: apply-update-from-local, prod trades/monitor_list check)
+
+**Context**
+- User ran **/apply-update-from-local** to apply the latest MASTER_CHANGELOG update to production from the local workspace via SSH (no agent on prod).
+
+**Apply-update-from-local**
+- Confirmed local and origin/main at commit `d0ff4e6` (Ghost monitor guard and MASTER_RESTART startup order).
+- Open entry: **2026-03-10 — Ghost monitor guard and MASTER_RESTART startup order**. Executed on prod over SSH: `git fetch && checkout main && pull --ff-only` (prod updated from f86636a to d0ff4e6); no DB migrations; fired `scripts/MASTER_RESTART.sh` in background (nohup); verified supervisor (all 33 processes RUNNING), health (main_app :3000, trade_executor :8001 → 200). No "Error notifying trade_manager" in `kalshi_account_sync.out.log` for current process (only pre-existing "Error notifying monitor manager" on port 8012). Marked all four checklist items `[x]` in `docs/changelog/MASTER_CHANGELOG.md` locally. Fidelity: local and prod same commit (d0ff4e6) and same applied migration. **VERIFY STATUS: All good.**
+
+**Prod DB: trades vs monitor_list**
+- User asked for distinct monitor IDs in prod `users.trades_0001`. Query returned 8: mon_0001_10002, 10009, 10020, 10021, 10022, 10023, 10026, 10027 (down from 13 earlier; 10014, 10018, 10019, 10031, 10032 no longer present in trades).
+- User asked to confirm those are all the active monitors in `users.monitor_list_0001`. Compared: monitor_list_0001 has exactly the same 8 IDs; no monitors in trades that are missing from monitor_list; no monitors in monitor_list that are missing from trades. **Confirmed: all trade monitors are in monitor_list; sets identical.**
+
+**Files changed**
+- `docs/changelog/MASTER_CHANGELOG.md`: 2026-03-10 entry checklist items set to `[x]` (local only; user to commit/push when convenient).
+
+**Outcome**
+- Production updated and verified. Trades table and monitor_list_0001 aligned on prod.
+
+---
+
 ### 2026-03-10 13:10 EDT (session: monitor_confirmed pinning deployment, GDrive tooling, central backlog, multiple system-restarts)
 
 **Context**

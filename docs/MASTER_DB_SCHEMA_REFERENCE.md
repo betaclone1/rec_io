@@ -10393,6 +10393,8 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `pct_mode` | `boolean` | YES | false | |
 | `live_filter` | `boolean` | YES | true | |
 | `paper_filter` | `boolean` | YES | false | |
+| `strategy_selection` | `jsonb` | YES | '{}' | Strategy filter state (name -> checked) for trade history UI. |
+| `symbol_selection` | `jsonb` | YES | '{}' | Symbol filter state (symbol -> checked) for trade history UI (from symbols_list). |
 
 #### Constraints
 

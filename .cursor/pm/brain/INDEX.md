@@ -27,6 +27,7 @@ Cursor does not retain chat context between sessions. **The memory (the docs in 
 | 14_context_retention | Why and what to write down; catch‑all for recent context / handoff so next session has continuity |
 | 15_chat_summary_log | Dated, timestamped chat summaries (from /log-chat); chronological record of sessions |
 | 16_LOGGING_AUDIT_INITIATIVE | Logging audit: script-stack inventory, per-script cleanup, log rotation fix, future consolidated MASTER log; scope, current state, phased plan |
+| (06) One-time migration cleanup | One-time migration/backfill scripts: tracked in MASTER_CHANGELOG (checklist) and HOUSEKEEPING_SCRIPTS_INVENTORY; archive when run everywhere and no longer needed. See 06 § One-time migration and backfill scripts. |
 | 17_MONITOR_CONFIRMED_WATCH | Daily-briefing check: PM runs monitor_confirmed script; only report to user when there are failures (last 7d); major indicator of ATS/trading health |
 | (PM doc) PROD_MAINTENANCE_FROM_LOCAL | Future/optional: prod maintenance from local via SSH; verify-production and daily-briefing already use SSH; apply-update currently runs with agent on prod (no git sync from local) |
 | REDIS_PLATFORM_INITIATIVE | Draft plan: full-scale Redis (pub/sub, optional cache) to replace HTTP broadcast mesh and slim main; scope, phases, risks, agent implications |

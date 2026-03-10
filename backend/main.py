@@ -125,7 +125,36 @@ def get_trade_history_preferences_postgresql():
         from backend.core.config.database import get_postgresql_connection
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            cursor.execute("""
+            select_full = """
+                SELECT date_filter, start_date, end_date, win_filter, loss_filter,
+                       contract_9am, contract_10am, contract_11am, contract_12am,
+                       contract_1pm, contract_2pm, contract_3pm, contract_4pm,
+                       contract_5pm, contract_6pm, contract_7pm, contract_8pm,
+                       contract_9pm, contract_10pm, contract_11pm,
+                       symbol_btc, symbol_eth, symbol_spy, symbol_ndx, symbol_usd_eur,
+                       strategy_hourly_htc, strategy_momentum_scalp, strategy_test,
+                       day_sunday, day_monday, day_tuesday, day_wednesday, day_thursday, day_friday, day_saturday,
+                       analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp, chart_view, pct_mode,
+                       live_filter, paper_filter,
+                       COALESCE(strategy_selection, '{}'::jsonb),
+                       COALESCE(symbol_selection, '{}'::jsonb)
+                FROM users.trade_history_preferences_0001 WHERE id = 1
+            """
+            select_with_strategy = """
+                SELECT date_filter, start_date, end_date, win_filter, loss_filter,
+                       contract_9am, contract_10am, contract_11am, contract_12am,
+                       contract_1pm, contract_2pm, contract_3pm, contract_4pm,
+                       contract_5pm, contract_6pm, contract_7pm, contract_8pm,
+                       contract_9pm, contract_10pm, contract_11pm,
+                       symbol_btc, symbol_eth, symbol_spy, symbol_ndx, symbol_usd_eur,
+                       strategy_hourly_htc, strategy_momentum_scalp, strategy_test,
+                       day_sunday, day_monday, day_tuesday, day_wednesday, day_thursday, day_friday, day_saturday,
+                       analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp, chart_view, pct_mode,
+                       live_filter, paper_filter,
+                       COALESCE(strategy_selection, '{}'::jsonb)
+                FROM users.trade_history_preferences_0001 WHERE id = 1
+            """
+            select_without_strategy = """
                 SELECT date_filter, start_date, end_date, win_filter, loss_filter,
                        contract_9am, contract_10am, contract_11am, contract_12am,
                        contract_1pm, contract_2pm, contract_3pm, contract_4pm,
@@ -137,8 +166,23 @@ def get_trade_history_preferences_postgresql():
                        analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp, chart_view, pct_mode,
                        live_filter, paper_filter
                 FROM users.trade_history_preferences_0001 WHERE id = 1
-            """)
-            result = cursor.fetchone()
+            """
+            result = None
+            has_strategy_col = False
+            has_symbol_col = False
+            try:
+                cursor.execute(select_full)
+                result = cursor.fetchone()
+                has_strategy_col = result is not None and len(result) > 44
+                has_symbol_col = result is not None and len(result) > 45
+            except psycopg2.ProgrammingError:
+                try:
+                    cursor.execute(select_with_strategy)
+                    result = cursor.fetchone()
+                    has_strategy_col = result is not None and len(result) > 44
+                except psycopg2.ProgrammingError:
+                    cursor.execute(select_without_strategy)
+                    result = cursor.fetchone()
             conn.close()
             
             if result:
@@ -186,7 +230,9 @@ def get_trade_history_preferences_postgresql():
                     "chart_view": result[40],
                     "pct_mode": result[41],
                     "live_filter": result[42] if len(result) > 42 else True,
-                    "paper_filter": result[43] if len(result) > 43 else False
+                    "paper_filter": result[43] if len(result) > 43 else False,
+                    "strategy_selection": result[44] if has_strategy_col else {},
+                    "symbol_selection": result[45] if has_symbol_col else {}
                 }
             else:
                 return {
@@ -232,7 +278,9 @@ def get_trade_history_preferences_postgresql():
                     "last_search_timestamp": int(time.time()),
                     "chart_view": "pnl",
                     "live_filter": True,
-                    "paper_filter": False
+                    "paper_filter": False,
+                    "strategy_selection": {},
+                    "symbol_selection": {}
                 }
     except Exception as e:
         _main_logger.warning(f"[PostgreSQL Error] Failed to get trade history preferences: {e}")
@@ -272,7 +320,9 @@ def get_trade_history_preferences_postgresql():
             "last_search_timestamp": int(time.time()),
             "chart_view": "pnl",
             "live_filter": True,
-            "paper_filter": False
+            "paper_filter": False,
+            "strategy_selection": {},
+            "symbol_selection": {}
         }
 
 def update_trade_history_preferences_postgresql(**kwargs):
@@ -2713,12 +2763,16 @@ def save_trade_history_preferences(preferences):
             if field in preferences:
                 update_data[field] = bool(preferences[field])
         
-        # Strategy filters
+        # Strategy filters (legacy fixed keys; dynamic strategy_selection from strategy_list)
         strategy_fields = ["strategy_hourly_htc", "strategy_momentum_scalp", "strategy_test"]
         for field in strategy_fields:
             if field in preferences:
                 update_data[field] = bool(preferences[field])
-        
+        if "strategy_selection" in preferences and isinstance(preferences["strategy_selection"], dict):
+            update_data["strategy_selection"] = json.dumps(preferences["strategy_selection"])
+        if "symbol_selection" in preferences and isinstance(preferences["symbol_selection"], dict):
+            update_data["symbol_selection"] = json.dumps(preferences["symbol_selection"])
+
         # Day filters
         day_fields = ["day_sunday", "day_monday", "day_tuesday", "day_wednesday", "day_thursday", "day_friday", "day_saturday"]
         for field in day_fields:
@@ -5387,44 +5441,6 @@ async def get_symbols():
             "message": str(e)
         }
 
-@app.get("/api/strategies")
-async def get_strategies(user_id: str = "user_0001"):
-    """Get available strategies for the strategy picker dropdown"""
-    try:
-        from backend.core.config.database import get_postgresql_connection
-        
-        user_number = user_id.replace("user_", "")
-        
-        conn = get_postgresql_connection()
-        if not conn:
-            return {
-                "status": "error",
-                "message": "Database connection failed"
-            }
-        
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT name
-            FROM users.strategy_list_0001
-            ORDER BY id
-        """)
-        
-        results = cursor.fetchall()
-        conn.close()
-        
-        strategies = [row[0] for row in results]
-        
-        return {
-            "status": "ok",
-            "strategies": strategies
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }
-
 @app.get("/api/monitor/{monitor_id}")
 async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
     """Get details for a specific monitor"""
@@ -6452,22 +6468,32 @@ async def get_strategies(user_id: str = "user_0001"):
                     ON CONFLICT (name) DO NOTHING
                 """, (strategy,))
         
-        # Now get all strategies
-        cursor.execute("""
-            SELECT name
-            FROM users.strategy_list_0001
-            ORDER BY id
-        """)
-        
-        results = cursor.fetchall()
+        # Now get all strategies and which have default=TRUE (for trade history Reset)
+        try:
+            cursor.execute("""
+                SELECT name, "default"
+                FROM users.strategy_list_0001
+                ORDER BY id
+            """)
+            results = cursor.fetchall()
+            strategies = [str(row[0]) if row[0] else "" for row in results]
+            default_strategy_names = [str(row[0]) for row in results if row[0] and row[1]]
+        except psycopg2.ProgrammingError:
+            cursor.execute("""
+                SELECT name
+                FROM users.strategy_list_0001
+                ORDER BY id
+            """)
+            results = cursor.fetchall()
+            strategies = [str(row[0]) if row[0] else "" for row in results]
+            default_strategy_names = list(strategies)
         conn.commit()
         conn.close()
         
-        strategies = [str(row[0]) if row[0] else "" for row in results]
-        
         return {
             "status": "ok",
-            "strategies": strategies
+            "strategies": strategies,
+            "default_strategy_names": default_strategy_names
         }
         
     except Exception as e:
