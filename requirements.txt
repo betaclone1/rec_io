@@ -3,6 +3,7 @@ anyio==4.9.0
 aiohttp==3.10.11
 aiofiles==24.1.0
 apscheduler==3.10.4
+bcrypt>=4.0.0
 certifi==2025.6.15
 cffi==1.17.1
 ccxt==4.4.15

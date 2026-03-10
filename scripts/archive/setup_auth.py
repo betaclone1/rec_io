@@ -98,7 +98,7 @@ def setup_auth():
     print("\n🎉 Authentication system setup complete!")
     print("\n📋 Login Information:")
     print(f"   Username: {user_info.get('user_id', 'admin')}")
-    print(f"   Password: {password}")
+    print("   Password: (set above; do not log or share)")
     print("\n🔧 To enable authentication in production:")
     print("   export AUTH_ENABLED=true")
     print("\n🔧 For local development (no auth required):")

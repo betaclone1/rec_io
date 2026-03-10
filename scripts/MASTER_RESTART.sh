@@ -297,7 +297,7 @@ master_restart() {
 
     # Step 0: Put system into maintenance mode to block new trades
     print_status "Step 0: Setting system_state.mode to 'maintenance' (trading disabled)..."
-    PGPASSWORD="rec_io_password" psql -h localhost -U rec_io_user -d rec_io_db <<'EOF' >/dev/null 2>&1
+    PGPASSWORD="${POSTGRES_PASSWORD:-${DB_PASSWORD:-rec_io_password}}" psql -h localhost -U rec_io_user -d rec_io_db <<'EOF' >/dev/null 2>&1
 CREATE SCHEMA IF NOT EXISTS core;
 CREATE TABLE IF NOT EXISTS core.system_state (
     id INTEGER PRIMARY KEY,
@@ -385,7 +385,7 @@ EOF
 
     # Step 8: Return system to normal trading mode
     print_status "Step 8: Setting system_state.mode back to 'normal' (trading enabled)..."
-    PGPASSWORD="rec_io_password" psql -h localhost -U rec_io_user -d rec_io_db <<'EOF' >/dev/null 2>&1
+    PGPASSWORD="${POSTGRES_PASSWORD:-${DB_PASSWORD:-rec_io_password}}" psql -h localhost -U rec_io_user -d rec_io_db <<'EOF' >/dev/null 2>&1
 INSERT INTO core.system_state (id, mode)
 VALUES (1, 'normal')
 ON CONFLICT (id) DO UPDATE

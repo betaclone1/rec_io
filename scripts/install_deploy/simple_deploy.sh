@@ -210,12 +210,12 @@ ssh "$REMOTE_USER@$REMOTE_HOST" << EOF
 set -e
 cd $REMOTE_DIR
 
-# Set database environment variables
-export DB_HOST=localhost
-export DB_NAME=rec_io_db
-export DB_USER=rec_io_user
-export DB_PASSWORD=rec_io_password
-export DB_PORT=5432
+# Set database environment variables (use env if set, else dev default)
+export DB_HOST=${DB_HOST:-localhost}
+export DB_NAME=${DB_NAME:-rec_io_db}
+export DB_USER=${DB_USER:-rec_io_user}
+export DB_PASSWORD=${DB_PASSWORD:-${POSTGRES_PASSWORD:-rec_io_password}}
+export DB_PORT=${DB_PORT:-5432}
 
 # Activate virtual environment and initialize database
 source venv/bin/activate
@@ -252,19 +252,19 @@ ssh "$REMOTE_USER@$REMOTE_HOST" << EOF
 set -e
 cd $REMOTE_DIR
 
-# Set database environment variables
-export DB_HOST=localhost
-export DB_NAME=rec_io_db
-export DB_USER=rec_io_user
-export DB_PASSWORD=rec_io_password
-export DB_PORT=5432
+# Set database environment variables (use env if set, else dev default)
+export DB_HOST=${DB_HOST:-localhost}
+export DB_NAME=${DB_NAME:-rec_io_db}
+export DB_USER=${DB_USER:-rec_io_user}
+export DB_PASSWORD=${DB_PASSWORD:-${POSTGRES_PASSWORD:-rec_io_password}}
+export DB_PORT=${DB_PORT:-5432}
 
 # Drop and recreate database to avoid conflicts (using postgres superuser)
 sudo -u postgres psql -c "DROP DATABASE IF EXISTS rec_io_db;"
 sudo -u postgres psql -c "CREATE DATABASE rec_io_db OWNER rec_io_user;"
 
 # Restore the database with proper error handling
-PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db < /tmp/rec_io_dump.sql 2>/dev/null || true
+PGPASSWORD=$DB_PASSWORD psql -h localhost -U rec_io_user -d rec_io_db < /tmp/rec_io_dump.sql 2>/dev/null || true
 
 # Clean up dump file
 rm -f /tmp/rec_io_dump.sql

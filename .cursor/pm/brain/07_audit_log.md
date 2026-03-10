@@ -4,6 +4,26 @@ Timestamped summary of exhaustive deep audit. No project files or DB schema were
 
 ---
 
+## 2026-03-08 — OpSec audit (proper)
+
+**Scope:** Secrets, credentials, auth, logging, CORS, dependencies, and exposure points across backend, scripts, and config.
+
+**Findings (see .cursor/pm/OPSEC_AUDIT_AND_UPGRADE.md for full report and suggestions)**
+
+- **Critical:** Hardcoded DB password `rec_io_password` as default/fallback in backend/core/config/database.py, main.py (get_user_credentials, change_password, many psycopg2.connect), kalshi_account_sync_ws.py, auto_entry_supervisor.py, active_trade_supervisor.py, scripts (MASTER_RESTART.sh, simple_deploy.sh, first_boot_sanitize.sh, generate_unified_supervisor_config.py). If DB_PASSWORD/POSTGRES_PASSWORD unset, production could use well-known default.
+- **Critical:** Auth bypass: token starting with `local_dev_` is accepted in /api/auth/verify.
+- **Critical:** Fallback password hashing stores plaintext: when bcrypt fails, `fallback_hash_<plaintext>` is stored; get_user_credentials JSON fallback uses plain "password": "admin".
+- **High:** Scripts print credentials: setup_auth.py prints `Password: {password}`; install.py prints db_password.
+- **High:** CORS allow_origins includes `"*"` with allow_credentials=True (risky).
+- **High:** change_password in main.py uses hardcoded psycopg2.connect(..., password="rec_io_password") instead of get_database_config().
+- **Medium:** Token passed in query params (Referer, logs, history). Auth tokens stored in JSON file (no encryption at rest).
+- **Medium:** Many API endpoints (e.g. /api/notify_db_change) have no token check; when AUTH_ENABLED=false entire app is unauthenticated.
+- **Low:** Archive scripts and test files contain hardcoded password or prod IP (137.184.224.94 in auto_entry_supervisor_test.py).
+
+**Recommendations (prioritized in OPSEC_AUDIT_AND_UPGRADE.md):** Remove hardcoded DB default; use get_database_config() everywhere; remove local_dev_ bypass or restrict to non-prod; require bcrypt, remove fallback; stop printing secrets; tighten CORS; move token to header/cookie; audit which endpoints need auth.
+
+---
+
 ## 2026-03-06 — Full project audit (initial)
 
 **Scope:** Entire repo: code, docs, config, scripts; DB introspection (read-only); PM memory (context docs) created and populated.

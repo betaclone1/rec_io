@@ -15,6 +15,7 @@ project_root = current_dir.parent.parent
 sys.path.insert(0, str(project_root))
 
 from backend.core.unified_config import unified_config
+from backend.core.config.database import get_database_config, get_postgresql_connection
 from backend.core.path_manager import PathManager
 from backend.core.host_detector import HostDetector
 import logging
@@ -74,18 +75,10 @@ class SupervisorConfigGenerator:
     def _get_active_monitors(self) -> list:
         """Get active monitors from database"""
         try:
-            import psycopg2
-            
-            # Get database configuration
-            db_config = self.config.get_database_config()
-            
-            conn = psycopg2.connect(
-                host=db_config.get("host", "localhost"),
-                database=db_config.get("name", "rec_io_db"),
-                user=db_config.get("user", "rec_io_user"),
-                password=db_config.get("password", "rec_io_password")
-            )
-            
+            conn = get_postgresql_connection()
+            if not conn:
+                logger.error("Database connection failed")
+                return []
             with conn.cursor() as cursor:
                 cursor.execute("""
                     SELECT id, name, status 
@@ -195,7 +188,7 @@ class SupervisorConfigGenerator:
         """Generate supervisor configuration content"""
         
         # Get database configuration
-        db_config = self.config.get_database_config()
+        db_config = get_database_config()
         
         # Create environment variables string
         env_vars = self._create_environment_variables(db_config, system_host)
@@ -382,7 +375,11 @@ startretries=3
 stopasgroup=true
 killasgroup=true
 stderr_logfile={stderr_log}
+stderr_logfile_maxbytes=5MB
+stderr_logfile_backups=5
 stdout_logfile={stdout_log}
+stdout_logfile_maxbytes=10MB
+stdout_logfile_backups=5
 environment={env_vars}
 
 """
@@ -403,19 +400,19 @@ environment={env_vars}
                 f'REC_PROJECT_ROOT="{self.config.project_root}"',
                 f'REC_ENVIRONMENT="{self.config.get("system.environment", "development")}"',
                 f'DB_HOST="{db_config.get("host", "localhost")}"',
-                f'DB_NAME="{db_config.get("name", "rec_io_db")}"',
+                f'DB_NAME="{db_config.get("database", db_config.get("name", "rec_io_db"))}"',
                 f'DB_USER="{db_config.get("user", "rec_io_user")}"',
-                f'DB_PASSWORD="{db_config.get("password", "rec_io_password")}"',
+                f'DB_PASSWORD="{db_config.get("password", "")}"',
                 f'DB_PORT="{db_config.get("port", 5432)}"',
                 f'POSTGRES_HOST="{db_config.get("host", "localhost")}"',
-                f'POSTGRES_DB="{db_config.get("name", "rec_io_db")}"',
+                f'POSTGRES_DB="{db_config.get("database", db_config.get("name", "rec_io_db"))}"',
                 f'POSTGRES_USER="{db_config.get("user", "rec_io_user")}"',
-                f'POSTGRES_PASSWORD="{db_config.get("password", "rec_io_password")}"',
+                f'POSTGRES_PASSWORD="{db_config.get("password", "")}"',
                 f'POSTGRES_PORT="{db_config.get("port", 5432)}"',
                 f'REC_DB_HOST="{db_config.get("host", "localhost")}"',
-                f'REC_DB_NAME="{db_config.get("name", "rec_io_db")}"',
+                f'REC_DB_NAME="{db_config.get("database", db_config.get("name", "rec_io_db"))}"',
                 f'REC_DB_USER="{db_config.get("user", "rec_io_user")}"',
-                f'REC_DB_PASS="{db_config.get("password", "rec_io_password")}"',
+                f'REC_DB_PASS="{db_config.get("password", "")}"',
                 f'REC_DB_PORT="{db_config.get("port", 5432)}"',
                 f'REC_DB_SSLMODE="{db_config.get("sslmode", "disable")}"'
             ]

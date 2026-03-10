@@ -17,17 +17,53 @@ This is the starting point - will expand to handle:
 import psycopg2
 from psycopg2 import sql
 import json
+import logging
 import requests
 import subprocess
 import sys
 import os
 from datetime import datetime, time as dt_time, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, List
 from flask import Flask, request, jsonify
 from backend.core.unified_config import UnifiedConfigManager
 from backend.core.port_config import get_port
 import threading
 import time
+
+
+def _est_formatter():
+    class ESTFormatter(logging.Formatter):
+        def formatTime(self, record, datefmt=None):
+            dt = datetime.fromtimestamp(record.created, tz=ZoneInfo("America/New_York"))
+            if datefmt:
+                return dt.strftime(datefmt)
+            s = dt.strftime("%Y-%m-%dT%H:%M:%S")
+            z = dt.strftime("%z")
+            return s + (z[:3] + ":" + z[3:] if len(z) >= 5 else z)
+    return ESTFormatter(fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+
+
+class _FlushingStreamHandler(logging.StreamHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+
+def _configure_logging():
+    log = logging.getLogger("monitor_manager")
+    if log.handlers:
+        return log
+    handler = _FlushingStreamHandler(sys.stdout)
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(_est_formatter())
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    return log
+
+
+_logger = _configure_logging()
+HEARTBEAT_INTERVAL_SEC = 300
 
 app = Flask(__name__)
 
@@ -61,12 +97,15 @@ class MonitorManager:
         return psycopg2.connect(**psycopg2_config)
     
     def log_event(self, event_type: str, message: str, data: Optional[Dict] = None):
-        """Centralized logging for monitor manager events"""
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        log_entry = f"[{timestamp}] [{self.service_name.upper()}] {event_type}: {message}"
-        if data:
-            log_entry += f" | Data: {json.dumps(data)}"
-        print(log_entry)
+        """Centralized logging for monitor manager events. Uses standard logger (EST, flush)."""
+        extra = f" | Data: {json.dumps(data)}" if data else ""
+        msg = message + extra
+        if event_type in ("ERROR", "STARTUP_ERROR", "WEBSOCKET_ERROR", "LOG_CLEANUP_ERROR", "ORPHANED_LOG_CLEANUP_ERROR"):
+            _logger.error("%s: %s", event_type, msg)
+        elif event_type in ("CREATE", "SUCCESS", "BANKROLL_UPDATE", "STARTUP", "INFO"):
+            _logger.info("%s: %s", event_type, msg)
+        else:
+            _logger.debug("%s: %s", event_type, msg)
     
     # === MONITOR PROCESS MANAGEMENT ===
     
@@ -319,6 +358,7 @@ environment={env_vars}
                 return False
             
             self.log_event("SUCCESS", f"Supervisor config regenerated and updated to remove monitor {monitor['user_number']}_{monitor['monitor_id']}")
+            _logger.info("Monitor deactivated monitor_id=%s", monitor.get("monitor_id") or monitor.get("name", ""))
             return True
             
         except Exception as e:
@@ -1109,16 +1149,16 @@ environment={env_vars}
     def cleanup_inactive_monitor_logs(self):
         """Clean up log files for inactive and archived monitors"""
         try:
-            print("[MONITOR_MANAGER] 🧹 Starting cleanup of inactive monitor logs...")
+            _logger.debug("Starting cleanup of inactive monitor logs")
             
             # Get inactive and archived monitor IDs from database
             inactive_monitor_ids = self._get_inactive_monitor_ids()
             
             if not inactive_monitor_ids:
-                print("[MONITOR_MANAGER] No inactive monitors found, skipping log cleanup")
+                _logger.debug("No inactive monitors found, skipping log cleanup")
                 return
             
-            print(f"[MONITOR_MANAGER] Found {len(inactive_monitor_ids)} inactive monitors: {inactive_monitor_ids}")
+            _logger.debug("Found %s inactive monitors: %s", len(inactive_monitor_ids), inactive_monitor_ids)
             
             # Create monitor_log_archive directory if it doesn't exist
             archive_dir = os.path.join(self.project_root, "logs", "log_archive", "monitor_log_archive")
@@ -1129,11 +1169,11 @@ environment={env_vars}
             for monitor_id in inactive_monitor_ids:
                 moved_count += self._move_monitor_logs_to_archive(monitor_id, archive_dir)
             
-            print(f"[MONITOR_MANAGER] ✅ Log cleanup completed: {moved_count} files moved to archive")
+            _logger.debug("Log cleanup completed: %s files moved to archive", moved_count)
             self.log_event("LOG_CLEANUP", f"Cleaned up {moved_count} log files for {len(inactive_monitor_ids)} inactive monitors")
             
         except Exception as e:
-            print(f"[MONITOR_MANAGER] ❌ Error during log cleanup: {e}")
+            _logger.error("Error during log cleanup: %s", e)
             self.log_event("LOG_CLEANUP_ERROR", f"Log cleanup failed: {str(e)}")
     
     def _get_inactive_monitor_ids(self) -> List[str]:
@@ -1148,7 +1188,7 @@ environment={env_vars}
                 """)
                 return [str(row[0]) for row in cursor.fetchall()]
         except Exception as e:
-            print(f"[MONITOR_MANAGER] Error getting inactive monitor IDs: {e}")
+            _logger.error("Error getting inactive monitor IDs: %s", e)
             return []
     
     def _move_monitor_logs_to_archive(self, monitor_id: str, archive_dir: str) -> int:
@@ -1176,17 +1216,17 @@ environment={env_vars}
                         # Move the file
                         os.rename(log_file, destination)
                         moved_count += 1
-                        print(f"[MONITOR_MANAGER] Moved: {filename} -> monitor_log_archive/")
+                        _logger.debug("Moved: %s -> monitor_log_archive/", filename)
             
         except Exception as e:
-            print(f"[MONITOR_MANAGER] Error moving logs for monitor {monitor_id}: {e}")
+            _logger.error("Error moving logs for monitor %s: %s", monitor_id, e)
         
         return moved_count
     
     def cleanup_orphaned_monitor_logs(self):
         """Clean up log files for monitors that don't exist in the database"""
         try:
-            print("[MONITOR_MANAGER] 🧹 Starting cleanup of orphaned monitor logs...")
+            _logger.debug("Starting cleanup of orphaned monitor logs")
             
             # Get all monitor IDs from database
             conn = self.get_database_connection()
@@ -1226,20 +1266,20 @@ environment={env_vars}
                     destination = os.path.join(archive_dir, filename)
                     os.rename(log_file, destination)
                     moved_count += 1
-                    print(f"[MONITOR_MANAGER] Moved orphaned: {filename} -> monitor_log_archive/")
+                    _logger.debug("Moved orphaned: %s -> monitor_log_archive/", filename)
             
-            print(f"[MONITOR_MANAGER] ✅ Orphaned log cleanup completed: {moved_count} files moved to archive")
+            _logger.debug("Orphaned log cleanup completed: %s files moved to archive", moved_count)
             if moved_count > 0:
                 self.log_event("ORPHANED_LOG_CLEANUP", f"Cleaned up {moved_count} orphaned log files")
             
         except Exception as e:
-            print(f"[MONITOR_MANAGER] ❌ Error during orphaned log cleanup: {e}")
+            _logger.error("Error during orphaned log cleanup: %s", e)
             self.log_event("ORPHANED_LOG_CLEANUP_ERROR", f"Orphaned log cleanup failed: {str(e)}")
     
     def perform_startup_cleanup(self):
         """Perform cleanup tasks on startup"""
         try:
-            print("[MONITOR_MANAGER] 🚀 Performing startup cleanup...")
+            _logger.debug("Performing startup cleanup")
             
             # Clean up inactive monitor logs
             self.cleanup_inactive_monitor_logs()
@@ -1247,10 +1287,10 @@ environment={env_vars}
             # Clean up orphaned monitor logs
             self.cleanup_orphaned_monitor_logs()
             
-            print("[MONITOR_MANAGER] ✅ Startup cleanup completed")
+            _logger.debug("Startup cleanup completed")
             
         except Exception as e:
-            print(f"[MONITOR_MANAGER] ❌ Error during startup cleanup: {e}")
+            _logger.error("Error during startup cleanup: %s", e)
     
     def start_daily_cleanup_scheduler(self):
         """Start the daily cleanup scheduler thread"""
@@ -1258,14 +1298,14 @@ environment={env_vars}
             self.cleanup_running = True
             self.cleanup_thread = threading.Thread(target=self._daily_cleanup_loop, daemon=True)
             self.cleanup_thread.start()
-            print("[MONITOR_MANAGER] 🕛 Daily cleanup scheduler started")
+            _logger.debug("Daily cleanup scheduler started")
     
     def stop_daily_cleanup_scheduler(self):
         """Stop the daily cleanup scheduler thread"""
         self.cleanup_running = False
         if self.cleanup_thread:
             self.cleanup_thread.join(timeout=5)
-        print("[MONITOR_MANAGER] Daily cleanup scheduler stopped")
+        _logger.debug("Daily cleanup scheduler stopped")
     
     def _daily_cleanup_loop(self):
         """Main loop for daily cleanup scheduler"""
@@ -1278,16 +1318,16 @@ environment={env_vars}
                 if (current_time.hour == 0 and current_time.minute == 0 and 
                     self.last_cleanup_date != current_date):
                     
-                    print("[MONITOR_MANAGER] 🕛 Midnight detected - running daily log cleanup...")
+                    _logger.debug("Midnight detected - running daily log cleanup")
                     self.perform_startup_cleanup()
                     self.last_cleanup_date = current_date
-                    print("[MONITOR_MANAGER] ✅ Daily cleanup completed")
+                    _logger.debug("Daily cleanup completed")
                 
                 # Sleep for 1 minute to check again
                 time.sleep(60)
                 
             except Exception as e:
-                print(f"[MONITOR_MANAGER] Error in daily cleanup scheduler: {e}")
+                _logger.error("Error in daily cleanup scheduler: %s", e)
                 time.sleep(300)  # Wait 5 minutes on error
 
 # Global instance
@@ -1318,11 +1358,11 @@ def bankroll_updated():
 def sync_bankroll_allotments():
     """Manually trigger bankroll allotment sync - updates bankroll_allotment_total for all active monitors"""
     try:
-        print("[MONITOR_MANAGER] Manual bankroll allotment sync requested")
+        _logger.debug("Manual bankroll allotment sync requested")
         result = monitor_manager.handle_bankroll_update()
         return jsonify(result)
     except Exception as e:
-        print(f"[MONITOR_MANAGER] Error in manual bankroll allotment sync: {e}")
+        _logger.error("Error in manual bankroll allotment sync: %s", e)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/update_monitor_position', methods=['POST'])
@@ -1349,8 +1389,8 @@ def update_monitor_position_variables():
         if monitor_id is None:
             return jsonify({'success': False, 'error': 'Invalid monitor_id'}), 400
         
-        print(f"[MONITOR_MANAGER] Updating monitor {monitor_id} (from {monitor_id_raw}) position variables")
-        print(f"[MONITOR_MANAGER] Position size: {position_size}, type: {position_type}, multiplier: {multiplier}")
+        _logger.debug("Updating monitor %s (from %s) position variables", monitor_id, monitor_id_raw)
+        _logger.debug("Position size: %s, type: %s, multiplier: %s", position_size, position_type, multiplier)
         
         # Update the monitor_list table with new values
         conn = monitor_manager.get_database_connection() # Use monitor_manager's connection
@@ -1374,14 +1414,14 @@ def update_monitor_position_variables():
         return jsonify({'success': True, 'total_position': total_position})
         
     except Exception as e:
-        print(f"[MONITOR_MANAGER] Error updating monitor position: {e}")
+        _logger.error("Error updating monitor position: %s", e)
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/sync_monitor_processes', methods=['POST'])
 def sync_monitor_processes():
     """Manually trigger monitor process sync"""
     try:
-        print("[MONITOR_MANAGER] Manual monitor process sync requested")
+        _logger.debug("Manual monitor process sync requested")
         
         # Use monitor_manager's built-in sync method
         success = monitor_manager.sync_monitor_processes()
@@ -1392,7 +1432,7 @@ def sync_monitor_processes():
             return jsonify({'success': False, 'error': 'Monitor process sync failed'}), 500
         
     except Exception as e:
-        print(f"[MONITOR_MANAGER] Error in manual sync: {e}")
+        _logger.error("Error in manual sync: %s", e)
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/initialize_allotments', methods=['POST'])
@@ -1404,7 +1444,7 @@ def initialize_allotments():
 def update_monitor_statistics():
     """Update monitor statistics from trades database"""
     try:
-        print("[MONITOR_MANAGER] Manual monitor statistics update requested")
+        _logger.debug("Manual monitor statistics update requested")
         
         # Use monitor_manager's built-in method
         result = monitor_manager.update_monitor_statistics_from_trades()
@@ -1415,14 +1455,14 @@ def update_monitor_statistics():
             return jsonify({'success': False, 'error': result.get('message')}), 500
         
     except Exception as e:
-        print(f"[MONITOR_MANAGER] Error in manual statistics update: {e}")
+        _logger.error("Error in manual statistics update: %s", e)
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/periodic_monitor_statistics_update', methods=['POST'])
 def periodic_monitor_statistics_update():
     """Trigger periodic update of all monitor statistics"""
     try:
-        print("[MONITOR_MANAGER] Periodic monitor statistics update requested")
+        _logger.debug("Periodic monitor statistics update requested")
         
         # Use monitor_manager's built-in method
         result = monitor_manager.periodic_monitor_statistics_update()
@@ -1433,7 +1473,7 @@ def periodic_monitor_statistics_update():
             return jsonify({'success': False, 'error': result.get('message')}), 500
         
     except Exception as e:
-        print(f"[MONITOR_MANAGER] Error in periodic statistics update: {e}")
+        _logger.error("Error in periodic statistics update: %s", e)
         return jsonify({'success': False, 'error': str(e)}), 500
 
 def get_strategy_default_settings(strategy_name, user_number="0001"):
@@ -1441,7 +1481,7 @@ def get_strategy_default_settings(strategy_name, user_number="0001"):
     try:
         conn = monitor_manager.get_database_connection()
         if not conn:
-            print(f"[STRATEGY DEFAULTS] Database connection failed")
+            _logger.debug("Strategy defaults: database connection failed")
             return {}
         
         with conn.cursor() as cursor:
@@ -1507,10 +1547,10 @@ def get_strategy_default_settings(strategy_name, user_number="0001"):
                     'max_ask': float(result[32]) if result[32] is not None else 0.9800,
                     'max_profit': float(result[33]) if result[33] is not None else 0.9900
                 }
-                print(f"[STRATEGY DEFAULTS] Loaded defaults for strategy '{strategy_name}'")
+                _logger.debug("Loaded defaults for strategy '%s'", strategy_name)
                 return defaults
             else:
-                print(f"[STRATEGY DEFAULTS] No defaults found for strategy '{strategy_name}', using fallback defaults")
+                _logger.debug("No defaults found for strategy '%s', using fallback defaults", strategy_name)
                 # Return fallback defaults if strategy not found
                 return {
                     'win_streak_threshold': 22,
@@ -1550,7 +1590,7 @@ def get_strategy_default_settings(strategy_name, user_number="0001"):
                 }
                 
     except Exception as e:
-        print(f"[STRATEGY DEFAULTS] Error getting strategy defaults for '{strategy_name}': {e}")
+        _logger.error("Error getting strategy defaults for '%s': %s", strategy_name, e)
         import traceback
         traceback.print_exc()
         return {}
@@ -1712,7 +1752,7 @@ def create_monitor():
         # Get strategy default settings
         strategy_defaults = get_strategy_default_settings(strategy, user_number)
         if not strategy_defaults:
-            print(f"[MONITOR CREATE] WARNING: strategy_defaults is empty for '{strategy}', using fallback defaults")
+            _logger.warning("Monitor create: strategy_defaults is empty for '%s', using fallback defaults", strategy)
             # Use fallback defaults if strategy not found
             strategy_defaults = {
                 'win_streak_threshold': 22,
@@ -1750,10 +1790,10 @@ def create_monitor():
                 'max_ask': 0.9800,
                 'max_profit': 0.9900
             }
-        print(f"[MONITOR CREATE] Using strategy defaults for '{strategy}'")
-        print(f"[MONITOR CREATE] min_time={strategy_defaults.get('min_time')}, max_time={strategy_defaults.get('max_time')}, min_probability={strategy_defaults.get('min_probability')}")
-        print(f"[MONITOR CREATE] max_probability={strategy_defaults.get('max_probability')}, min_differential={strategy_defaults.get('min_differential')}, max_differential={strategy_defaults.get('max_differential')}")
-        print(f"[MONITOR CREATE] spike_alert_enabled={strategy_defaults.get('spike_alert_enabled')}, momentum_spike_enabled={strategy_defaults.get('momentum_spike_enabled')}")
+        _logger.debug("Monitor create: using strategy defaults for '%s'", strategy)
+        _logger.debug("Monitor create: min_time=%s max_time=%s min_probability=%s", strategy_defaults.get('min_time'), strategy_defaults.get('max_time'), strategy_defaults.get('min_probability'))
+        _logger.debug("Monitor create: max_probability=%s min_differential=%s max_differential=%s", strategy_defaults.get('max_probability'), strategy_defaults.get('min_differential'), strategy_defaults.get('max_differential'))
+        _logger.debug("Monitor create: spike_alert_enabled=%s momentum_spike_enabled=%s", strategy_defaults.get('spike_alert_enabled'), strategy_defaults.get('momentum_spike_enabled'))
         
         conn = monitor_manager.get_database_connection()
         if not conn:
@@ -1882,7 +1922,7 @@ def create_monitor():
         conn.commit()
         conn.close()
         
-        monitor_manager.log_event("CREATE", f"Monitor {monitor_name} created successfully")
+        monitor_manager.log_event("CREATE", f"Monitor created monitor_id={monitor_id} name={monitor_name}")
         
         # Spawn monitor processes for the new monitor
         monitor_data = {
@@ -1928,7 +1968,7 @@ def health_check():
 def get_monitor_statistics(monitor_id):
     """Get statistics for a specific monitor"""
     try:
-        print(f"[MONITOR_MANAGER] Getting statistics for monitor {monitor_id}")
+        _logger.debug("Getting statistics for monitor %s", monitor_id)
         
         # Use monitor_manager's built-in method
         result = monitor_manager.get_monitor_statistics(monitor_id)
@@ -1939,14 +1979,14 @@ def get_monitor_statistics(monitor_id):
             return jsonify({'success': False, 'error': result.get('message')}), 404
         
     except Exception as e:
-        print(f"[MONITOR_MANAGER] Error getting monitor statistics: {e}")
+        _logger.error("Error getting monitor statistics: %s", e)
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/monitors/statistics', methods=['GET'])
 def get_all_monitor_statistics():
     """Get statistics for all monitors"""
     try:
-        print("[MONITOR_MANAGER] Getting statistics for all monitors")
+        _logger.debug("Getting statistics for all monitors")
         
         # Use monitor_manager's built-in method
         result = monitor_manager.get_all_monitor_statistics()
@@ -1957,7 +1997,7 @@ def get_all_monitor_statistics():
             return jsonify({'success': False, 'error': result.get('message')}), 500
         
     except Exception as e:
-        print(f"[MONITOR_MANAGER] Error getting all monitor statistics: {e}")
+        _logger.error("Error getting all monitor statistics: %s", e)
         return jsonify({'success': False, 'error': str(e)}), 500
 
 # === FUTURE ENDPOINTS (Foundation) ===
@@ -2009,7 +2049,7 @@ def toggle_auto_trade():
         return jsonify({"status": "ok", "message": f"Auto trade {'enabled' if auto_trade else 'disabled'} for monitor {monitor_id}"})
         
     except Exception as e:
-        print(f"Error toggling auto trade: {e}")
+        _logger.error("Error toggling auto trade: %s", e)
         return jsonify({"status": "error", "message": str(e)})
 
 @app.route('/api/trade_state_update', methods=['POST'])
@@ -2045,9 +2085,9 @@ def trade_status_update():
             return jsonify({'success': False, 'error': 'Missing monitor parameter'}), 400
         
         if bulk_update:
-            print(f"[MONITOR_MANAGER] Bulk trade status update: ticker {ticker}, status {status}, monitor {monitor}")
+            _logger.debug("Bulk trade status update: ticker %s status %s monitor %s", ticker, status, monitor)
         else:
-            print(f"[MONITOR_MANAGER] Trade status update: ID {trade_id}, status {status}, monitor {monitor}")
+            _logger.debug("Trade status update: ID %s status %s monitor %s", trade_id, status, monitor)
         
         # Use monitor_manager's built-in method
         result = monitor_manager.handle_trade_status_update(trade_id, status, monitor, bulk_update, ticker)
@@ -2058,7 +2098,7 @@ def trade_status_update():
             return jsonify({'success': False, 'error': result.get('message')}), 500
         
     except Exception as e:
-        print(f"[MONITOR_MANAGER] Error handling trade status update: {e}")
+        _logger.error("Error handling trade status update: %s", e)
         return jsonify({'success': False, 'error': str(e)}), 500
 
 class MonitorStatusWatcher:
@@ -2076,14 +2116,14 @@ class MonitorStatusWatcher:
             self.running = True
             self.thread = threading.Thread(target=self._watch_loop, daemon=True)
             self.thread.start()
-            print("[MONITOR_MANAGER] Monitor status watcher started")
+            _logger.debug("Monitor status watcher started")
     
     def stop(self):
         """Stop the status watcher thread"""
         self.running = False
         if self.thread:
             self.thread.join(timeout=5)
-        print("[MONITOR_MANAGER] Monitor status watcher stopped")
+        _logger.debug("Monitor status watcher stopped")
     
     def _watch_loop(self):
         """Main watching loop"""
@@ -2092,7 +2132,7 @@ class MonitorStatusWatcher:
                 self._check_for_status_changes()
                 time.sleep(10)  # Check every 10 seconds
             except Exception as e:
-                print(f"[MONITOR_MANAGER] Error in status watcher: {e}")
+                _logger.error("Error in status watcher: %s", e)
                 time.sleep(30)  # Wait longer on error
     
     def _check_for_status_changes(self):
@@ -2116,34 +2156,34 @@ class MonitorStatusWatcher:
                 # Check for changes
                 for monitor_id, status in current_status.items():
                     if monitor_id not in self.last_status or self.last_status[monitor_id] != status:
-                        print(f"[MONITOR_MANAGER] Status change detected: Monitor {monitor_id} changed from {self.last_status.get(monitor_id, 'unknown')} to {status}")
+                        _logger.debug("Status change detected: Monitor %s changed from %s to %s", monitor_id, self.last_status.get(monitor_id, 'unknown'), status)
                         self._handle_status_change(monitor_id, status)
                         self.last_status[monitor_id] = status
                 
                 # Check for removed monitors
                 for monitor_id in list(self.last_status.keys()):
                     if monitor_id not in current_status:
-                        print(f"[MONITOR_MANAGER] Monitor {monitor_id} removed from database")
+                        _logger.info("Monitor removed from database monitor_id=%s", monitor_id)
                         del self.last_status[monitor_id]
                         
         except Exception as e:
-            print(f"[MONITOR_MANAGER] Error checking status changes: {e}")
+            _logger.error("Error checking status changes: %s", e)
     
     def _handle_status_change(self, monitor_id, new_status):
         """Handle a monitor status change"""
         try:
-            print(f"[MONITOR_MANAGER] Status change detected: Monitor {monitor_id} changed to {new_status}")
+            _logger.debug("Status change detected: Monitor %s changed to %s", monitor_id, new_status)
             
             # Use monitor_manager's built-in sync method
             success = self.monitor_manager.sync_monitor_processes()
             
             if success:
-                print(f"[MONITOR_MANAGER] Monitor process sync completed successfully for monitor {monitor_id}")
+                _logger.info("Monitor process sync completed successfully for monitor_id=%s", monitor_id)
             else:
-                print(f"[MONITOR_MANAGER] Monitor process sync failed for monitor {monitor_id}")
+                _logger.warning("Monitor process sync failed for monitor_id=%s", monitor_id)
                 
         except Exception as e:
-            print(f"[MONITOR_MANAGER] Error handling status change for monitor {monitor_id}: {e}")
+            _logger.error("Error handling status change for monitor %s: %s", monitor_id, e)
 
 # Initialize monitor manager instance
 monitor_manager = MonitorManager()
@@ -2161,15 +2201,18 @@ start_status_watcher()
 # Start the daily cleanup scheduler
 monitor_manager.start_daily_cleanup_scheduler()
 
+def _heartbeat_loop():
+    while True:
+        time.sleep(HEARTBEAT_INTERVAL_SEC)
+        _logger.info("heartbeat")
+
+
 if __name__ == "__main__":
-    print("[MONITOR MANAGER] 🚀 Starting Core Monitor Management System")
-    print("[MONITOR MANAGER] Foundation for comprehensive monitor state management")
-    print("[MONITOR MANAGER] Current capability: Bankroll-driven position updates")
-    print("[MONITOR MANAGER] Future capabilities: Full monitor lifecycle management")
-    
+    _logger.debug("Starting Core Monitor Management System")
+    _hb = threading.Thread(target=_heartbeat_loop, daemon=True)
+    _hb.start()
     # Perform startup cleanup (move inactive monitor logs to archive)
     # DISABLED: Too aggressive - moves logs to archive too quickly
     # monitor_manager.perform_startup_cleanup()
-    
     monitor_port = get_port("monitor_manager")
     app.run(host='0.0.0.0', port=monitor_port, debug=False)

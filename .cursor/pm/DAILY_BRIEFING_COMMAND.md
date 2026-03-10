@@ -53,8 +53,8 @@ Part of the routine is to **check G Drive** (REC_IO / Cursor folder, or known no
 
 1. Memory and context (INDEX, 15, 14, 13, 06, 00).
 2. **G Drive** — Search → fetch notes → compare to reviewed log → surface new/updated in briefing → update log.
-3. Verify system (health, supervisor, logs); status All good / Investigate / Critical.
-4. Production check (one line if reachable).
+3. **Comprehensive system health check** — Run **separately** for local and for prod (SSH root@137.184.224.94; prod path /opt/rec_io_server). For each: supervisorctl status, health endpoints (main_app, trade_executor), tail key logs (trade_manager, trade_executor, main_app, kalshi_account_sync, cascading_failure_detector, one ATS, one AES) and look for ERROR/FATAL/CRITICAL or anomalies. **Report:** If nothing notable: "Local and prod: system health OK." If issues: concise rundown by environment (Local / Prod) and what needs attention.
+4. **Monitor_confirmed check** — Run check with `--days 7 --append-log`. Read log for previous total. Report only if current > 0 and (current > previous or previous > 0): rise or persistence.
 5. External news (one search; when relevant, give enough detail to be useful — 2–4 sentences or a few bullets).
 6. Ongoing tasks (short paragraph from 13, 14, TODO).
 7. Deliver briefing in the format above; end with VERIFY STATUS.

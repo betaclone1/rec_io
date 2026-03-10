@@ -10,6 +10,229 @@ Chronological log of chat sessions. Each entry is a dated, timestamped summary (
 
 ---
 
+### 2026-03-10 13:10 EDT (session: monitor_confirmed pinning deployment, GDrive tooling, central backlog, multiple system-restarts)
+
+**Context**
+- Follow-up to prior monitor_confirmed investigation and GDrive work. User requested a daily briefing, AES crash diagnosis, and a permanent fix for Drive access. Session extended into: implementing the monitor_confirmed error-handling plan (pinning open trades across Kalshi event rotations), restoring robust Drive search/read via scripts, muting noisy AES logs, refining daily-briefing behavior (news + immediately actionable items), and establishing a single prioritized backlog that merges daily notes with memory docs.
+
+**Kalshi market watchdog / monitor_confirmed implementation**
+- Implemented the **"pin open-trade markets across rotations"** plan from `docs/MONITOR_CONFIRMED_PIN_OPEN_TRADES_PLAN.md` directly in `backend/kalshi_market_watchdog.py` to prevent ATS monitoring gaps that cause `monitor_confirmed = FALSE`.
+- Added helpers:
+  - `get_open_trade_tickers_for_table(connection, table_name, symbol)` — queries `users.trades_0001` and `users.trades_simulated_0001` for **open/pending** trades and intersects with tickers present in the current `live_data.market_kalshi_{interval}_{symbol}` table for the relevant symbol.
+  - `fetch_rows_for_tickers(connection, table_name, tickers)` — fetches full existing `market_kalshi` rows for those tickers before TRUNCATE.
+  - `reinsert_preserved_rows(connection, table_name, rows)` — re-inserts preserved rows after new event data is saved; uses explicit column lists and `ON CONFLICT`/upsert semantics consistent with existing `save_market_data_to_postgresql` behavior, without fabricating data.
+- Wiring in main loop:
+  - On each tick, initializes `preserved_rows = []`.
+  - When a Kalshi event rotation is detected (`previous_event_ticker and previous_event_ticker != event_ticker`):
+    - Connects to Postgres; computes table name `live_data.market_kalshi_{INTERVAL}_{SYMBOL.lower()}`.
+    - Calls `get_open_trade_tickers_for_table` → if non-empty, calls `fetch_rows_for_tickers` to populate `preserved_rows`.
+    - Executes `TRUNCATE TABLE {table_name}` and commits, then closes connection.
+  - After saving new event data via `save_market_data_to_postgresql(...)`, if `preserved_rows` is non-empty, opens a new connection, calls `reinsert_preserved_rows`, commits, and logs an INFO `"Preserved %d rows for open trades across rotation"` message.
+- Invariants:
+  - No behavior change to trade entry timing or market selection; only ensures that tickers for **already open/pending trades** retain a row in `market_kalshi_*` after rotation so ATS continues to see a price source for stop monitoring.
+  - Does **not** synthesize or guess prices; it preserves the **last real row** from the prior event and lets ATS use it until Kalshi’s stream makes new rows available (or the trade closes).
+- Restart requirement:
+  - Explicitly called out that all `kalshi_market_watchdog_*` supervisor programs must be restarted (via `scripts/MASTER_RESTART.sh` or equivalent) to pick up the new behavior. Per-user request, documented the restart requirement in the conversation and treated it as mandatory communication whenever touching core services.
+
+**Instrumentation plan (monitor_confirmed)**
+- The broader refined plan for monitor_confirmed was re-affirmed: `monitor_confirmed` is a flag for **real-time monitoring coverage for auto-stops**, not just “we eventually had a closing price.”
+- Plan components (some still pending for later implementation):
+  - **Instrumentation in `active_trade_supervisor`** — add per-trade skip logs when `get_current_closing_price_for_trade` or `get_current_symbol_price` returns `None`, with fields: `trade_id`, `ticker`, `monitor_id`, `strategy`, current event ticker, and whether a rotation just occurred.
+  - **Reason logging in `trade_manager`** — at close time, whenever `monitor_confirmed` is set FALSE, log a specific reason code (e.g. `NO_MARKET_ROWS`, `NOT_IN_ACTIVE_TRADES`, `NOT_IN_SNAPSHOT_AFTER_ROTATION`) to distinguish failure modes without changing trade decisions.
+- Implementation status:
+  - The **pinning logic** in `kalshi_market_watchdog` is implemented and deployed (post-MASTER_RESTART).
+  - The detailed reason-logging pieces in `active_trade_supervisor` / `trade_manager` are **planned but not yet coded**; they remain part of the medium-term instrumentation work.
+
+**GDrive access and tooling**
+- Investigated and confirmed that the **official `@modelcontextprotocol/server-gdrive` MCP** is unreliable in this environment because the Cursor MCP wrapper cannot pass per-call `arguments` (required `query`); the server itself is also archived and has known bugs.
+- Implemented a **script-based, permanent solution** for Drive access:
+  - `scripts/gdrive/search-drive.js` — uses `googleapis` with the same OAuth credentials as the MCP to search Drive for files by `name contains` and optional `folder`/`folder-id`; outputs a JSON array of files on stdout. Usage: `node scripts/gdrive/search-drive.js "Cursor Notes"`, or `--folder "Cursor" "Notes"`, etc.
+  - `scripts/gdrive/read-file.js` — reads file contents by Drive file id; for Google Docs, exports as `text/plain`, for others, downloads as text. Usage: `node scripts/gdrive/read-file.js FILE_ID`.
+- Linked these to the daily-briefing and PM docs:
+  - `.cursor/pm/GOOGLE_DRIVE_MCP_SETUP.md`, `12_cursor_ide`, and `DAILY_BRIEFING_COMMAND` updated to document script-based read/search as the **primary** Drive mechanism for this project (with MCP used only when it’s functioning).
+  - `.cursor/pm/daily_briefing_reviewed_drive.json` was created/updated to track reviewed Drive notes, currently including the ID and metadata for `"Cursor Notes"`.
+- Outcome: User’s requirement that Drive be **permanently usable for read/write** is met via scripts, independent of MCP issues.
+
+**Daily briefing refinements**
+- Updated `.cursor/skills/daily-briefing/SKILL.md` and `.cursor/commands/daily-briefing.md`:
+  - **News focus** — step 4 now tells the agent to lead with **macro/crypto items that could move BTC/ETH** (rates, ETF/reg headlines, large liquidations) and then cover Kalshi/prediction-market news second. In the briefing output, the News section must lead with BTC/ETH price action and macro/crypto context.
+  - **Immediately actionable findings** — new step 6: if, during briefing, the agent finds items that are **clearly safe and immediately actionable without CEO input** (e.g. pure-noise log spam, a non-prod-only warning, harmless config tightening), it should **implement them as part of the daily-briefing run**.
+  - **Output ordering** — the News section description was updated to explicitly say “lead with BTC/ETH price action and macro/crypto items, then cover Kalshi/prediction markets at the end if relevant.”
+- Used the new rules to generate updated news briefings for the user, which they approved as closer to the desired tone and ordering.
+
+**AES log noise and fixes**
+- User pointed out `"auto_entry_supervisor_0001_10026.err.log"` being spammed by Flask/Werkzeug dev-server warnings; analysis confirmed these are non-critical informational messages.
+- Implemented a fix in `backend/auto_entry_supervisor.py`:
+  - After creating the Flask app, set `logging.getLogger("werkzeug").setLevel(logging.ERROR)` to **mute dev banner and INFO logs** while retaining real errors.
+  - Confirmed that the AES service still starts and serves correctly, while the `.err.log` volume dropped significantly.
+
+**System restarts and verification**
+- Multiple **`/system-restart`** commands were run during the session (user explicitly invoked the system-restart skill):
+  - Each run executed `scripts/MASTER_RESTART.sh` with full permissions (stopping supervisor, killing processes, flushing ports, regenerating unified supervisor config, restarting all services, and re-enabling `system_state.mode = normal`).
+  - After each restart, ran **verify-local** using the shared `.cursor/pm/VERIFY_COMMAND.md` workflow:
+    - Health checks: main_app `:3000/health` and trade_executor `:8001/health` returning 200 and healthy payloads.
+    - `supervisorctl -c backend/supervisord.conf status`: all core services (`main_app`, `trade_manager`, `trade_executor`, ATS/AES per monitor, kalshi_account_sync, kalshi_market_watchdog_*`, `strike_table_generator_*`, `symbol_price_watchdog_*`, `system_monitor`, `cascading_failure_detector`, `monitor_manager`) in RUNNING state.
+    - Logs: tailed `trade_executor.err`, `kalshi_account_sync.out`, `main_app.out`, and one `kalshi_market_watchdog_hourly_btc.out`. Errors:
+      - **trade_executor.err**: only Flask dev-server banner + health hits; no new tracebacks after each restart.
+      - **kalshi_account_sync.out**: clean baseline sync, then periodic heartbeats and sync OK messages.
+      - **main_app.out**: 200 OK responses for cooldown and auto-trade status notifications; no warnings/errors in tails.
+      - **kalshi_market_watchdog_hourly_btc.out**: periodic HTTPS read timeouts from Kalshi (known upstream issue) and rotation logs; for verify status, treated timeouts **before the new process start time** as stale; no new fatal errors during the post-restart windows.
+    - Each verify-local run concluded with:
+      - Summary: system running as intended, no post-restart tracebacks/fatal errors.
+      - Status block: `VERIFY STATUS` → `✅ All good`.
+- Also inspected `logs/main_app.err.log` after the main_app lifespan change to confirm:
+  - DeprecationWarning for `@app.on_event("startup"/"shutdown")` is gone.
+  - New lifespan logs appear as expected (`Main app started on port 3000`, `Main app shutting down`).
+
+**main_app lifespan cleanup**
+- Confirmed that the **FastAPI lifespan refactor is already in place**:
+  - `backend/main.py` defines:
+    - `@asynccontextmanager async def lifespan(app: FastAPI):` with INFO logs on startup/shutdown.
+    - `app = FastAPI(title="Trading System Main App", lifespan=lifespan)` (no `@app.on_event` decorators remain).
+  - Tail of `main_app.err.log` shows startup/shutdown messages from the lifespan and no DeprecationWarning.
+- Updated `13_proposed_tasks.md`:
+  - Marked **“main_app lifespan (non-critical)”** as **Done**, with a note that `backend/main.py` now uses lifespan and that the DeprecationWarning was cleared and verified.
+
+**Central backlog / “what’s next” behavior**
+- User emphasized that we must maintain a **central list of suggested tasks ordered by priority and horizon (short/medium/long)** and keep it up-to-date as tasks are added/completed, from:
+  - Chat discussions,
+  - Daily briefing findings,
+  - Notes shared via Drive (`Cursor Notes`).
+- Adjusted `13_proposed_tasks.md` to encode this explicitly:
+  - Added a **“Central backlog (“our list”)”** section at the top:
+    - 13 is now defined as the **central prioritized backlog**, tagged `[S]/[M]/[L]` when useful.
+    - “Presenting our list” rule: when the user asks “what’s next?” or similar, the agent must merge:
+      - 13 (ongoing + G Drive daily list section),
+      - open items from `docs/changelog/TODO.md`,
+      - the **current** content of `"Cursor Notes"` via `scripts/gdrive/read-file.js` and `daily_briefing_reviewed_drive.json`,
+      - then dedupe and re-rank (short, user-facing first; then tech debt/stability; then major initiatives).
+  - Folded the **Cursor Notes** daily list into 13 under **“G Drive — Cursor Notes (daily list, folded in 2026-03-10)”** with items:
+    - MTB/account balance & dashboard, mobile dashboard auto-refresh, account history strategy filters, frontend mobile parity rule, remote notifications, candlestick charting, Kalshi market sync WS initiative, daily-briefing “immediately actionable” (marked Done), PM/agent workflow review.
+  - Marked **maintenance rules**:
+    - New tasks from chat, briefing, or Drive must be added into 13 and prioritized.
+    - Completed tasks must be marked done in 13 (and in TODO.md where applicable).
+- Updated `14_context_retention.md`:
+  - Clarified that when answering “what’s next?” without an explicit instruction to proceed, the agent should **answer from the central backlog** (merged list) with ~5–6 candidates, not start executing.
+  - Added a **2026-03-10 backlog convention** bullet: 13 is the central prioritized backlog; on “what’s next?” we respond with top items by horizon; new tasks/ completions must be reflected in 13 (and TODO.md where relevant).
+- Behavior in this session:
+  - When the user asked “what’s next?”, the agent responded with a shortlist: `[S] main_app lifespan cleanup` (now done), `[S] mobile dashboard auto refresh`, `[S/M] MTB dashboard`, `[M] account history strategy filters`, `[M] AES consolidation`, `[L] candlestick charting`, all drawn from the merged backlog.
+
+**Other notes**
+- `verify-local` and `/system-restart` behavior was re-used multiple times this session; no change to underlying VERIFY_COMMAND workflow (health, supervisor, logs, status block).
+- The user re-affirmed that monitor_confirmed’s semantics are about **real-time monitoring of open trades for auto-stops**, not just availability of closing prices; all monitor_confirmed changes are designed with this interpretation as primary.
+
+**Outcomes**
+- Monitor_confirmed: pinning across event rotations implemented in `kalshi_market_watchdog` and live after MASTER_RESTART; instrumentation logging enhancements still to come.
+- GDrive: stable script-based read/search tools (`search-drive.js`, `read-file.js`) used by daily-briefing and backlog logic; MCP limitations documented but no longer a blocker.
+- Daily-briefing: news focus and “immediately actionable” behavior updated; AES log noise muted via Werkzeug logger level change.
+- main_app: lifespan refactor confirmed and DeprecationWarning resolved; task marked done.
+- Backlog: 13 now formally serves as the central prioritized list, merging TODO.md and Cursor Notes; new convention recorded in memory for future sessions.
+
+**Open / follow-up**
+- Monitor_confirmed:
+  - Implement detailed skip/reason logging in `active_trade_supervisor` and `trade_manager` per the instrumentation plan.
+  - Observe live data over days/weeks to confirm `monitor_confirmed = FALSE` rate drops, especially for BTC Momentum Breakout and the ETH Hourly HTC path that produced trade 14050.
+- Backlog:
+  - Address high-priority user-facing items (MTB dashboard, mobile refresh, account history filters) when the user chooses; keep 13 and TODO.md in sync as work completes.
+  - Schedule and design major initiatives (Redis platform, Kalshi WS order books, candlestick charting) when user wants to invest in them.
+
+---
+
+### 2026-03-09 (session: monitor_confirmed diagnosis, monitoring, daily briefing health check, verify-local/verify-production)
+
+**Context**
+- User reported increase in trades with monitor_confirmed = FALSE (ATS not consistently tracking live trades). Asked for diagnosis only (no patch).
+
+**Diagnosis (docs/DIAGNOSIS_MONITOR_CONFIRMED_FALSE.md)**
+- Two failure modes: (1) high_price = low_price — trade was in ATS but monitoring never updated (ticker missing from snapshot after event rotation; kalshi_market_watchdog TRUNCATEs table on event change; get_current_closing_price_for_trade returns None → ATS skips update). (2) high_price = low_price = NULL — trade never in active_trades when trade_manager read at close (notification/add path failure). DB query: since 2026-03-03, FALSE on 10026 (Hourly HTC), 10031 (Momentum Breakout), 10034 (15m HTC); 10031 had most (7). Corrected earlier wrong claim that "only 10031 is BTC hourly monitor" — there are nine BTC hourly monitors; VERIFY_COMMAND doc updated.
+
+**Ongoing monitoring**
+- scripts/diagnostics/check_monitor_confirmed_failures.py (--days 7, --append-log). .cursor/pm/brain/17_MONITOR_CONFIRMED_WATCH: PM runs check as part of daily briefing; only report to user when **rise in frequency** (current 7d total > previous) or **persistence** (previous > 0). Not on every non-zero. Skill step 3b: read log for last days=7 total, run script --append-log, report only if current > 0 and (current > previous or previous > 0).
+
+**Daily briefing: comprehensive health check (local + prod)**
+- Step 3: Run health check **separately** for local and prod (prod via ssh root@137.184.224.94). For each: supervisorctl status, health endpoints (main_app, trade_executor), tail key logs (trade_manager, trade_executor, main_app, kalshi_account_sync, cascading_failure_detector, one ATS, one AES); look for ERROR/FATAL/CRITICAL or anomalies. Report: if nothing notable, one line "Local and prod: system health OK."; if issues, concise rundown by environment. .cursor/skills/daily-briefing/SKILL.md, DAILY_BRIEFING_COMMAND.md, 02_services_ports (Production server section) updated.
+
+**Verify → verify-local and verify-production**
+- Single workflow in .cursor/pm/VERIFY_COMMAND.md; any changes there apply to both. .cursor/commands/verify-local.md and verify-production.md; .cursor/skills/verify-local/SKILL.md and verify-production/SKILL.md. Removed .cursor/commands/verify.md and .cursor/skills/verify/SKILL.md (no standalone verify). system-restart runs **verify-local** by default (commands/system-restart.md, skills/system-restart/SKILL.md, SYSTEM_RESTART_COMMAND.md). AGENTS.md, pm.mdc, 14_context_retention, prepare-update refs, daily-briefing.md updated to verify-local/verify-production.
+
+**Prod path**
+- Production server uses **/opt/rec_io_server** (not /opt/rec_io). Verified via /verify-production: supervisorctl -c /opt/rec_io_server/backend/supervisord.conf, logs /opt/rec_io_server/logs. verify-production skill and 02_services_ports updated to document /opt/rec_io_server.
+
+**Verify-production run (this session)**
+- Health main_app :3000 and trade_executor :8001 both 200. Supervisor 29/29 RUNNING. Logs: trade_executor (409s, external probes 404/400), kalshi_account_sync (account history 404 known), main_app (WebSocket KeyError on client disconnect — minor), trade_manager (Invalid HTTP from probes). Status: All good.
+
+**Outcomes**
+- monitor_confirmed: diagnosis doc and script in place; daily-briefing reports only on rise/persistence. Verify is verify-local (local) and verify-production (prod via SSH); system-restart defaults to verify-local. Daily briefing includes full health check local + prod; report only when issues. Prod path documented as /opt/rec_io_server.
+
+**Open / follow-up**
+- None.
+
+---
+
+### 2026-03-08 (session: log watch while user away)
+
+**Context**
+- User going out for a couple hours; asked to keep an eye on logs for insights.
+
+**Checks (3 passes over ~5 min)**
+- Health: main_app :3000, trade_executor :8001 both 200. Supervisor: all RUNNING.
+- system_monitor: tail shows DEBUG "Health: 31/31 services", "Discovered 31 services from universal config" — config discovery working (no ModuleNotFoundError in current run).
+- cascading_failure_detector: tail shows DEBUG "Discovered 30 critical services", "System healthy - 28/30 services running".
+- main_app.err tail: only DEBUG broadcast lines (auto trade status, cooldown timer); no new WARNING/ERROR in current output.
+- Grep of *.err.log for WARNING/ERROR: system_monitor/cfd err tails are now clean; hits in system_monitor/cfd were from old lines in large files. main_app.err has historical entries (unified_config /2_5 venv, ASGI exceptions, "No space left on device", Invalid HTTP) — none in the latest tail.
+
+**Insights**
+- No new errors or tracebacks during watch. Service discovery (config.generate_unified_supervisor_config) is working in both monitor and CFD.
+- When you review later: if you want to confirm nothing fired while away, check the *end* of each .err.log (tail) and look for timestamps after ~19:05 EST.
+
+**Outcomes**
+- Log watch complete; no action required.
+
+---
+
+### 2026-03-08 (session: priorities, env conventions, main lifespan, system-restart)
+
+**Context**
+- User asked for next priorities ignoring specific todo items. PM suggested: prod alignment (OpSec push when ready), stability/observability, tech debt (env, main lifespan), AES consolidation, March 12 observe.
+- User: don't mention strike table unless it persists over the next week or becomes critical; OpSec push when dev observed for a while; logging audit later; March 12 = observe deprecation doesn't break us (already on _fp/_dollars); env conventions — user thought we'd dealt with it.
+
+**Env conventions**
+- PM explained: central pattern done (database.py DB_*/REC_DB_*, critical services use it, supervisor injects all three so legacy POSTGRES_* code works). Remaining: optional file-by-file cleanup of legacy POSTGRES_* readers. User: is cleanup big? PM: no (~10–15 files, few lines each). User: keep in context; when touching a file for other work, switch it to get_postgresql_connection/get_database_config; flag for full pass only if it becomes a bigger problem.
+- Memory: 14_context_retention, 13_proposed_tasks, 06_conventions_insights updated — "opportunistic cleanup" when touching files; no dedicated full pass unless it becomes a problem.
+
+**main.py lifespan**
+- User: patch whatever needs it in main. PM replaced @app.on_event("startup") and @app.on_event("shutdown") with FastAPI lifespan: added `from contextlib import asynccontextmanager`, `@asynccontextmanager async def lifespan(app: FastAPI):` (startup print, yield, shutdown print), `app = FastAPI(..., lifespan=lifespan)`, removed the two on_event handlers. Clears DeprecationWarning.
+- File: backend/main.py. Restart required: main_app.
+
+**System-restart and verify**
+- User ran /system-restart. MASTER_RESTART.sh completed (exit 0, ~96s). Verify: main_app :3000 and trade_executor :8001 health 200; supervisor 25/25 RUNNING; logs for trade_executor, kalshi_account_sync, main_app, kalshi_market_watchdog_hourly_btc checked — process start times vs log timestamps, no current (post-restart) errors or tracebacks; main_app current run (pid 66417) shows lifespan in use, no deprecation in current run. Status: All good.
+
+**Outcomes**
+- Strike table not to be mentioned in priorities unless persistent/critical. Env cleanup is opportunistic; full pass only if it becomes a problem. main_app uses lifespan; DeprecationWarning cleared. Restart and verify passed.
+
+**Open / follow-up**
+- None.
+
+---
+
+### 2026-03-08 (session: prod instructions for OpSec push)
+
+**Context**
+- User asked to make a note for when we eventually push the OpSec update so the production server agent has special instructions.
+
+**Changes**
+- **MASTER_CHANGELOG** (`docs/changelog/MASTER_CHANGELOG.md`): Added entry **2026-03-08 — OpSec remediation (DB password, auth, CORS, bcrypt)** with summary of audit fixes and a **Production agent checklist** (all unchecked): (1) confirm `DB_PASSWORD` or `REC_DB_PASS` set on prod before/after pull, with optional check command; (2) confirm codebase (pull); (3) install deps so bcrypt present (`venv/bin/pip install -r requirements.txt`); (4) run `scripts/MASTER_RESTART.sh`; (5) run verify; if config/DB errors, ensure password set and restart again. Entry points prod agent to OPSEC doc for full instructions.
+- **OPSEC doc** (`.cursor/pm/OPSEC_AUDIT_AND_UPGRADE.md`): Added section **Production server: OpSec update (2026-03-08)** with prerequisites (DB password in env, bcrypt installed), how to check env, apply-update/checklist flow, and CORS note (explicit origins in prod).
+- **14_context_retention.md**: Extended OpSec remediation bullet with **For prod push:** MASTER_CHANGELOG entry and OPSEC section; prod agent must ensure DB password set, install deps, MASTER_RESTART, verify.
+
+**Outcomes**
+- When /apply-update runs on prod after this push, the agent will see the new changelog entry, run the checklist, and can use the OPSEC doc section for full steps. No code changes; documentation only.
+
+**Open / follow-up**
+- None.
+
+---
+
 ### 2026-03-08 (session: apply-update, confirm-update, account_history backfill, tracking) — **Production server**
 
 **Context**

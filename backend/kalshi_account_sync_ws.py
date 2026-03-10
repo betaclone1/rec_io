@@ -57,6 +57,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import schedule
 from decimal import Decimal
+import logging
 
 # Add project root to path for imports
 import sys
@@ -86,6 +87,44 @@ ensure_data_dirs()
 WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
 EST = ZoneInfo("America/New_York")
 
+# Logging: one formatter (EST), one line format; quiet by default (INFO = startup, errors, one-line outcome); flush after each line for real-time visibility
+def _est_formatter():
+    """Formatter that uses EST for asctime (ISO 8601 with offset)."""
+    class ESTFormatter(logging.Formatter):
+        def formatTime(self, record, datefmt=None):
+            dt = datetime.fromtimestamp(record.created, tz=EST)
+            if datefmt:
+                return dt.strftime(datefmt)
+            s = dt.strftime("%Y-%m-%dT%H:%M:%S")
+            z = dt.strftime("%z")
+            return s + (z[:3] + ":" + z[3:] if len(z) >= 5 else z)
+
+    return ESTFormatter(fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+
+
+class _FlushingStreamHandler(logging.StreamHandler):
+    """StreamHandler that flushes after every emit so supervisor-captured logs appear in real time."""
+
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+
+def _configure_logging():
+    logger = logging.getLogger("kalshi_account_sync")
+    if logger.handlers:
+        return logger
+    handler = _FlushingStreamHandler(sys.stdout)
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(_est_formatter())
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    return logger
+
+
+logger = _configure_logging()
+
+
 async def retry_api_call_with_fallback(api_call_func, fallback_func, max_retries=3, base_delay=1):
     """
     Retry an API call with exponential backoff, falling back to WebSocket data if all retries fail
@@ -98,23 +137,23 @@ async def retry_api_call_with_fallback(api_call_func, fallback_func, max_retries
     """
     for attempt in range(max_retries):
         try:
-            print(f"🔄 REST API attempt {attempt + 1}/{max_retries}")
+            logger.debug("REST API attempt %s/%s", attempt + 1, max_retries)
             result = api_call_func()
             if result is not None:
-                print(f"✅ REST API successful on attempt {attempt + 1}")
+                logger.debug("REST API successful on attempt %s", attempt + 1)
                 return result
             else:
-                print(f"⚠️ REST API returned None on attempt {attempt + 1}")
+                logger.debug("REST API returned None on attempt %s", attempt + 1)
         except Exception as e:
-            print(f"❌ REST API attempt {attempt + 1} failed: {e}")
-        
+            logger.debug("REST API attempt %s failed: %s", attempt + 1, e)
+
         if attempt < max_retries - 1:
             delay = base_delay * (2 ** attempt)  # exponential backoff
-            print(f"⏳ Waiting {delay}s before retry...")
+            logger.debug("Waiting %ss before retry", delay)
             await asyncio.sleep(delay)
-    
+
     # All retries failed, use WebSocket fallback
-    print(f"🚨 All REST API attempts failed, using WebSocket fallback")
+    logger.warning("All REST API attempts failed, using WebSocket fallback")
     return fallback_func()
 
 def use_websocket_fallback_for_positions():
@@ -122,10 +161,10 @@ def use_websocket_fallback_for_positions():
     global LATEST_WEBSOCKET_POSITION_DATA, LATEST_WEBSOCKET_TIMESTAMP
     
     if LATEST_WEBSOCKET_POSITION_DATA is None:
-        print("❌ No WebSocket position data available for fallback")
+        logger.warning("No WebSocket position data available for fallback")
         return None
-    
-    print("🔄 Using WebSocket position data as fallback")
+
+    logger.debug("Using WebSocket position data as fallback")
     
     # Convert WebSocket format to REST API format
     ws_data = LATEST_WEBSOCKET_POSITION_DATA
@@ -148,10 +187,10 @@ def use_websocket_fallback_for_positions():
     
     # Filter out KXMAYORNYCPARTY positions (same as REST API logic)
     if "KXMAYORNYCPARTY" in rest_position["ticker"]:
-        print("🔍 Filtering out KXMAYORNYCPARTY position from WebSocket fallback")
+        logger.debug("Filtering out KXMAYORNYCPARTY position from WebSocket fallback")
         return None
-    
-    print(f"📊 WebSocket fallback position: {rest_position['ticker']} - Position: {rest_position['position']}")
+
+    logger.debug("WebSocket fallback position: %s - Position: %s", rest_position["ticker"], rest_position["position"])
     
     # Return in REST API format
     return {
@@ -164,10 +203,10 @@ def use_websocket_fallback_for_fills():
     global LATEST_WEBSOCKET_POSITION_DATA, LATEST_WEBSOCKET_TIMESTAMP
     
     if LATEST_WEBSOCKET_POSITION_DATA is None:
-        print("❌ No WebSocket position data available for fills fallback")
+        logger.warning("No WebSocket position data available for fills fallback")
         return None
-    
-    print("🔄 Using WebSocket data to create fill fallback")
+
+    logger.debug("Using WebSocket data to create fill fallback")
     
     ws_data = LATEST_WEBSOCKET_POSITION_DATA
     
@@ -187,8 +226,8 @@ def use_websocket_fallback_for_fills():
         "user_id": ws_data.get("user_id")
     }
     
-    print(f"📊 WebSocket fallback fill: {fill_data['ticker']} - {fill_data['action']} {fill_data['count']}")
-    
+    logger.debug("WebSocket fallback fill: %s - %s %s", fill_data["ticker"], fill_data["action"], fill_data["count"])
+
     return {
         "fills": [fill_data],
         "cursor": ""
@@ -216,7 +255,7 @@ def get_base_url():
     }
     return BASE_URLS.get(get_account_mode(), BASE_URLS["prod"])
 
-print(f"Using base URL: {get_base_url()} for mode: {get_account_mode()}")
+logger.info("Started kalshi_account_sync (base_url=%s, mode=%s)", get_base_url(), get_account_mode())
 
 from backend.util.paths import get_kalshi_credentials_dir
 CREDENTIALS_DIR = Path(get_kalshi_credentials_dir()) / get_account_mode()
@@ -227,18 +266,9 @@ KEY_PATH = CREDENTIALS_DIR / "kalshi.pem"
 
 # PostgreSQL connection function
 def get_postgresql_connection():
-    """Get a connection to the PostgreSQL database"""
-    try:
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
-        return conn
-    except Exception as e:
-        print(f"❌ Failed to connect to PostgreSQL: {e}")
-        return None
+    """Get a connection to the PostgreSQL database (uses centralized config)."""
+    from backend.core.config.database import get_postgresql_connection as _get_pg
+    return _get_pg()
 
 
 def _fp_to_numeric(v):
@@ -321,12 +351,12 @@ def notify_frontend_db_change(db_name: str, change_data: dict = None):
         
         response = requests.post(notification_url, json=payload, timeout=5)
         if response.status_code == 200:
-            print(f"✅ Frontend notified of {db_name} change")
+            logger.debug("Frontend notified of %s change", db_name)
         else:
-            print(f"⚠️ Failed to notify frontend: {response.status_code}")
-            
+            logger.warning("Failed to notify frontend: %s", response.status_code)
+
     except Exception as e:
-        print(f"❌ Error notifying frontend: {e}")
+        logger.error("Error notifying frontend: %s", e)
 
 def notify_monitor_manager():
     """Notify monitor_manager that bankroll has been updated."""
@@ -342,13 +372,12 @@ def notify_monitor_manager():
         )
         
         if response.ok:
-            result = response.json()
-            print(f"📡 Monitor manager notified: {result}")
+            logger.debug("Monitor manager notified: %s", response.json())
         else:
-            print(f"⚠️ Failed to notify monitor manager: {response.status_code}")
-            
+            logger.warning("Failed to notify monitor manager: %s", response.status_code)
+
     except Exception as e:
-        print(f"❌ Error notifying monitor manager: {e}")
+        logger.error("Error notifying monitor manager: %s", e)
 
 
 # --- Kalshi v1 account/history (deposits/withdrawals) ---
@@ -356,7 +385,7 @@ KALSHI_V1_BASE_URL = "https://api.elections.kalshi.com"
 
 
 def fetch_v1_account_history_page(kalshi_user_id, page_number=1, page_size=200):
-    """GET one page of v1 account/history. Returns (entries list, None) or ([], error string)."""
+    """GET one page of v1 account/history (DEPRECATED by Kalshi; returns 404). Use fetch_v1_deposits_page and fetch_v1_withdrawals_page instead. Returns (entries list, None) or ([], error string)."""
     path = f"/v1/users/{kalshi_user_id}/account/history"
     url = KALSHI_V1_BASE_URL + path
     params = {"deposits": "true", "withdrawals": "true", "page_size": page_size, "page_number": page_number}
@@ -501,7 +530,12 @@ def _backfill_account_history_vendor_rail(conn, all_deposits, all_withdrawals):
         if best is None:
             continue
         kalshi_id, vendor, rail = best
+        if not kalshi_id:
+            continue
         with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM users.account_history_0001 WHERE kalshi_id = %s LIMIT 1", (kalshi_id,))
+            if cur.fetchone():
+                continue
             cur.execute("""
                 UPDATE users.account_history_0001
                 SET kalshi_id = %s, vendor = %s, rail = %s
@@ -540,35 +574,61 @@ def _refresh_transfer_from_to_from_account_history(conn):
     conn.commit()
 
 
-def _account_history_entry_to_row(entry):
-    """Convert one v1 API entry to a dict for account_history_0001."""
-    entry_type = entry.get("type") or ""
-    data = entry.get("data") or {}
-    dep = (data.get("Deposit") or {}) if entry_type == "Deposit" else {}
-    wd = (data.get("Withdrawal") or {}) if entry_type == "Withdrawal" else {}
-    payload = dep or wd
-    amount = payload.get("amount")
+def _deposit_item_to_row(item):
+    """Convert one v1 /deposits API item to a dict for account_history_0001."""
+    amount = item.get("amount_cents") if item.get("amount_cents") is not None else item.get("amount")
     if amount is None:
         return None
-    fee = payload.get("fee") or 0
-    created_at = payload.get("created_at")
-    updated_at = payload.get("updated_at") or created_at
-    status = payload.get("status")
-    returned_amount = payload.get("returned_amount") or 0
-    deposit_type = dep.get("deposit_type") if dep else None
-    immediate_amount = dep.get("immediate_amount") if dep else None
-    immediate_status = dep.get("immediate_status") if dep else None
+    created_at = _normalize_created_at(item.get("created_ts") or item.get("created_at"))
+    if created_at is None:
+        return None
+    updated_at = _normalize_created_at(item.get("updated_ts") or item.get("updated_at")) or created_at
+    fee = item.get("fee") or item.get("fee_cents") or 0
+    try:
+        amount_int = int(amount)
+        fee_int = int(fee)
+    except (TypeError, ValueError):
+        return None
     return {
-        "entry_type": entry_type,
-        "amount": int(amount),
-        "fee": int(fee),
+        "entry_type": "Deposit",
+        "amount": amount_int,
+        "fee": fee_int,
         "created_at": created_at,
         "updated_at": updated_at,
-        "status": status,
-        "returned_amount": int(returned_amount),
-        "deposit_type": deposit_type,
-        "immediate_amount": int(immediate_amount) if immediate_amount is not None else None,
-        "immediate_status": immediate_status,
+        "status": (item.get("status") or "").strip() or None,
+        "returned_amount": int(item.get("returned_amount") or item.get("returned_amount_cents") or 0),
+        "deposit_type": (item.get("deposit_type") or item.get("rail") or "").strip() or None,
+        "immediate_amount": int(item["immediate_amount"]) if item.get("immediate_amount") is not None else None,
+        "immediate_status": (item.get("immediate_status") or "").strip() or None,
+    }
+
+
+def _withdrawal_item_to_row(item):
+    """Convert one v1 /withdrawals API item to a dict for account_history_0001."""
+    amount = item.get("amount_cents") if item.get("amount_cents") is not None else item.get("amount")
+    if amount is None:
+        return None
+    created_at = _normalize_created_at(item.get("created_ts") or item.get("created_at"))
+    if created_at is None:
+        return None
+    updated_at = _normalize_created_at(item.get("updated_ts") or item.get("updated_at")) or created_at
+    fee = item.get("fee") or item.get("fee_cents") or 0
+    try:
+        amount_int = int(amount)
+        fee_int = int(fee)
+    except (TypeError, ValueError):
+        return None
+    return {
+        "entry_type": "Withdrawal",
+        "amount": amount_int,
+        "fee": fee_int,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "status": (item.get("status") or "").strip() or None,
+        "returned_amount": int(item.get("returned_amount") or item.get("returned_amount_cents") or 0),
+        "deposit_type": None,
+        "immediate_amount": None,
+        "immediate_status": None,
     }
 
 
@@ -659,27 +719,45 @@ def _update_external_transfer_status_from_account_history(conn):
 
 
 def sync_account_history(conn, kalshi_user_id):
-    """Fetch v1 account/history, upsert account_history_0001, create external transfers. Returns (n_upserted, error_str, new_deposit_amounts, new_withdrawal_amounts)."""
-    all_entries = []
-    page_number = 1
+    """Fetch v1 /deposits and /withdrawals, upsert account_history_0001, create external transfers.
+    Returns (n_upserted, error_str, new_deposit_amounts, new_withdrawal_amounts).
+    Uses deposits and withdrawals endpoints only; v1 account/history is deprecated (404)."""
     page_size = 200
+    all_deposits = []
+    page_number = 1
     while True:
-        entries, err = fetch_v1_account_history_page(kalshi_user_id, page_number=page_number, page_size=page_size)
+        deposits, err = fetch_v1_deposits_page(kalshi_user_id, page_number=page_number, page_size=page_size)
         if err:
             return 0, err, [], []
-        all_entries.extend(entries)
-        if len(entries) < page_size:
+        all_deposits.extend(deposits)
+        if len(deposits) < page_size:
+            break
+        page_number += 1
+    all_withdrawals = []
+    page_number = 1
+    while True:
+        withdrawals, err = fetch_v1_withdrawals_page(kalshi_user_id, page_number=page_number, page_size=page_size)
+        if err:
+            return 0, err, [], []
+        all_withdrawals.extend(withdrawals)
+        if len(withdrawals) < page_size:
             break
         page_number += 1
     rows = []
-    for entry in all_entries:
-        r = _account_history_entry_to_row(entry)
+    for item in all_deposits:
+        r = _deposit_item_to_row(item)
+        if r is not None:
+            rows.append(r)
+    for item in all_withdrawals:
+        r = _withdrawal_item_to_row(item)
         if r is not None:
             rows.append(r)
     if not rows:
         return 0, None, [], []
+    rows.sort(key=lambda r: (r["created_at"], r["entry_type"], r["amount"]))
     try:
         n = _upsert_account_history(conn, rows)
+        _backfill_account_history_vendor_rail(conn, all_deposits, all_withdrawals)
         _, new_deposit_amounts, new_withdrawal_amounts = _ensure_external_transfers_from_account_history(conn)
         _update_external_transfer_status_from_account_history(conn)
         return n, None, new_deposit_amounts, new_withdrawal_amounts
@@ -728,11 +806,11 @@ def fetch_event_json(event_ticker):
         response.raise_for_status()
         data = response.json()
         if "error" in data:
-            print(f"[{datetime.now()}] ❌ API returned error for ticker {event_ticker}: {data['error']}")
+            logger.error("API returned error for ticker %s: %s", event_ticker, data["error"])
             return None
         return data
     except Exception as e:
-        print(f"[{datetime.now()}] ❌ Exception fetching event JSON: {e}")
+        logger.error("Exception fetching event JSON: %s", e)
         return None
 
 
@@ -809,22 +887,22 @@ def subaccounts_update(cursor, portfolio_value):
             INSERT INTO users.transfers_0001 (timestamp, type, "from", "to", amount, initiated)
             VALUES (%s, %s, %s, %s, %s, %s)
         """, (transfer_timestamp_est, "internal", "Master Trading Bankroll", "Cash Transfer", transfer_amount, "automatic"))
-        print(f"💾 Internal transfer: {transfer_amount} to Cash Transfer (target_pnl_pct={target_pnl_pct} reached). MTB balance={new_mtb_balance}, base_value={new_base_value} (stepped by {base_step_pct}), realized_pnl={post_transfer_realized_pnl}. Recorded in users.transfers_0001.")
+        logger.debug("Internal transfer: %s to Cash Transfer (target_pnl_pct reached). Recorded in users.transfers_0001", transfer_amount)
     _pnl = post_transfer_realized_pnl if transfer_triggered else realized_pnl
     _pnl_pct = post_transfer_realized_pnl_pct if transfer_triggered else realized_pnl_pct
-    print(f"💾 PRIMARY={portfolio_value}, Master Trading Bankroll={master_bankroll_balance} (Cash Transfer={new_cash_transfer_balance if transfer_triggered else cash_transfer_balance}), realized_pnl={_pnl}, realized_pnl_pct={_pnl_pct} (users.subaccounts_0001)")
+    logger.debug("PRIMARY=%s, Master Trading Bankroll=%s, realized_pnl=%s (users.subaccounts_0001)", portfolio_value, master_bankroll_balance, _pnl)
     return (master_bankroll_balance, transfer_triggered)
 
 
 def sync_balance():
-    print("⏱ Sync attempt...")
+    logger.debug("Sync attempt...")
     method = "GET"
     path = "/portfolio/balance"
     url = f"{get_base_url()}{path}"
     timestamp = str(int(time.time() * 1000))  # milliseconds
 
     if not KEY_ID or not KEY_PATH.exists():
-        print("❌ Missing Kalshi API credentials or PEM file.")
+        logger.error("Missing Kalshi API credentials or PEM file")
         return
 
     signature = generate_kalshi_signature(method, f"/trade-api/v2{path}", timestamp, str(KEY_PATH))
@@ -844,8 +922,8 @@ def sync_balance():
         balance_amount = data.get('balance')
         portfolio_value_raw = data.get('portfolio_value')  # Current value of open positions from Kalshi API
         total_portfolio_value = balance_amount + portfolio_value_raw  # Total portfolio = cash + positions
-        print(f"[{datetime.now()}] ✅ Balance (cash): {balance_amount}, Open Positions Value: {portfolio_value_raw}, Total Portfolio: {total_portfolio_value}")
-        
+        logger.debug("Balance (cash): %s, Open Positions Value: %s, Total Portfolio: %s", balance_amount, portfolio_value_raw, total_portfolio_value)
+
         # Write to PostgreSQL only
         try:
             pg_conn = get_postgresql_connection()
@@ -895,26 +973,50 @@ def sync_balance():
                     else:
                         # Hold bankroll_current; do not update subaccounts
                         bankroll_current = prev_bankroll if prev_bankroll is not None else portfolio_value
-                    
+
+                    # Throttle: skip INSERT and notifies if last row is recent and unchanged (reduces table churn from WS + 5-min polling)
+                    skip_balance_write = False
                     cursor.execute("""
-                        INSERT INTO users.account_balance_0001 (balance, exposure, positions, portfolio, bankroll_current, portfolio_value, timestamp)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """, (balance_amount, total_exposure, positions_value, portfolio_value, bankroll_current, portfolio_value_raw, current_timestamp))
-                    pg_conn.commit()
-                    print(f"💾 Balance (cash: {balance_amount}), Open Positions ({positions_value}), Total Portfolio ({portfolio_value}), bankroll_current={bankroll_current} (positions={'flat' if positions_value == 0 else 'open'}) written to users.account_balance_0001")
-                    
-                    # Notify frontend of account balance change
-                    notify_frontend_db_change("account_balance", {
-                        "balance": balance_amount,
-                        "exposure": total_exposure,
-                        "positions": positions_value,
-                        "portfolio": portfolio_value,
-                        "portfolio_value_raw": portfolio_value_raw,
-                        "total_portfolio": total_portfolio_value
-                    })
-                    
-                    # Notify monitor_manager of bankroll update
-                    notify_monitor_manager()
+                        SELECT balance, exposure, positions, portfolio, bankroll_current,
+                               EXTRACT(EPOCH FROM (NOW() - created_at)) AS age_seconds
+                        FROM users.account_balance_0001 ORDER BY id DESC LIMIT 1
+                    """)
+                    last_row = cursor.fetchone()
+                    if last_row:
+                        last_balance, last_exposure, last_positions, last_portfolio, last_bankroll, age_seconds = last_row
+                        if age_seconds is not None and age_seconds < 120 and (
+                            int(last_balance or 0) == int(balance_amount or 0)
+                            and int(last_exposure or 0) == int(total_exposure or 0)
+                            and int(last_positions or 0) == positions_value
+                            and int(last_portfolio or 0) == portfolio_value
+                            and int(last_bankroll or 0) == bankroll_current
+                        ):
+                            skip_balance_write = True
+                            logger.debug("Balance unchanged, last write %.0fs ago; skipping duplicate row", age_seconds)
+
+                    if skip_balance_write:
+                        # Subaccounts may have been updated; commit those, but no new balance row or notifies
+                        pg_conn.commit()
+                    if not skip_balance_write:
+                        cursor.execute("""
+                            INSERT INTO users.account_balance_0001 (balance, exposure, positions, portfolio, bankroll_current, portfolio_value, timestamp)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """, (balance_amount, total_exposure, positions_value, portfolio_value, bankroll_current, portfolio_value_raw, current_timestamp))
+                        pg_conn.commit()
+                        logger.debug("Balance written to users.account_balance_0001 (portfolio=%s, bankroll_current=%s)", portfolio_value, bankroll_current)
+
+                        # Notify frontend of account balance change
+                        notify_frontend_db_change("account_balance", {
+                            "balance": balance_amount,
+                            "exposure": total_exposure,
+                            "positions": positions_value,
+                            "portfolio": portfolio_value,
+                            "portfolio_value_raw": portfolio_value_raw,
+                            "total_portfolio": total_portfolio_value
+                        })
+
+                        # Notify monitor_manager of bankroll update
+                        notify_monitor_manager()
                     # Sync Kalshi v1 account/history into users.account_history_0001 (simple UPDATE-then-INSERT, no ON CONFLICT)
                     cursor.execute("SELECT kalshi_user_id FROM users.user_info_0001 WHERE user_no = '0001'")
                     kalshi_user_row = cursor.fetchone()
@@ -923,9 +1025,9 @@ def sync_balance():
                     try:
                         n_upserted, sync_err, new_deposit_amounts, new_withdrawal_amounts = sync_account_history(pg_conn, kalshi_user_id_for_history)
                         if sync_err:
-                            print(f"⚠️ Account history sync failed: {sync_err}")
+                            logger.warning("Account history sync failed: %s", sync_err)
                         else:
-                            print(f"💾 Account history: {n_upserted} entries synced to users.account_history_0001")
+                            logger.debug("Account history: %s entries synced to users.account_history_0001", n_upserted)
                         if new_deposit_amounts:
                             with pg_conn.cursor() as cur:
                                 for amount_net in new_deposit_amounts:
@@ -938,7 +1040,7 @@ def sync_balance():
                             notify_frontend_db_change("subaccounts", {"source": "external_deposit"})
                             notify_frontend_db_change("transfers", {"source": "external_deposit"})
                             notify_monitor_manager()
-                            print(f"💾 New deposit(s) applied to Cash Transfer + PRIMARY: {sum(new_deposit_amounts)} cents total")
+                            logger.debug("New deposit(s) applied to Cash Transfer + PRIMARY: %s cents total", sum(new_deposit_amounts))
                         if new_withdrawal_amounts:
                             with pg_conn.cursor() as cur:
                                 for amount_net in new_withdrawal_amounts:
@@ -955,19 +1057,20 @@ def sync_balance():
                             notify_frontend_db_change("subaccounts", {"source": "external_withdrawal"})
                             notify_frontend_db_change("transfers", {"source": "external_withdrawal"})
                             notify_monitor_manager()
-                            print(f"💾 New withdrawal(s) applied: Cash Transfer reduced (PRIMARY adjusted), {sum(new_withdrawal_amounts)} cents total")
+                            logger.debug("New withdrawal(s) applied: Cash Transfer reduced (PRIMARY adjusted), %s cents total", sum(new_withdrawal_amounts))
                     except Exception as sync_exc:
-                        print(f"⚠️ Account history sync error: {sync_exc}")
+                        logger.warning("Account history sync error: %s", sync_exc)
                 if pg_conn:
                     pg_conn.close()
             else:
-                print(f"⚠️ Skipping PostgreSQL write - no connection available")
+                logger.warning("Skipping PostgreSQL write - no connection available")
         except Exception as pg_err:
-            print(f"❌ Failed to write balance to PostgreSQL: {pg_err}")
-            
-    except Exception as e:
-        print(f"[{datetime.now()}] ❌ Failed to fetch balance: {e}")
+            logger.error("Failed to write balance to PostgreSQL: %s", pg_err)
 
+    except Exception as e:
+        logger.error("Failed to fetch balance: %s", e)
+        return
+    logger.info("Balance sync OK")
 
 
 # --- New sync functions for positions, fills, settlements using PostgreSQL ---
@@ -976,8 +1079,8 @@ def sync_balance():
 
 def sync_positions():
     # PostgreSQL only - no legacy database paths needed
-    print("⏱ Syncing recent positions...")
-    
+    logger.debug("Syncing recent positions...")
+
     def make_rest_api_call():
         """Make the REST API call for positions"""
         method = "GET"
@@ -987,7 +1090,7 @@ def sync_positions():
         timestamp = str(int(time.time() * 1000))
         query = "?limit=50"  # Reduced limit for WebSocket implementation
         url = f"{get_base_url()}{path}{query}"
-        print(f"🔗 Requesting recent positions: {url}")
+        logger.debug("Requesting recent positions: %s", url)
 
         full_path_for_signature = f"/trade-api/v2{path}"
         signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
@@ -1004,11 +1107,8 @@ def sync_positions():
             response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
             data = response.json()
-            print("🔍 Raw Kalshi positions response:")
-            print(json.dumps(data, indent=2))
-            print("Response keys:", data.keys())
             if "error" in data:
-                print("⚠️ API error:", data["error"])
+                logger.warning("API error: %s", data["error"])
                 return None
             
             # Use new keys for positions
@@ -1040,9 +1140,9 @@ def sync_positions():
                     # Silently ignore KXMAYORNYCPARTY event positions (temporary filter)
                     pass
             
-            print(f"📊 Retrieved {len(all_market_positions)} market positions and {len(all_event_positions)} event positions")
-            print(f"🔍 After filtering: {len(filtered_market_positions)} market positions and {len(filtered_event_positions)} event positions")
-            
+            logger.debug("Retrieved %s market and %s event positions; after filtering: %s market, %s event",
+                         len(all_market_positions), len(all_event_positions), len(filtered_market_positions), len(filtered_event_positions))
+
             # Use filtered positions for processing
             all_market_positions = filtered_market_positions
             all_event_positions = filtered_event_positions
@@ -1053,48 +1153,48 @@ def sync_positions():
             }
             
         except Exception as e:
-            print(f"❌ Failed to fetch positions: {e}")
+            logger.debug("Failed to fetch positions: %s", e)
             raise e  # Re-raise to trigger retry logic
-    
+
     # Use retry logic with WebSocket fallback
     try:
         # Note: This is a synchronous function, so we can't use async retry here
         # We'll implement the retry logic directly
         max_retries = 3
         base_delay = 1
-        
+
         for attempt in range(max_retries):
             try:
-                print(f"🔄 REST API attempt {attempt + 1}/{max_retries}")
+                logger.debug("REST API attempt %s/%s", attempt + 1, max_retries)
                 data = make_rest_api_call()
                 if data is not None:
-                    print(f"✅ REST API successful on attempt {attempt + 1}")
+                    logger.debug("REST API successful on attempt %s", attempt + 1)
                     break
                 else:
-                    print(f"⚠️ REST API returned None on attempt {attempt + 1}")
+                    logger.debug("REST API returned None on attempt %s", attempt + 1)
             except Exception as e:
-                print(f"❌ REST API attempt {attempt + 1} failed: {e}")
-                
+                logger.debug("REST API attempt %s failed: %s", attempt + 1, e)
+
                 if attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt)  # exponential backoff
-                    print(f"⏳ Waiting {delay}s before retry...")
+                    logger.debug("Waiting %ss before retry", delay)
                     time.sleep(delay)
                 else:
-                    print(f"🚨 All REST API attempts failed, using WebSocket fallback")
+                    logger.warning("All REST API attempts failed, using WebSocket fallback")
                     data = use_websocket_fallback_for_positions()
                     if data is None:
-                        print("❌ WebSocket fallback also failed, aborting positions sync")
+                        logger.error("WebSocket fallback also failed, aborting positions sync")
                         return
         else:
             # All retries exhausted
-            print(f"🚨 All REST API attempts failed, using WebSocket fallback")
+            logger.warning("All REST API attempts failed, using WebSocket fallback")
             data = use_websocket_fallback_for_positions()
             if data is None:
-                print("❌ WebSocket fallback also failed, aborting positions sync")
+                logger.error("WebSocket fallback also failed, aborting positions sync")
                 return
-    
+
     except Exception as e:
-        print(f"❌ Error in positions sync: {e}")
+        logger.error("Error in positions sync: %s", e)
         return
 
     # Process the data (either from REST API or WebSocket fallback)
@@ -1112,11 +1212,11 @@ def sync_positions():
             json.dumps(snapshot_dict, sort_keys=True).encode()
         ).hexdigest()
     except Exception as e:
-        print(f"❌ Failed to hash positions snapshot: {e}")
+        logger.error("Failed to hash positions snapshot: %s", e)
         return
 
     if snapshot_hash == LAST_POSITIONS_HASH:
-        print("🔁 No changes in positions — skipping write.")
+        logger.debug("No changes in positions — skipping write")
         return  # Exit early; nothing new to write
 
     LAST_POSITIONS_HASH = snapshot_hash
@@ -1160,15 +1260,15 @@ def sync_positions():
                               total_traded_dollars, market_exposure_dollars, realized_pnl_dollars, fees_paid_dollars,
                               total_traded_fp, position_fp))
                     except Exception as e:
-                        print(f"❌ Failed to insert position {p.get('ticker')} to PostgreSQL: {e}")
-                
+                        logger.error("Failed to insert position %s to PostgreSQL: %s", p.get("ticker"), e)
+
                 pg_conn.commit()
-                print(f"💾 All positions also written to PostgreSQL users.positions_0001")
+                logger.debug("All positions written to PostgreSQL users.positions_0001")
             pg_conn.close()
         else:
-            print(f"⚠️ Skipping PostgreSQL write - no connection available")
+            logger.warning("Skipping PostgreSQL write - no connection available")
     except Exception as pg_err:
-        print(f"❌ Failed to write positions to PostgreSQL: {pg_err}")
+        logger.error("Failed to write positions to PostgreSQL: %s", pg_err)
 
     # JSON writing removed - PostgreSQL only
     notify_frontend_db_change("positions", {"market_positions": len(all_market_positions), "event_positions": len(all_event_positions)})
@@ -1182,16 +1282,18 @@ def sync_positions():
             timeout=5
         )
         if response.status_code == 200:
-            print(f"✅ Notified trade_manager about positions update")
+            logger.debug("Notified trade_manager about positions update")
         else:
-            print(f"⚠️ Failed to notify trade_manager: {response.status_code}")
+            logger.warning("Failed to notify trade_manager: %s", response.status_code)
     except Exception as e:
-        print(f"❌ Error notifying trade_manager: {e}")
+        logger.error("Error notifying trade_manager: %s", e)
+
+    logger.info("Positions sync OK")
 
 
 def sync_fills():
     # PostgreSQL only - no legacy database paths needed
-    print("⏱ Syncing recent fills...")
+    logger.debug("Syncing recent fills...")
     
     def make_rest_api_call():
         """Make the REST API call for fills"""
@@ -1202,7 +1304,7 @@ def sync_fills():
         timestamp = str(int(time.time() * 1000))
         query = "?limit=50"  # Reduced limit for WebSocket implementation
         url = f"{get_base_url()}{path}{query}"
-        print(f"🔗 Requesting recent fills: {url}")
+        logger.debug("Requesting recent fills: %s", url)
 
         full_path_for_signature = f"/trade-api/v2{path}"
         signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
@@ -1219,18 +1321,18 @@ def sync_fills():
             response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
             data = response.json()
-            print("Response keys:", data.keys())
+            logger.debug("Response keys: %s", list(data.keys()))
             if "error" in data:
-                print("⚠️ API error:", data["error"])
+                logger.warning("API error: %s", data["error"])
                 return None
             
             all_fills = data.get("fills", [])
-            print(f"📊 Retrieved {len(all_fills)} recent fills")
+            logger.debug("Retrieved %s recent fills", len(all_fills))
             
             return data
             
         except Exception as e:
-            print(f"❌ Failed to fetch fills: {e}")
+            logger.debug("Failed to fetch fills: %s", e)
             raise e  # Re-raise to trigger retry logic
     
     # Use retry logic
@@ -1240,36 +1342,36 @@ def sync_fills():
         
         for attempt in range(max_retries):
             try:
-                print(f"🔄 REST API attempt {attempt + 1}/{max_retries}")
+                logger.debug("REST API attempt %s/%s", attempt + 1, max_retries)
                 data = make_rest_api_call()
                 if data is not None:
-                    print(f"✅ REST API successful on attempt {attempt + 1}")
+                    logger.debug("REST API successful on attempt %s", attempt + 1)
                     break
                 else:
-                    print(f"⚠️ REST API returned None on attempt {attempt + 1}")
+                    logger.debug("REST API returned None on attempt %s", attempt + 1)
             except Exception as e:
-                print(f"❌ REST API attempt {attempt + 1} failed: {e}")
-                
+                logger.debug("REST API attempt %s failed: %s", attempt + 1, e)
+
                 if attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt)  # exponential backoff
-                    print(f"⏳ Waiting {delay}s before retry...")
+                    logger.debug("Waiting %ss before retry", delay)
                     time.sleep(delay)
                 else:
-                    print(f"🚨 All REST API attempts failed, using WebSocket fallback")
+                    logger.warning("All REST API attempts failed, using WebSocket fallback")
                     data = use_websocket_fallback_for_fills()
                     if data is None:
-                        print("❌ WebSocket fallback also failed, aborting fills sync")
+                        logger.error("WebSocket fallback also failed, aborting fills sync")
                         return
         else:
             # All retries exhausted
-            print(f"🚨 All REST API attempts failed, using WebSocket fallback")
+            logger.warning("All REST API attempts failed, using WebSocket fallback")
             data = use_websocket_fallback_for_fills()
             if data is None:
-                print("❌ WebSocket fallback also failed, aborting fills sync")
+                logger.error("WebSocket fallback also failed, aborting fills sync")
                 return
-    
+
     except Exception as e:
-        print(f"❌ Error in fills sync: {e}")
+        logger.error("Error in fills sync: %s", e)
         return
 
     # Process the data (either from REST API or WebSocket fallback)
@@ -1280,7 +1382,7 @@ def sync_fills():
     if all_fills:
         latest_time = all_fills[0].get("created_time")
         oldest_time = all_fills[-1].get("created_time")
-        print(f"🕒 Fills range — newest: {latest_time}, oldest: {oldest_time}, total: {len(all_fills)}")
+        logger.debug("Fills range — newest: %s, oldest: %s, total: %s", latest_time, oldest_time, len(all_fills))
         
         # ------------------------------------------------------------
         # Write to PostgreSQL (write all fills, let PostgreSQL handle duplicates)
@@ -1319,23 +1421,22 @@ def sync_fills():
                             """, (trade_id, ticker, order_id, side, action, count, count_fp, yes_price, no_price, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json))
                             pg_new_count += 1
                         except Exception as e:
-                            print(f"❌ Failed to insert fill {trade_id} to PostgreSQL: {e}")
-                    
+                            logger.error("Failed to insert fill %s to PostgreSQL: %s", trade_id, e)
+
                     pg_conn.commit()
-                    print(f"💾 {pg_new_count} fills written to PostgreSQL users.fills_0001")
+                    logger.debug("%s fills written to PostgreSQL users.fills_0001", pg_new_count)
                 pg_conn.close()
             else:
-                print(f"⚠️ Skipping PostgreSQL write - no connection available")
+                logger.warning("Skipping PostgreSQL write - no connection available")
         except Exception as pg_err:
-            print(f"❌ Failed to write fills to PostgreSQL: {pg_err}")
-        
-        # JSON writing removed - PostgreSQL only
-        print(f"💾 Fills written to PostgreSQL only")
+            logger.error("Failed to write fills to PostgreSQL: %s", pg_err)
+
+        logger.debug("Fills written to PostgreSQL only")
     else:
-        print("⚠️ API returned zero fills.")
+        logger.debug("API returned zero fills")
 
     notify_frontend_db_change("fills", {"fills": len(all_fills)})
-    
+
     # Notify trade_manager about fills update
     try:
         trade_manager_port = get_port("trade_manager")
@@ -1345,17 +1446,19 @@ def sync_fills():
             timeout=5
         )
         if response.status_code == 200:
-            print(f"✅ Notified trade_manager about fills update")
+            logger.debug("Notified trade_manager about fills update")
         else:
-            print(f"⚠️ Failed to notify trade_manager: {response.status_code}")
+            logger.warning("Failed to notify trade_manager: %s", response.status_code)
     except Exception as e:
-        print(f"❌ Error notifying trade_manager: {e}")
+        logger.error("Error notifying trade_manager: %s", e)
+
+    logger.info("Fills sync OK")
 
 
 def sync_settlements():
     # PostgreSQL only - no legacy database paths needed
-    print("⏱ Syncing recent settlements...")
-    
+    logger.debug("Syncing recent settlements...")
+
     def make_rest_api_call():
         """Make the REST API call for settlements"""
         method = "GET"
@@ -1365,7 +1468,7 @@ def sync_settlements():
         timestamp = str(int(time.time() * 1000))
         query = "?limit=50"  # Reduced limit for WebSocket implementation
         url = f"{get_base_url()}{path}{query}"
-        print(f"🔗 Requesting recent settlements: {url}")
+        logger.debug("Requesting recent settlements: %s", url)
 
         full_path_for_signature = f"/trade-api/v2{path}"
         signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
@@ -1382,18 +1485,18 @@ def sync_settlements():
             response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
             data = response.json()
-            print("Response keys:", data.keys())
+            logger.debug("Response keys: %s", list(data.keys()))
             if "error" in data:
-                print("⚠️ API error:", data["error"])
+                logger.warning("API error: %s", data["error"])
                 return None
-            
+
             all_settlements = data.get("settlements", [])
-            print(f"📊 Retrieved {len(all_settlements)} recent settlements")
-            
+            logger.debug("Retrieved %s recent settlements", len(all_settlements))
+
             return data
-            
+
         except Exception as e:
-            print(f"❌ Failed to fetch settlements: {e}")
+            logger.debug("Failed to fetch settlements: %s", e)
             raise e  # Re-raise to trigger retry logic
     
     # Use retry logic
@@ -1403,30 +1506,30 @@ def sync_settlements():
         
         for attempt in range(max_retries):
             try:
-                print(f"🔄 REST API attempt {attempt + 1}/{max_retries}")
+                logger.debug("REST API attempt %s/%s", attempt + 1, max_retries)
                 data = make_rest_api_call()
                 if data is not None:
-                    print(f"✅ REST API successful on attempt {attempt + 1}")
+                    logger.debug("REST API successful on attempt %s", attempt + 1)
                     break
                 else:
-                    print(f"⚠️ REST API returned None on attempt {attempt + 1}")
+                    logger.debug("REST API returned None on attempt %s", attempt + 1)
             except Exception as e:
-                print(f"❌ REST API attempt {attempt + 1} failed: {e}")
-                
+                logger.debug("REST API attempt %s failed: %s", attempt + 1, e)
+
                 if attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt)  # exponential backoff
-                    print(f"⏳ Waiting {delay}s before retry...")
+                    logger.debug("Waiting %ss before retry", delay)
                     time.sleep(delay)
                 else:
-                    print(f"🚨 All REST API attempts failed for settlements")
+                    logger.warning("All REST API attempts failed for settlements")
                     return
         else:
             # All retries exhausted
-            print(f"🚨 All REST API attempts failed for settlements")
+            logger.warning("All REST API attempts failed for settlements")
             return
-    
+
     except Exception as e:
-        print(f"❌ Error in settlements sync: {e}")
+        logger.error("Error in settlements sync: %s", e)
         return
 
     # Process the data
@@ -1477,7 +1580,7 @@ def sync_settlements():
                             yes_total_cost = float(yes_total_cost) / 100 if yes_total_cost is not None else None
                             no_total_cost = float(no_total_cost) / 100 if no_total_cost is not None else None
                         except Exception as e:
-                            print(f"⚠️ Error formatting cost fields for {ticker} at {settled_time}: {e}")
+                            logger.warning("Error formatting cost fields for %s at %s: %s", ticker, settled_time, e)
                             continue
 
                         cursor.execute("""
@@ -1487,24 +1590,25 @@ def sync_settlements():
                             ON CONFLICT (ticker, settled_time) DO NOTHING
                         """, (ticker, market_result, yes_count, yes_count_fp, yes_total_cost, no_count, no_count_fp, no_total_cost, revenue, settled_time, raw_json))
                     except Exception as e:
-                        print(f"❌ Failed to insert settlement {settlement.get('ticker')} to PostgreSQL: {e}")
-                
+                        logger.error("Failed to insert settlement %s to PostgreSQL: %s", settlement.get("ticker"), e)
+
                 pg_conn.commit()
-                print(f"💾 All settlements also written to PostgreSQL users.settlements_0001")
+                logger.debug("All settlements written to PostgreSQL users.settlements_0001")
             pg_conn.close()
         else:
-            print(f"⚠️ Skipping PostgreSQL write - no connection available")
+            logger.warning("Skipping PostgreSQL write - no connection available")
     except Exception as pg_err:
-        print(f"❌ Failed to write settlements to PostgreSQL: {pg_err}")
-    
+        logger.error("Failed to write settlements to PostgreSQL: %s", pg_err)
+
+    logger.info("Settlements sync OK")
     # JSON writing removed - PostgreSQL only
     notify_frontend_db_change("settlements", {"settlements": len(all_settlements)})
 
 
 def sync_orders():
     # PostgreSQL only - no legacy database paths needed
-    print("⏱ Syncing recent orders...")
-    
+    logger.debug("Syncing recent orders...")
+
     def make_rest_api_call():
         """Make the REST API call for orders"""
         method = "GET"
@@ -1514,7 +1618,7 @@ def sync_orders():
         timestamp = str(int(time.time() * 1000))
         query = "?limit=50"  # Reduced limit for WebSocket implementation
         url = f"{get_base_url()}{path}{query}"
-        print(f"🔗 Requesting recent orders: {url}")
+        logger.debug("Requesting recent orders: %s", url)
 
         full_path_for_signature = f"/trade-api/v2{path}"
         signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
@@ -1531,51 +1635,51 @@ def sync_orders():
             response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
             data = response.json()
-            print("Response keys:", data.keys())
+            logger.debug("Response keys: %s", list(data.keys()))
             if "error" in data:
-                print("⚠️ API error:", data["error"])
+                logger.warning("API error: %s", data["error"])
                 return None
-            
+
             all_orders = data.get("orders", [])
-            print(f"📊 Retrieved {len(all_orders)} recent orders")
-            
+            logger.debug("Retrieved %s recent orders", len(all_orders))
+
             return data
-            
+
         except Exception as e:
-            print(f"❌ Failed to fetch orders: {e}")
+            logger.debug("Failed to fetch orders: %s", e)
             raise e  # Re-raise to trigger retry logic
-    
+
     # Use retry logic
     try:
         max_retries = 3
         base_delay = 1
-        
+
         for attempt in range(max_retries):
             try:
-                print(f"🔄 REST API attempt {attempt + 1}/{max_retries}")
+                logger.debug("REST API attempt %s/%s", attempt + 1, max_retries)
                 data = make_rest_api_call()
                 if data is not None:
-                    print(f"✅ REST API successful on attempt {attempt + 1}")
+                    logger.debug("REST API successful on attempt %s", attempt + 1)
                     break
                 else:
-                    print(f"⚠️ REST API returned None on attempt {attempt + 1}")
+                    logger.debug("REST API returned None on attempt %s", attempt + 1)
             except Exception as e:
-                print(f"❌ REST API attempt {attempt + 1} failed: {e}")
-                
+                logger.debug("REST API attempt %s failed: %s", attempt + 1, e)
+
                 if attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt)  # exponential backoff
-                    print(f"⏳ Waiting {delay}s before retry...")
+                    logger.debug("Waiting %ss before retry", delay)
                     time.sleep(delay)
                 else:
-                    print(f"🚨 All REST API attempts failed for orders")
+                    logger.warning("All REST API attempts failed for orders")
                     return
         else:
             # All retries exhausted
-            print(f"🚨 All REST API attempts failed for orders")
+            logger.warning("All REST API attempts failed for orders")
             return
-    
+
     except Exception as e:
-        print(f"❌ Error in orders sync: {e}")
+        logger.error("Error in orders sync: %s", e)
         return
 
     # Process the data
@@ -1586,9 +1690,9 @@ def sync_orders():
     if all_orders:
         latest_time = all_orders[0].get("created_time")
         oldest_time = all_orders[-1].get("created_time")
-        print(f"🕒 Orders range — newest: {latest_time}, oldest: {oldest_time}, total: {len(all_orders)}")
+        logger.debug("Orders range — newest: %s, oldest: %s, total: %s", latest_time, oldest_time, len(all_orders))
     else:
-        print("⚠️ API returned zero orders.")
+        logger.debug("API returned zero orders")
     
     # ------------------------------------------------------------
     # Write to PostgreSQL with DELTA CHECKING and UPDATES
@@ -1669,9 +1773,9 @@ def sync_orders():
                                     order_id
                                 ))
                                 pg_updated_count += 1
-                                print(f"🔄 Updated order {order_id}: status={order.get('status')}, fills={order.get('fill_count')}")
+                                logger.debug("Updated order %s: status=%s, fills=%s", order_id, order.get("status"), order.get("fill_count"))
                             except Exception as e:
-                                print(f"❌ Failed to update order {order_id}: {e}")
+                                logger.error("Failed to update order %s: %s", order_id, e)
                     else:
                         # INSERT new order
                         try:
@@ -1715,23 +1819,22 @@ def sync_orders():
                                 json.dumps(order)
                             ))
                             pg_new_count += 1
-                            print(f"➕ Inserted new order {order_id}: status={order.get('status')}")
+                            logger.debug("Inserted new order %s: status=%s", order_id, order.get("status"))
                         except Exception as e:
-                            print(f"❌ Failed to insert order {order_id}: {e}")
-                
+                            logger.error("Failed to insert order %s: %s", order_id, e)
+
                 pg_conn.commit()
-                print(f"💾 Orders sync complete: {pg_new_count} new, {pg_updated_count} updated in PostgreSQL users.orders_0001")
+                logger.debug("Orders sync complete: %s new, %s updated in PostgreSQL users.orders_0001", pg_new_count, pg_updated_count)
             pg_conn.close()
         else:
-            print(f"⚠️ Skipping PostgreSQL write - no connection available")
+            logger.warning("Skipping PostgreSQL write - no connection available")
     except Exception as pg_err:
-        print(f"❌ Failed to write orders to PostgreSQL: {pg_err}")
-    
-    # JSON writing removed - PostgreSQL only
-    print(f"💾 Orders written to PostgreSQL only")
+        logger.error("Failed to write orders to PostgreSQL: %s", pg_err)
+
+    logger.debug("Orders written to PostgreSQL only")
 
     notify_frontend_db_change("orders", {"orders": len(all_orders)})
-    
+
     # Notify trade_manager about orders update
     try:
         trade_manager_port = get_port("trade_manager")
@@ -1741,11 +1844,13 @@ def sync_orders():
             timeout=2
         )
         if response.status_code == 200:
-            print(f"✅ Notified trade_manager about orders update")
+            logger.debug("Notified trade_manager about orders update")
         else:
-            print(f"⚠️ Failed to notify trade_manager about orders: {response.status_code}")
+            logger.warning("Failed to notify trade_manager about orders: %s", response.status_code)
     except Exception as e:
-        print(f"❌ Error notifying trade_manager about orders: {e}")
+        logger.error("Error notifying trade_manager about orders: %s", e)
+
+    logger.info("Orders sync OK")
 
 
 class KalshiWebSocketSync:
@@ -1762,14 +1867,14 @@ class KalshiWebSocketSync:
         cred_dir = Path(get_kalshi_credentials_dir()) / account_mode
         
         if not cred_dir.exists():
-            print(f"❌ No {account_mode} credentials found at {cred_dir}")
+            logger.error("No %s credentials found at %s", account_mode, cred_dir)
             return None
         
         env_vars = dotenv_values(cred_dir / ".env")
         key_path = cred_dir / "kalshi.pem"
         
         if not key_path.exists():
-            print(f"❌ No private key file found at {key_path}")
+            logger.error("No private key file found at %s", key_path)
             return None
         
         return {
@@ -1783,7 +1888,7 @@ class KalshiWebSocketSync:
             # Load credentials
             credentials = self.load_kalshi_credentials()
             if not credentials:
-                print(f"[{datetime.now(EST)}] ❌ No credentials available")
+                logger.error("No credentials available")
                 return False
             
             # Generate signature using the same method as REST API
@@ -1818,10 +1923,8 @@ class KalshiWebSocketSync:
                 "KALSHI-ACCESS-SIGNATURE": signature_b64
             }
             
-            print(f"[{datetime.now(EST)}] 🔐 Attempting User Fills WebSocket connection...")
-            print(f"[{datetime.now(EST)}] 📊 Account Mode: {get_account_mode()}")
-            print(f"[{datetime.now(EST)}] 🔑 Using API Key: {credentials['KEY_ID'][:8]}...")
-            
+            logger.info("Connecting to Kalshi User Fills WebSocket (mode=%s)", get_account_mode())
+
             # Connect with authentication headers
             self.websocket = await websockets.connect(
                 WS_URL,
@@ -1831,12 +1934,12 @@ class KalshiWebSocketSync:
                 close_timeout=10
             )
             
-            print(f"[{datetime.now(EST)}] ✅ Connected to Kalshi User Fills WebSocket API")
+            logger.info("Connected to Kalshi User Fills WebSocket API")
             self.reconnect_attempts = 0  # Reset reconnect attempts on successful connection
             return True
-            
+
         except Exception as e:
-            print(f"[{datetime.now(EST)}] ❌ Failed to connect to User Fills WebSocket: {e}")
+            logger.error("Failed to connect to User Fills WebSocket: %s", e)
             return False
     
     async def subscribe_to_market_positions(self):
@@ -1855,22 +1958,22 @@ class KalshiWebSocketSync:
             }
             
             await self.websocket.send(json.dumps(subscription_message))
-            print(f"[{datetime.now(EST)}] 📡 Sent market positions subscription: {json.dumps(subscription_message)}")
-            
+            logger.debug("Sent market positions subscription")
+
             # Wait for subscription confirmation
             response = await asyncio.wait_for(self.websocket.recv(), timeout=10)
             response_data = json.loads(response)
             
             if response_data.get("type") == "subscribed":
                 self.subscription_id = response_data.get("msg", {}).get("sid")
-                print(f"[{datetime.now(EST)}] ✅ Subscribed to market positions with SID: {self.subscription_id}")
+                logger.info("Subscribed to market positions (sid=%s)", self.subscription_id)
                 return True
             else:
-                print(f"[{datetime.now(EST)}] ❌ Market positions subscription failed: {response_data}")
+                logger.error("Market positions subscription failed: %s", response_data)
                 return False
-                
+
         except Exception as e:
-            print(f"[{datetime.now(EST)}] ❌ Failed to subscribe to market positions: {e}")
+            logger.error("Failed to subscribe to market positions: %s", e)
             return False
     
     async def handle_market_position_message(self, message):
@@ -1886,94 +1989,81 @@ class KalshiWebSocketSync:
                 LATEST_WEBSOCKET_POSITION_DATA = position_data
                 LATEST_WEBSOCKET_TIMESTAMP = datetime.now().isoformat() + "Z"
                 
-                print(f"\n[{datetime.now(EST)}] 📊 MARKET POSITION UPDATE RECEIVED!")
-                print(f"   User ID: {position_data.get('user_id')}")
-                print(f"   Market Ticker: {position_data.get('market_ticker')}")
-                print(f"   Position: {position_data.get('position')}")
-                print(f"   Position Cost: {position_data.get('position_cost')} (centi-cents)")
-                print(f"   Realized PnL: {position_data.get('realized_pnl')} (centi-cents)")
-                print(f"   Fees Paid: {position_data.get('fees_paid')} (centi-cents)")
-                print(f"   Volume: {position_data.get('volume')}")
-                print("=" * 50)
-                
+                logger.debug("Market position update: ticker=%s position=%s", position_data.get("market_ticker"), position_data.get("position"))
+
                 # WebSocket ONLY as trigger - NO direct database writes
-                print(f"[{datetime.now(EST)}] 🔔 Position change detected! Triggering full REST API polling cycle...")
+                logger.debug("Position change detected, triggering full REST API polling cycle")
                 await self.trigger_full_polling_cycle()
                 
             elif data.get("type") == "subscribed":
-                print(f"[{datetime.now(EST)}] ✅ Subscription confirmed: {data}")
-                
+                logger.debug("Subscription confirmed: %s", data)
+
             elif data.get("type") == "error":
-                print(f"[{datetime.now(EST)}] ❌ WebSocket error: {data}")
-                
+                logger.warning("WebSocket error: %s", data)
+
             else:
-                print(f"[{datetime.now(EST)}] 📨 Other message: {data}")
-                
+                logger.debug("WebSocket message: type=%s", data.get("type"))
+
         except Exception as e:
-            print(f"[{datetime.now(EST)}] ❌ Error handling message: {e}")
-            print(f"Raw message: {message}")
+            logger.error("Error handling message: %s", e)
+            logger.debug("Raw message: %s", message)
     
     async def trigger_full_polling_cycle(self):
         """Trigger a complete polling cycle for all endpoints when position changes"""
         try:
-            print(f"[{datetime.now(EST)}] 🔄 Starting triggered polling cycle...")
-            
+            logger.debug("Starting triggered polling cycle")
+
             # Run all sync functions asynchronously - balance LAST so it can reference latest positions data
             await self.async_sync_positions()
             await self.async_sync_fills()
             await self.async_sync_orders()
             await self.async_sync_settlements()
             await self.async_sync_balance()
-            
-            print(f"[{datetime.now(EST)}] ✅ Triggered polling cycle completed!")
-            
+
+            logger.debug("Triggered polling cycle completed")
+
         except Exception as e:
-            print(f"[{datetime.now(EST)}] ❌ Error in triggered polling cycle: {e}")
+            logger.error("Error in triggered polling cycle: %s", e)
     
     async def async_sync_balance(self):
         """Async version of sync_balance"""
         try:
-            print(f"[{datetime.now(EST)}] ⏱ Triggered balance sync...")
+            logger.debug("Triggered balance sync")
             sync_balance()
-            print(f"[{datetime.now(EST)}] ✅ Triggered balance sync completed")
         except Exception as e:
-            print(f"[{datetime.now(EST)}] ❌ Error in triggered balance sync: {e}")
-    
+            logger.error("Error in triggered balance sync: %s", e)
+
     async def async_sync_positions(self):
         """Async version of sync_positions"""
         try:
-            print(f"[{datetime.now(EST)}] ⏱ Triggered positions sync...")
+            logger.debug("Triggered positions sync")
             sync_positions()
-            print(f"[{datetime.now(EST)}] ✅ Triggered positions sync completed")
         except Exception as e:
-            print(f"[{datetime.now(EST)}] ❌ Error in triggered positions sync: {e}")
-    
+            logger.error("Error in triggered positions sync: %s", e)
+
     async def async_sync_fills(self):
         """Async version of sync_fills"""
         try:
-            print(f"[{datetime.now(EST)}] ⏱ Triggered fills sync...")
+            logger.debug("Triggered fills sync")
             sync_fills()
-            print(f"[{datetime.now(EST)}] ✅ Triggered fills sync completed")
         except Exception as e:
-            print(f"[{datetime.now(EST)}] ❌ Error in triggered fills sync: {e}")
-    
+            logger.error("Error in triggered fills sync: %s", e)
+
     async def async_sync_orders(self):
         """Async version of sync_orders"""
         try:
-            print(f"[{datetime.now(EST)}] ⏱ Triggered orders sync...")
+            logger.debug("Triggered orders sync")
             sync_orders()
-            print(f"[{datetime.now(EST)}] ✅ Triggered orders sync completed")
         except Exception as e:
-            print(f"[{datetime.now(EST)}] ❌ Error in triggered orders sync: {e}")
-    
+            logger.error("Error in triggered orders sync: %s", e)
+
     async def async_sync_settlements(self):
         """Async version of sync_settlements"""
         try:
-            print(f"[{datetime.now(EST)}] ⏱ Triggered settlements sync...")
+            logger.debug("Triggered settlements sync")
             sync_settlements()
-            print(f"[{datetime.now(EST)}] ✅ Triggered settlements sync completed")
         except Exception as e:
-            print(f"[{datetime.now(EST)}] ❌ Error in triggered settlements sync: {e}")
+            logger.error("Error in triggered settlements sync: %s", e)
     
     # REMOVED: write_market_position_to_db function
     # WebSocket now ONLY serves as a trigger for REST API polling
@@ -1986,98 +2076,92 @@ class KalshiWebSocketSync:
         try:
             # This could be used to track market state changes
             # For now, just log that we received it
-            print(f"[{datetime.now(EST)}] 💾 Market lifecycle data received for {lifecycle_data.get('market_ticker')}")
+            logger.debug("Market lifecycle data received for %s", lifecycle_data.get("market_ticker"))
         except Exception as e:
-            print(f"[{datetime.now(EST)}] ❌ Error storing market lifecycle: {e}")
-    
+            logger.error("Error storing market lifecycle: %s", e)
+
     async def store_event_lifecycle(self, event_data):
         """Store event lifecycle data (placeholder for future use)"""
         try:
-            # This could be used to track event creation and updates
-            # For now, just log that we received it
-            print(f"[{datetime.now(EST)}] 💾 Event lifecycle data received for {event_data.get('event_ticker')}")
+            logger.debug("Event lifecycle data received for %s", event_data.get("event_ticker"))
         except Exception as e:
-            print(f"[{datetime.now(EST)}] ❌ Error storing event lifecycle: {e}")
-    
+            logger.error("Error storing event lifecycle: %s", e)
+
     async def periodic_polling_task(self):
         """Periodic polling task that runs every 5 minutes"""
         while True:
             try:
                 await asyncio.sleep(300)  # 5 minutes = 300 seconds
-                print(f"[{datetime.now(EST)}] ⏰ 5-minute periodic polling triggered...")
+                logger.info("heartbeat")
+                logger.debug("5-minute periodic polling triggered")
                 await self.trigger_full_polling_cycle()
             except Exception as e:
-                print(f"[{datetime.now(EST)}] ❌ Error in periodic polling task: {e}")
-    
+                logger.error("Error in periodic polling task: %s", e)
+
     async def run_websocket(self):
         """Main WebSocket run loop - Hybrid approach: WebSocket triggers + periodic polling"""
-        print(f"[{datetime.now(EST)}] 🔌 Starting Kalshi Hybrid WebSocket/Polling Sync...")
-        
+        logger.info("Starting Kalshi Hybrid WebSocket/Polling Sync")
+
         # Start periodic polling task in the background
         periodic_task = asyncio.create_task(self.periodic_polling_task())
-        print(f"[{datetime.now(EST)}] ⏰ Started 5-minute periodic polling task")
-        
+        logger.debug("Started 5-minute periodic polling task")
+
         while True:
             try:
                 # Connect to WebSocket
                 if not await self.connect():
-                    print(f"[{datetime.now(EST)}] ❌ Failed to connect, retrying in 5 seconds...")
+                    logger.warning("Failed to connect, retrying in 5 seconds")
                     await asyncio.sleep(5)
                     continue
                 
                 # Subscribe to market positions
                 if not await self.subscribe_to_market_positions():
-                    print(f"[{datetime.now(EST)}] ❌ Failed to subscribe, retrying in 5 seconds...")
+                    logger.warning("Failed to subscribe, retrying in 5 seconds")
                     await asyncio.sleep(5)
                     continue
-                
-                print(f"[{datetime.now(EST)}] 🎧 Listening for market position notifications...")
-                print(f"[{datetime.now(EST)}] 💡 Position changes will trigger full polling cycle!")
-                print(f"[{datetime.now(EST)}] ⏰ Periodic polling every 5 minutes!")
-                print(f"[{datetime.now(EST)}] 🚀 HYBRID MODE: WebSocket triggers + 5-min polling → Polling updates all DBs!")
+
+                logger.info("Listening for market position notifications (hybrid: WS triggers + 5-min polling)")
                 
                 # Listen for messages
                 async for message in self.websocket:
                     await self.handle_market_position_message(message)
                     
             except websockets.exceptions.ConnectionClosed:
-                print(f"[{datetime.now(EST)}] 🔌 WebSocket connection closed, attempting to reconnect...")
+                logger.warning("WebSocket connection closed, attempting to reconnect")
                 if self.websocket:
                     await self.websocket.close()
                 await asyncio.sleep(5)
                 
             except Exception as e:
-                print(f"[{datetime.now(EST)}] ❌ WebSocket error: {e}")
+                logger.error("WebSocket error: %s", e)
                 await asyncio.sleep(5)
 
 
 def scheduled_balance_check():
     """Scheduled task to run balance check at 1AM every morning"""
-    print(f"[{datetime.now(EST)}] 🕐 Scheduled 1AM EST balance check triggered")
+    logger.debug("Scheduled 1AM EST balance check triggered")
     try:
         sync_balance()
-        print(f"[{datetime.now(EST)}] ✅ Scheduled balance check completed successfully")
     except Exception as e:
-        print(f"[{datetime.now(EST)}] ❌ Error in scheduled balance check: {e}")
+        logger.error("Error in scheduled balance check: %s", e)
+
 
 def hourly_balance_check():
     """Scheduled task to run balance check every hour on the hour"""
-    print(f"[{datetime.now(EST)}] 🕐 Hourly balance check triggered")
+    logger.debug("Hourly balance check triggered")
     try:
         sync_balance()
-        print(f"[{datetime.now(EST)}] ✅ Hourly balance check completed successfully")
     except Exception as e:
-        print(f"[{datetime.now(EST)}] ❌ Error in hourly balance check: {e}")
+        logger.error("Error in hourly balance check: %s", e)
+
 
 def run_scheduler():
     """Run the scheduler in a separate thread"""
     # Schedule for 1AM Eastern Time
     schedule.every().day.at("01:00").do(scheduled_balance_check)
-    print(f"[{datetime.now(EST)}] 📅 Scheduled daily balance check at 1AM EST")
-    
     # Schedule hourly balance checks (every hour on the hour)
     schedule.every().hour.do(hourly_balance_check)
-    print(f"[{datetime.now(EST)}] 📅 Scheduled hourly balance checks every hour on the hour")
+    logger.debug("Scheduler started: daily 1AM EST + hourly balance checks")
     
     while True:
         schedule.run_pending()
@@ -2085,37 +2169,31 @@ def run_scheduler():
 
 
 def main():
-    print("🔌 Kalshi Account Hybrid WebSocket/Polling Supervisor Starting...")
-    print("✅ Authenticated account access confirmed via balance endpoint.")
-    
+    logger.info("Kalshi Account Hybrid WebSocket/Polling Supervisor starting")
+
     # Initial sync to establish baseline data (one-time only)
-    print("📊 Performing initial baseline data sync...")
+    logger.info("Performing initial baseline data sync")
     sync_positions()
     sync_fills()
     sync_orders()
     sync_settlements()
     sync_balance()  # Update balance LAST so it can reference latest positions data
-    
-    print("✅ Initial baseline sync complete.")
-    print("🚀 Starting hybrid mode: WebSocket triggers + 5-min polling → Updates all DBs!")
-    print("💡 Polling triggers: WebSocket position changes + every 5 minutes")
-    print("📅 Daily balance check scheduled for 1AM EST")
-    print("📅 Hourly balance checks scheduled every hour on the hour")
-    
+
+    logger.info("Initial baseline sync complete; starting hybrid mode (WS triggers + 5-min polling)")
+
     # Start scheduler in a separate thread
     scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
     scheduler_thread.start()
-    
+
     # Create and run WebSocket sync
     websocket_sync = KalshiWebSocketSync()
-    
+
     try:
-        # Run the WebSocket sync
         asyncio.run(websocket_sync.run_websocket())
     except KeyboardInterrupt:
-        print("🛑 Hybrid WebSocket/Polling supervisor stopped by user")
+        logger.info("Hybrid WebSocket/Polling supervisor stopped by user")
     except Exception as e:
-        print(f"❌ Error in hybrid WebSocket/Polling supervisor: {e}")
+        logger.error("Error in hybrid WebSocket/Polling supervisor: %s", e)
 
 if __name__ == "__main__":
     main()

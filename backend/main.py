@@ -3,6 +3,7 @@ MAIN APPLICATION - UNIVERSAL CENTRALIZED PORT SYSTEM
 Uses the single centralized port configuration system.
 """
 
+import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -11,6 +12,7 @@ import uvicorn
 import os
 import json
 import asyncio
+from contextlib import asynccontextmanager
 import time
 from datetime import datetime, timedelta
 import pytz
@@ -42,13 +44,44 @@ from backend.core.port_config import get_port, get_port_info
 
 # Import unified configuration system for database connections
 from backend.core.unified_config import UnifiedConfigManager
+from backend.core.config.database import get_postgresql_connection, get_database_config
 unified_config = UnifiedConfigManager()
 
 # Get port from centralized system
 MAIN_APP_PORT = get_port("main_app")
 ACTIVE_TRADE_SUPERVISOR_PORT = get_port("active_trade_supervisor")
-print(f"[MAIN] 🚀 Using centralized port: {MAIN_APP_PORT}")
-print(f"[MAIN] 🚀 Active Trade Supervisor port: {ACTIVE_TRADE_SUPERVISOR_PORT}")
+
+# Logging: EST, flush, single handler to stdout (supervisor captures)
+from zoneinfo import ZoneInfo as _main_tz
+
+def _main_est_formatter():
+    class _ESTF(logging.Formatter):
+        def formatTime(self, record, datefmt=None):
+            from datetime import datetime
+            dt = datetime.fromtimestamp(record.created, tz=_main_tz("America/New_York"))
+            s = dt.strftime("%Y-%m-%dT%H:%M:%S")
+            z = dt.strftime("%z")
+            return s + (z[:3] + ":" + z[3:] if len(z) >= 5 else z)
+    return _ESTF(fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+
+class _MainFlushHandler(logging.StreamHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+def _configure_main_logging():
+    logr = logging.getLogger("main_app")
+    if logr.handlers:
+        return logr
+    import sys
+    h = _MainFlushHandler(sys.stdout)
+    h.setFormatter(_main_est_formatter())
+    logr.addHandler(h)
+    logr.setLevel(logging.INFO)
+    return logr
+
+_main_logger = _configure_main_logging()
+_main_logger.info("Using centralized port %s (ATS port %s)", MAIN_APP_PORT, ACTIVE_TRADE_SUPERVISOR_PORT)
 
 # Import centralized path utilities
 from backend.util.paths import get_data_dir, get_trade_history_dir, get_accounts_data_dir
@@ -202,7 +235,7 @@ def get_trade_history_preferences_postgresql():
                     "paper_filter": False
                 }
     except Exception as e:
-        print(f"[PostgreSQL Error] Failed to get trade history preferences: {e}")
+        _main_logger.warning(f"[PostgreSQL Error] Failed to get trade history preferences: {e}")
         return {
             "date_filter": "TODAY",
             "start_date": None,
@@ -245,13 +278,9 @@ def get_trade_history_preferences_postgresql():
 def update_trade_history_preferences_postgresql(**kwargs):
     """Update trade history preferences in PostgreSQL using UPSERT"""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
+        if not conn:
+            return
         with conn.cursor() as cursor:
             # First, ensure we only have one row
             cursor.execute("DELETE FROM users.trade_history_preferences_0001 WHERE id > 1")
@@ -274,11 +303,11 @@ def update_trade_history_preferences_postgresql(**kwargs):
             
             cursor.execute(query, values)
             conn.commit()
-            print(f"[PostgreSQL] Updated trade history preferences: {kwargs}")
+            _main_logger.debug(f"[PostgreSQL] Updated trade history preferences: {kwargs}")
         
         conn.close()
     except Exception as e:
-        print(f"[PostgreSQL Error] Failed to update trade history preferences: {e}")
+        _main_logger.warning(f"[PostgreSQL Error] Failed to update trade history preferences: {e}")
 
 # Authentication system
 AUTH_TOKENS_FILE = os.path.join(get_data_dir(), "users", "user_0001", "auth_tokens.json")
@@ -307,7 +336,7 @@ def save_auth_tokens(tokens):
         with open(AUTH_TOKENS_FILE, "w") as f:
             json.dump(tokens, f, indent=2)
     except Exception as e:
-        print(f"[AUTH] Error saving auth tokens: {e}")
+        _main_logger.warning(f"[AUTH] Error saving auth tokens: {e}")
 
 def load_device_tokens():
     """Load device tokens from file"""
@@ -326,7 +355,7 @@ def save_device_tokens(tokens):
         with open(DEVICE_TOKENS_FILE, "w") as f:
             json.dump(tokens, f, indent=2)
     except Exception as e:
-        print(f"[AUTH] Error saving device tokens: {e}")
+        _main_logger.warning(f"[AUTH] Error saving device tokens: {e}")
 
 def generate_token():
     """Generate a secure authentication token"""
@@ -351,13 +380,9 @@ def verify_password(password, hashed):
 def get_user_credentials():
     """Get user credentials from PostgreSQL"""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
+        if not conn:
+            raise Exception("Database connection failed")
         with conn.cursor() as cursor:
             cursor.execute("""
                 SELECT user_id, first_name, last_name, email, phone, account_type, password_hash
@@ -375,23 +400,24 @@ def get_user_credentials():
                     "password_hash": password_hash
                 }
     except Exception as e:
-        print(f"[AUTH] Error loading user credentials from PostgreSQL: {e}")
+        _main_logger.warning(f"[AUTH] Error loading user credentials from PostgreSQL: {e}")
     
-    # Fallback to JSON file for backward compatibility
-    try:
-        user_info_path = os.path.join(get_data_dir(), "users", "user_0001", "user_info.json")
-        if os.path.exists(user_info_path):
-            with open(user_info_path, "r") as f:
-                user_info = json.load(f)
-                return {
-                    "username": user_info.get("user_id", "admin"),
-                    "password": user_info.get("password", "admin"),  # Plain text fallback
-                    "name": user_info.get("name", "Admin User")
-                }
-    except Exception as e:
-        print(f"[AUTH] Error loading user credentials from JSON: {e}")
+    # Fallback to JSON file only when not in production
+    if os.getenv("REC_ENVIRONMENT") != "production":
+        try:
+            user_info_path = os.path.join(get_data_dir(), "users", "user_0001", "user_info.json")
+            if os.path.exists(user_info_path):
+                with open(user_info_path, "r") as f:
+                    user_info = json.load(f)
+                    return {
+                        "username": user_info.get("user_id", "admin"),
+                        "password": user_info.get("password", "admin"),
+                        "name": user_info.get("name", "Admin User")
+                    }
+        except Exception as e:
+            _main_logger.warning(f"[AUTH] Error loading user credentials from JSON: {e}")
     
-    # Default credentials if nothing works
+    # Default credentials if nothing works (dev only)
     return {
         "username": "admin",
         "password": "admin",
@@ -411,21 +437,20 @@ def verify_password(password, hashed_password):
         import bcrypt
         return bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8'))
     except Exception as e:
-        print(f"[AUTH] Password verification error: {e}")
+        _main_logger.debug(f"[AUTH] Password verification error: {e}")
         return False
 
 def change_password_hash(password):
-    """Hash a password for storage"""
+    """Hash a password for storage. Requires bcrypt; no plaintext fallback."""
     try:
         import bcrypt
         return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
     except ImportError:
-        # Fallback to simple hash if bcrypt is not available
-        print(f"[AUTH] bcrypt not available, using fallback password hashing")
-        return f"fallback_hash_{password}"
+        _main_logger.debug(f"[AUTH] bcrypt required for password hashing")
+        raise ValueError("bcrypt is required for password hashing")
     except Exception as e:
-        print(f"[AUTH] Password hashing error: {e}")
-        return f"fallback_hash_{password}"
+        _main_logger.debug(f"[AUTH] Password hashing error: {e}")
+        raise
 
 def load_preferences():
     global _preferences_cache, _cache_timestamp
@@ -445,7 +470,7 @@ def load_preferences():
         _cache_timestamp = current_time
         return default_prefs
     except Exception as e:
-        print(f"[Preferences Load Error] {e}")
+        _main_logger.warning(f"[Preferences Load Error] {e}")
         # Default preferences
         default_prefs = {"diff_mode": False, "position_size": 1, "multiplier": 1}
         _preferences_cache = default_prefs
@@ -461,9 +486,9 @@ async def save_preferences(prefs):
         # Update cache
         _preferences_cache = prefs.copy()
         _cache_timestamp = time.time()
-        print(f"[Preferences] ✅ Updated cache: {list(prefs.keys())}")
+        _main_logger.debug(f"[Preferences] ✅ Updated cache: {list(prefs.keys())}")
     except Exception as e:
-        print(f"[Preferences Save Error] {e}")
+        _main_logger.warning(f"[Preferences Save Error] {e}")
 
 # Broadcast helper function for preferences updates
 async def broadcast_preferences_update():
@@ -484,7 +509,7 @@ async def broadcast_preferences_update():
         # Clean up disconnected clients
         connected_clients.difference_update(to_remove)
     except Exception as e:
-        print(f"[Broadcast Preferences Error] {e}")
+        _main_logger.warning(f"[Broadcast Preferences Error] {e}")
 
 async def send_to_client(client, data):
     try:
@@ -520,29 +545,35 @@ async def broadcast_db_change(db_name: str, change_data: dict):
             to_remove.add(client)
     db_change_clients.difference_update(to_remove)
 
+# Lifespan: startup/shutdown (replaces deprecated on_event)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup and shutdown; use instead of on_event for FastAPI compatibility."""
+    _main_logger.info("Main app started on port %s", MAIN_APP_PORT)
+    yield
+    _main_logger.info("Main app shutting down")
+
 # Create FastAPI app
-app = FastAPI(title="Trading System Main App")
+app = FastAPI(title="Trading System Main App", lifespan=lifespan)
 
 # Import universal host system
 from backend.util.paths import get_host
 
 # Configure CORS with universal host origins
 host = get_host()
-origins = [
+_explicit_origins = [
     f"http://{host}:{MAIN_APP_PORT}",
     f"http://localhost:{MAIN_APP_PORT}",
     f"http://127.0.0.1:{MAIN_APP_PORT}",
     f"https://{host}:{MAIN_APP_PORT}",
     f"https://localhost:{MAIN_APP_PORT}",
     f"https://127.0.0.1:{MAIN_APP_PORT}",
-    # Domain-specific origins
     "https://rec-io.com",
     "https://www.rec-io.com",
     "http://rec-io.com",
     "http://www.rec-io.com",
-    # Allow access from any device on the local network (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
-    "*"  # Allow all origins for local network access
 ]
+origins = _explicit_origins if os.getenv("REC_ENVIRONMENT") == "production" else _explicit_origins + ["*"]
 
 app.add_middleware(
     CORSMiddleware,
@@ -685,11 +716,11 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
-        print(f"[WEBSOCKET] ✅ Client connected. Total clients: {len(self.active_connections)}")
+        _main_logger.debug(f"[WEBSOCKET] ✅ Client connected. Total clients: {len(self.active_connections)}")
 
     def disconnect(self, websocket: WebSocket):
         self.active_connections.remove(websocket)
-        print(f"[WEBSOCKET] ❌ Client disconnected. Total clients: {len(self.active_connections)}")
+        _main_logger.debug(f"[WEBSOCKET] ❌ Client disconnected. Total clients: {len(self.active_connections)}")
 
     async def send_personal_message(self, message: str, websocket: WebSocket):
         await websocket.send_text(message)
@@ -742,14 +773,14 @@ async def websocket_db_changes(websocket: WebSocket):
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     """Serve the main application or login page based on authentication."""
-    print(f"[AUTH] AUTH_ENABLED = {AUTH_ENABLED}")
+    _main_logger.debug(f"[AUTH] AUTH_ENABLED = {AUTH_ENABLED}")
     if AUTH_ENABLED:
         # Always redirect to login - no direct access to main app
-        print(f"[AUTH] Redirecting to login page")
+        _main_logger.debug(f"[AUTH] Redirecting to login page")
         return RedirectResponse(url="/login")
     else:
         # Local development mode - serve main app directly
-        print(f"[AUTH] Serving main app directly (local development)")
+        _main_logger.debug(f"[AUTH] Serving main app directly (local development)")
         with open(f"{frontend_dir}/index.html", "r") as f:
             content = f.read()
             return HTMLResponse(
@@ -786,7 +817,7 @@ async def serve_main_app(request: Request):
                 return RedirectResponse(url="/login")
                 
         except Exception as e:
-            print(f"[AUTH] Error verifying token: {e}")
+            _main_logger.warning(f"[AUTH] Error verifying token: {e}")
             return RedirectResponse(url="/login")
     
     # Serve the main app
@@ -920,7 +951,7 @@ async def serve_mobile_trade_monitor(request: Request):
                 return RedirectResponse(url="/login")
                 
         except Exception as e:
-            print(f"[AUTH] Error verifying token: {e}")
+            _main_logger.warning(f"[AUTH] Error verifying token: {e}")
             return RedirectResponse(url="/login")
     
     file_path = f"{frontend_dir}/mobile/trade_monitor_mobile.html"
@@ -964,7 +995,7 @@ async def serve_mobile_dashboard(request: Request):
                 return RedirectResponse(url="/login")
                 
         except Exception as e:
-            print(f"[AUTH] Error verifying token: {e}")
+            _main_logger.warning(f"[AUTH] Error verifying token: {e}")
             return RedirectResponse(url="/login")
     
     file_path = f"{frontend_dir}/mobile/dashboard_mobile.html"
@@ -1008,7 +1039,7 @@ async def serve_mobile_account_manager(request: Request):
                 return RedirectResponse(url="/login")
                 
         except Exception as e:
-            print(f"[AUTH] Error verifying token: {e}")
+            _main_logger.warning(f"[AUTH] Error verifying token: {e}")
             return RedirectResponse(url="/login")
     
     file_path = f"{frontend_dir}/mobile/account_manager_mobile.html"
@@ -1052,7 +1083,7 @@ async def serve_mobile_index(request: Request):
                 return RedirectResponse(url="/login")
                 
         except Exception as e:
-            print(f"[AUTH] Error verifying token: {e}")
+            _main_logger.warning(f"[AUTH] Error verifying token: {e}")
             return RedirectResponse(url="/login")
     
     file_path = f"{frontend_dir}/mobile/index.html"
@@ -1096,7 +1127,7 @@ async def serve_mobile_index_html(request: Request):
                 return RedirectResponse(url="/login")
                 
         except Exception as e:
-            print(f"[AUTH] Error verifying token: {e}")
+            _main_logger.warning(f"[AUTH] Error verifying token: {e}")
             return RedirectResponse(url="/login")
     
     file_path = f"{frontend_dir}/mobile/index.html"
@@ -1171,7 +1202,7 @@ async def serve_mobile_user(request: Request):
                 return RedirectResponse(url="/login")
                 
         except Exception as e:
-            print(f"[AUTH] Error verifying token: {e}")
+            _main_logger.warning(f"[AUTH] Error verifying token: {e}")
             return RedirectResponse(url="/login")
     
     file_path = f"{frontend_dir}/mobile/user_mobile.html"
@@ -1215,7 +1246,7 @@ async def serve_mobile_system(request: Request):
                 return RedirectResponse(url="/login")
                 
         except Exception as e:
-            print(f"[AUTH] Error verifying token: {e}")
+            _main_logger.warning(f"[AUTH] Error verifying token: {e}")
             return RedirectResponse(url="/login")
     
     file_path = f"{frontend_dir}/mobile/system_mobile.html"
@@ -1259,7 +1290,7 @@ async def serve_mobile_trade_history(request: Request):
                 return RedirectResponse(url="/login")
                 
         except Exception as e:
-            print(f"[AUTH] Error verifying token: {e}")
+            _main_logger.warning(f"[AUTH] Error verifying token: {e}")
             return RedirectResponse(url="/login")
     
     file_path = f"{frontend_dir}/mobile/trade_history_mobile.html"
@@ -1295,7 +1326,7 @@ def get_ttc_data_from_postgresql() -> Dict[str, Any]:
             'next_hour_est': next_hour.strftime("%I:%M:%S %p EDT")
         }
     except Exception as e:
-        print(f"Error calculating TTC: {e}")
+        _main_logger.warning(f"Error calculating TTC: {e}")
         return {"error": str(e)}
 
 @app.get("/api/ttc")
@@ -1319,7 +1350,7 @@ async def get_core_data(symbol: str = "BTC"):
             ttc_data = get_ttc_data_from_postgresql()
             ttc_seconds = ttc_data.get('ttc_seconds', 0)
         except Exception as e:
-            print(f"Error getting TTC from PostgreSQL: {e}")
+            _main_logger.warning(f"Error getting TTC from PostgreSQL: {e}")
             # Fallback calculation
             close_time = now.replace(hour=16, minute=0, second=0, microsecond=0)
             if now.time() >= close_time.time():
@@ -1330,13 +1361,7 @@ async def get_core_data(symbol: str = "BTC"):
         btc_price = 0
         try:
             # Get the latest price from PostgreSQL live_data.live_price_log_1s_btc
-            import psycopg2
-            conn = psycopg2.connect(
-                host="localhost",
-                database="rec_io_db",
-                user="rec_io_user",
-                password="rec_io_password"
-            )
+            conn = get_postgresql_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT price FROM live_data.live_price_log_1s_btc ORDER BY timestamp DESC LIMIT 1")
             result = cursor.fetchone()
@@ -1344,36 +1369,30 @@ async def get_core_data(symbol: str = "BTC"):
             
             if result:
                 btc_price = float(result[0])
-                print(f"[MAIN] Using PostgreSQL BTC price: ${btc_price:,.2f}")
+                _main_logger.debug(f"[MAIN] Using PostgreSQL BTC price: ${btc_price:,.2f}")
             else:
                 # Fallback to direct API call if no PostgreSQL data
                 response = requests.get("https://api.kraken.com/0/public/Ticker?pair=BTCUSD", timeout=5)
                 if response.status_code == 200:
                     data = response.json()
                     btc_price = float(data['result']['XXBTZUSD']['c'][0])
-                    print(f"[MAIN] Using fallback API BTC price: ${btc_price:,.2f}")
+                    _main_logger.debug(f"[MAIN] Using fallback API BTC price: ${btc_price:,.2f}")
         except Exception as e:
-            print(f"Error fetching BTC price from PostgreSQL: {e}")
+            _main_logger.warning(f"Error fetching BTC price from PostgreSQL: {e}")
             # Final fallback to direct API call
             try:
                 response = requests.get("https://api.kraken.com/0/public/Ticker?pair=BTCUSD", timeout=5)
                 if response.status_code == 200:
                     data = response.json()
                     btc_price = float(data['result']['XXBTZUSD']['c'][0])
-                    print(f"[MAIN] Using emergency fallback API BTC price: ${btc_price:,.2f}")
+                    _main_logger.debug(f"[MAIN] Using emergency fallback API BTC price: ${btc_price:,.2f}")
             except Exception as e2:
-                print(f"Emergency fallback also failed: {e2}")
+                _main_logger.warning(f"Emergency fallback also failed: {e2}")
         
         # Get momentum data directly from PostgreSQL
         momentum_data = {}
         try:
-            import psycopg2
-            conn = psycopg2.connect(
-                host="localhost",
-                database="rec_io_db",
-                user="rec_io_user",
-                password="rec_io_password"
-            )
+            conn = get_postgresql_connection()
             cursor = conn.cursor()
             cursor.execute(f"""
                 SELECT momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg,
@@ -1405,7 +1424,7 @@ async def get_core_data(symbol: str = "BTC"):
                     'movement': float(movement) if movement is not None else None,
                     'movement_percentile': float(movement_percentile) if movement_percentile is not None else None,
                 }
-                print(f"[MAIN] Momentum analysis: {momentum_data.get('weighted_momentum_score', 'N/A'):.4f}%")
+                _main_logger.debug(f"[MAIN] Momentum analysis: {momentum_data.get('weighted_momentum_score', 'N/A'):.4f}%")
             else:
                 momentum_data = {
                     'delta_1m': None,
@@ -1419,7 +1438,7 @@ async def get_core_data(symbol: str = "BTC"):
                     'movement': None, 'movement_percentile': None,
                 }
         except Exception as e:
-            print(f"Error getting momentum data from PostgreSQL: {e}")
+            _main_logger.warning(f"Error getting momentum data from PostgreSQL: {e}")
             momentum_data = {
                 'delta_1m': None,
                 'delta_2m': None,
@@ -1435,13 +1454,7 @@ async def get_core_data(symbol: str = "BTC"):
         # Get latest database price from PostgreSQL
         latest_db_price = 0
         try:
-            import psycopg2
-            conn = psycopg2.connect(
-                host="localhost",
-                database="rec_io_db",
-                user="rec_io_user",
-                password="rec_io_password"
-            )
+            conn = get_postgresql_connection()
             with conn.cursor() as cursor:
                 cursor.execute("SELECT buy_price FROM users.trades_0001 WHERE test_filter IS NULL OR test_filter = FALSE ORDER BY date DESC, time DESC LIMIT 1")
                 result = cursor.fetchone()
@@ -1449,7 +1462,7 @@ async def get_core_data(symbol: str = "BTC"):
                     latest_db_price = result[0]
             conn.close()
         except Exception as e:
-            print(f"Error getting latest DB price: {e}")
+            _main_logger.warning(f"Error getting latest DB price: {e}")
         
         # Get Kraken changes
         kraken_changes = {}
@@ -1472,7 +1485,7 @@ async def get_core_data(symbol: str = "BTC"):
                     change = (current_price - old_price) / old_price
                     kraken_changes[f"change{period}"] = change
         except Exception as e:
-            print(f"Error getting Kraken changes: {e}")
+            _main_logger.warning(f"Error getting Kraken changes: {e}")
         
         # Get Kalshi markets (placeholder)
         kalshi_markets = []
@@ -1492,7 +1505,7 @@ async def get_core_data(symbol: str = "BTC"):
             "kalshi_markets": kalshi_markets
         }
     except Exception as e:
-        print(f"Error in core data: {e}")
+        _main_logger.warning(f"Error in core data: {e}")
         return {"error": str(e)}
 
 # Account mode endpoints
@@ -1534,7 +1547,7 @@ async def get_kalshi_email_endpoint():
             return {"email": "No credentials found"}
             
     except Exception as e:
-        print(f"Error reading Kalshi credentials: {e}")
+        _main_logger.warning(f"Error reading Kalshi credentials: {e}")
         return {"email": "Error reading credentials"}
 
 @app.post("/api/set_account_mode")
@@ -1556,12 +1569,7 @@ async def get_trades(status: Optional[str] = None):
         from psycopg2.extras import RealDictCursor
         
         # Connect to PostgreSQL
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             # Build query based on status filter
@@ -1598,7 +1606,7 @@ async def get_trades(status: Optional[str] = None):
             return result
             
     except Exception as e:
-        print(f"Error getting trades from PostgreSQL: {e}")
+        _main_logger.warning(f"Error getting trades from PostgreSQL: {e}")
         return []
 
 @app.get("/trades/{trade_id}")
@@ -1609,7 +1617,7 @@ async def get_trade(trade_id: int):
         trade_manager_port = get_port("trade_manager")
         trade_manager_url = f"http://{get_host()}:{trade_manager_port}/trades/{trade_id}"
         
-        print(f"[MAIN] Forwarding trade GET request to trade_manager at {trade_manager_url}")
+        _main_logger.debug(f"[MAIN] Forwarding trade GET request to trade_manager at {trade_manager_url}")
         
         # Forward the request to trade_manager
         response = requests.get(
@@ -1618,14 +1626,14 @@ async def get_trade(trade_id: int):
         )
         
         if response.status_code == 200:
-            print(f"[MAIN] ✅ Trade GET request forwarded successfully to trade_manager")
+            _main_logger.debug(f"[MAIN] ✅ Trade GET request forwarded successfully to trade_manager")
             return response.json()
         else:
-            print(f"[MAIN] ❌ Trade GET request forwarding failed: {response.status_code}")
+            _main_logger.warning(f"[MAIN] ❌ Trade GET request forwarding failed: {response.status_code}")
             return {"error": f"Trade manager returned status {response.status_code}"}
             
     except Exception as e:
-        print(f"[MAIN] ❌ Error forwarding trade GET request: {e}")
+        _main_logger.warning(f"[MAIN] ❌ Error forwarding trade GET request: {e}")
         return {"error": str(e)}
 
 @app.post("/trades")
@@ -1636,7 +1644,7 @@ async def create_trade(trade_data: dict):
         trade_manager_port = get_port("trade_manager")
         trade_manager_url = f"http://{get_host()}:{trade_manager_port}/trades"
         
-        print(f"[MAIN] Forwarding trade ticket to trade_manager at {trade_manager_url}")
+        _main_logger.debug(f"[MAIN] Forwarding trade ticket to trade_manager at {trade_manager_url}")
         
         # Forward the request to trade_manager
         response = requests.post(
@@ -1647,14 +1655,14 @@ async def create_trade(trade_data: dict):
         )
         
         if response.status_code == 201:
-            print(f"[MAIN] ✅ Trade ticket forwarded successfully to trade_manager")
+            _main_logger.debug(f"[MAIN] ✅ Trade ticket forwarded successfully to trade_manager")
             return response.json()
         else:
-            print(f"[MAIN] ❌ Trade ticket forwarding failed: {response.status_code}")
+            _main_logger.warning(f"[MAIN] ❌ Trade ticket forwarding failed: {response.status_code}")
             return {"error": f"Trade manager returned status {response.status_code}"}
             
     except Exception as e:
-        print(f"[MAIN] ❌ Error forwarding trade ticket: {e}")
+        _main_logger.warning(f"[MAIN] ❌ Error forwarding trade ticket: {e}")
         return {"error": str(e)}
 
 # Additional endpoints for other data
@@ -1666,12 +1674,7 @@ async def get_btc_changes():
         from datetime import datetime
         from zoneinfo import ZoneInfo
         
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         cursor = conn.cursor()
         
         # Get latest price changes from the database
@@ -1698,7 +1701,7 @@ async def get_btc_changes():
         return changes
         
     except Exception as e:
-        print(f"[btc_price_changes API] Error reading from PostgreSQL: {e}")
+        _main_logger.warning(f"[btc_price_changes API] Error reading from PostgreSQL: {e}")
         return {"change1h": None, "change3h": None, "change1d": None, "timestamp": None}
 
 @app.get("/eth_price_changes")
@@ -1709,12 +1712,7 @@ async def get_eth_changes():
         from datetime import datetime
         from zoneinfo import ZoneInfo
         
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         cursor = conn.cursor()
         
         # Get latest price changes from the database
@@ -1741,7 +1739,7 @@ async def get_eth_changes():
         return changes
         
     except Exception as e:
-        print(f"[eth_price_changes API] Error reading from PostgreSQL: {e}")
+        _main_logger.warning(f"[eth_price_changes API] Error reading from PostgreSQL: {e}")
         return {"change1h": None, "change3h": None, "change1d": None, "timestamp": None}
 
 @app.get("/kalshi_market_snapshot")
@@ -1751,12 +1749,7 @@ async def get_kalshi_snapshot():
         import psycopg2
         
         # Connect to PostgreSQL
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         
         with conn.cursor() as cursor:
             # Get market data from PostgreSQL
@@ -1798,7 +1791,7 @@ async def get_kalshi_snapshot():
             }
             
     except Exception as e:
-        print(f"Error getting Kalshi snapshot from PostgreSQL: {e}")
+        _main_logger.warning(f"Error getting Kalshi snapshot from PostgreSQL: {e}")
         return {"markets": []}
 
 # API endpoints for account data
@@ -1811,7 +1804,7 @@ async def trigger_account_sync():
             from backend.kalshi_account_sync_ws import sync_balance
             sync_balance()
         except Exception as e:
-            print(f"account/sync: sync_balance failed: {e}")
+            _main_logger.warning(f"account/sync: sync_balance failed: {e}")
     threading.Thread(target=_run_sync, daemon=True).start()
     return {"ok": True}
 
@@ -1823,12 +1816,7 @@ async def get_account_balance(mode: str = "prod"):
         from psycopg2.extras import RealDictCursor
         
         # Connect to PostgreSQL
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             # Get the latest account balance
@@ -1856,7 +1844,7 @@ async def get_account_balance(mode: str = "prod"):
                 return {"portfolio": 0, "positions": 0, "bankroll_current": 0}
             
     except Exception as e:
-        print(f"Error getting account balance from PostgreSQL: {e}")
+        _main_logger.warning(f"Error getting account balance from PostgreSQL: {e}")
         return {"portfolio": 0, "positions": 0}
 
 @app.get("/api/subaccounts")
@@ -1865,12 +1853,7 @@ async def get_subaccounts():
     try:
         import psycopg2
         from psycopg2.extras import RealDictCursor
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute("""
                 SELECT id, subaccount, balance, base_value, realized_pnl, realized_pnl_pct,
@@ -1882,7 +1865,7 @@ async def get_subaccounts():
         conn.close()
         return {"subaccounts": [dict(r) for r in rows]}
     except Exception as e:
-        print(f"Error getting subaccounts from PostgreSQL: {e}")
+        _main_logger.warning(f"Error getting subaccounts from PostgreSQL: {e}")
         return {"subaccounts": []}
 
 @app.patch("/api/subaccounts/automatic-transfers")
@@ -1894,13 +1877,7 @@ async def update_subaccount_automatic_transfers(request: Request):
         automatic = payload.get("automatic_transfers")
         if subaccount_name is None or automatic is None:
             return {"ok": False, "error": "subaccount and automatic_transfers required"}
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             cursor.execute(
                 "UPDATE users.subaccounts_0001 SET automatic_transfers = %s WHERE subaccount = %s",
@@ -1913,7 +1890,7 @@ async def update_subaccount_automatic_transfers(request: Request):
         conn.close()
         return {"ok": True}
     except Exception as e:
-        print(f"Error updating subaccount automatic_transfers: {e}")
+        _main_logger.warning(f"Error updating subaccount automatic_transfers: {e}")
         return {"ok": False, "error": str(e)}
 
 @app.patch("/api/subaccounts/transfer-settings")
@@ -1928,13 +1905,7 @@ async def update_subaccount_transfer_settings(request: Request):
             return {"ok": False, "error": "subaccount required"}
         if target_pct is None and transfer_amt is None:
             return {"ok": False, "error": "at least one of target_pnl__pct or transfer_amt required"}
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             if target_pct is not None and transfer_amt is not None:
                 cursor.execute(
@@ -1958,7 +1929,7 @@ async def update_subaccount_transfer_settings(request: Request):
         conn.close()
         return {"ok": True}
     except Exception as e:
-        print(f"Error updating subaccount transfer settings: {e}")
+        _main_logger.warning(f"Error updating subaccount transfer settings: {e}")
         return {"ok": False, "error": str(e)}
 
 
@@ -1979,13 +1950,7 @@ async def update_subaccount_base_value(request: Request):
             return {"ok": False, "error": "base_value must be an integer (cents)"}
         if base_value_int < 0:
             return {"ok": False, "error": "base_value must be non-negative"}
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             cursor.execute(
                 "UPDATE users.subaccounts_0001 SET base_value = %s WHERE subaccount = %s",
@@ -1998,7 +1963,7 @@ async def update_subaccount_base_value(request: Request):
         conn.close()
         return {"ok": True}
     except Exception as e:
-        print(f"Error updating subaccount base_value: {e}")
+        _main_logger.warning(f"Error updating subaccount base_value: {e}")
         return {"ok": False, "error": str(e)}
 
 
@@ -2037,12 +2002,7 @@ async def initiate_transfer(request: Request):
         EST = ZoneInfo("America/New_York")
         transfer_timestamp_est = datetime.now(EST).strftime("%Y-%m-%d %H:%M:%S")
 
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         try:
             with conn.cursor() as cursor:
                 cursor.execute(
@@ -2088,14 +2048,14 @@ async def initiate_transfer(request: Request):
                 from backend.kalshi_account_sync_ws import sync_balance
                 sync_balance()
             except Exception as e:
-                print(f"initiate-transfer: sync_balance failed: {e}")
+                _main_logger.warning(f"initiate-transfer: sync_balance failed: {e}")
 
         import threading
         threading.Thread(target=_run_sync, daemon=True).start()
 
         return {"ok": True}
     except Exception as e:
-        print(f"Error initiating transfer: {e}")
+        _main_logger.warning(f"Error initiating transfer: {e}")
         return {"ok": False, "error": str(e)}
 
 
@@ -2107,12 +2067,7 @@ async def get_monitor_bankroll(monitor_id: str):
         from psycopg2.extras import RealDictCursor
         
         # Connect to PostgreSQL
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             # Get monitor-specific bankroll allotment
@@ -2137,7 +2092,7 @@ async def get_monitor_bankroll(monitor_id: str):
                 return {"monitor_id": monitor_id, "bankroll_allotment_total": 0, "name": "Unknown", "symbol": "BTC"}
             
     except Exception as e:
-        print(f"Error getting monitor bankroll from PostgreSQL: {e}")
+        _main_logger.warning(f"Error getting monitor bankroll from PostgreSQL: {e}")
         return {"monitor_id": monitor_id, "bankroll_allotment_total": 0, "name": "Unknown", "symbol": "BTC"}
 
 @app.get("/api/account/balance/history")
@@ -2148,12 +2103,7 @@ async def get_account_balance_history(mode: str = "prod", limit: int = 1000):
         from psycopg2.extras import RealDictCursor
         
         # Connect to PostgreSQL
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             # Get historical account balance data
@@ -2179,7 +2129,7 @@ async def get_account_balance_history(mode: str = "prod", limit: int = 1000):
             return {"history": history_data}
             
     except Exception as e:
-        print(f"Error getting account balance history from PostgreSQL: {e}")
+        _main_logger.warning(f"Error getting account balance history from PostgreSQL: {e}")
         return {"history": []}
 
 @app.get("/api/db/fills")
@@ -2190,12 +2140,7 @@ def get_fills():
         from psycopg2.extras import RealDictCursor
         
         # Connect to PostgreSQL
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute("""
@@ -2220,7 +2165,7 @@ def get_fills():
             return {"fills": fills_list}
             
     except Exception as e:
-        print(f"Error getting fills from PostgreSQL: {e}")
+        _main_logger.warning(f"Error getting fills from PostgreSQL: {e}")
         return {"fills": []}
 
 @app.get("/api/db/positions")
@@ -2231,12 +2176,7 @@ def get_positions():
         from psycopg2.extras import RealDictCursor
         
         # Connect to PostgreSQL
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute("""
@@ -2266,7 +2206,7 @@ def get_positions():
             return {"positions": positions_list}
             
     except Exception as e:
-        print(f"Error getting positions from PostgreSQL: {e}")
+        _main_logger.warning(f"Error getting positions from PostgreSQL: {e}")
         return {"positions": []}
 
 @app.get("/api/db/settlements")
@@ -2277,12 +2217,7 @@ def get_settlements():
         from psycopg2.extras import RealDictCursor
         
         # Connect to PostgreSQL
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute("""
@@ -2312,7 +2247,7 @@ def get_settlements():
             return {"settlements": settlements_list}
             
     except Exception as e:
-        print(f"Error getting settlements from PostgreSQL: {e}")
+        _main_logger.warning(f"Error getting settlements from PostgreSQL: {e}")
         return {"settlements": []}
 
 
@@ -2323,12 +2258,7 @@ def get_transfers():
         import psycopg2
         from psycopg2.extras import RealDictCursor
 
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
 
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute("""
@@ -2344,7 +2274,7 @@ def get_transfers():
         return {"transfers": transfers_list}
 
     except Exception as e:
-        print(f"Error getting transfers from PostgreSQL: {e}")
+        _main_logger.warning(f"Error getting transfers from PostgreSQL: {e}")
         return {"transfers": []}
 
 
@@ -2367,12 +2297,7 @@ def get_system_health_from_db():
         disk_used_gb = disk.used / (1024**3)
         disk_free_gb = disk.free / (1024**3)
         
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         
         with conn.cursor() as cursor:
             cursor.execute("SELECT * FROM system.health_status WHERE id = 1")
@@ -2402,7 +2327,7 @@ def get_system_health_from_db():
                 return {"error": "No health data available"}
                 
     except Exception as e:
-        print(f"[DB SYSTEM HEALTH] Error: {e}")
+        _main_logger.debug(f"[DB SYSTEM HEALTH] Error: {e}")
         return {"error": "Database error"}
 
 @app.get("/api/db/trades")
@@ -2413,12 +2338,7 @@ def get_trades_from_postgresql():
         from psycopg2.extras import RealDictCursor
         
         # Connect to PostgreSQL
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             # Get all trades from PostgreSQL
@@ -2462,7 +2382,7 @@ def get_trades_from_postgresql():
             return {"trades": trades_list}
             
     except Exception as e:
-        print(f"Error getting trades from PostgreSQL: {e}")
+        _main_logger.warning(f"Error getting trades from PostgreSQL: {e}")
         return {"trades": []}
 
 # Fingerprint and strike probability endpoints
@@ -2483,24 +2403,18 @@ async def get_current_fingerprint():
             "available_buckets": list(calculator.momentum_fingerprints.keys()) if hasattr(calculator, 'momentum_fingerprints') else []
         }
         
-        print(f"[FINGERPRINT] Current fingerprint: {fingerprint_info['fingerprint_file']}")
+        _main_logger.debug(f"[FINGERPRINT] Current fingerprint: {fingerprint_info['fingerprint_file']}")
         return fingerprint_info
         
     except Exception as e:
-        print(f"Error getting fingerprint: {e}")
+        _main_logger.warning(f"Error getting fingerprint: {e}")
         return {"fingerprint": "error", "error": str(e)}
 
 @app.get("/api/momentum")
 async def get_current_momentum(symbol: str = "BTC"):
     """Get current momentum score directly from PostgreSQL for specified symbol."""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         cursor = conn.cursor()
         cursor.execute(f"SELECT momentum FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
         result = cursor.fetchone()
@@ -2519,7 +2433,7 @@ async def get_current_momentum(symbol: str = "BTC"):
                 "error": "No momentum data available"
             }
     except Exception as e:
-        print(f"Error getting momentum from PostgreSQL: {e}")
+        _main_logger.warning(f"Error getting momentum from PostgreSQL: {e}")
         return {
             "status": "error",
             "momentum_score": 0,
@@ -2532,12 +2446,7 @@ async def get_btc_price():
     try:
         import psycopg2
         
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT price FROM live_data.live_price_log_1s_btc ORDER BY timestamp DESC LIMIT 1")
         result = cursor.fetchone()
@@ -2550,7 +2459,7 @@ async def get_btc_price():
             return {"price": None, "error": "No price data available"}
             
     except Exception as e:
-        print(f"Error getting BTC price from PostgreSQL: {e}")
+        _main_logger.warning(f"Error getting BTC price from PostgreSQL: {e}")
         return {"price": None, "error": str(e)}
 
 @app.get("/api/eth_price")
@@ -2559,12 +2468,7 @@ async def get_eth_price():
     try:
         import psycopg2
         
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT price FROM live_data.live_price_log_1s_eth ORDER BY timestamp DESC LIMIT 1")
         result = cursor.fetchone()
@@ -2577,20 +2481,14 @@ async def get_eth_price():
             return {"price": None, "error": "No price data available"}
             
     except Exception as e:
-        print(f"Error getting ETH price from PostgreSQL: {e}")
+        _main_logger.warning(f"Error getting ETH price from PostgreSQL: {e}")
         return {"price": None, "error": str(e)}
 
 @app.get("/api/momentum_score")
 async def get_momentum_score():
     """Get current momentum score for mobile directly from PostgreSQL."""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT momentum FROM live_data.live_price_log_1s_btc ORDER BY timestamp DESC LIMIT 1")
         result = cursor.fetchone()
@@ -2602,7 +2500,7 @@ async def get_momentum_score():
         else:
             return {"weighted_score": 0, "error": "No momentum data available"}
     except Exception as e:
-        print(f"Error getting momentum score: {e}")
+        _main_logger.warning(f"Error getting momentum score: {e}")
         return {"weighted_score": 0, "error": str(e)}
 
 def _strike_table_name(symbol: str, market: str) -> str:
@@ -2624,12 +2522,7 @@ async def get_strike_table_mobile(request: Request):
         if market not in ("hourly", "15m"):
             return {"strikes": [], "error": "market required (hourly or 15m)"}
         table_name = _strike_table_name(symbol, market)
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             # Get strike table data from PostgreSQL
             cursor.execute(f"""
@@ -2680,7 +2573,7 @@ async def get_strike_table_mobile(request: Request):
             return {"strikes": strikes}
             
     except Exception as e:
-        print(f"Error getting strike table from PostgreSQL: {e}")
+        _main_logger.warning(f"Error getting strike table from PostgreSQL: {e}")
         return {"strikes": [], "error": str(e)}
 
 # === PREFERENCES API ENDPOINTS ===
@@ -2708,14 +2601,14 @@ async def update_preferences(request: Request):
             prefs["position_size"] = int(data["position_size"])
             updated = True
         except Exception as e:
-            print(f"[Invalid Position Size] {e}")
+            _main_logger.debug(f"[Invalid Position Size] {e}")
 
     if "multiplier" in data:
         try:
             prefs["multiplier"] = float(data["multiplier"])
             updated = True
         except Exception as e:
-            print(f"[Invalid Multiplier] {e}")
+            _main_logger.debug(f"[Invalid Multiplier] {e}")
 
     if updated:
         await save_preferences(prefs)
@@ -2745,7 +2638,7 @@ def load_trade_history_preferences():
     try:
         return get_trade_history_preferences_postgresql()
     except Exception as e:
-        print(f"[Trade History Preferences Load Error] {e}")
+        _main_logger.debug(f"[Trade History Preferences Load Error] {e}")
         return {
             "date_filter": "TODAY",
             "start_date": None,
@@ -2855,9 +2748,9 @@ def save_trade_history_preferences(preferences):
         
         if update_data:
             update_trade_history_preferences_postgresql(**update_data)
-            print(f"[Trade History Preferences] ✅ Updated PostgreSQL: {list(update_data.keys())}")
+            _main_logger.debug(f"[Trade History Preferences] ✅ Updated PostgreSQL: {list(update_data.keys())}")
     except Exception as e:
-        print(f"[Trade History Preferences Save Error] {e}")
+        _main_logger.debug(f"[Trade History Preferences Save Error] {e}")
 
 @app.get("/api/get_trade_history_preferences")
 async def get_trade_history_preferences():
@@ -2883,7 +2776,7 @@ async def set_trade_history_preferences(request: Request):
         
         return {"status": "ok", "preferences": preferences}
     except Exception as e:
-        print(f"[Trade History Preferences Set Error] {e}")
+        _main_logger.debug(f"[Trade History Preferences Set Error] {e}")
         return {"status": "error", "message": str(e)}
 
 # LEGACY REMOVED: /api/get_auto_stop endpoint - no longer used, auto stop now controlled by auto_trade in monitor_list
@@ -2919,13 +2812,13 @@ async def notify_auto_trade_status_change(request: Request):
             try:
                 await websocket.send_text(json.dumps(message))
             except Exception as e:
-                print(f"Error sending to WebSocket client: {e}")
+                _main_logger.warning(f"Error sending to WebSocket client: {e}")
                 connected_clients.discard(websocket)
         
-        print(f"[MAIN] ✅ Auto trade status change broadcasted to {len(connected_clients)} clients")
+        _main_logger.debug(f"[MAIN] ✅ Auto trade status change broadcasted to {len(connected_clients)} clients")
         return {"status": "ok", "message": "Auto trade status change notification sent"}
     except Exception as e:
-        print(f"Error in notify_auto_trade_status_change: {e}")
+        _main_logger.warning(f"Error in notify_auto_trade_status_change: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/notify_cooldown_timer_change")
@@ -2953,13 +2846,13 @@ async def notify_cooldown_timer_change(request: Request):
             try:
                 await websocket.send_text(json.dumps(message))
             except Exception as e:
-                print(f"Error sending to WebSocket client: {e}")
+                _main_logger.warning(f"Error sending to WebSocket client: {e}")
                 connected_clients.discard(websocket)
         
-        print(f"[MAIN] ✅ Cooldown timer change broadcasted to {len(connected_clients)} clients")
+        _main_logger.debug(f"[MAIN] ✅ Cooldown timer change broadcasted to {len(connected_clients)} clients")
         return {"status": "ok", "message": "Cooldown timer change notification sent"}
     except Exception as e:
-        print(f"Error in notify_cooldown_timer_change: {e}")
+        _main_logger.warning(f"Error in notify_cooldown_timer_change: {e}")
         return {"status": "error", "message": str(e)}
 
 # Legacy /api/get_trade_preferences endpoint removed - position sizing and strategy now handled by monitor_list table
@@ -2988,13 +2881,7 @@ async def get_auto_entry_settings(monitor_id: str = None):
         return {"status": "error", "message": "Monitor ID required"}
     
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             # Get settings directly from monitor_list table
             cursor.execute("""
@@ -3050,7 +2937,7 @@ async def get_auto_entry_settings(monitor_id: str = None):
                 return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
                 
     except Exception as e:
-        print(f"[Auto Entry Settings] ❌ Error getting monitor settings: {e}")
+        _main_logger.debug(f"[Auto Entry Settings] ❌ Error getting monitor settings: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/set_auto_entry_settings")
@@ -3062,13 +2949,7 @@ async def set_auto_entry_settings(request: Request):
         return {"status": "error", "message": "Monitor ID required"}
     
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             # Check if monitor exists
             cursor.execute("""
@@ -3185,7 +3066,7 @@ async def set_auto_entry_settings(request: Request):
                 update_values.append(monitor_id)
                 cursor.execute(query, update_values)
                 
-                print(f"[Auto Entry & Auto Stop Settings] ✅ Updated monitor {monitor_id}: {list(data.keys())}")
+                _main_logger.debug(f"[Auto Entry & Auto Stop Settings] ✅ Updated monitor {monitor_id}: {list(data.keys())}")
                 
                 # Return the updated settings
                 cursor.execute("""
@@ -3233,7 +3114,7 @@ async def set_auto_entry_settings(request: Request):
                 return {"status": "error", "message": "No valid fields to update"}
                 
     except Exception as e:
-        print(f"[Auto Entry Settings] ❌ Error updating strategy: {e}")
+        _main_logger.debug(f"[Auto Entry Settings] ❌ Error updating strategy: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/trigger_open_trade")
@@ -3254,7 +3135,7 @@ async def trigger_open_trade(request: Request):
         trade_strategy = data.get("trade_strategy")
         paper_trade = data.get("paper_trade", False)
         
-        print(f"[TRIGGER OPEN TRADE] Received request: strike={strike}, side={side}, ticker={ticker}, buy_price={buy_price}, prob={prob}, symbol_open={symbol_open}, momentum={momentum}, paper_trade={paper_trade}")
+        _main_logger.debug(f"[TRIGGER OPEN TRADE] Received request: strike={strike}, side={side}, ticker={ticker}, buy_price={buy_price}, prob={prob}, symbol_open={symbol_open}, momentum={momentum}, paper_trade={paper_trade}")
         
         # Forward the request directly to the trade_manager service
         trade_manager_port = get_port("trade_manager")
@@ -3285,36 +3166,31 @@ async def trigger_open_trade(request: Request):
         # Get current monitor information from the request - NO FALLBACKS
         monitor = data.get("monitor")
         if not monitor:
-            print(f"[TRIGGER OPEN TRADE] Error: No monitor specified in trade data")
+            _main_logger.debug(f"[TRIGGER OPEN TRADE] Error: No monitor specified in trade data")
             return {"status": "error", "message": "Monitor must be specified"}
         
         # Extract monitor ID from monitor string (e.g., "mon_0001_10001" -> "10001")
         monitor_id = monitor.split('_')[-1] if monitor and '_' in monitor else None
         if not monitor_id:
-            print(f"[TRIGGER OPEN TRADE] Error: Invalid monitor format: {monitor}")
+            _main_logger.debug(f"[TRIGGER OPEN TRADE] Error: Invalid monitor format: {monitor}")
             return {"status": "error", "message": "Invalid monitor format"}
         
         # Get bankroll_allotment_total from monitor configuration
         bankroll_allotment_total = None
         try:
             import psycopg2
-            conn = psycopg2.connect(
-                host=os.getenv('POSTGRES_HOST', 'localhost'),
-                database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-                user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-                password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-            )
+            conn = get_postgresql_connection()
             with conn.cursor() as cursor:
                 cursor.execute("SELECT bankroll_allotment_total FROM users.monitor_list_0001 WHERE id = %s", (monitor_id,))
                 result = cursor.fetchone()
                 if result:
                     bankroll_allotment_total = result[0]
-                    print(f"[TRIGGER OPEN TRADE] Bankroll allotment loaded from monitor {monitor_id}: {bankroll_allotment_total}")
+                    _main_logger.debug(f"[TRIGGER OPEN TRADE] Bankroll allotment loaded from monitor {monitor_id}: {bankroll_allotment_total}")
                 else:
-                    print(f"[TRIGGER OPEN TRADE] No monitor configuration found for monitor {monitor_id}")
+                    _main_logger.debug(f"[TRIGGER OPEN TRADE] No monitor configuration found for monitor {monitor_id}")
                     return {"status": "error", "message": "Monitor configuration not found"}
         except Exception as e:
-            print(f"[TRIGGER OPEN TRADE] Error loading bankroll allotment from monitor {monitor_id}: {e}")
+            _main_logger.debug(f"[TRIGGER OPEN TRADE] Error loading bankroll allotment from monitor {monitor_id}: {e}")
             return {"status": "error", "message": f"Failed to load monitor configuration: {e}"}
         finally:
             if conn:
@@ -3354,14 +3230,14 @@ async def trigger_open_trade(request: Request):
         
         if response.status_code == 201:
             result = response.json()
-            print(f"[TRIGGER OPEN TRADE] Trade initiated successfully: {result}")
+            _main_logger.debug(f"[TRIGGER OPEN TRADE] Trade initiated successfully: {result}")
             return {
                 "status": "success",
                 "message": "Trade initiated successfully",
                 "trade_data": result
             }
         else:
-            print(f"[TRIGGER OPEN TRADE] Trade initiation failed: {response.status_code} - {response.text}")
+            _main_logger.debug(f"[TRIGGER OPEN TRADE] Trade initiation failed: {response.status_code} - {response.text}")
             return {
                 "status": "error",
                 "message": f"Trade initiation failed: {response.status_code}",
@@ -3369,7 +3245,7 @@ async def trigger_open_trade(request: Request):
             }
         
     except Exception as e:
-        print(f"[TRIGGER OPEN TRADE] Error: {e}")
+        _main_logger.debug(f"[TRIGGER OPEN TRADE] Error: {e}")
         return {"status": "error", "message": str(e)}
 
 
@@ -3400,12 +3276,7 @@ async def get_live_probabilities(request: Request):
         if market not in ("hourly", "15m"):
             return {"error": "market required (hourly or 15m)"}
         table_name = _strike_table_name(symbol, market)
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             # Get probability data from PostgreSQL strike table
             cursor.execute(f"""
@@ -3451,12 +3322,12 @@ def safe_read_json(filepath: str, timeout: float = 0.1):
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
     except (IOError, OSError) as e:
         # If locking fails, fall back to normal read (rare)
-        print(f"Warning: File locking failed for {filepath}: {e}")
+        _main_logger.debug(f"Warning: File locking failed for {filepath}: {e}")
         try:
             with open(filepath, 'r') as f:
                 return json.load(f)
         except Exception as read_error:
-            print(f"Error reading JSON from {filepath}: {read_error}")
+            _main_logger.warning(f"Error reading JSON from {filepath}: {read_error}")
             return None
 
 @app.get("/api/strike_tables/{symbol}")
@@ -3473,12 +3344,7 @@ async def get_strike_table(symbol: str, request: Request):
         table_name = _strike_table_name(symbol, market)
         ttc_col = "ttc_15m" if market == "15m" else "ttc_hourly"
         prob_col = "probability_15m" if market == "15m" else "probability_hourly"
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             cursor.execute(f"""
                 SELECT 
@@ -3565,12 +3431,7 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
         table_name = _strike_table_name(symbol, market)
         ttc_column = "ttc_15m" if market == "15m" else "ttc_hourly"
         prob_column = "probability_15m" if market == "15m" else "probability_hourly"
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             # Get the latest strike table data from PostgreSQL
             cursor.execute(f"""
@@ -3647,7 +3508,7 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
             return response
             
     except Exception as e:
-        print(f"Error getting PostgreSQL strike table for {symbol}: {str(e)}")
+        _main_logger.warning(f"Error getting PostgreSQL strike table for {symbol}: {str(e)}")
         return {"error": f"Error loading PostgreSQL strike table for {symbol}: {str(e)}"}
 
 @app.get("/api/watchlist/{monitor_name}")
@@ -3663,15 +3524,10 @@ async def get_watchlist(monitor_name: str):
         if monitor_name.startswith('mon_'):
             table_suffix = monitor_name[4:]  # Remove "mon_" prefix
         
-        # Connect to PostgreSQL using unified configuration
-        db_config = unified_config.get_database_config()
-        conn = psycopg2.connect(
-            host=db_config.get('host', 'localhost'),
-            database=db_config.get('name', 'rec_io_db'),
-            user=db_config.get('user', 'rec_io_user'),
-            password=db_config.get('password', 'rec_io_password')
-        )
-        
+        # Connect to PostgreSQL using centralized config
+        conn = get_postgresql_connection()
+        if not conn:
+            return {"error": "Database unavailable"}
         with conn.cursor() as cursor:
             # Get header data
             cursor.execute(f"""
@@ -3761,15 +3617,10 @@ async def get_active_trades_for_monitor(monitor_name: str):
         if monitor_name.startswith('mon_'):
             table_suffix = monitor_name[4:]  # Remove "mon_" prefix
         
-        # Connect to PostgreSQL using unified configuration
-        db_config = unified_config.get_database_config()
-        conn = psycopg2.connect(
-            host=db_config.get('host', 'localhost'),
-            database=db_config.get('name', 'rec_io_db'),
-            user=db_config.get('user', 'rec_io_user'),
-            password=db_config.get('password', 'rec_io_password')
-        )
-        
+        # Connect to PostgreSQL using centralized config
+        conn = get_postgresql_connection()
+        if not conn:
+            return {"error": "Database unavailable"}
         with conn.cursor() as cursor:
             # Get all active trades for this monitor
             cursor.execute(f"""
@@ -3841,12 +3692,7 @@ async def get_unified_ttc(symbol: str, request: Request):
         if market not in ("hourly", "15m"):
             return {"error": "market required (hourly or 15m)", "ttc_seconds": 0}
         table_name = _strike_table_name(symbol, market)
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             # Hourly tables use ttc_hourly; 15m tables use ttc_15m.
             ttc_column = "ttc_15m" if market == "15m" else "ttc_hourly"
@@ -3926,12 +3772,7 @@ async def get_historical_price_data(symbol: str = "BTC", limit: int = 1000, star
         from datetime import datetime
         
         # Connect to PostgreSQL
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         
         # Build query
         query = """
@@ -4001,7 +3842,7 @@ async def notify_automated_trade(request: Request):
     """Receive automated trade notification and broadcast to frontend via WebSocket"""
     try:
         data = await request.json()
-        print(f"[MAIN] 🔔 Received automated trade notification: {data}")
+        _main_logger.debug(f"[MAIN] 🔔 Received automated trade notification: {data}")
         
         # Broadcast to all connected WebSocket clients
         message = {
@@ -4014,14 +3855,14 @@ async def notify_automated_trade(request: Request):
             try:
                 await websocket.send_text(json.dumps(message))
             except Exception as e:
-                print(f"Error sending to WebSocket client: {e}")
+                _main_logger.warning(f"Error sending to WebSocket client: {e}")
                 connected_clients.discard(websocket)
         
-        print(f"[MAIN] ✅ Automated trade notification broadcasted to {len(connected_clients)} clients")
+        _main_logger.debug(f"[MAIN] ✅ Automated trade notification broadcasted to {len(connected_clients)} clients")
         return {"success": True, "message": "Notification broadcasted"}
         
     except Exception as e:
-        print(f"[MAIN] ❌ Error handling automated trade notification: {e}")
+        _main_logger.warning(f"[MAIN] ❌ Error handling automated trade notification: {e}")
         return {"success": False, "error": str(e)}
 
 @app.post("/api/notify_automated_close")
@@ -4029,7 +3870,7 @@ async def notify_automated_close(request: Request):
     """Receive automated trade close notification and broadcast to frontend via WebSocket"""
     try:
         data = await request.json()
-        print(f"[MAIN] 🔔 Received automated trade close notification: {data}")
+        _main_logger.debug(f"[MAIN] 🔔 Received automated trade close notification: {data}")
         
         # Broadcast to all connected WebSocket clients
         message = {
@@ -4042,14 +3883,14 @@ async def notify_automated_close(request: Request):
             try:
                 await websocket.send_text(json.dumps(message))
             except Exception as e:
-                print(f"Error sending to WebSocket client: {e}")
+                _main_logger.warning(f"Error sending to WebSocket client: {e}")
                 connected_clients.discard(websocket)
         
-        print(f"[MAIN] ✅ Automated trade close notification broadcasted to {len(connected_clients)} clients")
+        _main_logger.debug(f"[MAIN] ✅ Automated trade close notification broadcasted to {len(connected_clients)} clients")
         return {"success": True, "message": "Close notification broadcasted"}
         
     except Exception as e:
-        print(f"[MAIN] ❌ Error handling automated trade close notification: {e}")
+        _main_logger.warning(f"[MAIN] ❌ Error handling automated trade close notification: {e}")
         return {"success": False, "error": str(e)}
 
 @app.post("/api/broadcast_auto_entry_indicator")
@@ -4057,7 +3898,7 @@ async def broadcast_auto_entry_indicator(request: Request):
     """Receive auto entry indicator change and broadcast to frontend via WebSocket"""
     try:
         data = await request.json()
-        print(f"[MAIN] 🔔 Received auto entry indicator change: {data}")
+        _main_logger.debug(f"[MAIN] 🔔 Received auto entry indicator change: {data}")
         
         # Broadcast to all connected WebSocket clients
         message = {
@@ -4070,14 +3911,14 @@ async def broadcast_auto_entry_indicator(request: Request):
             try:
                 await websocket.send_text(json.dumps(message))
             except Exception as e:
-                print(f"Error sending to WebSocket client: {e}")
+                _main_logger.warning(f"Error sending to WebSocket client: {e}")
                 connected_clients.discard(websocket)
         
-        print(f"[MAIN] ✅ Auto entry indicator change broadcasted to {len(connected_clients)} clients")
+        _main_logger.debug(f"[MAIN] ✅ Auto entry indicator change broadcasted to {len(connected_clients)} clients")
         return {"success": True, "message": "Indicator change broadcasted"}
         
     except Exception as e:
-        print(f"[MAIN] ❌ Error handling auto entry indicator change: {e}")
+        _main_logger.warning(f"[MAIN] ❌ Error handling auto entry indicator change: {e}")
         return {"success": False, "error": str(e)}
 
 @app.post("/api/broadcast_active_trades_change")
@@ -4085,7 +3926,7 @@ async def broadcast_active_trades_change(request: Request):
     """Receive active trades change and broadcast to frontend via WebSocket"""
     try:
         data = await request.json()
-        print(f"[MAIN] 🔔 Received active trades change: {data.get('count', 0)} trades")
+        _main_logger.debug(f"[MAIN] 🔔 Received active trades change: {data.get('count', 0)} trades")
         
         # Broadcast to all connected WebSocket clients
         message = {
@@ -4098,14 +3939,14 @@ async def broadcast_active_trades_change(request: Request):
             try:
                 await websocket.send_text(json.dumps(message))
             except Exception as e:
-                print(f"Error sending to WebSocket client: {e}")
+                _main_logger.warning(f"Error sending to WebSocket client: {e}")
                 connected_clients.discard(websocket)
         
-        print(f"[MAIN] ✅ Active trades change broadcasted to {len(connected_clients)} clients")
+        _main_logger.debug(f"[MAIN] ✅ Active trades change broadcasted to {len(connected_clients)} clients")
         return {"success": True, "message": "Active trades change broadcasted"}
         
     except Exception as e:
-        print(f"[MAIN] ❌ Error handling active trades change: {e}")
+        _main_logger.warning(f"[MAIN] ❌ Error handling active trades change: {e}")
         return {"success": False, "error": str(e)}
 
 @app.post("/api/broadcast_monitor_total_position")
@@ -4113,7 +3954,7 @@ async def broadcast_monitor_total_position(request: Request):
     """Receive monitor total position update and broadcast to frontend via WebSocket"""
     try:
         data = await request.json()
-        print(f"[MAIN] 🔔 Received monitor total position update: {data}")
+        _main_logger.debug(f"[MAIN] 🔔 Received monitor total position update: {data}")
         
         # Broadcast to all connected WebSocket clients
         message = {
@@ -4127,14 +3968,14 @@ async def broadcast_monitor_total_position(request: Request):
             try:
                 await websocket.send_text(json.dumps(message))
             except Exception as e:
-                print(f"Error sending to WebSocket client: {e}")
+                _main_logger.warning(f"Error sending to WebSocket client: {e}")
                 connected_clients.discard(websocket)
         
-        print(f"[MAIN] ✅ Monitor total position update broadcasted to {len(connected_clients)} clients")
+        _main_logger.debug(f"[MAIN] ✅ Monitor total position update broadcasted to {len(connected_clients)} clients")
         return {"success": True, "message": "Monitor total position update broadcasted"}
         
     except Exception as e:
-        print(f"[MAIN] ❌ Error handling monitor total position update: {e}")
+        _main_logger.warning(f"[MAIN] ❌ Error handling monitor total position update: {e}")
         return {"success": False, "error": str(e)}
 
 @app.post("/api/broadcast_monitor_list_update")
@@ -4142,8 +3983,8 @@ async def broadcast_monitor_list_update(request: Request):
     """Receive monitor list update and broadcast to frontend via WebSocket"""
     try:
         data = await request.json()
-        print(f"[MAIN] 🔔 Received monitor list update: {data}")
-        print(f"[MAIN] 🔔 Connected WebSocket clients: {len(connected_clients)}")
+        _main_logger.debug(f"[MAIN] 🔔 Received monitor list update: {data}")
+        _main_logger.debug(f"[MAIN] 🔔 Connected WebSocket clients: {len(connected_clients)}")
         
         # Broadcast to all connected WebSocket clients
         message = {
@@ -4156,14 +3997,14 @@ async def broadcast_monitor_list_update(request: Request):
             try:
                 await websocket.send_text(json.dumps(message))
             except Exception as e:
-                print(f"Error sending to WebSocket client: {e}")
+                _main_logger.warning(f"Error sending to WebSocket client: {e}")
                 connected_clients.discard(websocket)
         
-        print(f"[MAIN] ✅ Monitor list update broadcasted to {len(connected_clients)} clients")
+        _main_logger.debug(f"[MAIN] ✅ Monitor list update broadcasted to {len(connected_clients)} clients")
         return {"success": True, "message": "Monitor list update broadcasted"}
         
     except Exception as e:
-        print(f"[MAIN] ❌ Error handling monitor list update: {e}")
+        _main_logger.warning(f"[MAIN] ❌ Error handling monitor list update: {e}")
         return {"success": False, "error": str(e)}
 
 # Momentum and fingerprint now consolidated in strike table - no separate broadcast endpoints needed
@@ -4177,7 +4018,7 @@ async def notify_db_change(request: Request):
         timestamp = data.get("timestamp")
         change_data = data.get("change_data", {})
         
-        print(f"📡 Received DB change notification: {db_name} at {timestamp}")
+        _main_logger.debug(f"📡 Received DB change notification: {db_name} at {timestamp}")
         
         # Broadcast to all connected WebSocket clients
         await broadcast_db_change(db_name, {
@@ -4187,7 +4028,7 @@ async def notify_db_change(request: Request):
         
         return {"status": "ok", "message": f"Notification sent for {db_name}"}
     except Exception as e:
-        print(f"❌ Error handling DB change notification: {e}")
+        _main_logger.debug(f"❌ Error handling DB change notification: {e}")
         return {"status": "error", "message": str(e)}
 
 
@@ -4246,7 +4087,7 @@ async def login(request: Request):
                     }
                     save_device_tokens(device_tokens)
                 
-                print(f"[AUTH] User {username} logged in successfully")
+                _main_logger.debug(f"[AUTH] User {username} logged in successfully")
                 return {
                     "success": True,
                     "token": token,
@@ -4255,19 +4096,19 @@ async def login(request: Request):
                     "name": credentials["name"]
                 }
             else:
-                print(f"[AUTH] Failed login attempt for username: {username}")
+                _main_logger.debug(f"[AUTH] Failed login attempt for username: {username}")
                 return {
                     "success": False,
                     "error": "Invalid username or password"
                 }
         else:
-            print(f"[AUTH] Failed login attempt for username: {username}")
+            _main_logger.debug(f"[AUTH] Failed login attempt for username: {username}")
             return {
                 "success": False,
                 "error": "Invalid username or password"
             }
     except Exception as e:
-        print(f"[AUTH] Login error: {e}")
+        _main_logger.debug(f"[AUTH] Login error: {e}")
         return {
             "success": False,
             "error": "Authentication error"
@@ -4281,8 +4122,8 @@ async def verify_auth(request: Request):
         token = data.get("token", "")
         device_id = data.get("deviceId", "")
         
-        # Check for local development bypass
-        if token.startswith("local_dev_"):
+        # Local development bypass only when not in production
+        if token.startswith("local_dev_") and os.getenv("REC_ENVIRONMENT") != "production":
             return {"authenticated": True, "username": "local_dev", "name": "Local Development"}
         
         # Check auth tokens only (device token alone is not enough for verify)
@@ -4300,7 +4141,7 @@ async def verify_auth(request: Request):
         
         return {"authenticated": False}
     except Exception as e:
-        print(f"[AUTH] Verification error: {e}")
+        _main_logger.debug(f"[AUTH] Verification error: {e}")
         return {"authenticated": False}
 
 @app.post("/api/auth/logout")
@@ -4323,10 +4164,10 @@ async def logout(request: Request):
             del device_tokens[device_id]
             save_device_tokens(device_tokens)
         
-        print(f"[AUTH] User logged out successfully")
+        _main_logger.debug(f"[AUTH] User logged out successfully")
         return {"success": True}
     except Exception as e:
-        print(f"[AUTH] Logout error: {e}")
+        _main_logger.debug(f"[AUTH] Logout error: {e}")
         return {"success": False, "error": str(e)}
 
 @app.get("/api/user/info")
@@ -4344,7 +4185,7 @@ async def get_user_info():
             "account_type": credentials.get("account_type")
         }
     except Exception as e:
-        print(f"[USER INFO] Error getting user info: {e}")
+        _main_logger.debug(f"[USER INFO] Error getting user info: {e}")
         return {"error": "Failed to get user information"}
 
 @app.post("/api/user/change-password")
@@ -4368,8 +4209,9 @@ async def change_password(request: Request):
         new_hash = change_password_hash(new_password)
         
         # Update in PostgreSQL
-        import psycopg2
-        conn = psycopg2.connect(host="localhost", database="rec_io_db", user="rec_io_user", password="rec_io_password")
+        conn = get_postgresql_connection()
+        if not conn:
+            return {"success": False, "error": "Database unavailable"}
         with conn.cursor() as cursor:
             cursor.execute("""
                 UPDATE users.user_info_0001 
@@ -4380,7 +4222,7 @@ async def change_password(request: Request):
         
         return {"success": True, "message": "Password updated successfully"}
     except Exception as e:
-        print(f"[AUTH] Error changing password: {e}")
+        _main_logger.warning(f"[AUTH] Error changing password: {e}")
         return {"success": False, "error": str(e)}
 
 @app.get("/api/system/health")
@@ -4389,12 +4231,7 @@ async def get_system_health():
     try:
         import psycopg2
         
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         
         with conn.cursor() as cursor:
             cursor.execute("SELECT * FROM system.health_status WHERE id = 1")
@@ -4422,20 +4259,8 @@ async def get_system_health():
                 return {"error": "No health data available"}
                 
     except Exception as e:
-        print(f"[SYSTEM HEALTH] Error getting system health: {e}")
+        _main_logger.debug(f"[SYSTEM HEALTH] Error getting system health: {e}")
         return {"error": "Failed to get system health information"}
-
-# Startup and shutdown events
-@app.on_event("startup")
-async def startup_event():
-    """Called when the application starts."""
-    print(f"[MAIN] 🚀 Main app started on centralized port {MAIN_APP_PORT}")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Called when the application shuts down."""
-    print("[MAIN] 🛑 Main app shutting down")
-    # No port release needed for static ports
 
 @app.post("/api/admin/supervisor-status")
 async def get_supervisor_status():
@@ -4872,12 +4697,7 @@ async def get_current_portfolio():
         import psycopg2
         
         # Connect to PostgreSQL
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         
         with conn.cursor() as cursor:
             cursor.execute("""
@@ -4904,7 +4724,7 @@ async def get_current_portfolio():
             }
         
     except Exception as e:
-        print(f"Error getting current portfolio: {e}")
+        _main_logger.warning(f"Error getting current portfolio: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/portfolio/history")
@@ -4915,12 +4735,7 @@ async def get_portfolio_history(period: str = "1m"):
         from datetime import datetime, timedelta
         
         # Connect to PostgreSQL
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         
         # Calculate time range based on period
         now = datetime.now()
@@ -5019,7 +4834,7 @@ async def get_portfolio_history(period: str = "1m"):
         }
         
     except Exception as e:
-        print(f"Error getting portfolio history: {e}")
+        _main_logger.warning(f"Error getting portfolio history: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/bankroll/history")
@@ -5029,12 +4844,7 @@ async def get_bankroll_history(period: str = "1m"):
         import psycopg2
         from datetime import datetime, timedelta
 
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
 
         now = datetime.now()
         if period == "1d":
@@ -5117,7 +4927,7 @@ async def get_bankroll_history(period: str = "1m"):
         }
 
     except Exception as e:
-        print(f"Error getting bankroll history: {e}")
+        _main_logger.warning(f"Error getting bankroll history: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/pnl/history")
@@ -5128,12 +4938,7 @@ async def get_pnl_history(period: str = "1m"):
         import psycopg2
         from datetime import datetime, timedelta
 
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
 
         now = datetime.now()
         start_time = None
@@ -5188,7 +4993,7 @@ async def get_pnl_history(period: str = "1m"):
         }
 
     except Exception as e:
-        print(f"Error getting PnL history: {e}")
+        _main_logger.warning(f"Error getting PnL history: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/performance/realized")
@@ -5201,12 +5006,7 @@ async def get_performance_realized():
         from datetime import datetime, timedelta
         from zoneinfo import ZoneInfo
 
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as tz_cur:
             tz_cur.execute("SET TIME ZONE 'America/New_York'")
         eastern = ZoneInfo("America/New_York")
@@ -5284,7 +5084,7 @@ async def get_performance_realized():
         return {"status": "ok", "periods": result}
 
     except Exception as e:
-        print(f"Error getting performance realized: {e}")
+        _main_logger.warning(f"Error getting performance realized: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/dashboard/preferences")
@@ -5324,7 +5124,7 @@ async def get_dashboard_preferences(mode: str = "prod"):
             }
             
     except Exception as e:
-        print(f"Error getting dashboard preferences: {e}")
+        _main_logger.warning(f"Error getting dashboard preferences: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/dashboard/preferences")
@@ -5335,7 +5135,7 @@ async def save_dashboard_preferences(request: Request):
         conn = get_postgresql_connection()
         
         data = await request.json()
-        print(f"[DASHBOARD PREFERENCES] Received data: {data}")
+        _main_logger.debug(f"[DASHBOARD PREFERENCES] Received data: {data}")
         portfolio_chart_view = data.get("portfolio_chart_view", "all")
         monitor_view_mode = data.get("monitor_view_mode", "tile")
         monitor_sort_by = data.get("monitor_sort_by", "name")
@@ -5343,7 +5143,7 @@ async def save_dashboard_preferences(request: Request):
         portfolio_view = data.get("portfolio_view", "portfolio")
         if portfolio_view not in ("bankroll", "portfolio", "pnl"):
             portfolio_view = "portfolio"
-        print(f"[DASHBOARD PREFERENCES] Extracted values: portfolio_chart_view={portfolio_chart_view}, monitor_view_mode={monitor_view_mode}, monitor_sort_by={monitor_sort_by}, allocation_view={allocation_view}, portfolio_view={portfolio_view}")
+        _main_logger.debug(f"[DASHBOARD PREFERENCES] Extracted values: portfolio_chart_view={portfolio_chart_view}, monitor_view_mode={monitor_view_mode}, monitor_sort_by={monitor_sort_by}, allocation_view={allocation_view}, portfolio_view={portfolio_view}")
         
         with conn.cursor() as cursor:
             cursor.execute("""
@@ -5362,14 +5162,14 @@ async def save_dashboard_preferences(request: Request):
         conn.commit()
         conn.close()
         
-        print(f"[DASHBOARD PREFERENCES] Successfully saved preferences to database")
+        _main_logger.debug(f"[DASHBOARD PREFERENCES] Successfully saved preferences to database")
         return {
             "status": "ok",
             "message": "Preferences saved successfully"
         }
             
     except Exception as e:
-        print(f"Error saving dashboard preferences: {e}")
+        _main_logger.warning(f"Error saving dashboard preferences: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/total_position")
@@ -5950,7 +5750,7 @@ async def get_monitors_allocation(user_id: str = "user_0001"):
         }
         
     except Exception as e:
-        print(f"Error getting monitors allocation: {e}")
+        _main_logger.warning(f"Error getting monitors allocation: {e}")
         return {
             "status": "error",
             "message": str(e)
@@ -6060,7 +5860,7 @@ async def update_monitors_allocation(request: dict):
                         WHERE id = %s
                     """, (new_total_position, monitor_id))
                     
-                    print(f"Updated monitor {monitor_id}: {new_percentage}% (${new_dollar_amount_cents/100:.2f}) -> total_position: {new_total_position}")
+                    _main_logger.debug(f"Updated monitor {monitor_id}: {new_percentage}% (${new_dollar_amount_cents/100:.2f}) -> total_position: {new_total_position}")
                     
                     # Send WebSocket notification to frontend about total_position update
                     try:
@@ -6071,9 +5871,9 @@ async def update_monitors_allocation(request: dict):
                             'multiplier': multiplier_value
                         }, timeout=1)
                     except Exception as e:
-                        print(f"Failed to send total_position update notification: {str(e)}")
+                        _main_logger.debug(f"Failed to send total_position update notification: {str(e)}")
                 else:
-                    print(f"Updated monitor {monitor_id}: {new_percentage}% (${new_dollar_amount_cents/100:.2f}) - no position data found")
+                    _main_logger.debug(f"Updated monitor {monitor_id}: {new_percentage}% (${new_dollar_amount_cents/100:.2f}) - no position data found")
         
         conn.commit()
         conn.close()
@@ -6084,7 +5884,7 @@ async def update_monitors_allocation(request: dict):
         }
         
     except Exception as e:
-        print(f"Error updating monitors allocation: {e}")
+        _main_logger.warning(f"Error updating monitors allocation: {e}")
         return {
             "status": "error",
             "message": str(e)
@@ -6123,7 +5923,7 @@ async def update_monitors_order(request: dict):
                 else:
                     numeric_id = monitor_id
                 
-                print(f"[MONITOR ORDER] Updating monitor {monitor_id} -> numeric_id: {numeric_id}, order: {new_order}")
+                _main_logger.debug(f"[MONITOR ORDER] Updating monitor {monitor_id} -> numeric_id: {numeric_id}, order: {new_order}")
                 
                 cursor.execute(f"""
                     UPDATE users.monitor_list_{user_number}
@@ -6187,10 +5987,10 @@ async def toggle_auto_trade(request: dict):
             conn.commit()
             conn.close()
             
-            print(f"[MAIN] ✅ Updated monitor {monitor_id} auto_trade to {auto_trade}")
+            _main_logger.debug(f"[MAIN] ✅ Updated monitor {monitor_id} auto_trade to {auto_trade}")
             
         except Exception as e:
-            print(f"[MAIN] ❌ Error updating database: {e}")
+            _main_logger.warning(f"[MAIN] ❌ Error updating database: {e}")
             return {"status": "error", "message": f"Database error: {str(e)}"}
         
         # Broadcast the auto trade toggle to all connected WebSocket clients
@@ -6202,26 +6002,26 @@ async def toggle_auto_trade(request: dict):
                 "message": f"Auto trade {'enabled' if auto_trade else 'disabled'} for monitor {monitor_id}"
             }
             
-            print(f"[MAIN] 🔔 Broadcasting auto trade toggle: {message}")
-            print(f"[MAIN] 🔔 Connected WebSocket clients: {len(connected_clients)}")
+            _main_logger.debug(f"[MAIN] 🔔 Broadcasting auto trade toggle: {message}")
+            _main_logger.debug(f"[MAIN] 🔔 Connected WebSocket clients: {len(connected_clients)}")
             
             # Send to preferences WebSocket clients
             for websocket in connected_clients.copy():
                 try:
                     await websocket.send_text(json.dumps(message))
-                    print(f"[MAIN] ✅ Message sent to WebSocket client")
+                    _main_logger.debug(f"[MAIN] ✅ Message sent to WebSocket client")
                 except Exception as e:
-                    print(f"Error sending to WebSocket client: {e}")
+                    _main_logger.warning(f"Error sending to WebSocket client: {e}")
                     connected_clients.discard(websocket)
             
-            print(f"[MAIN] ✅ Auto trade toggle broadcasted to {len(connected_clients)} WebSocket clients")
+            _main_logger.debug(f"[MAIN] ✅ Auto trade toggle broadcasted to {len(connected_clients)} WebSocket clients")
         except Exception as e:
-            print(f"[MAIN] ⚠️ Warning: Failed to broadcast auto trade toggle: {e}")
+            _main_logger.debug(f"[MAIN] ⚠️ Warning: Failed to broadcast auto trade toggle: {e}")
         
         return {"status": "ok", "message": f"Auto trade {'enabled' if auto_trade else 'disabled'} for monitor {monitor_id}"}
         
     except Exception as e:
-        print(f"Error in toggle auto trade: {e}")
+        _main_logger.warning(f"Error in toggle auto trade: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/monitor/toggle-paper-trade")
@@ -6273,7 +6073,7 @@ async def toggle_paper_trade(request: Request):
             conn.commit()
             conn.close()
             
-            print(f"[MAIN] ✅ Updated monitor {monitor_id} paper_trade to {paper_trade}")
+            _main_logger.debug(f"[MAIN] ✅ Updated monitor {monitor_id} paper_trade to {paper_trade}")
             
             # Broadcast the change to all connected WebSocket clients
             message = {
@@ -6287,19 +6087,19 @@ async def toggle_paper_trade(request: Request):
                 try:
                     await websocket.send_text(json.dumps(message))
                 except Exception as e:
-                    print(f"Error sending paper_trade update to WebSocket client: {e}")
+                    _main_logger.warning(f"Error sending paper_trade update to WebSocket client: {e}")
                     connected_clients.discard(websocket)
             
-            print(f"[MAIN] ✅ Paper trade change broadcasted to {len(connected_clients)} clients")
+            _main_logger.debug(f"[MAIN] ✅ Paper trade change broadcasted to {len(connected_clients)} clients")
             
             return {"status": "ok", "message": "Paper trade updated successfully"}
             
         except Exception as e:
-            print(f"[MAIN] ❌ Error updating database: {e}")
+            _main_logger.warning(f"[MAIN] ❌ Error updating database: {e}")
             return {"status": "error", "message": f"Database error: {str(e)}"}
             
     except Exception as e:
-        print(f"[MAIN] ❌ Error toggling paper trade: {e}")
+        _main_logger.warning(f"[MAIN] ❌ Error toggling paper trade: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/update_monitor_position")
@@ -6315,7 +6115,7 @@ async def update_monitor_position(request: Request):
         if monitor_id is None or position_size is None or position_type is None or multiplier is None:
             return {"error": "Missing required fields"}
         
-        print(f"[PROXY] Forwarding to monitor_manager: {data}")
+        _main_logger.debug(f"[PROXY] Forwarding to monitor_manager: {data}")
         
         # Forward to monitor_manager
         response = requests.post(
@@ -6324,7 +6124,7 @@ async def update_monitor_position(request: Request):
             timeout=30
         )
         
-        print(f"[PROXY] Monitor manager response: {response.status_code}")
+        _main_logger.debug(f"[PROXY] Monitor manager response: {response.status_code}")
         
         if response.status_code == 200:
             return response.json()
@@ -6332,7 +6132,7 @@ async def update_monitor_position(request: Request):
             return {"error": f"Monitor manager returned status {response.status_code}"}, response.status_code
             
     except Exception as e:
-        print(f"[PROXY] Error: {e}")
+        _main_logger.debug(f"[PROXY] Error: {e}")
         return {"error": str(e)}, 500
 
 @app.post("/api/monitor/archive")
@@ -6416,7 +6216,7 @@ async def archive_monitor(request: dict):
         conn.commit()
         conn.close()
         
-        print(f"[ARCHIVE] Monitor {monitor_name} (ID: {monitor_id}) archived successfully")
+        _main_logger.debug(f"[ARCHIVE] Monitor {monitor_name} (ID: {monitor_id}) archived successfully")
         
         # Broadcast monitor list update to all connected WebSocket clients
         message = {
@@ -6430,15 +6230,15 @@ async def archive_monitor(request: dict):
             try:
                 await websocket.send_text(json.dumps(message))
             except Exception as e:
-                print(f"Error sending monitor list update to WebSocket client: {e}")
+                _main_logger.warning(f"Error sending monitor list update to WebSocket client: {e}")
                 connected_clients.discard(websocket)
         
-        print(f"[ARCHIVE] ✅ Monitor list update broadcasted to {len(connected_clients)} clients")
+        _main_logger.debug(f"[ARCHIVE] ✅ Monitor list update broadcasted to {len(connected_clients)} clients")
         
         return {"status": "ok", "message": f"Monitor {monitor_name} archived successfully"}
         
     except Exception as e:
-        print(f"Error archiving monitor: {e}")
+        _main_logger.warning(f"Error archiving monitor: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/monitor/deactivate")
@@ -6490,7 +6290,7 @@ async def deactivate_monitor(request: dict):
         conn.commit()
         conn.close()
         
-        print(f"[DEACTIVATE] Monitor {monitor_name} (ID: {monitor_id}) deactivated successfully")
+        _main_logger.debug(f"[DEACTIVATE] Monitor {monitor_name} (ID: {monitor_id}) deactivated successfully")
         
         # Broadcast monitor list update to all connected WebSocket clients
         message = {
@@ -6504,15 +6304,15 @@ async def deactivate_monitor(request: dict):
             try:
                 await websocket.send_text(json.dumps(message))
             except Exception as e:
-                print(f"Error sending monitor list update to WebSocket client: {e}")
+                _main_logger.warning(f"Error sending monitor list update to WebSocket client: {e}")
                 connected_clients.discard(websocket)
         
-        print(f"[DEACTIVATE] ✅ Monitor list update broadcasted to {len(connected_clients)} clients")
+        _main_logger.debug(f"[DEACTIVATE] ✅ Monitor list update broadcasted to {len(connected_clients)} clients")
         
         return {"status": "ok", "message": f"Monitor {monitor_name} deactivated successfully"}
         
     except Exception as e:
-        print(f"Error deactivating monitor: {e}")
+        _main_logger.warning(f"Error deactivating monitor: {e}")
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/monitor/activate")
@@ -6564,7 +6364,7 @@ async def activate_monitor(request: dict):
         conn.commit()
         conn.close()
         
-        print(f"[ACTIVATE] Monitor {monitor_name} (ID: {monitor_id}) activated successfully")
+        _main_logger.debug(f"[ACTIVATE] Monitor {monitor_name} (ID: {monitor_id}) activated successfully")
         
         # Broadcast monitor list update to all connected WebSocket clients
         message = {
@@ -6578,15 +6378,15 @@ async def activate_monitor(request: dict):
             try:
                 await websocket.send_text(json.dumps(message))
             except Exception as e:
-                print(f"Error sending monitor list update to WebSocket client: {e}")
+                _main_logger.warning(f"Error sending monitor list update to WebSocket client: {e}")
                 connected_clients.discard(websocket)
         
-        print(f"[ACTIVATE] ✅ Monitor list update broadcasted to {len(connected_clients)} clients")
+        _main_logger.debug(f"[ACTIVATE] ✅ Monitor list update broadcasted to {len(connected_clients)} clients")
         
         return {"status": "ok", "message": f"Monitor {monitor_name} activated successfully"}
         
     except Exception as e:
-        print(f"Error activating monitor: {e}")
+        _main_logger.warning(f"Error activating monitor: {e}")
         return {"status": "error", "message": str(e)}
 
 
@@ -6697,11 +6497,11 @@ async def create_monitor(request: dict):
             return {"status": "error", "message": f"Monitor manager error: {response.text}"}
             
     except Exception as e:
-        print(f"Error forwarding monitor creation: {e}")
+        _main_logger.warning(f"Error forwarding monitor creation: {e}")
         return {"status": "error", "message": str(e)}
 
 # Main entry point
 if __name__ == "__main__":
-    print(f"[MAIN] 🚀 Launching app on centralized port {MAIN_APP_PORT}")
+    _main_logger.debug(f"[MAIN] 🚀 Launching app on centralized port {MAIN_APP_PORT}")
     uvicorn.run(app, host="0.0.0.0", port=MAIN_APP_PORT)
 

@@ -13,12 +13,16 @@ import os
 
 
 def get_database_config():
-    """Get database configuration from environment variables. Prefer DB_*; fall back to REC_DB_*."""
+    """Get database configuration from environment variables. Prefer DB_*; fall back to REC_DB_*.
+    In production (REC_ENVIRONMENT=production), DB_PASSWORD or REC_DB_PASS is required; no default."""
+    pw = os.getenv('DB_PASSWORD') or os.getenv('REC_DB_PASS')
+    if os.getenv('REC_ENVIRONMENT') == 'production' and not pw:
+        raise ValueError("DB_PASSWORD or REC_DB_PASS required in production")
     return {
         'host': os.getenv('DB_HOST') or os.getenv('REC_DB_HOST') or 'localhost',
         'database': os.getenv('DB_NAME') or os.getenv('REC_DB_NAME') or 'rec_io_db',
         'user': os.getenv('DB_USER') or os.getenv('REC_DB_USER') or 'rec_io_user',
-        'password': os.getenv('DB_PASSWORD') or os.getenv('REC_DB_PASS') or 'rec_io_password',
+        'password': pw or 'rec_io_password',
         'port': int(os.getenv('DB_PORT') or os.getenv('REC_DB_PORT') or '5432'),
     }
 

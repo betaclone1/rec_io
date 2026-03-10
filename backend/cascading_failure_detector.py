@@ -4,6 +4,7 @@ Cascading Failure Detector - Simplified Version
 Detects truly catastrophic system failures only.
 """
 
+import logging
 import os
 import sys
 import time
@@ -16,6 +17,36 @@ from typing import Dict, Any, List
 # Force output to be unbuffered for supervisor
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
+
+
+def _cfd_est_formatter():
+    class _ESTF(logging.Formatter):
+        def formatTime(self, record, datefmt=None):
+            dt = datetime.fromtimestamp(record.created, tz=ZoneInfo("America/New_York"))
+            s = dt.strftime("%Y-%m-%dT%H:%M:%S")
+            z = dt.strftime("%z")
+            return s + (z[:3] + ":" + z[3:] if len(z) >= 5 else z)
+    return _ESTF(fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+
+
+class _CfdFlushHandler(logging.StreamHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+
+def _configure_cfd_logging():
+    logr = logging.getLogger("cascading_failure_detector")
+    if logr.handlers:
+        return logr
+    h = _CfdFlushHandler(sys.stdout)
+    h.setFormatter(_cfd_est_formatter())
+    logr.addHandler(h)
+    logr.setLevel(logging.INFO)
+    return logr
+
+
+_cfd_logger = _configure_cfd_logging()
 
 # Add project root to path for imports
 from backend.util.paths import get_project_root
@@ -65,8 +96,8 @@ class CascadingFailureDetector:
             "kalshi_market_watchdog_hourly_eth", # ETH Kalshi hourly market data
             # "kalshi_market_watchdog_hourly_spx", # SPX Kalshi hourly market data
             # "kalshi_market_watchdog_hourly_ndx", # NDX Kalshi hourly market data
-            "kalshi_market_watchdog_hourly_inx", # INX Kalshi hourly market data
-            "kalshi_market_watchdog_hourly_nasdaq100", # NASDAQ100 Kalshi hourly market data
+            # "kalshi_market_watchdog_hourly_inx", # INX - not in supervisor; uncomment when deployed
+            # "kalshi_market_watchdog_hourly_nasdaq100", # NASDAQ100 - not in supervisor; uncomment when deployed
             "kalshi_market_watchdog_15m_btc", # BTC Kalshi 15m market data
             "kalshi_market_watchdog_15m_eth", # ETH Kalshi 15m market data
             "strike_table_generator_15m_btc", # BTC 15m strike table
@@ -96,11 +127,12 @@ class CascadingFailureDetector:
             "scripts/MASTER_RESTART.sh"
         ]
     
-    def _log_event(self, message: str):
-        """Log an event with timestamp."""
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[{timestamp}] {message}")
-        sys.stdout.flush()
+    def _log_event(self, message: str, level: str = "info"):
+        """Log an event (INFO by default). Use level='debug' for discovery/verbose."""
+        if level == "debug":
+            _cfd_logger.debug("%s", message)
+        else:
+            _cfd_logger.info("%s", message)
     
     def _update_critical_services(self):
         """Update critical services list to include active monitor processes"""
@@ -110,8 +142,8 @@ class CascadingFailureDetector:
     def _discover_services_from_config(self):
         """Discover all services from the universal configuration system."""
         try:
-            # Import the supervisor config generator to get the same service list
-            from scripts.generate_unified_supervisor_config import SupervisorConfigGenerator
+            # Import the supervisor config generator (scripts dir is on sys.path)
+            from config.generate_unified_supervisor_config import SupervisorConfigGenerator
             
             # Create a temporary generator to get the service list
             generator = SupervisorConfigGenerator()
@@ -140,10 +172,10 @@ class CascadingFailureDetector:
             # Update the critical services list
             self.critical_services = discovered_services
             
-            self._log_event(f"🔍 Discovered {len(discovered_services)} critical services from universal config")
+            self._log_event(f"Discovered {len(discovered_services)} critical services from universal config", level="debug")
             
         except Exception as e:
-            self._log_event(f"⚠️ Error discovering services from config, using fallback: {e}")
+            _cfd_logger.warning("Error discovering services from config, using fallback: %s", e)
             # Keep existing critical_services if discovery fails
             self.critical_services = self.core_critical_services.copy()
     
@@ -434,12 +466,9 @@ class CascadingFailureDetector:
             self._log_event(f"❌ Error checking restart completion: {e}")
     
     def run_detection_loop(self):
-        """Run continuous failure detection loop."""
-        self._log_event("🚀 Starting Cascading Failure Detector (Simplified)...")
-        self._log_event(f"Monitoring {len(self.critical_services)} critical services")
-        self._log_event(f"Check interval: {self.check_interval} seconds")
-        self._log_event(f"Failure thresholds: {self.failure_threshold}/{self.critical_threshold}/{self.cascading_threshold}")
-        self._log_event("")
+        """Run continuous failure detection loop. At INFO we only log when degraded (warning/critical/catastrophic)."""
+        _cfd_logger.debug("Starting Cascading Failure Detector; monitoring %s services every %ss",
+                         len(self.critical_services), self.check_interval)
         
         try:
             while True:
@@ -458,17 +487,13 @@ class CascadingFailureDetector:
                 total_services = len(self.critical_services)
                 
                 if failure_level == FailureLevel.NONE:
-                    print(f"🟢 System healthy - {healthy_services}/{total_services} services running")
-                    sys.stdout.flush()
+                    _cfd_logger.debug("System healthy - %s/%s services running", healthy_services, total_services)
                 elif failure_level == FailureLevel.WARNING:
-                    print(f"🟡 System warning - {healthy_services}/{total_services} services running")
-                    sys.stdout.flush()
+                    _cfd_logger.warning("System warning - %s/%s services running", healthy_services, total_services)
                 elif failure_level == FailureLevel.CRITICAL:
-                    print(f"🟠 System critical - {healthy_services}/{total_services} services running")
-                    sys.stdout.flush()
+                    _cfd_logger.warning("System critical - %s/%s services running", healthy_services, total_services)
                 elif failure_level == FailureLevel.CATASTROPHIC:
-                    print(f"🔴 System catastrophic - {healthy_services}/{total_services} services running")
-                    sys.stdout.flush()
+                    _cfd_logger.error("System catastrophic - %s/%s services running", healthy_services, total_services)
                     
                     # Trigger MASTER RESTART for catastrophic failures
                     if self.trigger_master_restart():
@@ -484,9 +509,9 @@ class CascadingFailureDetector:
                 time.sleep(self.check_interval)
                 
         except KeyboardInterrupt:
-            self._log_event("🛑 Detection stopped by user")
+            _cfd_logger.info("Detection stopped by user")
         except Exception as e:
-            self._log_event(f"❌ Detection error: {e}")
+            _cfd_logger.exception("Detection error: %s", e)
 
 if __name__ == "__main__":
     detector = CascadingFailureDetector()

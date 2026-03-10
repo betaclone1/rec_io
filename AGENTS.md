@@ -4,9 +4,11 @@ Project-specific agents are in `.cursor/rules/`.
 
 **Org chart & standards:** [.cursor/pm/ORG_CHART.md](.cursor/pm/ORG_CHART.md) — CEO/PM, departments (Technical, Analysis, Operations, Integrations), governance (real money → CEO; task flow through PM).
 
-**/verify** — After MASTER_RESTART: verify newest changes and system health. PM runs the checks and reports. See [.cursor/pm/VERIFY_COMMAND.md](.cursor/pm/VERIFY_COMMAND.md).
+**/verify-local** — After MASTER_RESTART (local): verify newest changes and system health on the local server. PM runs the checks and reports. See [.cursor/pm/VERIFY_COMMAND.md](.cursor/pm/VERIFY_COMMAND.md) (shared workflow) and `.cursor/commands/verify-local.md`.
 
-**/system-restart** — Run MASTER_RESTART, wait for completion, then run the full verify workflow. See [.cursor/pm/SYSTEM_RESTART_COMMAND.md](.cursor/pm/SYSTEM_RESTART_COMMAND.md).
+**/verify-production** — Same verification workflow as verify-local but run on the production server via SSH. See [.cursor/pm/VERIFY_COMMAND.md](.cursor/pm/VERIFY_COMMAND.md) and `.cursor/commands/verify-production.md`. Any changes to the workflow in VERIFY_COMMAND.md apply to both.
+
+**/system-restart** — Run MASTER_RESTART, wait for completion, then run **verify-local** (default). See [.cursor/pm/SYSTEM_RESTART_COMMAND.md](.cursor/pm/SYSTEM_RESTART_COMMAND.md).
 
 **/log-chat** — User's tool to request a chat summary: append a dated, timestamped entry to .cursor/pm/brain/15_chat_summary_log.md. The PM may also update that log on its own when helpful. On new chat, review all memory docs including this log. See [.cursor/pm/LOG_CHAT_COMMAND.md](.cursor/pm/LOG_CHAT_COMMAND.md).
 

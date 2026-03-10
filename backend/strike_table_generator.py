@@ -16,6 +16,7 @@ import logging
 import argparse
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Dict, List, Any, Optional, Tuple
 from decimal import Decimal
 
@@ -26,12 +27,39 @@ from backend.core.config.config_manager import config
 from backend.core.config.database import get_postgresql_connection
 from backend.util.paths import get_data_dir, get_kalshi_data_dir
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+
+def _est_formatter():
+    class ESTFormatter(logging.Formatter):
+        def formatTime(self, record, datefmt=None):
+            dt = datetime.fromtimestamp(record.created, tz=ZoneInfo("America/New_York"))
+            if datefmt:
+                return dt.strftime(datefmt)
+            s = dt.strftime("%Y-%m-%dT%H:%M:%S")
+            z = dt.strftime("%z")
+            return s + (z[:3] + ":" + z[3:] if len(z) >= 5 else z)
+    return ESTFormatter(fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+
+
+class _FlushingStreamHandler(logging.StreamHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+
+def _configure_logging():
+    log = logging.getLogger("strike_table_generator")
+    if log.handlers:
+        return log
+    handler = _FlushingStreamHandler(sys.stdout)
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(_est_formatter())
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    return log
+
+
+logger = _configure_logging()
+HEARTBEAT_INTERVAL_SEC = 300
 
 class LookupProbabilityCalculator:
     """Probability calculator using the lookup table instead of live interpolation."""
@@ -63,11 +91,11 @@ class LookupProbabilityCalculator:
             
             # Get the most recent table (highest date string)
             latest_table = results[0][0]
-            logger.info(f"📊 Using lookup table: {latest_table}")
+            logger.debug("Using lookup table: %s", latest_table)
             return latest_table
             
         except Exception as e:
-            logger.error(f"❌ Error finding lookup table for {self.symbol.upper()}: {e}")
+            logger.error("Error finding lookup table for %s: %s", self.symbol.upper(), e)
             raise
         finally:
             if conn:
@@ -92,7 +120,7 @@ class LookupProbabilityCalculator:
             return float(result[0])
             
         except Exception as e:
-            logger.error(f"Error getting max buffer for {self.symbol.upper()}: {e}")
+            logger.error("Error getting max buffer for %s: %s", self.symbol.upper(), e)
             raise
         finally:
             if conn:
@@ -121,7 +149,7 @@ class LookupProbabilityCalculator:
         
         # Check if buffer is outside lookup table range for this symbol
         if buffer_points > self.max_buffer:
-            logger.warning(f"Buffer {buffer_points} outside lookup table range (0-{self.max_buffer}), using max buffer as fallback")
+            logger.warning("Buffer %s outside lookup table range (0-%s), using max buffer as fallback", buffer_points, self.max_buffer)
             buffer_points = self.max_buffer
         
         use_external_conn = conn is not None
@@ -159,7 +187,7 @@ class LookupProbabilityCalculator:
             results = [(float(r[0]), float(r[1]), float(r[2]), float(r[3])) for r in results]
             
             if len(results) == 0:
-                logger.warning(f"No data found for TTC={ttc_seconds}, buffer={buffer_points}, momentum={momentum_bucket}")
+                logger.warning("No data found for TTC=%s, buffer=%s, momentum=%s", ttc_seconds, buffer_points, momentum_bucket)
                 return None, None
             
             elif len(results) == 1:
@@ -219,11 +247,11 @@ class LookupProbabilityCalculator:
                 return self._bilinear_interpolate(results, ttc_seconds, buffer_points)
             
             else:
-                logger.error(f"Unexpected number of results: {len(results)}")
+                logger.error("Unexpected number of results: %s", len(results))
                 raise ValueError(f"Unexpected number of lookup results: {len(results)}")
                 
         except Exception as e:
-            logger.error(f"Error in lookup probability calculation: {e}")
+            logger.error("Error in lookup probability calculation: %s", e)
             raise
         finally:
             if conn and not use_external_conn:
@@ -279,7 +307,7 @@ class LookupProbabilityCalculator:
             return pos_interp, neg_interp
             
         except Exception as e:
-            logger.error(f"Error in bilinear interpolation: {e}")
+            logger.error("Error in bilinear interpolation: %s", e)
             return 50.0, 50.0
     
     def _interpolate_2d(self, q11: float, q21: float, q12: float, q22: float,
@@ -333,9 +361,9 @@ class StrikeTableGenerator:
         self.interval = interval.lower()  # "hourly" or "15m"
         if self.interval == "15m" and self.symbol not in ("btc", "eth"):
             raise ValueError("15m interval only supported for BTC and ETH")
-        logger.info(f"🔧 Initializing strike table generator for {symbol.upper()} ({self.interval})")
+        logger.debug("Initializing strike table generator for %s (%s)", symbol.upper(), self.interval)
         self.calculator = LookupProbabilityCalculator(symbol)
-        logger.info(f"✅ Strike table generator initialized for {symbol.upper()} ({self.interval})")
+        logger.debug("Strike table generator initialized for %s (%s)", symbol.upper(), self.interval)
 
     def _strike_table_name(self) -> str:
         """Table name: strike_table_hourly_{symbol} or strike_table_15m_{symbol}."""
@@ -403,7 +431,7 @@ class StrikeTableGenerator:
             return f"{self.symbol.upper()} price today"
             
         except Exception as e:
-            logger.error(f"Error parsing event ticker {event_ticker}: {e}")
+            logger.error("Error parsing event ticker %s: %s", event_ticker, e)
             return f"{self.symbol.upper()} price today"
         
     def setup_live_data_schema(self):
@@ -490,10 +518,10 @@ class StrikeTableGenerator:
             cursor.execute(strike_index_sql)
             
             conn.commit()
-            logger.info(f"✅ Live data schema and tables created for {self.symbol.upper()}")
+            logger.debug("Live data schema and tables created for %s", self.symbol.upper())
             
         except Exception as e:
-            logger.error(f"❌ Error setting up live data schema: {e}")
+            logger.error("Error setting up live data schema: %s", e)
             raise
         finally:
             if conn:
@@ -503,7 +531,7 @@ class StrikeTableGenerator:
         """Get current market data from live_data.live_price_log_1s_{symbol} and Kalshi snapshot."""
         try:
             # Get current price and momentum from PostgreSQL
-            logger.info(f"🔍 Connecting to database for {self.symbol.upper()} price data...")
+            logger.debug("Connecting to database for %s price data", self.symbol.upper())
             conn = get_postgresql_connection()
             cursor = conn.cursor()
             
@@ -543,7 +571,7 @@ class StrikeTableGenerator:
             }
             
         except Exception as e:
-            logger.error(f"❌ Error getting current market data: {e}")
+            logger.error("Error getting current market data: %s", e)
             raise
     
     def get_kalshi_market_snapshot(self) -> Dict[str, Any]:
@@ -632,7 +660,7 @@ class StrikeTableGenerator:
                 strike_date = "2025-08-15T15:00:00Z"
             
             conn.close()
-            logger.info(f"📊 Loaded live market data from database - Event: {event_ticker}, Markets: {len(markets)}, Tier: ${strike_tier:,}")
+            logger.debug("Loaded live market data - Event: %s, Markets: %s, Tier: $%s", event_ticker, len(markets), f"{strike_tier:,}")
             return {
                 "event_ticker": event_ticker,
                 "market_status": "active",
@@ -642,7 +670,7 @@ class StrikeTableGenerator:
                 "markets": markets
             }
         except Exception as e:
-            logger.error(f"❌ Error getting Kalshi market data from database: {e}")
+            logger.error("Error getting Kalshi market data from database: %s", e)
             raise
     
     def detect_strike_tier_spacing(self, markets: List[Dict[str, Any]]) -> int:
@@ -693,7 +721,7 @@ class StrikeTableGenerator:
                 ttc_seconds = int((next_hour - now).total_seconds())
             return max(0, ttc_seconds)
         except Exception as e:
-            logger.warning(f"⚠️ Error calculating TTC, using default: {e}")
+            logger.warning("Error calculating TTC, using default: %s", e)
             return 300
 
     def _seconds_to_next_15m_boundary_est(self) -> int:
@@ -711,20 +739,20 @@ class StrikeTableGenerator:
                 next_boundary = now.replace(minute=next_min, second=0, microsecond=0)
             return max(0, int((next_boundary - now).total_seconds()))
         except Exception as e:
-            logger.warning(f"⚠️ Error calculating 15m TTC, using default: {e}")
+            logger.warning("Error calculating 15m TTC, using default: %s", e)
             return 300
     
-    def generate_strike_table(self) -> bool:
+    def generate_strike_table(self) -> Tuple[bool, Optional[str], int]:
         """
         Generate complete strike table data and write to PostgreSQL.
-        
+
         Returns:
-            True if successful
+            (success, event_ticker, num_strikes) on success; (False, None, 0) on failure.
         """
         conn = None
         try:
             # Get current market data
-            logger.info("📊 Getting current market data...")
+            logger.debug("Getting current market data")
             market_info = self.get_current_market_data()
             current_price = market_info["current_price"]
             momentum_score = market_info["momentum_score"]
@@ -734,13 +762,13 @@ class StrikeTableGenerator:
             movement = market_info.get("movement")
             movement_percentile = market_info.get("movement_percentile")
             market_data = market_info["market_data"]
-            logger.info(f"✅ Got market data - Price: ${current_price:,.2f}, Momentum: {momentum_percentile:.1f}")
+            logger.debug("Got market data - Price: $%s, Momentum: %s", f"{current_price:,.2f}", momentum_percentile)
             
             # Calculate TTC (hourly or 15m depending on interval) and always 15m boundary for ttc_15m column
             ttc_seconds = self.calculate_ttc_seconds(market_data["strike_date"])
             ttc_15m_seconds = self._seconds_to_next_15m_boundary_est()
             
-            logger.info(f"📊 Current data - Price: ${current_price:,.2f}, TTC: {ttc_seconds}s, TTC_15m: {ttc_15m_seconds}s, Momentum Percentile: {momentum_percentile:.1f}")
+            logger.debug("Current data - Price: $%s, TTC: %ss, TTC_15m: %ss, Momentum: %s", f"{current_price:,.2f}", ttc_seconds, ttc_15m_seconds, momentum_percentile)
             
             # Get available market strikes (use same integer as match logic so we find ask prices)
             markets = market_data.get("markets", [])
@@ -760,13 +788,13 @@ class StrikeTableGenerator:
                     single = available_strikes[0]
                 else:
                     single = int(round(current_price))
-                    logger.warning(f"15m: no valid strikes from market data, using synthetic strike {single} based on current_price {current_price}")
+                    logger.warning("15m: no valid strikes from market data, using synthetic strike %s based on current_price %s", single, current_price)
 
                 max_buffer = self.calculator.max_buffer
                 if abs(current_price - single) > max_buffer:
-                    logger.warning(f"15m strike {single} outside lookup buffer {max_buffer}, using anyway")
+                    logger.warning("15m strike %s outside lookup buffer %s, using anyway", single, max_buffer)
                 strikes = [single]
-                logger.info(f"🎯 Processing 1 strike (15m): {single}")
+                logger.debug("Processing 1 strike (15m): %s", single)
             else:
                 if not available_strikes:
                     raise ValueError("No valid strikes found in market data")
@@ -775,7 +803,7 @@ class StrikeTableGenerator:
                 filtered_strikes = [s for s in available_strikes if abs(current_price - s) <= max_buffer]
                 max_strikes = min(21, len(filtered_strikes))
                 strikes = filtered_strikes[:max_strikes]
-                logger.info(f"🎯 Processing {len(strikes)} strikes from market data")
+                logger.debug("Processing %s strikes from market data", len(strikes))
             
             # Use momentum percentile directly as bucket
             # momentum_percentile is already in percentile format like -47.0, -51.0, etc.
@@ -790,9 +818,9 @@ class StrikeTableGenerator:
             # Clear ALL previous strike table data - only keep current iteration
             try:
                 cursor.execute(f"DELETE FROM live_data.{table_name}")
-                logger.info(f"✅ Cleared previous strike table data for {self.symbol.upper()} ({self.interval})")
+                logger.debug("Cleared previous strike table data for %s (%s)", self.symbol.upper(), self.interval)
             except Exception as e:
-                logger.error(f"❌ Error clearing strike table: {e}")
+                logger.error("Error clearing strike table: %s", e)
                 conn.rollback()
                 raise
             
@@ -813,7 +841,7 @@ class StrikeTableGenerator:
                     else:
                         probability = neg_prob
                     if pos_prob is None or neg_prob is None:
-                        logger.warning(f"⚠️ No probability found for strike {strike}, skipping")
+                        logger.warning("No probability found for strike %s, skipping", strike)
                         continue
                     
                     pos_prob_15m, neg_prob_15m = self.calculator.get_probability(
@@ -853,14 +881,14 @@ class StrikeTableGenerator:
                                 break
                     
                     if yes_ask is None or no_ask is None:
-                        logger.warning(f"⚠️ Missing ask prices for strike {strike}, skipping")
+                        logger.warning("Missing ask prices for strike %s, skipping", strike)
                         continue
                     
                     # Calculate yes_diff and no_diff based on money line position using subpenny precision
                     # Convert _dollars values to cents for calculation (multiply by 100)
                     # Require _dollars values - no fallback to legacy cents
                     if not yes_ask_dollars or not no_ask_dollars:
-                        logger.warning(f"⚠️ Missing _dollars values for strike {strike}, skipping")
+                        logger.warning("Missing _dollars values for strike %s, skipping", strike)
                         continue
                     
                     # Calculate price spreads (ask_dollars - bid_dollars, always positive)
@@ -930,18 +958,18 @@ class StrikeTableGenerator:
                     })
                     
                 except Exception as e:
-                    logger.error(f"❌ Error processing strike {strike}: {e}")
+                    logger.error("Error processing strike %s: %s", strike, e)
                     continue
             
             conn.commit()
-            logger.info(f"✅ Generated {len(strike_data)} strike table records for {self.symbol.upper()}")
-            return True
-        
+            event_ticker = market_data.get("event_ticker")
+            logger.debug("Generated %s strike table records for %s", len(strike_data), self.symbol.upper())
+            return (True, event_ticker, len(strike_data))
         except Exception as e:
-            logger.error(f"❌ Error generating strike table: {e}")
+            logger.error("Error generating strike table: %s", e)
             if conn:
                 conn.rollback()
-            return False
+            return (False, None, 0)
         finally:
             if conn:
                 conn.close()
@@ -1025,7 +1053,7 @@ class StrikeTableGenerator:
             return result
             
         except Exception as e:
-            logger.error(f"❌ Error getting latest strike table JSON: {e}")
+            logger.error("Error getting latest strike table JSON: %s", e)
             return None
         finally:
             if conn:
@@ -1065,7 +1093,7 @@ class StrikeTableGenerator:
                 "consistency_status": "CONSISTENT" if is_consistent else "MIXED_TIMESTAMPS"
             }
         except Exception as e:
-            logger.error(f"❌ Error checking strike table consistency: {e}")
+            logger.error("Error checking strike table consistency: %s", e)
             return None
         finally:
             if conn:
@@ -1073,27 +1101,24 @@ class StrikeTableGenerator:
 
 def run_continuous_generation(interval_seconds: int = 30, symbol: str = "btc", interval: str = "hourly"):
     """Run the strike table generator continuously."""
-    logger.info(f"🚀 Starting continuous strike table generation for {symbol.upper()} ({interval}, interval: {interval_seconds}s)")
-    
-    # Initialize generator
+    logger.debug("Starting continuous strike table generation for %s (%s, interval: %ss)", symbol.upper(), interval, interval_seconds)
     generator = StrikeTableGenerator(symbol, interval=interval)
-    
-    # Setup schema
     generator.setup_live_data_schema()
-    
     iteration = 0
+    previous_event_ticker = None
+    last_heartbeat = time.time()
     while True:
         try:
             iteration += 1
-            logger.info(f"🔄 Generation iteration {iteration}")
-            
-            # Generate strike table
-            success = generator.generate_strike_table()
-            
+            logger.debug("Generation iteration %s", iteration)
+            success, event_ticker, num_strikes = generator.generate_strike_table()
             if success:
-                logger.info(f"✅ Iteration {iteration} completed successfully")
-                
-                # Show summary of latest data
+                if previous_event_ticker is not None and previous_event_ticker != event_ticker:
+                    logger.info(
+                        "Strike table rotated: %s → %s (%s strikes)",
+                        previous_event_ticker, event_ticker, num_strikes,
+                    )
+                previous_event_ticker = event_ticker
                 try:
                     conn = get_postgresql_connection()
                     cursor = conn.cursor()
@@ -1105,30 +1130,26 @@ def run_continuous_generation(interval_seconds: int = 30, symbol: str = "btc", i
                            AVG({prob_col}) as avg_prob
                     FROM live_data.{generator._strike_table_name()}
                     """)
-                    
                     result = cursor.fetchone()
                     if result:
                         total_strikes, min_prob, max_prob, avg_prob = result
-                        logger.info(f"📊 Summary: {total_strikes} strikes, Prob range: {min_prob:.2f}%-{max_prob:.2f}%, Avg: {avg_prob:.2f}%")
-                    
+                        logger.debug("Summary: %s strikes, Prob range: %s%%-%s%%, Avg: %s%%", total_strikes, min_prob, max_prob, avg_prob)
                     conn.close()
                 except Exception as e:
-                    logger.error(f"❌ Error getting summary: {e}")
+                    logger.error("Error getting summary: %s", e)
             else:
-                logger.error(f"❌ Iteration {iteration} failed")
-            
-            # Wait for next iteration
-            logger.info(f"⏳ Waiting {interval_seconds} seconds before next generation...")
-            import time
+                logger.error("Iteration %s failed", iteration)
+            if time.time() - last_heartbeat >= HEARTBEAT_INTERVAL_SEC:
+                logger.info("heartbeat")
+                last_heartbeat = time.time()
+            logger.debug("Waiting %s seconds before next generation", interval_seconds)
             time.sleep(interval_seconds)
-            
         except KeyboardInterrupt:
-            logger.info("🛑 Continuous generation stopped by user")
+            logger.debug("Continuous generation stopped by user")
             break
         except Exception as e:
-            logger.error(f"❌ Error in continuous generation: {e}")
-            logger.info("⏳ Waiting 60 seconds before retry...")
-            import time
+            logger.error("Error in continuous generation: %s", e, exc_info=True)
+            logger.debug("Waiting 60 seconds before retry")
             time.sleep(60)
 
 def main():
@@ -1149,7 +1170,7 @@ def main():
         run_continuous_generation(interval_sec, symbol, interval=interval)
     else:
         # Run in test mode
-        logger.info(f"🚀 Testing PostgreSQL Strike Table Generator for {symbol} ({interval})")
+        logger.debug("Testing PostgreSQL Strike Table Generator for %s (%s)", symbol, interval)
         
         # Initialize generator
         generator = StrikeTableGenerator(symbol, interval=interval)
@@ -1157,15 +1178,13 @@ def main():
         # Setup schema
         generator.setup_live_data_schema()
         
-        # Test strike table generation
-        logger.info("📊 Generating test strike table...")
-        success = generator.generate_strike_table()
-        
+        logger.debug("Generating test strike table")
+        success, _event, _n = generator.generate_strike_table()
         if success:
-            logger.info("✅ Strike table generation successful")
+            logger.debug("Strike table generation successful")
             
             # Test retrieval of strike table data
-            logger.info("📊 Retrieving latest strike table data...")
+            logger.debug("Retrieving latest strike table data")
             conn = get_postgresql_connection()
             cursor = conn.cursor()
             
@@ -1177,8 +1196,8 @@ def main():
             result = cursor.fetchone()
             if result:
                 total_records, latest_update = result
-                logger.info(f"✅ Strike table has {total_records} records")
-                logger.info(f"📊 Latest update: {latest_update}")
+                logger.debug("Strike table has %s records", total_records)
+                logger.debug("Latest update: %s", latest_update)
                 
                 # Show sample strike table data
                 prob_col = "probability_15m" if generator.interval == "15m" else "probability_hourly"
@@ -1190,16 +1209,16 @@ def main():
                 """)
                 
                 rows = cursor.fetchall()
-                logger.info("📊 Sample strike table data:")
+                logger.debug("Sample strike table data")
                 for row in rows:
                     strike, buffer, prob, yes_ask, no_ask, active_side = row
-                    logger.info(f"   Strike ${strike:,}: {prob:.2f}% | YES: {yes_ask} | NO: {no_ask} | {active_side.upper()}")
+                    logger.debug("Strike $%s: %s%% | YES: %s | NO: %s | %s", f"{strike:,}", f"{prob:.2f}", yes_ask, no_ask, active_side.upper())
             else:
-                logger.error("❌ No strike table data found")
+                logger.error("No strike table data found")
             
             conn.close()
         else:
-            logger.error("❌ Strike table generation failed")
+            logger.error("Strike table generation failed")
 
 if __name__ == "__main__":
     main()

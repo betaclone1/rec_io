@@ -85,7 +85,7 @@ perform_sanitization() {
     # Clear all user-specific data from database
     print_status "Clearing user data from database..."
     if command -v psql &> /dev/null; then
-        PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db << 'SQL_EOF' 2>/dev/null || true
+        PGPASSWORD="${POSTGRES_PASSWORD:-${DB_PASSWORD:-rec_io_password}}" psql -h localhost -U rec_io_user -d rec_io_db << 'SQL_EOF' 2>/dev/null || true
             -- Clear all user-specific data
             DELETE FROM users.trades_0001;
             DELETE FROM users.active_trades_0001;

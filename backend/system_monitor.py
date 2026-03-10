@@ -4,6 +4,7 @@ System Monitor - Simplified Version
 Monitors system health and performance metrics without aggressive restart logic.
 """
 
+import logging
 import os
 import sys
 import psutil
@@ -19,6 +20,36 @@ from typing import Dict, Any, List
 # Force output to be unbuffered for supervisor
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
+
+
+def _sm_est_formatter():
+    class _ESTF(logging.Formatter):
+        def formatTime(self, record, datefmt=None):
+            dt = datetime.fromtimestamp(record.created, tz=ZoneInfo("America/New_York"))
+            s = dt.strftime("%Y-%m-%dT%H:%M:%S")
+            z = dt.strftime("%z")
+            return s + (z[:3] + ":" + z[3:] if len(z) >= 5 else z)
+    return _ESTF(fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+
+
+class _SmFlushHandler(logging.StreamHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+
+def _configure_sm_logging():
+    logr = logging.getLogger("system_monitor")
+    if logr.handlers:
+        return logr
+    h = _SmFlushHandler(sys.stdout)
+    h.setFormatter(_sm_est_formatter())
+    logr.addHandler(h)
+    logr.setLevel(logging.INFO)
+    return logr
+
+
+_sm_logger = _configure_sm_logging()
 
 # Add project root to path for imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -83,8 +114,8 @@ class SystemMonitor:
     def _discover_services_from_config(self):
         """Discover all services from the universal configuration system."""
         try:
-            # Import the supervisor config generator to get the same service list
-            from scripts.generate_unified_supervisor_config import SupervisorConfigGenerator
+            # Import the supervisor config generator (scripts dir is on sys.path)
+            from config.generate_unified_supervisor_config import SupervisorConfigGenerator
             
             # Create a temporary generator to get the service list
             generator = SupervisorConfigGenerator()
@@ -158,12 +189,10 @@ class SystemMonitor:
             # Update the service URLs with discovered services
             self.service_urls = discovered_services
             
-            print(f"🔍 Discovered {len(discovered_services)} services from universal config")
-            sys.stdout.flush()
+            _sm_logger.debug("Discovered %s services from universal config", len(discovered_services))
             
         except Exception as e:
-            print(f"⚠️ Error discovering services from config, using fallback: {e}")
-            sys.stdout.flush()
+            _sm_logger.warning("Error discovering services from config, using fallback: %s", e)
             # Keep existing service_urls if discovery fails
     
     def check_service_health(self, service_name: str, port: int) -> Dict[str, Any]:
@@ -261,8 +290,7 @@ class SystemMonitor:
                             if m:
                                 supervisor_pid = int(m.group(1))
                     except Exception as e:
-                        print(f"⚠️ Error determining supervisor PID for {service_name}: {e}")
-                        sys.stdout.flush()
+                        _sm_logger.debug("Error determining supervisor PID for %s: %s", service_name, e)
                     
                     # Anything that is not the supervisor PID is considered rogue and should be killed.
                     # If we couldn't determine a supervisor PID, treat ALL matches as rogue; supervisor
@@ -275,8 +303,7 @@ class SystemMonitor:
                     # Kill rogue processes
                     for rogue_proc in rogue_processes:
                         try:
-                            print(f"🚨 KILLING DUPLICATE {service_name} PROCESS: PID {rogue_proc['pid']}")
-                            sys.stdout.flush()
+                            _sm_logger.info("KILLING DUPLICATE %s PROCESS: PID %s", service_name, rogue_proc['pid'])
                             
                             # Kill the process
                             os.kill(rogue_proc['pid'], 9)  # SIGKILL
@@ -292,12 +319,10 @@ class SystemMonitor:
                             # Process already dead
                             pass
                         except Exception as e:
-                            print(f"❌ Failed to kill duplicate {service_name} process {rogue_proc['pid']}: {e}")
-                            sys.stdout.flush()
+                            _sm_logger.warning("Failed to kill duplicate %s process %s: %s", service_name, rogue_proc['pid'], e)
             
             if duplicate_report["duplicates_found"]:
-                print(f"🚨 DUPLICATE PROCESSES DETECTED: {len(duplicate_report['duplicate_processes'])} services affected")
-                sys.stdout.flush()
+                _sm_logger.warning("DUPLICATE PROCESSES DETECTED: %s services affected", len(duplicate_report['duplicate_processes']))
                 
                                         # Send notification - DISABLED TO PREVENT FALSE ALERTS
                         # try:
@@ -308,8 +333,7 @@ class SystemMonitor:
                         #     sys.stdout.flush()
             
         except Exception as e:
-            print(f"❌ Error checking for duplicate processes: {e}")
-            sys.stdout.flush()
+            _sm_logger.warning("Error checking for duplicate processes: %s", e)
         
         return duplicate_report
 
@@ -456,7 +480,7 @@ class SystemMonitor:
                                 if process_name not in all_services:
                                     all_services.append(process_name)
         except Exception as e:
-            print(f"⚠️ Supervisor not available, using direct process check: {e}")
+            _sm_logger.debug("Supervisor not available, using direct process check: %s", e)
             supervisor_available = False
         
         service_status = {}
@@ -614,7 +638,7 @@ class SystemMonitor:
                 is_local_dev = False
                 if not report.get("supervisor_status", {}).get("processes"):
                     is_local_dev = True
-                    print("🖥️ Detected local development environment - adjusting health checks")
+                    _sm_logger.debug("Detected local development environment - adjusting health checks")
                 
                 # Check system resources (don't mark as degraded for resource errors, only for service failures)
                 resources = report.get("system_resources", {})
@@ -638,7 +662,7 @@ class SystemMonitor:
                     # In local development, assume all services are healthy
                     services_healthy = 13
                     services_total = 13
-                    print("✅ Local development mode - assuming all services are healthy")
+                    _sm_logger.debug("Local development mode - assuming all services are healthy")
                 else:
                     # Production environment - check actual service status
                     for service_name, service_info in services.items():
@@ -653,7 +677,7 @@ class SystemMonitor:
                 if is_local_dev:
                     # In local development, supervisor status doesn't matter
                     supervisor_status = "running"
-                    print("✅ Local development mode - supervisor status ignored")
+                    _sm_logger.debug("Local development mode - supervisor status ignored")
                 elif supervisor_status != "running" and supervisor_status != "not_running":
                     # Only mark as degraded if supervisor is in an error state, not if it's simply not running
                     if "error" in str(supervisor_status).lower():
@@ -663,8 +687,7 @@ class SystemMonitor:
                 duplicate_processes = report.get("duplicate_processes", {})
                 if duplicate_processes.get("duplicates_found", False):
                     overall_status = "degraded"
-                    print(f"⚠️ System status degraded due to duplicate processes detected")
-                    sys.stdout.flush()
+                    _sm_logger.warning("System status degraded due to duplicate processes detected")
                 
                 # Extract system resource metrics
                 cpu_percent = None
@@ -709,12 +732,10 @@ class SystemMonitor:
                 ))
                 
                 conn.commit()
-                print(f"💾 Health report saved to database: {overall_status} ({services_healthy}/{services_total} services healthy)")
-                sys.stdout.flush()
+                _sm_logger.debug("Health report saved: %s (%s/%s services)", overall_status, services_healthy, services_total)
                 
         except Exception as e:
-            print(f"❌ Error saving health report to database: {e}")
-            sys.stdout.flush()
+            _sm_logger.warning("Error saving health report to database: %s", e)
     
     def trigger_master_restart(self):
         """Trigger a MASTER RESTART and send notification."""
@@ -722,8 +743,7 @@ class SystemMonitor:
             # Import user_notifications here to avoid circular imports - DISABLED
             # import user_notifications
             
-            print("🚨 TRIGGERING MASTER RESTART")
-            sys.stdout.flush()
+            _sm_logger.warning("TRIGGERING MASTER RESTART")
             
             # Send notification - DISABLED TO PREVENT FALSE ALERTS
             # message = "SYSTEM-TRIGGERED MASTER RESTART: System monitor detected critical failures. MASTER RESTART initiated."
@@ -752,12 +772,12 @@ class SystemMonitor:
             #     print(f"❌ MASTER RESTART failed: {result.stderr}")
             #     return False
             
-            print("🚨 MASTER RESTART DISABLED - Would have triggered restart but alerts are disabled")
+            _sm_logger.warning("MASTER RESTART DISABLED - Would have triggered restart but alerts are disabled")
             self.master_restart_triggered = True
             return True
                 
         except Exception as e:
-            print(f"❌ Error triggering MASTER RESTART: {e}")
+            _sm_logger.exception("Error triggering MASTER RESTART: %s", e)
             return False
     
     def check_restart_completion(self):
@@ -792,101 +812,31 @@ class SystemMonitor:
                 # message = "SYSTEM RESTARTED SUCCESSFULLY: All critical services are running. Automated trading functions have resumed."
                 # user_notifications.send_user_notification(message, "RESTART_SUCCESS")
                 self.trading_suspended = False
-                print("✅ System fully recovered - automated trading resumed")
-                sys.stdout.flush()
+                _sm_logger.info("System fully recovered - automated trading resumed")
             else:
                 # Failure - send notification - DISABLED TO PREVENT FALSE ALERTS
                 # message = f"SYSTEM RESTART FAILED: Critical services still down: {', '.join(failed_services)}. System needs immediate attention."
                 # user_notifications.send_user_notification(message, "RESTART_FAILURE")
-                print(f"❌ System restart failed - services still down: {', '.join(failed_services)}")
-                sys.stdout.flush()
+                _sm_logger.warning("System restart failed - services still down: %s", ", ".join(failed_services))
             
             self.restart_completion_checked = True
             
         except Exception as e:
-            print(f"❌ Error checking restart completion: {e}")
-            sys.stdout.flush()
+            _sm_logger.warning("Error checking restart completion: %s", e)
     
     def run_monitoring_loop(self):
         """Run continuous monitoring loop."""
-        print("🚀 Starting Trading System Monitor (Simplified)...")
-        sys.stdout.flush()
-        print(f"Monitoring {len(self.service_urls)} services every {self.monitoring_interval} seconds")
-        sys.stdout.flush()
-        print()
-        sys.stdout.flush()
+        _sm_logger.info("Starting System Monitor; monitoring %s services every %ss", len(self.service_urls), self.monitoring_interval)
         
         try:
             while True:
                 report = self.generate_health_report()
-                
-                # Print status summary
-                print(f"📊 System Health Report - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                sys.stdout.flush()
-                print("=" * 60)
-                sys.stdout.flush()
-                
-                # System resources
                 resources = report["system_resources"]
-                if "error" not in resources:
-                    print(f"💻 CPU: {resources['cpu_percent']:.1f}% | "
-                          f"Memory: {resources['memory_percent']:.1f}% | "
-                          f"Disk: {resources['disk_percent']:.1f}%")
-                    sys.stdout.flush()
-                else:
-                    print(f"❌ System resources error: {resources['error']}")
-                    sys.stdout.flush()
-                
-                # Database health
-                db_health = report["database_health"]
-                for db_name, db_status in db_health.items():
-                    status_icon = "✅" if db_status["status"] == "healthy" else "❌"
-                    print(f"{status_icon} {db_name}: {db_status['status']}")
-                    sys.stdout.flush()
-                
-                # Comprehensive service status
                 all_services = report["all_services_status"]
-                print(f"\n🔧 ALL SERVICES STATUS ({all_services['running_services']}/{all_services['total_services']} running):")
-                sys.stdout.flush()
-                
-                # Group services by category (updated to match current configuration)
-                # SPX/NDX services commented out; add back when re-enabling SPX/NDX trading.
-                service_categories = {
-                    "Core Trading": ["main_app", "trade_manager", "trade_executor"],
-                    "Data Services": ["symbol_price_watchdog_btc", "symbol_price_watchdog_eth", "strike_table_generator_hourly_btc", "strike_table_generator_hourly_eth", "strike_table_generator_15m_btc", "strike_table_generator_15m_eth"],
-                    "Kalshi API": ["kalshi_account_sync", "kalshi_market_watchdog_hourly_btc", "kalshi_market_watchdog_hourly_eth", "kalshi_market_watchdog_15m_btc", "kalshi_market_watchdog_15m_eth"],
-                    "Monitor Management": ["monitor_manager"],
-                    "System Management": ["cascading_failure_detector", "system_monitor"]
-                }
-                
-                for category, services in service_categories.items():
-                    print(f"\n  📂 {category}:")
-                    sys.stdout.flush()
-                    for service in services:
-                        if service in all_services["services"]:
-                            service_info = all_services["services"][service]
-                            if service_info["status"] == "running":
-                                status_icon = "✅"
-                            elif service_info["status"] == "stopped":
-                                status_icon = "⏸️"
-                            elif service_info["status"] == "fatal":
-                                status_icon = "💀"
-                            else:
-                                status_icon = "❓"
-                            print(f"    {status_icon} {service}: {service_info['status']}")
-                            sys.stdout.flush()
-                        else:
-                            print(f"    ❓ {service}: not found")
-                            sys.stdout.flush()
-                
-                # Service health (port-based services)
-                print("\n🔧 Port-Based Service Health:")
-                sys.stdout.flush()
-                for service_name, service_status in report["services"].items():
-                    status_icon = "✅" if service_status["status"] == "healthy" else "❌"
-                    port = service_status.get("port", "N/A")
-                    print(f"  {status_icon} {service_name} (port {port}): {service_status['status']}")
-                    sys.stdout.flush()
+                run = all_services["running_services"]
+                total = all_services["total_services"]
+                cpu_str = "%.1f%%" % resources["cpu_percent"] if "error" not in resources else "error"
+                _sm_logger.debug("Health: %s/%s services, CPU %s", run, total, cpu_str)
                 
                 # Check for failed services and handle MASTER RESTART logic
                 failed_services = []
@@ -896,29 +846,20 @@ class SystemMonitor:
                 
                 # Handle MASTER RESTART logic
                 if failed_services:
-                    print(f"\n🚨 Found {len(failed_services)} failed services: {', '.join(failed_services)}")
-                    sys.stdout.flush()
+                    _sm_logger.warning("Found %s failed services: %s", len(failed_services), ", ".join(failed_services))
                     
                     # Suspend trading immediately
                     if not self.trading_suspended:
                         self.trading_suspended = True
-                        print("🚨 CRITICAL: Services down - automated trading suspended")
-                        sys.stdout.flush()
-                        
-                        # First, check and store current trading states before disabling
-                        # Auto trade intervention removed - user settings will not be modified automatically
-                        print("🛡️ Auto trade intervention disabled - user settings preserved")
-                        sys.stdout.flush()
+                        _sm_logger.warning("CRITICAL: Services down - automated trading suspended")
                     
                     # Try individual restarts first
                     self.restart_attempts += 1
-                    print(f"🔄 Attempting service recovery (attempt {self.restart_attempts}/{self.max_restart_attempts})")
-                    sys.stdout.flush()
+                    _sm_logger.info("Attempting service recovery (attempt %s/%s)", self.restart_attempts, self.max_restart_attempts)
                     
                     # Actually attempt to restart failed services
                     for service_name in failed_services:
-                        print(f"🔄 Attempting to restart {service_name}...")
-                        sys.stdout.flush()
+                        _sm_logger.debug("Attempting to restart %s...", service_name)
                         
                         try:
                             from backend.util.paths import get_supervisorctl_path, get_supervisor_config_path
@@ -928,11 +869,9 @@ class SystemMonitor:
                             )
                             
                             if result.returncode == 0:
-                                print(f"✅ Successfully restarted {service_name}")
-                                sys.stdout.flush()
+                                _sm_logger.info("Successfully restarted %s", service_name)
                                 
                                 # Immediately check if system has recovered after restart
-                                print("🔄 Checking system recovery after restart...")
                                 time.sleep(2)  # Brief pause to let service start
                                 
                                 # Check if all services are now healthy
@@ -949,33 +888,24 @@ class SystemMonitor:
                                             all_healthy = False
                                             break
                                     except Exception as e:
-                                        print(f"⚠️ Error checking {check_service} status: {e}")
+                                        _sm_logger.debug("Error checking %s status: %s", check_service, e)
                                         all_healthy = False
                                         break
                                 
                                 if all_healthy:
-                                    print("✅ All services recovered - checking if trading should be re-enabled...")
-                                    # Check if we were previously suspended
+                                    _sm_logger.info("All services recovered after restart")
                                     if self.trading_suspended:
-                                        print("✅ System recovered - user trading settings preserved")
                                         self.trading_suspended = False
-                                        
-                                        # Auto trade intervention removed - user settings will not be modified automatically
-                                        print("🛡️ Auto trade intervention disabled - user settings preserved")
-                                        sys.stdout.flush()
                                     break  # Exit the loop since system is recovered
                             else:
-                                print(f"❌ Failed to restart {service_name}: {result.stderr}")
-                                sys.stdout.flush()
+                                _sm_logger.warning("Failed to restart %s: %s", service_name, result.stderr)
                                 
                         except Exception as e:
-                            print(f"❌ Error restarting {service_name}: {e}")
-                            sys.stdout.flush()
+                            _sm_logger.warning("Error restarting %s: %s", service_name, e)
                     
                     # If max attempts reached, trigger MASTER RESTART
                     if self.restart_attempts >= self.max_restart_attempts:
-                        print("🚨 Maximum restart attempts reached - triggering MASTER RESTART")
-                        sys.stdout.flush()
+                        _sm_logger.warning("Maximum restart attempts reached - triggering MASTER RESTART")
                         self.trigger_master_restart()
                         self.restart_attempts = 0  # Reset for next cycle
                 else:
@@ -983,28 +913,18 @@ class SystemMonitor:
                     if self.trading_suspended:
                         self.trading_suspended = False
                         self.restart_attempts = 0
-                        print("✅ System recovered - user trading settings preserved")
-                        sys.stdout.flush()
-                        
-                        # Auto trade intervention removed - user settings will not be modified automatically
-                        print("🛡️ Auto trade intervention disabled - user settings preserved")
-                        sys.stdout.flush()
+                        _sm_logger.info("System recovered - user trading settings preserved")
                 
                 # Check restart completion if MASTER RESTART was triggered
                 if self.master_restart_triggered and not self.restart_completion_checked:
                     self.check_restart_completion()
                 
-                print("\n" + "=" * 60)
-                sys.stdout.flush()
                 time.sleep(self.monitoring_interval)
                 
         except KeyboardInterrupt:
-            print("\n🛑 Monitoring stopped by user")
-            sys.stdout.flush()
+            _sm_logger.info("Monitoring stopped by user")
         except Exception as e:
-            print(f"❌ Monitoring error: {e}")
-            sys.stdout.flush()
-            sys.stderr.flush()
+            _sm_logger.exception("Monitoring error: %s", e)
 
 if __name__ == "__main__":
     monitor = SystemMonitor()

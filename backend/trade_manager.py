@@ -1,3 +1,4 @@
+import logging
 import threading
 import time
 import os
@@ -26,6 +27,46 @@ CONTRACT_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2})(am|pm)$", re.IGNORECASE)
 CONTRACT_15M_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2}):[0-9]{2}\s*(am|pm)", re.IGNORECASE)
 CONTRACT_15M_FULL_PATTERN = re.compile(r".*\s([0-9]{1,2}):([0-9]{2})\s*(am|pm)", re.IGNORECASE)
 MONITOR_KEY_PATTERN = re.compile(r"^mon_(\d+?)_(\d+)$", re.IGNORECASE)
+
+
+def _tm_est_formatter():
+    class _ESTF(logging.Formatter):
+        def formatTime(self, record, datefmt=None):
+            dt = datetime.fromtimestamp(record.created, tz=ZoneInfo("America/New_York"))
+            s = dt.strftime("%Y-%m-%dT%H:%M:%S")
+            z = dt.strftime("%z")
+            return s + (z[:3] + ":" + z[3:] if len(z) >= 5 else z)
+    return _ESTF(fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+
+
+class _TmFlushHandler(logging.StreamHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+
+def _configure_tm_logging():
+    logr = logging.getLogger("trade_manager")
+    if logr.handlers:
+        return logr
+    h = _TmFlushHandler(sys.stdout)
+    h.setFormatter(_tm_est_formatter())
+    logr.addHandler(h)
+    logr.setLevel(logging.INFO)
+    return logr
+
+
+_tm_logger = _configure_tm_logging()
+
+
+def log(msg):
+    """Log messages at INFO; use log_debug for routine/verbose output."""
+    _tm_logger.info("%s", msg)
+
+
+def log_debug(msg):
+    """Log at DEBUG (not shown at default INFO level)."""
+    _tm_logger.debug("%s", msg)
 
 
 def _fetch_monitor_state(pg_conn, monitor_key):
@@ -57,7 +98,7 @@ def _fetch_monitor_state(pg_conn, monitor_key):
                 }
         return None
     except Exception as e:
-        print(f"⚠️ Error fetching monitor state for {monitor_key}: {e}")
+        log(f"⚠️ Error fetching monitor state for {monitor_key}: {e}")
         return None
 
 
@@ -291,7 +332,7 @@ def get_momentum_data_from_postgresql(symbol):
                 "weighted_momentum_score": 0
             }
     except Exception as e:
-        print(f"Error getting momentum from PostgreSQL: {e}")
+        log(f"Error getting momentum from PostgreSQL: {e}")
         return {
             "weighted_momentum_score": 0
         }
@@ -315,7 +356,7 @@ def get_postgresql_connection():
         )
         return conn
     except Exception as e:
-        print(f"❌ Failed to connect to PostgreSQL: {e}")
+        log(f"❌ Failed to connect to PostgreSQL: {e}")
         return None
 
 
@@ -353,7 +394,7 @@ def _get_system_mode() -> str:
         conn = get_postgresql_connection()
         if not conn:
             # If we cannot talk to the DB at all, treat as maintenance for safety.
-            print("⚠️ SYSTEM_STATE: No DB connection; treating mode as 'maintenance'")
+            log("⚠️ SYSTEM_STATE: No DB connection; treating mode as 'maintenance'")
             return "maintenance"
 
         with conn.cursor() as cursor:
@@ -385,7 +426,7 @@ def _get_system_mode() -> str:
         return "normal"
     except Exception as e:
         # On any unexpected error, fail closed.
-        print(f"⚠️ SYSTEM_STATE error: {e}")
+        log(f"⚠️ SYSTEM_STATE error: {e}")
         return "maintenance"
     finally:
         if conn:
@@ -404,8 +445,7 @@ def _is_trading_enabled() -> bool:
     """
     mode = _get_system_mode()
     if mode != "normal":
-        # Use plain print here; log() may not yet be defined at import time when this runs.
-        print(f"[TRADE_MANAGER] Trading disabled (system_mode={mode}); rejecting new trade request")
+        log(f"[TRADE_MANAGER] Trading disabled (system_mode={mode}); rejecting new trade request")
     return mode == "normal"
 
 
@@ -459,7 +499,7 @@ def insert_trade(trade):
                 movement_for_db = float(result[6]) if result[6] is not None else None
                 movement_percentile_for_db = float(result[7]) if result[7] is not None else None
     except Exception as e:
-        print(f"⚠️ insert_trade: live_price_log_1s_{symbol_lower} failed for symbol_open: {e}")
+            log(f"⚠️ insert_trade: live_price_log_1s_{symbol_lower} failed for symbol_open: {e}")
 
     # Fallback: if we still have no price, get it from the main app API (same source as confirm path)
     if symbol_open is None:
@@ -472,7 +512,7 @@ def insert_trade(trade):
                 if price is not None:
                     symbol_open = round(float(price), 2)
         except Exception as e:
-            print(f"⚠️ insert_trade: API fallback for symbol_open failed: {e}")
+            log(f"⚠️ insert_trade: API fallback for symbol_open failed: {e}")
 
     contract_original = trade.get('contract')
     contract_name = truncate_contract_name(contract_original, symbol)
@@ -510,7 +550,7 @@ def insert_trade(trade):
                             if cooldown_result and cooldown_result[0] is not None:
                                 cooldown_timer = int(cooldown_result[0])
                     except Exception as e:
-                        print(f"⚠️ Error fetching cooldown_timer for {monitor_key}: {e}")
+                        log(f"⚠️ Error fetching cooldown_timer for {monitor_key}: {e}")
                 
                 # Handle loss_prevention
                 trade_loss_prevention = trade.get('loss_prevention')
@@ -606,13 +646,13 @@ def insert_trade(trade):
                 ))
                 last_id = cursor.fetchone()[0]
                 pg_conn.commit()
-                print(f"💾 Trade written to PostgreSQL users.trades_0001 with ID {last_id}")
+                log_debug(f"💾 Trade written to PostgreSQL users.trades_0001 with ID {last_id}")
             pg_conn.close()
         else:
-            print(f"⚠️ Skipping PostgreSQL write - no connection available")
+            log(f"⚠️ Skipping PostgreSQL write - no connection available")
             return None
     except Exception as pg_err:
-        print(f"❌ Failed to write trade to PostgreSQL: {pg_err}")
+        log(f"❌ Failed to write trade to PostgreSQL: {pg_err}")
         return None
     
     notify_frontend_trade_change()
@@ -686,7 +726,7 @@ def insert_simulated_trade(trade):
                 movement_for_db = float(result[6]) if result[6] is not None else None
                 movement_percentile_for_db = float(result[7]) if result[7] is not None else None
     except Exception as e:
-        print(f"⚠️ insert_simulated_trade: live_price_log_1s_{symbol_lower} failed for symbol_open: {e}")
+        log(f"⚠️ insert_simulated_trade: live_price_log_1s_{symbol_lower} failed for symbol_open: {e}")
 
     # Fallback: if we still have no price, get it from the main app API
     if symbol_open is None:
@@ -699,7 +739,7 @@ def insert_simulated_trade(trade):
                 if price is not None:
                     symbol_open = round(float(price), 2)
         except Exception as e:
-            print(f"⚠️ insert_simulated_trade: API fallback for symbol_open failed: {e}")
+            log(f"⚠️ insert_simulated_trade: API fallback for symbol_open failed: {e}")
 
     # Simulated trades: do not record diff, buy_price, position, fees, or bankroll
     diff_formatted = None
@@ -783,11 +823,11 @@ def insert_simulated_trade(trade):
         pg_conn.commit()
         pg_conn.close()
         if last_id is None:
-            print("❌ Simulated trade INSERT returned no id (RETURNING id gave no row)")
+            log("❌ Simulated trade INSERT returned no id (RETURNING id gave no row)")
             return None
     except Exception as e:
         import traceback
-        print(f"❌ Failed to write simulated trade: {e}")
+        log(f"❌ Failed to write simulated trade: {e}")
         traceback.print_exc()
         return None
     return last_id
@@ -962,16 +1002,16 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                                     """, (position_for_db, buy_price, total_fees_dollars, diff_formatted, symbol_open, id))
                                     
                                     if cursor.rowcount > 0:
-                                        print(f"💾 Trade additional fields updated in PostgreSQL users.trades_0001 from ORDERS data")
+                                        log_debug(f"💾 Trade additional fields updated in PostgreSQL users.trades_0001 from ORDERS data")
                                     else:
-                                        print(f"⚠️ No matching trade found in PostgreSQL for ID {id}")
+                                        log(f"⚠️ No matching trade found in PostgreSQL for ID {id}")
                                     
                                     pg_conn_update.commit()
                                 pg_conn_update.close()
                             else:
-                                print(f"⚠️ Skipping PostgreSQL additional fields update - no connection available")
+                                log(f"⚠️ Skipping PostgreSQL additional fields update - no connection available")
                         except Exception as pg_err:
-                            print(f"❌ Failed to update trade additional fields in PostgreSQL: {pg_err}")
+                            log(f"❌ Failed to update trade additional fields in PostgreSQL: {pg_err}")
                         
                         # Update trade status to open (this will also update PostgreSQL and notify ATS)
                         update_trade_status(id, 'open')
@@ -1318,11 +1358,6 @@ def get_high_low_prices_from_active_trades(trade_id: int) -> tuple:
     except Exception as e:
         log(f"❌ Error getting high/low prices from active_trades for trade {trade_id}: {e}")
         return (None, None)
-
-def log(msg):
-    """Log messages with timestamp"""
-    timestamp = datetime.now(ZoneInfo("America/New_York")).strftime("%H:%M:%S")
-    print(f"[TRADE_MANAGER {timestamp}] {msg}", flush=True)
 
 
 def _split_monitor_identifier(monitor_key: str):
@@ -1705,7 +1740,7 @@ def log_event(ticket_id, message):
     try:
         log_trade_event(ticket_id, message, service="trade_manager")
     except Exception as e:
-        print(f"[LOG ERROR] Failed to write log: {message} — {e}")
+        log(f"[LOG ERROR] Failed to write log: {message} — {e}")
 
 def notify_active_trade_supervisor_direct_with_monitor(trade_id: int, ticket_id: str, status: str, monitor_identifier: str) -> None:
     """Send direct notification to active trade supervisor via HTTP API with pre-fetched monitor identifier"""
@@ -1869,7 +1904,7 @@ def init_trades_db():
     try:
         pg_conn = get_postgresql_connection()
         if not pg_conn:
-            print("⚠️ Cannot connect to PostgreSQL - skipping database initialization")
+            log("⚠️ Cannot connect to PostgreSQL - skipping database initialization")
             return
         
         with pg_conn.cursor() as cursor:
@@ -1989,32 +2024,39 @@ def init_trades_db():
 
             
             # Add order_id columns if they don't exist (for existing databases)
+            # Use savepoints so a failing ALTER/UPDATE doesn't leave the transaction aborted.
             try:
+                cursor.execute("SAVEPOINT sp_order_id_open")
                 cursor.execute("ALTER TABLE users.trades_0001 ADD COLUMN order_id_open TEXT")
-                print("✅ Added order_id_open column to existing trades table")
+                log_debug("✅ Added order_id_open column to existing trades table")
             except Exception as e:
+                cursor.execute("ROLLBACK TO SAVEPOINT sp_order_id_open")
                 if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
-                    print("✅ order_id_open column already exists in trades table")
+                    log_debug("✅ order_id_open column already exists in trades table")
                 else:
-                    print(f"⚠️ Note: Could not add order_id_open column: {e}")
+                    log(f"⚠️ Note: Could not add order_id_open column: {e}")
             
             try:
+                cursor.execute("SAVEPOINT sp_order_id_close")
                 cursor.execute("ALTER TABLE users.trades_0001 ADD COLUMN order_id_close TEXT")
-                print("✅ Added order_id_close column to existing trades table")
+                log_debug("✅ Added order_id_close column to existing trades table")
             except Exception as e:
+                cursor.execute("ROLLBACK TO SAVEPOINT sp_order_id_close")
                 if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
-                    print("✅ order_id_close column already exists in trades table")
+                    log_debug("✅ order_id_close column already exists in trades table")
                 else:
-                    print(f"⚠️ Note: Could not add order_id_close column: {e}")
+                    log(f"⚠️ Note: Could not add order_id_close column: {e}")
             
             # Migrate existing order_id data to order_id_open
             try:
+                cursor.execute("SAVEPOINT sp_migrate_order_id")
                 cursor.execute("UPDATE users.trades_0001 SET order_id_open = order_id WHERE order_id IS NOT NULL AND order_id_open IS NULL")
                 migrated_count = cursor.rowcount
                 if migrated_count > 0:
-                    print(f"✅ Migrated {migrated_count} existing order_id values to order_id_open")
+                    log_debug(f"✅ Migrated {migrated_count} existing order_id values to order_id_open")
             except Exception as e:
-                print(f"⚠️ Could not migrate existing order_id data: {e}")
+                cursor.execute("ROLLBACK TO SAVEPOINT sp_migrate_order_id")
+                log(f"⚠️ Could not migrate existing order_id data: {e}")
             
             # Create indexes for better performance
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_0001_status ON users.trades_0001(status)")
@@ -2027,12 +2069,12 @@ def init_trades_db():
 
             
             pg_conn.commit()
-            print("✅ PostgreSQL database structure initialized successfully")
+            log_debug("✅ PostgreSQL database structure initialized successfully")
             
         pg_conn.close()
         
     except Exception as e:
-        print(f"❌ Error initializing PostgreSQL database structure: {e}")
+        log(f"❌ Error initializing PostgreSQL database structure: {e}")
         try:
             pg_conn.close()
         except:
@@ -2124,9 +2166,9 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                     """, (status, trade_id))
                 
                 if cursor.rowcount > 0:
-                    print(f"💾 Trade status update written to PostgreSQL users.trades_0001")
+                    log_debug(f"💾 Trade status update written to PostgreSQL users.trades_0001")
                 else:
-                    print(f"⚠️ No matching trade found in PostgreSQL for ID {trade_id}")
+                    log(f"⚠️ No matching trade found in PostgreSQL for ID {trade_id}")
                 
                 pg_conn.commit()
                 pg_conn.close()
@@ -2149,9 +2191,9 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                 except Exception as e:
                     log(f"ACTIVE TRADES BROADCAST ERROR: {e}")
         else:
-            print(f"⚠️ Skipping PostgreSQL update - no connection available")
+            log(f"⚠️ Skipping PostgreSQL update - no connection available")
     except Exception as e:
-        print(f"❌ Failed to update PostgreSQL: {e}")
+        log(f"❌ Failed to update PostgreSQL: {e}")
         if pg_conn:
             pg_conn.close()
     
@@ -2266,9 +2308,9 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
                     """, (status, trade_id))
                 
                 if cursor.rowcount > 0:
-                    print(f"💾 Trade status update written to PostgreSQL users.trades_0001")
+                    log_debug(f"💾 Trade status update written to PostgreSQL users.trades_0001")
                 else:
-                    print(f"⚠️ No matching trade found in PostgreSQL for ID {trade_id}")
+                    log(f"⚠️ No matching trade found in PostgreSQL for ID {trade_id}")
                 
                 pg_conn.commit()
                 pg_conn.close()
@@ -2291,9 +2333,9 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
                 except Exception as e:
                     log(f"ACTIVE TRADES BROADCAST ERROR: {e}")
         else:
-            print(f"⚠️ Skipping PostgreSQL update - no connection available")
+            log(f"⚠️ Skipping PostgreSQL update - no connection available")
     except Exception as e:
-        print(f"❌ Failed to update PostgreSQL: {e}")
+        log(f"❌ Failed to update PostgreSQL: {e}")
         if pg_conn:
             pg_conn.close()
     
@@ -2686,7 +2728,7 @@ def get_trades(status: str = None, recent_hours: int = None):
         
         return result
     except Exception as e:
-        print(f"❌ Error reading trades from PostgreSQL: {e}")
+        log(f"❌ Error reading trades from PostgreSQL: {e}")
         return []
     finally:
         pg_conn.close()
@@ -2881,12 +2923,12 @@ async def add_trade(request: Request):
                             with pg_conn_update.cursor() as cursor:
                                 cursor.execute("UPDATE users.trades_0001 SET status = 'closing', symbol_close = %s, close_method = %s WHERE id = %s", (symbol_close, close_method, trade_id))
                                 pg_conn_update.commit()
-                                print(f"💾 Manual close trade also marked as 'closing' in PostgreSQL users.trades_0001")
+                                log_debug(f"💾 Manual close trade also marked as 'closing' in PostgreSQL users.trades_0001")
                             pg_conn_update.close()
                         else:
-                            print(f"⚠️ Skipping PostgreSQL manual close update - no connection available")
+                            log(f"⚠️ Skipping PostgreSQL manual close update - no connection available")
                     except Exception as pg_err:
-                        print(f"❌ Failed to update manual close trade in PostgreSQL: {pg_err}")
+                        log(f"❌ Failed to update manual close trade in PostgreSQL: {pg_err}")
                     
                     # Notify active trade supervisor
                     notify_active_trade_supervisor_direct(trade_id, data.get('ticket_id'), "closing")
@@ -3571,12 +3613,12 @@ def check_expired_trades():
                             WHERE id = %s AND status IN ('open', 'closing', 'close_failed')
                         """, (closed_at, symbol_close, high_price, low_price, monitor_confirmed, trade_id))
                     pg_conn.commit()
-                    print(f"💾 Expired trades update written to PostgreSQL users.trades_0001 for {len(trades_to_process)} trades (open, closing, and close_failed)")
+                    log_debug(f"💾 Expired trades update written to PostgreSQL users.trades_0001 for {len(trades_to_process)} trades (open, closing, and close_failed)")
                 pg_conn.close()
             else:
-                print(f"⚠️ Skipping PostgreSQL expired trades update - no connection available")
+                log(f"⚠️ Skipping PostgreSQL expired trades update - no connection available")
         except Exception as pg_err:
-            print(f"❌ Failed to update expired trades in PostgreSQL: {pg_err}")
+            log(f"❌ Failed to update expired trades in PostgreSQL: {pg_err}")
         
         notify_frontend_trade_change()
         
@@ -3816,9 +3858,9 @@ def poll_settlements_for_matches(expired_tickers):
                                 # PnL is in dollars, bankroll is in cents
                                 # Formula: (pnl / (bankroll/100.0)) * 100
                                 ret_pct = round((pnl / (bankroll / 100.0)) * 100, 5)
-                                print(f"💾 Calculated ret_pct for trade {trade_id}: {ret_pct}% (PnL: {pnl}, Bankroll: {bankroll})")
+                                log_debug(f"💾 Calculated ret_pct for trade {trade_id}: {ret_pct}% (PnL: {pnl}, Bankroll: {bankroll})")
                             else:
-                                print(f"⚠️ Bankroll is zero or None for trade {trade_id}, cannot calculate ret_pct")
+                                log(f"⚠️ Bankroll is zero or None for trade {trade_id}, cannot calculate ret_pct")
                         
                         # Update this specific trade
                         # Note: high_price and low_price are already set during expiration, preserve them
@@ -3836,7 +3878,7 @@ def poll_settlements_for_matches(expired_tickers):
                                         WHERE id = %s AND status = 'expired'
                                     """, (sell_price, 'W' if sell_price > 0 else 'L', pnl, ret_pct, trade_id))
                                     pg_conn_update.commit()
-                                    print(f"💾 Settlement update for trade {trade_id}: PnL={pnl}, ret_pct={ret_pct}")
+                                    log_debug(f"💾 Settlement update for trade {trade_id}: PnL={pnl}, ret_pct={ret_pct}")
                                     
                                     # Update win_streak for the monitor
                                     update_monitor_win_streak(trade_id)
@@ -3846,9 +3888,9 @@ def poll_settlements_for_matches(expired_tickers):
                                     
                                 pg_conn_update.close()
                             else:
-                                print(f"⚠️ Skipping PostgreSQL settlement update for trade {trade_id} - no connection available")
+                                log(f"⚠️ Skipping PostgreSQL settlement update for trade {trade_id} - no connection available")
                         except Exception as pg_err:
-                            print(f"❌ Failed to update settlement trade {trade_id} in PostgreSQL: {pg_err}")
+                            log(f"❌ Failed to update settlement trade {trade_id} in PostgreSQL: {pg_err}")
                     
                     if pg_conn_trades:
                         pg_conn_trades.close()

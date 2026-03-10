@@ -23,6 +23,6 @@ Run first thing each morning (or when requested). Delivers a **concise, conversa
    - **Next to consider** — Ranked list (bullets), one line per item.
    - **VERIFY STATUS** — One line: All good / Investigate / Critical.
 
-End with VERIFY STATUS so the briefing stays consistent with /verify.
+End with VERIFY STATUS so the briefing stays consistent with verify-local/verify-production.
 
 See .cursor/pm/DAILY_BRIEFING_COMMAND.md for format details and Drive reviewed-log.

@@ -30,3 +30,8 @@
 - kalshi_market_watchdog_*: Kalshi market data.
 - kalshi_account_sync: Sync account/fills/orders/positions to DB.
 - cascading_failure_detector, system_monitor: Health/monitoring.
+
+## Production server (daily-briefing and verify-production)
+
+- **SSH:** `ssh root@137.184.224.94` (production droplet; see DIGITALOCEAN_INTEGRATION.md).
+- **Project path on prod:** `/opt/rec_io_server` (logs at `/opt/rec_io_server/logs`, supervisor config `/opt/rec_io_server/backend/supervisord.conf`). Health endpoints same as local (main_app :3000, trade_executor :8001).

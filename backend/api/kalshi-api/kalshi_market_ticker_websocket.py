@@ -62,12 +62,10 @@ class KalshiMarketTickerWebSocket:
     def connect_database(self):
         """Connect to PostgreSQL database"""
         try:
-            self.db_connection = psycopg2.connect(
-                host="localhost",
-                database="rec_io_db",
-                user="rec_io_user",
-                password="rec_io_password"
-            )
+            from backend.core.config.database import get_postgresql_connection
+            self.db_connection = get_postgresql_connection()
+            if not self.db_connection:
+                return False
             print(f"[{datetime.now(EST)}] ✅ Connected to PostgreSQL database")
             return True
         except Exception as e:

@@ -3,17 +3,20 @@
 import sys
 import os
 import argparse
-# Add the project root to the Python path (permanent scalable fix)
-sys.path.insert(0, '/opt/rec_io_server')
-from backend.util.paths import get_project_root
-if get_project_root() not in sys.path:
-    sys.path.insert(0, get_project_root())
+import logging
+
+# Ensure project root is on path (derive from this file: backend/kalshi_market_watchdog.py -> parent)
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_script_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 import requests
 import json
 import time
 import os
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import pytz
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -26,6 +29,40 @@ API_HEADERS = {
 }
 
 EST = pytz.timezone("America/New_York")
+
+
+def _est_formatter():
+    class ESTFormatter(logging.Formatter):
+        def formatTime(self, record, datefmt=None):
+            dt = datetime.fromtimestamp(record.created, tz=ZoneInfo("America/New_York"))
+            if datefmt:
+                return dt.strftime(datefmt)
+            s = dt.strftime("%Y-%m-%dT%H:%M:%S")
+            z = dt.strftime("%z")
+            return s + (z[:3] + ":" + z[3:] if len(z) >= 5 else z)
+    return ESTFormatter(fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+
+
+class _FlushingStreamHandler(logging.StreamHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+
+def _configure_logging():
+    log = logging.getLogger("kalshi_market_watchdog")
+    if log.handlers:
+        return log
+    handler = _FlushingStreamHandler(sys.stdout)
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(_est_formatter())
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    return log
+
+
+logger = _configure_logging()
+HEARTBEAT_INTERVAL_SEC = 300
 
 
 def _market_cents_from_dollars(dollars_val, legacy_cents):
@@ -63,8 +100,67 @@ def connect_database():
         connection = psycopg2.connect(**DB_CONFIG)
         return connection
     except Exception as e:
-        print(f"[{datetime.now(EST)}] ❌ Database connection failed: {e}")
+        logger.error("Database connection failed: %s", e)
         return None
+
+def get_open_trade_tickers_for_table(connection, table_name, symbol):
+    """Return set of tickers that are both (open/pending trades for symbol) and (exist in table)."""
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT ticker FROM users.trades_0001
+            WHERE status IN ('pending', 'open') AND symbol = %s AND ticker IS NOT NULL
+            """,
+            (symbol,),
+        )
+        open_tickers = {row[0] for row in cursor.fetchall()}
+        if not open_tickers:
+            return set()
+        cursor.execute(
+            f"SELECT market_ticker FROM {table_name} WHERE market_ticker IN %s",
+            (tuple(open_tickers),),
+        )
+        return {row[0] for row in cursor.fetchall()}
+    except Exception as e:
+        logger.warning("get_open_trade_tickers_for_table failed: %s", e)
+        return set()
+
+
+def fetch_rows_for_tickers(connection, table_name, tickers):
+    """Return list of row dicts for the given market_tickers (for re-insert after rotation)."""
+    if not tickers:
+        return []
+    try:
+        cursor = connection.cursor(cursor_factory=RealDictCursor)
+        cursor.execute(
+            f"SELECT * FROM {table_name} WHERE market_ticker IN %s",
+            (tuple(tickers),),
+        )
+        return cursor.fetchall()
+    except Exception as e:
+        logger.warning("fetch_rows_for_tickers failed: %s", e)
+        return []
+
+
+def reinsert_preserved_rows(connection, table_name, rows):
+    """Re-insert rows (list of dicts) into table; used to keep open-trade markets visible after TRUNCATE."""
+    if not rows:
+        return
+    # Insert all columns except id (let SERIAL assign)
+    cols = [k for k in rows[0].keys() if k != "id"]
+    cols_str = ", ".join(cols)
+    placeholders = ", ".join(["%s"] * len(cols))
+    sql = f"INSERT INTO {table_name} ({cols_str}) VALUES ({placeholders})"
+    try:
+        cursor = connection.cursor()
+        for row in rows:
+            vals = [row[c] for c in cols]
+            cursor.execute(sql, vals)
+    except Exception as e:
+        logger.warning("reinsert_preserved_rows failed: %s", e)
+        raise
+
 
 def create_market_kalshi_table(connection, symbol, interval="hourly"):
     """Create the market_kalshi_{interval}_{symbol} table if it doesn't exist"""
@@ -115,10 +211,9 @@ def create_market_kalshi_table(connection, symbol, interval="hourly"):
             pass
         
         connection.commit()
-        print(f"[{datetime.now(EST)}] ✅ Market Kalshi {symbol.upper()} ({interval}) table ready")
-        
+        logger.debug("Market Kalshi %s (%s) table ready", symbol.upper(), interval)
     except Exception as e:
-        print(f"[{datetime.now(EST)}] ❌ Failed to create table: {e}")
+        logger.error("Failed to create table: %s", e)
         connection.rollback()
 
 def get_current_price(symbol):
@@ -142,7 +237,7 @@ def get_current_price(symbol):
         return None
         
     except Exception as e:
-        print(f"[{datetime.now(EST)}] ❌ Error getting {symbol.upper()} price: {e}")
+        logger.warning("Error getting %s price: %s", symbol.upper(), e)
         return None
 
 def next_15m_close_est():
@@ -170,7 +265,7 @@ def get_current_event_ticker_15m(symbol):
         resp = requests.get(list_url, params={"series_ticker": f"KX{symbol}15M"}, headers=API_HEADERS, timeout=10)
         if not resp.ok:
             if last_failed_ticker != target_ts:
-                print(f"[{datetime.now(EST)}] ⚠️ 15m list failed: {resp.status_code}")
+                logger.warning("15m list failed: %s", resp.status_code)
                 last_failed_ticker = target_ts
             return None, None
         payload = resp.json()
@@ -186,9 +281,9 @@ def get_current_event_ticker_15m(symbol):
                     return event_ticker, data
                 break
     except Exception as e:
-        print(f"[{datetime.now(EST)}] ⚠️ 15m resolve error: {e}")
+        logger.warning("15m resolve error: %s", e)
     if last_failed_ticker != target_ts:
-        print(f"[{datetime.now(EST)}] ⚠️ No 15m event for window closing {close_time.strftime('%H:%M')} EST")
+        logger.debug("No 15m event for window closing %s EST", close_time.strftime("%H:%M"))
         last_failed_ticker = target_ts
     return None, None
 
@@ -210,7 +305,7 @@ def get_current_event_ticker(symbol, interval="hourly"):
     }
     
     if symbol.upper() not in symbol_config:
-        print(f"❌ Unsupported symbol: {symbol}")
+        logger.error("Unsupported symbol: %s", symbol)
         return None, None
     
     config = symbol_config[symbol.upper()]
@@ -240,7 +335,7 @@ def get_current_event_ticker(symbol, interval="hourly"):
     else:
         # Log the failure but don't try alternative markets
         if last_failed_ticker != current_ticker:
-            print(f"[{datetime.now(EST)}] ⚠️ Failed to fetch market data for {current_ticker}")
+            logger.warning("Failed to fetch market data for %s", current_ticker)
             last_failed_ticker = current_ticker
         return None, None
 
@@ -275,7 +370,7 @@ def get_current_symbol_price(symbol):
         return None
         
     except Exception as e:
-        print(f"[{datetime.now(EST)}] ❌ Error getting current price for {symbol}: {e}")
+        logger.warning("Error getting current price for %s: %s", symbol, e)
         return None
 
 def filter_markets_by_price_range(markets_data, symbol, strike_count=75):
@@ -283,7 +378,7 @@ def filter_markets_by_price_range(markets_data, symbol, strike_count=75):
     try:
         current_price = get_current_symbol_price(symbol)
         if not current_price:
-            print(f"[{datetime.now(EST)}] ⚠️ No current price for {symbol}, returning all markets")
+            logger.warning("No current price for %s, returning all markets", symbol)
             return markets_data
         
         # Extract strike prices and sort by distance from current price
@@ -314,12 +409,15 @@ def filter_markets_by_price_range(markets_data, symbol, strike_count=75):
             max_strike = max(m[1] for m in closest_markets)
             strike_range = f"${min_strike:,.0f} - ${max_strike:,.0f}"
         
-        print(f"[{datetime.now(EST)}] 🎯 Filtered {len(markets_data)} markets to {len(filtered_markets)} strikes around ${current_price:,.2f} (range: {strike_range})")
+        logger.debug(
+            "Filtered %s markets to %s strikes around $%s (range: %s)",
+            len(markets_data), len(filtered_markets), f"{current_price:,.2f}", strike_range,
+        )
         
         return filtered_markets
         
     except Exception as e:
-        print(f"[{datetime.now(EST)}] ❌ Error filtering markets: {e}")
+        logger.warning("Error filtering markets: %s", e)
         return markets_data  # Return all markets if filtering fails
 
 def fetch_event_json(event_ticker):
@@ -329,11 +427,11 @@ def fetch_event_json(event_ticker):
         response.raise_for_status()
         data = response.json()
         if "error" in data:
-            print(f"[{datetime.now(EST)}] ❌ API returned error for ticker {event_ticker}: {data['error']}")
+            logger.warning("API returned error for ticker %s: %s", event_ticker, data["error"])
             return None
         return data
     except Exception as e:
-        print(f"[{datetime.now(EST)}] ❌ Exception fetching event JSON: {e}")
+        logger.warning("Exception fetching event JSON: %s", e)
         return None
 
 def save_market_data_to_postgresql(event_ticker, markets_data, symbol, interval="hourly"):
@@ -413,16 +511,14 @@ def save_market_data_to_postgresql(event_ticker, markets_data, symbol, interval=
                       volume, volume_24h, open_interest, liquidity))
                 
             except Exception as e:
-                print(f"[{datetime.now(EST)}] ❌ Error processing market {market.get('ticker', 'unknown')}: {e}")
+                logger.warning("Error processing market %s: %s", market.get("ticker", "unknown"), e)
                 continue
-        
         connection.commit()
         connection.close()
-        print(f"[{datetime.now(EST)}] ✅ Saved {len(markets_data)} markets to PostgreSQL for {event_ticker}")
+        logger.debug("Saved %s markets to PostgreSQL for %s", len(markets_data), event_ticker)
         return True
-        
     except Exception as e:
-        print(f"[{datetime.now(EST)}] ❌ Error saving to PostgreSQL: {e}")
+        logger.error("Error saving to PostgreSQL: %s", e)
         if connection:
             connection.rollback()
             connection.close()
@@ -446,7 +542,7 @@ def get_one_minute_avg_at_time(connection, symbol, opening_time_est):
         row = cursor.fetchone()
         return float(row[0]) if row and row[0] is not None else None
     except Exception as e:
-        print(f"[{datetime.now(EST)}] ⚠️ get_one_minute_avg_at_time: {e}")
+        logger.debug("get_one_minute_avg_at_time: %s", e)
         return None
 
 
@@ -460,7 +556,7 @@ def backfill_15m_strike_from_price_log(symbol, event_ticker):
         opening_time = close_time - timedelta(minutes=15)
         one_min_avg = get_one_minute_avg_at_time(connection, symbol, opening_time)
         if one_min_avg is None:
-            print(f"[{datetime.now(EST)}] ⚠️ No one_minute_avg at opening {opening_time.strftime('%H:%M')} EST for {symbol}")
+            logger.debug("No one_minute_avg at opening %s EST for %s", opening_time.strftime("%H:%M"), symbol)
             connection.close()
             return False
         strike_str = f"${one_min_avg:,.2f}"
@@ -470,11 +566,11 @@ def backfill_15m_strike_from_price_log(symbol, event_ticker):
             UPDATE {table} SET strike = %s, updated_at = NOW() WHERE event_ticker = %s
         """, (strike_str, event_ticker))
         connection.commit()
-        print(f"[{datetime.now(EST)}] ✅ 15m strike set to {strike_str} (1m avg at {opening_time.strftime('%H:%M')} EST)")
+        logger.debug("15m strike set to %s (1m avg at %s EST)", strike_str, opening_time.strftime("%H:%M"))
         connection.close()
         return True
     except Exception as e:
-        print(f"[{datetime.now(EST)}] ❌ backfill_15m_strike: {e}")
+        logger.warning("backfill_15m_strike: %s", e)
         if connection:
             connection.rollback()
             connection.close()
@@ -495,72 +591,69 @@ def main():
     INTERVAL = args.interval
     
     if INTERVAL == "15m" and SYMBOL not in ("BTC", "ETH"):
-        print(f"[{datetime.now(EST)}] ❌ 15m interval only supports BTC and ETH, got {SYMBOL}")
+        logger.error("15m interval only supports BTC and ETH, got %s", SYMBOL)
         sys.exit(1)
-    
-    print(f"[{datetime.now(EST)}] 🚀 Starting Kalshi API Market {SYMBOL} Watchdog ({INTERVAL})")
-    
-    # Initialize database table
+    logger.debug("Starting Kalshi API Market %s Watchdog (%s)", SYMBOL, INTERVAL)
     connection = connect_database()
     if connection:
         create_market_kalshi_table(connection, SYMBOL, INTERVAL)
         connection.close()
-    
-    # Track previous event ticker for cleanup (reset every 15 min for 15m, every hour for hourly)
     previous_event_ticker = None
-    
+    last_heartbeat = time.time()
     while True:
         try:
-            # Get current event ticker and data (hourly or 15m)
             event_ticker, event_data = get_current_event_ticker(SYMBOL, INTERVAL)
-            
+            preserved_rows = []
             if event_ticker and event_data and "markets" in event_data:
-                # Check if market changed - if so, clean up old data
                 if previous_event_ticker and previous_event_ticker != event_ticker:
-                    print(f"[{datetime.now(EST)}] 🔄 Market changed: {previous_event_ticker} → {event_ticker}")
-                    print(f"[{datetime.now(EST)}] 🧹 Cleaning up old market data...")
-                    
-                    # Truncate table to remove old market data
+                    logger.info(
+                        "Market rotated: %s → %s (%s tickers)",
+                        previous_event_ticker, event_ticker, len(event_data.get("markets", [])),
+                    )
+                    logger.debug("Cleaning up old market data")
+                    table_name = f"live_data.market_kalshi_{INTERVAL}_{SYMBOL.lower()}"
                     connection = connect_database()
+                    preserved_rows = []
                     if connection:
+                        preserve_tickers = get_open_trade_tickers_for_table(connection, table_name, SYMBOL)
+                        if preserve_tickers:
+                            preserved_rows = fetch_rows_for_tickers(connection, table_name, preserve_tickers)
                         cursor = connection.cursor()
-                        table_name = f"live_data.market_kalshi_{INTERVAL}_{SYMBOL.lower()}"
                         cursor.execute(f"TRUNCATE TABLE {table_name}")
                         connection.commit()
                         connection.close()
-                        print(f"[{datetime.now(EST)}] ✅ Cleaned up old market data")
-                
-                print(f"[{datetime.now(EST)}] 📊 Processing event: {event_ticker}")
-                
-                # 15m: usually one market (no strike subtitle); use all. Hourly: filter to 75 closest strikes.
+                        logger.debug("Cleaned up old market data")
+                logger.debug("Processing event: %s", event_ticker)
                 if INTERVAL == "15m":
                     filtered_markets = event_data["markets"]
                 else:
                     filtered_markets = filter_markets_by_price_range(event_data["markets"], SYMBOL, 75)
-                
-                # Save to PostgreSQL
                 success = save_market_data_to_postgresql(event_ticker, filtered_markets, SYMBOL, INTERVAL)
-                
                 if not success:
-                    print(f"[{datetime.now(EST)}] ❌ Failed to save data for {event_ticker}")
+                    logger.error("Failed to save data for %s", event_ticker)
                 elif INTERVAL == "15m" and (previous_event_ticker is None or previous_event_ticker != event_ticker):
-                    # On rollover (or first run): set strike from 1s price log at this market's opening time
                     backfill_15m_strike_from_price_log(SYMBOL, event_ticker)
-                
-                # Update previous event ticker
+                if preserved_rows:
+                    conn2 = connect_database()
+                    if conn2:
+                        try:
+                            reinsert_preserved_rows(conn2, table_name, preserved_rows)
+                            conn2.commit()
+                            logger.info("Preserved %d rows for open trades across rotation", len(preserved_rows))
+                        finally:
+                            conn2.close()
                 previous_event_ticker = event_ticker
             else:
-                # No market data available - this could be due to API issues or market transition
-                # Don't update previous_event_ticker to avoid false market changes
-                print(f"[{datetime.now(EST)}] ⚠️ No active event found - continuing with last known market")
-            
+                logger.debug("No active event found - continuing with last known market")
+            if time.time() - last_heartbeat >= HEARTBEAT_INTERVAL_SEC:
+                logger.info("heartbeat")
+                last_heartbeat = time.time()
             time.sleep(POLL_INTERVAL_SECONDS)
-            
         except KeyboardInterrupt:
-            print(f"\n[{datetime.now(EST)}] 🛑 Kalshi API Market {SYMBOL} Watchdog stopped")
+            logger.debug("Kalshi API Market %s Watchdog stopped", SYMBOL)
             break
         except Exception as e:
-            print(f"[{datetime.now(EST)}] ❌ Unexpected error: {e}")
+            logger.error("Unexpected error: %s", e, exc_info=True)
             time.sleep(POLL_INTERVAL_SECONDS)
 
 if __name__ == "__main__":

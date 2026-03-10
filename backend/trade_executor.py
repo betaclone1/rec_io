@@ -7,7 +7,9 @@ Uses the single centralized port configuration system.
 # Syntax error removed for normal operation
 
 from flask import Flask, request, jsonify
+import logging
 import os
+import sys
 import json
 import time
 import uuid
@@ -88,24 +90,49 @@ def generate_kalshi_signature(method, full_path, timestamp, key_path):
 
 from backend.util.trade_logger import log_trade_event
 
-# --- Logging helper for trade events ---
-def log_event(ticket_id, message):
+
+def _te_est_formatter():
+    class _ESTF(logging.Formatter):
+        def formatTime(self, record, datefmt=None):
+            dt = datetime.fromtimestamp(record.created, tz=ZoneInfo("America/New_York"))
+            s = dt.strftime("%Y-%m-%dT%H:%M:%S")
+            z = dt.strftime("%z")
+            return s + (z[:3] + ":" + z[3:] if len(z) >= 5 else z)
+    return _ESTF(fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+
+
+class _TeFlushHandler(logging.StreamHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+
+def _configure_te_logging():
+    logr = logging.getLogger("trade_executor")
+    if logr.handlers:
+        return logr
+    h = _TeFlushHandler(sys.stdout)
+    h.setFormatter(_te_est_formatter())
+    logr.addHandler(h)
+    logr.setLevel(logging.INFO)
+    return logr
+
+
+_te_logger = _configure_te_logging()
+
+
+def log_event(ticket_id, message, trade_id=None):
     """
-    Log trade events to PostgreSQL instead of text files.
+    Log trade events to stdout and PostgreSQL. Include trade_id (hero id from trades table)
+    when present so the full pipeline is traceable by grep for that id.
     """
     try:
-        # Compose log message with executor prefix
-        timestamp = datetime.now(ZoneInfo("America/New_York")).strftime("%H:%M:%S")
-        log_message = f"[EXECUTOR {timestamp}] {message}"
-        
-        # Write to console with flush
-        print(log_message, flush=True)
-        
-        # Log to PostgreSQL
-        log_trade_event(ticket_id, message, service="trade_executor")
-
+        prefix = f"trade_id={trade_id} " if trade_id is not None else ""
+        message_with_id = f"{prefix}{message}"
+        _te_logger.info("%s", message_with_id)
+        log_trade_event(ticket_id, message_with_id, service="trade_executor")
     except Exception as e:
-        print(f"Error in log_event: {e}")
+        _te_logger.error("Error in log_event: %s", e)
 
 def get_manager_port():
     return get_port("trade_manager")
@@ -135,11 +162,12 @@ def trigger_trade():
     try:
         data = request.get_json()
         ticket_id = data.get("ticket_id", "UNKNOWN")
+        trade_id = data.get("id")  # Hero id from users.trades_0001 for full pipeline traceability
         # Normalize ticket_id to avoid double "TICKET-" prefixing
         if ticket_id.count("TICKET-") > 1:
             ticket_id = ticket_id.split("TICKET-")[-1]
             ticket_id = f"TICKET-{ticket_id}"
-        log_event(ticket_id, "RECEIVED TICKET")
+        log_event(ticket_id, "RECEIVED TICKET", trade_id=trade_id)
 
         ticker = data.get("ticker")
         raw_side = data.get("side", "yes")
@@ -181,10 +209,10 @@ def trigger_trade():
         
         # Refresh credentials at trade time
         KEY_ID, KEY_PATH = get_current_credentials()
-        log_event(ticket_id, f"🔑 CREDENTIALS: KEY_ID={KEY_ID[:8]}..., KEY_PATH={KEY_PATH}")
+        log_event(ticket_id, f"🔑 CREDENTIALS: KEY_ID={KEY_ID[:8]}..., KEY_PATH={KEY_PATH}", trade_id=trade_id)
         
         signature = generate_kalshi_signature("POST", full_path, timestamp, str(KEY_PATH))
-        log_event(ticket_id, f"🔐 SIGNATURE: timestamp={timestamp}, path={full_path}")
+        log_event(ticket_id, f"🔐 SIGNATURE: timestamp={timestamp}, path={full_path}", trade_id=trade_id)
         headers = {
             "Accept": "application/json",
             "User-Agent": "KalshiTradeExec/1.0",
@@ -197,19 +225,19 @@ def trigger_trade():
         url = f"{get_base_url()}{path}"
         
         # Log the complete request details
-        log_event(ticket_id, f"🌐 SENDING TO KALSHI: {url}")
-        log_event(ticket_id, f"📤 REQUEST HEADERS: {json.dumps(headers, indent=2)}")
-        log_event(ticket_id, f"📤 REQUEST PAYLOAD: {json.dumps(order_payload, indent=2)}")
+        log_event(ticket_id, f"🌐 SENDING TO KALSHI: {url}", trade_id=trade_id)
+        log_event(ticket_id, f"📤 REQUEST HEADERS: {json.dumps(headers, indent=2)}", trade_id=trade_id)
+        log_event(ticket_id, f"📤 REQUEST PAYLOAD: {json.dumps(order_payload, indent=2)}", trade_id=trade_id)
         
         try:
             response = requests.post(url, headers=headers, json=order_payload, timeout=10)
             
             # Log the complete response details
-            log_event(ticket_id, f"📥 RESPONSE STATUS: {response.status_code}")
-            log_event(ticket_id, f"📥 RESPONSE HEADERS: {dict(response.headers)}")
-            log_event(ticket_id, f"📥 RESPONSE BODY: {response.text}")
+            log_event(ticket_id, f"📥 RESPONSE STATUS: {response.status_code}", trade_id=trade_id)
+            log_event(ticket_id, f"📥 RESPONSE HEADERS: {dict(response.headers)}", trade_id=trade_id)
+            log_event(ticket_id, f"📥 RESPONSE BODY: {response.text}", trade_id=trade_id)
         except requests.exceptions.RequestException as e:
-            log_event(ticket_id, f"❌ REQUEST FAILED: {type(e).__name__}: {str(e)}")
+            log_event(ticket_id, f"❌ REQUEST FAILED: {type(e).__name__}: {str(e)}", trade_id=trade_id)
             # Handle timeout/network errors the same as 400+ errors
             trade_id = data.get("id")
             if trade_id:
@@ -227,7 +255,7 @@ def trigger_trade():
             return jsonify({"status": "rejected", "error": f"timeout: {str(e)}"}), 500
 
         if response.status_code >= 400:
-            log_event(ticket_id, f"❌ TRADE REJECTED - Status: {response.status_code}, Response: {response.text}")
+            log_event(ticket_id, f"❌ TRADE REJECTED - Status: {response.status_code}, Response: {response.text}", trade_id=trade_id)
             # Use the trade ID if provided, otherwise use ticket_id
             trade_id = data.get("id")
             intent = data.get("intent", "open")  # Get the original intent
@@ -245,7 +273,7 @@ def trigger_trade():
             threading.Thread(target=notify_error, daemon=True).start()
             return jsonify({"status": "rejected", "error": response.text}), response.status_code
         elif response.status_code in [200, 201]:
-            log_event(ticket_id, f"✅ TRADE SUCCESS - Status: {response.status_code}, Response: {response.text}")
+            log_event(ticket_id, f"✅ TRADE SUCCESS - Status: {response.status_code}, Response: {response.text}", trade_id=trade_id)
             
             # Extract order_id from Kalshi response
             order_id = None
@@ -253,9 +281,9 @@ def trigger_trade():
                 response_json = response.json()
                 if "order" in response_json and "order_id" in response_json["order"]:
                     order_id = response_json["order"]["order_id"]
-                    log_event(ticket_id, f"📋 EXTRACTED ORDER_ID: {order_id}")
+                    log_event(ticket_id, f"📋 EXTRACTED ORDER_ID: {order_id}", trade_id=trade_id)
             except Exception as e:
-                log_event(ticket_id, f"⚠️ Failed to extract order_id: {e}")
+                log_event(ticket_id, f"⚠️ Failed to extract order_id: {e}", trade_id=trade_id)
             
             # Use the trade ID if provided, otherwise use ticket_id
             trade_id = data.get("id")
@@ -275,7 +303,10 @@ def trigger_trade():
             return jsonify({"status": "sent", "message": "Trade sent successfully"}), 200
 
     except Exception as e:
-        log_event(ticket_id, f"❌ ERROR: {e}")
+        try:
+            log_event(ticket_id, f"❌ ERROR: {e}", trade_id=trade_id)
+        except NameError:
+            log_event("UNKNOWN", f"❌ ERROR: {e}", trade_id=None)
         return jsonify({"error": str(e)}), 500
 
 # System status endpoint (kept for health monitoring)
@@ -291,7 +322,7 @@ def get_system_status():
             "port_system": "centralized"
         }
     except Exception as e:
-        print(f"Error getting system status: {e}")
+        _te_logger.error("Error getting system status: %s", e)
         return {"error": str(e)}
 
 # Main entry point

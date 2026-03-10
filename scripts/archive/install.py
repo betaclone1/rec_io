@@ -186,7 +186,7 @@ def setup_postgresql():
     print(f"🗄️  Using default database configuration:")
     print(f"   Database: {db_name}")
     print(f"   Username: {db_user}")
-    print(f"   Password: {db_password}")
+    print("   Password: (set in config; do not log or share)")
     print("   (You can change these later if needed)")
     
     # Create user and database

@@ -8,6 +8,7 @@ new open trades and creates corresponding entries in ACTIVE_TRADES.DB.
 Supports multiple monitors with monitor-specific configuration.
 """
 
+import logging
 import os
 import json
 import time
@@ -26,6 +27,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from backend.core.port_config import get_port
+from backend.core.config.database import get_postgresql_connection
 from backend.util.paths import get_host
 
 # Add these functions after the existing imports and before the get_monitor_identifier function
@@ -33,13 +35,9 @@ from backend.util.paths import get_host
 def create_monitor_active_trades_table():
     """Create monitor-specific active trades table when supervisor starts"""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_postgresql_connection()
+        if not conn:
+            return
         with conn.cursor() as cursor:
             # Create monitor-specific active trades table
             active_trades_table = f"active_trades_{USER_NUMBER}_{MONITOR_ID}"
@@ -79,7 +77,7 @@ def create_monitor_active_trades_table():
             """)
             conn.commit()
         conn.close()
-        log(f"[ACTIVE_TRADES] ✅ Created monitor-specific active trades table: {active_trades_table}")
+        log_debug(f"Created monitor-specific active trades table: {active_trades_table}")
     except Exception as e:
         log(f"[ACTIVE_TRADES] ❌ Error creating active trades table: {e}")
 
@@ -87,19 +85,14 @@ def drop_monitor_active_trades_table():
     """Drop monitor-specific active trades table when supervisor stops"""
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             # Drop monitor-specific active trades table
             active_trades_table = f"active_trades_{USER_NUMBER}_{MONITOR_ID}"
             cursor.execute(f"DROP TABLE IF EXISTS users.{active_trades_table}")
             conn.commit()
         conn.close()
-        log(f"[ACTIVE_TRADES] ✅ Dropped monitor-specific active trades table: {active_trades_table}")
+        log_debug(f"Dropped monitor-specific active trades table: {active_trades_table}")
     except Exception as e:
         log(f"[ACTIVE_TRADES] ❌ Error dropping active trades table: {e}")
 
@@ -132,8 +125,50 @@ MONITOR_IDENTIFIER = get_monitor_identifier()
 USER_NUMBER = MONITOR_IDENTIFIER.split('_')[0]
 MONITOR_ID = MONITOR_IDENTIFIER.split('_')[1]
 
-print(f"[ACTIVE_TRADE_SUPERVISOR_{MONITOR_IDENTIFIER}] 🚀 Monitor-aware supervisor starting")
-print(f"[ACTIVE_TRADE_SUPERVISOR_{MONITOR_IDENTIFIER}] User: {USER_NUMBER}, Monitor: {MONITOR_ID}")
+
+def _ats_est_formatter():
+    class _ESTF(logging.Formatter):
+        def formatTime(self, record, datefmt=None):
+            dt = datetime.fromtimestamp(record.created, tz=ZoneInfo("America/New_York"))
+            s = dt.strftime("%Y-%m-%dT%H:%M:%S")
+            z = dt.strftime("%z")
+            return s + (z[:3] + ":" + z[3:] if len(z) >= 5 else z)
+    return _ESTF(fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+
+
+class _AtsFlushHandler(logging.StreamHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+
+def _configure_ats_logging():
+    logr = logging.getLogger("active_trade_supervisor")
+    if logr.handlers:
+        return logr
+    h = _AtsFlushHandler(sys.stdout)
+    h.setFormatter(_ats_est_formatter())
+    logr.addHandler(h)
+    # Default to INFO in normal operation; DEBUG must be explicitly enabled.
+    logr.setLevel(logging.INFO)
+    return logr
+
+
+_ats_logger = _configure_ats_logging()
+HEARTBEAT_INTERVAL_SEC = 300
+
+
+def _ats_heartbeat_loop():
+    while True:
+        time.sleep(HEARTBEAT_INTERVAL_SEC)
+        _ats_logger.info("heartbeat")
+
+
+_ats_hb_thread = threading.Thread(target=_ats_heartbeat_loop, daemon=True)
+_ats_hb_thread.start()
+
+
+_ats_logger.info("Monitor-aware supervisor starting user=%s monitor=%s", USER_NUMBER, MONITOR_ID)
 
 # Get symbol for this monitor (will be updated dynamically)
 def get_monitor_symbol():
@@ -141,16 +176,9 @@ def get_monitor_symbol():
     try:
         import psycopg2
         
-        # PostgreSQL connection parameters
-        postgres_config = {
-            'host': os.getenv('POSTGRES_HOST', 'localhost'),
-            'port': int(os.getenv('POSTGRES_PORT', '5432')),
-            'database': os.getenv('POSTGRES_DB', 'rec_io_db'),
-            'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
-            'password': os.getenv('POSTGRES_PASSWORD', '')
-        }
-        
-        conn = psycopg2.connect(**postgres_config)
+        conn = get_postgresql_connection()
+        if not conn:
+            return "BTC", "hourly"
         cursor = conn.cursor()
         
         cursor.execute(f"""
@@ -164,7 +192,7 @@ def get_monitor_symbol():
         if result and result[0]:
             return result[0].upper(), (result[1] or 'hourly').strip().lower()
         else:
-            log(f"[ACTIVE_TRADE_SUPERVISOR] ⚠️ No symbol found for monitor {MONITOR_IDENTIFIER}, defaulting to BTC")
+            log_debug(f"No symbol found for monitor {MONITOR_IDENTIFIER}, defaulting to BTC")
             return "BTC", "hourly"
     except Exception as e:
         log(f"[ACTIVE_TRADE_SUPERVISOR] ❌ Error getting monitor symbol: {e}, defaulting to BTC")
@@ -180,21 +208,15 @@ def get_strike_table_name(symbol: str, market: str) -> str:
 _sym_mkt = get_monitor_symbol()
 MONITOR_SYMBOL = _sym_mkt[0] if isinstance(_sym_mkt, tuple) else _sym_mkt
 MONITOR_MARKET = _sym_mkt[1] if isinstance(_sym_mkt, tuple) else 'hourly'
-print(f"[ACTIVE_TRADE_SUPERVISOR_{MONITOR_IDENTIFIER}] 📊 Initial symbol: {MONITOR_SYMBOL}, market: {MONITOR_MARKET}")
+_ats_logger.info("Initial symbol=%s market=%s", MONITOR_SYMBOL, MONITOR_MARKET)
 
 def get_current_monitor_symbol_and_market():
     """Get (symbol, market) for this monitor from database. market is 'hourly' or '15m'."""
     global MONITOR_SYMBOL, MONITOR_MARKET
     try:
-        import psycopg2
-        postgres_config = {
-            'host': os.getenv('POSTGRES_HOST', 'localhost'),
-            'port': int(os.getenv('POSTGRES_PORT', '5432')),
-            'database': os.getenv('POSTGRES_DB', 'rec_io_db'),
-            'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
-            'password': os.getenv('POSTGRES_PASSWORD', '')
-        }
-        conn = psycopg2.connect(**postgres_config)
+        conn = get_postgresql_connection()
+        if not conn:
+            return "BTC", "hourly"
         cursor = conn.cursor()
         cursor.execute(f"""
             SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{USER_NUMBER}
@@ -208,7 +230,7 @@ def get_current_monitor_symbol_and_market():
             if mkt not in ('hourly', '15m'):
                 mkt = 'hourly'
             if sym != MONITOR_SYMBOL or mkt != MONITOR_MARKET:
-                log(f"[ACTIVE_TRADE_SUPERVISOR] 🔄 Monitor symbol/market: {MONITOR_SYMBOL}/{MONITOR_MARKET} -> {sym}/{mkt}")
+                log_debug(f"Monitor symbol/market: {MONITOR_SYMBOL}/{MONITOR_MARKET} -> {sym}/{mkt}")
                 MONITOR_SYMBOL, MONITOR_MARKET = sym, mkt
             return sym, mkt
         return "BTC", "hourly"
@@ -234,7 +256,7 @@ register_monitor_ports(MONITOR_IDENTIFIER)
 
 # Get monitor-specific port
 ACTIVE_TRADE_SUPERVISOR_PORT = get_monitor_port("active_trade_supervisor", MONITOR_IDENTIFIER)
-print(f"[ACTIVE_TRADE_SUPERVISOR_{MONITOR_IDENTIFIER}] 🚀 Using monitor-specific port: {ACTIVE_TRADE_SUPERVISOR_PORT}")
+_ats_logger.info("Using monitor-specific port: %s", ACTIVE_TRADE_SUPERVISOR_PORT)
 
 # Import centralized path utilities
 from backend.util.paths import get_project_root, get_data_dir, get_trade_history_dir, get_kalshi_data_dir, get_service_url, get_active_trades_dir
@@ -373,7 +395,7 @@ def notify_automated_close():
     """Notify the frontend that an automated trade close was triggered"""
     try:
         data = request.json
-        log(f"[AUTO STOP] 🔔 Notifying frontend of automated trade close: {data}")
+        log_debug(f"Notifying frontend of automated trade close: {data}")
         
         # Forward the notification to the main app for WebSocket broadcast
         try:
@@ -381,9 +403,9 @@ def notify_automated_close():
             url = get_service_url(port) + "/api/notify_automated_close"
             response = requests.post(url, json=data, timeout=2)
             if response.ok:
-                log(f"[AUTO STOP] ✅ Frontend notification sent successfully")
+                log_debug(f"Frontend notification sent successfully")
             else:
-                log(f"[AUTO STOP] ⚠️ Frontend notification failed: {response.status_code}")
+                log_debug(f"Frontend notification failed: {response.status_code}")
         except Exception as e:
             log(f"[AUTO STOP] ❌ Error sending frontend notification: {e}")
         
@@ -405,20 +427,18 @@ def sync_and_monitor():
         return {"status": "error", "message": str(e)}, 500
 
 def log(message: str):
-    """Log messages with timestamp"""
-    timestamp = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[ACTIVE_TRADE_SUPERVISOR {timestamp}] {message}", flush=True)
+    """Stdout log at INFO (use log_debug for plumbing)."""
+    _ats_logger.info("%s", message)
+
+
+def log_debug(message: str):
+    """Stdout log at DEBUG for plumbing/repetitive messages."""
+    _ats_logger.debug("%s", message)
 
 def get_momentum_percentile_from_postgresql(symbol="BTC"):
     """Get current momentum_5s_avg from live price log for the specified symbol."""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         cursor = conn.cursor()
         cursor.execute(f"SELECT momentum_5s_avg FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
         result = cursor.fetchone()
@@ -435,13 +455,7 @@ def get_momentum_percentile_from_postgresql(symbol="BTC"):
 def get_momentum_5s_avg_from_postgresql(symbol="BTC"):
     """Get current momentum_5s_avg directly from PostgreSQL for the specified symbol."""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         cursor = conn.cursor()
         cursor.execute(f"SELECT momentum_5s_avg FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
         result = cursor.fetchone()
@@ -630,26 +644,12 @@ def init_active_trades_db():
     pass
 
 def get_db_connection():
-    """Get database connection with appropriate timeout"""
+    """Get database connection with appropriate timeout (uses centralized config)."""
     return get_postgresql_connection()
 
 def get_trades_db_connection():
     """Get connection to the main trades database"""
     return get_postgresql_connection()
-
-def get_postgresql_connection():
-    """Get a connection to the PostgreSQL database"""
-    try:
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
-        return conn
-    except Exception as e:
-        print(f"❌ Failed to connect to PostgreSQL: {e}")
-        return None
 
 def add_new_active_trade(trade_id: int, ticket_id: str) -> bool:
     """
@@ -1734,12 +1734,12 @@ def start_monitoring_loop():
                 # Log monitoring status every 60 seconds
                 current_time = time.time()
                 if not hasattr(monitoring_worker, 'last_status_log') or current_time - monitoring_worker.last_status_log > 60:
-                    log(f"📊 MONITORING: Checking {len(active_trades)} active trades")
+                    log_debug(f"MONITORING: Checking {len(active_trades)} active trades")
                     monitoring_worker.last_status_log = current_time
                 
                 # Add heartbeat log every 30 seconds to track monitoring health
                 if not hasattr(monitoring_worker, 'last_heartbeat') or current_time - monitoring_worker.last_heartbeat > 30:
-                    log(f"💓 MONITORING HEARTBEAT: Monitoring loop healthy, {len(active_trades)} active trades")
+                    log_debug(f"MONITORING HEARTBEAT: Monitoring loop healthy, {len(active_trades)} active trades")
                     monitoring_worker.last_heartbeat = current_time
                 
                 # Run failsafe check every 60 seconds
@@ -1759,12 +1759,7 @@ def start_monitoring_loop():
                     # Get momentum spike settings from monitor's assigned strategy
                     try:
                         import psycopg2
-                        conn = psycopg2.connect(
-                            host="localhost",
-                            database="rec_io_db",
-                            user="rec_io_user",
-                            password="rec_io_password"
-                        )
+                        conn = get_postgresql_connection()
                         with conn.cursor() as cursor:
                             # First get the strategy name for this monitor
                             cursor.execute(f"""
@@ -1788,11 +1783,11 @@ def start_monitoring_loop():
                                 else:
                                     momentum_spike_enabled = True
                                     momentum_spike_threshold = 35  # Use percentage directly
-                                    log(f"[MOMENTUM SPIKE] ⚠️ No strategy found: {strategy_name}, using defaults")
+                                    log_debug(f"No strategy found: {strategy_name}, using defaults")
                             else:
                                 momentum_spike_enabled = True
                                 momentum_spike_threshold = 35  # Use percentage directly
-                                log(f"[MOMENTUM SPIKE] ⚠️ No strategy assigned to monitor {MONITOR_ID}, using defaults")
+                                log_debug(f"No strategy assigned to monitor {MONITOR_ID}, using defaults")
                         
                         conn.close()
                         
@@ -1843,7 +1838,7 @@ def start_monitoring_loop():
                                                     spike_still_active = current_momentum_after_verification >= momentum_spike_threshold
                                                     if spike_still_active:
                                                         # Conditions still met after verification - trigger auto-stop
-                                                        log(f"[MOMENTUM SPIKE] ✅ Verification period ended - triggering auto stop for NO trade {trade_id} (momentum: {current_momentum_after_verification:.2f}, threshold: +{momentum_spike_threshold}, verification_duration={verification_seconds}s)")
+                                                        log_debug(f"[MOMENTUM SPIKE] Verification period ended - triggering auto stop for NO trade {trade_id} (momentum: {current_momentum_after_verification:.2f}, threshold: +{momentum_spike_threshold}, verification_duration={verification_seconds}s)")
                                                         if trigger_auto_stop_close(trade):
                                                             auto_stop_triggered_trades.add(trade_id)
                                                             del verification_pending_trades[trade_id]
@@ -1863,7 +1858,7 @@ def start_monitoring_loop():
                                                 # Still in verification period - just wait, don't check conditions during wait
                                                 remaining_time = verification_end_time - current_time
                                                 if not hasattr(monitoring_worker, 'last_momentum_verification_log') or current_time - monitoring_worker.last_momentum_verification_log > 10:
-                                                    log(f"[MOMENTUM SPIKE] ⏳ NO trade {trade_id} in verification period - {remaining_time:.1f}s remaining (momentum: {current_momentum:.2f})")
+                                                    log_debug(f"NO trade {trade_id} in verification period - {remaining_time:.1f}s remaining (momentum: {current_momentum:.2f})")
                                                     monitoring_worker.last_momentum_verification_log = current_time
                                                 continue
                                         else:
@@ -1873,7 +1868,7 @@ def start_monitoring_loop():
                                                     # Start verification period
                                                     verification_end_time = current_time + verification_seconds
                                                     verification_pending_trades[trade_id] = (current_time, verification_end_time)
-                                                    log(f"[MOMENTUM SPIKE] 🔍 Starting verification period for NO trade {trade_id} (momentum: {current_momentum:.2f}, threshold: +{momentum_spike_threshold}, verification_duration={verification_seconds}s)")
+                                                    log_debug(f"Starting verification period for NO trade {trade_id} (momentum: {current_momentum:.2f}, threshold: +{momentum_spike_threshold}, verification_duration={verification_seconds}s)")
                                                 else:
                                                     # No verification - trigger immediately
                                                     log(f"[MOMENTUM SPIKE] 🚨 POSITIVE SPIKE - Triggering close for NO trade {trade_id} (momentum: {current_momentum:.2f})")
@@ -1909,7 +1904,7 @@ def start_monitoring_loop():
                                                     spike_still_active = current_momentum_after_verification <= -momentum_spike_threshold
                                                     if spike_still_active:
                                                         # Conditions still met after verification - trigger auto-stop
-                                                        log(f"[MOMENTUM SPIKE] ✅ Verification period ended - triggering auto stop for YES trade {trade_id} (momentum: {current_momentum_after_verification:.2f}, threshold: -{momentum_spike_threshold}, verification_duration={verification_seconds}s)")
+                                                        log_debug(f"[MOMENTUM SPIKE] Verification period ended - triggering auto stop for YES trade {trade_id} (momentum: {current_momentum_after_verification:.2f}, threshold: -{momentum_spike_threshold}, verification_duration={verification_seconds}s)")
                                                         if trigger_auto_stop_close(trade):
                                                             auto_stop_triggered_trades.add(trade_id)
                                                             del verification_pending_trades[trade_id]
@@ -1929,7 +1924,7 @@ def start_monitoring_loop():
                                                 # Still in verification period - just wait, don't check conditions during wait
                                                 remaining_time = verification_end_time - current_time
                                                 if not hasattr(monitoring_worker, 'last_momentum_verification_log') or current_time - monitoring_worker.last_momentum_verification_log > 10:
-                                                    log(f"[MOMENTUM SPIKE] ⏳ YES trade {trade_id} in verification period - {remaining_time:.1f}s remaining (momentum: {current_momentum:.2f})")
+                                                    log_debug(f"YES trade {trade_id} in verification period - {remaining_time:.1f}s remaining (momentum: {current_momentum:.2f})")
                                                     monitoring_worker.last_momentum_verification_log = current_time
                                                 continue
                                         else:
@@ -1939,7 +1934,7 @@ def start_monitoring_loop():
                                                     # Start verification period
                                                     verification_end_time = current_time + verification_seconds
                                                     verification_pending_trades[trade_id] = (current_time, verification_end_time)
-                                                    log(f"[MOMENTUM SPIKE] 🔍 Starting verification period for YES trade {trade_id} (momentum: {current_momentum:.2f}, threshold: -{momentum_spike_threshold}, verification_duration={verification_seconds}s)")
+                                                    log_debug(f"Starting verification period for YES trade {trade_id} (momentum: {current_momentum:.2f}, threshold: -{momentum_spike_threshold}, verification_duration={verification_seconds}s)")
                                                 else:
                                                     # No verification - trigger immediately
                                                     log(f"[MOMENTUM SPIKE] 🚨 NEGATIVE SPIKE - Triggering close for YES trade {trade_id} (momentum: {current_momentum:.2f})")
@@ -1954,7 +1949,7 @@ def start_monitoring_loop():
                                 
                                 # Log momentum monitoring (every 30 seconds to reduce noise)
                                 if not hasattr(monitoring_worker, 'last_momentum_log') or current_time - monitoring_worker.last_momentum_log > 30:
-                                    log(f"[MOMENTUM SPIKE] Monitoring momentum: {current_momentum:.2f} (threshold: ±{momentum_spike_threshold})")
+                                    log_debug(f"[MOMENTUM SPIKE] Monitoring momentum: {current_momentum:.2f} (threshold: ±{momentum_spike_threshold})")
                                     monitoring_worker.last_momentum_log = current_time
                     except Exception as e:
                         log(f"[MOMENTUM SPIKE] Error in momentum spike logic: {e}")
@@ -2121,6 +2116,9 @@ def start_event_driven_supervisor():
     
     # Check if there are already active trades and start monitoring if needed
     conn = get_db_connection()
+    if not conn:
+        log("❌ Failed to connect to PostgreSQL; cannot start event-driven supervisor")
+        sys.exit(1)
     cursor = conn.cursor()
     active_trades_table = get_monitor_active_trades_table()
     cursor.execute(f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE status = 'active'")
@@ -2225,13 +2223,7 @@ def start_event_driven_supervisor():
 def is_auto_stop_enabled():
     """Check if AUTO STOP is enabled by checking auto_trade boolean in monitor_list"""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db", 
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             # Check auto_trade boolean from the specific monitor's row in monitor_list
             cursor.execute(f"SELECT auto_trade FROM users.monitor_list_{USER_NUMBER} WHERE id = %s", (MONITOR_ID,))
@@ -2240,7 +2232,7 @@ def is_auto_stop_enabled():
                 auto_trade_enabled = result[0]
                 return auto_trade_enabled
             else:
-                log(f"[AUTO STOP] No monitor found with ID {MONITOR_ID} in monitor_list")
+                log_debug(f"No monitor found with ID {MONITOR_ID} in monitor_list")
                 return False
     except Exception as e:
         log(f"[AUTO STOP] Error reading auto_trade from monitor_list: {e}")
@@ -2325,7 +2317,7 @@ def trigger_auto_stop_close(trade):
                 notification_url = get_service_url(ACTIVE_TRADE_SUPERVISOR_PORT) + "/api/notify_automated_close"
                 notification_response = requests.post(notification_url, json=notification_data, timeout=2)
                 if notification_response.ok:
-                    log(f"[AUTO STOP] 🔔 Frontend notification sent for automated trade close")
+                    log_debug(f"Frontend notification sent for automated trade close")
                 else:
                     log(f"[AUTO STOP] ⚠️ Frontend notification failed: {notification_response.status_code}")
             except Exception as e:
@@ -2435,12 +2427,7 @@ def get_trade_strategy():
     """Get trade strategy from monitor-specific configuration"""
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             cursor.execute(f"SELECT strategy FROM users.monitor_list_{USER_NUMBER} WHERE id = %s", (MONITOR_ID,))
             result = cursor.fetchone()
@@ -2461,12 +2448,7 @@ def get_momentum_scalp_trailing_stop_amount():
     """Get momentum scalp trailing stop amount from monitor configuration"""
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             cursor.execute(f"SELECT momentum_scalp_trailing_stop_amount FROM users.monitor_list_{USER_NUMBER} WHERE id = %s", (MONITOR_ID,))
             result = cursor.fetchone()
@@ -2474,7 +2456,7 @@ def get_momentum_scalp_trailing_stop_amount():
             if result and result[0] is not None:
                 return float(result[0])
             else:
-                log(f"[AUTO STOP MS] No trailing stop amount found for monitor {MONITOR_ID}, using default 0.10")
+                log_debug(f"No trailing stop amount found for monitor {MONITOR_ID}, using default 0.10")
                 return 0.10  # Default 10% trailing stop
     except Exception as e:
         log(f"[AUTO STOP MS] Error reading trailing stop amount: {e}")
@@ -2484,12 +2466,7 @@ def get_momentum_scalp_profit_target():
     """Get momentum scalp profit target from monitor configuration"""
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             cursor.execute(f"SELECT momentum_scalp_profit_target FROM users.monitor_list_{USER_NUMBER} WHERE id = %s", (MONITOR_ID,))
             result = cursor.fetchone()
@@ -2497,7 +2474,7 @@ def get_momentum_scalp_profit_target():
             if result and result[0] is not None:
                 return float(result[0])
             else:
-                log(f"[AUTO STOP MS] No profit target found for monitor {MONITOR_ID}, using default 0.50")
+                log_debug(f"No profit target found for monitor {MONITOR_ID}, using default 0.50")
                 return 0.50  # Default 50% profit target
     except Exception as e:
         log(f"[AUTO STOP MS] Error reading profit target: {e}")
@@ -2507,12 +2484,7 @@ def get_max_profit():
     """Get max_profit from monitor configuration"""
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             cursor.execute(f"SELECT max_profit FROM users.monitor_list_{USER_NUMBER} WHERE id = %s", (MONITOR_ID,))
             result = cursor.fetchone()
@@ -2520,7 +2492,7 @@ def get_max_profit():
             if result and result[0] is not None:
                 return float(result[0])
             else:
-                log(f"[AUTO STOP MS] No max_profit found for monitor {MONITOR_ID}, using default 0.9900")
+                log_debug(f"No max_profit found for monitor {MONITOR_ID}, using default 0.9900")
                 return 0.9900  # Default 99% max profit
     except Exception as e:
         log(f"[AUTO STOP MS] Error reading max_profit: {e}")
@@ -2530,12 +2502,7 @@ def get_momentum_scalp_entry_threshold():
     """Get momentum scalp entry threshold from monitor configuration"""
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             cursor.execute(f"SELECT momentum_scalp_entry_threshold FROM users.monitor_list_{USER_NUMBER} WHERE id = %s", (MONITOR_ID,))
             result = cursor.fetchone()
@@ -2543,7 +2510,7 @@ def get_momentum_scalp_entry_threshold():
             if result and result[0] is not None:
                 return float(result[0])
             else:
-                log(f"[AUTO STOP MS] No momentum_scalp_entry_threshold found for monitor {MONITOR_ID}, using default 35.0")
+                log_debug(f"No momentum_scalp_entry_threshold found for monitor {MONITOR_ID}, using default 35.0")
                 return 35.0  # Default threshold
     except Exception as e:
         log(f"[AUTO STOP MS] Error reading momentum_scalp_entry_threshold: {e}")
@@ -2552,13 +2519,7 @@ def get_momentum_scalp_entry_threshold():
 def get_auto_stop_threshold():
     """Get auto stop probability threshold from monitor's assigned strategy"""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db", 
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             # First get the strategy name for this monitor
             cursor.execute(f"""
@@ -2567,12 +2528,12 @@ def get_auto_stop_threshold():
             monitor_result = cursor.fetchone()
             
             if not monitor_result:
-                log(f"[AUTO STOP] No monitor found with ID {MONITOR_ID}")
+                log_debug(f"No monitor found with ID {MONITOR_ID}")
                 return 40
             
             strategy_name = monitor_result[0]
             if not strategy_name:
-                log(f"[AUTO STOP] No strategy assigned to monitor {MONITOR_ID}")
+                log_debug(f"No strategy assigned to monitor {MONITOR_ID}")
                 return 40
             
             # Get the threshold from the monitor
@@ -2587,7 +2548,7 @@ def get_auto_stop_threshold():
                 threshold = result[0]
                 return threshold
             else:
-                log(f"[AUTO STOP] No strategy found with name: {strategy_name}")
+                log_debug(f"No strategy found with name: {strategy_name}")
                 return 40
                 
     except Exception as e:
@@ -2610,7 +2571,7 @@ def get_unified_ttc_seconds(symbol: str = None):
         if result and result[0] is not None:
             return int(result[0])
         else:
-            log(f"[AUTO STOP] Warning: No TTC data from master strike table, using fallback calculation")
+            log_debug(f"No TTC data from master strike table, using fallback calculation")
             # Fallback to simple calculation
             now = datetime.now(ZoneInfo("America/New_York"))
             next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
@@ -2626,13 +2587,7 @@ def get_unified_ttc_seconds(symbol: str = None):
 def get_min_ttc_seconds():
     """Get the minimum TTC seconds setting from monitor's assigned strategy"""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db", 
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             # First get the strategy name for this monitor
             cursor.execute(f"""
@@ -2641,12 +2596,12 @@ def get_min_ttc_seconds():
             monitor_result = cursor.fetchone()
             
             if not monitor_result:
-                log(f"[AUTO STOP] No monitor found with ID {MONITOR_ID}")
+                log_debug(f"No monitor found with ID {MONITOR_ID}")
                 return 60
             
             strategy_name = monitor_result[0]
             if not strategy_name:
-                log(f"[AUTO STOP] No strategy assigned to monitor {MONITOR_ID}")
+                log_debug(f"No strategy assigned to monitor {MONITOR_ID}")
                 return 60
             
             # Get the min_ttc_seconds from the monitor
@@ -2661,7 +2616,7 @@ def get_min_ttc_seconds():
                 min_ttc = result[0]
                 return min_ttc
             else:
-                log(f"[AUTO STOP] No strategy found with name: {strategy_name}")
+                log_debug(f"No strategy found with name: {strategy_name}")
                 return 60
                 
     except Exception as e:
@@ -2671,13 +2626,7 @@ def get_min_ttc_seconds():
 def get_verification_period_enabled():
     """Get the verification period enabled setting from monitor's assigned strategy"""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db", 
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             # First get the strategy name for this monitor
             cursor.execute(f"""
@@ -2686,12 +2635,12 @@ def get_verification_period_enabled():
             monitor_result = cursor.fetchone()
             
             if not monitor_result:
-                log(f"[AUTO STOP] No monitor found with ID {MONITOR_ID}")
+                log_debug(f"No monitor found with ID {MONITOR_ID}")
                 return False
             
             strategy_name = monitor_result[0]
             if not strategy_name:
-                log(f"[AUTO STOP] No strategy assigned to monitor {MONITOR_ID}")
+                log_debug(f"No strategy assigned to monitor {MONITOR_ID}")
                 return False
             
             # Get the verification_period_enabled from the monitor
@@ -2706,7 +2655,7 @@ def get_verification_period_enabled():
                 enabled = result[0]
                 return enabled
             else:
-                log(f"[AUTO STOP] No strategy found with name: {strategy_name}")
+                log_debug(f"No strategy found with name: {strategy_name}")
                 return False
                 
     except Exception as e:
@@ -2716,13 +2665,7 @@ def get_verification_period_enabled():
 def get_verification_period_seconds():
     """Get the verification period seconds setting from monitor's assigned strategy"""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db", 
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             # First get the strategy name for this monitor
             cursor.execute(f"""
@@ -2731,12 +2674,12 @@ def get_verification_period_seconds():
             monitor_result = cursor.fetchone()
             
             if not monitor_result:
-                log(f"[AUTO STOP] No monitor found with ID {MONITOR_ID}")
+                log_debug(f"No monitor found with ID {MONITOR_ID}")
                 return 15
             
             strategy_name = monitor_result[0]
             if not strategy_name:
-                log(f"[AUTO STOP] No strategy assigned to monitor {MONITOR_ID}")
+                log_debug(f"No strategy assigned to monitor {MONITOR_ID}")
                 return 15
             
             # Get the verification_period_seconds from the monitor
@@ -2751,7 +2694,7 @@ def get_verification_period_seconds():
                 seconds = result[0]
                 return seconds
             else:
-                log(f"[AUTO STOP] No strategy found with name: {strategy_name}")
+                log_debug(f"No strategy found with name: {strategy_name}")
                 return 15
                 
     except Exception as e:
@@ -2821,18 +2764,18 @@ def check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_tra
                 # Still in verification period - just wait, don't check conditions during wait
                 remaining_time = verification_end_time - current_time
                 if not hasattr(check_auto_stop_conditions_hourly_htc, 'last_verification_log') or current_time - check_auto_stop_conditions_hourly_htc.last_verification_log > 10:
-                    log(f"[AUTO STOP HTC] ⏳ Trade {trade_id} in verification period - {remaining_time:.1f}s remaining")
+                    log_debug(f"Trade {trade_id} in verification period - {remaining_time:.1f}s remaining")
                     check_auto_stop_conditions_hourly_htc.last_verification_log = current_time
                 continue
         
         # Check for new auto-stop conditions
         # Debug logging for trade 2448
         if trade_id == 2448:
-            log(f"[AUTO STOP HTC DEBUG] Trade 2448 - prob: {prob}, threshold: {threshold}, status: {trade.get('status')}, in_triggered: {trade_id in auto_stop_triggered_trades}, ttc: {ttc_seconds}, min_ttc: {min_ttc_seconds}")
+            log_debug(f"Trade {trade_id} - prob: {prob}, threshold: {threshold}, status: {trade.get('status')}, in_triggered: {trade_id in auto_stop_triggered_trades}, ttc: {ttc_seconds}, min_ttc: {min_ttc_seconds}")
         
         # Debug logging for trade 2448
         if trade_id == 2448:
-            log(f"[AUTO STOP HTC DEBUG] Trade 2448 conditions - prob_valid: {prob is not None}, prob_type: {type(prob)}, prob_lt_threshold: {float(prob) < threshold if prob is not None else 'N/A'}, status_active: {trade.get('status') == 'active'}, not_triggered: {trade_id not in auto_stop_triggered_trades}, ttc_valid: {ttc_seconds is not None}, ttc_ge_min: {ttc_seconds >= min_ttc_seconds if ttc_seconds is not None else 'N/A'}")
+            log_debug(f"Trade {trade_id} conditions - prob_valid: {prob is not None}, prob_type: {type(prob)}, prob_lt_threshold: {float(prob) < threshold if prob is not None else 'N/A'}, status_active: {trade.get('status') == 'active'}, not_triggered: {trade_id not in auto_stop_triggered_trades}, ttc_valid: {ttc_seconds is not None}, ttc_ge_min: {ttc_seconds >= min_ttc_seconds if ttc_seconds is not None else 'N/A'}")
         
         auto_stop_conditions_met = (
             prob is not None and
@@ -2846,7 +2789,7 @@ def check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_tra
         
         # Debug logging for trade 2448
         if trade_id == 2448:
-            log(f"[AUTO STOP HTC DEBUG] Trade 2448 - auto_stop_conditions_met: {auto_stop_conditions_met}")
+            log_debug(f"Trade {trade_id} - auto_stop_conditions_met: {auto_stop_conditions_met}")
         
         if auto_stop_conditions_met:
             # Debug logging for trade 2448

@@ -42,6 +42,10 @@ Do not state procedures or commitments in chat (e.g. "going forward I'll maintai
 
 When you edit **critical scripts**—code that runs as a long-lived process (supervisor-managed services, main_app, trade_executor, kalshi_account_sync_ws, auto_entry_supervisor, watchdogs, etc.)—you **must call out in your summary** that a restart is required and which service(s). Example: "**Restart required:** kalshi_account_sync_ws, main_app (MASTER_RESTART or supervisorctl restart <program>)." Do not leave it implied; state it explicitly so the user knows changes will not be live until restart.
 
+## Logging (mandatory for new and changed log calls)
+
+All **new or changed** logging must follow the project logging standards so format, timestamps, errors, and heartbeats are consistent. Use the `logging` module (no `print()` for operational messages); one timestamp format (ISO 8601 + TZ, EST); one line format `{timestamp} {level} [{logger}] {message}`; errors with level + description + exception; consistent startup/restart/heartbeat phrasing. **Real-time visibility:** supervisor-captured logs must flush after each line. **Single destination:** no duplication — log only to stdout (supervisor captures it); no FileHandler or script-owned log files for supervised processes unless documented. (e.g. use a `StreamHandler` subclass that flushes in `emit()`, or `print(..., flush=True)` if still using print). Full details: `.cursor/pm/brain/16_LOGGING_AUDIT_INITIATIVE.md` §5 (including §5.8) and `docs/LOGGING_INVENTORY.md` (top). When adding or editing log calls, adhere to these rules unless an exception is documented.
+
 ## Patterns
 
 - **DB:** Single PostgreSQL DB rec_io_db; schemas users, live_data, historical_data, analytics, system, archive, core, work_progress, testing, public. Central connection via backend.core.config.database.
@@ -77,6 +81,6 @@ When directed to do a **deep dive** or **learn everything** about a company, pla
 ## Insights (from audit)
 
 - main.py has some hardcoded localhost/rec_io_user/rec_io_password in get_trade_history_preferences_postgresql; rest of app uses env or unified config.
-- Multiple env conventions (DB_*, REC_DB_*, POSTGRES_*) across codebase; scripts that call database.py should normalize to DB_* via REC_DB_* mapping when loading .env.
+- Multiple env conventions (DB_*, REC_DB_*, POSTGRES_*) across codebase; scripts that call database.py should normalize to DB_* via REC_DB_* mapping when loading .env. **Opportunistic cleanup:** When touching a file for other work, if it uses POSTGRES_* or its own DB config, switch it to get_postgresql_connection()/get_database_config() from backend.core.config.database. Flag for a full pass only if it becomes a bigger problem.
 - MASTER_RESTART PORTS array is a subset of MASTER_PORT_MANIFEST; supervisor may start more processes; port_config.py is source of truth for get_port().
 - Simulated trades duplicate prevention: is_strike_already_simulated_traded and trade_manager use same backend.core.config.database connection so duplicate check sees same rows (per changelog 2026-03-07).

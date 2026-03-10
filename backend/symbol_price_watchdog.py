@@ -16,12 +16,12 @@ import yliveticker
 import numpy as np
 import threading
 import time
+import logging
 
 # Add the project root to the Python path (permanent scalable fix)
 from backend.util.paths import get_project_root
 if get_project_root() not in sys.path:
     sys.path.insert(0, get_project_root())
-print('DEBUG sys.path:', sys.path)
 
 # Now import everything else
 from backend.core.config.settings import config
@@ -30,6 +30,39 @@ from backend.util.paths import get_btc_price_history_dir, ensure_data_dirs
 
 # Ensure all data directories exist
 ensure_data_dirs()
+
+# Logging: EST timestamps, single handler to stdout, flush after each line (real-time visibility)
+def _est_formatter():
+    class ESTFormatter(logging.Formatter):
+        def formatTime(self, record, datefmt=None):
+            dt = datetime.fromtimestamp(record.created, tz=ZoneInfo("America/New_York"))
+            if datefmt:
+                return dt.strftime(datefmt)
+            s = dt.strftime("%Y-%m-%dT%H:%M:%S")
+            z = dt.strftime("%z")
+            return s + (z[:3] + ":" + z[3:] if len(z) >= 5 else z)
+    return ESTFormatter(fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+
+
+class _FlushingStreamHandler(logging.StreamHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+
+def _configure_logging():
+    log = logging.getLogger("symbol_price_watchdog")
+    if log.handlers:
+        return log
+    handler = _FlushingStreamHandler(sys.stdout)
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(_est_formatter())
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    return log
+
+
+logger = _configure_logging()
 
 # Symbol configuration
 SYMBOL_CONFIG = {
@@ -119,31 +152,25 @@ def update_prev_day_avg_for_symbol(symbol: str, cursor, table_name: str, yesterd
         mom = f"{row[0]:.1f}" if row[0] is not None else "NULL"
         vol = f"{row[1]:.1f}" if row[1] is not None else "NULL"
         mov = f"{row[2]:.1f}" if row[2] is not None else "NULL"
-        print(f"✅ {symbol} prev_day_avg updated: momentum={mom} volatility={vol} movement={mov}")
+        logger.debug("%s prev_day_avg updated: momentum=%s volatility=%s movement=%s", symbol, mom, vol, mov)
 
 def _run_daily_prev_day_avg_0005(symbol: str):
     """Background thread: run prev_day_avg update every day at 00:05 EST. No dependency on ticks."""
     table_name = SYMBOL_CONFIG[symbol]["table_name"]
-    print(f"🕐 [{symbol}] Daily prev_day_avg thread started, waiting for 00:05 EST...")
-    sys.stdout.flush()
+    logger.debug("[%s] Daily prev_day_avg thread started, waiting for 00:05 EST", symbol)
     while True:
         now = datetime.now(ZoneInfo("America/New_York"))
-        # Next 00:05 EST today or tomorrow
         target = now.replace(hour=0, minute=5, second=0, microsecond=0)
         if now >= target:
             target += timedelta(days=1)
         wait_seconds = (target - now).total_seconds()
-        wait_hours = wait_seconds / 3600
-        print(f"🕐 [{symbol}] Next prev_day_avg update scheduled for {target.strftime('%Y-%m-%d %H:%M:%S')} EST (in {wait_hours:.1f} hours)")
-        sys.stdout.flush()
         time.sleep(wait_seconds)
         now_after_sleep = datetime.now(ZoneInfo("America/New_York"))
-        print(f"🕐 [{symbol}] Running daily prev_day_avg update at {now_after_sleep.strftime('%Y-%m-%d %H:%M:%S')} EST...")
-        sys.stdout.flush()
+        logger.debug("[%s] Running daily prev_day_avg at %s EST", symbol, now_after_sleep.strftime("%Y-%m-%d %H:%M:%S"))
         try:
             conn = get_postgres_connection()
             if not conn:
-                print(f"⚠️ [{symbol}] Failed to get DB connection for prev_day_avg update")
+                logger.warning("[%s] Failed to get DB connection for prev_day_avg", symbol)
                 continue
             cursor = conn.cursor()
             today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
@@ -151,19 +178,13 @@ def _run_daily_prev_day_avg_0005(symbol: str):
             yesterday_dt = today_dt - timedelta(days=1)
             yesterday_start = yesterday_dt.strftime("%Y-%m-%d") + "T00:00:00"
             yesterday_end = today_str + "T00:00:00"
-            print(f"🕐 [{symbol}] Computing prev_day_avg for {yesterday_start} to {yesterday_end}")
-            sys.stdout.flush()
+            logger.debug("[%s] Computing prev_day_avg for %s to %s", symbol, yesterday_start, yesterday_end)
             update_prev_day_avg_for_symbol(symbol, cursor, table_name, yesterday_start, yesterday_end)
             conn.commit()
             cursor.close()
             conn.close()
-            print(f"✅ [{symbol}] Daily prev_day_avg update completed successfully")
-            sys.stdout.flush()
         except Exception as e:
-            print(f"⚠️ [{symbol}] daily prev_day_avg (00:05) failed: {e}")
-            import traceback
-            traceback.print_exc()
-            sys.stdout.flush()
+            logger.warning("[%s] daily prev_day_avg (00:05) failed: %s", symbol, e, exc_info=True)
 
 def load_movement_profile(symbol: str) -> Dict[float, float]:
     """Load movement profile from database and cache (same pattern as momentum)."""
@@ -188,7 +209,7 @@ def load_movement_profile(symbol: str) -> Dict[float, float]:
         MOVEMENT_PROFILES[symbol] = profile
         return profile
     except Exception as e:
-        print(f"⚠️ Load movement profile for {symbol}: {e}")
+        logger.warning("Load movement profile for %s: %s", symbol, e)
         return {}
 
 def calculate_movement_percentile(symbol: str, movement_value: float) -> Optional[float]:
@@ -234,27 +255,21 @@ def load_momentum_profile(symbol: str) -> Dict[float, float]:
         
         results = cursor.fetchall()
         if not results:
-            # Fallback to base table if no dated tables exist
             profile_table = f"analytics.{symbol.lower()}_momentum_profile"
-            print(f"⚠️ No dated momentum profile found for {symbol}, using base table")
+            logger.debug("No dated momentum profile for %s, using base table", symbol)
         else:
-            # Use the most recent dated table
             profile_table = f"analytics.{results[0][0]}"
-            print(f"📊 Using momentum profile: {results[0][0]}")
-        
+            logger.debug("Using momentum profile: %s", results[0][0])
         cursor.execute(f"SELECT percentile, momentum_value FROM {profile_table} ORDER BY percentile")
-        
         profile = {}
         for row in cursor.fetchall():
             profile[float(row[0])] = float(row[1])
-        
         conn.close()
         MOMENTUM_PROFILES[symbol] = profile
-        print(f"✅ Loaded momentum profile for {symbol}: {len(profile)} percentiles")
+        logger.debug("Loaded momentum profile for %s: %s percentiles", symbol, len(profile))
         return profile
-        
     except Exception as e:
-        print(f"❌ Error loading momentum profile for {symbol}: {e}")
+        logger.error("Error loading momentum profile for %s: %s", symbol, e)
         return {}
 
 def calculate_momentum_percentile(symbol: str, momentum_value: float) -> Optional[float]:
@@ -325,27 +340,21 @@ def load_volatility_profile(symbol: str) -> Dict[float, float]:
         
         results = cursor.fetchall()
         if not results:
-            print(f"⚠️ No dated volatility profile found for {symbol}")
+            logger.debug("No dated volatility profile for %s", symbol)
             conn.close()
             return {}
-        
-        # Use the most recent dated table
         profile_table = f"analytics.{results[0][0]}"
-        print(f"📊 Using volatility profile: {results[0][0]}")
-        
+        logger.debug("Using volatility profile: %s", results[0][0])
         cursor.execute(f"SELECT percentile, volatility_value FROM {profile_table} ORDER BY percentile")
-        
         profile = {}
         for row in cursor.fetchall():
             profile[float(row[0])] = float(row[1])
-        
         conn.close()
         VOLATILITY_PROFILES[symbol] = profile
-        print(f"✅ Loaded volatility profile for {symbol}: {len(profile)} percentiles")
+        logger.debug("Loaded volatility profile for %s: %s percentiles", symbol, len(profile))
         return profile
-        
     except Exception as e:
-        print(f"❌ Error loading volatility profile for {symbol}: {e}")
+        logger.error("Error loading volatility profile for %s: %s", symbol, e)
         return {}
 
 def calculate_volatility_percentile(symbol: str, volatility_value: float) -> Optional[float]:
@@ -430,7 +439,7 @@ def get_1m_avg_price(symbol: str) -> float:
             return get_current_price(symbol)
             
     except Exception as e:
-        print(f"Error calculating 1m average price: {e}")
+        logger.warning("Error calculating 1m average price: %s", e)
         return get_current_price(symbol)
 
 def get_current_price(symbol: str) -> float:
@@ -447,9 +456,8 @@ def get_current_price(symbol: str) -> float:
         if result:
             return float(result[0])
         return 0.0
-        
     except Exception as e:
-        print(f"Error getting current price: {e}")
+        logger.warning("Error getting current price: %s", e)
         return 0.0
 
 def get_momentum_data(symbol: str = 'BTC') -> dict:
@@ -462,7 +470,7 @@ def get_momentum_data(symbol: str = 'BTC') -> dict:
         momentum_data = calculate_native_momentum(symbol)
         return momentum_data
     except Exception as e:
-        print(f"Failed to calculate momentum data: {e}")
+        logger.warning("Failed to calculate momentum data: %s", e)
         return {"momentum": None}
 
 def get_price_at_offset(symbol: str, minutes_ago: int) -> Optional[float]:
@@ -495,7 +503,7 @@ def get_price_at_offset(symbol: str, minutes_ago: int) -> Optional[float]:
         return None
         
     except Exception as e:
-        print(f"Error getting price at {minutes_ago}m offset: {e}")
+        logger.warning("Error getting price at %sm offset: %s", minutes_ago, e)
         return None
 
 def get_current_price_from_db(symbol: str) -> Optional[float]:
@@ -514,7 +522,7 @@ def get_current_price_from_db(symbol: str) -> Optional[float]:
         return None
         
     except Exception as e:
-        print(f"Error getting current price: {e}")
+        logger.warning("Error getting current price: %s", e)
         return None
 
 def get_high_low_open_for_window(symbol: str, minutes_ago: int) -> Tuple[Optional[float], Optional[float], Optional[float]]:
@@ -538,7 +546,7 @@ def get_high_low_open_for_window(symbol: str, minutes_ago: int) -> Tuple[Optiona
             return (float(row[1]), float(row[0]), float(row[2]))
         return (None, None, None)
     except Exception as e:
-        print(f"get_high_low_open_for_window({symbol}, {minutes_ago}m): {e}")
+        logger.warning("get_high_low_open_for_window(%s, %sm): %s", symbol, minutes_ago, e)
         return (None, None, None)
 
 def calculate_move_for_window(symbol: str, minutes: int) -> Optional[float]:
@@ -676,7 +684,7 @@ def calculate_5s_momentum_average(symbol: str = 'BTC') -> Optional[float]:
         return momentum_5s_percentile
         
     except Exception as e:
-        print(f"⚠️ 5s momentum average calculation failed: {e}")
+        logger.debug("5s momentum average calculation failed: %s", e)
         return None
 
 def calculate_30s_momentum_average(symbol: str = 'BTC') -> Optional[float]:
@@ -713,7 +721,7 @@ def calculate_30s_momentum_average(symbol: str = 'BTC') -> Optional[float]:
         return momentum_30s_percentile
         
     except Exception as e:
-        print(f"⚠️ 30s momentum average calculation failed: {e}")
+        logger.debug("30s momentum average calculation failed: %s", e)
         return None
 
 def calculate_native_momentum(symbol: str = 'BTC') -> Dict[str, Any]:
@@ -780,7 +788,7 @@ def get_minute_candles_for_volatility(symbol: str, lookback_minutes: int = 60) -
         return candles
         
     except Exception as e:
-        print(f"⚠️ Error getting minute candles for volatility: {e}")
+        logger.debug("Error getting minute candles for volatility: %s", e)
         return []
 
 def calculate_native_volatility(symbol: str = 'BTC') -> Optional[float]:
@@ -880,7 +888,7 @@ def calculate_native_volatility(symbol: str = 'BTC') -> Optional[float]:
         return float(round(weighted_vol, 6))
         
     except Exception as e:
-        print(f"⚠️ Error calculating volatility: {e}")
+        logger.debug("Error calculating volatility: %s", e)
         return None
 
 def get_volatility_for_minute(symbol: str, minute_key: str) -> Tuple[Optional[float], Optional[float]]:
@@ -905,10 +913,10 @@ def get_volatility_for_minute(symbol: str, minute_key: str) -> Tuple[Optional[fl
             try:
                 volatility_percentile = calculate_volatility_percentile(symbol, volatility_value)
             except Exception as e:
-                print(f"⚠️ Volatility percentile calculation failed for {symbol}: {e}")
+                logger.debug("Volatility percentile calculation failed for %s: %s", symbol, e)
                 volatility_percentile = None
     except Exception as e:
-        print(f"⚠️ Volatility calculation failed for {symbol}: {e}")
+        logger.debug("Volatility calculation failed for %s: %s", symbol, e)
         volatility_value = None
         volatility_percentile = None
     
@@ -937,14 +945,13 @@ def insert_tick(symbol: str, timestamp: str, price: float):
             if one_minute_avg == 0.0:  # No historical data
                 one_minute_avg = price  # Use current price as fallback
         except Exception as e:
-            print(f"⚠️ 1m average calculation failed (no historical data yet): {e}")
+            logger.debug("1m average calculation failed (no historical data yet): %s", e)
             one_minute_avg = price  # Use current price as fallback
-        
-        # Get momentum data - handle case where no historical data exists yet
+
         try:
             momentum_data = get_momentum_data(symbol)
         except Exception as e:
-            print(f"⚠️ Momentum calculation failed (no historical data yet): {e}")
+            logger.debug("Momentum calculation failed (no historical data yet): %s", e)
             momentum_data = {
                 'momentum': None,
                 'delta_1m': None,
@@ -961,21 +968,17 @@ def insert_tick(symbol: str, timestamp: str, price: float):
             try:
                 momentum_percentile = calculate_momentum_percentile(symbol, momentum_data['momentum'])
             except Exception as e:
-                print(f"⚠️ Momentum percentile calculation failed: {e}")
-        
-        # Calculate 5-second momentum average
+                logger.debug("Momentum percentile calculation failed: %s", e)
         momentum_5s_avg = None
         try:
             momentum_5s_avg = calculate_5s_momentum_average(symbol)
         except Exception as e:
-            print(f"⚠️ 5s momentum average calculation failed: {e}")
-        
-        # Calculate 30-second momentum average
+            logger.debug("5s momentum average calculation failed: %s", e)
         momentum_30s_avg = None
         try:
             momentum_30s_avg = calculate_30s_momentum_average(symbol)
         except Exception as e:
-            print(f"⚠️ 30s momentum average calculation failed: {e}")
+            logger.debug("30s momentum average calculation failed: %s", e)
         
         # Get volatility for current minute (calculated synchronously on first tick of minute)
         minute_key = timestamp[:16]  # Extract minute key (YYYY-MM-DDTHH:MM)
@@ -985,7 +988,7 @@ def insert_tick(symbol: str, timestamp: str, price: float):
         try:
             movement_data = get_movement_data(symbol)
         except Exception as e:
-            print(f"⚠️ Movement calculation failed: {e}")
+            logger.debug("Movement calculation failed: %s", e)
             movement_data = {
                 "move_1m": None, "move_2m": None, "move_3m": None, "move_4m": None,
                 "move_15m": None, "move_30m": None, "movement": None, "movement_percentile": None,
@@ -1114,32 +1117,32 @@ def insert_tick(symbol: str, timestamp: str, price: float):
         cursor.execute(f"DELETE FROM live_data.{table_name} WHERE timestamp < %s", (cutoff_iso,))
         
         conn.commit()
-        
-        # Log successful price insertion
-        print(f"✅ {symbol} price logged: ${price:,.2f} at {timestamp}")
-        
+        logger.debug("%s price logged: $%s at %s", symbol, f"{price:,.2f}", timestamp)
     except Exception as e:
-        print(f"⚠️ Logger encountered an error: {e}")
+        logger.error("Logger encountered an error: %s", e, exc_info=True)
         conn.rollback()
         raise
     finally:
         conn.close()
 
+HEARTBEAT_INTERVAL_SEC = 300  # 5 min internal heartbeat to stdout
+
 async def log_symbol_price(symbol: str):
     """Log price data for the specified symbol"""
     global last_logged_second
-    
+
     last_logged_second = None
+    last_heartbeat = time.time()
     symbol_config = SYMBOL_CONFIG[symbol]
-    
+
     # Pre-load momentum, volatility, and movement profiles for this symbol
-    print(f"🔄 Pre-loading momentum profile for {symbol}...")
+    logger.debug("Pre-loading momentum profile for %s", symbol)
     load_momentum_profile(symbol)
-    print(f"🔄 Pre-loading volatility profile for {symbol}...")
+    logger.debug("Pre-loading volatility profile for %s", symbol)
     load_volatility_profile(symbol)
-    print(f"🔄 Pre-loading movement profile for {symbol}...")
+    logger.debug("Pre-loading movement profile for %s", symbol)
     load_movement_profile(symbol)
-    
+
     while True:
         try:
             async with websockets.connect(symbol_config['api_endpoint']) as websocket:
@@ -1170,23 +1173,17 @@ async def log_symbol_price(symbol: str):
                         last_logged_second = current_second
 
                         rounded_timestamp = now.strftime("%Y-%m-%dT%H:%M:%S")
-                        formatted_price = f"${price:,.2f}"
-
                         insert_tick(symbol, rounded_timestamp, price)
 
-                        # Ensure the directory exists before writing to the heartbeat file
-                        heartbeat_path = os.path.join(get_btc_price_history_dir(), symbol_config['heartbeat_file'])
-                        os.makedirs(os.path.dirname(heartbeat_path), exist_ok=True)
-                        with open(heartbeat_path, "w") as hb:
-                            hb.write(f"{rounded_timestamp} {symbol} logger alive (PostgreSQL)\n")
+                        if time.time() - last_heartbeat >= HEARTBEAT_INTERVAL_SEC:
+                            logger.info("heartbeat")
+                            last_heartbeat = time.time()
 
                     except asyncio.TimeoutError:
-                        print("⚠️ WebSocket timeout. Reconnecting...")
+                        logger.warning("WebSocket timeout, reconnecting")
                         break
         except Exception as e:
-            print("⚠️ Logger encountered an error:", e)
-            import traceback
-            traceback.print_exc()
+            logger.error("Logger encountered an error: %s", e, exc_info=True)
             await asyncio.sleep(5)
 
 async def poll_kraken_price_changes(symbol: str):
@@ -1239,88 +1236,66 @@ async def poll_kraken_price_changes(symbol: str):
                                         cursor.close()
                                         conn.close()
                                     except Exception as e:
-                                        print(f"[Database Error for {symbol}]", e)
+                                        logger.warning("Database error for %s: %s", symbol, e)
                                         if conn:
                                             conn.close()
         except Exception as e:
-            print(f"[Kraken Poll Error for {symbol}]", e)
+            logger.warning("Kraken poll error for %s: %s", symbol, e)
         await asyncio.sleep(60)
 
 def handle_yahoo_finance_symbol(symbol: str):
     """Handle Yahoo Finance symbols (SPX, NDX, etc.) synchronously"""
     symbol_config = SYMBOL_CONFIG[symbol]
     last_logged_second = None
-    
-    # Pre-load momentum, volatility, and movement profiles for this symbol
-    print(f"🔄 Pre-loading momentum profile for {symbol}...")
+    last_heartbeat = [time.time()]  # use list so on_new_msg can update
+
+    logger.debug("Pre-loading momentum profile for %s", symbol)
     load_momentum_profile(symbol)
-    print(f"🔄 Pre-loading volatility profile for {symbol}...")
+    logger.debug("Pre-loading volatility profile for %s", symbol)
     load_volatility_profile(symbol)
-    print(f"🔄 Pre-loading movement profile for {symbol}...")
+    logger.debug("Pre-loading movement profile for %s", symbol)
     load_movement_profile(symbol)
-    
+
     def on_new_msg(ws, msg):
-        """Handle incoming Yahoo Finance ticker messages"""
         nonlocal last_logged_second
         try:
-            # Parse the Yahoo Finance message
             price = None
             if isinstance(msg, dict):
-                # Try different possible price field names
                 for price_field in ['price', 'regularMarketPrice', 'last', 'lastPrice', 'close']:
                     if price_field in msg and msg[price_field] is not None:
                         price = float(msg[price_field])
                         break
-            
             if price is None:
                 return
-            
             now = datetime.now(ZoneInfo("America/New_York"))
             now = now.replace(microsecond=0)
-            
             current_second = int(now.timestamp())
             if last_logged_second == current_second:
                 return
             last_logged_second = current_second
-            
             rounded_timestamp = now.strftime("%Y-%m-%dT%H:%M:%S")
-            
-            # Insert the tick data
             insert_tick(symbol, rounded_timestamp, price)
-            
-            # Update heartbeat file
-            heartbeat_path = os.path.join(get_btc_price_history_dir(), symbol_config['heartbeat_file'])
-            os.makedirs(os.path.dirname(heartbeat_path), exist_ok=True)
-            with open(heartbeat_path, "w") as hb:
-                hb.write(f"{rounded_timestamp} {symbol} logger alive (PostgreSQL)\n")
-                
+            if time.time() - last_heartbeat[0] >= HEARTBEAT_INTERVAL_SEC:
+                logger.info("heartbeat")
+                last_heartbeat[0] = time.time()
         except Exception as e:
-            print(f"⚠️ Error processing Yahoo Finance message: {e}")
-            import traceback
-            traceback.print_exc()
-    
+            logger.warning("Error processing Yahoo Finance message: %s", e, exc_info=True)
+
+    ticker = None
     try:
-        print(f"🚀 Starting Yahoo Finance watchdog for {symbol} ({symbol_config['yahoo_symbol']})")
-        
-        # Create and start the Yahoo Finance live ticker
+        logger.debug("Starting Yahoo Finance watchdog for %s (%s)", symbol, symbol_config['yahoo_symbol'])
         ticker = yliveticker.YLiveTicker(
             on_ticker=on_new_msg,
             ticker_names=[symbol_config['yahoo_symbol']]
         )
-        
-        # Keep the main thread alive
         while True:
-            import time
             time.sleep(1)
-            
     except KeyboardInterrupt:
-        print(f"\n🛑 Stopping {symbol} watchdog...")
+        logger.debug("Stopping %s watchdog", symbol)
         if ticker:
             ticker.close()
     except Exception as e:
-        print(f"❌ Yahoo Finance watchdog error: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error("Yahoo Finance watchdog error: %s", e, exc_info=True)
 
 async def main():
     parser = argparse.ArgumentParser(description='Symbol Price Watchdog')
@@ -1330,20 +1305,13 @@ async def main():
     symbol = args.symbol.upper()
     
     if symbol not in SYMBOL_CONFIG:
-        print(f"❌ Unsupported symbol: {symbol}")
-        print(f"Supported symbols: {list(SYMBOL_CONFIG.keys())}")
+        logger.error("Unsupported symbol: %s (supported: %s)", symbol, list(SYMBOL_CONFIG.keys()))
         return
-    
     config = SYMBOL_CONFIG[symbol]
-    method = config.get('method', 'coinbase')  # Default to coinbase for backward compatibility
-    
-    print(f"Starting {symbol} Price Watchdog (PostgreSQL) using {method}")
-    sys.stdout.flush()
-    # Daily prev_day_avg update at 00:05 EST (runs regardless of ticks)
+    method = config.get('method', 'coinbase')
+    logger.debug("Starting %s Price Watchdog (PostgreSQL) using %s", symbol, method)
     t = threading.Thread(target=_run_daily_prev_day_avg_0005, args=(symbol,), daemon=True)
     t.start()
-    print("🕐 Daily prev_day_avg update scheduled for 00:05 EST")
-    sys.stdout.flush()
     
     if method == 'yahoo_finance':
         # Yahoo Finance symbols (SPX, NDX, etc.) - run synchronously

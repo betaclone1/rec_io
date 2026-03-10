@@ -11,6 +11,7 @@ auto_entry from auto_trade_settings. Each monitor controls its own auto entry
 supervisor via the auto_trade toggle switch.
 """
 
+import logging
 import os
 import json
 import time
@@ -42,13 +43,9 @@ from backend.util.paths import get_host, get_data_dir, get_service_url, get_trad
 def create_monitor_watchlist_table_DELETED():
     """Create monitor-specific watchlist table when supervisor starts"""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
+        if not conn:
+            return
         with conn.cursor() as cursor:
             # Create monitor-specific watchlist table
             watchlist_table = f"watchlist_{USER_NUMBER}_{MONITOR_ID}"
@@ -79,7 +76,7 @@ def create_monitor_watchlist_table_DELETED():
             """)
             conn.commit()
         conn.close()
-        log(f"[WATCHLIST] ✅ Created monitor-specific watchlist table: {watchlist_table}")
+        log_debug(f"[WATCHLIST] Created monitor-specific watchlist table: {watchlist_table}")
     except Exception as e:
         log(f"[WATCHLIST] ❌ Error creating watchlist table: {e}")
 
@@ -87,19 +84,14 @@ def drop_monitor_watchlist_table_DELETED():
     """Drop monitor-specific watchlist table when supervisor stops"""
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         with conn.cursor() as cursor:
             # Drop monitor-specific watchlist table
             watchlist_table = f"watchlist_{USER_NUMBER}_{MONITOR_ID}"
             cursor.execute(f"DROP TABLE IF EXISTS live_data.{watchlist_table}")
             conn.commit()
         conn.close()
-        log(f"[WATCHLIST] ✅ Dropped monitor-specific watchlist table: {watchlist_table}")
+        log_debug(f"[WATCHLIST] Dropped monitor-specific watchlist table: {watchlist_table}")
     except Exception as e:
         log(f"[WATCHLIST] ❌ Error dropping watchlist table: {e}")
 
@@ -128,8 +120,50 @@ MONITOR_IDENTIFIER = get_monitor_identifier()
 USER_NUMBER = MONITOR_IDENTIFIER.split('_')[0]
 MONITOR_ID = MONITOR_IDENTIFIER.split('_')[1]
 
-print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] 🚀 Monitor-aware supervisor starting")
-print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] User: {USER_NUMBER}, Monitor: {MONITOR_ID}")
+
+def _aes_est_formatter():
+    class _ESTF(logging.Formatter):
+        def formatTime(self, record, datefmt=None):
+            dt = datetime.fromtimestamp(record.created, tz=ZoneInfo("America/New_York"))
+            s = dt.strftime("%Y-%m-%dT%H:%M:%S")
+            z = dt.strftime("%z")
+            return s + (z[:3] + ":" + z[3:] if len(z) >= 5 else z)
+    return _ESTF(fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+
+
+class _AesFlushHandler(logging.StreamHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+
+def _configure_aes_logging():
+    logr = logging.getLogger("auto_entry_supervisor")
+    if logr.handlers:
+        return logr
+    h = _AesFlushHandler(sys.stdout)
+    h.setFormatter(_aes_est_formatter())
+    logr.addHandler(h)
+    # Default to INFO in normal operation; DEBUG must be explicitly enabled.
+    logr.setLevel(logging.INFO)
+    return logr
+
+
+_aes_logger = _configure_aes_logging()
+HEARTBEAT_INTERVAL_SEC = 300
+
+
+def _aes_heartbeat_loop():
+    while True:
+        time.sleep(HEARTBEAT_INTERVAL_SEC)
+        _aes_logger.info("heartbeat")
+
+
+_aes_hb_thread = threading.Thread(target=_aes_heartbeat_loop, daemon=True)
+_aes_hb_thread.start()
+
+
+_aes_logger.info("Monitor-aware supervisor starting user=%s monitor=%s", USER_NUMBER, MONITOR_ID)
 
 _LAST_MONITOR_STATE = {
     "contract": None,
@@ -264,12 +298,7 @@ def _fetch_performance_modifier(weekly_cycle: int) -> float:
         import psycopg2
         from psycopg2 import sql
 
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         table_identifier = sql.SQL("{}.{}").format(
             sql.Identifier("users"),
             sql.Identifier(f"monitor_cycle_performance_{USER_NUMBER}_{MONITOR_ID}")
@@ -293,12 +322,7 @@ def _fetch_max_pct_exposure(weekly_cycle: int) -> float:
         import psycopg2
         from psycopg2 import sql
 
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         table_identifier = sql.SQL("{}.{}").format(
             sql.Identifier("users"),
             sql.Identifier(f"monitor_cycle_performance_{USER_NUMBER}_{MONITOR_ID}")
@@ -367,12 +391,7 @@ def update_monitor_current_state(strike_table_data: Dict[str, Any]) -> None:
     try:
         import psycopg2
 
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         with conn.cursor() as cursor:
             cursor.execute(
                 f"""
@@ -449,15 +468,7 @@ def get_monitor_symbol():
         import psycopg2
         
         # PostgreSQL connection parameters
-        postgres_config = {
-            'host': os.getenv('POSTGRES_HOST', 'localhost'),
-            'port': int(os.getenv('POSTGRES_PORT', '5432')),
-            'database': os.getenv('POSTGRES_DB', 'rec_io_db'),
-            'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
-            'password': os.getenv('POSTGRES_PASSWORD', '')
-        }
-        
-        conn = psycopg2.connect(**postgres_config)
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         cursor.execute(f"""
@@ -488,21 +499,16 @@ def get_strike_table_name(symbol: str, market: str) -> str:
 _monitor_symbol_market = get_monitor_symbol()
 MONITOR_SYMBOL = _monitor_symbol_market[0] if isinstance(_monitor_symbol_market, tuple) else _monitor_symbol_market
 MONITOR_MARKET = _monitor_symbol_market[1] if isinstance(_monitor_symbol_market, tuple) else 'hourly'
-print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] 📊 Initial symbol: {MONITOR_SYMBOL}, market: {MONITOR_MARKET}")
+_aes_logger.info("Initial symbol=%s market=%s", MONITOR_SYMBOL, MONITOR_MARKET)
 
 def get_current_monitor_symbol_and_market():
     """Get (symbol, market) for this monitor from database. market is 'hourly' or '15m'."""
     global MONITOR_SYMBOL, MONITOR_MARKET
     try:
         import psycopg2
-        postgres_config = {
-            'host': os.getenv('POSTGRES_HOST', 'localhost'),
-            'port': int(os.getenv('POSTGRES_PORT', '5432')),
-            'database': os.getenv('POSTGRES_DB', 'rec_io_db'),
-            'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
-            'password': os.getenv('POSTGRES_PASSWORD', '')
-        }
-        conn = psycopg2.connect(**postgres_config)
+        conn = get_db_connection()
+        if not conn:
+            return "BTC", "hourly"
         cursor = conn.cursor()
         cursor.execute(f"""
             SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{USER_NUMBER}
@@ -516,7 +522,7 @@ def get_current_monitor_symbol_and_market():
             if mkt not in ('hourly', '15m'):
                 mkt = 'hourly'
             if sym != MONITOR_SYMBOL or mkt != MONITOR_MARKET:
-                log(f"[AUTO_ENTRY_SUPERVISOR] 🔄 Monitor symbol/market: {MONITOR_SYMBOL}/{MONITOR_MARKET} -> {sym}/{mkt}")
+                log_debug(f"Monitor symbol/market: {MONITOR_SYMBOL}/{MONITOR_MARKET} -> {sym}/{mkt}")
                 MONITOR_SYMBOL, MONITOR_MARKET = sym, mkt
             return sym, mkt
         return "BTC", "hourly"
@@ -534,11 +540,13 @@ register_monitor_ports(MONITOR_IDENTIFIER)
 
 # Get monitor-specific port
 AUTO_ENTRY_SUPERVISOR_PORT = get_monitor_port("auto_entry_supervisor", MONITOR_IDENTIFIER)
-print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] 🚀 Using monitor-specific port: {AUTO_ENTRY_SUPERVISOR_PORT}")
+_aes_logger.info("Using monitor-specific port: %s", AUTO_ENTRY_SUPERVISOR_PORT)
 
 # Create Flask app
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
+# Mute Flask/Werkzeug dev-server banner to avoid flooding .err.log
+logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 # Global variable to track monitoring thread
 monitoring_thread = None
@@ -592,12 +600,7 @@ def save_auto_entry_state_to_db(state):
     """Save auto entry state to production database"""
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         with conn.cursor() as cursor:
             # LEGACY REMOVED: auto_entry_status updates - now using auto_trade_status only
             # Update only cooldown and timestamp fields
@@ -611,12 +614,7 @@ def load_auto_entry_state_from_db():
     """Load auto entry state from production database (timestamp-based cooldown)"""
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         with conn.cursor() as cursor:
             # Get monitor's strategy and cooldown state
             cursor.execute("""
@@ -675,11 +673,11 @@ def load_auto_entry_state_from_db():
                             "cooldown_timer": int(remaining_seconds)
                         }, timeout=2)
                         if response.ok:
-                            log(f"[AUTO ENTRY] ✅ Cooldown timer change notification sent: monitor_id={full_monitor_id}, timer={remaining_seconds}")
+                            log_debug(f"Cooldown timer change notification sent: monitor_id={full_monitor_id}, timer={remaining_seconds}")
                         else:
-                            log(f"[AUTO ENTRY] ⚠️ Failed to send cooldown timer notification: {response.status_code}")
+                            log_debug(f"Failed to send cooldown timer notification: {response.status_code}")
                     except Exception as e:
-                        log(f"[AUTO ENTRY] ❌ Error sending cooldown timer notification: {e}")
+                        log_debug(f"Error sending cooldown timer notification: {e}")
                 
                 state = {
                     "user_id": "user_0001",
@@ -711,35 +709,26 @@ def load_auto_entry_state_from_db():
 # These will be loaded from auto_entry_settings.json
 
 def log(message: str):
-    """Log messages with timestamp and monitor identifier"""
-    timestamp = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S")
-    log_message = f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER} {timestamp}] {message}"
-    
-    # Just print to stdout - supervisor will capture this to .out.log
-    # Use flush to ensure real-time logging
-    print(log_message, flush=True)
+    """Stdout log at INFO (use log_debug for plumbing)."""
+    _aes_logger.info("%s", message)
+
+
+def log_debug(message: str):
+    """Stdout log at DEBUG for plumbing/repetitive messages."""
+    _aes_logger.debug("%s", message)
+
 
 def log_heartbeat():
-    """Log heartbeat every 5 minutes with system status"""
+    """Detailed status at DEBUG; simple heartbeat at INFO is handled by _aes_heartbeat_loop."""
     try:
-        # Get current system status
         auto_trade_enabled = is_auto_trade_enabled()
         current_symbol = get_current_monitor_symbol()
-        
-        # Get current momentum
         current_momentum = get_current_momentum(current_symbol)
         momentum_str = f"{current_momentum:.2f}" if current_momentum is not None else "N/A"
-        
-        # Get cooldown status
         cooldown_timer = 0
         try:
             import psycopg2
-            conn = psycopg2.connect(
-                host=os.getenv('POSTGRES_HOST', 'localhost'),
-                database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-                user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-                password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-            )
+            conn = get_db_connection()
             with conn.cursor() as cursor:
                 cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
                 result = cursor.fetchone()
@@ -747,13 +736,10 @@ def log_heartbeat():
             conn.close()
         except Exception:
             cooldown_timer = 0
-        
-        cooldown_str = f"{cooldown_timer}s" if cooldown_timer is not None else "None"  # Can be negative to show elapsed time
-        
-        log(f"💓 HEARTBEAT | Auto Trade: {auto_trade_enabled} | Symbol: {current_symbol} | Momentum: {momentum_str} | Cooldown: {cooldown_str}")
-        
+        cooldown_str = f"{cooldown_timer}s" if cooldown_timer is not None else "None"
+        log_debug(f"HEARTBEAT | Auto Trade: {auto_trade_enabled} | Symbol: {current_symbol} | Momentum: {momentum_str} | Cooldown: {cooldown_str}")
     except Exception as e:
-        log(f"💓 HEARTBEAT | Error getting status: {e}")
+        log_debug(f"HEARTBEAT | Error getting status: {e}")
 
 # Legacy auto_entry_state.json functionality removed - now using PostgreSQL for all state management
 
@@ -763,15 +749,7 @@ def get_current_momentum(symbol="BTC"):
         import psycopg2
         
         # PostgreSQL connection parameters
-        postgres_config = {
-            'host': os.getenv('POSTGRES_HOST', 'localhost'),
-            'port': int(os.getenv('POSTGRES_PORT', '5432')),
-            'database': os.getenv('POSTGRES_DB', 'rec_io_db'),
-            'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
-            'password': os.getenv('POSTGRES_PASSWORD', '')
-        }
-        
-        conn = psycopg2.connect(**postgres_config)
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         # Get momentum_5s_avg from live price log (symbol's live data stream)
@@ -799,15 +777,7 @@ def get_momentum_30s_avg(symbol="BTC"):
         import psycopg2
         
         # PostgreSQL connection parameters
-        postgres_config = {
-            'host': os.getenv('POSTGRES_HOST', 'localhost'),
-            'port': int(os.getenv('POSTGRES_PORT', '5432')),
-            'database': os.getenv('POSTGRES_DB', 'rec_io_db'),
-            'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
-            'password': os.getenv('POSTGRES_PASSWORD', '')
-        }
-        
-        conn = psycopg2.connect(**postgres_config)
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         # Get momentum_30s_avg from live price log (symbol's live data stream)
@@ -835,15 +805,7 @@ def get_momentum_percentile(symbol="BTC"):
         import psycopg2
         
         # PostgreSQL connection parameters
-        postgres_config = {
-            'host': os.getenv('POSTGRES_HOST', 'localhost'),
-            'port': int(os.getenv('POSTGRES_PORT', '5432')),
-            'database': os.getenv('POSTGRES_DB', 'rec_io_db'),
-            'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
-            'password': os.getenv('POSTGRES_PASSWORD', '')
-        }
-        
-        conn = psycopg2.connect(**postgres_config)
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         # Get momentum_percentile from live price log (symbol's live data stream)
@@ -929,7 +891,7 @@ def check_spike_alert_conditions():
                 state["spike_alert_start_time"] = None
                 state["spike_alert_momentum_value"] = None
                 state["spike_alert_recovery_countdown"] = None
-                log(f"[SPIKE ALERT] Disabled - clearing any active spike alert")
+                log_debug(f"[SPIKE ALERT] Disabled - clearing any active spike alert")
             
             # Update global state for frontend
             auto_entry_indicator_state.update({
@@ -967,7 +929,7 @@ def check_spike_alert_conditions():
             
             # Start cooldown period in database (timestamp-based)
             start_cooldown_period_in_db()
-            
+            _aes_logger.info("spike started monitor_id=%s", MONITOR_ID)
             log(f"[SPIKE ALERT] 🚨 SPIKE DETECTED! Momentum: {current_momentum:.2f} (threshold: ±{spike_threshold})")
             log(f"[SPIKE ALERT] Auto entry PAUSED for {cooldown_minutes} minutes")
         
@@ -984,7 +946,7 @@ def check_spike_alert_conditions():
                         state["spike_alert_momentum_value"] = None
                         state["spike_alert_recovery_countdown"] = None
                         # Note: spike_alert_start_time remains set in DB (cooldown_start_time) for tracking elapsed time
-                        
+                        _aes_logger.info("spike ended monitor_id=%s", MONITOR_ID)
                         log(f"[SPIKE ALERT] ✅ RECOVERY COMPLETE! Auto entry RESUMED")
                         log(f"[SPIKE ALERT] Recovery time: {time_in_recovery:.1f} minutes")
                     else:
@@ -992,7 +954,7 @@ def check_spike_alert_conditions():
                         remaining_minutes = cooldown_minutes - time_in_recovery
                         state["spike_alert_recovery_countdown"] = remaining_minutes
                         
-                        log(f"[SPIKE ALERT] ⏳ Recovery in progress: {remaining_minutes:.1f} minutes remaining")
+                        log_debug(f"[SPIKE ALERT] Recovery in progress: {remaining_minutes:.1f} minutes remaining")
                 else:
                     # Reset recovery countdown if start time is missing
                     state["spike_alert_recovery_countdown"] = cooldown_minutes
@@ -1004,7 +966,7 @@ def check_spike_alert_conditions():
                 # Reset cooldown period in database
                 start_cooldown_period_in_db()
                 
-                log(f"[SPIKE ALERT] ⚠️ Still in spike conditions: {current_momentum:.2f} - resetting timer to {cooldown_minutes} minutes")
+                log_debug(f"[SPIKE ALERT] Still in spike conditions: {current_momentum:.2f} - resetting timer to {cooldown_minutes} minutes")
         
         # Update current momentum in loaded state
         state["current_momentum"] = current_momentum
@@ -1028,12 +990,7 @@ def start_cooldown_period_in_db():
     """Start a new cooldown period in the database (uses existing spike_alert_cooldown_minutes setting)"""
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         with conn.cursor() as cursor:
             # Update the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
@@ -1043,7 +1000,7 @@ def start_cooldown_period_in_db():
             
             conn.commit()
         conn.close()
-        log(f"[AUTO ENTRY] ✅ Started cooldown period in production database")
+        log_debug(f"Started cooldown period in production database")
     except Exception as e:
         log(f"[AUTO ENTRY] ❌ Error starting cooldown period: {e}")
 
@@ -1051,12 +1008,7 @@ def reset_cooldown_period_in_db():
     """Reset/clear the cooldown period in the database"""
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         with conn.cursor() as cursor:
             # Reset the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
@@ -1066,7 +1018,7 @@ def reset_cooldown_period_in_db():
             
             conn.commit()
         conn.close()
-        log(f"[AUTO ENTRY] ✅ Reset cooldown period in production database")
+        log_debug(f"Reset cooldown period in production database")
     except Exception as e:
         log(f"[AUTO ENTRY] ❌ Error resetting cooldown period: {e}")
 
@@ -1075,12 +1027,7 @@ def update_cooldown_timer_in_db(seconds):
     """Update cooldown_timer in the database (LEGACY - will be removed)"""
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         with conn.cursor() as cursor:
             # Update the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
@@ -1090,7 +1037,7 @@ def update_cooldown_timer_in_db(seconds):
             
             conn.commit()
         conn.close()
-        log(f"[AUTO ENTRY] ✅ Updated cooldown_timer to {seconds} seconds in production database (LEGACY)")
+        log_debug(f"Updated cooldown_timer to {seconds} seconds in production database (LEGACY)")
         
         # Notify frontend of cooldown timer change
         try:
@@ -1103,11 +1050,11 @@ def update_cooldown_timer_in_db(seconds):
                 "cooldown_timer": seconds
             }, timeout=2)
             if response.ok:
-                log(f"[AUTO ENTRY] ✅ Cooldown timer change notification sent: monitor_id={full_monitor_id}, timer={seconds}")
+                log_debug(f"Cooldown timer change notification sent: monitor_id={full_monitor_id}, timer={seconds}")
             else:
-                log(f"[AUTO ENTRY] ⚠️ Failed to send cooldown timer notification: {response.status_code}")
+                log_debug(f"Failed to send cooldown timer notification: {response.status_code}")
         except Exception as e:
-            log(f"[AUTO ENTRY] ❌ Error sending cooldown timer notification: {e}")
+            log_debug(f"Error sending cooldown timer notification: {e}")
     except Exception as e:
         log(f"[AUTO ENTRY] ❌ Error updating cooldown_timer: {e}")
 
@@ -1121,12 +1068,7 @@ def update_auto_entry_status_in_db(status):
             previous_auto_trade_status = status
         
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         with conn.cursor() as cursor:
             # Update the monitor's auto_trade_status field (this is what the frontend reads)
             cursor.execute(
@@ -1483,12 +1425,7 @@ def determine_auto_entry_status_momentum_contain():
         cooldown_timer = None
         try:
             import psycopg2
-            conn = psycopg2.connect(
-                host=os.getenv('POSTGRES_HOST', 'localhost'),
-                database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-                user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-                password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-            )
+            conn = get_db_connection()
             with conn.cursor() as cursor:
                 cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
                 result = cursor.fetchone()
@@ -1532,12 +1469,7 @@ def broadcast_auto_entry_indicator_change():
         cooldown_timer = 0
         try:
             import psycopg2
-            conn = psycopg2.connect(
-                host=os.getenv('POSTGRES_HOST', 'localhost'),
-                database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-                user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-                password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-            )
+            conn = get_db_connection()
             with conn.cursor() as cursor:
                 cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
                 result = cursor.fetchone()
@@ -1568,7 +1500,7 @@ def broadcast_auto_entry_indicator_change():
         
         # Update previous state
         previous_indicator_state = current_state_key
-        log(f"[AUTO ENTRY DEBUG]   State changed, broadcasting...")
+        log_debug("State changed, broadcasting...")
         
         # COMMENTED OUT: Legacy auto_entry_indicator_change WebSocket notification - now using auto_trade_status_change only
         # try:
@@ -1593,9 +1525,9 @@ def broadcast_auto_entry_indicator_change():
                 "auto_trade_status": new_status
             }, timeout=2)
             if response.ok:
-                log(f"[AUTO ENTRY] ✅ Auto trade status change notification sent: monitor_id={full_monitor_id}, status={new_status}")
+                log_debug(f"Auto trade status change notification sent: monitor_id={full_monitor_id}, status={new_status}")
             else:
-                log(f"[AUTO ENTRY] ⚠️ Failed to send auto trade status notification: {response.status_code}")
+                log_debug(f"Failed to send auto trade status notification: {response.status_code}")
         except Exception as e:
             log(f"[AUTO ENTRY] ❌ Error sending auto trade status notification: {e}")
             
@@ -1606,12 +1538,7 @@ def is_auto_trade_enabled():
     """Check if AUTO ENTRY is enabled by checking auto_trade boolean in monitor_list"""
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'), 
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         with conn.cursor() as cursor:
             # Check auto_trade boolean from the specific monitor's row in monitor_list
             cursor.execute("SELECT auto_trade FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
@@ -1621,7 +1548,7 @@ def is_auto_trade_enabled():
                 # Only log status changes, not every check
                 return auto_trade_enabled
             else:
-                log(f"[AUTO ENTRY] No monitor found with ID {MONITOR_ID} in monitor_list")
+                log_debug(f"No monitor found with ID {MONITOR_ID} in monitor_list")
                 return False
     except Exception as e:
         log(f"[AUTO ENTRY] Error reading auto_trade from monitor_list: {e}")
@@ -1632,12 +1559,7 @@ def get_auto_entry_settings():
     global previous_settings
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'), 
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         with conn.cursor() as cursor:
             # Get monitor's strategy
             cursor.execute("""
@@ -1690,18 +1612,18 @@ def get_auto_entry_settings():
                                 changed_settings.append(f"{key}: {previous_settings.get(key, 'None')} → {value}")
                         
                         if changed_settings:
-                            log(f"[AUTO ENTRY] 🔧 SETTINGS CHANGED | Monitor {MONITOR_IDENTIFIER} | Changes: {'; '.join(changed_settings)}")
+                            log_debug(f"SETTINGS CHANGED | Monitor {MONITOR_IDENTIFIER} | Changes: {'; '.join(changed_settings)}")
                     
                     previous_settings = settings.copy()
                     # Only log settings loading on first load or when settings change
                     if previous_settings is None:
-                        log(f"[AUTO ENTRY] ✅ Loaded settings from monitor: {MONITOR_IDENTIFIER}")
+                        log_debug(f"Loaded settings from monitor: {MONITOR_IDENTIFIER}")
                     return settings
                 else:
-                    log(f"[AUTO ENTRY] No monitor found with ID: {MONITOR_IDENTIFIER.split('_')[1]}")
+                    log_debug(f"No monitor found with ID: {MONITOR_IDENTIFIER.split('_')[1]}")
                     return {}
             else:
-                log(f"[AUTO ENTRY] No monitor found with ID: {MONITOR_ID}")
+                log_debug(f"No monitor found with ID: {MONITOR_ID}")
                 return {}
     except Exception as e:
         log(f"[AUTO ENTRY] Error reading settings from strategy: {e}")
@@ -1714,12 +1636,7 @@ def get_current_ttc():
         if not current_market or current_market not in ("hourly", "15m"):
             return 0
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         with conn.cursor() as cursor:
             table_name = get_strike_table_name(current_symbol, current_market)
             ttc_column = "ttc_15m" if current_market == "15m" else "ttc_hourly"
@@ -1752,12 +1669,7 @@ def get_master_strike_table_data():
     """Get current master strike table data from PostgreSQL (uses monitor symbol + market)."""
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         with conn.cursor() as cursor:
             current_symbol, current_market = get_current_monitor_symbol_and_market()
             table_name = get_strike_table_name(current_symbol, current_market)
@@ -1778,7 +1690,7 @@ def get_master_strike_table_data():
             """)
             header_data = cursor.fetchone()
             if not header_data:
-                log(f"[WATCHLIST] No strike table data found in PostgreSQL")
+                log_debug(f"[WATCHLIST] No strike table data found in PostgreSQL")
                 return None
             cursor.execute(f"""
                 SELECT
@@ -1892,7 +1804,7 @@ def generate_watchlist_from_strike_table_DELETED():
         # Get master strike table data
         strike_table_data = get_master_strike_table_data()
         if not strike_table_data or "strikes" not in strike_table_data:
-            log(f"[WATCHLIST] No master strike table data available")
+            log_debug(f"[WATCHLIST] No master strike table data available")
             return False
         
         current_price = strike_table_data.get("current_price")
@@ -1908,7 +1820,7 @@ def generate_watchlist_from_strike_table_DELETED():
         # Load auto entry settings for filter parameters
         settings = get_auto_entry_settings()
         if not settings:
-            log(f"[WATCHLIST] No auto entry settings available")
+            log_debug(f"[WATCHLIST] No auto entry settings available")
             return False
         
         min_volume = settings.get("watchlist_min_volume", 1000)
@@ -1922,7 +1834,7 @@ def generate_watchlist_from_strike_table_DELETED():
         current_settings = f"min_prob={min_probability}, min_diff={min_differential}{max_diff_str}, min_vol={min_volume}, max_ask={max_ask}"
         global previous_watchlist_settings
         if previous_watchlist_settings != current_settings:
-            log(f"[WATCHLIST] Filtering with settings: {current_settings}")
+            log_debug(f"[WATCHLIST] Filtering with settings: {current_settings}")
             previous_watchlist_settings = current_settings
         
         # Filter strikes for watchlist
@@ -1994,12 +1906,7 @@ def generate_watchlist_from_strike_table_DELETED():
         # Write watchlist to PostgreSQL using monitor-specific table
         try:
             import psycopg2
-            conn = psycopg2.connect(
-                host=os.getenv('POSTGRES_HOST', 'localhost'),
-                database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-                user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-                password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-            )
+            conn = get_db_connection()
             with conn.cursor() as cursor:
                 # Use monitor-specific watchlist table
                 watchlist_table = f"watchlist_{USER_NUMBER}_{MONITOR_ID}"
@@ -2039,12 +1946,7 @@ def get_watchlist_data_DELETED():
     """Get current watchlist data from monitor-specific PostgreSQL table"""
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         with conn.cursor() as cursor:
             # Use monitor-specific watchlist table
             watchlist_table = f"watchlist_{USER_NUMBER}_{MONITOR_ID}"
@@ -2119,21 +2021,16 @@ def get_position_size():
     conn = None
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         with conn.cursor() as cursor:
             cursor.execute("SELECT total_position FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
             result = cursor.fetchone()
             if result:
                 total_position = result[0]
-                log(f"[AUTO ENTRY] Total position loaded from monitor {MONITOR_ID}: {total_position}")
+                log_debug(f"Total position loaded from monitor {MONITOR_ID}: {total_position}")
                 return total_position
             else:
-                log(f"[AUTO ENTRY] No monitor configuration found for monitor {MONITOR_ID}")
+                log_debug(f"No monitor configuration found for monitor {MONITOR_ID}")
                 return None
     except Exception as e:
         log(f"[AUTO ENTRY] Error loading total position from monitor {MONITOR_ID}: {e}")
@@ -2147,12 +2044,7 @@ def get_current_multiplier():
     conn = None
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         with conn.cursor() as cursor:
             cursor.execute("SELECT multiplier FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
             result = cursor.fetchone()
@@ -2175,12 +2067,7 @@ def get_loss_prevention_state():
     conn = None
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         with conn.cursor() as cursor:
             cursor.execute("SELECT loss_prevention FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
             result = cursor.fetchone()
@@ -2189,7 +2076,7 @@ def get_loss_prevention_state():
                 log(f"[AUTO ENTRY] Loss prevention state loaded from monitor {MONITOR_ID}: {loss_prevention}")
                 return loss_prevention
             else:
-                log(f"[AUTO ENTRY] No monitor configuration found for monitor {MONITOR_ID}")
+                log_debug(f"No monitor configuration found for monitor {MONITOR_ID}")
                 return "off"  # Default to off if not found
     except Exception as e:
         log(f"[AUTO ENTRY] Error loading loss_prevention from monitor {MONITOR_ID}: {e}")
@@ -2203,12 +2090,7 @@ def get_trade_strategy():
     conn = None
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         with conn.cursor() as cursor:
             cursor.execute("SELECT strategy FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
             result = cursor.fetchone()
@@ -2229,12 +2111,7 @@ def get_bankroll_allotment():
     conn = None
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         with conn.cursor() as cursor:
             cursor.execute("SELECT bankroll_allotment_total FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
             result = cursor.fetchone()
@@ -2243,7 +2120,7 @@ def get_bankroll_allotment():
                 log(f"[AUTO ENTRY] Bankroll allotment loaded from monitor {MONITOR_ID}: {bankroll_allotment}")
                 return bankroll_allotment
             else:
-                log(f"[AUTO ENTRY] No monitor configuration found for monitor {MONITOR_ID}")
+                log_debug(f"No monitor configuration found for monitor {MONITOR_ID}")
                 return None
     except Exception as e:
         log(f"[AUTO ENTRY] Error loading bankroll allotment from monitor {MONITOR_ID}: {e}")
@@ -2333,12 +2210,7 @@ def trigger_auto_entry_trade(strike_data):
         paper_trade = False
         try:
             import psycopg2
-            conn = psycopg2.connect(
-                host=os.getenv('POSTGRES_HOST', 'localhost'),
-                database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-                user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-                password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-            )
+            conn = get_db_connection()
             with conn.cursor() as cursor:
                 cursor.execute(f"SELECT paper_trade FROM users.monitor_list_{USER_NUMBER} WHERE id = %s", (MONITOR_ID,))
                 result = cursor.fetchone()
@@ -2477,12 +2349,7 @@ def has_bracket_for_cycle(contract: Optional[str] = None, strike_tier: Optional[
         # Calculate bracket distance: 2 strikes = 2 * strike_tier
         bracket_distance = 2 * strike_tier
         
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         # Get current monitor identifier
@@ -2557,12 +2424,7 @@ def is_strike_already_traded(strike_data):
     Only blocks new trades if there's an existing trade from the SAME MONITOR on the same strike/side."""
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv('POSTGRES_HOST', 'localhost'),
-            database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-            user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-            password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        )
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         # Get current monitor identifier
@@ -2676,9 +2538,9 @@ def trigger_simulated_trade(strike_data):
         }
         r = requests.post(f"http://localhost:{port}/trades", json=payload, timeout=10)
         if r.status_code == 201:
-            log(f"[SIMULATED 15m] Recorded trade id={r.json().get('id')}")
+            log_debug(f"[SIMULATED 15m] Recorded trade id={r.json().get('id')}")
             return True
-        log(f"[SIMULATED 15m] trade_manager returned {r.status_code}: {r.text}")
+        log_debug(f"[SIMULATED 15m] trade_manager returned {r.status_code}: {r.text}")
         return False
     except Exception as e:
         log(f"[SIMULATED 15m] Error: {e}")
@@ -2696,7 +2558,7 @@ def check_simulated_15m_entry_hourly_htc():
         for k in ("min_time", "max_time", "min_probability", "max_probability"):
             if k not in settings:
                 if _do_log:
-                    log(f"[SIMULATED 15m] skip: missing setting {k}")
+                    log_debug(f"[SIMULATED 15m] skip: missing setting {k}")
                     check_simulated_15m_entry_hourly_htc._log_ts = _now
                 return
         min_t = settings["min_time"]
@@ -2706,18 +2568,23 @@ def check_simulated_15m_entry_hourly_htc():
         data = get_master_strike_table_data_simulated_15m()
         if not data or "strikes" not in data:
             if _do_log:
-                log(f"[SIMULATED 15m] skip: no strike data from hourly table")
+                log_debug(f"[SIMULATED 15m] skip: no strike data from hourly table")
                 check_simulated_15m_entry_hourly_htc._log_ts = _now
             return
         ttc = data.get("ttc")
         if ttc is None or not (min_t <= ttc <= max_t):
             if _do_log:
-                log(f"[SIMULATED 15m] skip: ttc_15m={ttc} outside window [{min_t},{max_t}]")
+                log_debug(f"[SIMULATED 15m] skip: ttc_15m={ttc} outside window [{min_t},{max_t}]")
                 check_simulated_15m_entry_hourly_htc._log_ts = _now
             return
         if _do_log:
-            log(f"[SIMULATED 15m] in window ttc_15m={ttc} [{min_t},{max_t}] scanning {len(data['strikes'])} strikes prob=[{min_p},{max_p}]")
+            log_debug(f"[SIMULATED 15m] in window ttc_15m={ttc} [{min_t},{max_t}] scanning {len(data['strikes'])} strikes prob=[{min_p},{max_p}]")
             check_simulated_15m_entry_hourly_htc._log_ts = _now
+        # Throttled success: one line per ~15 min so we get ~4/hour that cycle ran
+        _ok_ts = getattr(check_simulated_15m_entry_hourly_htc, "_ok_log_ts", 0)
+        if (_now - _ok_ts) >= 900:
+            log(f"[SIMULATED 15m] cycle OK")
+            check_simulated_15m_entry_hourly_htc._ok_log_ts = _now
         processed = set()
         for strike in data["strikes"]:
             try:
@@ -2767,7 +2634,7 @@ def check_auto_entry_conditions():
                 if not hasattr(check_auto_entry_conditions, "_sim_log_ts"):
                     check_auto_entry_conditions._sim_log_ts = 0
                 if (_t.time() - check_auto_entry_conditions._sim_log_ts) >= 90:
-                    log(f"[SIMULATED 15m] running (hourly + auto_trade)")
+                    log_debug(f"[SIMULATED 15m] running (hourly + auto_trade)")
                     check_auto_entry_conditions._sim_log_ts = _t.time()
                 # Only one simulated scan at a time to avoid duplicate inserts (race on duplicate check)
                 if _simulated_15m_lock.acquire(blocking=False):
@@ -2865,7 +2732,7 @@ def check_auto_entry_conditions_hourly_htc():
         prob_adj = settings.get("prob_adj", 5.00)  # Default to 5.00 if not set
         if spike_alert_active:
             min_probability = base_min_probability + prob_adj
-            log(f"[AUTO ENTRY] 📊 Using adjusted probability: {base_min_probability:.2f} + {prob_adj:.2f} = {min_probability:.2f}% (spike cooldown active)")
+            log_debug(f"[AUTO ENTRY] 📊 Using adjusted probability: {base_min_probability:.2f} + {prob_adj:.2f} = {min_probability:.2f}% (spike cooldown active)")
         else:
             min_probability = base_min_probability
         
@@ -2905,7 +2772,7 @@ def check_auto_entry_conditions_hourly_htc():
             if not hasattr(check_auto_entry_conditions_hourly_htc, 'last_ttc_log'):
                 check_auto_entry_conditions_hourly_htc.last_ttc_log = 0
             if current_time - check_auto_entry_conditions_hourly_htc.last_ttc_log >= 300:  # Log every 5 minutes
-                log(f"[AUTO ENTRY] ⏸️ TTC outside window: {current_ttc}s (window: {min_time}-{max_time}s)")
+                log_debug(f"[AUTO ENTRY] ⏸️ TTC outside window: {current_ttc}s (window: {min_time}-{max_time}s)")
                 check_auto_entry_conditions_hourly_htc.last_ttc_log = current_time
             return
         
@@ -2943,7 +2810,7 @@ def check_auto_entry_conditions_hourly_htc():
             prob_display = f"{min_probability:.2f}-{max_probability}%"
             if spike_alert_active:
                 prob_display += f" (adjusted: {base_min_probability:.2f}+{prob_adj:.2f})"
-            log(f"[AUTO ENTRY] 🔍 Scanning {strike_count} strikes | TTC: {current_ttc}s | Window: {min_time}-{max_time}s | Prob: {prob_display}")
+            log_debug(f"[AUTO ENTRY] 🔍 Scanning {strike_count} strikes | TTC: {current_ttc}s | Window: {min_time}-{max_time}s | Prob: {prob_display}")
             check_auto_entry_conditions_hourly_htc.last_scan_log = current_time
         
         # Process each strike ONCE
@@ -3165,7 +3032,7 @@ def check_auto_entry_conditions_reverse_htc():
             if not hasattr(check_auto_entry_conditions_reverse_htc, 'last_ttc_log'):
                 check_auto_entry_conditions_reverse_htc.last_ttc_log = 0
             if current_time - check_auto_entry_conditions_reverse_htc.last_ttc_log >= 300:  # Log every 5 minutes
-                log(f"[AUTO ENTRY REVERSE HTC] ⏸️ TTC outside window: {current_ttc}s (window: {min_time}-{max_time}s)")
+                log_debug(f"[AUTO ENTRY REVERSE HTC] ⏸️ TTC outside window: {current_ttc}s (window: {min_time}-{max_time}s)")
                 check_auto_entry_conditions_reverse_htc.last_ttc_log = current_time
             return
         
@@ -3226,7 +3093,7 @@ def check_auto_entry_conditions_reverse_htc():
             check_auto_entry_conditions_reverse_htc.last_scan_log = 0
         if current_time - check_auto_entry_conditions_reverse_htc.last_scan_log >= 60:  # Log every 60 seconds
             strike_count = len(strike_table_data.get("strikes", []))
-            log(f"[AUTO ENTRY REVERSE HTC] 🔍 Scanning {strike_count} strikes | TTC: {current_ttc}s | Window: {min_time}-{max_time}s | Prob: {min_probability}-{max_probability}% | SPIKE ACTIVE")
+            log_debug(f"[AUTO ENTRY REVERSE HTC] 🔍 Scanning {strike_count} strikes | TTC: {current_ttc}s | Window: {min_time}-{max_time}s | Prob: {min_probability}-{max_probability}% | SPIKE ACTIVE")
             check_auto_entry_conditions_reverse_htc.last_scan_log = current_time
         
         # Process each strike ONCE
@@ -3767,12 +3634,7 @@ def check_auto_entry_conditions_momentum_contain():
             cooldown_timer = None
             try:
                 import psycopg2
-                conn = psycopg2.connect(
-                    host=os.getenv('POSTGRES_HOST', 'localhost'),
-                    database=os.getenv('POSTGRES_DB', 'rec_io_db'),
-                    user=os.getenv('POSTGRES_USER', 'rec_io_user'),
-                    password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-                )
+                conn = get_db_connection()
                 with conn.cursor() as cursor:
                     cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
                     result = cursor.fetchone()
@@ -4569,7 +4431,7 @@ def start_monitoring_loop():
                 
                 # Only log every 1000 checks (reduces logging by 99.9%)
                 if check_count % 1000 == 0:
-                    log(f"[AUTO ENTRY] Check #{check_count} - continuing monitoring...")
+                    log_debug(f"Check #{check_count} - continuing monitoring...")
                 
                 # Clean up old cooldowns first
                 cleanup_old_cooldowns()

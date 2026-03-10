@@ -1,15 +1,12 @@
-# /verify command
+# Verification workflow (shared by verify-local and verify-production)
 
-**Defined in:** `.cursor/commands/verify.md` (slash command) and `.cursor/skills/verify/SKILL.md` (skill). If `/verify` does not appear when you type `/`, try typing `/verify` anyway; some Cursor versions still register it. You can also say "run verify" or paste the intent from this doc.
+**Used by:** `/verify-local` (runs on the local server) and `/verify-production` (runs on the production server via SSH). **Any changes to this workflow apply to both commands.** Define the steps here only once; each command specifies where they run (local vs prod).
 
-When the user invokes **/verify**, they are indicating that **MASTER_RESTART** has been run on the system and they want to confirm that:
-
-1. The newest changes are implemented (code in place).
-2. The system is running as intended.
+When the user invokes **/verify-local** or **/verify-production**, they want to confirm (on the chosen server) that: (1) the newest changes are in place, and (2) the system is running as intended.
 
 ## Agent behavior
 
-The agent (PM or whoever receives /verify) must **run the verification**, not just describe how to do it. Execute checks and report results.
+The agent must **run the verification**, not just describe how. Execute checks on the target server (local or prod via SSH) and report results.
 
 ## Verification workflow
 
@@ -27,7 +24,7 @@ The agent (PM or whoever receives /verify) must **run the verification**, not ju
    ## VERIFY STATUS
    ✅ All good
    ```
-   Or use `⚠️ Investigate` / `🔴 Critical` as appropriate. The status line with the icon MUST appear; do not omit it. If there are any **current** errors in logs (timestamp after process start), do NOT report "All good"; use Investigate or Critical. Stale errors (before process start) do not count.
+   Or use ⚠️ Investigate / 🔴 Critical as appropriate. The status line with the icon MUST appear. If there are any **current** errors in logs (timestamp after process start), do NOT report "All good"; use Investigate or Critical. Stale errors (before process start) do not count.
 
 6. **If status is Investigate or Critical** — Do not stop at the status. Investigate the issue (e.g. read relevant code, check logs, run a diagnostic). Provide a short diagnosis: likely cause and, if possible, a recommended fix or next step.
 

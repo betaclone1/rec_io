@@ -6,6 +6,23 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-08 — OpSec remediation (DB password, auth, CORS, bcrypt)
+
+**Summary**
+
+- **OpSec audit fixes:** Production now requires `DB_PASSWORD` or `REC_DB_PASS` when `REC_ENVIRONMENT=production` (no default). All backend and scripts use `get_database_config()` / `get_postgresql_connection()`. Auth: `local_dev_` bypass only when not production; bcrypt required for new password hashes; change_password uses centralized config. CORS: in production, explicit origins only (no `"*"`). Password prints removed from setup_auth/install (archive). bcrypt added to requirements.txt.
+- **Production server agent:** Before or immediately after pull, ensure the production server has **DB_PASSWORD** or **REC_DB_PASS** set in the environment (e.g. in `.env` or in the env that feeds supervisor). If not set, app and config generation will fail until set. See **.cursor/pm/OPSEC_AUDIT_AND_UPGRADE.md** section "Production server: OpSec update (2026-03-08)" for full instructions.
+
+**Production agent checklist**
+
+- [ ] **Before or right after pull:** Confirm production has `DB_PASSWORD` or `REC_DB_PASS` set (e.g. in `.env` or wherever supervisor gets its env). If `REC_ENVIRONMENT=production` and neither is set, `get_database_config()` will raise and services will not start. If unsure, run: `cd project_root && source .env 2>/dev/null; echo "DB_PASSWORD set: $(if [ -n \"$DB_PASSWORD\" ] || [ -n \"$REC_DB_PASS\" ]; then echo yes; else echo NO; fi)"`.
+- [ ] Confirm codebase changes (pull latest on production).
+- [ ] Install Python deps so **bcrypt** is present: from project root run `venv/bin/pip install -r requirements.txt` (or your usual deploy install). Required for change-password; existing logins unaffected.
+- [ ] Run `scripts/MASTER_RESTART.sh` (blocking, with permissions to stop supervisor and free ports). Config generation uses `get_database_config()` and will fail if production env has no DB password.
+- [ ] Run verify workflow (health, supervisor status, logs, status block per VERIFY_COMMAND.md). If any service fails to start with a DB or config error, ensure `DB_PASSWORD` or `REC_DB_PASS` is set and restart again.
+
+---
+
 ## 2026-03-08 — DigitalOcean integration and prepare-update prod snapshot
 
 **Summary**
