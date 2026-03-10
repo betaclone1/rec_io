@@ -467,23 +467,29 @@ def get_monitor_symbol():
     try:
         import psycopg2
         
-        # PostgreSQL connection parameters
         conn = get_db_connection()
+        if not conn:
+            log(f"[AUTO_ENTRY_SUPERVISOR] ❌ No database connection available when resolving symbol for monitor {MONITOR_IDENTIFIER}")
+            os._exit(0)
+
         cursor = conn.cursor()
-        
         cursor.execute(f"""
             SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{USER_NUMBER} 
             WHERE id = %s
         """, (MONITOR_ID,))
-        
         result = cursor.fetchone()
         conn.close()
-        
-        if result and result[0]:
-            return result[0].upper(), (result[1] or 'hourly').strip().lower()  # (symbol, market)
-        else:
-            log(f"[AUTO_ENTRY_SUPERVISOR] ⚠️ No symbol found for monitor {MONITOR_IDENTIFIER}, defaulting to BTC")
-            return "BTC", "hourly"
+
+        if not result:
+            log(f"[AUTO_ENTRY_SUPERVISOR] ❌ Monitor {MONITOR_IDENTIFIER} not found in monitor_list_{USER_NUMBER}; shutting down supervisor to avoid ghost activity")
+            os._exit(0)
+
+        symbol_value, market_value = result
+        if not symbol_value:
+            log(f"[AUTO_ENTRY_SUPERVISOR] ❌ Monitor {MONITOR_IDENTIFIER} has no symbol configured; shutting down supervisor")
+            os._exit(0)
+
+        return symbol_value.upper(), (market_value or 'hourly').strip().lower()  # (symbol, market)
     except Exception as e:
         log(f"[AUTO_ENTRY_SUPERVISOR] ❌ Error getting monitor symbol: {e}, defaulting to BTC")
         return "BTC", "hourly"
@@ -1539,20 +1545,24 @@ def is_auto_trade_enabled():
     try:
         import psycopg2
         conn = get_db_connection()
+        if not conn:
+            log(f"[AUTO ENTRY] ❌ No database connection available when reading auto_trade for monitor {MONITOR_ID}; shutting down supervisor")
+            os._exit(0)
+
         with conn.cursor() as cursor:
             # Check auto_trade boolean from the specific monitor's row in monitor_list
             cursor.execute("SELECT auto_trade FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
             result = cursor.fetchone()
-            if result:
-                auto_trade_enabled = result[0]
-                # Only log status changes, not every check
-                return auto_trade_enabled
-            else:
-                log_debug(f"No monitor found with ID {MONITOR_ID} in monitor_list")
-                return False
+
+            if not result:
+                log(f"[AUTO ENTRY] ❌ Monitor {MONITOR_ID} missing from monitor_list_0001; shutting down supervisor to avoid ghost auto-entry")
+                os._exit(0)
+
+            auto_trade_enabled = bool(result[0])
+            return auto_trade_enabled
     except Exception as e:
-        log(f"[AUTO ENTRY] Error reading auto_trade from monitor_list: {e}")
-        return False
+        log(f"[AUTO ENTRY] ❌ Error reading auto_trade from monitor_list for monitor {MONITOR_ID}: {e}")
+        os._exit(0)
 
 def get_auto_entry_settings():
     """Get auto entry settings from monitor's assigned strategy"""

@@ -372,6 +372,22 @@ EOF
     rm -rf "${_REPO_ROOT}/backend/__pycache__" 2>/dev/null || true
     start_supervisor
     echo ""
+
+    # Step 5b: Wait for core services to bind (avoids kalshi_account_sync hitting trade_manager before it is listening)
+    print_status "Step 5b: Waiting for core ports (3000, 4000, 8001)..."
+    _wait_attempts=0
+    while [ $_wait_attempts -lt 30 ]; do
+        if check_port 3000 && check_port 4000 && check_port 8001; then
+            print_success "Core ports active"
+            break
+        fi
+        /bin/sleep 1
+        _wait_attempts=$((_wait_attempts + 1))
+    done
+    if [ $_wait_attempts -ge 30 ]; then
+        print_warning "Core ports not all active after 30s; continuing anyway"
+    fi
+    echo ""
     
     # Step 6: Restart all services
     print_status "Step 6: Restarting all services..."

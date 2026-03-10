@@ -6,6 +6,40 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-10 — Ghost monitor guard and MASTER_RESTART startup order
+
+**Summary**
+
+- **Ghost monitor guard:** `auto_entry_supervisor` and `active_trade_supervisor` now exit immediately if their monitor row is missing from `users.monitor_list_*` or has no symbol. This prevents deleted monitors from continuing to run and send trades. On startup, `get_monitor_symbol()` and (in AES) `is_auto_trade_enabled()` treat missing/invalid monitor as fatal and call `os._exit(0)` after logging.
+- **kalshi_account_sync startup:** Before running the initial baseline sync, `kalshi_account_sync_ws` now waits until `trade_manager` is reachable on its port (TCP connect, up to 30s). Notify to `trade_manager` (`/api/positions_updated`) uses a shared helper with 3 retries and backoff so transient connection refused is not logged as ERROR.
+- **MASTER_RESTART:** New Step 5b: after starting supervisor, the script waits until core ports 3000, 4000, and 8001 are listening (up to 30s) before proceeding to restart all services, so `trade_manager` is up before dependent services run their first sync.
+
+**Production agent checklist**
+
+- [ ] Confirm codebase changes (pull latest on production).
+- [ ] No DB schema changes or migrations.
+- [ ] Run `scripts/MASTER_RESTART.sh` so all processes load the new code; ghost monitors (if any) will self-exit on next start.
+- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status, and that no "Error notifying trade_manager" appears in `kalshi_account_sync.out.log` for the current process start.
+
+---
+
+## 2026-03-10 — Logging housekeeping (prod logs directory)
+
+**Summary**
+
+- **Prod logs cleanup:** Bring the production `logs/` directory back to a manageable, recent window of history by archiving/compressing rotated supervisor logs, pruning excess rotations beyond a small fixed count, and purging old logs for services that are no longer supervised.
+- **Scope:** This is purely a logging/housekeeping change: it does not alter any service behavior, DB schema, or business logic. It only moves or deletes historical log files according to the rules encoded in the diagnostics scripts.
+
+**Production agent checklist**
+
+- [x] Confirm codebase changes (pull latest on production).
+- [x] From project root on prod (`/opt/rec_io_server`), archive or remove existing rotated logs so that only the current `.out.log`/`.err.log` files remain for each active service.
+- [x] Prune older numeric rotations for active services so there are no stale `.out.log.N` / `.err.log.N` segments left in `logs/`.
+- [x] Purge stale logs for services no longer managed by supervisor (including legacy SPX/NDX watchers and their strike/price logs) so only active BTC/ETH services remain.
+- [x] Spot-check `logs/` on prod: confirm that each active service still has its current `.out.log` and `.err.log`, that historical clutter (e.g. daily_update* cron logs) has been removed, and that no errors occurred while cleaning the directory.
+
+---
+
 ## 2026-03-08 — OpSec remediation (DB password, auth, CORS, bcrypt)
 
 **Summary**
@@ -15,11 +49,11 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 **Production agent checklist**
 
-- [ ] **Before or right after pull:** Confirm production has `DB_PASSWORD` or `REC_DB_PASS` set (e.g. in `.env` or wherever supervisor gets its env). If `REC_ENVIRONMENT=production` and neither is set, `get_database_config()` will raise and services will not start. If unsure, run: `cd project_root && source .env 2>/dev/null; echo "DB_PASSWORD set: $(if [ -n \"$DB_PASSWORD\" ] || [ -n \"$REC_DB_PASS\" ]; then echo yes; else echo NO; fi)"`.
-- [ ] Confirm codebase changes (pull latest on production).
-- [ ] Install Python deps so **bcrypt** is present: from project root run `venv/bin/pip install -r requirements.txt` (or your usual deploy install). Required for change-password; existing logins unaffected.
-- [ ] Run `scripts/MASTER_RESTART.sh` (blocking, with permissions to stop supervisor and free ports). Config generation uses `get_database_config()` and will fail if production env has no DB password.
-- [ ] Run verify workflow (health, supervisor status, logs, status block per VERIFY_COMMAND.md). If any service fails to start with a DB or config error, ensure `DB_PASSWORD` or `REC_DB_PASS` is set and restart again.
+- [x] **Before or right after pull:** Confirm production has `DB_PASSWORD` or `REC_DB_PASS` set (e.g. in `.env` or wherever supervisor gets its env). If `REC_ENVIRONMENT=production` and neither is set, `get_database_config()` will raise and services will not start. If unsure, run: `cd project_root && source .env 2>/dev/null; echo "DB_PASSWORD set: $(if [ -n \"$DB_PASSWORD\" ] || [ -n \"$REC_DB_PASS\" ]; then echo yes; else echo NO; fi)"`.
+- [x] Confirm codebase changes (pull latest on production).
+- [x] Install Python deps so **bcrypt** is present: from project root run `venv/bin/pip install -r requirements.txt` (or your usual deploy install). Required for change-password; existing logins unaffected.
+- [x] Run `scripts/MASTER_RESTART.sh` (blocking, with permissions to stop supervisor and free ports). Config generation uses `get_database_config()` and will fail if production env has no DB password.
+- [x] Run verify workflow (health, supervisor status, logs, status block per VERIFY_COMMAND.md). If any service fails to start with a DB or config error, ensure `DB_PASSWORD` or `REC_DB_PASS` is set and restart again.
 
 ---
 
@@ -101,7 +135,7 @@ Each entry below uses:
 
 - [x] Confirm codebase changes (pull latest on production).
 - [x] Apply migration if not already applied: `python3 scripts/db/run_migration.py up 20260307_1600_account_history_vendor_rail_kalshi_id` (from project root with PYTHONPATH set). If already applied, `run_migration.py list` will show it.
-- [ ] Optional one-time backfill for existing account_history rows with NULL kalshi_id/vendor/rail: `PYTHONPATH=. python3 scripts/db/backfill_account_history_vendor_rail.py`. Run once; sync will backfill on its own thereafter.
+- [x] Optional one-time backfill for existing account_history rows with NULL kalshi_id/vendor/rail: `PYTHONPATH=. python3 scripts/db/backfill_account_history_vendor_rail.py`. Run once; sync will backfill on its own thereafter.
 - [x] Restart `kalshi_account_sync` (or full restart: `scripts/MASTER_RESTART.sh`) so sync uses new code.
 - [x] Confirm: Account manager transfers table shows From/To and Status; account_history rows have vendor/rail populated where API provides them.
 

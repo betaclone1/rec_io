@@ -175,25 +175,30 @@ def get_monitor_symbol():
     """Get the symbol for the current monitor from database"""
     try:
         import psycopg2
-        
+
         conn = get_postgresql_connection()
         if not conn:
-            return "BTC", "hourly"
+            log(f"[ACTIVE_TRADE_SUPERVISOR] ❌ No database connection available when resolving symbol for monitor {MONITOR_IDENTIFIER}")
+            os._exit(0)
+
         cursor = conn.cursor()
-        
         cursor.execute(f"""
             SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{USER_NUMBER}
             WHERE id = %s
         """, (MONITOR_ID,))
-        
         result = cursor.fetchone()
         conn.close()
-        
-        if result and result[0]:
-            return result[0].upper(), (result[1] or 'hourly').strip().lower()
-        else:
-            log_debug(f"No symbol found for monitor {MONITOR_IDENTIFIER}, defaulting to BTC")
-            return "BTC", "hourly"
+
+        if not result:
+            log(f"[ACTIVE_TRADE_SUPERVISOR] ❌ Monitor {MONITOR_IDENTIFIER} not found in monitor_list_{USER_NUMBER}; shutting down supervisor to avoid ghost activity")
+            os._exit(0)
+
+        symbol_value, market_value = result
+        if not symbol_value:
+            log(f"[ACTIVE_TRADE_SUPERVISOR] ❌ Monitor {MONITOR_IDENTIFIER} has no symbol configured; shutting down supervisor")
+            os._exit(0)
+
+        return symbol_value.upper(), (market_value or 'hourly').strip().lower()
     except Exception as e:
         log(f"[ACTIVE_TRADE_SUPERVISOR] ❌ Error getting monitor symbol: {e}, defaulting to BTC")
         return "BTC", "hourly"

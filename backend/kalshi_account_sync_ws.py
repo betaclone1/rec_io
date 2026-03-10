@@ -1076,6 +1076,26 @@ def sync_balance():
 # --- New sync functions for positions, fills, settlements using PostgreSQL ---
 
 
+def _notify_trade_manager_positions_updated(payload):
+    """POST to trade_manager /api/positions_updated with retries. Handles connection refused at startup (trade_manager may not be listening yet)."""
+    trade_manager_port = get_port("trade_manager")
+    url = f"http://localhost:{trade_manager_port}/api/positions_updated"
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        try:
+            response = requests.post(url, json=payload, timeout=5)
+            if response.status_code == 200:
+                logger.debug("Notified trade_manager about %s", payload.get("database", "update"))
+                return
+            logger.warning("trade_manager returned %s on attempt %s/%s", response.status_code, attempt + 1, max_attempts)
+        except Exception as e:
+            if attempt < max_attempts - 1:
+                delay = 1 * (2 ** attempt)
+                logger.debug("trade_manager unreachable (attempt %s/%s): %s; retry in %ss", attempt + 1, max_attempts, e, delay)
+                time.sleep(delay)
+            else:
+                logger.warning("Failed to notify trade_manager after %s attempts: %s", max_attempts, e)
+
 
 def sync_positions():
     # PostgreSQL only - no legacy database paths needed
@@ -1273,20 +1293,8 @@ def sync_positions():
     # JSON writing removed - PostgreSQL only
     notify_frontend_db_change("positions", {"market_positions": len(all_market_positions), "event_positions": len(all_event_positions)})
     
-    # Notify trade_manager about positions update
-    try:
-        trade_manager_port = get_port("trade_manager")
-        response = requests.post(
-            f"http://localhost:{trade_manager_port}/api/positions_updated",
-            json={"database": "positions"},
-            timeout=5
-        )
-        if response.status_code == 200:
-            logger.debug("Notified trade_manager about positions update")
-        else:
-            logger.warning("Failed to notify trade_manager: %s", response.status_code)
-    except Exception as e:
-        logger.error("Error notifying trade_manager: %s", e)
+    # Notify trade_manager about positions update (retry on connection refused at startup)
+    _notify_trade_manager_positions_updated({"database": "positions"})
 
     logger.info("Positions sync OK")
 
@@ -1437,20 +1445,7 @@ def sync_fills():
 
     notify_frontend_db_change("fills", {"fills": len(all_fills)})
 
-    # Notify trade_manager about fills update
-    try:
-        trade_manager_port = get_port("trade_manager")
-        response = requests.post(
-            f"http://localhost:{trade_manager_port}/api/positions_updated",
-            json={"database": "fills"},
-            timeout=5
-        )
-        if response.status_code == 200:
-            logger.debug("Notified trade_manager about fills update")
-        else:
-            logger.warning("Failed to notify trade_manager: %s", response.status_code)
-    except Exception as e:
-        logger.error("Error notifying trade_manager: %s", e)
+    _notify_trade_manager_positions_updated({"database": "fills"})
 
     logger.info("Fills sync OK")
 
@@ -1835,20 +1830,7 @@ def sync_orders():
 
     notify_frontend_db_change("orders", {"orders": len(all_orders)})
 
-    # Notify trade_manager about orders update
-    try:
-        trade_manager_port = get_port("trade_manager")
-        response = requests.post(
-            f"http://localhost:{trade_manager_port}/api/positions_updated",
-            json={"database": "orders"},
-            timeout=2
-        )
-        if response.status_code == 200:
-            logger.debug("Notified trade_manager about orders update")
-        else:
-            logger.warning("Failed to notify trade_manager about orders: %s", response.status_code)
-    except Exception as e:
-        logger.error("Error notifying trade_manager about orders: %s", e)
+    _notify_trade_manager_positions_updated({"database": "orders"})
 
     logger.info("Orders sync OK")
 
@@ -2168,8 +2150,28 @@ def run_scheduler():
         time.sleep(60)  # Check every minute
 
 
+def _wait_for_trade_manager(timeout_sec=30, poll_interval=1):
+    """Block until trade_manager is listening so initial baseline sync never hits connection refused. Required for MASTER_RESTART ordering."""
+    import socket
+    port = get_port("trade_manager")
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(2)
+            s.connect(("127.0.0.1", port))
+            s.close()
+            logger.debug("trade_manager reachable on port %s", port)
+            return
+        except Exception:
+            time.sleep(poll_interval)
+    logger.warning("trade_manager not reachable after %ss; proceeding with initial sync anyway (retries will apply)", timeout_sec)
+
+
 def main():
     logger.info("Kalshi Account Hybrid WebSocket/Polling Supervisor starting")
+
+    _wait_for_trade_manager()
 
     # Initial sync to establish baseline data (one-time only)
     logger.info("Performing initial baseline data sync")

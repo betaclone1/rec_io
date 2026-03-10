@@ -8,14 +8,19 @@ When the user invokes **/apply-update** (or says "apply update" or "follow the c
 
 1. **Read** `docs/changelog/CHANGELOG_AGENT_INSTRUCTIONS.md` and follow it in full.
 2. **Find open entries** in `docs/changelog/MASTER_CHANGELOG.md` — entries whose Production agent checklist has at least one unchecked box (`- [ ]`). Process **newest-first**.
-3. **Execute** each unchecked task in order: confirm codebase (pull latest on the server where the agent is running), run migrations or one-time scripts as specified, **run `scripts/MASTER_RESTART.sh` when the checklist requires a restart** (blocking until complete), run verification steps. After each completed task, update MASTER_CHANGELOG.md: change that task's `- [ ]` to `- [x]`. If a task cannot be completed (e.g. missing env), report clearly and do not mark it done.
-4. **After all checklist tasks** — Run the verify workflow (health, supervisor status, recent logs, status block per VERIFY_COMMAND.md) on that server to confirm the system is up and running.
-5. **Commands** — From project root on the server where the agent runs. Python: `PYTHONPATH=$(pwd) venv/bin/python` (or the exact command in the checklist). Restarts: `scripts/MASTER_RESTART.sh` or as specified in the entry.
+3. **Execute** each unchecked task:
+   - **When run on prod (`/apply-update`):** Confirm codebase (pull latest on the server where the agent is running), run migrations or one-time scripts as specified, **run `scripts/MASTER_RESTART.sh` when the checklist requires a restart** (blocking until complete), run verification steps. After each completed task, update MASTER_CHANGELOG.md: change that task's `- [ ]` to `- [x]`. If a task cannot be completed (e.g. missing env), report clearly and do not mark it done.
+   - **When run from local (`/apply-update-from-local`):** Execute each checklist command on prod via SSH (e.g. `ssh root@137.184.224.94 'cd /opt/rec_io_server && <command>'`), then update MASTER_CHANGELOG.md locally. See `.cursor/commands/apply-update-from-local.md` and `.cursor/skills/apply-update-from-local/SKILL.md` for the SSH pattern and verification/fidelity steps.
+4. **After all checklist tasks** — Run the verify workflow (health, supervisor status, recent logs, status block per VERIFY_COMMAND.md) on the target server (prod) to confirm the system is up and running.
+5. **Commands** — From project root on the server where the commands run:
+   - On prod directly: `cd /opt/rec_io_server`, Python: `PYTHONPATH=$(pwd) venv/bin/python`, restarts via `scripts/MASTER_RESTART.sh` or as specified.
+   - From local via SSH: `ssh root@137.184.224.94 'cd /opt/rec_io_server && <command>'` with the same command bodies as above.
 
 ## Defined in
 
-- **Slash command:** `.cursor/commands/apply-update.md`
-- **Skill:** `.cursor/skills/apply-update/SKILL.md`
+- **Slash command (on prod):** `.cursor/commands/apply-update.md`
+- **Slash command (from local via SSH):** `.cursor/commands/apply-update-from-local.md`
+- **Skills:** `.cursor/skills/apply-update/SKILL.md`, `.cursor/skills/apply-update-from-local/SKILL.md`
 
 If `/apply-update` does not appear when you type `/`, try typing `/apply-update` anyway, or say "apply update" or "run the changelog instructions".
 

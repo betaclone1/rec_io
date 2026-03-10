@@ -14,7 +14,9 @@ Project-specific agents are in `.cursor/rules/`.
 
 **/prepare-update** — Before pushing: verify system, audit server-agnostic, update changelog and DB docs (with @updater/@db), then report ready for publishing and suggest commit message. See [.cursor/pm/PREPARE_UPDATE_COMMAND.md](.cursor/pm/PREPARE_UPDATE_COMMAND.md).
 
-**/apply-update** — Production: review latest MASTER_CHANGELOG entries and instruction docs, run each open production checklist, and calibrate this server with the latest update. See [.cursor/pm/APPLY_UPDATE_COMMAND.md](.cursor/pm/APPLY_UPDATE_COMMAND.md). Equivalent: @updater new update.
+**/apply-update** — Production (run on prod): review latest MASTER_CHANGELOG entries and instruction docs, run each open production checklist on the production server, and calibrate that server with the latest update. See [.cursor/pm/APPLY_UPDATE_COMMAND.md](.cursor/pm/APPLY_UPDATE_COMMAND.md). Equivalent: @updater new update.
+
+**/apply-update-from-local** — Production (primary path, run locally): from this workspace, use SSH to run all open MASTER_CHANGELOG production checklist tasks on the prod server (`ssh root@137.184.224.94 'cd /opt/rec_io_server && ...'`), then verify prod and check fidelity between local and prod (git rev + migrations). See [.cursor/pm/APPLY_UPDATE_COMMAND.md](.cursor/pm/APPLY_UPDATE_COMMAND.md) and `.cursor/pm/PROD_MAINTENANCE_FROM_LOCAL.md`.
 
 **/confirm-update** — After apply-update and any prod adjustments: review all changes and notes, mark everything up so that when you push, pull on dev (and other envs) keeps codebases and docs in sync. See [.cursor/pm/CONFIRM_UPDATE_COMMAND.md](.cursor/pm/CONFIRM_UPDATE_COMMAND.md).
 
