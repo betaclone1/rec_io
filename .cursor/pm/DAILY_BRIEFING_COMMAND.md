@@ -8,7 +8,7 @@ Morning routine: refresh context, check Drive for new notes, verify system, skim
 
 ## Briefing format (for human eyes)
 
-Format the output so it is **easy to read and scan**: use clear section headings, blank lines between sections, and bullets for lists. Be concise but not cramped — when something is worth mentioning (e.g. news items, a new Drive note, a real log issue), give enough detail to be useful.
+Include these sections when they have content. Omit any section with nothing to report.
 
 **Structure** — Output in this order. **Omit any section that has nothing new or nothing to report**; do not add filler like "Nothing new on Drive," "No news," or "No Kalshi updates." Use a heading only for sections you include (e.g. `## At a glance`, `## System`, `## Drive`), with a blank line after each heading before the content.
 

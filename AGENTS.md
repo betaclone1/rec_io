@@ -1,68 +1,26 @@
-# Agent instructions
+# Agents
 
-Project-specific agents are in `.cursor/rules/`.
+**Chat:** Use normal markdown (bold, headers, lists). Do not strip formatting.
 
-**Org chart & standards:** [.cursor/pm/ORG_CHART.md](.cursor/pm/ORG_CHART.md) — CEO/PM, departments (Technical, Analysis, Operations, Integrations), governance (real money → CEO; task flow through PM).
+**Context:** When you edit .cursor/pm/brain/, .cursor/rules/, .cursor/skills/, or .cursor/commands/, stage and amend the single unpushed `ctx:` commit. See .cursor/pm/brain/06_conventions_insights.md § Context files and commits.
 
-**/verify-local** — After MASTER_RESTART (local): verify newest changes and system health on the local server. PM runs the checks and reports. See [.cursor/pm/VERIFY_COMMAND.md](.cursor/pm/VERIFY_COMMAND.md) (shared workflow) and `.cursor/commands/verify-local.md`.
+**Org:** .cursor/pm/ORG_CHART.md
 
-**/verify-production** — Same verification workflow as verify-local but run on the production server via SSH. See [.cursor/pm/VERIFY_COMMAND.md](.cursor/pm/VERIFY_COMMAND.md) and `.cursor/commands/verify-production.md`. Any changes to the workflow in VERIFY_COMMAND.md apply to both.
+**Commands (see .cursor/pm/ for full doc):** /verify-local, /verify-production, /system-restart, /log-chat, /prepare-update, /apply-update, /apply-update-from-local, /confirm-update, /daily-briefing.
 
-**/system-restart** — Run MASTER_RESTART, wait for completion, then run **verify-local** (default). See [.cursor/pm/SYSTEM_RESTART_COMMAND.md](.cursor/pm/SYSTEM_RESTART_COMMAND.md).
-
-**/log-chat** — User's tool to request a chat summary: append a dated, timestamped entry to .cursor/pm/brain/15_chat_summary_log.md. The PM may also update that log on its own when helpful. On new chat, review all memory docs including this log. See [.cursor/pm/LOG_CHAT_COMMAND.md](.cursor/pm/LOG_CHAT_COMMAND.md).
-
-**/prepare-update** — Before pushing: verify system, audit server-agnostic, update changelog and DB docs (with @updater/@db), then report ready for publishing and suggest commit message. See [.cursor/pm/PREPARE_UPDATE_COMMAND.md](.cursor/pm/PREPARE_UPDATE_COMMAND.md).
-
-**/apply-update** — Production (run on prod): review latest MASTER_CHANGELOG entries and instruction docs, run each open production checklist on the production server, and calibrate that server with the latest update. See [.cursor/pm/APPLY_UPDATE_COMMAND.md](.cursor/pm/APPLY_UPDATE_COMMAND.md). Equivalent: @updater new update.
-
-**/apply-update-from-local** — Production (primary path, run locally): (1) Push committed updates and instructions from this machine; apply them to prod from this machine via SSH — no agents on prod. (2) Do not litter the repo with one-off DB scripts; for simple one-off DB changes use checklist steps with simple commands, not new migration files. From this workspace, SSH to run open MASTER_CHANGELOG checklist tasks, then verify and check fidelity. See [.cursor/pm/APPLY_UPDATE_COMMAND.md](.cursor/pm/APPLY_UPDATE_COMMAND.md) and `.cursor/pm/PROD_MAINTENANCE_FROM_LOCAL.md`.
-
-**/confirm-update** — After apply-update and any prod adjustments: review all changes and notes, mark everything up so that when you push, pull on dev (and other envs) keeps codebases and docs in sync. See [.cursor/pm/CONFIRM_UPDATE_COMMAND.md](.cursor/pm/CONFIRM_UPDATE_COMMAND.md).
-
-**/daily-briefing** — Morning routine: memory, check G Drive for new/updated notes (track reviewed in .cursor/pm/daily_briefing_reviewed_drive.json), verify system, prod, news, tasks; deliver concise conversational briefing (high-level first, then next tasks to consider). See [.cursor/pm/DAILY_BRIEFING_COMMAND.md](.cursor/pm/DAILY_BRIEFING_COMMAND.md).
+**DB changes (non-negotiable):** When the user asks to add or modify anything in the database (column, table, schema, etc.), do the full protocol. The **actual database must be modified** (run the migration). Do not only edit database.py or migration files. Steps: (1) Create migration up/down in scripts/migrations/ if not present, (2) **Run** `python3 scripts/db/run_migration.py up <migration_id>` so the live DB changes, (3) Update docs/MASTER_DB_SCHEMA_REFERENCE.md, (4) Update backend/core/config/database.py (CREATE TABLE / bootstrap) as needed, (5) Update .cursor/pm/brain/03_db_schema_brain.md as needed, (6) Run scripts/db/check_db_schema_drift.py. No DB change is done until the migration has been applied to the database.
 
 ---
 
-## @pm — Project Manager
+## Roster
 
-**First step when invoked:** Before answering or acting, refresh context from memory: read `.cursor/pm/brain/INDEX.md`, then `15_chat_summary_log.md` (and other memory docs as needed). If the user asks whether you remember prior work or what you were discussing, answer from that context after this review—do not say you lack prior context without having checked memory.
-
-**Works autonomously:** executes full workflows without asking permission each step. Use **@pm** for strategy, audits, agent/rules maintenance, and system-wide coordination. Only pauses for true blockers or decisions only you can make. See `.cursor/rules/pm.mdc`.
-
----
-
-## @kalshi — Kalshi expert
-
-**In-house authority on Kalshi:** company, news, markets, and especially API and WebSocket. Use **@kalshi** for anything Kalshi-related: API/WS behavior, fixed-point migration, our integration (trade_executor, kalshi_account_sync_ws, etc.), changelog impact. Research-first; no guessing. See `.cursor/rules/kalshi.mdc`.
-
----
-
-## @frontend — Head of front-end development
-
-**Head of front-end development and maintenance.** Expert in HTML, JS, CSS, mobile; owns our frontend UI and UI/UX. Use **@frontend** for frontend work, layout, responsiveness, and UX. See `.cursor/rules/frontend.mdc`.
-
----
-
-## @db — Head of DB operations / PostgreSQL expert
-
-**Head of DB operations:** Monitors all DB changes (from any process); ensures associated files and docs are updated so DB changes are painless across servers. Use **@db** for schema design, migrations, reference alignment, and anything that changes or depends on DB structure. Must use reversible migration pairs and `scripts/db/run_migration.py`; no ad hoc DDL. When the DB changes, @db ensures reference doc, database.py, migrations, memory (03), and changelog stay in sync. See `.cursor/rules/db.mdc`.
-
----
-
-## @updater — Changelog / deployment
-
-- **@updater prepare update** — Review changes, update changelog and DB docs before push.
-- **@updater new update** — Run outstanding MASTER_CHANGELOG checklist tasks (production).
-
----
-
-## @digitalocean — DigitalOcean expert
-
-**In-house authority on DigitalOcean:** production server host and web domain host. Use **@digitalocean** for DO API, snapshots, backups, droplets, domains. Priority: see, create, modify, and delete snapshots and backups. Research-first; no guessing. See `.cursor/rules/digitalocean.mdc` and `.cursor/pm/DIGITALOCEAN_INTEGRATION.md`.
-
----
-
-## @assistant — Personal assistant
-
-**Personal assistant** for email, calendar, and other tasks that do not use rec.io operational system resources. Use **@assistant** for Gmail (search, read, draft, send), Google Calendar (events, free time), scheduling, and personal productivity. Does not touch backend, DB, trading, or deployment; for those, use @pm or the relevant domain agent. See `.cursor/rules/assistant.mdc`.
+| Agent | Role | Rule |
+|-------|------|------|
+| @pm | Project Manager. Strategy, audits, agent/rules, coordination. First step: read INDEX then 15. Context sweep: see 06. | .cursor/rules/pm.mdc |
+| @analyst | Analytics, backtests, strategy performance, data deep-dives. Memory: .cursor/pm/brain/analyst/. First step: INDEX, 15, INDEX_ANALYST. | .cursor/rules/analyst.mdc |
+| @db | DB operations, schema, migrations, reference. | .cursor/rules/db.mdc |
+| @frontend | Frontend, HTML/JS/CSS, mobile, UI/UX. | .cursor/rules/frontend.mdc |
+| @updater | Changelog, prepare update, run checklists on prod. | .cursor/rules/updater.mdc |
+| @kalshi | Kalshi API, WebSocket, broker. | .cursor/rules/kalshi.mdc |
+| @digitalocean | DO API, snapshots, backups, droplets. | .cursor/rules/digitalocean.mdc |
+| @assistant | Gmail, Calendar, personal productivity. No backend/DB/trading. | .cursor/rules/assistant.mdc |

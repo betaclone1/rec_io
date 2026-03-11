@@ -1,37 +1,16 @@
-# Context retention across chats
+# Context retention
 
-Cursor does not retain chat context between sessions. This memory is how we preserve continuity. **Write things down.** Memory docs (including 14 and 15) are **for the PM's use first**—be as technical and detailed as necessary; human readability is not required. Storage is cheap; prefer writing too much over losing context.
+Cursor doesn't retain chat. Memory is here. Write things down. If we talk about it, assume the user wants it remembered. When in doubt, add it. Use 14 as catch-all when it doesn't fit elsewhere.
 
-**Default:** If we talk about it, assume the CEO wants the PM to remember it. Record it in memory (appropriate numbered doc or 14 as catch‑all). Do not wait to be asked.
-
-**When in doubt, add it:** If you wonder whether something should go in memory, add it. Prefer writing too much over losing context.
-
-**When the CEO says "check X":** Actually run the check (commands, read files, inspect logs, query DB, etc.). Do not reply with instructions for the CEO to check it themselves.
-
-**/verify-local** and **/verify-production:** When the user invokes verify-local (or verify-production), run the verification workflow on the chosen server (local or prod via SSH). See .cursor/pm/VERIFY_COMMAND.md and .cursor/commands/verify-local.md, verify-production.md.
-
-**Chat summary log (15):** The PM may update .cursor/pm/brain/15_chat_summary_log.md on its own whenever it would be helpful. **/log-chat** is the user's tool to explicitly request an update: summarize the current chat and append a dated, timestamped entry (newest at top). See .cursor/pm/LOG_CHAT_COMMAND.md.
-
-**Questions are not directives:** If the CEO asks a question (e.g. "what's next?"), that is not an instruction to proceed with a task. Answer the question (e.g. describe the next task from the central backlog in 13_proposed_tasks). When they want you to proceed they will say so.
-
-## What to record in memory
-
-Record anything that a future session (or the CEO) would need to know and that would otherwise live only in chat history:
-
-- **Decisions** — What was decided, by whom, and any conditions (e.g. "CEO approved X; do Y only after Z").
-- **Outcomes** — What was done, what was deferred, what failed and why.
-- **Proposed task lists / next steps** — In 13_proposed_tasks.md; when the PM suggests a list of starting tasks or next steps, put it there.
-- **Open questions / blockers** — Questions still unanswered; blockers and what would unblock them; who owns the next step.
-- **Handoff notes** — "Next session: continue with X; avoid Y; check Z."
-- **Key facts from conversation** — Conventions the CEO stated, preferences, constraints, or context that would otherwise be lost (e.g. "Slack is primary comms; PM replies guaranteed only in IDE").
-- **Ongoing work** — What’s in progress, what’s blocked, what’s waiting on the CEO.
-- **Procedures and commitments** — If the PM states a procedure or commitment in chat (e.g. "going forward I will maintain both TODO and MASTER_CHANGELOG"), write it into memory (06 for conventions, 05 for changelog workflow, or the relevant doc). Stating it in chat alone is meaningless; without persistent memory it will be forgotten. Add to 06, 05, or 14 as appropriate so future sessions follow it.
-
-Use the appropriate numbered memory doc when there’s a clear home (e.g. 13 for task lists, 07 for audit findings, 06 for conventions). Use this doc (14) as a catch‑all for **recent context / handoff** when it doesn’t fit elsewhere, or to append a short "last session" summary so the next load has immediate continuity.
+**What to record:** Decisions, outcomes, task lists (13), open questions, blockers, handoff notes, key facts, ongoing work, procedures (write into 06 or 05, not just chat). When user says "check X," run the check; don't reply with instructions for them to check. Questions are not directives; answer, don't assume go-ahead.
 
 ## Recent context / handoff
 
 *(Append below when something doesn’t fit elsewhere or when ending a session with important context.)*
+
+**2026-03-11 — Context files apply to ALL agents:** The context-commit rule (stage context paths, amend/create single unpushed `ctx:` commit) applies to **every agent** (PM, @analyst, @frontend, @db, @updater, @kalshi, @assistant). Updated 06 § Agent context files and commits and AGENTS.md (top-level note). PM monitors chats for consistency and will stage/commit context changes from other agents' work when needed so the CHANGES panel stays clear.
+
+**2026-03-11 — Analytics department and @analyst (major hire):** New department **Analytics** headed by **@analyst**. Same depth of context retention as PM: first step = read PM brain INDEX, 15_chat_summary_log, then `.cursor/pm/brain/analyst/INDEX_ANALYST.md` and listed analyst docs. Scope: strategy performance, deep dives, analytics/historical/live data systems, market news (BTC, ETH, crypto, financial), backtests, monitor tuning, simulated/hypothetical PnL, backtest pattern retention and automation, regime-learning initiative. Works hand-in-hand with @db for fine-tuned queries (local and production). Rule: `.cursor/rules/analyst.mdc`. Memory: `.cursor/pm/brain/analyst/`. ORG_CHART, AGENTS.md, and PM brain INDEX updated.
 
 **2026-03-11 — Update confirmation and DB / migrations (mandatory):** (1) Never confirm an update unless DB updates are 100% confirmed; never skip DB verification. (2) Simple schema = direct DDL in checklist or init_database, not migration scripts; use migration files only for something very special. See 06 § Update confirmation and § DB changes; apply-update-from-local and APPLY_UPDATE_COMMAND updated.
 

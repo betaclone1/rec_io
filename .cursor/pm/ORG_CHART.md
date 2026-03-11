@@ -25,11 +25,11 @@ Departments own domains of work. Subagents are created under departments as need
   - **@db** — Head of DB operations; PostgreSQL expert. Monitors all DB changes; keeps reference doc, database.py, migrations, and memory (03) in sync so DB changes are painless across servers. Schema, reversible migrations (`scripts/db/run_migration.py`), reference alignment. See `.cursor/rules/db.mdc`.
 - **Future subagents (as needed):** e.g. backend lead (optional "Backend master" that agents touching backend scripts and DB report to), infra/DevOps, **@opsec** (head of security; consulted on auth, secrets, deployment; see .cursor/pm/OPSEC_AUDIT_AND_UPGRADE.md) — created when workload or expertise warrants it.
 
-### 2.2 Analysis
+### 2.2 Analytics
 
-- **Scope:** Data analysis, analytics, backtesting, strategy research, reporting, momentum/volatility/pattern work.
-- **Current agents:** *(none yet)*
-- **Future subagents (as needed):** e.g. analytics lead, backtest/strategy — created when workload warrants it.
+- **Scope:** Strategy performance tracking, deep dives into data for patterns and strategy improvement, analytics and historical/live data systems, market context (BTC, ETH, crypto, financial markets), backtesting (parameter changes, monitor tuning, simulated and hypothetical PnL), backtest pattern retention and automation, and the regime-learning initiative (system learning and adapting to shifting regimes).
+- **Current agents:** **@analyst** — Head of Analytics. Expert in trading strategies, backtests, and data analysis; works hand-in-hand with @db for fine-tuned queries on local and production. Same depth of context retention as PM. See `.cursor/rules/analyst.mdc`. Memory: `.cursor/pm/brain/analyst/` (INDEX_ANALYST, backtest patterns, strategy findings, regime learning).
+- **Future subagents (as needed):** Created when workload or specialization warrants it.
 
 ### 2.3 Operations
 
@@ -62,7 +62,7 @@ Departments own domains of work. Subagents are created under departments as need
    Most work is assigned through PM. CEO may talk to individual agents when useful; PM remains the default coordinator and keeps context.
 
 3. **Delegation**  
-   PM delegates to domain agents (@frontend, @db, @updater, @kalshi) when the task fits. Keep agent context (rules, AGENTS.md, memory docs) updated so agents stay effective. See 06 "Delegation and agent context."
+   PM delegates to domain agents (@frontend, @db, @analyst, @updater, @kalshi) when the task fits. Keep agent context (rules, AGENTS.md, memory docs) updated so agents stay effective. See 06 "Delegation and agent context."
 
 4. **Org chart maintenance**  
    When adding or retiring a subagent, PM updates this doc and `AGENTS.md` (and `.cursor/rules/` as needed) so the chart stays accurate.
@@ -92,11 +92,12 @@ Departments own domains of work. Subagents are created under departments as need
    @assistant    Project Manager (@pm)
  (personal)              |
         +---------------+---------------+
-        |               |               |
-   Technical      Analysis      Operations    Integrations
-(@frontend,@db)               (@updater)    (@kalshi)
+        |       |       |       |       |
+  Technical  Analytics  Operations  Integrations
+(@frontend,  (@analyst) (@updater) (@kalshi,
+  @db)                            @digitalocean)
 ```
 
 ---
 
-*Last updated: 2026-03-08. Update this file when adding/removing agents, changing reporting lines, or updating comms.*
+*Last updated: 2026-03-11. Update this file when adding/removing agents, changing reporting lines, or updating comms.*

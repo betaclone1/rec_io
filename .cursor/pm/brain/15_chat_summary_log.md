@@ -10,6 +10,60 @@ Chronological log of chat sessions. Each entry is a dated, timestamped summary (
 
 ---
 
+### 2026-03-11 (session: context files in CHANGES panel, ctx commit applied)
+
+**Context**
+- User asked why they were still seeing "context level files" in the Cursor CHANGES UI (AGENTS.md, ORG_CHART, 06/14/15/INDEX, MASTER_CHANGELOG, etc.) and said "we talked about this."
+
+**Cause**
+- Per 06 "Agent context files and commits (mandatory)": when context files change, they must be staged and committed into the single rolling `ctx:` commit so they leave the CHANGES panel. After the earlier session that created the Analytics department and @analyst, those context edits were never committed and remained as uncommitted modifications.
+
+**Actions**
+- Staged all modified context paths: AGENTS.md, .cursor/pm/ORG_CHART.md, .cursor/pm/brain/06_conventions_insights.md, 14_context_retention.md, 15_chat_summary_log.md, INDEX.md, docs/changelog/MASTER_CHANGELOG.md, .cursor/rules/analyst.mdc, .cursor/pm/brain/analyst/ (full folder).
+- Created single commit: `ctx: agent context updates (Analytics department, @analyst)`. Branch now 1 ahead of origin/main; no push (per PROJECT_RULES, no push without explicit CEO authorization).
+
+**Outcomes**
+- The seven modified context files and new analyst rule/brain no longer appear as "modified" in CHANGES; they are in the ctx commit. CHANGES panel should show only untracked or other non-context changes.
+- Re-affirmed: going forward, when any agent touches context files, stage them and either create or amend the single unpushed `ctx:` commit so the CEO's CHANGES view stays clear of context-only edits.
+
+**/log-chat** invoked; this entry appended.
+
+---
+
+### 2026-03-11 ~16:45 EST (session: prepare-update, apply-update-from-local, prod deploy, user feedback)
+
+**Context**
+- Same commit (9765f7d) contained Kalshi _dollars schema + dashboard Performance panel + changelog/context. User ran `/prepare-update` then deployed to production via `/apply-update-from-local`. User later affirmed the update process was smooth and seamless and "this is how it should be."
+
+**Prepare-update**
+- **Prod snapshot:** Ran `./scripts/do/snapshot_prod.sh rec-io-prod-pre-update-2026-03-11`; snapshot action submitted (droplet 513735057).
+- **Verify:** main_app :3000, trade_executor :8001 → 200; supervisor 26/26 RUNNING; logs (trade_executor, kalshi_account_sync, main_app, one watchdog) no current errors. Status: All good.
+- **Server-agnostic audit:** Staged files scanned; no new hardcoded paths or undocumented env; existing localhost use in backend noted as documented pattern.
+- **Changelog:** Added entry **2026-03-11 — Dashboard Performance panel and mobile dashboard tweaks** (summary + production checklist; frontend only, no DB, no restart). 2026-03-12 (Kalshi _dollars) already present. Staged `docs/changelog/MASTER_CHANGELOG.md`.
+- **Commit message:** Suggested title + bullets (Kalshi _dollars, dashboard Performance + mobile, changelog entries, schema ref + context). Reported ready for publishing.
+
+**Apply-update-from-local**
+- **Pre-flight:** 2026-03-12 uses inline DDL only (no migration files); no abort.
+- **Open entries (newest-first):** 2026-03-12 (Kalshi _dollars), 2026-03-11 (dashboard/mobile frontend).
+- **Execution on prod (SSH, /opt/rec_io_server):**
+  - Pull: `git fetch && checkout main && git pull --ff-only origin main` → fast-forward to 9765f7d (22 files).
+  - 2026-03-12 DDL: Ran the inline Python DDL block from project root; output "DB schema update done."
+  - Schema verify: Queried information_schema on prod; fills_0001 has yes_price_dollars, no_price_dollars and no legacy price columns; settlements_0001 has yes_total_cost_dollars, no_total_cost_dollars and no yes_total_cost/no_total_cost. Schema OK.
+  - MASTER_RESTART: Fired `nohup bash scripts/MASTER_RESTART.sh` in background on prod; waited ~105s.
+  - 2026-03-11: Satisfied by same pull (frontend only).
+- **Verify prod:** Health 200 both; supervisor 26/26 RUNNING; tail trade_executor.err, kalshi_account_sync.out, main_app.out — baseline sync, hybrid mode, 200 OKs; external probe 404/400/505 in trade_executor not from our stack. No current tracebacks.
+- **Fidelity:** Local and prod both at 9765f7d1f456f6fe6e051017b410e86df6c200a5.
+- **Changelog:** Updated MASTER_CHANGELOG.md locally: all checklist items for 2026-03-12 and 2026-03-11 set to [x].
+- **VERIFY STATUS:** All good.
+
+**User feedback**
+- User stated the update was "smooth, seamless" and "this is how it should be." PM acknowledged and will treat this flow (push → SSH pull → DDL → verify schema → MASTER_RESTART → verify health/supervisor/logs → mark checklist → fidelity) as the baseline for future apply-update-from-local runs.
+
+**Outcomes**
+- Production at 9765f7d with Kalshi _dollars schema applied and all services restarted; dashboard Performance panel and mobile tweaks live. No open checklist items for 2026-03-11 or 2026-03-12. User satisfied with deploy process.
+
+---
+
 ### 2026-03-11 (session: dashboard Performance panel deltas removed, centering audit, transform-based offset)
 
 **Context**

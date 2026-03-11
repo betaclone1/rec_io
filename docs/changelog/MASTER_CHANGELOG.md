@@ -18,8 +18,8 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 **Production checklist**
 
-- [ ] Confirm codebase changes (pull latest on production).
-- [ ] **DB schema update (required; run automatically as part of this update):** From project root on the target server, run the DDL below. Apply-update executes this step; do not run migrations manually on other servers. Command (idempotent; safe if schema already updated):
+- [x] Confirm codebase changes (pull latest on production).
+- [x] **DB schema update (required; run automatically as part of this update):** From project root on the target server, run the DDL below. Apply-update executes this step; do not run migrations manually on other servers. Command (idempotent; safe if schema already updated):
 
   ```bash
   PYTHONPATH=$(pwd) venv/bin/python -c "
@@ -50,8 +50,8 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
   Then verify schema: `users.fills_0001` has `yes_price_dollars`, `no_price_dollars` and no `yes_price_fixed`, `no_price_fixed`, `yes_price`, `no_price`; `users.settlements_0001` has `yes_total_cost_dollars`, `no_total_cost_dollars` and no `yes_total_cost`, `no_total_cost`.
 
-- [ ] Run `scripts/MASTER_RESTART.sh` so kalshi_account_sync and any dependent services load the new code.
-- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status; optionally trigger a fills/settlements sync and confirm no errors in kalshi_account_sync logs.
+- [x] Run `scripts/MASTER_RESTART.sh` so kalshi_account_sync and any dependent services load the new code.
+- [x] Verify: health (main_app :3000, trade_executor :8001), supervisor status; optionally trigger a fills/settlements sync and confirm no errors in kalshi_account_sync logs.
 
 ---
 
@@ -64,8 +64,8 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 **Production checklist**
 
-- [ ] Confirm codebase changes (pull latest on production).
-- [ ] No DB or backend service changes. Frontend only; no restart required. Optional: hard refresh or clear cache on clients to pick up updated dashboard HTML/CSS.
+- [x] Confirm codebase changes (pull latest on production).
+- [x] No DB or backend service changes. Frontend only; no restart required. Optional: hard refresh or clear cache on clients to pick up updated dashboard HTML/CSS.
 
 ---
 

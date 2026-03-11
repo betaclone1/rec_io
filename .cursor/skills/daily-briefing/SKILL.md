@@ -1,33 +1,16 @@
-# Daily briefing (morning routine)
+# Daily briefing
 
-Run when the user wants the morning routine. Deliver a **concise, conversational** briefing: high-level first, then down to a short list of next tasks to consider. Include a **G Drive check** for new or updated notes and track what you've reviewed.
+Run when user wants morning routine. Concise briefing: high-level first, then next tasks. See .cursor/pm/DAILY_BRIEFING_COMMAND.md and 02_services_ports for details.
 
-## Workflow (execute in order)
+## Workflow (order)
 
-1. **Memory and context** — Read INDEX.md, 15_chat_summary_log.md, and as needed 14, 13, 06, 00. Note open tasks and handoffs.
+1. **Memory** — Read INDEX, 15, then 14, 13, 06, 00 as needed. Note open tasks.
+2. **G Drive** — Search/fetch notes (REC_IO / Cursor). Compare to daily_briefing_reviewed_drive.json; update log after review. Briefing: Drive section only when new/updated notes.
+3. **Health (local + prod)** — For each: supervisorctl status, health (main_app :3000, trade_executor :8001), tail key logs for ERROR/FATAL/CRITICAL. Prod: ssh root@137.184.224.94, path /opt/rec_io_server. Briefing: "Local and prod: system health OK." or rundown by env.
+4. **Monitor_confirmed** — Read log for previous days=7 total. Run `python3 scripts/diagnostics/check_monitor_confirmed_failures.py --days 7 --append-log`. Briefing: include only if current > 0 and (current > previous or previous > 0). One System bullet.
+5. **Kalshi changelog** — Check docs.kalshi.com/changelog (RSS or page). Add tasks to 13. Briefing: section only when new/relevant entries.
+6. **News** — One search: macro/crypto then Kalshi. Briefing: News only when relevant.
+7. **Ongoing** — From 13, 14, TODO. Briefing: Where we are only when something to say.
+8. **Output** — Sections: At a glance, System, Drive (if new), Kalshi (if new), News (if relevant), Where we are (if notable), Next to consider, VERIFY STATUS. Omit empty sections. Clear headings, bullets.
 
-2. **Check G Drive** — Search Drive for notes (e.g. in REC_IO / Cursor; or use known docs like "Cursor Notes"). Fetch each. Compare to `.cursor/pm/daily_briefing_reviewed_drive.json`: if file_id missing or content changed, treat as new/updated. After review, **update the log** (entry per file with `last_reviewed` date; optional `content_signature` hash to detect changes next run). Log format: `{ "file_id": { "name": "Title", "last_reviewed": "YYYY-MM-DD", "content_signature": "optional" } }`. Create the file if it doesn't exist. **In the briefing:** Include a **Drive** section only when there are new or updated notes; if nothing new, omit the Drive section entirely.
-
-3. **Comprehensive system health check (local and prod)** — Run **separately** for local dev and for production (prod via SSH). **Prod:** `ssh root@137.184.224.94`; project path on prod is `/opt/rec_io_server` (logs at `/opt/rec_io_server/logs`). For **each** environment: (a) supervisorctl status — any process not RUNNING? (b) health endpoints (main_app :3000, trade_executor :8001). (c) Tail key logs (e.g. last 150–200 lines): trade_manager, trade_executor, main_app, kalshi_account_sync, cascading_failure_detector, one ATS, one AES. Look for ERROR, FATAL, CRITICAL, or anomalous patterns (e.g. repeated restarts, connection refused). **Report:** If nothing notable on either environment: one line **"Local and prod: system health OK."** If any issues: concise rundown by environment (Local / Prod) and what needs attention; do not list healthy items.
-
-3b. **Monitor_confirmed check** — Run the check and only mention it if there is a **rise in frequency** or **persistence**. (Some failures over 7 days are expected; user only needs to know when it gets worse or keeps happening.) Steps: (1) Read `scripts/diagnostics/monitor_confirmed_failures_log.txt` and from the most recent line with `days=7` parse `total=N` (previous 7-day total; use 0 if file missing or no line with days=7). (2) Run `python3 scripts/diagnostics/check_monitor_confirmed_failures.py --days 7 --append-log`. (3) From the script output get current total (e.g. "Total: N trades"). (4) **Only include in the briefing** if current > 0 **and** (current > previous **or** previous > 0). So: report when failures have **risen** (current > previous) or are **persistent** (we had failures last time too). Do not report on a one-off non-zero. When reporting: short System bullet with total and which monitors/strategies, and that it indicates ATS not tracking some trades (ref docs/DIAGNOSIS_MONITOR_CONFIRMED_FALSE.md).
-
-4. **Kalshi changelog** — Check https://docs.kalshi.com/changelog (always available). Prefer RSS at https://docs.kalshi.com/changelog/rss.xml; if the feed fails or is unavailable, fetch the changelog page via web. **Derive actionable tasks** from new or relevant entries: e.g. migrate off deprecated fields, verify after a breaking change, adopt a new endpoint. **Add those tasks to the central backlog** (13_proposed_tasks) in a "Kalshi changelog (from daily briefing)" section or merge into the ongoing list; tag [S]/[M]/[L] as appropriate. **In the briefing:** Include a **Kalshi changelog** section when there are new/relevant entries; summarize and call out any tasks you added to the list.
-
-5. **External news** — One web search focused on **macro/crypto items that could move BTC or ETH** (e.g. major rate or inflation prints, ETF or regulatory headlines, large liquidations) **first**, and **Kalshi/prediction-market items** second. In the briefing, lead the News section with **price action and macro/crypto context**, then mention Kalshi/prediction-market headlines at the end if they matter. When there are items worth mentioning: give 2–4 sentences or a few bullets (what happened, and why it might matter for our trading or price behavior). **In the briefing:** Include **News** only when there is something relevant; if nothing relevant, omit the section. Don't compress real news into a single vague line.
-
-6. **Ongoing tasks** — From 13_proposed_tasks, 14, docs/changelog/TODO.md. Short paragraph or bullets: where things stand, what's blocked. **In the briefing:** Include **Where we are** only when there is something to say; if there's nothing notable, omit or keep to one line.
-
-7. **Immediately actionable findings** — If, during any step of the daily briefing, you find something that is **clearly immediately actionable without further CEO input** (e.g. muting pure noise logs, fixing a safe non-prod-only warning, tightening a harmless configuration, or similar low-risk cleanups), you **should go ahead and implement it** as part of the daily-briefing run before reporting back.
-
-8. **Briefing output** — Format **for human eyes**: clear section headings (e.g. ## At a glance, ## System), blank lines between sections, bullets for lists. **Omit any section that has nothing new or nothing to report** — do not add filler like "Nothing new on Drive," "No news," or "No Kalshi updates." Only include sections where there is something to say.
-   - **At a glance** — One or two sentences overall; optional one-line status.
-   - **System** — Result of comprehensive health check (local + prod): either "Local and prod: system health OK." or a concise rundown of notable issues by environment. Include monitor_confirmed only if rise/persistence (step 3b). Bullets if multiple points.
-   - **Drive** — Include only when there are new or updated notes; otherwise omit the section.
-   - **Kalshi changelog** — Include only when the RSS feed (or changelog) has new or relevant entries (API changes, deprecations, new fields); otherwise omit.
-   - **News** — Include only when there is relevant macro/crypto or prediction-market news; otherwise omit. When included: 2–4 sentences or bullets, leading with BTC/ETH and macro/crypto, then Kalshi/prediction-market if applicable. **No internal doc refs** (e.g. "From 13", "14"); use plain language ("open tasks", "our list", "changelog").
-   - **Where we are** — Short paragraph or bullets on ongoing work and blockers; omit if nothing notable.
-   - **Next to consider** — Ranked list (bullets), one line per item.
-   - **VERIFY STATUS** — Single line: All good / Investigate / Critical.
-
-References: .cursor/pm/DAILY_BRIEFING_COMMAND.md, .cursor/pm/brain/02_services_ports.md, .cursor/pm/GOOGLE_DRIVE_MCP_SETUP.md.
+**If a step fails (MCP, SSH, script, fetch):** Do not skip. In the briefing include a "Failures" or inline note: what failed and the error. Retry once or try alternative. Never omit a failed step.
