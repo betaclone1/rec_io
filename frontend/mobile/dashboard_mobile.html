@@ -41,7 +41,7 @@
       margin-bottom: 0;
     }
 
-    .performance-periods { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; width: fit-content; align-self: center; }
+    .performance-periods { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; width: fit-content; align-self: center; transform: translateX(-20px); }
     .performance-row { display: flex; align-items: center; gap: 10px; }
     .performance-label { font-size: 13px; font-weight: 600; color: #a0aec0; width: 48px; text-align: right; }
     .performance-box { display: inline-block; background-color: #1a1d24; border-radius: 8px; border: 1px solid #3d4552; padding: 9px 14px; min-width: 72px; text-align: center; }
@@ -1201,25 +1201,21 @@
           <span class="performance-label">Day</span>
           <div class="performance-box"><span class="performance-pnl" id="perf-pnl-day">—</span></div>
           <div class="performance-box"><span class="performance-ret" id="perf-ret-day">—</span></div>
-          <div class="performance-compare" id="perf-compare-day"></div>
         </div>
         <div class="performance-row" data-period="week">
           <span class="performance-label">Week</span>
           <div class="performance-box"><span class="performance-pnl" id="perf-pnl-week">—</span></div>
           <div class="performance-box"><span class="performance-ret" id="perf-ret-week">—</span></div>
-          <div class="performance-compare" id="perf-compare-week"></div>
         </div>
         <div class="performance-row" data-period="month">
           <span class="performance-label">Month</span>
           <div class="performance-box"><span class="performance-pnl" id="perf-pnl-month">—</span></div>
           <div class="performance-box"><span class="performance-ret" id="perf-ret-month">—</span></div>
-          <div class="performance-compare" id="perf-compare-month"></div>
         </div>
         <div class="performance-row" data-period="year">
           <span class="performance-label">Year</span>
           <div class="performance-box"><span class="performance-pnl" id="perf-pnl-year">—</span></div>
           <div class="performance-box"><span class="performance-ret" id="perf-ret-year">—</span></div>
-          <div class="performance-compare" id="perf-compare-year"></div>
         </div>
       </div>
       <div class="performance-cash-balance">
@@ -3554,6 +3550,8 @@
         },
         plugins: [customPlugin, crosshairPlugin, yAxisLabelsPlugin, glowPlugin],
         options: {
+          // Disable animations on mobile so periodic refreshes don't visibly re-animate the line
+          animation: false,
           responsive: true,
           maintainAspectRatio: false,
           interaction: {
@@ -4583,7 +4581,8 @@
       await loadAllocationData();
       if (window.monitorHistoryDisplay) window.monitorHistoryDisplay.refresh(currentView);
     }
-    window.__onPullToRefresh = function() { return refreshAllDashboardData(); };
+    // For pull-to-refresh, treat this as a hard reset: let the wrapper reload the page.
+    window.__onPullToRefresh = function() { return null; };
 
     startDashboardMobilePolling();
 
@@ -5273,7 +5272,6 @@
     }
 
     function connectWebSocket() {
-      if (window.DASHBOARD_MOBILE_PAUSED) return;
       // Close existing connection if any
       if (ws) {
         ws.close();
@@ -5456,9 +5454,7 @@
       };
 
       ws.onclose = function() {
-        if (!window.DASHBOARD_MOBILE_PAUSED) {
-          setTimeout(connectWebSocket, 5000);
-        }
+        setTimeout(connectWebSocket, 5000);
       };
 
       ws.onerror = function(error) {
@@ -7004,26 +7000,11 @@
       window.hideMobileUnifiedAutoTradeSettings = hideModal;
     })();
   </script>
-  <!-- Tab visibility: pause when hidden -->
+  <!-- Tab visibility messages are ignored for dashboard refresh logic to avoid interfering with normal polling/WebSocket behavior -->
   <script>
   (function() {
     window.addEventListener('message', function(event) {
       if (!event.data || event.data.type !== 'tab-visibility') return;
-      const visible = event.data.visible === true;
-      window.DASHBOARD_MOBILE_PAUSED = !visible;
-      if (visible) {
-        if (typeof startDashboardMobilePolling === 'function') startDashboardMobilePolling();
-        if (typeof startDashboardMarketDataPolling === 'function') startDashboardMarketDataPolling();
-        if (typeof connectWebSocket === 'function') connectWebSocket();
-      } else {
-        if (window._dmPortfolioInterval) { clearInterval(window._dmPortfolioInterval); window._dmPortfolioInterval = null; }
-        if (window._dmHistoryInterval) { clearInterval(window._dmHistoryInterval); window._dmHistoryInterval = null; }
-        if (window._dmPerformanceInterval) { clearInterval(window._dmPerformanceInterval); window._dmPerformanceInterval = null; }
-        if (window._dmMonitorRefreshInterval) { clearInterval(window._dmMonitorRefreshInterval); window._dmMonitorRefreshInterval = null; }
-        if (window._dmAutoTradeInterval) { clearInterval(window._dmAutoTradeInterval); window._dmAutoTradeInterval = null; }
-        if (window._dmMarketDataInterval) { clearInterval(window._dmMarketDataInterval); window._dmMarketDataInterval = null; }
-        if (window._dashboardMobileWs) { try { window._dashboardMobileWs.close(); } catch (e) {} window._dashboardMobileWs = null; }
-      }
     });
   })();
   </script>

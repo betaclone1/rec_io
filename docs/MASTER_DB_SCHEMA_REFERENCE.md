@@ -9808,15 +9808,13 @@ Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m va
 | `action` | `text` | YES | - | |
 | `count` | `integer(32)` | YES | - | |
 | `count_fp` | `numeric(12,2)` | YES | - | Fixed-point contract count (Kalshi migration). |
-| `yes_price` | `real(24)` | YES | - | |
-| `no_price` | `real(24)` | YES | - | |
+| `yes_price_dollars` | `text` | YES | - | Fill price in dollars (Kalshi API yes_price_dollars). |
+| `no_price_dollars` | `text` | YES | - | Fill price in dollars (Kalshi API no_price_dollars). |
 | `is_taker` | `boolean` | YES | - | |
 | `created_time` | `text` | YES | - | |
 | `raw_json` | `text` | YES | - | |
 | `created_at` | `timestamp with time zone` | YES | CURRENT_TIMESTAMP | |
 | `updated_at` | `timestamp with time zone` | YES | CURRENT_TIMESTAMP | |
-| `yes_price_fixed` | `text` | YES | - | |
-| `no_price_fixed` | `text` | YES | - | |
 
 #### Constraints
 
@@ -10214,10 +10212,10 @@ Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m va
 | `market_result` | `text` | YES | - | |
 | `yes_count` | `integer(32)` | YES | - | |
 | `yes_count_fp` | `numeric(12,2)` | YES | - | Fixed-point (Kalshi migration). |
-| `yes_total_cost` | `numeric(10,2)` | YES | - | |
+| `yes_total_cost_dollars` | `numeric(10,2)` | YES | - | Total cost in dollars (Kalshi API yes_total_cost_dollars). |
 | `no_count` | `integer(32)` | YES | - | |
 | `no_count_fp` | `numeric(12,2)` | YES | - | Fixed-point (Kalshi migration). |
-| `no_total_cost` | `numeric(10,2)` | YES | - | |
+| `no_total_cost_dollars` | `numeric(10,2)` | YES | - | Total cost in dollars (Kalshi API no_total_cost_dollars). |
 | `revenue` | `numeric(10,2)` | YES | - | |
 | `settled_time` | `text` | YES | - | |
 | `raw_json` | `text` | YES | - | |

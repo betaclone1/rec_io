@@ -622,7 +622,7 @@
             const fillsBody = document.getElementById("fills-body");
             fillsBody.innerHTML = fills.map(f => {
                 // Get price based on side with no formatting - use _fixed columns
-                const price = f.side === "yes" ? f.yes_price_fixed : f.no_price_fixed;
+                const price = f.side === "yes" ? f.yes_price_dollars : f.no_price_dollars;
                 
                 return `
                     <tr>

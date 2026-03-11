@@ -10,21 +10,23 @@ Morning routine: refresh context, check Drive for new notes, verify system, skim
 
 Format the output so it is **easy to read and scan**: use clear section headings, blank lines between sections, and bullets for lists. Be concise but not cramped — when something is worth mentioning (e.g. news items, a new Drive note, a real log issue), give enough detail to be useful.
 
-**Structure** — Output in this order, with a **heading for each section** (e.g. `## At a glance`, `## System`, `## Drive`, etc.) and a blank line after each heading before the content.
+**Structure** — Output in this order. **Omit any section that has nothing new or nothing to report**; do not add filler like "Nothing new on Drive," "No news," or "No Kalshi updates." Use a heading only for sections you include (e.g. `## At a glance`, `## System`, `## Drive`), with a blank line after each heading before the content.
 
-1. **At a glance** — One or two sentences: how things are overall (system, prod, Drive new or not, any standout). Optional one-line status if helpful.
+1. **At a glance** — One or two sentences: how things are overall (system, prod, any standout). Optional one-line status if helpful.
 
-2. **System** — Health and logs in a short, readable block. Use bullets if there are multiple points (e.g. main_app 200, trade_executor 200, supervisor all RUNNING). If there are log issues worth noting, give a sentence or two of detail; if all quiet, say so in one line.
+2. **System** — Health and logs in a short, readable block. Use bullets if there are multiple points. If there are log issues worth noting, give a sentence or two of detail; if all quiet, say so in one line.
 
-3. **Drive** — New or updated notes: if any, summarize in a few lines or bullets so the reader knows what's new. If nothing new, one line ("Nothing new since last run."). Mention if you updated the reviewed log.
+3. **Drive** — Include only when there are new or updated notes; summarize in a few lines or bullets. If nothing new, omit the section.
 
-4. **News** — **When there are items worth mentioning:** give a little more than one sentence — 2–4 sentences or a few bullets (what happened, why it might matter). **When nothing is relevant:** skip the section or move on; do not add filler like "Nothing that affects us" or "Nothing else in the search."
+4. **Kalshi changelog** — Include only when the Kalshi changelog RSS (or changelog page) has new or relevant entries (API changes, deprecations, new fields). If nothing relevant or feed unavailable, omit the section.
 
-5. **Where we are** — Short paragraph on ongoing work and blockers. Bullets are fine if there are several threads.
+5. **News** — Include only when there is relevant macro/crypto or prediction-market news; give 2–4 sentences or a few bullets (what happened, why it might matter). If nothing relevant, omit the section.
 
-6. **Next to consider** — Ranked list (bullets or numbers), high-level to tactical. One line per item; easy to scan.
+6. **Where we are** — Short paragraph on ongoing work and blockers when there is something to say; otherwise omit or keep to one line.
 
-7. **VERIFY STATUS** — Single line at the end: All good / Investigate / Critical.
+7. **Next to consider** — Ranked list (bullets or numbers), high-level to tactical. One line per item; easy to scan.
+
+8. **VERIFY STATUS** — Single line at the end: All good / Investigate / Critical.
 
 **Tone:** Conversational. Prefer "we" and clear, concrete detail over either lengthy prose or telegraphic one-liners when the content warrants it.
 
@@ -52,9 +54,10 @@ Part of the routine is to **check G Drive** (REC_IO / Cursor folder, or known no
 ## Workflow summary
 
 1. Memory and context (INDEX, 15, 14, 13, 06, 00).
-2. **G Drive** — Search → fetch notes → compare to reviewed log → surface new/updated in briefing → update log.
+2. **G Drive** — Search → fetch notes → compare to reviewed log → update log. In briefing: include **Drive** section only when there are new or updated notes; otherwise omit.
 3. **Comprehensive system health check** — Run **separately** for local and for prod (SSH root@137.184.224.94; prod path /opt/rec_io_server). For each: supervisorctl status, health endpoints (main_app, trade_executor), tail key logs (trade_manager, trade_executor, main_app, kalshi_account_sync, cascading_failure_detector, one ATS, one AES) and look for ERROR/FATAL/CRITICAL or anomalies. **Report:** If nothing notable: "Local and prod: system health OK." If issues: concise rundown by environment (Local / Prod) and what needs attention.
 4. **Monitor_confirmed check** — Run check with `--days 7 --append-log`. Read log for previous total. Report only if current > 0 and (current > previous or previous > 0): rise or persistence.
-5. External news (one search; when relevant, give enough detail to be useful — 2–4 sentences or a few bullets).
-6. Ongoing tasks (short paragraph from 13, 14, TODO).
-7. Deliver briefing in the format above; end with VERIFY STATUS.
+5. **Kalshi changelog** — Check https://docs.kalshi.com/changelog (always available). Prefer RSS at /changelog/rss.xml; if RSS fails, fetch the changelog page via web. **Derive actionable tasks** (migrate off deprecated fields, verify after breaking change, use new endpoint) and **add them to the central backlog** (13_proposed_tasks). In briefing: include **Kalshi changelog** when there are new/relevant entries and call out any tasks added to the list.
+6. External news (one search; when relevant, give enough detail — 2–4 sentences or bullets). In briefing: include **News** only when relevant; otherwise omit.
+7. Ongoing tasks (short paragraph from 13, 14, TODO). In briefing: include **Where we are** only when there is something to say; otherwise omit.
+8. Deliver briefing in the format above (omit any section with nothing to report); end with VERIFY STATUS.

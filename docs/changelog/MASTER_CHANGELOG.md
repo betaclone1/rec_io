@@ -6,6 +6,69 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-12 — Kalshi API: fills and settlements _dollars (schema)
+
+**Summary**
+
+- **Fills:** Kalshi API now exposes `yes_price_dollars` and `no_price_dollars`; legacy `yes_price_fixed` / `no_price_fixed` and cent fields deprecated. We removed deprecated columns and added `yes_price_dollars`, `no_price_dollars` to `users.fills_0001`. Sync and ingest read from API _dollars (fallback to _fixed during rollout). Frontend uses the new column names.
+- **Settlements:** API exposes `yes_total_cost_dollars` and `no_total_cost_dollars`. We removed `yes_total_cost`, `no_total_cost` and added `yes_total_cost_dollars`, `no_total_cost_dollars` to `users.settlements_0001`. Sync and ingest read _dollars (fallback to cent fields).
+- **Schema:** Direct DDL only (no migration files). Reference: `docs/MASTER_DB_SCHEMA_REFERENCE.md`. CREATE TABLEs updated in trade_manager.py, kalshi_account_sync_ws.py, kalshi_historical_ingest.py.
+
+**DB schema change required.** This update requires running DDL on the database. The apply-update process runs the DB step below automatically on the target server as part of the production checklist. Do not skip it; there is no separate manual migration step.
+
+**Production checklist**
+
+- [ ] Confirm codebase changes (pull latest on production).
+- [ ] **DB schema update (required; run automatically as part of this update):** From project root on the target server, run the DDL below. Apply-update executes this step; do not run migrations manually on other servers. Command (idempotent; safe if schema already updated):
+
+  ```bash
+  PYTHONPATH=$(pwd) venv/bin/python -c "
+  from backend.core.config.database import get_postgresql_connection
+  conn = get_postgresql_connection()
+  cur = conn.cursor()
+  # fills_0001: add new columns
+  cur.execute('ALTER TABLE users.fills_0001 ADD COLUMN IF NOT EXISTS yes_price_dollars TEXT')
+  cur.execute('ALTER TABLE users.fills_0001 ADD COLUMN IF NOT EXISTS no_price_dollars TEXT')
+  cur.execute(\"SELECT 1 FROM information_schema.columns WHERE table_schema='users' AND table_name='fills_0001' AND column_name='yes_price_fixed'\")
+  if cur.fetchone():
+      cur.execute(\"UPDATE users.fills_0001 SET yes_price_dollars = yes_price_fixed, no_price_dollars = no_price_fixed WHERE yes_price_fixed IS NOT NULL OR no_price_fixed IS NOT NULL\")
+      for col in ('yes_price_fixed', 'no_price_fixed', 'yes_price', 'no_price'):
+          cur.execute(\"ALTER TABLE users.fills_0001 DROP COLUMN IF EXISTS \" + col)
+  # settlements_0001: add new columns
+  cur.execute('ALTER TABLE users.settlements_0001 ADD COLUMN IF NOT EXISTS yes_total_cost_dollars NUMERIC(10,2)')
+  cur.execute('ALTER TABLE users.settlements_0001 ADD COLUMN IF NOT EXISTS no_total_cost_dollars NUMERIC(10,2)')
+  cur.execute(\"SELECT 1 FROM information_schema.columns WHERE table_schema='users' AND table_name='settlements_0001' AND column_name='yes_total_cost'\")
+  if cur.fetchone():
+      cur.execute(\"UPDATE users.settlements_0001 SET yes_total_cost_dollars = yes_total_cost, no_total_cost_dollars = no_total_cost WHERE yes_total_cost IS NOT NULL OR no_total_cost IS NOT NULL\")
+      cur.execute('ALTER TABLE users.settlements_0001 DROP COLUMN IF EXISTS yes_total_cost')
+      cur.execute('ALTER TABLE users.settlements_0001 DROP COLUMN IF EXISTS no_total_cost')
+  conn.commit()
+  conn.close()
+  print('DB schema update done')
+  "
+  ```
+
+  Then verify schema: `users.fills_0001` has `yes_price_dollars`, `no_price_dollars` and no `yes_price_fixed`, `no_price_fixed`, `yes_price`, `no_price`; `users.settlements_0001` has `yes_total_cost_dollars`, `no_total_cost_dollars` and no `yes_total_cost`, `no_total_cost`.
+
+- [ ] Run `scripts/MASTER_RESTART.sh` so kalshi_account_sync and any dependent services load the new code.
+- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status; optionally trigger a fills/settlements sync and confirm no errors in kalshi_account_sync logs.
+
+---
+
+## 2026-03-11 — Dashboard Performance panel and mobile dashboard tweaks
+
+**Summary**
+
+- **Performance panel (desktop + mobile):** Removed the delta/compare column (previous-period change) from the Performance panel; rows now show only label, PnL, and PnL %. Applied a 20px left shift via `transform: translateX(-20px)` on `.performance-periods` so the block is better centered in the panel.
+- **Mobile dashboard:** Chart animation disabled so periodic refreshes do not re-animate the line; pull-to-refresh now triggers a full page reload; WebSocket reconnect no longer gated by `DASHBOARD_MOBILE_PAUSED`.
+
+**Production checklist**
+
+- [ ] Confirm codebase changes (pull latest on production).
+- [ ] No DB or backend service changes. Frontend only; no restart required. Optional: hard refresh or clear cache on clients to pick up updated dashboard HTML/CSS.
+
+---
+
 ## 2026-03-10 — Trade history mobile: disable contract filter (parity with desktop)
 
 **Summary**
@@ -16,8 +79,8 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 **Production checklist**
 
-- [ ] Confirm codebase changes (pull latest on production).
-- [ ] No DB or backend changes. Frontend only; no restart required. Optional: hard refresh or clear cache on mobile client to pick up updated `trade_history_mobile.html`.
+- [x] Confirm codebase changes (pull latest on production).
+- [x] No DB or backend changes. Frontend only; no restart required. Optional: hard refresh or clear cache on mobile client to pick up updated `trade_history_mobile.html`.
 
 ---
 
@@ -31,9 +94,9 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 **Production checklist**
 
-- [ ] Confirm codebase changes (pull latest on production).
-- [ ] No DB migrations. Run `scripts/MASTER_RESTART.sh` so all auto_entry_supervisor and trade_manager processes load the new logic.
-- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Optionally after a few 15m cycles, run duplicate detection on prod (e.g. inline query or script) to confirm no new duplicate groups in `users.trades_simulated_0001`.
+- [x] Confirm codebase changes (pull latest on production).
+- [x] No DB migrations. Run `scripts/MASTER_RESTART.sh` so all auto_entry_supervisor and trade_manager processes load the new logic.
+- [x] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Optionally after a few 15m cycles, run duplicate detection on prod (e.g. inline query or script) to confirm no new duplicate groups in `users.trades_simulated_0001`.
 
 ---
 
@@ -48,10 +111,10 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 **Production checklist**
 
-- [ ] Confirm codebase changes (pull latest on production).
-- [ ] Apply migrations if not already applied: `20260310_1200_trade_history_preferences_strategy_selection`, `20260310_1210_trade_history_preferences_symbol_selection`, `20260310_1220_strategy_list_default_column` (from project root with `PYTHONPATH=. venv/bin/python scripts/db/run_migration.py up <slug>` for each, or run all pending via your usual process).
-- [ ] Run `scripts/MASTER_RESTART.sh` so frontend and main_app load the new code.
-- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status; optional: open Trade History and confirm Strategy/Symbol dropdowns load and Reset sets Strategy to defaults only.
+- [x] Confirm codebase changes (pull latest on production).
+- [x] Apply migrations if not already applied: `20260310_1200_trade_history_preferences_strategy_selection`, `20260310_1210_trade_history_preferences_symbol_selection`, `20260310_1220_strategy_list_default_column` (from project root with `PYTHONPATH=. venv/bin/python scripts/db/run_migration.py up <slug>` for each, or run all pending via your usual process). **Prod schema verified 2026-03-11: strategy_selection and symbol_selection exist on trade_history_preferences_0001; default exists on strategy_list_0001.**
+- [x] Run `scripts/MASTER_RESTART.sh` so frontend and main_app load the new code.
+- [x] Verify: health (main_app :3000, trade_executor :8001), supervisor status; optional: open Trade History and confirm Strategy/Symbol dropdowns load and Reset sets Strategy to defaults only.
 
 ---
 

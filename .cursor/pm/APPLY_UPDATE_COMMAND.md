@@ -6,7 +6,9 @@ When the user invokes **/apply-update** (or says "apply update" or "follow the c
 
 **Where to run:** Production updates are applied **from your local workspace** via **/apply-update-from-local**: the agent SSHs to prod and runs the checklist there (pull, migrations, restart, verify). Use **/apply-update** only when the agent is already on the production server. See `.cursor/commands/apply-update-from-local.md` and `.cursor/pm/PROD_MAINTENANCE_FROM_LOCAL.md`.
 
-**Migrations:** Migration files reach prod only via git (commit and push; then this workflow runs pull on prod). Never SCP or copy migration files to prod. If the checklist includes "Apply migrations", every referenced migration file must be in the commit being deployed; if not, abort (do not pull, do not restart), report **🔴 Critical — update aborted**, and do not run the update until migration files are in the repo and pushed.
+**DB: never confirm an update unless DB updates are 100% confirmed. We never ever skip this step.** If an entry has any DB-related checklist item, verify the DB state on the target server (run the step and verify, or query schema) before marking it done. Do not report "All good" if any DB step was skipped or unverified.
+
+**Migrations:** Migration files reach prod only via git (commit and push; then this workflow runs pull on prod). Never SCP or copy migration files to prod. If the checklist includes "Apply migrations" and migration files are in the commit: run them on prod and verify. If migration files are not in the commit: verify the schema on prod (e.g. information_schema); if schema is already present, mark the entry complete with a note; if not, do not mark complete and status is not "All good."
 
 ## What the agent does
 

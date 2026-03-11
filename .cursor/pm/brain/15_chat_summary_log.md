@@ -10,6 +10,181 @@ Chronological log of chat sessions. Each entry is a dated, timestamped summary (
 
 ---
 
+### 2026-03-11 (session: dashboard Performance panel deltas removed, centering audit, transform-based offset)
+
+**Context**
+- User focused on UI layout of the Performance panel in both desktop `dashboard.html` and mobile `dashboard_mobile.html`. They wanted to remove the “delta” column (previous vs current performance) from the Performance panel and then fix an apparent horizontal centering issue where the three remaining columns (label, PnL, PnL%) appeared pushed to the right within the panel. Multiple iterations were needed because simple CSS changes either had no visible effect or caused undesirable side effects, and the user wanted a clear diagnosis of the cause, not just patches.
+
+**Changes made**
+- **Removed delta/compare column from Performance panels (desktop + mobile)**:
+  - `frontend/tabs/dashboard.html`: In the Performance panel markup, removed the `<div class="performance-compare" id="perf-compare-..."></div>` elements from each period row (Day/Week/Month/Year), leaving only `performance-label`, `performance-pnl`, and `performance-ret` in each row. The JS loader (`loadPerformanceData`) was left intact; its `compareEl` logic becomes a no-op because the DOM elements no longer exist.
+  - `frontend/mobile/dashboard_mobile.html`: Mirrored the same HTML change for the mobile Performance panel, removing all `performance-compare` `<div>`s while keeping the PnL and percentage boxes plus the cash balance footer.
+- **Initial (reverted) centering attempt using flex alignment**:
+  - Desktop: Changed `.performance-periods` from `width: fit-content; align-self: center;` to a plain flex column with `align-items: center`, and added `justify-content: center` to `.performance-row` to try to center visible content. This visually shrank the row layout / box sizing in an undesirable way and did not address the user’s perception of imbalance, so it was reverted to the original definition with `width: fit-content; align-self: center;`.
+  - Mobile: Applied the same flex-centering tweak to the inline `.performance-periods`/`.performance-row` styles, but this also did not solve the perceptual centering issue. These mobile changes were likewise fully reverted, restoring the original compact inline CSS.
+- **Diagnosis of the apparent “pushed right” look**:
+  - Confirmed that each row is a flex row: `.performance-row { display: flex; align-items: center; gap: 10px; }`, with the label column defined as `.performance-label { font-size: 13px; font-weight: 600; color: #a0aec0; width: 48px; text-align: right; }`.
+  - Determined that the **fixed 48px width** combined with **right-aligned text** means there is always up to 48px of horizontal space allocated for the label, but the visible text sits flush against the PnL box. The **empty part of that 48px column lies to the left of the label’s visible text**, which makes the three visible columns (label text + PnL box + PnL% box) appear shifted right relative to the panel’s background even when the flex container itself is centered.
+  - Also separated this from the left-edge padding issue: the panel’s interior has padding from both `.panel-container` in `global.css` and the per-panel `.new-panel` styles. However, the user’s complaint persisted even after understanding padding, so the key “dumb problem” was the invisible left portion of the fixed-width label column plus the centering of the `performance-periods` block.
+- **Attempted simple horizontal offset via margin-left**:
+  - On mobile, added `margin-left: -10px` to `.performance-periods` (a flex item within `.new-panel` which has `display: flex; flex-direction: column; align-self: center;`), expecting the entire block of four rows to shift left by 10px.
+  - Observed that this had no visible effect, and concluded this was due to cross-axis flex alignment: in a column flex container, `align-self: center` on the flex item (the `.performance-periods` block) determines the horizontal position and effectively overrides left/right margins when computing the cross-axis centering. This explained why `margin-left` appeared to do nothing even though the code compiled fine.
+- **Final solution: transform-based horizontal offset**:
+  - Implemented a transform-based offset that is not overridden by flex alignment, which the user requested to be a minimal change that simply moved the visual block without altering layout semantics.
+  - Desktop `frontend/tabs/dashboard.html`:
+    - Updated `.performance-periods` to add `transform: translateX(-20px);` while keeping `width: fit-content; align-self: center;` so all sizing and alignment remain the same but the entire block moves left 20px inside the panel.
+  - Mobile `frontend/mobile/dashboard_mobile.html`:
+    - Updated the inline `.performance-periods` rule to include `transform: translateX(-20px);`, mirroring the desktop behavior and shifting the mobile Performance rows block 20px left inside its panel.
+  - The user explicitly asked to increase the shift from 10px to 20px after reviewing the 10px version, so both desktop and mobile now use `translateX(-20px)`.
+
+**Outcomes / notes**
+- Performance panels on both desktop and mobile now:
+  - Show only the PnL and PnL% columns per period (no previous-period delta).
+  - Present the rows shifted left by 20px via CSS transform, with all previous spacing, fonts, and component structure otherwise unchanged.
+- Root cause of the centering annoyance was recorded as:
+  - The fixed-width, right-aligned label column creating invisible space to the left of the visible label text; and
+  - Flexbox cross-axis centering (`align-self: center`) ignoring left margins on the `.performance-periods` wrapper, which made naïve margin-based offsets ineffective.
+- The final solution is deliberately minimal and local: a single `transform: translateX(...)` on `.performance-periods`, which the user can easily adjust later without needing to reason through the flex layout again.
+
+---
+
+### 2026-03-11 13:30 EST (session: Kalshi _dollars DB alignment, changelog DDL, context-commit workflow, system-restart)
+
+**Context**
+- Follow-up to the prior Kalshi fixed-point/_dollars migration work. User discarded earlier code-only changes and explicitly requested a **full, correct implementation** that includes DB schema, reference docs, migrations/DDL, and frontend usage. Separately, user proposed and approved a new workflow for **siloing agent context edits** so they do not clutter the Cursor CHANGES panel or the commit graph. Session ended with a `/system-restart` + verify-local run and a `/log-chat` request.
+
+**Kalshi fills/settlements DB alignment (_dollars fields, no legacy columns)**
+- Located the authoritative schema: `docs/MASTER_DB_SCHEMA_REFERENCE.md` for `users.fills_0001` and `users.settlements_0001`, and the bootstrap `CREATE TABLE` definitions in `backend/trade_manager.py`, plus the Kalshi sync/ingest writers `backend/kalshi_account_sync_ws.py` and `backend/api/kalshi-api/kalshi_historical_ingest.py`, and the `/api/db/*` readers in `backend/main.py`.
+- Verified current state before changes:
+  - `users.fills_0001` schema still had `yes_price`, `no_price`, `yes_price_fixed`, `no_price_fixed` columns; `_fp` count already present.
+  - `users.settlements_0001` had `yes_total_cost`, `no_total_cost` NUMERIC(10,2) plus `_fp` count columns.
+  - `trade_manager.py` CREATE TABLEs used `yes_price`/`no_price` + `yes_price_fixed`/`no_price_fixed` for fills, and `yes_total_cost`/`no_total_cost` for settlements.
+  - Sync/ingest code paths read cent-based fields and/or `_fixed` strings, converting cents to dollars.
+  - Frontend pages (`frontend/tabs/account_manager.html`, `frontend/mobile/account_manager_mobile.html`, `frontend/tabs/trade_monitor.html`, `frontend/mobile/trade_monitor_mobile.html`) still referenced `yes_price`, `no_price`, or `yes_price_fixed`/`no_price_fixed` in JS.
+- Implemented schema change **using direct DDL, not migration files**, per 06 rules:
+  - Initially created a reversible migration pair `20260312_1000_kalshi_fills_settlements_dollars.up/down.sql` and applied it locally, but then removed both files after re-reading 06 **“DB changes: migrations vs direct DDL (mandatory)”** and the user’s explicit requirement to avoid routine migrations. Local DB remained in the updated state (verified via `information_schema`).
+  - Final schema shape (post-DDL; matching both DB and reference doc):
+    - `users.fills_0001`:
+      - Added `yes_price_dollars TEXT`, `no_price_dollars TEXT`.
+      - Dropped legacy `yes_price_fixed`, `no_price_fixed`, `yes_price`, `no_price` after backfilling new columns from `_fixed` where present.
+      - Kept `count_fp NUMERIC(12,2)` as the fixed-point contract count.
+    - `users.settlements_0001`:
+      - Added `yes_total_cost_dollars NUMERIC(10,2)`, `no_total_cost_dollars NUMERIC(10,2)`.
+      - Dropped `yes_total_cost`, `no_total_cost` after backfilling from those columns.
+- Updated reference + bootstrap definitions:
+  - `docs/MASTER_DB_SCHEMA_REFERENCE.md`:
+    - `users.fills_0001`: replaced `yes_price`/`no_price`/`yes_price_fixed`/`no_price_fixed` with `yes_price_dollars TEXT` and `no_price_dollars TEXT` plus descriptions tying them to Kalshi `yes_price_dollars`/`no_price_dollars`.
+    - `users.settlements_0001`: replaced `yes_total_cost`/`no_total_cost` with `yes_total_cost_dollars`/`no_total_cost_dollars` as NUMERIC(10,2) with descriptions referencing Kalshi `yes_total_cost_dollars`/`no_total_cost_dollars`.
+  - `backend/trade_manager.py`:
+    - Fills `CREATE TABLE users.fills_0001` now only defines `yes_price_dollars`/`no_price_dollars` (no legacy price columns).
+    - Settlements `CREATE TABLE users.settlements_0001` now only defines `yes_total_cost_dollars`/`no_total_cost_dollars` (no legacy cost columns); `_fp` count columns remain on the positions/settlements side where appropriate.
+
+**Kalshi sync/ingest code, frontend, and changelog updates**
+- `backend/kalshi_account_sync_ws.py`:
+  - **Fills path**:
+    - For each fill, now reads `yes_price_dollars = fill.get("yes_price_dollars") or fill.get("yes_price_fixed")` and similarly for `no_price_dollars`, so the code is future-safe when Kalshi deprecates `_fixed` and uses the new `_dollars` fields only.
+    - INSERT into `users.fills_0001` now uses `(trade_id, ticker, order_id, side, action, count, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json)` to match the new schema.
+  - **Settlements path**:
+    - CREATE TABLE uses `yes_count_fp NUMERIC(12,2)`, `no_count_fp NUMERIC(12,2)`, `yes_total_cost_dollars DECIMAL(10,2)`, `no_total_cost_dollars DECIMAL(10,2)` directly.
+    - For each settlement, reads:
+      - `yes_total_cost_dollars = settlement.get("yes_total_cost_dollars")`; if absent but `yes_total_cost` present, convert by `float(yes_total_cost) / 100`.
+      - `no_total_cost_dollars = settlement.get("no_total_cost_dollars")` with analogous fallback.
+    - Still converts `revenue` from cents to dollars. Casts string `_dollars` values to float as needed, logs and skips on parse errors.
+    - INSERT now writes only `_dollars` cost columns: `(ticker, market_result, yes_count, yes_count_fp, yes_total_cost_dollars, no_count, no_count_fp, no_total_cost_dollars, revenue, settled_time, raw_json)`.
+- `backend/api/kalshi-api/kalshi_historical_ingest.py`:
+  - **Fills ingest**:
+    - Updated CREATE TABLE to use `count_fp NUMERIC(12,2)`, `yes_price_dollars TEXT`, `no_price_dollars TEXT` (no legacy price columns).
+    - For each fill, reads `_fp` and `_dollars` (fallback to `_fixed`) and INSERTs into the new `_dollars` columns only.
+  - **Settlements ingest**:
+    - Updated CREATE TABLE to use `yes_count_fp`/`no_count_fp` and `_dollars` total-cost columns only, mirroring `kalshi_account_sync_ws`.
+    - Reads `yes_total_cost_dollars`/`no_total_cost_dollars` with cent-field fallbacks, and converts/normalizes values before INSERT into `_dollars` columns.
+- `backend/main.py`:
+  - `/api/db/fills` and `/api/db/settlements` already select `SELECT * FROM users.fills_0001` and `SELECT * FROM users.settlements_0001` and only adjust `_fp` counts for display. No changes needed for the column rename; the new columns flow through automatically in the JSON.
+- Frontend:
+  - `frontend/tabs/account_manager.html` and `frontend/mobile/account_manager_mobile.html`:
+    - Price extraction now uses `f.yes_price_dollars` / `f.no_price_dollars` instead of `_fixed`.
+    - Exported columns list updated to `['ticker','side','action','count','yes_price_dollars','no_price_dollars','created_time']`.
+  - `frontend/tabs/trade_monitor.html` and `frontend/mobile/trade_monitor_mobile.html`:
+    - Wherever fill price was computed as `fill.yes_price`/`fill.no_price`, now uses `fill.yes_price_dollars` / `fill.no_price_dollars` for consistency with the DB and API.
+- `docs/changelog/MASTER_CHANGELOG.md`:
+  - New entry **“2026-03-12 — Kalshi API: fills and settlements _dollars (schema)”** rewritten to use **direct DDL** instead of referencing a migration:
+    - Summary describes deprecation of legacy price/cost columns and addition of `_dollars` columns on `users.fills_0001` and `users.settlements_0001`, plus code/front-end updates.
+    - Production checklist now includes an explicit **“DB schema update (required; run automatically as part of this update)”** step with an **inline Python one-liner** that:
+      - Adds `_dollars` columns with `ADD COLUMN IF NOT EXISTS`.
+      - Backfills from legacy columns when they exist.
+      - Drops legacy price/cost columns when finished.
+      - Is idempotent and safe to run under apply-update on the target server.
+    - Checklist explicitly states: apply-update must run this DDL as part of the update; there is **no separate manual migration step**.
+- `13_proposed_tasks.md`:
+  - Updated the “Kalshi changelog” section to mark:
+    - Fills migration as **Done**: schema now uses `yes_price_dollars`/`no_price_dollars` (legacy columns removed); sync and ingest read API `_dollars` with fallback; reference doc, CREATE TABLEs, and frontend updated.
+    - Settlements migration as **Done**: schema uses `yes_total_cost_dollars`/`no_total_cost_dollars` (legacy cost columns removed); sync/ingest use API `_dollars` with cent fallbacks; docs and CREATE TABLEs updated.
+  - Both tasks now explicitly reference **direct DDL in the 2026-03-12 changelog entry (no migration files)**.
+
+**DB verification and system restart**
+- Locally ran the inline Python DDL block from the changelog to confirm it executes cleanly on an already-updated DB (idempotent: ADD COLUMN IF NOT EXISTS, then conditional UPDATE/DROP guarded by `information_schema.columns` checks). Verified via a short Python snippet that:
+  - `users.fills_0001` columns are now `['id', 'trade_id', 'ticker', 'order_id', 'side', 'action', 'count', 'is_taker', 'created_time', 'raw_json', 'created_at', 'updated_at', 'count_fp', 'yes_price_dollars', 'no_price_dollars']`.
+  - `users.settlements_0001` columns are now `['id', 'ticker', 'market_result', 'yes_count', 'no_count', 'revenue', 'settled_time', 'raw_json', 'yes_count_fp', 'no_count_fp', 'yes_total_cost_dollars', 'no_total_cost_dollars']`.
+- Ran `/system-restart`:
+  - `scripts/MASTER_RESTART.sh` executed to completion, restarting supervisor-managed processes and core services.
+  - Then ran verify-local per `.cursor/pm/VERIFY_COMMAND.md`:
+    - Health: main_app `:3000/health` and trade_executor `:8001/health` both returned 200.
+    - `supervisorctl -c backend/supervisord.conf status`: all standard programs RUNNING (ATS/AES per monitor, kalshi_account_sync, watchdogs, trade_executor, main_app, etc.) with fresh uptimes.
+    - Logs:
+      - `trade_executor.err.log`: only dev-server warnings and health request lines; no current tracebacks.
+      - `kalshi_account_sync.out.log`: earlier settlement insert errors from before the most recent restart, followed by clean baseline sync and hybrid mode startup; treated pre-restart errors as stale; no new failures.
+      - `main_app.out.log`: recent 200 OKs for API calls; no tracebacks or ERROR lines.
+      - `kalshi_market_watchdog_15m_btc.out.log`: heartbeats and market rotations; intermittent HTTPS timeouts to Kalshi treated as transient upstream/network noise, not fatal.
+    - Concluded verify-local with `VERIFY STATUS` → `✅ All good`.
+
+**Agent context commit workflow (CHANGES panel + graph hygiene)**
+- User described a pain point: agent context files (rules, skills, brain docs) are proliferating and cluttering both **Cursor’s CHANGES panel** and the **commit graph**, making it harder to see “real system changes” at a glance.
+- Together we designed and then codified a **single-commit, path-scoped context strategy**:
+  - **Goal:** CEO’s CHANGES view should only show “actual system files” while we work; context work is my responsibility and must still be retained and versioned.
+  - Agreed to avoid a long-lived `agent-context` branch (too much branch/merge overhead, risk of context not matching the checked-out tree).
+- Implementation in `.cursor/pm/brain/06_conventions_insights.md`:
+  - New mandatory section **“Agent context files and commits (mandatory)”**:
+    - Defines **context paths** owned by agents:
+      - `.cursor/pm/brain/` (all non-local-state brain docs).
+      - `.cursor/rules/` (agent rule .mdc).
+      - `.cursor/skills/` (SKILL.md).
+      - `.cursor/commands/` (slash command docs).
+      - Additional agent-only docs can be added explicitly later.
+    - Establishes a **single rolling context commit** on `main`:
+      - On top of the last pushed commit, keep **at most one local `ctx:` commit**, e.g. `ctx: agent context updates`.
+      - When context files change, stage only those paths and **amend that one `ctx:` commit** as long as it is unpushed and only touches context paths.
+      - This keeps context edits **out of the CHANGES panel** during normal work, while still persisting them in git.
+    - **No commit spam:** Do not create many small context commits; there should never be more than one local, unpushed `ctx:` commit between releases.
+    - **Amend rules:** Never amend a pushed commit. `git commit --amend` is allowed only on the unpushed `ctx:` commit and only when its diff is limited to context paths.
+    - **Release behavior:** During `/prepare-update` and `/confirm-update`, it is acceptable for the release to include **a single separate `ctx:` commit** alongside system changes; alternately, it can be squashed into the release commit if desired, but no special branch is required.
+- User explicitly confirmed they can **“live with one context commit between releases”** and asked that this behavior be consistent going forward whenever I touch context files during chats. I committed to that policy (subject to existing global git rules: no pushes without explicit authorization, no amending pushed commits).
+
+**Open / follow-ups**
+- Production side of the 2026-03-12 Kalshi `_dollars` schema change is wired via MASTER_CHANGELOG: apply-update must run the inline DB DDL step on prod and verify schema before reporting All good. The local DB has been updated and verified; prod update will be applied via `/apply-update-from-local` when the user is ready.
+- The new context-commit workflow is documented in 06 and will govern future agent context edits; no code changes yet to prepare-update/confirm-update commands, but they already tolerate a single `ctx:` commit alongside system commits.
+
+---
+
+### 2026-03-11 (session: update-confirmation + migrations rules, prod verify)
+
+**Context**
+- User restated two non-negotiable rules: (1) Not a single update is ever confirmed unless DB updates are 100% confirmed; we never ever skip that step. (2) We should not write many migration scripts for routine schema work—unless something is very special, add/adjust columns, tables, schemas via direct DDL (changelog checklist or init_database), not migration files that clutter repo and servers.
+
+**Changes made**
+- **06_conventions_insights.md:** New mandatory section **"Update confirmation: DB verification non-negotiable"** — no checklist item or update marked complete until every DB-related step is verified on target server (run step and verify, or query schema); no "all good" if any DB step skipped or unverified. **"DB changes: migrations vs one-off commands"** rewritten as **"DB changes: migrations vs direct DDL"** — do not add migration scripts for routine schema; use direct DDL in MASTER_CHANGELOG checklist or init_database; migration files only for something very special (versioned, reversible, need rollback).
+- **.cursor/commands/apply-update-from-local.md:** CRITICAL block now "never confirm an update unless DB updates are 100% confirmed; we never ever skip this step." Added bullets: no update confirmed until every DB-related item verified on target; if any DB task required and not completed/verified → VERIFY STATUS 🔴 Critical. Pre-flight: when migration files not in commit, verify schema on prod (e.g. information_schema); if present mark entry complete with note, else do not mark complete and do not report "All good."
+- **.cursor/pm/APPLY_UPDATE_COMMAND.md:** Same DB rule at top; migrations paragraph: if migration files not in commit, verify schema on prod; only then mark entry complete or leave incomplete (not "all good").
+- **.cursor/rules/db.mdc:** "Migrations vs one-off commands" → "Migrations vs direct DDL" (routine = checklist/init_database; migrations only when versioned/reversible). New bullet: "Update confirmation" — no update confirmed unless DB 100% confirmed; any DB-related checklist item must be verified on target before marking done.
+- **.cursor/pm/brain/14_context_retention.md:** New handoff **2026-03-11** — (1) Never confirm update without 100% DB confirmation; (2) simple schema = direct DDL in checklist or init_database, not migration scripts; pointers to 06, apply-update-from-local, APPLY_UPDATE_COMMAND.
+
+**Prod verification (user ask: confirm prod totally updated)**
+- Ran verify on prod via SSH: git HEAD `3ce28aa98c819d479a933ae46c7c0442f79b71cb` (main, in sync with origin); local same commit. Migrations applied: 20260307_1600, 20260310_1200, 20260310_1210, 20260310_1220. main_app :3000 and trade_executor :8001 → HTTP 200. All 26 supervisor processes RUNNING. VERIFY STATUS: All good.
+
+**Outcome**
+- Update-confirmation and migrations-vs-direct-DDL rules written into 06, apply-update-from-local, APPLY_UPDATE_COMMAND, db.mdc, 14. Production confirmed fully updated (code, schema, health, supervisor).
+
+---
+
 ### 2026-03-10 ~22:00 EDT (session: prod DB update, revert, death-loop fix, twofold workflow purpose)
 
 **Context**

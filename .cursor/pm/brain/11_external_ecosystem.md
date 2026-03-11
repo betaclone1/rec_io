@@ -28,7 +28,7 @@ rec.io’s **only broker today**. May add others later.
 
 - **Index (discover all pages):** https://docs.kalshi.com/llms.txt — use before deep-diving.
 - **Welcome:** https://docs.kalshi.com/welcome  
-- **Changelog:** https://docs.kalshi.com/changelog — **subscribe (RSS)** so we don’t miss breaking changes. RSS: https://docs.kalshi.com/changelog/rss.xml  
+- **Changelog:** https://docs.kalshi.com/changelog — **subscribe (RSS)** so we don’t miss breaking changes. Check the page; if RSS (/changelog/rss.xml) is down, use the web page.  
 - **Fee schedule:** https://kalshi.com/fee-schedule — standard taker fees (e.g. $0.07–$1.75 per 100 contracts), fee multiplier 1; non-standard series vary; “Upcoming fee changes” on page.
 - **Developer agreement:** https://kalshi.com/developer-agreement (binding when using API).
 

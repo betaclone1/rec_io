@@ -20,6 +20,7 @@ For **each open entry** (only those with unchecked boxes), in **newest-first ord
 2. **Read the full entry** — Summary and every checklist item, including any sub-bullets or inline commands.
 3. **Execute each unchecked task** in order:
    - **Confirm codebase** — Ensure the server (where the agent is running) has latest `main` (e.g. `git status`, `git log -1`). If not, pull (or tell the user to pull); do not proceed until codebase is synced (or user confirms).
+   - **DB schema / DDL (required when present)** — If the checklist includes a "DB schema update" or DDL step (e.g. "run the following DDL" or "DB schema update (required; run automatically as part of this update)"), **you must run it on the target server as part of apply-update.** DB changes are never manual on other servers; they are always executed automatically by the update process. Run the exact command or script block given in the checklist from project root; then verify schema as stated in the entry.
    - **Update local database** — If the checklist says to run `init_database()`, run from project root:  
      `PYTHONPATH=$(pwd) venv/bin/python -c "from backend.core.config.database import init_database; init_database()"`
    - **Any one-time scripts** — If the checklist specifies a script (e.g. dedupe, historical ingest), run it exactly as written, from project root, with `PYTHONPATH=$(pwd) venv/bin/python` (or the exact command given). Run each such script only as many times as the entry says (e.g. "run once").

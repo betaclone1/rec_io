@@ -246,16 +246,18 @@ def write_settlements_to_db():
         )
         c = conn.cursor()
 
-        # Create settlements table if it doesn't exist
+        # Create settlements table if it doesn't exist (columns align with Kalshi API _dollars)
         c.execute("""
             CREATE TABLE IF NOT EXISTS users.settlements_0001 (
                 id SERIAL PRIMARY KEY,
                 ticker TEXT,
                 market_result TEXT,
                 yes_count INTEGER,
-                yes_total_cost DECIMAL(10,2),
+                yes_count_fp NUMERIC(12,2),
+                yes_total_cost_dollars DECIMAL(10,2),
                 no_count INTEGER,
-                no_total_cost DECIMAL(10,2),
+                no_count_fp NUMERIC(12,2),
+                no_total_cost_dollars DECIMAL(10,2),
                 revenue DECIMAL(10,2),
                 settled_time TEXT,
                 raw_json TEXT,
@@ -268,18 +270,25 @@ def write_settlements_to_db():
             market_result = s.get("market_result")
             yes_count = s.get("yes_count")
             yes_count_fp = _fp_to_numeric(s.get("yes_count_fp"))
-            yes_total_cost = s.get("yes_total_cost")
             no_count = s.get("no_count")
             no_count_fp = _fp_to_numeric(s.get("no_count_fp"))
-            no_total_cost = s.get("no_total_cost")
             revenue = s.get("revenue")
             settled_time = s.get("settled_time")
             raw_json = json.dumps(s)
 
+            yes_total_cost_dollars = s.get("yes_total_cost_dollars")
+            if yes_total_cost_dollars is None and s.get("yes_total_cost") is not None:
+                yes_total_cost_dollars = float(s["yes_total_cost"]) / 100
+            no_total_cost_dollars = s.get("no_total_cost_dollars")
+            if no_total_cost_dollars is None and s.get("no_total_cost") is not None:
+                no_total_cost_dollars = float(s["no_total_cost"]) / 100
+
             try:
                 revenue = float(revenue) / 100 if revenue is not None else None
-                yes_total_cost = float(yes_total_cost) / 100 if yes_total_cost is not None else None
-                no_total_cost = float(no_total_cost) / 100 if no_total_cost is not None else None
+                if yes_total_cost_dollars is not None and not isinstance(yes_total_cost_dollars, (int, float)):
+                    yes_total_cost_dollars = float(yes_total_cost_dollars)
+                if no_total_cost_dollars is not None and not isinstance(no_total_cost_dollars, (int, float)):
+                    no_total_cost_dollars = float(no_total_cost_dollars)
             except Exception as e:
                 print(f"⚠️ Error formatting cost fields for {ticker} at {settled_time}: {e}")
                 continue
@@ -287,10 +296,10 @@ def write_settlements_to_db():
             try:
                 c.execute("""
                     INSERT INTO users.settlements_0001
-                    (ticker, market_result, yes_count, yes_count_fp, yes_total_cost, no_count, no_count_fp, no_total_cost, revenue, settled_time, raw_json)
+                    (ticker, market_result, yes_count, yes_count_fp, yes_total_cost_dollars, no_count, no_count_fp, no_total_cost_dollars, revenue, settled_time, raw_json)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (ticker, settled_time) DO NOTHING
-                """, (ticker, market_result, yes_count, yes_count_fp, yes_total_cost, no_count, no_count_fp, no_total_cost, revenue, settled_time, raw_json))
+                """, (ticker, market_result, yes_count, yes_count_fp, yes_total_cost_dollars, no_count, no_count_fp, no_total_cost_dollars, revenue, settled_time, raw_json))
             except Exception as e:
                 print(f"❌ Failed to insert settlement {ticker} at {settled_time}: {e}")
 
@@ -319,7 +328,7 @@ def write_fills_to_db():
         )
         c = conn.cursor()
 
-        # Create fills table if it doesn't exist
+        # Create fills table if it doesn't exist (columns align with Kalshi API _dollars)
         c.execute("""
             CREATE TABLE IF NOT EXISTS users.fills_0001 (
                 trade_id TEXT PRIMARY KEY,
@@ -328,8 +337,9 @@ def write_fills_to_db():
                 side TEXT,
                 action TEXT,
                 count INTEGER,
-                yes_price DECIMAL(10,2),
-                no_price DECIMAL(10,2),
+                count_fp NUMERIC(12,2),
+                yes_price_dollars TEXT,
+                no_price_dollars TEXT,
                 is_taker BOOLEAN,
                 created_time TEXT,
                 raw_json TEXT
@@ -344,10 +354,8 @@ def write_fills_to_db():
             action = fill.get("action")
             count = fill.get("count")
             count_fp = _fp_to_numeric(fill.get("count_fp"))
-            yes_price = float(fill.get("yes_price")) / 100 if fill.get("yes_price") is not None else None
-            no_price = float(fill.get("no_price")) / 100 if fill.get("no_price") is not None else None
-            yes_price_fixed = fill.get("yes_price_fixed")
-            no_price_fixed = fill.get("no_price_fixed")
+            yes_price_dollars = fill.get("yes_price_dollars") or fill.get("yes_price_fixed")
+            no_price_dollars = fill.get("no_price_dollars") or fill.get("no_price_fixed")
             is_taker = fill.get("is_taker")
             created_time = fill.get("created_time")
             raw_json = json.dumps(fill)
@@ -355,10 +363,10 @@ def write_fills_to_db():
             try:
                 c.execute("""
                     INSERT INTO users.fills_0001
-                    (trade_id, ticker, order_id, side, action, count, count_fp, yes_price, no_price, yes_price_fixed, no_price_fixed, is_taker, created_time, raw_json)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (trade_id, ticker, order_id, side, action, count, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (trade_id) DO NOTHING
-                """, (trade_id, ticker, order_id, side, action, count, count_fp, yes_price, no_price, yes_price_fixed, no_price_fixed, is_taker, created_time, raw_json))
+                """, (trade_id, ticker, order_id, side, action, count, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json))
             except Exception as e:
                 print(f"❌ Failed to insert fill {trade_id}: {e}")
 

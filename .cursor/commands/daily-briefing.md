@@ -9,17 +9,19 @@ Run first thing each morning (or when requested). Delivers a **concise, conversa
 **Execute the full workflow** (do not just describe it):
 
 1. **Memory and context** — Read `.cursor/pm/brain/INDEX.md`, then `15_chat_summary_log.md` and as needed 14, 13, 06, 00. Note open tasks and handoff items.
-2. **Check G Drive for new or updated notes** — Search Drive (e.g. query for files in REC_IO / Cursor folder, or use known note docs like "Cursor Notes"). Fetch each note. Compare to `.cursor/pm/daily_briefing_reviewed_drive.json`: if a doc is not in the log or its content has changed (e.g. hash or significant change), treat as **new or updated** and surface in the briefing. After reviewing, **update the reviewed log** (add or update entry with `last_reviewed` date and optionally a short content signature so next run can detect updates). This "marks" that you have seen the note. See DAILY_BRIEFING_COMMAND.md for the log format.
-3. **Verify system** — Health (main_app :3000, trade_executor :8001), supervisor status, recent logs for key services. Only errors after process start count. Conclude: All good / Investigate / Critical.
-4. **Production** — If prod is documented and reachable (e.g. health URL), check and report in one line.
-5. **External news** — One short web search (Kalshi, prediction markets, or crypto/financial). One or two sentences only.
-6. **Ongoing tasks** — From 13, 14, changelog TODO: where things stand and what's blocked (one short paragraph).
-7. **Deliver the briefing** formatted **for human eyes**: clear section headings, blank lines between sections, bullets for lists. Concise but readable — when something is worth mentioning (news, Drive updates, log issues), give enough detail to be useful.
+2. **Check G Drive** — Search Drive (e.g. REC_IO / Cursor, "Cursor Notes"). Fetch each note. Compare to `.cursor/pm/daily_briefing_reviewed_drive.json`; if doc missing or content changed, treat as new/updated. After review, update the log (last_reviewed, optional content_signature). **In briefing:** Include **Drive** only when there are new or updated notes; otherwise omit the section.
+3. **Verify system (local + prod)** — Full health check per VERIFY_COMMAND (supervisor, health endpoints, key log tails). Prod via SSH (root@137.184.224.94, /opt/rec_io_server). Only errors after process start count. Conclude: All good / Investigate / Critical.
+4. **Monitor_confirmed** — Run `scripts/diagnostics/check_monitor_confirmed_failures.py --days 7 --append-log`. **In briefing:** Include only if rise or persistence (see skill/DAILY_BRIEFING_COMMAND).
+5. **Kalshi changelog** — Check https://docs.kalshi.com/changelog (always available). Prefer RSS; if RSS fails, fetch the page via web. **Derive actionable tasks** (migrate deprecated, verify after breaking change, new endpoints) and **add them to the central backlog** (13). **In briefing:** Include **Kalshi changelog** when relevant and call out any tasks added.
+6. **External news** — One web search (macro/crypto first, then Kalshi/prediction-market). **In briefing:** Include **News** only when relevant; otherwise omit.
+7. **Ongoing tasks** — From 13, 14, changelog TODO. **In briefing:** Include **Where we are** only when there is something to say; otherwise omit.
+8. **Deliver the briefing** — Format for human eyes: clear headings, blank lines, bullets. **Omit any section that has nothing new or nothing to report** (no filler like "Nothing new on Drive," "No news," "No Kalshi updates").
    - **At a glance** — One or two sentences overall; optional one-line status.
-   - **System** — Health and logs; bullets if multiple points; a sentence or two of detail for any real issues.
-   - **Drive** — New/updated notes in a few lines or bullets if any; one line if nothing new. Mention if you updated the reviewed log.
-   - **News** — When there are items worth mentioning: 2–4 sentences or a few bullets (what happened, why it might matter). When nothing relevant: skip or move on; do not add filler like "Nothing that affects us." Do not use internal doc references (e.g. "From 13"); use plain language ("open tasks", "our list", "changelog", etc.).
-   - **Where we are** — Short paragraph or bullets on ongoing work and blockers.
+   - **System** — Health and logs; bullets if multiple points; include monitor_confirmed only if rise/persistence.
+   - **Drive** — Only when new/updated notes; otherwise omit.
+   - **Kalshi changelog** — Only when RSS has new/relevant entries; otherwise omit.
+   - **News** — Only when relevant; otherwise omit. No internal doc refs; use plain language.
+   - **Where we are** — Only when there is something to say; otherwise omit.
    - **Next to consider** — Ranked list (bullets), one line per item.
    - **VERIFY STATUS** — One line: All good / Investigate / Critical.
 

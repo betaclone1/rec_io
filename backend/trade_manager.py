@@ -1975,7 +1975,7 @@ def init_trades_db():
                 OWNED BY users.trades_0001.id
             """)
             
-            # Create fills table
+            # Create fills table (price columns align with Kalshi API yes_price_dollars / no_price_dollars)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users.fills_0001 (
                     id SERIAL PRIMARY KEY,
@@ -1985,26 +1985,24 @@ def init_trades_db():
                     side TEXT,
                     action TEXT,
                     count INTEGER,
-                    yes_price REAL,
-                    no_price REAL,
-                    yes_price_fixed TEXT,
-                    no_price_fixed TEXT,
+                    yes_price_dollars TEXT,
+                    no_price_dollars TEXT,
                     is_taker BOOLEAN,
                     created_time TEXT,
                     raw_json TEXT
                 )
             """)
             
-            # Create settlements table
+            # Create settlements table (cost columns align with Kalshi API yes_total_cost_dollars / no_total_cost_dollars)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users.settlements_0001 (
                     id SERIAL PRIMARY KEY,
                     ticker TEXT,
                     market_result TEXT,
                     yes_count INTEGER,
-                    yes_total_cost DECIMAL(10,2),
+                    yes_total_cost_dollars DECIMAL(10,2),
                     no_count INTEGER,
-                    no_total_cost DECIMAL(10,2),
+                    no_total_cost_dollars DECIMAL(10,2),
                     revenue DECIMAL(10,2),
                     settled_time TEXT,
                     raw_json TEXT,

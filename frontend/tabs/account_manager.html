@@ -566,7 +566,7 @@
       if (fillsBody) {
         fillsBody.innerHTML = fills.map(f => {
         // Get price based on side with no formatting - use _fixed columns
-        const price = f.side === "yes" ? f.yes_price_fixed : f.no_price_fixed;
+        const price = f.side === "yes" ? f.yes_price_dollars : f.no_price_dollars;
         
         return `
           <tr>
@@ -955,7 +955,7 @@
         return;
       }
 
-      const columns = ['ticker','side','action','count','yes_price','no_price','created_time'];
+      const columns = ['ticker','side','action','count','yes_price_dollars','no_price_dollars','created_time'];
       const csv = arrayToCSV(window.fills, columns);
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);

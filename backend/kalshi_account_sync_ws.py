@@ -1409,13 +1409,9 @@ def sync_fills():
                         action = fill.get("action")
                         count = fill.get("count")
                         count_fp = _fp_to_numeric(fill.get("count_fp"))
-                        # Legacy cent values - no longer used, kept for database compatibility only
-                        yes_price = None
-                        no_price = None
-                        # Extract dollar values from API response (new subpenny pricing fields)
-                        # Note: Fills API uses "yes_price_fixed" and "no_price_fixed" instead of "_dollars"
-                        yes_price_dollars = fill.get("yes_price_fixed")
-                        no_price_dollars = fill.get("no_price_fixed")
+                        # API: yes_price_dollars / no_price_dollars (Kalshi changelog Mar 2026); fallback to _fixed during rollout
+                        yes_price_dollars = fill.get("yes_price_dollars") or fill.get("yes_price_fixed")
+                        no_price_dollars = fill.get("no_price_dollars") or fill.get("no_price_fixed")
                         is_taker = bool(fill.get("is_taker")) if fill.get("is_taker") is not None else None
                         created_time = fill.get("created_time")
                         raw_json = json.dumps(fill)
@@ -1423,10 +1419,10 @@ def sync_fills():
                         try:
                             cursor.execute("""
                                 INSERT INTO users.fills_0001
-                                (trade_id, ticker, order_id, side, action, count, count_fp, yes_price, no_price, yes_price_fixed, no_price_fixed, is_taker, created_time, raw_json)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                (trade_id, ticker, order_id, side, action, count, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                                 ON CONFLICT (trade_id) DO NOTHING
-                            """, (trade_id, ticker, order_id, side, action, count, count_fp, yes_price, no_price, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json))
+                            """, (trade_id, ticker, order_id, side, action, count, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json))
                             pg_new_count += 1
                         except Exception as e:
                             logger.error("Failed to insert fill %s to PostgreSQL: %s", trade_id, e)
@@ -1545,9 +1541,11 @@ def sync_settlements():
                         ticker TEXT,
                         market_result TEXT,
                         yes_count INTEGER,
-                        yes_total_cost DECIMAL(10,2),
+                        yes_count_fp NUMERIC(12,2),
+                        yes_total_cost_dollars DECIMAL(10,2),
                         no_count INTEGER,
-                        no_total_cost DECIMAL(10,2),
+                        no_count_fp NUMERIC(12,2),
+                        no_total_cost_dollars DECIMAL(10,2),
                         revenue DECIMAL(10,2),
                         settled_time TEXT,
                         raw_json TEXT,
@@ -1561,29 +1559,36 @@ def sync_settlements():
                         market_result = settlement.get("market_result")
                         yes_count = settlement.get("yes_count")
                         yes_count_fp = _fp_to_numeric(settlement.get("yes_count_fp"))
-                        yes_total_cost = settlement.get("yes_total_cost")
                         no_count = settlement.get("no_count")
                         no_count_fp = _fp_to_numeric(settlement.get("no_count_fp"))
-                        no_total_cost = settlement.get("no_total_cost")
                         revenue = settlement.get("revenue")
                         settled_time = settlement.get("settled_time")
                         raw_json = json.dumps(settlement)
 
-                        # Convert cent values to dollars (divide by 100)
+                        # API: yes_total_cost_dollars / no_total_cost_dollars (Kalshi changelog Mar 2026); fallback to cent fields during rollout
+                        yes_total_cost_dollars = settlement.get("yes_total_cost_dollars")
+                        if yes_total_cost_dollars is None and settlement.get("yes_total_cost") is not None:
+                            yes_total_cost_dollars = float(settlement["yes_total_cost"]) / 100
+                        no_total_cost_dollars = settlement.get("no_total_cost_dollars")
+                        if no_total_cost_dollars is None and settlement.get("no_total_cost") is not None:
+                            no_total_cost_dollars = float(settlement["no_total_cost"]) / 100
+
                         try:
                             revenue = float(revenue) / 100 if revenue is not None else None
-                            yes_total_cost = float(yes_total_cost) / 100 if yes_total_cost is not None else None
-                            no_total_cost = float(no_total_cost) / 100 if no_total_cost is not None else None
+                            if yes_total_cost_dollars is not None and not isinstance(yes_total_cost_dollars, (int, float)):
+                                yes_total_cost_dollars = float(yes_total_cost_dollars)
+                            if no_total_cost_dollars is not None and not isinstance(no_total_cost_dollars, (int, float)):
+                                no_total_cost_dollars = float(no_total_cost_dollars)
                         except Exception as e:
                             logger.warning("Error formatting cost fields for %s at %s: %s", ticker, settled_time, e)
                             continue
 
                         cursor.execute("""
                             INSERT INTO users.settlements_0001
-                            (ticker, market_result, yes_count, yes_count_fp, yes_total_cost, no_count, no_count_fp, no_total_cost, revenue, settled_time, raw_json)
+                            (ticker, market_result, yes_count, yes_count_fp, yes_total_cost_dollars, no_count, no_count_fp, no_total_cost_dollars, revenue, settled_time, raw_json)
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             ON CONFLICT (ticker, settled_time) DO NOTHING
-                        """, (ticker, market_result, yes_count, yes_count_fp, yes_total_cost, no_count, no_count_fp, no_total_cost, revenue, settled_time, raw_json))
+                        """, (ticker, market_result, yes_count, yes_count_fp, yes_total_cost_dollars, no_count, no_count_fp, no_total_cost_dollars, revenue, settled_time, raw_json))
                     except Exception as e:
                         logger.error("Failed to insert settlement %s to PostgreSQL: %s", settlement.get("ticker"), e)
 

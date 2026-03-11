@@ -3807,7 +3807,7 @@ async function fetchAndRenderRecentTrades() {
         const s = fill.side.toUpperCase();
         side = s === 'YES' ? 'Y' : (s === 'NO' ? 'N' : s);
         // Convert price from cents to dollars
-        const price = s === 'YES' ? fill.yes_price : fill.no_price;
+        const price = s === 'YES' ? fill.yes_price_dollars : fill.no_price_dollars;
         if (price != null) {
           const priceInDollars = price / 100;
           buy = priceInDollars.toFixed(2);
@@ -4007,7 +4007,7 @@ async function fetchAndRenderRecentTrades() {
         const s = fill.side.toUpperCase();
         side = s === 'YES' ? 'Y' : (s === 'NO' ? 'N' : s);
         // Display price as stored in database (no conversion needed)
-        const price = s === 'YES' ? fill.yes_price : fill.no_price;
+        const price = s === 'YES' ? fill.yes_price_dollars : fill.no_price_dollars;
         if (price != null) {
           buy = price.toString();
         } else {

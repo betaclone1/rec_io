@@ -38,6 +38,12 @@ Source: REC_IO / Cursor — "Cursor Notes" on Google Drive.
 
 7. **Redis platform initiative (future, major)** — Full-scale Redis for pub/sub and optional cache to replace internal HTTP broadcast mesh and slim main.py. Not scheduled. Plan drafted in REDIS_PLATFORM_INITIATIVE.md: current state, vision, scope (main, trade_manager, ATS, AES, monitor_manager, kalshi_account_sync, frontend WS), phases (research/pilot/migration/main slim-down), risks, agent implications (possible @infra/@redis or extend @db). When we set a timeline: refine phases, consider onboarding Redis/infra agent.
 
+**Kalshi changelog (from daily briefing 2026-03-11):**
+
+- ~~**[S] Kalshi fills: migrate to yes_price_dollars / no_price_dollars**~~ — **Done.** Schema: deprecated yes_price_fixed, no_price_fixed, yes_price, no_price removed; yes_price_dollars, no_price_dollars added. Direct DDL in MASTER_CHANGELOG 2026-03-12 (no migration files). Sync and ingest read API _dollars (fallback to _fixed). Reference doc and CREATE TABLEs updated. Frontend uses yes_price_dollars / no_price_dollars.
+- ~~**[S] Kalshi settlements: migrate to yes_total_cost_dollars / no_total_cost_dollars**~~ — **Done.** Schema: yes_total_cost, no_total_cost removed; yes_total_cost_dollars, no_total_cost_dollars added. Direct DDL in MASTER_CHANGELOG 2026-03-12 (no migration files). Sync and ingest read API _dollars (fallback to cent fields). Reference doc and CREATE TABLEs updated.
+- **[S] Post–Mar 12: verify no breakage from Kalshi legacy field removal** — After Mar 12, 2026: (1) Run fills sync and settlements sync; confirm no errors and rows written. (2) Spot-check one order flow and market data path (e.g. ATS or strike table) to confirm _fp/_dollars usage only. (3) If any 400/500 or missing fields, add _dollars fallbacks where we still read legacy keys (e.g. orders yes_price, market yes_bid/yes_ask in watchdog/ATS).
+
 **G Drive — Cursor Notes (daily list, folded in 2026-03-10):**
 
 Source: REC_IO / Cursor — "Cursor Notes" on Google Drive. When presenting "our list" or "next tasks," merge this with the ongoing list above and with docs/changelog/TODO.md open items; prioritize and present one comprehensive list.
@@ -56,4 +62,4 @@ Source: REC_IO / Cursor — "Cursor Notes" on Google Drive. When presenting "our
 
 ---
 
-*Last updated: 2026-03-10.*
+*Last updated: 2026-03-11.*
