@@ -12,7 +12,7 @@
 
 ## Changelog workflow
 
-- **Add entry:** Before push, add new ## YYYY-MM-DD — Title in MASTER_CHANGELOG.md at top. Summary + Production agent checklist with - [ ] items (codebase, init_database, one-time scripts, restart, verification).
+- **Add entry:** Before push, add new ## YYYY-MM-DD — Title in MASTER_CHANGELOG.md at top. Summary + Production checklist with - [ ] items (codebase, init_database, one-time scripts, restart, verification).
 - **Run checklist:** /apply-update or @updater new update (production agent): read CHANGELOG_AGENT_INSTRUCTIONS.md and MASTER_CHANGELOG.md; for each open entry (newest first), execute each unchecked task, then set - [ ] → - [x].
 - **Python:** From project root, PYTHONPATH=$(pwd) venv/bin/python (never bare python3 for scripts).
 

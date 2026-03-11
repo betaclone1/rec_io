@@ -6,6 +6,22 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-10 — Simulated trade duplicate prevention (AES + trade_manager)
+
+**Summary**
+
+- **Root cause:** AES `is_strike_already_simulated_traded()` only checked open/pending and (monitor, ticker, side). After the 15m expiration job closed a simulated trade, the next scan did not see it and inserted again for the same cycle. trade_manager had no server-side duplicate guard.
+- **Fix:** (1) AES: duplicate check now requires date, contract, and strike in strike_data and queries for **any** row (no status filter) with (monitor, date, contract, strike, side). Caller `check_simulated_15m_entry_hourly_htc` passes date_str and contract_name (same as trigger_simulated_trade). (2) trade_manager `insert_simulated_trade`: before INSERT, SELECT for existing (monitor, date, contract, strike, side); if found, return that id and skip insert.
+- **No schema or migrations.** See `docs/AUDIT_SIMULATED_TRADE_DUPLICATES.md` for full audit.
+
+**Production checklist**
+
+- [ ] Confirm codebase changes (pull latest on production).
+- [ ] No DB migrations. Run `scripts/MASTER_RESTART.sh` so all auto_entry_supervisor and trade_manager processes load the new logic.
+- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Optionally after a few 15m cycles, run duplicate detection on prod (e.g. inline query or script) to confirm no new duplicate groups in `users.trades_simulated_0001`.
+
+---
+
 ## 2026-03-10 — Trade history filters and preferences (dynamic Strategy/Symbol, All/None, migrations)
 
 **Summary**
@@ -15,7 +31,7 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Migrations:** Three reversible migrations: `20260310_1200_trade_history_preferences_strategy_selection` (strategy_selection JSONB), `20260310_1210_trade_history_preferences_symbol_selection` (symbol_selection JSONB), `20260310_1220_strategy_list_default_column` (`"default"` boolean on strategy_list_0001). Apply in order from project root with `PYTHONPATH=. venv/bin/python scripts/db/run_migration.py up <slug>`.
 - **PM:** One-time migration/backfill script cleanup tracking documented in `.cursor/pm/brain/06_conventions_insights.md` and INDEX (HOUSEKEEPING_SCRIPTS_INVENTORY + MASTER_CHANGELOG).
 
-**Production agent checklist**
+**Production checklist**
 
 - [ ] Confirm codebase changes (pull latest on production).
 - [ ] Apply migrations if not already applied: `20260310_1200_trade_history_preferences_strategy_selection`, `20260310_1210_trade_history_preferences_symbol_selection`, `20260310_1220_strategy_list_default_column` (from project root with `PYTHONPATH=. venv/bin/python scripts/db/run_migration.py up <slug>` for each, or run all pending via your usual process).
@@ -32,7 +48,7 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **kalshi_account_sync startup:** Before running the initial baseline sync, `kalshi_account_sync_ws` now waits until `trade_manager` is reachable on its port (TCP connect, up to 30s). Notify to `trade_manager` (`/api/positions_updated`) uses a shared helper with 3 retries and backoff so transient connection refused is not logged as ERROR.
 - **MASTER_RESTART:** New Step 5b: after starting supervisor, the script waits until core ports 3000, 4000, and 8001 are listening (up to 30s) before proceeding to restart all services, so `trade_manager` is up before dependent services run their first sync.
 
-**Production agent checklist**
+**Production checklist**
 
 - [x] Confirm codebase changes (pull latest on production).
 - [x] No DB schema changes or migrations.
@@ -48,7 +64,7 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Prod logs cleanup:** Bring the production `logs/` directory back to a manageable, recent window of history by archiving/compressing rotated supervisor logs, pruning excess rotations beyond a small fixed count, and purging old logs for services that are no longer supervised.
 - **Scope:** This is purely a logging/housekeeping change: it does not alter any service behavior, DB schema, or business logic. It only moves or deletes historical log files according to the rules encoded in the diagnostics scripts.
 
-**Production agent checklist**
+**Production checklist**
 
 - [x] Confirm codebase changes (pull latest on production).
 - [x] From project root on prod (`/opt/rec_io_server`), archive or remove existing rotated logs so that only the current `.out.log`/`.err.log` files remain for each active service.
@@ -65,7 +81,7 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **OpSec audit fixes:** Production now requires `DB_PASSWORD` or `REC_DB_PASS` when `REC_ENVIRONMENT=production` (no default). All backend and scripts use `get_database_config()` / `get_postgresql_connection()`. Auth: `local_dev_` bypass only when not production; bcrypt required for new password hashes; change_password uses centralized config. CORS: in production, explicit origins only (no `"*"`). Password prints removed from setup_auth/install (archive). bcrypt added to requirements.txt.
 - **Production server agent:** Before or immediately after pull, ensure the production server has **DB_PASSWORD** or **REC_DB_PASS** set in the environment (e.g. in `.env` or in the env that feeds supervisor). If not set, app and config generation will fail until set. See **.cursor/pm/OPSEC_AUDIT_AND_UPGRADE.md** section "Production server: OpSec update (2026-03-08)" for full instructions.
 
-**Production agent checklist**
+**Production checklist**
 
 - [x] **Before or right after pull:** Confirm production has `DB_PASSWORD` or `REC_DB_PASS` set (e.g. in `.env` or wherever supervisor gets its env). If `REC_ENVIRONMENT=production` and neither is set, `get_database_config()` will raise and services will not start. If unsure, run: `cd project_root && source .env 2>/dev/null; echo "DB_PASSWORD set: $(if [ -n \"$DB_PASSWORD\" ] || [ -n \"$REC_DB_PASS\" ]; then echo yes; else echo NO; fi)"`.
 - [x] Confirm codebase changes (pull latest on production).
@@ -84,7 +100,7 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **/apply-update:** Slash command and APPLY_UPDATE_COMMAND.md for production to run open MASTER_CHANGELOG checklists and calibrate server.
 - **Scripts/docs:** scripts/do/snapshot_prod.sh, .cursor/pm/DIGITALOCEAN_INTEGRATION.md, DO_AGENT_SNAPSHOT_FIX.md, sandbox.json (optional .env read). .env.example and master .env include DIGITALOCEAN_API_TOKEN.
 
-**Production agent checklist**
+**Production checklist**
 
 - [x] Confirm codebase changes (pull latest on production).
 - [x] No DB schema changes or migrations; no restart required.
@@ -101,7 +117,7 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Archive:** `docs/pm_brain/` content moved to `.cursor/pm/brain/`; many legacy docs and corrupted `MASTER_PORT_MANIFEST.json` snapshots moved to `archive/2026-03-housekeeping/` (docs and backend/core/config corrupt copies). `AGENTS.md` and `.gitignore` updated for new paths and ignores.
 - **No application or DB changes:** No backend code, schema, or migrations in this commit. Production behavior unchanged.
 
-**Production agent checklist**
+**Production checklist**
 
 - [x] Confirm codebase changes (pull latest on production).
 - [x] No DB schema changes or migrations; no restart required for this release.
@@ -115,7 +131,7 @@ Each entry below uses:
 
 - **Date** – When the update is intended for production (YYYY-MM-DD).
 - **Summary** – What the release contains.
-- **Production agent checklist** – A list of tasks with checkboxes (`- [ ]`). The production agent physically checks these off as each is completed. Every entry has at least a minimal checklist (e.g. "Confirm codebase changes", "Update local database" if applicable). Details or commands for a task can appear under the checklist or inline in the task text.
+- **Production checklist** – A list of tasks with checkboxes (`- [ ]`). Whoever runs the update (from local via /apply-update-from-local or on prod via /apply-update) checks these off as each is completed. Every entry has at least a minimal checklist (e.g. "Confirm codebase changes", "Update local database" if applicable). Details or commands for a task can appear under the checklist or inline in the task text.
 
 ---
 
@@ -130,7 +146,7 @@ Each entry below uses:
 - **live_orderbook_snapshot.py:** Orderbook delta messages: accept `price_dollars` or `price` (cents); normalize to cents for internal orderbook.
 - **kalshi_market_ticker_websocket.py:** Orderbook delta: accept `price_dollars` and `delta_fp`; snapshot levels normalized from price_dollars/size_fp to cents/int for existing logic.
 
-**Production agent checklist**
+**Production checklist**
 
 - [x] Confirm codebase changes (pull latest on production).
 - [x] No DB schema changes required; existing `_fp` and `_dollars` columns already used.
@@ -149,7 +165,7 @@ Each entry below uses:
 - **Backfill:** Sync runs `_backfill_account_history_vendor_rail` after each upsert so existing rows get `kalshi_id`/vendor/rail when the API delivers them. One-off script `scripts/db/backfill_account_history_vendor_rail.py` can be run manually to backfill existing rows (e.g. after first deploy): `PYTHONPATH=. python3 scripts/db/backfill_account_history_vendor_rail.py`.
 - **Rail:** Only withdrawals have `rail` in the API; deposits correctly have `rail` NULL.
 
-**Production agent checklist**
+**Production checklist**
 
 - [x] Confirm codebase changes (pull latest on production).
 - [x] Apply migration if not already applied: `python3 scripts/db/run_migration.py up 20260307_1600_account_history_vendor_rail_kalshi_id` (from project root with PYTHONPATH set). If already applied, `run_migration.py list` will show it.
@@ -166,7 +182,7 @@ Each entry below uses:
 - **auto_entry_supervisor.py:** `get_port("main")` → `get_port("main_app")` at the `update_monitor_position` call so the correct port is used.
 - **main.py:** `get_trade_history_preferences_postgresql()` now uses `get_postgresql_connection()` from `backend.core.config.database` instead of hardcoded localhost/rec_io_user/rec_io_password. Aligns with server-agnostic config.
 
-**Production agent checklist**
+**Production checklist**
 
 - [x] Confirm codebase changes (pull latest on production).
 - [x] Restart `auto_entry_supervisor` (or full restart: `scripts/MASTER_RESTART.sh`) and `main_app` so changes take effect.
@@ -182,7 +198,7 @@ Each entry below uses:
 - **database.py:** Prefers DB_HOST, DB_NAME, DB_USER, DB_PASSWORD, DB_PORT; if unset, falls back to REC_DB_HOST, REC_DB_NAME, REC_DB_USER, REC_DB_PASS, REC_DB_PORT. One place for both conventions; scripts do not need to map REC_DB_* → DB_*.
 - **Updated modules:** symbol_price_watchdog_finance, strike_table_generator, backend/util/cleanup_temp_schemas, symbol_data_fetch_pg, symbol_profiler, live_table_viewer, probability_lookup_generator; scripts: update_position_to_100, rollback_position_update, generate_schema_doc, audit_db_schema.
 
-**Production agent checklist**
+**Production checklist**
 
 - [x] Confirm codebase changes (pull latest on production).
 - [x] Ensure .env or deploy sets either DB_* or REC_DB_* (database.py uses both). No code changes required if already using DB_* or REC_DB_*.
@@ -201,7 +217,7 @@ Each entry below uses:
 - **update_db_schema_to_reference.py:** Now uses `get_postgresql_connection()` from project config (env); docstring states type/default fixes are out of scope (use reversible migrations or manual ALTERs).
 - **Audit findings:** `docs/changelog/DB_MAINTENANCE_AUDIT_FINDINGS.md` documents local audit and single source of truth. **Local alignment complete:** drift check passes. Prod schema changes are part of the normal update process; @updater coordinates and verifies when pushing to production.
 
-**Production agent checklist**
+**Production checklist**
 
 - [x] Confirm codebase changes (pull latest on production).
 - [x] No prod DDL required for this release. CI will run drift check on future push/PR.
@@ -217,7 +233,7 @@ Each entry below uses:
 - **Dedupe script (one-time):** `backend/util/dedupe_simulated_trades.py` removes duplicate rows in `users.trades_simulated_0001` that accumulated before the connection fix. The script is **one-time only**; duplicate prevention is now in-app. It is documented as too aggressive (it deduped by date+contract only); if a future one-off dedupe is ever needed, use (date, contract, strike, side) and keep min(id) per group.
 - **No code changes to live/paper trading;** only simulated path and shared DB usage.
 
-**Production agent checklist**
+**Production checklist**
 
 - [x] Confirm codebase changes (pull latest `main` on production).
 - [x] Update local database: run from project root  
@@ -241,7 +257,7 @@ Each entry below uses:
 - **Simulated cycle_win_loss per 15m window:** For each 15m window (grouped by `monitor`, `date`, `weekly_cycle`) that has simulated trades closed in a given expiration run, `trade_manager` sets `cycle_win_loss` on `users.trades_simulated_0001` to `L` if **any** trade in that window is a loss, otherwise `W`. This gives a single, conservative win/loss flag per monitor per 15m cycle for downstream Strategy Health Score (SHS) work.
 - **DB schema + load characteristics:** No new columns were added for this feature; it relies on the existing `users.trades_simulated_0001` schema (including `weekly_cycle NUMERIC(5,1)`, `cycle_win_loss`, `cycle_pnl`, `cycle_ret_pct`) and the `live_data.live_price_log_1s_{symbol}` tables. `insert_simulated_trade` explicitly records `diff`, `buy_price`, `position`, `fees`, `bankroll`, `price_spread`, and `sell_price` as `NULL` and touches only `users.trades_simulated_0001`. The system leverages existing CPU-intensive processes (strike generators, price logs, auto-entry loops); the new work is limited to light `SELECT` / `INSERT` / `UPDATE` statements and does not introduce new schedulers or external API calls.
 
-**Production agent checklist**
+**Production checklist**
 
 - [x] Confirm codebase changes (pull latest `main` on production).
 - [x] Update local database schema to latest (id sequences, PKs, numeric weekly_cycle, simulated table shape) by running from project root:
@@ -266,7 +282,7 @@ Each entry below uses:
 - **users.trades_simulated_0001:** New table (duplicate of `trades_0001`) for simulated 15m-cycle trades; documented in MASTER_DB_SCHEMA_REFERENCE. Any future schema changes to `trades_0001` must be applied to `trades_simulated_0001` as well.
 - **weekly_cycle decimal:** `users.trades_0001.weekly_cycle` (and `trades_simulated_0001` if present) now stored with one decimal place: hourly trades = `hour.4` (e.g. 64.4 = fourth quarter of the hour); 15m trades = `hour.0 | .1 | .2 | .3` from contract minutes (:00, :15, :30, :45). Column type migrated from INTEGER to `NUMERIC(5,1)`. Cycle performance and monitor_cycle_performance still use the integer part only (`FLOOR(weekly_cycle)`); decimals are for record-keeping and future use.
 
-**Production agent checklist**
+**Production checklist**
 
 - [x] Confirm codebase changes (pull latest `main` on production).
 - [x] Update local database: run `PYTHONPATH=$(pwd) venv/bin/python -c "from backend.core.config.database import init_database; init_database()"` from project root. This applies: (1) drop `ttc_seconds` and `probability` from `live_data.strike_table_15m_btc` and `strike_table_15m_eth` if present; (2) alter `users.trades_0001.weekly_cycle` and `users.trades_simulated_0001.weekly_cycle` (if table exists) from integer to `NUMERIC(5,1)`.
@@ -285,7 +301,7 @@ Each entry below uses:
 - **Outbound:** Order submission sends only `count_fp` to the Kalshi API (legacy `count` no longer sent). Internal callers (main, auto_entry, ATS, frontend) pass `count_fp` through the trade chain.
 - If the API stops sending legacy count fields, operations continue unchanged; legacy columns may be NULL for new data. See `docs/FIXED_POINT_LEGACY_DEPRECATION_AUDIT.md` for details.
 
-**Production agent checklist**
+**Production checklist**
 
 - [x] Confirm codebase changes (pull latest `main` on production; or merge feature branch into `main` then pull).
 - [x] Update local database: ensure `_fp` columns exist on `users.fills_0001`, `users.orders_0001`, `users.positions_0001`, `users.settlements_0001` per `docs/MASTER_DB_SCHEMA_REFERENCE.md`. Add any missing as `NUMERIC(12,2)` (nullable). Columns: `fills_0001` → `count_fp`; `orders_0001` → `initial_count_fp`, `remaining_count_fp`, `fill_count_fp`; `positions_0001` → `total_traded_fp`, `position_fp`; `settlements_0001` → `yes_count_fp`, `no_count_fp`. Example: `ALTER TABLE users.fills_0001 ADD COLUMN IF NOT EXISTS count_fp NUMERIC(12,2);`

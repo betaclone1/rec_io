@@ -37,7 +37,7 @@ Departments own domains of work. Subagents are created under departments as need
 - **Current agents:** **@updater** — changelog and deployment. See `.cursor/rules/updater.mdc`.  
   - `@updater prepare update` — review changes, update changelog and DB docs before push.  
   - `@updater new update` — run outstanding MASTER_CHANGELOG checklist (production).  
-  - **/apply-update** — Same workflow as @updater new update: production server agent (or user on prod) runs this to review latest MASTER_CHANGELOG and instruction docs and calibrate the server with the latest update. See `.cursor/pm/APPLY_UPDATE_COMMAND.md`.
+  - **/apply-update-from-local** — Primary: from local, SSH to prod and run the production checklist (pull, migrations, restart, verify). **/apply-update** — Alternative: same checklist when the agent is already on the prod server. See `.cursor/pm/APPLY_UPDATE_COMMAND.md`.
 
 ### 2.4 Integrations
 

@@ -782,6 +782,19 @@ def insert_simulated_trade(trade):
             price_spread = None
             ticker, side = trade.get('ticker'), trade.get('side')
 
+            # Server-side duplicate guard: one row per (monitor, date, contract, strike, side)
+            if monitor_key and trade.get('date') and contract_name and trade.get('strike') and side:
+                cursor.execute("""
+                    SELECT id FROM users.trades_simulated_0001
+                    WHERE monitor = %s AND date = %s AND contract = %s AND strike = %s AND side = %s
+                    LIMIT 1
+                """, (monitor_key, trade['date'], contract_name, trade['strike'], side))
+                existing = cursor.fetchone()
+                if existing:
+                    log(f"[SIMULATED] Duplicate skipped (monitor={monitor_key} date={trade['date']} contract={contract_name} strike={trade['strike']} side={side}); existing id={existing[0]}")
+                    pg_conn.close()
+                    return existing[0]
+
             cursor.execute("""
                 INSERT INTO users.trades_simulated_0001 (
                     status, date, time, symbol, market, trade_strategy,

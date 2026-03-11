@@ -2485,9 +2485,15 @@ def is_strike_already_traded(strike_data):
 
 
 def is_strike_already_simulated_traded(strike_data):
-    """True if we already have an open/pending simulated trade on this strike (trades_simulated_0001).
-    Uses same DB connection config as main trades log (server-agnostic: DB_* / REC_DB_*)."""
+    """True if we already have any simulated trade (open, pending, or closed) for this monitor+date+contract+strike+side.
+    Prevents re-insert after the 15m expiration job closes a trade. Uses same DB as trade_manager (DB_* / REC_DB_*)."""
     try:
+        date_str = strike_data.get('date')
+        contract_str = strike_data.get('contract')
+        strike_str = strike_data.get('strike')
+        if not date_str or not contract_str or strike_str is None:
+            log(f"[SIMULATED 15m] duplicate check requires date, contract, strike in strike_data")
+            return False
         side = (strike_data.get('side') or '').lower()
         db_side = 'Y' if side in ('yes', 'y') else 'N'
         conn = get_db_connection()
@@ -2498,8 +2504,8 @@ def is_strike_already_simulated_traded(strike_data):
             with conn.cursor() as cursor:
                 cursor.execute("""
                     SELECT 1 FROM users.trades_simulated_0001
-                    WHERE status IN ('open', 'pending') AND monitor = %s AND ticker = %s AND side = %s
-                """, (f"mon_0001_{MONITOR_ID}", strike_data.get('ticker'), db_side))
+                    WHERE monitor = %s AND date = %s AND contract = %s AND strike = %s AND side = %s
+                """, (f"mon_0001_{MONITOR_ID}", date_str, contract_str, strike_str, db_side))
                 return cursor.fetchone() is not None
         finally:
             conn.close()
@@ -2595,6 +2601,10 @@ def check_simulated_15m_entry_hourly_htc():
         if (_now - _ok_ts) >= 900:
             log(f"[SIMULATED 15m] cycle OK")
             check_simulated_15m_entry_hourly_htc._ok_log_ts = _now
+        current_symbol = get_current_monitor_symbol()
+        hour_24, minute = _next_15m_boundary_est()
+        contract_name = _format_15m_contract_label(current_symbol, hour_24, minute)
+        date_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
         processed = set()
         for strike in data["strikes"]:
             try:
@@ -2607,7 +2617,8 @@ def check_simulated_15m_entry_hourly_htc():
                 processed.add(strike_key)
                 if not can_trade_strike_simulated(strike_key):
                     continue
-                check_data = {"strike": strike.get("strike"), "side": active_side, "ticker": strike.get("ticker")}
+                strike_formatted = f"${int(strike.get('strike')):,}" if strike.get('strike') is not None else None
+                check_data = {"strike": strike_formatted, "side": active_side, "ticker": strike.get("ticker"), "date": date_str, "contract": contract_name}
                 if is_strike_already_simulated_traded(check_data):
                     continue
                 prob = strike.get("probability")

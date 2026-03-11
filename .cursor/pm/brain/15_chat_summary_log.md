@@ -10,6 +10,30 @@ Chronological log of chat sessions. Each entry is a dated, timestamped summary (
 
 ---
 
+### 2026-03-10 ~22:00 EDT (session: prod DB update, revert, death-loop fix, twofold workflow purpose)
+
+**Context**
+- User asked whether production server DB had been updated. In a prior turn the agent had applied three migrations on prod by SCP’ing migration files and running `run_migration.py up` via SSH; prod DB was thus migrated but the migration files were not in the repo (they had been untracked / not in the pushed commit).
+
+**User corrections (critical)**
+1. **SCP is not the fix.** Copying migration files to prod via SCP was wrong: it would litter the repo with one-off migration files and bypass the intended workflow. The point is to update the remote DB from this machine by having migrations in the repo (commit + push), then apply-update-from-local runs pull on prod and runs the migration runner there. Agent then committed and pushed the six migration files (commit 6413330). User immediately requested full revert: "REVERT ALL OF THAT RIGHT THIS SECOND." Agent ran `git reset --hard c91cc2e` and `git push --force origin main`. Repo reverted; migration files no longer in main. Prod DB remains in the state from the earlier SCP-applied migrations; local working tree back to c91cc2e (migration files not present on disk).
+2. **Contradictory docs cause death loops.** User said core commands and context had contradictory language (e.g. "agent on production server" vs "from local via SSH") that would cause death loops. Agent audited and aligned all update-related docs to a single source of truth.
+3. **Twofold workflow purpose.** User stated the entire point is: (1) Push committed updates and instructions from this local machine and apply them directly to remote servers (e.g. prod) from this machine, without spinning up agents on the production server. (2) Do not litter the project and repository with one-off scripts that only update the DB; for simple one-off DB changes use simple commands (in the changelog checklist), not new migration files or one-off scripts.
+
+**Changes made**
+
+- **Death-loop / contradiction cleanup:** APPLY_UPDATE_COMMAND.md — "Where to run" and "Migrations" state apply-from-local primary, apply-update only when on prod; migrations only via git (no SCP). CHANGELOG_AGENT_INSTRUCTIONS.md — opening rewritten: from local follow apply-update-from-local, on prod follow apply-update; migration pre-flight (step 1) added; "Production checklist" not "Production agent checklist." apply-update-from-local command and skill — step 3 "Production checklist." apply-update command and skill — "Use this only when the agent is already on the production server; from local use /apply-update-from-local"; "Production checklist" everywhere. ORG_CHART.md — /apply-update-from-local primary, /apply-update alternative. INDEX.md (brain) — PROD_MAINTENANCE_FROM_LOCAL row updated. OPSEC_AUDIT_AND_UPGRADE.md — "whoever runs the production checklist (/apply-update-from-local from local or /apply-update when on prod)." VERIFY_COMMAND.md — when verification is part of apply-update/apply-update-from-local, if required migrations were not successfully run, status is **🔴 Critical**. Replaced "Production agent checklist" with "Production checklist" in: updater.mdc, 05_docs_changelog, 06_conventions_insights, confirm-update.md, changelog README, MASTER_CHANGELOG.md (description + all entry headings replace_all). 14_context_retention — stale "agent on prod" sentence replaced with current practice (push+apply from local).
+
+- **Twofold purpose and no one-off DB script litter:** PROD_MAINTENANCE_FROM_LOCAL.md — new "Purpose (twofold)" at top: (1) push and apply from this machine, no agents on prod; (2) no littering repo with one-off DB scripts; simple one-offs = checklist commands, not new migration files. APPLY_UPDATE_COMMAND.md — same twofold purpose in intro + pointer to 06 § DB changes. AGENTS.md — /apply-update-from-local blurb states both points. 06_conventions_insights.md — new **§ DB changes: migrations vs one-off commands (mandatory)**: do not create migration files for simple one-off DB changes; document exact command or SQL in MASTER_CHANGELOG Production checklist; apply-update runs them on prod via SSH; use migration files only for versioned, reversible schema. One-time migration § updated: prefer checklist-step commands over new scripts. db.mdc — "Migrations vs one-off commands" and "One-offs: checklist commands, not new files"; migrations only for versioned reversible schema. updater.mdc — Production checklist for "when applying the update (from local via /apply-update-from-local or on prod via /apply-update)"; "Update local database": for simple one-offs put exact command or SQL in checklist (no new migration file); migration files only for versioned reversible schema; one-time scripts only when necessary; prefer inline command over new script file. Line 29 curly-quote artifact removed (Python script + small edits).
+
+**Outcome**
+- Single, consistent update workflow: push and apply from local via /apply-update-from-local; /apply-update only when already on prod. No SCP of migration files. Migration pre-flight and Critical status when required migrations not run are documented. Twofold purpose (push+apply from this machine; no repo litter with one-off DB scripts) and the rule "simple one-off DB changes = checklist command, not new migration file" are written into PROD_MAINTENANCE_FROM_LOCAL, APPLY_UPDATE_COMMAND, 06, db.mdc, updater.mdc, AGENTS.md, 14_context_retention.
+
+**Open / note**
+- Prod DB has the three trade-history-preferences/strategy_list migrations applied (from the earlier SCP-based run). Repo main is at c91cc2e and does not contain those migration files. If those schema changes are to be versioned in repo, migration files would need to be re-created and committed, or the changelog could describe the equivalent one-off commands for future envs; current docs now prefer simple commands in checklist for one-offs.
+
+---
+
 ### 2026-03-10 ~19:15 EDT (session: apply-update-from-local, prod trades/monitor_list check)
 
 **Context**

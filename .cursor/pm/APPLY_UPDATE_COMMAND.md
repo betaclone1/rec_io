@@ -1,13 +1,17 @@
 # /apply-update command
 
+**Purpose:** (1) Push committed updates and instructions from this local machine and apply them to remote servers (e.g. prod) from this machine — no agents on prod. (2) Do not litter the repo with one-off DB scripts; for simple one-off DB changes use checklist steps with simple commands, not new migration files. See `.cursor/pm/PROD_MAINTENANCE_FROM_LOCAL.md` and `06_conventions_insights.md` § DB changes: migrations vs one-off commands.
+
 When the user invokes **/apply-update** (or says "apply update" or "follow the changelog instructions"), the agent must run the production update workflow **fully autonomously**: review the latest MASTER_CHANGELOG entries and instruction docs, execute each **open** production checklist (including DB migrations, restarts, and verification), and calibrate the server with the latest update. Equivalent to **@updater new update**. Apply all necessary changes, run `scripts/MASTER_RESTART.sh` when the checklist requires a restart (blocking until complete), then run the verify workflow. Do not pause for permission; execute with the permissions needed for migrations, restart, and verify to succeed.
 
-**Current practice:** Apply-update is typically run with an **agent on the production server** (e.g. Cursor/agent in the prod project). The agent on prod does git pull, runs migrations, MASTER_RESTART, and verify there. No git push/pull is run from local through terminal or SSH. A future option to consolidate more maintenance from local via SSH (including optional fidelity checks) is described in `.cursor/pm/PROD_MAINTENANCE_FROM_LOCAL.md`.
+**Where to run:** Production updates are applied **from your local workspace** via **/apply-update-from-local**: the agent SSHs to prod and runs the checklist there (pull, migrations, restart, verify). Use **/apply-update** only when the agent is already on the production server. See `.cursor/commands/apply-update-from-local.md` and `.cursor/pm/PROD_MAINTENANCE_FROM_LOCAL.md`.
+
+**Migrations:** Migration files reach prod only via git (commit and push; then this workflow runs pull on prod). Never SCP or copy migration files to prod. If the checklist includes "Apply migrations", every referenced migration file must be in the commit being deployed; if not, abort (do not pull, do not restart), report **🔴 Critical — update aborted**, and do not run the update until migration files are in the repo and pushed.
 
 ## What the agent does
 
 1. **Read** `docs/changelog/CHANGELOG_AGENT_INSTRUCTIONS.md` and follow it in full.
-2. **Find open entries** in `docs/changelog/MASTER_CHANGELOG.md` — entries whose Production agent checklist has at least one unchecked box (`- [ ]`). Process **newest-first**.
+2. **Find open entries** in `docs/changelog/MASTER_CHANGELOG.md` — entries whose Production checklist has at least one unchecked box (`- [ ]`). Process **newest-first**.
 3. **Execute** each unchecked task:
    - **When run on prod (`/apply-update`):** Confirm codebase (pull latest on the server where the agent is running), run migrations or one-time scripts as specified, **run `scripts/MASTER_RESTART.sh` when the checklist requires a restart** (blocking until complete), run verification steps. After each completed task, update MASTER_CHANGELOG.md: change that task's `- [ ]` to `- [x]`. If a task cannot be completed (e.g. missing env), report clearly and do not mark it done.
    - **When run from local (`/apply-update-from-local`):** Execute each checklist command on prod via SSH (e.g. `ssh root@137.184.224.94 'cd /opt/rec_io_server && <command>'`), then update MASTER_CHANGELOG.md locally. See `.cursor/commands/apply-update-from-local.md` and `.cursor/skills/apply-update-from-local/SKILL.md` for the SSH pattern and verification/fidelity steps.
@@ -26,7 +30,7 @@ If `/apply-update` does not appear when you type `/`, try typing `/apply-update`
 
 ## Reference
 
-- **Optional future: prod from local via SSH:** `.cursor/pm/PROD_MAINTENANCE_FROM_LOCAL.md`
+- **Prod from local (primary):** `.cursor/pm/PROD_MAINTENANCE_FROM_LOCAL.md`
 - **Full step-by-step:** `docs/changelog/CHANGELOG_AGENT_INSTRUCTIONS.md`
 - **Master checklist:** `docs/changelog/MASTER_CHANGELOG.md`
 - **Changelog rule:** `.cursor/rules/changelog.mdc` (same workflow when user says "changelog" or "follow the changelog instructions")

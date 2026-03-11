@@ -17,7 +17,7 @@ The agent must **run the verification**, not just describe how. Execute checks o
 5. **Status (required, prominent)** — You MUST end the report with the status block. Output it exactly as follows (nothing after it). Choose one:
    - **✅ All good** — Everything is fine; all checks passed, no issues.
    - **⚠️ Investigate** — Potential issues that should be investigated (e.g. non-critical warnings, one service lagging, errors in logs).
-   - **🔴 Critical** — Critical problems (e.g. health failures, processes not RUNNING, tracebacks or fatal errors in logs).
+   - **🔴 Critical** — Critical problems (e.g. health failures, processes not RUNNING, tracebacks or fatal errors in logs). **When verification is part of apply-update or apply-update-from-local:** If the changelog required "Apply migrations" and those migrations were not successfully run on the target server, status is **🔴 Critical** (never "All good").
    **Format (output this block verbatim at the very end):**
    ```
    ---

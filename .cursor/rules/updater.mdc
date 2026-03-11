@@ -22,11 +22,11 @@ When the user says **@updater prepare update**, you are preparing for a push of 
    - Open **`docs/changelog/MASTER_CHANGELOG.md`**.
    - Add a **new timestamped entry** at the top (newest-first). Use today’s date (YYYY-MM-DD) and a clear title (e.g. `## 2026-03-07 — Short description`).
    - Write a **Summary** that describes the change in plain language.
-   - Add a **Production agent checklist** with checkboxes (`- [ ]`) for every task production/server agents must do:
+   - Add a **Production checklist** with checkboxes (`- [ ]`) for every task to run when applying the update (from local via /apply-update-from-local or on prod via /apply-update):
      - Confirm codebase changes (pull latest `main`).
-     - Update local database: if schema or data changed, include the exact command (from project root):  
+     - Update local database: for simple one-off DB changes, put the exact command or SQL in the checklist (no new migration file). Use migration files only for versioned, reversible schema. If schema or data changed and using init_database, include (from project root):  
        `PYTHONPATH=$(pwd) venv/bin/python -c "from backend.core.config.database import init_database; init_database()"`  
-       and any one-time scripts (e.g. dedupe, backfill) with “run once” or frequency as needed.
+       Use one-time scripts only when necessary; prefer inline command in checklist over new script file.
      - Restart application services (list services or reference `scripts/MASTER_RESTART.sh`).
      - Verification steps (what to check in DB, logs, or UI).
    - See existing entries in `MASTER_CHANGELOG.md` and `docs/changelog/README.md` for format.

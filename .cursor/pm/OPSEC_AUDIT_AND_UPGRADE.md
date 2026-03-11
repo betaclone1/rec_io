@@ -73,7 +73,7 @@ A full codebase scan was run for secrets, auth, logging, CORS, and exposure. Sum
 
 ## Production server: OpSec update (2026-03-08)
 
-When this update is pushed to the production server, the **production agent** (or operator running /apply-update) must follow these instructions so the OpSec changes do not cause failures.
+When this update is applied, whoever runs the production checklist (/apply-update-from-local from local or /apply-update when on prod) must follow these instructions so the OpSec changes do not cause failures.
 
 **Prerequisites (must be true before or right after pull)**
 
@@ -85,7 +85,7 @@ When this update is pushed to the production server, the **production agent** (o
 
 **Apply-update / checklist**
 
-- The entry **2026-03-08 — OpSec remediation** in `docs/changelog/MASTER_CHANGELOG.md` has the full Production agent checklist. The agent should: confirm DB password is set, pull, install deps, run MASTER_RESTART, then run verify. If any step fails with a config/DB error, fix env (set DB password) and retry.
+- The entry **2026-03-08 — OpSec remediation** in `docs/changelog/MASTER_CHANGELOG.md` has the full Production checklist. The agent should: confirm DB password is set, pull, install deps, run MASTER_RESTART, then run verify. If any step fails with a config/DB error, fix env (set DB password) and retry.
 
 **CORS**
 
