@@ -6,6 +6,21 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-10 — Trade history mobile: disable contract filter (parity with desktop)
+
+**Summary**
+
+- **Issue:** Mobile trade history showed a subset of trades for the same filter parameters as desktop; e.g. trade 10625 appeared on desktop but not on mobile.
+- **Cause:** Desktop has contract filtering disabled in `applyFilters()` (commented out); mobile was still applying `filterTradesByContract()`, which only keeps trades whose contract string matches hourly labels (12am–11pm) and excluded others.
+- **Fix:** Disabled contract filter in mobile `applyFilters()` in `frontend/mobile/trade_history_mobile.html` so mobile shows all contracts like desktop. Same effective filters on both: date, win/loss, strategy, symbol, monitor, day, paper/live.
+
+**Production checklist**
+
+- [ ] Confirm codebase changes (pull latest on production).
+- [ ] No DB or backend changes. Frontend only; no restart required. Optional: hard refresh or clear cache on mobile client to pick up updated `trade_history_mobile.html`.
+
+---
+
 ## 2026-03-10 — Simulated trade duplicate prevention (AES + trade_manager)
 
 **Summary**
