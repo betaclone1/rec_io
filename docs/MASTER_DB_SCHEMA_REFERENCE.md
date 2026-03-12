@@ -9646,6 +9646,8 @@ Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m va
 | `bankroll_current` | `integer(32)` | YES | - | |
 | `bankroll_prev` | `integer(32)` | YES | - | |
 | `portfolio_value` | `integer(32)` | YES | - | |
+| `master_trading_bankroll` | `integer(32)` | YES | - | Snapshot of Master Trading Bankroll (MTB) balance in cents at the time of this row |
+| `mtb_base_value` | `integer(32)` | YES | - | Snapshot of MTB base_value in cents at the time of this row |
 
 #### Constraints
 
@@ -10113,14 +10115,6 @@ Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m va
 | `action` | `text` | YES | - | |
 | `side` | `text` | YES | - | |
 | `type` | `text` | YES | - | |
-| `yes_price` | `integer(32)` | YES | - | |
-| `no_price` | `integer(32)` | YES | - | |
-| `initial_count` | `integer(32)` | YES | - | |
-| `initial_count_fp` | `numeric(12,2)` | YES | - | Fixed-point (Kalshi migration). |
-| `remaining_count` | `integer(32)` | YES | - | |
-| `remaining_count_fp` | `numeric(12,2)` | YES | - | Fixed-point (Kalshi migration). |
-| `fill_count` | `integer(32)` | YES | - | |
-| `fill_count_fp` | `numeric(12,2)` | YES | - | Fixed-point (Kalshi migration). |
 | `created_time` | `text` | YES | - | |
 | `expiration_time` | `text` | YES | - | |
 | `last_update_time` | `text` | YES | - | |
@@ -10128,15 +10122,19 @@ Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m va
 | `order_group_id` | `text` | YES | - | |
 | `queue_position` | `integer(32)` | YES | - | |
 | `self_trade_prevention_type` | `text` | YES | - | |
-| `maker_fees` | `integer(32)` | YES | - | |
-| `taker_fees` | `integer(32)` | YES | - | |
-| `maker_fill_cost` | `integer(32)` | YES | - | |
-| `taker_fill_cost` | `integer(32)` | YES | - | |
 | `raw_json` | `text` | YES | - | |
 | `created_at` | `timestamp with time zone` | YES | CURRENT_TIMESTAMP | |
 | `updated_at` | `timestamp with time zone` | YES | CURRENT_TIMESTAMP | |
 | `yes_price_dollars` | `text` | YES | - | |
 | `no_price_dollars` | `text` | YES | - | |
+| `initial_count_fp` | `numeric(12,2)` | YES | - | Fixed-point (Kalshi migration). |
+| `initial_count_fp` | `numeric(12,2)` | YES | - | Fixed-point (Kalshi migration). |
+| `remaining_count_fp` | `numeric(12,2)` | YES | - | Fixed-point (Kalshi migration). |
+| `fill_count_fp` | `numeric(12,2)` | YES | - | Fixed-point (Kalshi migration). |
+| `taker_fees_dollars` | `text` | YES | - | Fixed-point (Kalshi migration). |
+| `maker_fees_dollars` | `text` | YES | - | Fixed-point (Kalshi migration). |
+| `taker_fill_cost_dollars` | `text` | YES | - | Fixed-point (Kalshi migration). |
+| `maker_fill_cost_dollars` | `text` | YES | - | Fixed-point (Kalshi migration). |
 
 #### Constraints
 

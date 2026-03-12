@@ -6,6 +6,55 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-12 — Fixed-point migration completion and MTB (DB migrations required)
+
+**Summary**
+
+- **DB migrations (required on production in order):** This update completes the Kalshi fixed-point migration and adds MTB tracking. All four migrations below must be applied on the target server **before** restarting services. No code that reads legacy integer/cents columns remains; the DB schema must match.
+- **account_balance_0001:** Add `master_trading_bankroll` and `mtb_base_value` (migration `20260312_2000_account_balance_mtb_columns`). Sync writes these on balance updates.
+- **orders_0001:** Add fee/cost dollar columns, then drop legacy integer columns (migrations `20260312_2015_orders_fee_dollars_columns`, `20260312_2045_orders_drop_legacy_int_columns`). Orders use only `*_dollars` and `*_fp` fields.
+- **fills_0001, positions_0001, settlements_0001:** Drop legacy integer/cents columns (migration `20260312_2115_fp_drop_legacy_ints_fills_positions_settlements`). Live sync and historical ingest write only `_fp` and `*_dollars`.
+- **Code:** `trade_manager` (open/close and PnL), `kalshi_account_sync_ws` (orders/fills/positions/settlements sync and balance), and `kalshi_historical_ingest` (write_orders_to_db, write_fills_to_db, write_positions_to_db, write_settlements_to_db) use only the new columns. Order INSERT placeholder count fixed so baseline order sync no longer errors.
+
+Plans: `db-prod-schema-alignment` (in progress). Schema ref: `docs/MASTER_DB_SCHEMA_REFERENCE.md`.
+
+**Production checklist**
+
+- [ ] Confirm codebase changes on production (pull latest `main`):  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] **DB migration 1 — account_balance MTB columns.** From project root on the target server:
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260312_2000_account_balance_mtb_columns`
+- [ ] **DB migration 2 — orders fee/cost dollar columns.** From project root:
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260312_2015_orders_fee_dollars_columns`
+- [ ] **DB migration 3 — drop legacy integer columns from orders_0001.** From project root:
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260312_2045_orders_drop_legacy_int_columns`
+- [ ] **DB migration 4 — drop legacy columns from fills, positions, settlements.** From project root:
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260312_2115_fp_drop_legacy_ints_fills_positions_settlements`
+- [ ] Run `scripts/MASTER_RESTART.sh` so kalshi_account_sync, trade_manager, and dependent services load the new code.
+- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status, and `logs/kalshi_account_sync.out.log` shows no "Failed to insert order" errors on baseline sync.
+
+---
+
+## 2026-03-12 — PM/update pipeline and trade history filters
+
+**Summary**
+
+- **PM / update flow:** Wired `/prepare-update` to treat `.cursor/plans/*.md` as the canonical record of work done, and to always create a fresh changelog entry with an open Production checklist that references the relevant plans for each batch. Updated the updater rules so changelog entries explicitly list associated plans and include a standard “Confirm codebase changes (pull latest on production)” task.
+- **Backlog cleanup:** Retired legacy PM/brain docs under `.cursor/pm/brain` in favor of plans, and clarified that active task tracking lives solely in `.cursor/plans/`.
+- **Account history filters:** Stabilized the Strategy dropdown options on desktop and mobile trade history so they are cleaned, deduplicated, and ordered with core strategies first and the rest sorted alphabetically, driven by `/api/strategies`.
+- **Mobile UX:** Improved mobile trade history dropdown labels so when multiple values are selected the buttons read “Multiple Strategies / Symbols / Contracts / Days / Monitors,” making each control self-explanatory without external labels.
+- **Frontend parity convention:** Documented a mobile-parity convention in `AGENTS.md` so future frontend changes consider whether a corresponding change is needed on mobile.
+
+Plans: `logging-audit`, `db-prod-schema-alignment`, `account-history-strategy-filters`, `frontend-mobile-parity-rule`
+
+**Production checklist**
+
+- [x] Confirm codebase changes on production (pull latest `main`):  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [x] Verify: health (main_app :3000, trade_executor :8001), and spot-check desktop and mobile trade history Strategy dropdowns for the cleaned, deterministic ordering and updated “Multiple …” labels.
+
+---
+
 ## 2026-03-12 — Kalshi market volume_fp alignment
 
 **Summary**

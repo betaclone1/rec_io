@@ -20,6 +20,9 @@ Run when the user is ready to push a commit to the git repository. Orchestrates 
    - Treat **`.cursor/plans/*.md`** as the canonical record of what work was done:
      - List plan files (exclude `README.md`), read their `**Status:**` lines, and identify plans with `Status: done` that correspond to the changes in this update.
      - For these completed plans, summarize the user‑visible and DB‑relevant behavior changes in plain language.
+   - **You must always ensure that today’s work is represented by a fresh, open changelog entry:**
+     - If there is no existing `docs/changelog/MASTER_CHANGELOG.md` entry for this batch of completed plans, **add a new entry at the top** with today’s date, a clear title, a Summary, and a **Production checklist where all new tasks start as `- [ ]` (unchecked)**.
+     - At a minimum, the checklist must include a “Confirm codebase changes (pull latest on production)” item, plus any DB schema / migration / restart / verification steps implied by the plans and code changes.
    - Follow the steps in `.cursor/rules/updater.mdc` "Command: prepare update":
      - Add/update a `docs/changelog/MASTER_CHANGELOG.md` entry (date, title, Summary, Production checklist) that **explicitly references the relevant plan files** (e.g. “Plans: `mtb-account-dashboard`, `account-history-strategy-filters`”) so future readers can trace work back to its plans.
      - Update related docs, and align `docs/MASTER_DB_SCHEMA_REFERENCE.md` and `backend/core/config/database.py` when DB changes occurred. Ensure any DB/schema changes mentioned in plans are fully captured in the schema ref **and** in the changelog checklist (same standard as @db alignment).

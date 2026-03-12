@@ -369,6 +369,16 @@ def _order_count_val(legacy, fp):
     return 0.0
 
 
+def _parse_dollars(value):
+    """Convert fixed-point dollar strings/numbers to float dollars; None/invalid -> None."""
+    if value is None:
+        return None
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _format_count_fp(payload: dict, for_close: bool = False) -> str:
     """Format contract count as Kalshi fixed-point string (e.g. '100.00'). For open use position/count; for close use count/position."""
     fp = payload.get("count_fp")
@@ -880,43 +890,46 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                 time.sleep(1)
                 continue
             
-            # Check ORDERS table for our specific order_id (prefer _fp columns for counts)
+            # Check ORDERS table for our specific order_id (prefer _fp columns for counts and *_dollars for prices/fees)
             with pg_conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT remaining_count, remaining_count_fp, fill_count, fill_count_fp,
-                           initial_count, initial_count_fp, status,
-                           taker_fees, maker_fees, taker_fill_cost, side
+                    SELECT remaining_count_fp, fill_count_fp, initial_count_fp, status, side,
+                           taker_fees_dollars, maker_fees_dollars,
+                           taker_fill_cost_dollars, maker_fill_cost_dollars
                     FROM users.orders_0001 
                     WHERE order_id = %s
                 """, (stored_order_id_open,))
                 order_row = cursor.fetchone()
             
             if order_row:
-                (remaining_count, remaining_count_fp, fill_count, fill_count_fp,
-                 initial_count, initial_count_fp, order_status, taker_fees, maker_fees, taker_fill_cost, side) = order_row
-                remaining_val = _order_count_val(remaining_count, remaining_count_fp)
-                fill_val = _order_count_val(fill_count, fill_count_fp)
-                initial_val = _order_count_val(initial_count, initial_count_fp)
+                (remaining_count_fp, fill_count_fp, initial_count_fp, order_status, side,
+                 taker_fees_dollars, maker_fees_dollars,
+                 taker_fill_cost_dollars, maker_fill_cost_dollars) = order_row
+                # Legacy integer counts were removed; use *_fp only.
+                remaining_val = _order_count_val(None, remaining_count_fp)
+                fill_val = _order_count_val(None, fill_count_fp)
+                initial_val = _order_count_val(None, initial_count_fp)
                 log_event(ticket_id, f"MANAGER: Opening order {stored_order_id_open} status: {order_status}, remaining: {remaining_val}, filled: {fill_val}/{initial_val}")
                 
                 # Check if order is completely filled (remaining = 0) and executed
                 if order_status == "executed" and remaining_val == 0 and fill_val > 0:
-                    # Calculate fees from orders table (already in cents, convert to dollars)
-                    total_fees_cents = (taker_fees or 0) + (maker_fees or 0)
-                    total_fees_dollars = total_fees_cents / 100.0
+                    # Calculate fees from orders table, using *_dollars fixed-point fields
+                    taker_fees_usd = _parse_dollars(taker_fees_dollars)
+                    maker_fees_usd = _parse_dollars(maker_fees_dollars)
+                    total_fees_dollars = (taker_fees_usd or 0.0) + (maker_fees_usd or 0.0)
                     
-                    # Calculate position size and buy price from order data (use _fp for precision)
+                    # Calculate position size and buy price from order data (use _fp and *_dollars for precision)
                     position_size = fill_val
 
-                    # taker_fill_cost is in cents for the filled quantity. It may be NULL on prod after
-                    # the fixed-point migration, so guard against None to avoid crashing the open watch.
-                    if taker_fill_cost is not None and position_size > 0:
-                        buy_price = (taker_fill_cost / 100.0) / position_size
-                    else:
-                        # Fallback: if we have no cost, we cannot infer an accurate buy price from orders alone.
-                        # Leave buy_price at 0.0 so the trade can still be confirmed open; downstream PnL will
-                        # be based on prices from fills/positions instead of this snapshot.
-                        buy_price = 0.0
+                    # taker_fill_cost_dollars is the fixed-point total cost for the filled taker quantity.
+                    buy_price = 0.0
+                    total_cost_usd = _parse_dollars(taker_fill_cost_dollars)
+
+                    if total_cost_usd is None and taker_fill_cost_cents is not None:
+                        total_cost_usd = taker_fill_cost_cents / 100.0
+
+                    if total_cost_usd is not None and position_size > 0:
+                        buy_price = total_cost_usd / position_size
 
                     # trades_0001.position is integer; round for DB write
                     position_for_db = int(round(position_size))
@@ -1115,16 +1128,18 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
         try:
             with pg_conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT remaining_count, remaining_count_fp, fill_count, fill_count_fp, status, taker_fees, maker_fees
+                    SELECT remaining_count_fp, fill_count_fp, status,
+                           taker_fees_dollars, maker_fees_dollars
                     FROM users.orders_0001 
                     WHERE order_id = %s
                 """, (stored_order_id_close,))
                 order_row = cursor.fetchone()
             
             if order_row:
-                remaining_count, remaining_count_fp, fill_count, fill_count_fp, order_status, taker_fees, maker_fees = order_row
-                remaining_val = _order_count_val(remaining_count, remaining_count_fp)
-                fill_val = _order_count_val(fill_count, fill_count_fp)
+                remaining_count_fp, fill_count_fp, order_status, taker_fees_dollars, maker_fees_dollars = order_row
+                # Legacy integer counts were removed; use *_fp only.
+                remaining_val = _order_count_val(None, remaining_count_fp)
+                fill_val = _order_count_val(None, fill_count_fp)
                 log_event(ticket_id, f"MANAGER: Close order {stored_order_id_close} status: {order_status}, remaining: {remaining_val}, filled: {fill_val}")
                 
                 # Check if close order is completely filled (remaining = 0) and executed
@@ -1146,9 +1161,10 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                     else:
                         existing_fees = 0.0
                     
-                    # Add closing order fees to existing opening fees
-                    close_order_fees_cents = (taker_fees or 0) + (maker_fees or 0)
-                    close_order_fees_dollars = close_order_fees_cents / 100.0
+                    # Add closing order fees to existing opening fees (prefer *_dollars fixed-point fields)
+                    taker_fees_usd = _parse_dollars(taker_fees_dollars)
+                    maker_fees_usd = _parse_dollars(maker_fees_dollars)
+                    close_order_fees_dollars = (taker_fees_usd or 0.0) + (maker_fees_usd or 0.0)
                     total_fees_paid = existing_fees + close_order_fees_dollars
                     
                     log_event(ticket_id, f"MANAGER: SIMPLE fee calc - existing: ${existing_fees}, close order: ${close_order_fees_dollars}, total: ${total_fees_paid}")
@@ -1158,7 +1174,7 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                     if pg_conn_close_order:
                         with pg_conn_close_order.cursor() as cursor:
                             cursor.execute("""
-                                SELECT side, taker_fill_cost, fill_count, fill_count_fp
+                                SELECT side, taker_fill_cost_dollars, fill_count_fp
                                 FROM users.orders_0001 
                                 WHERE order_id = %s
                             """, (stored_order_id_close,))
@@ -1168,10 +1184,11 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                         close_order_data = None
                     
                     if close_order_data:
-                        close_side, close_fill_cost, close_fill_count, close_fill_count_fp = close_order_data
-                        close_fill_val = _order_count_val(close_fill_count, close_fill_count_fp)
-                        # Calculate sell price from close order (cost per share)
-                        sell_price = (close_fill_cost / 100.0) / close_fill_val if close_fill_val > 0 else 0.0
+                        close_side, close_fill_cost_dollars, close_fill_count_fp = close_order_data
+                        close_fill_val = _order_count_val(None, close_fill_count_fp)
+                        # Calculate sell price from close order (cost per share) using fixed-point dollars
+                        total_close_cost_usd = _parse_dollars(close_fill_cost_dollars)
+                        sell_price = (total_close_cost_usd / close_fill_val) if (total_close_cost_usd is not None and close_fill_val > 0) else 0.0
                         # For close orders, sell_price should be 1 - the price we paid to close
                         sell_price = 1 - sell_price
                         log_event(ticket_id, f"MANAGER: Calculated sell_price from close order: {sell_price}")
@@ -1984,7 +2001,7 @@ def init_trades_db():
                 OWNED BY users.trades_0001.id
             """)
             
-            # Create fills table (price columns align with Kalshi API yes_price_dollars / no_price_dollars)
+            # Create fills table (fixed-point: count_fp and *_dollars only)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users.fills_0001 (
                     id SERIAL PRIMARY KEY,
@@ -1993,7 +2010,7 @@ def init_trades_db():
                     order_id TEXT,
                     side TEXT,
                     action TEXT,
-                    count INTEGER,
+                    count_fp NUMERIC(12,2),
                     yes_price_dollars TEXT,
                     no_price_dollars TEXT,
                     is_taker BOOLEAN,
@@ -2002,39 +2019,37 @@ def init_trades_db():
                 )
             """)
             
-            # Create settlements table (cost columns align with Kalshi API yes_total_cost_dollars / no_total_cost_dollars)
+            # Create settlements table (fixed-point counts and *_total_cost_dollars)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users.settlements_0001 (
                     id SERIAL PRIMARY KEY,
                     ticker TEXT,
                     market_result TEXT,
-                    yes_count INTEGER,
-                    yes_total_cost_dollars DECIMAL(10,2),
-                    no_count INTEGER,
-                    no_total_cost_dollars DECIMAL(10,2),
                     revenue DECIMAL(10,2),
                     settled_time TEXT,
+                    raw_json TEXT,
+                    yes_count_fp NUMERIC(12,2),
+                    no_count_fp NUMERIC(12,2),
+                    yes_total_cost_dollars DECIMAL(10,2),
+                    no_total_cost_dollars DECIMAL(10,2),
                     raw_json TEXT,
                     UNIQUE(ticker, settled_time)
                 )
             """)
             
-            # Create positions table
+            # Create positions table (fixed-point / dollars only)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users.positions_0001 (
                     id SERIAL PRIMARY KEY,
                     ticker TEXT,
-                    total_traded INTEGER,
-                    position INTEGER,
-                    market_exposure INTEGER,
-                    realized_pnl REAL,
-                    fees_paid REAL,
                     last_updated_ts TEXT,
+                    raw_json TEXT,
                     total_traded_dollars TEXT,
                     market_exposure_dollars TEXT,
                     realized_pnl_dollars TEXT,
                     fees_paid_dollars TEXT,
-                    raw_json TEXT
+                    total_traded_fp NUMERIC(12,2),
+                    position_fp NUMERIC(12,2)
                 )
             """)
             

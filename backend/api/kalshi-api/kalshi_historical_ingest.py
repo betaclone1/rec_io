@@ -39,6 +39,26 @@ def _fp_to_numeric(v):
         return None
 
 
+def _dollars_to_cents(value):
+    """
+    Convert Kalshi *_dollars string/number fields to integer cents for storage in legacy columns.
+
+    We keep both:
+    - *_dollars TEXT in the DB mirroring the API field
+    - integer cent columns for existing consumers.
+    """
+    if value is None:
+        return None
+    try:
+        if isinstance(value, str):
+            return int(round(float(value) * 100))
+        if isinstance(value, (int, float, Decimal)):
+            return int(round(float(value) * 100))
+        return None
+    except Exception:
+        return None
+
+
 def generate_kalshi_signature(method, full_path, timestamp, key_path):
     from cryptography.hazmat.primitives import serialization, hashes
     from cryptography.hazmat.primitives.asymmetric import padding
@@ -246,21 +266,19 @@ def write_settlements_to_db():
         )
         c = conn.cursor()
 
-        # Create settlements table if it doesn't exist (columns align with Kalshi API _dollars)
+        # Create settlements table if it doesn't exist (fixed-point counts and *_total_cost_dollars)
         c.execute("""
             CREATE TABLE IF NOT EXISTS users.settlements_0001 (
                 id SERIAL PRIMARY KEY,
                 ticker TEXT,
                 market_result TEXT,
-                yes_count INTEGER,
-                yes_count_fp NUMERIC(12,2),
-                yes_total_cost_dollars DECIMAL(10,2),
-                no_count INTEGER,
-                no_count_fp NUMERIC(12,2),
-                no_total_cost_dollars DECIMAL(10,2),
                 revenue DECIMAL(10,2),
                 settled_time TEXT,
                 raw_json TEXT,
+                yes_count_fp NUMERIC(12,2),
+                no_count_fp NUMERIC(12,2),
+                yes_total_cost_dollars DECIMAL(10,2),
+                no_total_cost_dollars DECIMAL(10,2),
                 UNIQUE(ticker, settled_time)
             )
         """)
@@ -268,9 +286,7 @@ def write_settlements_to_db():
         for s in settlements:
             ticker = s.get("ticker")
             market_result = s.get("market_result")
-            yes_count = s.get("yes_count")
             yes_count_fp = _fp_to_numeric(s.get("yes_count_fp"))
-            no_count = s.get("no_count")
             no_count_fp = _fp_to_numeric(s.get("no_count_fp"))
             revenue = s.get("revenue")
             settled_time = s.get("settled_time")
@@ -296,10 +312,12 @@ def write_settlements_to_db():
             try:
                 c.execute("""
                     INSERT INTO users.settlements_0001
-                    (ticker, market_result, yes_count, yes_count_fp, yes_total_cost_dollars, no_count, no_count_fp, no_total_cost_dollars, revenue, settled_time, raw_json)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (ticker, market_result, revenue, settled_time, raw_json,
+                     yes_count_fp, no_count_fp, yes_total_cost_dollars, no_total_cost_dollars)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (ticker, settled_time) DO NOTHING
-                """, (ticker, market_result, yes_count, yes_count_fp, yes_total_cost_dollars, no_count, no_count_fp, no_total_cost_dollars, revenue, settled_time, raw_json))
+                """, (ticker, market_result, revenue, settled_time, raw_json,
+                      yes_count_fp, no_count_fp, yes_total_cost_dollars, no_total_cost_dollars))
             except Exception as e:
                 print(f"❌ Failed to insert settlement {ticker} at {settled_time}: {e}")
 
@@ -336,7 +354,6 @@ def write_fills_to_db():
                 order_id TEXT,
                 side TEXT,
                 action TEXT,
-                count INTEGER,
                 count_fp NUMERIC(12,2),
                 yes_price_dollars TEXT,
                 no_price_dollars TEXT,
@@ -352,7 +369,6 @@ def write_fills_to_db():
             order_id = fill.get("order_id")
             side = fill.get("side")
             action = fill.get("action")
-            count = fill.get("count")
             count_fp = _fp_to_numeric(fill.get("count_fp"))
             yes_price_dollars = fill.get("yes_price_dollars") or fill.get("yes_price_fixed")
             no_price_dollars = fill.get("no_price_dollars") or fill.get("no_price_fixed")
@@ -363,10 +379,10 @@ def write_fills_to_db():
             try:
                 c.execute("""
                     INSERT INTO users.fills_0001
-                    (trade_id, ticker, order_id, side, action, count, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (trade_id, ticker, order_id, side, action, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (trade_id) DO NOTHING
-                """, (trade_id, ticker, order_id, side, action, count, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json))
+                """, (trade_id, ticker, order_id, side, action, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json))
             except Exception as e:
                 print(f"❌ Failed to insert fill {trade_id}: {e}")
 
@@ -439,18 +455,19 @@ def write_positions_to_db():
         )
         c = conn.cursor()
 
-        # Create positions table if it doesn't exist
+        # Create positions table if it doesn't exist (fixed-point / dollars only)
         c.execute("""
             CREATE TABLE IF NOT EXISTS users.positions_0001 (
                 id SERIAL PRIMARY KEY,
                 ticker TEXT,
-                total_traded INTEGER,
-                position INTEGER,
-                market_exposure INTEGER,
-                realized_pnl DECIMAL(10,2),
-                fees_paid DECIMAL(10,2),
                 last_updated_ts TEXT,
-                raw_json TEXT
+                raw_json TEXT,
+                total_traded_dollars TEXT,
+                market_exposure_dollars TEXT,
+                realized_pnl_dollars TEXT,
+                fees_paid_dollars TEXT,
+                total_traded_fp NUMERIC(12,2),
+                position_fp NUMERIC(12,2)
             )
         """)
 
@@ -460,21 +477,25 @@ def write_positions_to_db():
         for p in positions:
             try:
                 ticker = p.get("ticker")
-                total_traded = p.get("total_traded")
-                total_traded_fp = _fp_to_numeric(p.get("total_traded_fp"))
-                position_value = p.get("position")
-                position_fp = _fp_to_numeric(p.get("position_fp"))
-                market_exposure = p.get("market_exposure")
-                realized_pnl = float(p.get("realized_pnl")) / 100 if p.get("realized_pnl") is not None else None
-                fees_paid = float(p.get("fees_paid")) / 100 if p.get("fees_paid") is not None else None
                 last_updated_ts = p.get("last_updated_ts")
                 raw_json = json.dumps(p)
 
+                total_traded_dollars = p.get("total_traded_dollars")
+                market_exposure_dollars = p.get("market_exposure_dollars")
+                realized_pnl_dollars = p.get("realized_pnl_dollars")
+                fees_paid_dollars = p.get("fees_paid_dollars")
+                total_traded_fp = _fp_to_numeric(p.get("total_traded_fp"))
+                position_fp = _fp_to_numeric(p.get("position_fp"))
+
                 c.execute("""
                     INSERT INTO users.positions_0001
-                    (ticker, total_traded, total_traded_fp, position, position_fp, market_exposure, realized_pnl, fees_paid, last_updated_ts, raw_json)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (ticker, total_traded, total_traded_fp, position_value, position_fp, market_exposure, realized_pnl, fees_paid, last_updated_ts, raw_json))
+                    (ticker, last_updated_ts, raw_json,
+                     total_traded_dollars, market_exposure_dollars, realized_pnl_dollars, fees_paid_dollars,
+                     total_traded_fp, position_fp)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (ticker, last_updated_ts, raw_json,
+                      total_traded_dollars, market_exposure_dollars, realized_pnl_dollars, fees_paid_dollars,
+                      total_traded_fp, position_fp))
             except Exception as e:
                 print(f"❌ Failed to insert position {p.get('ticker')}: {e}")
 
@@ -486,7 +507,7 @@ def write_positions_to_db():
 
 
 def write_orders_to_db():
-    """Read orders.json and upsert into users.orders_0001 (matches account sync schema, includes _fp)."""
+    """Read orders.json and upsert into users.orders_0001 (fixed-point / *_dollars only)."""
     global mode
     print("💾 Writing orders to PostgreSQL database...")
     orders_path = os.path.join(get_accounts_data_dir(), "kalshi", mode, "orders.json")
@@ -514,22 +535,29 @@ def write_orders_to_db():
             try:
                 c.execute("""
                     INSERT INTO users.orders_0001
-                    (order_id, user_id, ticker, status, action, side, type, yes_price, no_price, yes_price_dollars, no_price_dollars,
-                     initial_count, initial_count_fp, remaining_count, remaining_count_fp, fill_count, fill_count_fp,
+                    (order_id, user_id, ticker, status, action, side, type,
+                     yes_price_dollars, no_price_dollars,
+                     initial_count_fp, remaining_count_fp, fill_count_fp,
                      created_time, expiration_time, last_update_time, client_order_id, order_group_id, queue_position,
-                     self_trade_prevention_type, maker_fees, taker_fees, maker_fill_cost, taker_fill_cost, raw_json)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     self_trade_prevention_type,
+                     maker_fees_dollars, taker_fees_dollars, maker_fill_cost_dollars, taker_fill_cost_dollars,
+                     raw_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s,
+                            %s, %s,
+                            %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s,
+                            %s,
+                            %s, %s, %s, %s,
+                            %s)
                     ON CONFLICT (order_id) DO UPDATE SET
                         status = EXCLUDED.status,
-                        fill_count = EXCLUDED.fill_count,
-                        remaining_count = EXCLUDED.remaining_count,
                         fill_count_fp = EXCLUDED.fill_count_fp,
                         remaining_count_fp = EXCLUDED.remaining_count_fp,
                         last_update_time = EXCLUDED.last_update_time,
-                        maker_fees = EXCLUDED.maker_fees,
-                        taker_fees = EXCLUDED.taker_fees,
-                        maker_fill_cost = EXCLUDED.maker_fill_cost,
-                        taker_fill_cost = EXCLUDED.taker_fill_cost,
+                        maker_fees_dollars = EXCLUDED.maker_fees_dollars,
+                        taker_fees_dollars = EXCLUDED.taker_fees_dollars,
+                        maker_fill_cost_dollars = EXCLUDED.maker_fill_cost_dollars,
+                        taker_fill_cost_dollars = EXCLUDED.taker_fill_cost_dollars,
                         queue_position = EXCLUDED.queue_position,
                         raw_json = EXCLUDED.raw_json
                 """, (
@@ -540,15 +568,10 @@ def write_orders_to_db():
                     order.get("action"),
                     order.get("side"),
                     order.get("type"),
-                    order.get("yes_price"),
-                    order.get("no_price"),
                     order.get("yes_price_dollars"),
                     order.get("no_price_dollars"),
-                    order.get("initial_count"),
                     _fp_to_numeric(order.get("initial_count_fp")),
-                    order.get("remaining_count"),
                     _fp_to_numeric(order.get("remaining_count_fp")),
-                    order.get("fill_count"),
                     _fp_to_numeric(order.get("fill_count_fp")),
                     order.get("created_time"),
                     order.get("expiration_time"),
@@ -557,10 +580,10 @@ def write_orders_to_db():
                     order.get("order_group_id"),
                     order.get("queue_position"),
                     order.get("self_trade_prevention_type"),
-                    order.get("maker_fees"),
-                    order.get("taker_fees"),
-                    order.get("maker_fill_cost"),
-                    order.get("taker_fill_cost"),
+                    order.get("maker_fees_dollars"),
+                    order.get("taker_fees_dollars"),
+                    order.get("maker_fill_cost_dollars"),
+                    order.get("taker_fill_cost_dollars"),
                     json.dumps(order),
                 ))
             except Exception as e:

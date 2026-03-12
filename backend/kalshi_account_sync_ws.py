@@ -281,6 +281,26 @@ def _fp_to_numeric(v):
         return None
 
 
+def _dollars_to_cents(value):
+    """
+    Convert Kalshi *_dollars string/number fields to integer cents for storage in legacy columns.
+
+    We keep both:
+    - *_dollars TEXT in the DB mirroring the API field
+    - integer cent columns for existing consumers (e.g. trade_manager)
+    """
+    if value is None:
+        return None
+    try:
+        if isinstance(value, str):
+            return int(round(float(value) * 100))
+        if isinstance(value, (int, float, Decimal)):
+            return int(round(float(value) * 100))
+        return None
+    except Exception:
+        return None
+
+
 def generate_kalshi_signature(method, full_path, timestamp, key_path):
     from cryptography.hazmat.primitives import serialization, hashes
     from cryptography.hazmat.primitives.asymmetric import padding
@@ -636,20 +656,33 @@ def _upsert_account_history(conn, rows):
     """Insert or update rows in users.account_history_0001. Simple UPDATE-then-INSERT per row; no ON CONFLICT, no unique constraint required."""
     if not rows:
         return 0
-    cols = ["entry_type", "amount", "fee", "created_at", "updated_at", "status", "returned_amount", "deposit_type", "immediate_amount", "immediate_status"]
+
     with conn.cursor() as cur:
         for r in rows:
             cur.execute("""
                 UPDATE users.account_history_0001 SET
-                    updated_at = %s, status = %s, returned_amount = %s, deposit_type = %s,
-                    immediate_amount = %s, immediate_status = %s, synced_at = CURRENT_TIMESTAMP
+                    updated_at = %s,
+                    status = %s,
+                    returned_amount = %s,
+                    deposit_type = %s,
+                    immediate_amount = %s,
+                    immediate_status = %s,
+                    synced_at = CURRENT_TIMESTAMP
                 WHERE created_at = %s AND entry_type = %s AND amount = %s
-            """, (r["updated_at"], r["status"], r["returned_amount"], r["deposit_type"], r["immediate_amount"], r["immediate_status"], r["created_at"], r["entry_type"], r["amount"]))
+            """, (
+                r["updated_at"], r["status"], r["returned_amount"], r["deposit_type"],
+                r["immediate_amount"], r["immediate_status"],
+                r["created_at"], r["entry_type"], r["amount"]
+            ))
             if cur.rowcount == 0:
                 cur.execute(f"""
-                    INSERT INTO users.account_history_0001 ({", ".join(cols)})
+                    INSERT INTO users.account_history_0001 (entry_type, amount, fee, created_at, updated_at, status, returned_amount, deposit_type, immediate_amount, immediate_status)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (r["entry_type"], r["amount"], r["fee"], r["created_at"], r["updated_at"], r["status"], r["returned_amount"], r["deposit_type"], r["immediate_amount"], r["immediate_status"]))
+                """, (
+                    r["entry_type"], r["amount"], r["fee"], r["created_at"], r["updated_at"],
+                    r["status"], r["returned_amount"], r["deposit_type"],
+                    r["immediate_amount"], r["immediate_status"]
+                ))
     conn.commit()
     return len(rows)
 
@@ -894,6 +927,24 @@ def subaccounts_update(cursor, portfolio_value):
     return (master_bankroll_balance, transfer_triggered)
 
 
+def _get_mtb_snapshot_from_subaccounts(cur):
+    """
+    Return (master_trading_bankroll, mtb_base_value) in cents from users.subaccounts_0001
+    for the 'Master Trading Bankroll' subaccount, or (None, None) if not present.
+    """
+    cur.execute("""
+        SELECT balance, base_value
+        FROM users.subaccounts_0001
+        WHERE subaccount = 'Master Trading Bankroll'
+    """)
+    row = cur.fetchone()
+    if not row:
+        return None, None
+    balance, base_value = row
+    return (int(balance) if balance is not None else None,
+            int(base_value) if base_value is not None else None)
+
+
 def sync_balance():
     logger.debug("Sync attempt...")
     method = "GET"
@@ -931,15 +982,7 @@ def sync_balance():
             if pg_conn:
                 with pg_conn.cursor() as cursor:
                     current_timestamp = datetime.now(EST).isoformat()
-                    
-                    # Get total exposure from POSITIONS table
-                    cursor.execute("""
-                        SELECT COALESCE(SUM(market_exposure), 0) as total_exposure
-                        FROM users.positions_0001
-                    """)
-                    exposure_result = cursor.fetchone()
-                    total_exposure = int(exposure_result[0]) if exposure_result and exposure_result[0] else 0
-                    
+
                     # Get previous bankroll for ratchet (and for hold when positions != 0)
                     cursor.execute("""
                         SELECT portfolio, bankroll_current FROM users.account_balance_0001 
@@ -951,6 +994,8 @@ def sync_balance():
                     # PORTFOLIO = total at Kalshi (cash + positions). Feeds PRIMARY in subaccounts; written to account_balance.portfolio.
                     portfolio_value = int(total_portfolio_value)
                     positions_value = int(portfolio_value_raw)
+                    # Use positions_value as our exposure metric in the fixed-point world.
+                    total_exposure = positions_value
                     
                     # Only update subaccounts and derive bankroll_current from Master Trading Bankroll when flat (positions=0).
                     # When positions != 0, skip subaccounts and hold bankroll_current to avoid noisy API during open/close.
@@ -1000,12 +1045,24 @@ def sync_balance():
                         # Subaccounts may have been updated; commit those, but no new balance row or notifies
                         pg_conn.commit()
                     if not skip_balance_write:
+                        # Snapshot MTB state at the same time we write account_balance_0001
+                        mtb_balance, mtb_base = _get_mtb_snapshot_from_subaccounts(cursor)
                         cursor.execute("""
-                            INSERT INTO users.account_balance_0001 (balance, exposure, positions, portfolio, bankroll_current, portfolio_value, timestamp)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        """, (balance_amount, total_exposure, positions_value, portfolio_value, bankroll_current, portfolio_value_raw, current_timestamp))
+                            INSERT INTO users.account_balance_0001 (
+                                balance, exposure, positions, portfolio, bankroll_current,
+                                portfolio_value, timestamp, master_trading_bankroll, mtb_base_value
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (
+                            balance_amount, total_exposure, positions_value, portfolio_value,
+                            bankroll_current, portfolio_value_raw, current_timestamp,
+                            mtb_balance, mtb_base
+                        ))
                         pg_conn.commit()
-                        logger.debug("Balance written to users.account_balance_0001 (portfolio=%s, bankroll_current=%s)", portfolio_value, bankroll_current)
+                        logger.debug(
+                            "Balance written to users.account_balance_0001 (portfolio=%s, bankroll_current=%s, mtb=%s, mtb_base_value=%s)",
+                            portfolio_value, bankroll_current, mtb_balance, mtb_base
+                        )
 
                         # Notify frontend of account balance change
                         notify_frontend_db_change("account_balance", {
@@ -1254,12 +1311,6 @@ def sync_positions():
                 for p in all_market_positions:
                     try:
                         ticker = p.get("ticker")
-                        total_traded = p.get("total_traded")
-                        position_value = p.get("position")
-                        market_exposure = p.get("market_exposure")
-                        # Legacy cent values - no longer used, kept for database compatibility only
-                        realized_pnl = None
-                        fees_paid = None
                         last_updated_ts = p.get("last_updated_ts")
                         raw_json = json.dumps(p)
                         
@@ -1274,11 +1325,11 @@ def sync_positions():
 
                         cursor.execute("""
                             INSERT INTO users.positions_0001
-                            (ticker, total_traded, position, market_exposure, realized_pnl, fees_paid, last_updated_ts, raw_json,
+                            (ticker, last_updated_ts, raw_json,
                              total_traded_dollars, market_exposure_dollars, realized_pnl_dollars, fees_paid_dollars,
                              total_traded_fp, position_fp)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """, (ticker, total_traded, position_value, market_exposure, realized_pnl, fees_paid, last_updated_ts, raw_json,
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (ticker, last_updated_ts, raw_json,
                               total_traded_dollars, market_exposure_dollars, realized_pnl_dollars, fees_paid_dollars,
                               total_traded_fp, position_fp))
                     except Exception as e:
@@ -1409,7 +1460,6 @@ def sync_fills():
                         order_id = fill.get("order_id")
                         side = fill.get("side")
                         action = fill.get("action")
-                        count = fill.get("count")
                         count_fp = _fp_to_numeric(fill.get("count_fp"))
                         # API: yes_price_dollars / no_price_dollars (Kalshi changelog Mar 2026); fallback to _fixed during rollout
                         yes_price_dollars = fill.get("yes_price_dollars") or fill.get("yes_price_fixed")
@@ -1421,10 +1471,10 @@ def sync_fills():
                         try:
                             cursor.execute("""
                                 INSERT INTO users.fills_0001
-                                (trade_id, ticker, order_id, side, action, count, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                (trade_id, ticker, order_id, side, action, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                                 ON CONFLICT (trade_id) DO NOTHING
-                            """, (trade_id, ticker, order_id, side, action, count, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json))
+                            """, (trade_id, ticker, order_id, side, action, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json))
                             pg_new_count += 1
                         except Exception as e:
                             logger.error("Failed to insert fill %s to PostgreSQL: %s", trade_id, e)
@@ -1542,15 +1592,13 @@ def sync_settlements():
                         id SERIAL PRIMARY KEY,
                         ticker TEXT,
                         market_result TEXT,
-                        yes_count INTEGER,
-                        yes_count_fp NUMERIC(12,2),
-                        yes_total_cost_dollars DECIMAL(10,2),
-                        no_count INTEGER,
-                        no_count_fp NUMERIC(12,2),
-                        no_total_cost_dollars DECIMAL(10,2),
                         revenue DECIMAL(10,2),
                         settled_time TEXT,
                         raw_json TEXT,
+                        yes_count_fp NUMERIC(12,2),
+                        no_count_fp NUMERIC(12,2),
+                        yes_total_cost_dollars DECIMAL(10,2),
+                        no_total_cost_dollars DECIMAL(10,2),
                         UNIQUE(ticker, settled_time)
                     )
                 """)
@@ -1559,9 +1607,7 @@ def sync_settlements():
                     try:
                         ticker = settlement.get("ticker")
                         market_result = settlement.get("market_result")
-                        yes_count = settlement.get("yes_count")
                         yes_count_fp = _fp_to_numeric(settlement.get("yes_count_fp"))
-                        no_count = settlement.get("no_count")
                         no_count_fp = _fp_to_numeric(settlement.get("no_count_fp"))
                         revenue = settlement.get("revenue")
                         settled_time = settlement.get("settled_time")
@@ -1587,10 +1633,12 @@ def sync_settlements():
 
                         cursor.execute("""
                             INSERT INTO users.settlements_0001
-                            (ticker, market_result, yes_count, yes_count_fp, yes_total_cost_dollars, no_count, no_count_fp, no_total_cost_dollars, revenue, settled_time, raw_json)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            (ticker, market_result, revenue, settled_time, raw_json,
+                             yes_count_fp, no_count_fp, yes_total_cost_dollars, no_total_cost_dollars)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                             ON CONFLICT (ticker, settled_time) DO NOTHING
-                        """, (ticker, market_result, yes_count, yes_count_fp, yes_total_cost_dollars, no_count, no_count_fp, no_total_cost_dollars, revenue, settled_time, raw_json))
+                        """, (ticker, market_result, revenue, settled_time, raw_json,
+                              yes_count_fp, no_count_fp, yes_total_cost_dollars, no_total_cost_dollars))
                     except Exception as e:
                         logger.error("Failed to insert settlement %s to PostgreSQL: %s", settlement.get("ticker"), e)
 
@@ -1702,23 +1750,23 @@ def sync_orders():
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
-                # Get existing orders with key fields for delta comparison (use _fp for counts so we don't depend on legacy)
+                # Get existing orders with key fields for delta comparison (use _fp for counts and *_dollars for prices/fees)
                 cursor.execute("""
-                    SELECT order_id, status, fill_count, remaining_count, fill_count_fp, remaining_count_fp,
-                           last_update_time, taker_fees, maker_fees, taker_fill_cost, maker_fill_cost
+                    SELECT order_id, status, fill_count_fp, remaining_count_fp,
+                           last_update_time,
+                           taker_fees_dollars, maker_fees_dollars,
+                           taker_fill_cost_dollars, maker_fill_cost_dollars
                     FROM users.orders_0001
                 """)
                 existing_orders = {row[0]: {
                     'status': row[1],
-                    'fill_count': row[2],
-                    'remaining_count': row[3],
-                    'fill_count_fp': row[4],
-                    'remaining_count_fp': row[5],
-                    'last_update_time': row[6],
-                    'taker_fees': row[7],
-                    'maker_fees': row[8],
-                    'taker_fill_cost': row[9],
-                    'maker_fill_cost': row[10]
+                    'fill_count_fp': row[2],
+                    'remaining_count_fp': row[3],
+                    'last_update_time': row[4],
+                    'taker_fees_dollars': row[5],
+                    'maker_fees_dollars': row[6],
+                    'taker_fill_cost_dollars': row[7],
+                    'maker_fill_cost_dollars': row[8],
                 } for row in cursor.fetchall()}
                 
                 pg_new_count = 0
@@ -1734,42 +1782,49 @@ def sync_orders():
                         # DELTA CHECK - Compare key fields that can change
                         existing = existing_orders[order_id]
                         needs_update = False
-                        
+
                         # Check for changes in critical fields (use _fp for counts so API can omit legacy)
                         api_fill_fp = _fp_to_numeric(order.get("fill_count_fp"))
                         api_remaining_fp = _fp_to_numeric(order.get("remaining_count_fp"))
+
+                        # Fees and fill cost now come from *_dollars fields post fixed-point migration.
+                        api_taker_fees_dollars = order.get("taker_fees_dollars")
+                        api_maker_fees_dollars = order.get("maker_fees_dollars")
+                        api_taker_fill_cost_dollars = order.get("taker_fill_cost_dollars")
+                        api_maker_fill_cost_dollars = order.get("maker_fill_cost_dollars")
+
                         if (existing['status'] != order.get("status") or
                             existing['fill_count_fp'] != api_fill_fp or
                             existing['remaining_count_fp'] != api_remaining_fp or
                             existing['last_update_time'] != order.get("last_update_time") or
-                            existing['taker_fees'] != order.get("taker_fees") or
-                            existing['maker_fees'] != order.get("maker_fees") or
-                            existing['taker_fill_cost'] != order.get("taker_fill_cost") or
-                            existing['maker_fill_cost'] != order.get("maker_fill_cost")):
+                            existing['taker_fees_dollars'] != api_taker_fees_dollars or
+                            existing['maker_fees_dollars'] != api_maker_fees_dollars or
+                            existing['taker_fill_cost_dollars'] != api_taker_fill_cost_dollars or
+                            existing['maker_fill_cost_dollars'] != api_maker_fill_cost_dollars):
                             needs_update = True
                         
                         if needs_update:
                             try:
-                                # UPDATE existing order with new data
+                                # UPDATE existing order with new data (no legacy integer columns)
                                 cursor.execute("""
                                     UPDATE users.orders_0001 SET
-                                        status = %s, fill_count = %s, remaining_count = %s,
+                                        status = %s,
                                         fill_count_fp = %s, remaining_count_fp = %s,
-                                        last_update_time = %s, taker_fees = %s, maker_fees = %s,
-                                        taker_fill_cost = %s, maker_fill_cost = %s, queue_position = %s,
+                                        last_update_time = %s,
+                                        taker_fees_dollars = %s, maker_fees_dollars = %s,
+                                        taker_fill_cost_dollars = %s, maker_fill_cost_dollars = %s,
+                                        queue_position = %s,
                                         raw_json = %s, updated_at = CURRENT_TIMESTAMP
                                     WHERE order_id = %s
                                 """, (
                                     order.get("status"),
-                                    order.get("fill_count"),
-                                    order.get("remaining_count"),
-                                    _fp_to_numeric(order.get("fill_count_fp")),
-                                    _fp_to_numeric(order.get("remaining_count_fp")),
+                                    api_fill_fp,
+                                    api_remaining_fp,
                                     order.get("last_update_time"),
-                                    order.get("taker_fees"),
-                                    order.get("maker_fees"),
-                                    order.get("taker_fill_cost"),
-                                    order.get("maker_fill_cost"),
+                                    api_taker_fees_dollars,
+                                    api_maker_fees_dollars,
+                                    api_taker_fill_cost_dollars,
+                                    api_maker_fill_cost_dollars,
                                     order.get("queue_position"),
                                     json.dumps(order),
                                     order_id
@@ -1783,12 +1838,16 @@ def sync_orders():
                         try:
                             cursor.execute("""
                                 INSERT INTO users.orders_0001
-                                (order_id, user_id, ticker, status, action, side, type, yes_price, no_price, yes_price_dollars, no_price_dollars,
-                                 initial_count, initial_count_fp, remaining_count, remaining_count_fp, fill_count, fill_count_fp,
+                                (order_id, user_id, ticker, status, action, side, type, yes_price_dollars, no_price_dollars,
+                                 initial_count_fp, remaining_count_fp, fill_count_fp,
                                  created_time, expiration_time, last_update_time, client_order_id, order_group_id, queue_position,
-                                 self_trade_prevention_type, maker_fees, taker_fees, maker_fill_cost,
-                                 taker_fill_cost, raw_json)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                 self_trade_prevention_type,
+                                 maker_fees_dollars, taker_fees_dollars, maker_fill_cost_dollars, taker_fill_cost_dollars,
+                                 raw_json)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                        %s, %s, %s,
+                                        %s, %s, %s, %s, %s, %s, %s,
+                                        %s, %s, %s, %s, %s)
                             """, (
                                 order_id,
                                 order.get("user_id"),
@@ -1797,15 +1856,10 @@ def sync_orders():
                                 order.get("action"),
                                 order.get("side"),
                                 order.get("type"),
-                                order.get("yes_price"),
-                                order.get("no_price"),
                                 order.get("yes_price_dollars"),
                                 order.get("no_price_dollars"),
-                                order.get("initial_count"),
                                 _fp_to_numeric(order.get("initial_count_fp")),
-                                order.get("remaining_count"),
                                 _fp_to_numeric(order.get("remaining_count_fp")),
-                                order.get("fill_count"),
                                 _fp_to_numeric(order.get("fill_count_fp")),
                                 order.get("created_time"),
                                 order.get("expiration_time"),
@@ -1814,10 +1868,10 @@ def sync_orders():
                                 order.get("order_group_id"),
                                 order.get("queue_position"),
                                 order.get("self_trade_prevention_type"),
-                                order.get("maker_fees"),
-                                order.get("taker_fees"),
-                                order.get("maker_fill_cost"),
-                                order.get("taker_fill_cost"),
+                                order.get("maker_fees_dollars"),
+                                order.get("taker_fees_dollars"),
+                                order.get("maker_fill_cost_dollars"),
+                                order.get("taker_fill_cost_dollars"),
                                 json.dumps(order)
                             ))
                             pg_new_count += 1

@@ -478,6 +478,8 @@ def init_database():
                 immediate_amount INTEGER,
                 immediate_status VARCHAR(50),
                 synced_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                master_trading_bankroll INTEGER,
+                mtb_base_value INTEGER,
                 CONSTRAINT account_history_0001_created_type_amount_key UNIQUE (created_at, entry_type, amount)
             );
         """)
@@ -486,23 +488,34 @@ def init_database():
             DO $$
             DECLARE
                 col TEXT;
-                cols_add TEXT[] := ARRAY['entry_type', 'amount', 'fee', 'created_at', 'updated_at', 'status', 'returned_amount', 'deposit_type', 'immediate_amount', 'immediate_status', 'synced_at', 'kalshi_id', 'vendor', 'rail'];
+                cols_add TEXT[] := ARRAY[
+                    'entry_type', 'amount', 'fee', 'created_at', 'updated_at', 'status',
+                    'returned_amount', 'deposit_type', 'immediate_amount', 'immediate_status',
+                    'synced_at', 'kalshi_id', 'vendor', 'rail', 'master_trading_bankroll', 'mtb_base_value'
+                ];
                 col_defs TEXT[] := ARRAY[
                     'VARCHAR(20) NOT NULL', 'INTEGER NOT NULL', 'INTEGER DEFAULT 0', 'TIMESTAMP WITH TIME ZONE NOT NULL',
                     'TIMESTAMP WITH TIME ZONE', 'VARCHAR(50)', 'INTEGER DEFAULT 0', 'VARCHAR(50)', 'INTEGER', 'VARCHAR(50)',
-                    'TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP', 'VARCHAR(64)', 'VARCHAR(100)', 'VARCHAR(100)'
+                    'TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP', 'VARCHAR(64)', 'VARCHAR(100)', 'VARCHAR(100)',
+                    'INTEGER', 'INTEGER'
                 ];
                 i INT;
             BEGIN
                 FOR i IN 1..array_length(cols_add, 1) LOOP
-                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'users' AND table_name = 'account_history_0001' AND column_name = cols_add[i]) THEN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'users' AND table_name = 'account_history_0001' AND column_name = cols_add[i]
+                    ) THEN
                         EXECUTE format('ALTER TABLE users.account_history_0001 ADD COLUMN %I ' || col_defs[i], cols_add[i]);
                     END IF;
                 END LOOP;
                 IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'account_history_0001_created_type_amount_key') THEN
                     ALTER TABLE users.account_history_0001 ADD CONSTRAINT account_history_0001_created_type_amount_key UNIQUE (created_at, entry_type, amount);
                 END IF;
-                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'users' AND tablename = 'account_history_0001' AND indexname = 'account_history_0001_kalshi_id_key') THEN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_indexes
+                    WHERE schemaname = 'users' AND tablename = 'account_history_0001' AND indexname = 'account_history_0001_kalshi_id_key'
+                ) THEN
                     CREATE UNIQUE INDEX account_history_0001_kalshi_id_key ON users.account_history_0001 (kalshi_id) WHERE kalshi_id IS NOT NULL;
                 END IF;
             EXCEPTION WHEN OTHERS THEN
