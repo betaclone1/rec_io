@@ -1434,6 +1434,13 @@
             statusElement.className = `monitor-status ${getStatusClass(status)}`;
           }
           
+          // Update auto trade toggle (failsafe: same refresh loop as other tile data)
+          const toggleElement = tile.querySelector('.auto-trade-toggle');
+          if (toggleElement) {
+            const on = newMonitor.autoTrade === true || newMonitor.auto_trade === true;
+            if (on) toggleElement.classList.add('active'); else toggleElement.classList.remove('active');
+          }
+          
           // Update allocation status badge
           const statusParent = statusElement ? statusElement.parentElement : null;
           if (statusParent) {

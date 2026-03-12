@@ -6,6 +6,25 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-11 — Drawdown safety valve and monitor list frontend sync
+
+**Summary**
+
+- **Drawdown safety valve:** When account sync detects a significant drawdown (Master Trading Bankroll ≤ 70% of previous bankroll), it steps down `bankroll_current` and notifies monitor_manager with `bankroll_stepped_down: true`. Monitor_manager then sets all monitors' `auto_trade` to FALSE and `auto_trade_status` to `'off'` so auto entry is halted until the user manually re-enables per monitor.
+- **Sync path:** `kalshi_account_sync_ws` sets `bankroll_stepped_down` only in the ratchet step-down branch and passes it in the POST body to `/api/bankroll_updated`. Monitor_manager reads the flag and runs the bulk UPDATE on `users.monitor_list_0001` before recalculating allotments.
+- **Frontend notify on every monitor_list change:** Monitor_manager now calls `_notify_frontend_monitor_list_updated()` whenever it changes the monitor list (bankroll update, position variables update, statistics update, create monitor, toggle auto_trade, sync_monitor_processes). The main app broadcasts `monitor_list_updated` so the dashboard runs `loadMonitors()` and refreshes tiles.
+- **Dashboard (tabs + mobile) failsafe:** The AUTO TRADE toggle on monitor tiles is updated in the same 30s refresh loop as other tile stats. `updateMonitorStatValues` now syncs the `.auto-trade-toggle` element's `active` class from the API data (`autoTrade` / `auto_trade`), so if a WebSocket update is missed, the next poll corrects the toggle.
+
+No DB schema changes. Backend (kalshi_account_sync_ws, monitor_manager) and frontend (dashboard.html, dashboard_mobile.html) only.
+
+**Production checklist**
+
+- [ ] Confirm codebase changes (pull latest on production).
+- [ ] No DB migrations. Run `scripts/MASTER_RESTART.sh` so kalshi_account_sync and monitor_manager load the new code.
+- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Optionally simulate a drawdown (or wait for one) and confirm dashboard toggles show auto_trade off and refresh when expected.
+
+---
+
 ## 2026-03-12 — Kalshi API: fills and settlements _dollars (schema)
 
 **Summary**

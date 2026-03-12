@@ -358,8 +358,8 @@ def notify_frontend_db_change(db_name: str, change_data: dict = None):
     except Exception as e:
         logger.error("Error notifying frontend: %s", e)
 
-def notify_monitor_manager():
-    """Notify monitor_manager that bankroll has been updated."""
+def notify_monitor_manager(bankroll_stepped_down=False):
+    """Notify monitor_manager that bankroll has been updated. Pass bankroll_stepped_down=True when bankroll was stepped down due to significant drawdown (MTB <= 70% of prev)."""
     try:
         import requests
         from backend.core.port_config import get_port
@@ -367,7 +367,7 @@ def notify_monitor_manager():
         monitor_port = get_port("monitor_manager")
         response = requests.post(
             f"http://localhost:{monitor_port}/api/bankroll_updated",
-            json={},
+            json={"bankroll_stepped_down": bankroll_stepped_down},
             timeout=5
         )
         
@@ -954,6 +954,7 @@ def sync_balance():
                     
                     # Only update subaccounts and derive bankroll_current from Master Trading Bankroll when flat (positions=0).
                     # When positions != 0, skip subaccounts and hold bankroll_current to avoid noisy API during open/close.
+                    bankroll_stepped_down = False
                     if positions_value == 0:
                         # Update subaccounts (PRIMARY, MTB, PnLs; internal transfer if target hit). Returns (mtb_balance, transfer_triggered).
                         master_bankroll_balance, transfer_triggered = subaccounts_update(cursor, portfolio_value)
@@ -968,6 +969,7 @@ def sync_balance():
                                 bankroll_current = master_bankroll_balance
                             elif master_bankroll_balance <= (prev_bankroll * 0.7):
                                 bankroll_current = master_bankroll_balance
+                                bankroll_stepped_down = True
                             else:
                                 bankroll_current = prev_bankroll
                     else:
@@ -1015,8 +1017,8 @@ def sync_balance():
                             "total_portfolio": total_portfolio_value
                         })
 
-                        # Notify monitor_manager of bankroll update
-                        notify_monitor_manager()
+                        # Notify monitor_manager of bankroll update (pass drawdown flag so it can set all auto_trade=FALSE)
+                        notify_monitor_manager(bankroll_stepped_down=bankroll_stepped_down)
                     # Sync Kalshi v1 account/history into users.account_history_0001 (simple UPDATE-then-INSERT, no ON CONFLICT)
                     cursor.execute("SELECT kalshi_user_id FROM users.user_info_0001 WHERE user_no = '0001'")
                     kalshi_user_row = cursor.fetchone()

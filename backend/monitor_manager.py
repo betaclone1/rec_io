@@ -415,26 +415,27 @@ environment={env_vars}
         
         self.log_event("SUCCESS", "Monitor process sync completed")
         
-        # Alert frontend to refresh monitor list
+        self._notify_frontend_monitor_list_updated("Monitor process sync completed")
+        return True
+
+    def _notify_frontend_monitor_list_updated(self, message: str = "Monitor list updated") -> None:
+        """Whenever monitor_manager changes monitor_list, alert frontend so displays refresh."""
         try:
             import requests
-            self.log_event("INFO", "Sending monitor list update alert to frontend")
-            response = requests.post('http://localhost:3000/api/broadcast_monitor_list_update', json={
-                'type': 'monitor_list_updated',
-                'message': 'Monitor list has been updated'
-            }, timeout=1)
-            self.log_event("INFO", f"Monitor list update alert sent, response: {response.status_code}")
+            requests.post("http://localhost:3000/api/broadcast_monitor_list_update", json={
+                "type": "monitor_list_updated",
+                "message": message
+            }, timeout=5)
         except Exception as e:
-            self.log_event("WEBSOCKET_ERROR", f"Failed to send monitor list update notification: {str(e)}")
-        
-        return True
+            self.log_event("WEBSOCKET_ERROR", f"Failed to notify frontend: {e}")
 
     # === CORE FUNCTIONALITY (Starting Point) ===
     
-    def handle_bankroll_update(self) -> Dict[str, Any]:
+    def handle_bankroll_update(self, bankroll_stepped_down: bool = False) -> Dict[str, Any]:
         """
-        Handle bankroll update notification from kalshi_account_sync
-        This is the starting point - will expand to handle all monitor updates
+        Handle bankroll update notification from kalshi_account_sync.
+        When bankroll_stepped_down is True (significant drawdown), set all monitors' auto_trade to FALSE
+        so auto entry is halted until the user manually re-enables it.
         """
         try:
             self.log_event("BANKROLL_UPDATE", "Processing bankroll update notification")
@@ -442,14 +443,37 @@ environment={env_vars}
             # Update bankroll allotments for active monitors (includes total_position calculation)
             allotment_result = self.update_monitor_bankroll_allotments(0)  # bankroll parameter not used anymore
             
+            # Drawdown safety valve: set all monitors' auto_trade to FALSE so auto entry is halted until user re-enables
+            if bankroll_stepped_down:
+                conn = None
+                try:
+                    conn = self.get_database_connection()
+                    with conn.cursor() as cursor:
+                        cursor.execute("""
+                            UPDATE users.monitor_list_0001
+                            SET auto_trade = FALSE, auto_trade_status = 'off', updated_at = CURRENT_TIMESTAMP
+                        """)
+                        n_updated = cursor.rowcount
+                    conn.commit()
+                    self.log_event(
+                        "AUTO_ENTRY_HALTED_DRAWDOWN",
+                        f"Significant drawdown detected; set auto_trade=FALSE for all monitors (rows_updated={n_updated}). Re-enable manually when ready."
+                    )
+                finally:
+                    if conn:
+                        conn.close()
+            
             # Combine results
             combined_result = {
                 "status": "success",
                 "allotment_update": allotment_result,
+                "bankroll_stepped_down": bankroll_stepped_down,
                 "message": "Bankroll update processed successfully"
             }
             
             self.log_event("BANKROLL_UPDATE", "Bankroll update processed successfully", combined_result)
+            # Whenever we change monitor_list, alert frontend
+            self._notify_frontend_monitor_list_updated("Bankroll / monitor list updated")
             return combined_result
             
         except Exception as e:
@@ -714,6 +738,7 @@ environment={env_vars}
                 except Exception as e:
                     self.log_event("WEBSOCKET_ERROR", f"Failed to send total_position update notification: {str(e)}")
                 
+                self._notify_frontend_monitor_list_updated("Monitor position variables updated")
                 total_time = time.time() - start_time
                 self.log_event("TIMING", f"Total function time: {total_time:.3f}s")
                 
@@ -978,7 +1003,8 @@ environment={env_vars}
                             self.log_event("STATS_UPDATE", f"Updated monitor {monitor_name}: trades={total_trades}, W/L={win_loss_rate}%, ret_pct={ret_pct_sum}%, PNL=${total_pnl:.2f}")
                 
                 conn.commit()
-                
+                if updated_count > 0:
+                    self._notify_frontend_monitor_list_updated("Monitor statistics updated")
                 return {
                     "status": "success",
                     "message": f"Updated statistics for {updated_count} monitors",
@@ -1351,8 +1377,10 @@ except Exception as e:
 
 @app.route('/api/bankroll_updated', methods=['POST'])
 def bankroll_updated():
-    """Endpoint called by kalshi_account_sync when bankroll changes"""
-    return jsonify(monitor_manager.handle_bankroll_update())
+    """Endpoint called by kalshi_account_sync when bankroll changes. Body may include bankroll_stepped_down=True when bankroll was stepped down due to significant drawdown."""
+    payload = request.get_json(silent=True) or {}
+    bankroll_stepped_down = payload.get("bankroll_stepped_down", False)
+    return jsonify(monitor_manager.handle_bankroll_update(bankroll_stepped_down=bankroll_stepped_down))
 
 @app.route('/api/sync_bankroll_allotments', methods=['POST'])
 def sync_bankroll_allotments():
@@ -1932,6 +1960,7 @@ def create_monitor():
         }
         monitor_manager.spawn_monitor_processes(monitor_data)
         
+        monitor_manager._notify_frontend_monitor_list_updated("Monitor created")
         return jsonify({
             "status": "ok", 
             "message": f"Monitor {monitor_name} created successfully",
@@ -2046,6 +2075,7 @@ def toggle_auto_trade():
         conn.commit()
         conn.close()
         
+        monitor_manager._notify_frontend_monitor_list_updated("Auto trade toggled")
         return jsonify({"status": "ok", "message": f"Auto trade {'enabled' if auto_trade else 'disabled'} for monitor {monitor_id}"})
         
     except Exception as e:
