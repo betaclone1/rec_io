@@ -133,3 +133,11 @@ For this alignment pass, all in-scope core/runtime tables are therefore treated 
 - Re‑ran `scripts/db/check_db_schema_drift.py` locally with `PYTHONPATH=.`; it reports:  
   `OK: database.py matches reference doc for critical tables (with parsed columns).`
 - This confirms that, for the critical/runtime tables, **local** `database.py` and the reference doc are aligned; the remaining drift tracked in this section is limited to prod‑only extensions where the DB is treated as canonical and docs/db.py will catch up.
+
+---
+
+## 7. After (plan closed 2026-03-12)
+
+- **Outcome:** No prod DDL was run. All in-scope core/runtime tables were classified as **doc/db.py catch up to DB** or **leave as-is (document reality)**. Prod is the source of truth for the current schema; reference doc and `database.py` are to be updated in follow-up work to match prod where they lag.
+- **Local:** `check_db_schema_drift.py` passes for critical tables; reference and `database.py` are aligned for the tables the drift check covers.
+- **Next steps (if any):** Doc/db.py catch-up edits can be done incrementally. Any future prod schema changes (e.g. type alignment for `users.trades_0001`) should use reversible migrations under `scripts/migrations/` and a dedicated prod maintenance window with backup. Plan `.cursor/plans/db-prod-schema-alignment.md` closed as **done**.

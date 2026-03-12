@@ -6,6 +6,27 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-12 — Active trade supervisor fix (confirm_open_trade post fixed-point)
+
+**Summary**
+
+- **Bug:** After the fixed-point migration, `confirm_open_trade()` in trade_manager still referenced `taker_fill_cost_cents`, which was removed from `users.orders_0001`. When `_parse_dollars(taker_fill_cost_dollars)` returned None, the code raised NameError and confirm_open_trade crashed. Trades never moved to `status = 'open'`, so active_trade_supervisor never received the "open" notification and never tracked them (monitor_confirmed = FALSE).
+- **Fix:** Removed the legacy fallback; when total cost from orders is missing, we keep the existing `buy_price` from `users.trades_0001` so the trade is still confirmed and ATS is notified.
+- **Docs:** Added `docs/AUDIT_ACTIVE_TRADE_SUPERVISOR_TRADE_MANAGER.md` (pipeline, failure modes, fixed-point impact, duplicate-entry explanation).
+
+No DB migrations. Code change in `backend/trade_manager.py` only.
+
+**Production checklist**
+
+- [ ] Confirm codebase changes (pull latest on production):  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart trade_manager so the fix is loaded:  
+  `supervisorctl -c backend/supervisord.conf restart trade_manager`  
+  (Optional: restart active_trade_supervisor processes if you want them to pick up any related state; the fix is in trade_manager.)
+- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status. After deploy, new opens should be tracked; monitor_confirmed = FALSE counts may drop over the next days (run `scripts/diagnostics/check_monitor_confirmed_failures.py --days 7` to spot-check).
+
+---
+
 ## 2026-03-12 — Fixed-point migration completion and MTB (DB migrations required)
 
 **Summary**
@@ -20,18 +41,38 @@ Plans: `db-prod-schema-alignment` (in progress). Schema ref: `docs/MASTER_DB_SCH
 
 **Production checklist**
 
-- [ ] Confirm codebase changes on production (pull latest `main`):  
+- [x] Confirm codebase changes on production (pull latest `main`):  
   `git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] **DB migration 1 — account_balance MTB columns.** From project root on the target server:
+- [x] **DB migration 1 — account_balance MTB columns.** From project root on the target server:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260312_2000_account_balance_mtb_columns`
-- [ ] **DB migration 2 — orders fee/cost dollar columns.** From project root:
+- [x] **DB migration 2 — orders fee/cost dollar columns.** From project root:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260312_2015_orders_fee_dollars_columns`
-- [ ] **DB migration 3 — drop legacy integer columns from orders_0001.** From project root:
+- [x] **DB migration 3 — drop legacy integer columns from orders_0001.** From project root:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260312_2045_orders_drop_legacy_int_columns`
-- [ ] **DB migration 4 — drop legacy columns from fills, positions, settlements.** From project root:
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260312_2115_fp_drop_legacy_ints_fills_positions_settlements`
-- [ ] Run `scripts/MASTER_RESTART.sh` so kalshi_account_sync, trade_manager, and dependent services load the new code.
-- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status, and `logs/kalshi_account_sync.out.log` shows no "Failed to insert order" errors on baseline sync.
+- [x] **DB migration 4 — drop legacy columns from fills, positions, settlements (direct SQL, one-time).** From psql or an equivalent SQL console on the production database, run once:
+
+  ```sql
+  -- Fills: keep count_fp and dollar prices only
+  ALTER TABLE users.fills_0001
+      DROP COLUMN IF EXISTS count;
+
+  -- Positions: keep *_fp and *_dollars; legacy numeric columns are no longer read
+  ALTER TABLE users.positions_0001
+      DROP COLUMN IF EXISTS total_traded,
+      DROP COLUMN IF EXISTS position,
+      DROP COLUMN IF EXISTS market_exposure,
+      DROP COLUMN IF EXISTS realized_pnl,
+      DROP COLUMN IF EXISTS fees_paid;
+
+  -- Settlements: keep *_fp and *_total_cost_dollars; legacy int counts are no longer read
+  ALTER TABLE users.settlements_0001
+      DROP COLUMN IF EXISTS yes_count,
+      DROP COLUMN IF EXISTS no_count;
+  ```
+
+  Then confirm via `\d users.fills_0001`, `\d users.positions_0001`, and `\d users.settlements_0001` that these columns are gone.
+- [x] Run `scripts/MASTER_RESTART.sh` so kalshi_account_sync, trade_manager, and dependent services load the new code.
+- [x] Verify: health (main_app :3000, trade_executor :8001), supervisor status, and `logs/kalshi_account_sync.out.log` shows no "Failed to insert order" errors on baseline sync.
 
 ---
 

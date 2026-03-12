@@ -42,7 +42,7 @@
 |-------|------|------|
 | @db | DB operations, schema, migrations, reference. | .cursor/rules/db.mdc (or archive) |
 | @frontend | Frontend, HTML/JS/CSS, mobile, UI/UX. | .cursor/rules/frontend.mdc (or archive) |
-| @analyst | Analytics, backtests, strategy, data deep-dives. | .cursor/rules/analyst.mdc (or archive) |
+| @analyst | Trades logs, historical/live data, analytics pipelines; tradebook; strategy description, optimization, and design. Expert on crypto market movements and Kalshi-style prediction market mechanics. | .cursor/rules/analyst.mdc |
 | @updater | Changelog, prepare update, production checklist. | .cursor/rules/updater.mdc (or archive) |
 | @kalshi | Kalshi API, WebSocket, broker. | .cursor/rules/kalshi.mdc (or archive) |
 | @digitalocean | DO API, snapshots, backups, droplets. | .cursor/rules/digitalocean.mdc (or archive) |

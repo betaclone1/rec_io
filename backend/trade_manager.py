@@ -925,11 +925,21 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                     buy_price = 0.0
                     total_cost_usd = _parse_dollars(taker_fill_cost_dollars)
 
-                    if total_cost_usd is None and taker_fill_cost_cents is not None:
-                        total_cost_usd = taker_fill_cost_cents / 100.0
-
                     if total_cost_usd is not None and position_size > 0:
                         buy_price = total_cost_usd / position_size
+                    elif position_size > 0:
+                        # Fallback: orders table had no dollar cost (e.g. API gap); keep existing buy_price from trade row
+                        try:
+                            pg_conn_bp = get_postgresql_connection()
+                            if pg_conn_bp:
+                                with pg_conn_bp.cursor() as cur:
+                                    cur.execute("SELECT buy_price FROM users.trades_0001 WHERE id = %s", (id,))
+                                    bp_row = cur.fetchone()
+                                    if bp_row and bp_row[0] is not None:
+                                        buy_price = float(bp_row[0])
+                                pg_conn_bp.close()
+                        except Exception as e:
+                            log_event(ticket_id, f"MANAGER: Could not read existing buy_price for open: {e}")
 
                     # trades_0001.position is integer; round for DB write
                     position_for_db = int(round(position_size))
