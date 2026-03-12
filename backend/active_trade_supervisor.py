@@ -1210,7 +1210,8 @@ def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Option
             
         cursor = conn.cursor()
         
-        # Get market data from PostgreSQL (hourly or 15m table per monitor)
+        # Get market data from PostgreSQL (hourly or 15m table per monitor).
+        # Use volume_fp / volume_24h_fp (fixed-point migration); legacy "volume" was removed.
         cursor.execute(f"""
             SELECT 
                 market_ticker,
@@ -1218,7 +1219,7 @@ def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Option
                 no_ask,
                 yes_ask_dollars,
                 no_ask_dollars,
-                volume,
+                volume_fp,
                 event_ticker,
                 strike
             FROM live_data.{table_name}
@@ -1232,7 +1233,7 @@ def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Option
             log("⚠️ No Kalshi market data found in PostgreSQL")
             return None
         
-        # Convert to the same format as the JSON file
+        # Convert to the same format as the JSON file (volume_fp -> "volume" for compatibility)
         markets = []
         for row in markets_data:
             market = {
@@ -1241,7 +1242,7 @@ def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Option
                 "no_ask": row[2],
                 "yes_ask_dollars": row[3],
                 "no_ask_dollars": row[4],
-                "volume": row[5],
+                "volume": row[5],  # volume_fp
                 "event_ticker": row[6],
                 "strike": row[7]
             }
