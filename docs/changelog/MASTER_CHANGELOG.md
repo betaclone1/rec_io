@@ -19,9 +19,9 @@ No DB schema changes. Backend (kalshi_account_sync_ws, monitor_manager) and fron
 
 **Production checklist**
 
-- [ ] Confirm codebase changes (pull latest on production).
-- [ ] No DB migrations. Run `scripts/MASTER_RESTART.sh` so kalshi_account_sync and monitor_manager load the new code.
-- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Optionally simulate a drawdown (or wait for one) and confirm dashboard toggles show auto_trade off and refresh when expected.
+- [x] Confirm codebase changes (pull latest on production).
+- [x] No DB migrations. Run `scripts/MASTER_RESTART.sh` so kalshi_account_sync and monitor_manager load the new code.
+- [x] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Optionally simulate a drawdown (or wait for one) and confirm dashboard toggles show auto_trade off and refresh when expected.
 
 ---
 
