@@ -1,5 +1,7 @@
 # TODO — Changelog backlog
 
+**Outstanding work migrated (2026-03):** Active task tracking is in **`.cursor/plans/`** (one plan file per task). See `.cursor/plans/README.md` and `PROJECT_OPERATING_MODEL.md`. This doc remains as historical record and reference; use `.cursor/plans/*.md` for current backlog.
+
 Timestamped tasks we want to come back to. Use checklist formatting; add technical notes where useful. Update with milestones and completion reports as work progresses.
 
 ---
@@ -18,14 +20,16 @@ Timestamped tasks we want to come back to. Use checklist formatting; add technic
 
 **Scope:** Align DB structure across reference docs, `database.py`, and local vs remote DB states. Single source of truth and no schema drift.
 
-**Checklist**
+**Active tracking:** See `.cursor/plans/db-prod-schema-alignment.md` and `docs/changelog/DB_MAINTENANCE_AUDIT_FINDINGS.md` for the current state. This section is a historical summary and high-level pointer, not the live task source of truth.
+
+**Checklist (historical)**
 
 - [x] Audit and document current state: reference doc vs `database.py` vs local DB vs remote (prod) DB. (Local audit done; prod deferred; findings in `docs/changelog/DB_MAINTENANCE_AUDIT_FINDINGS.md`.)
 - [x] Define single source of truth (doc or code) and update the other to match. (Reference doc = SSOT; `database.py` = bootstrap; see findings doc.)
 - [x] Ensure `database.py` CREATE TABLE / migrations produce the same types and columns as the reference doc for all critical tables (at least `users.trades_0001`, `users.trades_simulated_0001`, and any other tables used by trading paths). (Local alignment done 2026-03-07: type-compatibility buckets in drift check, reference updated with bankroll_allotment and max_probability, parser skips comment lines; `check_db_schema_drift.py` passes.)
 - [x] Extend or replace `update_db_schema_to_reference.py` so it can correct type/default mismatches (not only add missing columns), or document when to run ALTERs manually. (Documented: type/default via reversible migrations or manual ALTERs; script adds columns only.)
 - [x] Add a check (script or CI) that fails if `database.py` table definitions drift from the reference doc. (`scripts/db/check_db_schema_drift.py`.)
-- [ ] Plan and execute remote (prod) schema fixes for tables that were created with the old `database.py` definition. (Prod is part of the normal update process; @updater coordinates and verifies when pushing to production. Local system updated and tested first; then run update to prod and updater agent coordinates/verifies.)
+- [ ] Plan and execute remote (prod) schema fixes for tables that were created with the old `database.py` definition. (**Not yet scheduled**: when a prod maintenance window is planned, create a dedicated plan under `.cursor/plans/` for the reversible migration batch; do not track that work here.)
 
 **Technical notes**
 
@@ -72,17 +76,17 @@ Timestamped tasks we want to come back to. Use checklist formatting; add technic
 
 ---
 
-## 2026-03-05 — System-wide logging audit
+## 2026-03-05 — System-wide logging audit (completed)
 
 **Scope:** Scripts are logging far too much, causing system lag and ballooning storage. Audit logging across services and reduce volume to what’s necessary for operations and debugging.
 
 **Checklist**
 
-- [ ] Identify main offenders: which scripts/services produce the largest or most frequent log output (e.g. auto_entry_supervisor, trade_manager, kalshi_account_sync, watchdogs, etc.).
-- [ ] Define logging policy: what should be logged at INFO vs DEBUG vs only in development; reduce per-tick/per-order/per-request chatter.
-- [ ] Trim or gate verbose logs (e.g. full payloads, repeated status lines, success confirmations that add little value).
-- [ ] Consider log levels, conditional verbose logging, or sampling for high-frequency paths.
-- [ ] Revisit logrotate/retention and any log aggregation so retained volume is bounded after the audit.
+- [x] Identify main offenders: which scripts/services produce the largest or most frequent log output (e.g. auto_entry_supervisor, trade_manager, kalshi_account_sync, watchdogs, etc.).
+- [x] Define logging policy: what should be logged at INFO vs DEBUG vs only in development; reduce per-tick/per-order/per-request chatter.
+- [x] Trim or gate verbose logs (e.g. full payloads, repeated status lines, success confirmations that add little value).
+- [x] Consider log levels, conditional verbose logging, or sampling for high-frequency paths.
+- [x] Revisit logrotate/retention and any log aggregation so retained volume is bounded after the audit.
 
 **Technical notes**
 
@@ -91,7 +95,7 @@ Timestamped tasks we want to come back to. Use checklist formatting; add technic
 
 **Milestones / completion**
 
-- (Add when audit is started or completed.)
+- **2026-03-12 — Logging audit completed.** Offending services identified, log volume trimmed per policy, and retention/rotation updated; see `.cursor/plans/logging-audit.md` for details and status.
 
 ---
 
@@ -123,6 +127,8 @@ Tasks to reduce CPU usage of long-running scripts via consolidation, polling/int
 
 **Scope:** Consolidate `auto_entry_supervisor` from one process per monitor to a **single process** that iterates over all active monitors each tick. Keeps strict per-monitor discipline (no cross-monitor state, every trade/DB call explicitly keyed by monitor_id). Expected CPU impact: today ~6–7% of one core per process (8 monitors ≈ 50% of one core total); after consolidation ~35–45% of one core total — roughly 5–15% of one core freed, or ~1–2% per active monitor. Gain is from removing duplicate process/thread overhead.
 
+**Active tracking:** See `.cursor/plans/auto-entry-supervisor-consolidation.md` for the live plan, steps, and completion criteria.
+
 **Checklist**
 
 - [ ] Refactor state to be per-monitor (e.g. `_last_monitor_state[monitor_id]`, `auto_entry_indicator_state[monitor_id]`, strategy globals keyed by monitor_id). No process-wide “current monitor” global.
@@ -146,6 +152,8 @@ Tasks to reduce CPU usage of long-running scripts via consolidation, polling/int
 ## 2026-03-06 — Discord MCP / Kalshi dev channel (deferred)
 
 **Scope:** Finish Discord bot setup so @kalshi can read (and optionally post to) the Kalshi dev channel. Eric is new to MCP; he wants to come back to this later and use it as a starting point to dig into MCP functionality.
+
+**Active tracking:** See `.cursor/plans/discord-mcp-kalshi-dev.md` for the live plan, steps, and completion criteria.
 
 **Checklist**
 

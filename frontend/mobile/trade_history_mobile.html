@@ -1113,13 +1113,17 @@
             });
         }
         
-        // Core strategy display order (same as desktop)
+        // Core strategy display order (same as desktop; rest alpha-sorted)
         const STRATEGY_CORE_ORDER = ['Hourly HTC', '15m HTC', 'Momentum Contain', 'Momentum Breakout'];
         let strategyDefaultNames = [];
 
         function sortStrategiesForDisplay(names) {
-            const core = STRATEGY_CORE_ORDER.filter(n => names.includes(n));
-            const rest = names.filter(n => !STRATEGY_CORE_ORDER.includes(n));
+            // Clean up: drop falsy, dedupe, then put core strategies first and sort the rest alphabetically
+            const cleaned = Array.from(new Set(names.filter(Boolean)));
+            const core = STRATEGY_CORE_ORDER.filter(n => cleaned.includes(n));
+            const rest = cleaned
+                .filter(n => !STRATEGY_CORE_ORDER.includes(n))
+                .sort((a, b) => a.localeCompare(b));
             return [...core, ...rest];
         }
 
@@ -1130,8 +1134,10 @@
                 const response = await fetch('/api/strategies?user_id=user_0001');
                 const data = await response.json();
                 if (data.status !== 'ok' || !Array.isArray(data.strategies)) return [];
-                strategyDefaultNames = Array.isArray(data.default_strategy_names) ? data.default_strategy_names : (data.strategies || []);
-                const names = data.strategies.filter(Boolean);
+                const rawStrategies = Array.isArray(data.strategies) ? data.strategies : [];
+                const rawDefaults = Array.isArray(data.default_strategy_names) ? data.default_strategy_names : rawStrategies;
+                strategyDefaultNames = Array.from(new Set(rawDefaults.filter(Boolean)));
+                const names = rawStrategies.filter(Boolean);
                 const ordered = sortStrategiesForDisplay(names);
                 container.innerHTML = '';
                 ordered.forEach(name => {
@@ -1214,20 +1220,30 @@
             if (!btn) return;
             const cbs = getStrategyCheckboxes();
             const checked = cbs.filter(cb => cb.checked);
-            if (checked.length === 0) btn.textContent = 'Select Strategies';
-            else if (checked.length === cbs.length) btn.textContent = 'All Strategies';
-            else if (checked.length === 1) btn.textContent = checked[0].getAttribute('data-strategy-name');
-            else btn.textContent = 'Multiple';
+            if (checked.length === 0) {
+                btn.textContent = 'Select Strategies';
+            } else if (checked.length === cbs.length) {
+                btn.textContent = 'All Strategies';
+            } else if (checked.length === 1) {
+                btn.textContent = checked[0].getAttribute('data-strategy-name');
+            } else {
+                btn.textContent = 'Multiple Strategies';
+            }
         }
         function updateSymbolButtonText() {
             const btn = document.getElementById('symbol-dropdown-btn');
             if (!btn) return;
             const cbs = getSymbolCheckboxes();
             const checked = cbs.filter(cb => cb.checked);
-            if (checked.length === 0) btn.textContent = 'Select Symbols';
-            else if (checked.length === cbs.length) btn.textContent = 'All Symbols';
-            else if (checked.length === 1) btn.textContent = checked[0].getAttribute('data-symbol');
-            else btn.textContent = 'Multiple';
+            if (checked.length === 0) {
+                btn.textContent = 'Select Symbols';
+            } else if (checked.length === cbs.length) {
+                btn.textContent = 'All Symbols';
+            } else if (checked.length === 1) {
+                btn.textContent = checked[0].getAttribute('data-symbol');
+            } else {
+                btn.textContent = 'Multiple Symbols';
+            }
         }
         function updateContractButtonText() {
             const btn = document.getElementById('contract-dropdown-btn');
@@ -1235,10 +1251,15 @@
             if (!btn || !content) return;
             const cbs = Array.from(content.querySelectorAll('input[type="checkbox"]'));
             const checked = cbs.filter(cb => cb.checked);
-            if (checked.length === 0) btn.textContent = 'Select Contracts';
-            else if (checked.length === cbs.length) btn.textContent = 'All Contracts';
-            else if (checked.length === 1) btn.textContent = checked[0].id.replace('contract-', '');
-            else btn.textContent = 'Multiple';
+            if (checked.length === 0) {
+                btn.textContent = 'Select Contracts';
+            } else if (checked.length === cbs.length) {
+                btn.textContent = 'All Contracts';
+            } else if (checked.length === 1) {
+                btn.textContent = checked[0].id.replace('contract-', '');
+            } else {
+                btn.textContent = 'Multiple Contracts';
+            }
         }
         function updateDayButtonText() {
             const btn = document.getElementById('day-dropdown-btn');
@@ -1246,12 +1267,16 @@
             if (!btn || !content) return;
             const cbs = Array.from(content.querySelectorAll('input[type="checkbox"]'));
             const checked = cbs.filter(cb => cb.checked);
-            if (checked.length === 0) btn.textContent = 'Select Days';
-            else if (checked.length === cbs.length) btn.textContent = 'All Days';
-            else if (checked.length === 1) {
+            if (checked.length === 0) {
+                btn.textContent = 'Select Days';
+            } else if (checked.length === cbs.length) {
+                btn.textContent = 'All Days';
+            } else if (checked.length === 1) {
                 const label = checked[0].closest('label');
-                btn.textContent = label ? label.textContent.trim() : 'Multiple';
-            } else btn.textContent = 'Multiple';
+                btn.textContent = label ? label.textContent.trim() : 'Multiple Days';
+            } else {
+                btn.textContent = 'Multiple Days';
+            }
         }
         function updateMonitorButtonText() {
             const btn = document.getElementById('monitor-dropdown-btn');
@@ -1259,12 +1284,16 @@
             if (!btn || !content) return;
             const cbs = Array.from(content.querySelectorAll('input[type="checkbox"]'));
             const checked = cbs.filter(cb => cb.checked);
-            if (checked.length === 0) btn.textContent = 'Select Monitors';
-            else if (checked.length === cbs.length) btn.textContent = 'All Monitors';
-            else if (checked.length === 1) {
+            if (checked.length === 0) {
+                btn.textContent = 'Select Monitors';
+            } else if (checked.length === cbs.length) {
+                btn.textContent = 'All Monitors';
+            } else if (checked.length === 1) {
                 const label = checked[0].closest('label');
-                btn.textContent = label ? label.textContent.trim() : 'Multiple';
-            } else btn.textContent = 'Multiple';
+                btn.textContent = label ? label.textContent.trim() : 'Multiple Monitors';
+            } else {
+                btn.textContent = 'Multiple Monitors';
+            }
         }
         
         // === MONITOR FILTER LOGIC ===

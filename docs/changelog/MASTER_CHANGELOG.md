@@ -6,6 +6,23 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-12 — Kalshi market volume_fp alignment
+
+**Summary**
+
+- Rename Kalshi market volume columns on all live market tables from `volume` / `volume_24h` to `volume_fp` / `volume_24h_fp` to match the Kalshi API’s fixed-point fields.
+- Update `kalshi_market_watchdog` to write `volume_fp` and `volume_24h_fp` as integer counts derived from the API’s fixed-point strings (e.g. `"56658.00"` → `56658`), with safe fallbacks.
+- Keep strike table schemas unchanged; `strike_table_generator` now reads `volume_fp` / `volume_24h_fp` from `market_kalshi_*` and continues to store them in the existing `volume` column on the strike tables.
+
+**Production checklist**
+
+- [x] Confirm codebase changes (pull latest on production).
+- [x] Update DB schema on production Kalshi market tables: rename `live_data.market_kalshi_hourly_{btc,eth,ndx,spx}` and `live_data.market_kalshi_15m_{btc,eth}` columns from `volume` → `volume_fp` and `volume_24h` → `volume_24h_fp` using direct DDL (one-time ALTER TABLE per table).
+- [x] Run `scripts/MASTER_RESTART.sh` so all Kalshi watchdogs, strike generators, and dependent services load the new code.
+- [x] Verify production: health (main_app :3000, trade_executor :8001), supervisor status, and that Kalshi market tables on prod now have `volume_fp` / `volume_24h_fp` columns and are being populated with non-zero values.
+
+---
+
 ## 2026-03-11 — Drawdown safety valve and monitor list frontend sync
 
 **Summary**

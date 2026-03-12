@@ -838,15 +838,19 @@
       });
     }
     
-    // Core strategy display order (first four, then rest from API order)
+    // Core strategy display order (first four, then rest alpha-sorted)
     const STRATEGY_CORE_ORDER = ['Hourly HTC', '15m HTC', 'Momentum Contain', 'Momentum Breakout'];
 
     // Names with default=TRUE in strategy_list; on Reset only these are re-selected
     let strategyDefaultNames = [];
 
     function sortStrategiesForDisplay(names) {
-      const core = STRATEGY_CORE_ORDER.filter(n => names.includes(n));
-      const rest = names.filter(n => !STRATEGY_CORE_ORDER.includes(n));
+      // Clean up: drop falsy, dedupe, then put core strategies first and sort the rest alphabetically
+      const cleaned = Array.from(new Set(names.filter(Boolean)));
+      const core = STRATEGY_CORE_ORDER.filter(n => cleaned.includes(n));
+      const rest = cleaned
+        .filter(n => !STRATEGY_CORE_ORDER.includes(n))
+        .sort((a, b) => a.localeCompare(b));
       return [...core, ...rest];
     }
 
@@ -857,8 +861,10 @@
         const response = await fetch('/api/strategies?user_id=user_0001');
         const data = await response.json();
         if (data.status !== 'ok' || !Array.isArray(data.strategies)) return [];
-        strategyDefaultNames = Array.isArray(data.default_strategy_names) ? data.default_strategy_names : (data.strategies || []);
-        const names = data.strategies.filter(Boolean);
+        const rawStrategies = Array.isArray(data.strategies) ? data.strategies : [];
+        const rawDefaults = Array.isArray(data.default_strategy_names) ? data.default_strategy_names : rawStrategies;
+        strategyDefaultNames = Array.from(new Set(rawDefaults.filter(Boolean)));
+        const names = rawStrategies.filter(Boolean);
         const ordered = sortStrategiesForDisplay(names);
         container.innerHTML = '';
         ordered.forEach(name => {

@@ -1,6 +1,6 @@
 # Prepare update (pre-push)
 
-Run when the user is ready to push a commit to the git repository. Orchestrates verification, server-agnostic audit, changelog/DB alignment, and reports when the update is ready for publishing with a suggested commit message.
+Run when the user is ready to push a commit to the git repository. Orchestrates verification, server-agnostic audit, **plan → changelog handoff**, and reports when the update is ready for publishing with a suggested commit message.
 
 ## Workflow (execute in order)
 
@@ -16,15 +16,21 @@ Run when the user is ready to push a commit to the git repository. Orchestrates 
 3. **Server-agnostic audit**
    - Run `git status` and `git diff` (and `git diff --staged` if applicable). For changed files, search for: hardcoded `localhost` or `127.0.0.1` (allow in tests or commented config), absolute paths (e.g. `/Users/`, `C:\`), env vars that might differ by environment and are not documented in docs or .env.example. Flag each finding with file and line or snippet; do not block the workflow.
 
-4. **Changelog and DB docs (@updater prepare update)**
-   - Follow the steps in .cursor/rules/updater.mdc "Command: prepare update": review changes, add/update MASTER_CHANGELOG.md entry (date, summary, production checklist), update related docs, align docs/MASTER_DB_SCHEMA_REFERENCE.md and backend/core/config/database.py. Ensure DB changes are in schema ref and changelog (same as @db alignment).
+4. **Plans → changelog and DB docs (@updater prepare update)**
+   - Treat **`.cursor/plans/*.md`** as the canonical record of what work was done:
+     - List plan files (exclude `README.md`), read their `**Status:**` lines, and identify plans with `Status: done` that correspond to the changes in this update.
+     - For these completed plans, summarize the user‑visible and DB‑relevant behavior changes in plain language.
+   - Follow the steps in `.cursor/rules/updater.mdc` "Command: prepare update":
+     - Add/update a `docs/changelog/MASTER_CHANGELOG.md` entry (date, title, Summary, Production checklist) that **explicitly references the relevant plan files** (e.g. “Plans: `mtb-account-dashboard`, `account-history-strategy-filters`”) so future readers can trace work back to its plans.
+     - Update related docs, and align `docs/MASTER_DB_SCHEMA_REFERENCE.md` and `backend/core/config/database.py` when DB changes occurred. Ensure any DB/schema changes mentioned in plans are fully captured in the schema ref **and** in the changelog checklist (same standard as @db alignment).
 
 5. **Flag other issues**
    - Note: missing migrations, untracked files that might need committing, TODOs in changed code, or anything that should be reviewed before push.
 
 6. **Commit message and readiness**
-   - **From staged changes:** Run `git diff --cached --name-status` and identify every substantive change. Commit message: short title + bullet list (like Generate Commit Message); 3–7 bullets, each naming one change area in plain language; mention every substantive change; no file counts; concise.
-   - If no blocking issues: output a clear block with the derived commit message.
+   - **From staged changes (and associated plans):** Run `git diff --cached --name-status` and identify every substantive change. Use the associated plan titles (from `.cursor/plans/*.md`) and the new changelog entry to shape the message: short title + bullet list (like Generate Commit Message); 3–7 bullets, each naming one change area in plain language; mention every substantive change; no file counts; concise.
+   - The final suggested commit message **must be emitted as a single, copy-pastable block** in the chat (one asset the user can grab and use directly).
+   - If no blocking issues: output that single commit-message block clearly.
    - If there are blocking issues: list them and do not output "ready for publishing"; suggest what to fix.
 
 References: .cursor/pm/PREPARE_UPDATE_COMMAND.md, .cursor/rules/updater.mdc, .cursor/commands/verify-local.md, .cursor/pm/VERIFY_COMMAND.md, .cursor/pm/brain/02_services_ports.md.
