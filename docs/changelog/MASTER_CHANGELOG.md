@@ -18,12 +18,12 @@ No DB migrations. Code change in `backend/trade_manager.py` only.
 
 **Production checklist**
 
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart trade_manager so the fix is loaded:  
+- [x] Restart trade_manager so the fix is loaded:  
   `supervisorctl -c backend/supervisord.conf restart trade_manager`  
   (Optional: restart active_trade_supervisor processes if you want them to pick up any related state; the fix is in trade_manager.)
-- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status. After deploy, new opens should be tracked; monitor_confirmed = FALSE counts may drop over the next days (run `scripts/diagnostics/check_monitor_confirmed_failures.py --days 7` to spot-check).
+- [x] Verify: health (main_app :3000, trade_executor :8001), supervisor status. After deploy, new opens should be tracked; monitor_confirmed = FALSE counts may drop over the next days (run `scripts/diagnostics/check_monitor_confirmed_failures.py --days 7` to spot-check).
 
 ---
 
