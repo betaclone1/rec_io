@@ -907,8 +907,17 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                     
                     # Calculate position size and buy price from order data (use _fp for precision)
                     position_size = fill_val
-                    # taker_fill_cost is in cents, convert to price per share
-                    buy_price = (taker_fill_cost / 100.0) / position_size if position_size > 0 else 0.0
+
+                    # taker_fill_cost is in cents for the filled quantity. It may be NULL on prod after
+                    # the fixed-point migration, so guard against None to avoid crashing the open watch.
+                    if taker_fill_cost is not None and position_size > 0:
+                        buy_price = (taker_fill_cost / 100.0) / position_size
+                    else:
+                        # Fallback: if we have no cost, we cannot infer an accurate buy price from orders alone.
+                        # Leave buy_price at 0.0 so the trade can still be confirmed open; downstream PnL will
+                        # be based on prices from fills/positions instead of this snapshot.
+                        buy_price = 0.0
+
                     # trades_0001.position is integer; round for DB write
                     position_for_db = int(round(position_size))
                     log_event(ticket_id, f"MANAGER: Order completely filled - pos={position_for_db}, price={buy_price:.4f}, fees=${total_fees_dollars:.4f}")
