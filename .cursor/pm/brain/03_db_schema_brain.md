@@ -9,7 +9,7 @@
 ## Schemas (from live introspection)
 
 - **users** — trades_0001, trades_simulated_0001, active_trades_0001, monitor_list_0001, strategy_list_0001, account_history_0001, fills_0001, orders_0001, positions_0001, settlements_0001, trade_history_preferences_0001, dashboard_preferences_0001, user_info_0001, transfers_0001, master_users, subaccounts_0001, trade_preferences_0001, trade_logs_0001; per-monitor active_trades_0001_10xxx, monitor_cycle_performance_0001_10xxx.
-- **live_data** — live_price_log_1s_btc/eth/spx/ndx, live_symbol_status, strike_table_hourly_btc/eth/spx/ndx, strike_table_15m_btc/eth, market_kalshi_hourly_*, market_kalshi_15m_btc/eth, price_change_*, btc/eth_price_change, eth_price_log, symbols_list.
+- **live_data** — live_price_log_1s_btc/eth/spx/ndx, live_symbol_status, strike_table_hourly_btc/eth/spx/ndx, strike_table_15m_btc/eth, market_kalshi_hourly_* (volume_fp/volume_24h_fp), market_kalshi_15m_btc/eth (volume_fp/volume_24h_fp), price_change_*, btc/eth_price_change, eth_price_log, symbols_list.
 - **historical_data** — btc/eth/ndx/spx_price_history.
 - **analytics** — probability_lookup_*_master_*, *_fingerprint_* (btc/eth/spx/ndx, ±10..±90), *_movement_profile_*, *_momentum_profile_*, *_price_profile_*, *_volatility_profile_*.
 - **system** — health_status, installation_access_log.

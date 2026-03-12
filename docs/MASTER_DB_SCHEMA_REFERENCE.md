@@ -8501,8 +8501,8 @@ This syncs settlements, fills, and orders (with cursor pagination) and writes to
 | `no_bid` | `integer(32)` | YES | - | |
 | `no_ask` | `integer(32)` | YES | - | |
 | `last_price` | `integer(32)` | YES | - | |
-| `volume` | `integer(32)` | YES | - | |
-| `volume_24h` | `integer(32)` | YES | - | |
+| `volume_fp` | `integer(32)` | YES | - | Fixed-point volume count (Kalshi `volume_fp`) |
+| `volume_24h_fp` | `integer(32)` | YES | - | Fixed-point 24h volume count (Kalshi `volume_24h_fp`) |
 | `open_interest` | `integer(32)` | YES | - | |
 | `liquidity` | `integer(32)` | YES | - | |
 | `created_at` | `timestamp with time zone` | YES | now() | |
@@ -8550,8 +8550,8 @@ This syncs settlements, fills, and orders (with cursor pagination) and writes to
 | `no_bid` | `integer(32)` | YES | - | |
 | `no_ask` | `integer(32)` | YES | - | |
 | `last_price` | `integer(32)` | YES | - | |
-| `volume` | `integer(32)` | YES | - | |
-| `volume_24h` | `integer(32)` | YES | - | |
+| `volume_fp` | `integer(32)` | YES | - | Fixed-point volume count (Kalshi `volume_fp`) |
+| `volume_24h_fp` | `integer(32)` | YES | - | Fixed-point 24h volume count (Kalshi `volume_24h_fp`) |
 | `open_interest` | `integer(32)` | YES | - | |
 | `liquidity` | `integer(32)` | YES | - | |
 | `created_at` | `timestamp with time zone` | YES | now() | |
@@ -8599,8 +8599,8 @@ This syncs settlements, fills, and orders (with cursor pagination) and writes to
 | `no_bid` | `integer(32)` | YES | - | |
 | `no_ask` | `integer(32)` | YES | - | |
 | `last_price` | `integer(32)` | YES | - | |
-| `volume` | `integer(32)` | YES | - | |
-| `volume_24h` | `integer(32)` | YES | - | |
+| `volume_fp` | `integer(32)` | YES | - | Fixed-point volume count (Kalshi `volume_fp`) |
+| `volume_24h_fp` | `integer(32)` | YES | - | Fixed-point 24h volume count (Kalshi `volume_24h_fp`) |
 | `open_interest` | `integer(32)` | YES | - | |
 | `liquidity` | `integer(32)` | YES | - | |
 | `created_at` | `timestamp with time zone` | YES | now() | |
@@ -8656,8 +8656,8 @@ This syncs settlements, fills, and orders (with cursor pagination) and writes to
 | `no_bid` | `integer(32)` | YES | - | |
 | `no_ask` | `integer(32)` | YES | - | |
 | `last_price` | `integer(32)` | YES | - | |
-| `volume` | `integer(32)` | YES | - | |
-| `volume_24h` | `integer(32)` | YES | - | |
+| `volume_fp` | `integer(32)` | YES | - | Fixed-point volume count (Kalshi `volume_fp`) |
+| `volume_24h_fp` | `integer(32)` | YES | - | Fixed-point 24h volume count (Kalshi `volume_24h_fp`) |
 | `open_interest` | `integer(32)` | YES | - | |
 | `liquidity` | `integer(32)` | YES | - | |
 | `created_at` | `timestamp with time zone` | YES | now() | |
@@ -8707,8 +8707,8 @@ Kalshi 15-minute market data for BTC. One row per current 15m window; truncated 
 | `no_bid` | `integer(32)` | YES | - | |
 | `no_ask` | `integer(32)` | YES | - | |
 | `last_price` | `integer(32)` | YES | - | |
-| `volume` | `integer(32)` | YES | - | |
-| `volume_24h` | `integer(32)` | YES | - | |
+| `volume_fp` | `integer(32)` | YES | - | Fixed-point volume count (Kalshi `volume_fp`) |
+| `volume_24h_fp` | `integer(32)` | YES | - | Fixed-point 24h volume count (Kalshi `volume_24h_fp`) |
 | `open_interest` | `integer(32)` | YES | - | |
 | `liquidity` | `integer(32)` | YES | - | |
 | `created_at` | `timestamp with time zone` | YES | now() | |
@@ -8755,8 +8755,8 @@ Kalshi 15-minute market data for ETH. One row per current 15m window; truncated 
 | `no_bid` | `integer(32)` | YES | - | |
 | `no_ask` | `integer(32)` | YES | - | |
 | `last_price` | `integer(32)` | YES | - | |
-| `volume` | `integer(32)` | YES | - | |
-| `volume_24h` | `integer(32)` | YES | - | |
+| `volume_fp` | `integer(32)` | YES | - | Fixed-point volume count (Kalshi `volume_fp`) |
+| `volume_24h_fp` | `integer(32)` | YES | - | Fixed-point 24h volume count (Kalshi `volume_24h_fp`) |
 | `open_interest` | `integer(32)` | YES | - | |
 | `liquidity` | `integer(32)` | YES | - | |
 | `created_at` | `timestamp with time zone` | YES | now() | |

@@ -77,6 +77,19 @@ def _market_cents_from_dollars(dollars_val, legacy_cents):
     return 0
 
 
+def _int_from_fixed_point(value, default=0):
+    """
+    Convert Kalshi fixed-point strings (e.g. '56658.00') to integer counts.
+    Falls back to default on any parse error.
+    """
+    if value is None or value == "":
+        return default
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
 # Database configuration
 DB_CONFIG = {
     'host': os.getenv('POSTGRES_HOST', 'localhost'),
@@ -187,8 +200,8 @@ def create_market_kalshi_table(connection, symbol, interval="hourly"):
             no_bid_dollars TEXT,
             no_ask_dollars TEXT,
             last_price_dollars TEXT,
-            volume INTEGER,
-            volume_24h INTEGER,
+            volume_fp INTEGER,
+            volume_24h_fp INTEGER,
             open_interest INTEGER,
             liquidity INTEGER,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -476,8 +489,16 @@ def save_market_data_to_postgresql(event_ticker, markets_data, symbol, interval=
                 no_ask = _market_cents_from_dollars(no_ask_dollars, market.get("no_ask"))
                 last_price = _market_cents_from_dollars(last_price_dollars, market.get("last_price"))
                 
-                volume = market.get("volume", 0)
-                volume_24h = market.get("volume_24h", 0)
+                # Kalshi volume fields migrated from volume/volume_24h → volume_fp/volume_24h_fp.
+                # API sends these as fixed-point strings (e.g. '56658.00'); convert to integer counts for storage.
+                volume_fp = _int_from_fixed_point(
+                    market.get("volume_fp"),
+                    default=_int_from_fixed_point(market.get("volume", 0)),
+                )
+                volume_24h_fp = _int_from_fixed_point(
+                    market.get("volume_24h_fp"),
+                    default=_int_from_fixed_point(market.get("volume_24h", 0)),
+                )
                 open_interest = market.get("open_interest", 0)
                 liquidity = market.get("liquidity", 0)
                 
@@ -487,7 +508,7 @@ def save_market_data_to_postgresql(event_ticker, markets_data, symbol, interval=
                     INSERT INTO live_data.{table_name} 
                     (event_ticker, market_ticker, market, strike, yes_bid, yes_ask, no_bid, no_ask, last_price,
                      yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
-                     volume, volume_24h, open_interest, liquidity, updated_at)
+                     volume_fp, volume_24h_fp, open_interest, liquidity, updated_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                     ON CONFLICT (event_ticker, market_ticker) DO UPDATE SET
                         market = EXCLUDED.market,
@@ -501,14 +522,14 @@ def save_market_data_to_postgresql(event_ticker, markets_data, symbol, interval=
                         no_bid_dollars = EXCLUDED.no_bid_dollars,
                         no_ask_dollars = EXCLUDED.no_ask_dollars,
                         last_price_dollars = EXCLUDED.last_price_dollars,
-                        volume = EXCLUDED.volume,
-                        volume_24h = EXCLUDED.volume_24h,
+                        volume_fp = EXCLUDED.volume_fp,
+                        volume_24h_fp = EXCLUDED.volume_24h_fp,
                         open_interest = EXCLUDED.open_interest,
                         liquidity = EXCLUDED.liquidity,
                         updated_at = NOW()
                 """, (event_ticker, market_ticker, market_val, strike, yes_bid, yes_ask, no_bid, no_ask, last_price,
                       yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
-                      volume, volume_24h, open_interest, liquidity))
+                      volume_fp, volume_24h_fp, open_interest, liquidity))
                 
             except Exception as e:
                 logger.warning("Error processing market %s: %s", market.get("ticker", "unknown"), e)

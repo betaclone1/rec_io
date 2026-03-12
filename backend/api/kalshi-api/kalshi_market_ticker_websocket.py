@@ -330,7 +330,7 @@ class KalshiMarketTickerWebSocket:
             volume = 0
             
             # Volume 24h: not available from WebSocket, leave as None
-            volume_24h = None
+            volume_24h_fp = None
             
             # Last Price: calculate from best bid/ask spread
             last_price = None
@@ -351,7 +351,7 @@ class KalshiMarketTickerWebSocket:
                 'no_ask': no_ask,
                 'last_price': last_price,
                 'volume': volume,
-                'volume_24h': volume_24h,
+                'volume_24h_fp': volume_24h_fp,
                 'open_interest': open_interest,
                 'liquidity': liquidity,
                 'yes_volume': yes_volume_total,
@@ -362,7 +362,7 @@ class KalshiMarketTickerWebSocket:
             print(f"[{datetime.now(EST)}] ❌ Error calculating market data: {e}")
             return {
                 'yes_bid': None, 'yes_ask': None, 'no_bid': None, 'no_ask': None,
-                'last_price': None, 'volume': 0, 'volume_24h': None,
+                'last_price': None, 'volume_fp': 0, 'volume_24h_fp': None,
                 'open_interest': None, 'liquidity': None,
                 'yes_volume': None, 'no_volume': None
             }
@@ -387,7 +387,7 @@ class KalshiMarketTickerWebSocket:
                 cursor.execute("""
                     INSERT INTO testing.market_kalshi_btc_websocket 
                     (event_ticker, market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask,
-                     last_price, volume, volume_24h, open_interest, liquidity, yes_volume, no_volume, updated_at)
+                     last_price, volume_fp, volume_24h_fp, open_interest, liquidity, yes_volume, no_volume, updated_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                     ON CONFLICT (event_ticker, market_ticker)
                     DO UPDATE SET 
@@ -398,7 +398,7 @@ class KalshiMarketTickerWebSocket:
                         no_ask = EXCLUDED.no_ask,
                         last_price = EXCLUDED.last_price,
                         volume = EXCLUDED.volume,
-                        volume_24h = EXCLUDED.volume_24h,
+                        volume_24h_fp = EXCLUDED.volume_24h_fp,
                         open_interest = EXCLUDED.open_interest,
                         liquidity = EXCLUDED.liquidity,
                         yes_volume = EXCLUDED.yes_volume,
@@ -409,7 +409,7 @@ class KalshiMarketTickerWebSocket:
                     market_data['yes_bid'], market_data['yes_ask'],
                     market_data['no_bid'], market_data['no_ask'],
                     market_data['last_price'], market_data['volume'],
-                    market_data['volume_24h'], market_data['open_interest'],
+                    market_data['volume_24h_fp'], market_data['open_interest'],
                     market_data['liquidity'], market_data['yes_volume'],
                     market_data['no_volume']
                 ))

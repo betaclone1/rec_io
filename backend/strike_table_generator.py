@@ -598,7 +598,7 @@ class StrikeTableGenerator:
             cursor.execute(f"""
                 SELECT market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask, last_price,
                        yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
-                       volume, volume_24h, open_interest, liquidity, updated_at
+                       volume_fp AS volume, volume_24h_fp AS volume_24h, open_interest, liquidity, updated_at
                 FROM live_data.{market_table} 
                 WHERE event_ticker = %s
                 ORDER BY updated_at DESC
