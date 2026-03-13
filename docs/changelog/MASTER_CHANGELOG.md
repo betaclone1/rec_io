@@ -20,11 +20,11 @@ Plans: `paper-trade-fee-estimates` (implementation complete; plan still draft). 
 
 **Production checklist**
 
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart application services so trade_manager, main_app, monitor_manager, and auto_entry_supervisor load the new code:  
+- [x] Restart application services so trade_manager, main_app, monitor_manager, and auto_entry_supervisor load the new code:  
   `scripts/MASTER_RESTART.sh` (or equivalent supervisorctl restarts).
-- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Spot-check trade history: paper trades show italic and fee values where applicable.
+- [x] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Spot-check trade history: paper trades show italic and fee values where applicable.
 
 ---
 

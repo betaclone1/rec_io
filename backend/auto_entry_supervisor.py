@@ -1444,16 +1444,21 @@ def determine_auto_entry_status_momentum_contain():
         if cooldown_timer is None:
             return "INACTIVE"
         
-        # Check if cooldown_timer is within the activation window
-        # If min is set, cooldown_timer must be >= min (not too close to spike)
-        if min_cooldown_timer is not None and cooldown_timer < min_cooldown_timer:
-            return "INACTIVE"  # Too close to momentum spike
+        # DB stores cooldown_timer as REMAINING seconds in spike cooldown (positive = in spike).
+        # min/max_cooldown_timer are "seconds since spike started" window. So: time_since_spike = total_cooldown - remaining.
+        cooldown_minutes = settings.get("spike_alert_cooldown_minutes") or 0
+        total_cooldown_seconds = int(cooldown_minutes) * 60
+        time_since_spike = total_cooldown_seconds - int(cooldown_timer) if cooldown_timer > 0 else 0
         
-        # If max is set, cooldown_timer must be <= max (not too far after spike)
-        if max_cooldown_timer is not None and cooldown_timer > max_cooldown_timer:
-            return "INACTIVE"  # Too far after spike regime has ended
+        # If min is set, time_since_spike must be >= min (not too close to spike start)
+        if min_cooldown_timer is not None and time_since_spike < min_cooldown_timer:
+            return "INACTIVE"  # Too close to momentum spike start
         
-        # All checks passed - cooldown timer is within window
+        # If max is set, time_since_spike must be <= max (not too far after spike started)
+        if max_cooldown_timer is not None and time_since_spike > max_cooldown_timer:
+            return "INACTIVE"  # Too far after spike regime started
+        
+        # All checks passed - cooldown window (time since spike) is within min/max
         return "ACTIVE"
             
     except Exception as e:
@@ -3688,15 +3693,17 @@ def check_auto_entry_conditions_momentum_contain():
                 log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ cooldown_timer is NULL - skipping entry")
                 return
             
-            # Check if cooldown_timer is within the activation window
-            # If min is set, cooldown_timer must be >= min (not too close to spike)
-            if min_cooldown_timer is not None and cooldown_timer < min_cooldown_timer:
-                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ cooldown_timer ({cooldown_timer}) < min_cooldown_timer ({min_cooldown_timer}) - too close to momentum spike - skipping entry")
+            # DB stores cooldown_timer as REMAINING seconds in spike cooldown. min/max are "seconds since spike started".
+            cooldown_minutes = settings.get("spike_alert_cooldown_minutes") or 0
+            total_cooldown_seconds = int(cooldown_minutes) * 60
+            time_since_spike = total_cooldown_seconds - int(cooldown_timer) if cooldown_timer > 0 else 0
+            
+            if min_cooldown_timer is not None and time_since_spike < min_cooldown_timer:
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ time_since_spike ({time_since_spike}s) < min_cooldown_timer ({min_cooldown_timer}s) - too close to spike start - skipping entry")
                 return
             
-            # If max is set, cooldown_timer must be <= max (not too far after spike)
-            if max_cooldown_timer is not None and cooldown_timer > max_cooldown_timer:
-                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ cooldown_timer ({cooldown_timer}) > max_cooldown_timer ({max_cooldown_timer}) - too far after spike regime has ended - skipping entry")
+            if max_cooldown_timer is not None and time_since_spike > max_cooldown_timer:
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ time_since_spike ({time_since_spike}s) > max_cooldown_timer ({max_cooldown_timer}s) - too far after spike start - skipping entry")
                 return
         
         # If we've already entered trades for this spike activation, do nothing
