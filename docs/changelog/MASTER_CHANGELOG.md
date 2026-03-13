@@ -6,6 +6,28 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-13 — Paper trade fee estimates, PnL/ret backfill, and monitor/AES tweaks
+
+**Summary**
+
+- **Paper trade fee estimates:** Trade manager now computes and stores estimated taker fees for paper trades using Kalshi’s formula `round_up(0.07 × position × P × (1 − P))` at open and (when closed before expiration) at close. Open path sets `fees` at open; close path adds close fee to existing open fee; expiration path uses open fee only. PnL and ret_pct use these fees.
+- **Backfills (already run on production):** `scripts/db/backfill_paper_trade_fees.py` and `scripts/db/backfill_paper_trade_pnl_ret.py` were run once on prod to backfill `fees` and then `pnl` / `ret_pct` / `win_loss` (and cycle_* for affected cycles) for all paper trades. No need to re-run on apply unless re-backfilling a fresh DB.
+- **Trade history UI:** Desktop and mobile trade history tables style paper-trade rows with italic; no new columns.
+- **Auto-entry and monitors:** Auto_entry_supervisor runs a 30s loop calling `periodic_status_sync()` so `auto_trade_status` stays in sync. On monitor deactivate, main_app sets `auto_trade_status = 'off'` and triggers `sync_monitor_processes` so AES/ATS tear down promptly. Monitor_manager `create_monitor` returns 207 and a clear message when spawn fails.
+- **AGENTS.md:** Command names updated to `/system-restart-local` and `/system-restart-production`.
+
+Plans: `paper-trade-fee-estimates` (implementation complete; plan still draft). No DB migrations; schema unchanged.
+
+**Production checklist**
+
+- [ ] Confirm codebase changes (pull latest on production):  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart application services so trade_manager, main_app, monitor_manager, and auto_entry_supervisor load the new code:  
+  `scripts/MASTER_RESTART.sh` (or equivalent supervisorctl restarts).
+- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Spot-check trade history: paper trades show italic and fee values where applicable.
+
+---
+
 ## 2026-03-12 — Active trade supervisor fix (confirm_open_trade post fixed-point)
 
 **Summary**

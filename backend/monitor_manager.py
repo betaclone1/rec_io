@@ -1958,15 +1958,30 @@ def create_monitor():
             'monitor_id': str(monitor_id),
             'name': monitor_name
         }
-        monitor_manager.spawn_monitor_processes(monitor_data)
+        spawn_ok = monitor_manager.spawn_monitor_processes(monitor_data)
+        
+        if not spawn_ok:
+            # Surface a soft failure so callers know processes did not start
+            monitor_manager.log_event(
+                "ERROR",
+                f"Monitor {monitor_name} created but failed to spawn processes; supervisor config/update returned error"
+            )
+            status_code = 207  # Multi-Status / partial success
+            message = (
+                f"Monitor {monitor_name} created, but failed to start auto-entry/active-trade supervisors. "
+                "A MASTER_RESTART or manual investigation of monitor_manager logs may be required."
+            )
+        else:
+            status_code = 200
+            message = f"Monitor {monitor_name} created successfully"
         
         monitor_manager._notify_frontend_monitor_list_updated("Monitor created")
         return jsonify({
-            "status": "ok", 
-            "message": f"Monitor {monitor_name} created successfully",
+            "status": "ok" if spawn_ok else "partial",
+            "message": message,
             "monitor_name": monitor_name,
             "monitor_id": monitor_id
-        })
+        }), status_code
         
     except Exception as e:
         monitor_manager.log_event("ERROR", f"Error creating monitor: {e}")

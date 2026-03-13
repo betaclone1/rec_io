@@ -1,4 +1,5 @@
 import logging
+import math
 import threading
 import time
 import os
@@ -377,6 +378,14 @@ def _parse_dollars(value):
         return float(str(value))
     except (TypeError, ValueError):
         return None
+
+
+def estimate_kalshi_taker_fee(position: int, price: float) -> float:
+    """Estimate taker fee for one leg: 0.07 * C * P * (1 - P), rounded up to next cent. Taker only."""
+    if position is None or position <= 0 or price is None or price <= 0 or price >= 1:
+        return 0.0
+    raw = 0.07 * position * price * (1.0 - price)
+    return math.ceil(raw * 100) / 100
 
 
 def _format_count_fp(payload: dict, for_close: bool = False) -> str:
@@ -2878,24 +2887,26 @@ async def add_trade(request: Request):
                         now_est = datetime.now(ZoneInfo("America/New_York"))
                         closed_at = now_est.strftime("%H:%M:%S")
                         
-                        # Get trade data for calculations
+                        # Get trade data for calculations (include existing open fee)
                         pg_conn_trade = get_postgresql_connection()
                         if pg_conn_trade:
                             with pg_conn_trade.cursor() as cursor:
-                                cursor.execute("SELECT buy_price, position, bankroll FROM users.trades_0001 WHERE id = %s", (trade_id,))
+                                cursor.execute("SELECT buy_price, position, bankroll, fees FROM users.trades_0001 WHERE id = %s", (trade_id,))
                                 trade_data = cursor.fetchone()
                             pg_conn_trade.close()
                         else:
                             trade_data = None
                         
                         if trade_data and sell_price is not None:
-                            buy_price, position, bankroll = trade_data
-                            
-                            # Calculate PnL (fees = 0.00 for paper trades)
-                            fees = 0.00
+                            buy_price, position, bankroll, existing_fees = trade_data
+                            existing_fees = float(existing_fees) if existing_fees is not None else 0.0
+                            # Close leg: we sold at sell_price so we bought to close at (1 - sell_price). Taker fee on that leg.
+                            price_to_close = 1.0 - float(sell_price)
+                            close_fee = estimate_kalshi_taker_fee(int(position), price_to_close) if 0 < price_to_close < 1 else 0.0
+                            total_fees = existing_fees + close_fee
                             buy_value = buy_price * position
                             sell_value = sell_price * position
-                            pnl = round(sell_value - buy_value - fees, 2)
+                            pnl = round(sell_value - buy_value - total_fees, 2)
                             win_loss = "W" if pnl > 0 else "L" if pnl < 0 else "D"
                             
                             # Calculate ret_pct
@@ -2906,8 +2917,8 @@ async def add_trade(request: Request):
                             # Get high_price and low_price from active_trades
                             high_price, low_price = get_high_low_prices_from_active_trades(trade_id)
                             
-                            # Update trade to closed with all calculated values
-                            update_trade_status_with_ret_pct(trade_id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, fees, ret_pct, high_price, low_price)
+                            # Update trade to closed with all calculated values (total_fees = open + close)
+                            update_trade_status_with_ret_pct(trade_id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, total_fees, ret_pct, high_price, low_price)
                             
                             # Set order_id_close to NULL for paper trades
                             pg_conn_update = get_postgresql_connection()
@@ -2917,8 +2928,8 @@ async def add_trade(request: Request):
                                     pg_conn_update.commit()
                                 pg_conn_update.close()
                             
-                            log(f"📝 PAPER TRADE CLOSED: Trade {trade_id}, PnL=${pnl}, W/L={win_loss}, Fees=${fees}")
-                            log_event(ticket_id, f"MANAGER: PAPER TRADE CLOSED - PnL: ${pnl}, W/L: {win_loss}, Fees: ${fees}")
+                            log(f"📝 PAPER TRADE CLOSED: Trade {trade_id}, PnL=${pnl}, W/L={win_loss}, Fees=${total_fees}")
+                            log_event(ticket_id, f"MANAGER: PAPER TRADE CLOSED - PnL: ${pnl}, W/L: {win_loss}, Fees: ${total_fees}")
                             
                             # Notify active trade supervisor that it's closed
                             notify_active_trade_supervisor_direct(trade_id, ticket_id, "closed")
@@ -3058,19 +3069,26 @@ async def add_trade(request: Request):
             log_event(data.get("ticket_id", "UNKNOWN"), "MANAGER: PAPER TRADE — DATABASE INSERT FAILED")
             return {"error": "Failed to insert paper trade to database", "id": None}
         
-        # Immediately mark as open with fees = 0.00, using original buy_price
+        # Immediately mark as open with estimated taker open fee, order_id_open = NULL
         try:
+            buy_price = data.get('buy_price')
+            position = data.get('position')
+            open_fee = 0.0
+            if buy_price is not None and position is not None:
+                try:
+                    open_fee = estimate_kalshi_taker_fee(int(position), float(buy_price))
+                except (TypeError, ValueError):
+                    pass
             pg_conn = get_postgresql_connection()
             if pg_conn:
                 with pg_conn.cursor() as cursor:
-                    # Update to open status with fees = 0.00, order_id_open = NULL
                     cursor.execute("""
                         UPDATE users.trades_0001 
                         SET status = 'open', 
-                            fees = 0.00, 
+                            fees = %s, 
                             order_id_open = NULL
                         WHERE id = %s
-                    """, (trade_id,))
+                    """, (open_fee, trade_id))
                     pg_conn.commit()
                 pg_conn.close()
         except Exception as e:
@@ -3710,7 +3728,7 @@ def check_expired_trades():
                     
                     with pg_conn_paper.cursor() as cursor:
                         cursor.execute("""
-                            SELECT strike, side, symbol_close, buy_price, position, bankroll, high_price, low_price
+                            SELECT strike, side, symbol_close, buy_price, position, bankroll, high_price, low_price, fees
                             FROM users.trades_0001 
                             WHERE id = %s AND status = 'expired'
                         """, (trade_id,))
@@ -3720,7 +3738,8 @@ def check_expired_trades():
                         log(f"⚠️ Paper trade {trade_id} not found or not expired")
                         continue
                     
-                    strike, side, symbol_close, buy_price, position, bankroll, high_price, low_price = trade_data
+                    strike, side, symbol_close, buy_price, position, bankroll, high_price, low_price, existing_fees = trade_data
+                    existing_fees = float(existing_fees) if existing_fees is not None else 0.0
                     
                     if symbol_close is None:
                         log(f"⚠️ Paper trade {trade_id} has no symbol_close, skipping settlement")
@@ -3743,11 +3762,11 @@ def check_expired_trades():
                         log(f"⚠️ Paper trade {trade_id} has invalid side: {side}")
                         continue
                     
-                    # Set sell_price: 1.0000 for winners, 0.0000 for losers
+                    # Set sell_price: 1.0000 for winners, 0.0000 for losers. No close order at expiration; fees = open fee only.
                     sell_price = 1.0000 if is_winner else 0.0000
-                    fees = 0.00
+                    fees = existing_fees
                     
-                    # Calculate PnL
+                    # Calculate PnL (fees = open fee only; no close fee at expiration)
                     pnl = None
                     if buy_price is not None and position is not None:
                         buy_value = buy_price * position

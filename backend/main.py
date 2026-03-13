@@ -805,7 +805,7 @@ async def websocket_preferences(websocket: WebSocket):
         while True:
             await websocket.receive_text()  # Keep connection alive
     except WebSocketDisconnect:
-        connected_clients.remove(websocket)
+        connected_clients.discard(websocket)
 
 @app.websocket("/ws/db_changes")
 async def websocket_db_changes(websocket: WebSocket):
@@ -6292,10 +6292,11 @@ async def deactivate_monitor(request: dict):
             return {"status": "error", "message": "Database connection failed"}
         
         with conn.cursor() as cursor:
-            # Set auto_trade to FALSE and status to 'inactive' (auto_trade_status now controlled by auto_entry_supervisor)
+            # Set auto_trade to FALSE, status to 'inactive', and auto_trade_status to 'off'
+            # so AES/ATS clearly see this monitor as disabled and the UI reflects it.
             cursor.execute(f"""
                 UPDATE users.monitor_list_{user_number}
-                SET auto_trade = FALSE, status = 'inactive'
+                SET auto_trade = FALSE, status = 'inactive', auto_trade_status = 'off'
                 WHERE id = %s
             """, (db_monitor_id,))
             
@@ -6307,6 +6308,25 @@ async def deactivate_monitor(request: dict):
         conn.close()
         
         _main_logger.debug(f"[DEACTIVATE] Monitor {monitor_name} (ID: {monitor_id}) deactivated successfully")
+
+        # Trigger an immediate monitor process sync so AES/ATS for this monitor
+        # are torn down promptly, instead of waiting for the 10s watcher loop.
+        try:
+            import requests
+            from backend.core.port_config import get_port
+
+            monitor_manager_port = get_port("monitor_manager")
+            sync_resp = requests.post(
+                f"http://localhost:{monitor_manager_port}/api/sync_monitor_processes",
+                json={"source": "main_app_deactivate", "monitor_id": monitor_id},
+                timeout=10,
+            )
+            if not sync_resp.ok:
+                _main_logger.warning(
+                    f"[DEACTIVATE] ⚠️ sync_monitor_processes returned {sync_resp.status_code}: {sync_resp.text}"
+                )
+        except Exception as e:
+            _main_logger.warning(f"[DEACTIVATE] ⚠️ Failed to trigger monitor process sync: {e}")
         
         # Broadcast monitor list update to all connected WebSocket clients
         message = {

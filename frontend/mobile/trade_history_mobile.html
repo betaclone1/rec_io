@@ -195,6 +195,10 @@
             background-color: #1f2633;
         }
 
+        .results-table tbody tr.paper-trade-row {
+            font-style: italic;
+        }
+
         .no-results {
             text-align: center;
             padding: 20px;
@@ -961,6 +965,9 @@
                 tr.style.borderTop = isNewGroup ? '2px solid #666' : '';
                 // Assign group-odd or group-even class based on groupIndex
                 tr.classList.add(groupIndex % 2 === 1 ? 'group-odd' : 'group-even');
+                if (trade.paper_trade === true || trade.paper_trade === 1 || trade.paper_trade === 'true' || trade.paper_trade === '1' || trade.paper_trade === 'True') {
+                    tr.classList.add('paper-trade-row');
+                }
                 // Helper to format numbers with + sign for positive values, no decimals
                 function plusSign(val) {
                     if (val === null || val === undefined || val === '') return '';

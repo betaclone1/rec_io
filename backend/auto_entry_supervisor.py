@@ -1540,6 +1540,25 @@ def broadcast_auto_entry_indicator_change():
     except Exception as e:
         log(f"[AUTO ENTRY] ❌ Error in broadcast_auto_entry_indicator_change: {e}")
 
+
+def periodic_status_sync():
+    """
+    Ensure auto_trade_status stays in sync with current conditions, even if
+    strategy-specific paths do not trigger a broadcast on a given tick.
+
+    This is intentionally light: it only runs when auto_trade is enabled and
+    delegates to determine_auto_entry_status + update_auto_entry_status_in_db.
+    """
+    try:
+        auto_trade_enabled = is_auto_trade_enabled()
+        if not auto_trade_enabled:
+            return
+
+        status = determine_auto_entry_status()
+        update_auto_entry_status_in_db(status)
+    except Exception as e:
+        log(f"[AUTO ENTRY] ❌ Error during periodic_status_sync: {e}")
+
 def is_auto_trade_enabled():
     """Check if AUTO ENTRY is enabled by checking auto_trade boolean in monitor_list"""
     try:
@@ -4671,11 +4690,15 @@ def start_event_driven_supervisor():
     http_thread = threading.Thread(target=start_http_server, daemon=True)
     http_thread.start()
     
-    # Keep the process alive but don't loop
+    # Keep the process alive and periodically sync status even if
+    # no external HTTP triggers are hitting this process.
     try:
         while True:
-            # Just keep the process running, no active polling
-            time.sleep(60)  # Sleep for 1 minute, just to keep alive
+            try:
+                periodic_status_sync()
+            except Exception as e:
+                log(f"[AUTO ENTRY] ❌ Error in periodic status loop: {e}")
+            time.sleep(30)
     except KeyboardInterrupt:
         log("🛑 Auto entry supervisor stopped by user")
     except Exception as e:
