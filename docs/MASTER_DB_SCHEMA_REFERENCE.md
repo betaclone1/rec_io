@@ -10477,7 +10477,10 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `notes` | `text` | YES | - | |
 | `monitor` | `text` | YES | - | |
 | `bankroll` | `real(24)` | YES | - | |
+| `master_trading_bankroll` | `integer(32)` | YES | - | Snapshot of MTB balance in cents from account_balance at insert time. |
+| `mtb_base_value` | `integer(32)` | YES | - | Snapshot of MTB base_value in cents from account_balance at insert time. |
 | `ret_pct` | `real(24)` | YES | - | |
+| `ret_pct_base` | `real(24)` | YES | - | Return % vs mtb_base_value (same formula as ret_pct but denominator = mtb_base_value in cents). |
 | `momentum_5s_avg` | `numeric(10,4)` | YES | - | |
 | `order_id` | `text` | YES | - | |
 | `order_id_open` | `text` | YES | - | |

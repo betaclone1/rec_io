@@ -6,6 +6,29 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-14 — MTB snapshot and ret_pct_base on trades, insufficient-resting-volume log
+
+**Summary**
+
+- **trade_executor:** Rejection log line now includes intent (open/close). Standalone JSONL log `logs/insufficient_resting_volume_rejections.jsonl` records each fill_or_kill_insufficient_resting_volume rejection with monitor, contract, position size, ticker, etc.; rotates monthly to `..._YYYY-MM.jsonl`. Rationale: track liquidity ceilings as bankroll scales.
+- **trade_manager:** On insert, reads latest `master_trading_bankroll` and `mtb_base_value` from `users.account_balance_0001` and stores them on the trade row. On close, computes `ret_pct_base` (same formula as ret_pct but using mtb_base_value); one-time backfill copies ret_pct into ret_pct_base for existing rows.
+- **DB migrations (required on production, in order):** (1) `20260314_1200_trades_mtb_snapshot_columns` — add master_trading_bankroll, mtb_base_value to trades_0001 and trades_simulated_0001. (2) `20260314_1210_trades_ret_pct_base` — add ret_pct_base. (3) `20260314_1220_backfill_ret_pct_base_from_ret_pct` — backfill ret_pct_base = ret_pct for existing closed trades.
+- **Schema:** MASTER_DB_SCHEMA_REFERENCE.md and database.py CREATE TABLEs updated.
+
+**Production checklist**
+
+- [ ] Confirm codebase changes (pull latest on production):  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations in order (from project root):  
+  `PYTHONPATH=$(pwd) python3 scripts/db/run_migration.py up 20260314_1200_trades_mtb_snapshot_columns`  
+  `PYTHONPATH=$(pwd) python3 scripts/db/run_migration.py up 20260314_1210_trades_ret_pct_base`  
+  `PYTHONPATH=$(pwd) python3 scripts/db/run_migration.py up 20260314_1220_backfill_ret_pct_base_from_ret_pct`
+- [ ] Restart application services so trade_manager and trade_executor load the new code:  
+  `scripts/MASTER_RESTART.sh`
+- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status.
+
+---
+
 ## 2026-03-14 — Script crash fixes, critical-asset logging, push-and-update command
 
 **Summary**

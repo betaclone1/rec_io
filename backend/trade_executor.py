@@ -36,7 +36,7 @@ TRADE_EXECUTOR_PORT = get_port("trade_executor")
 # print(f"[TRADE_EXECUTOR] 🚀 Using centralized port: {TRADE_EXECUTOR_PORT}")
 
 # Import centralized path utilities
-from backend.util.paths import get_accounts_data_dir, get_host
+from backend.util.paths import get_accounts_data_dir, get_host, get_logs_dir
 from backend.account_mode import get_account_mode
 
 # Create Flask app
@@ -89,6 +89,66 @@ def generate_kalshi_signature(method, full_path, timestamp, key_path):
     return base64.b64encode(signature).decode("utf-8")
 
 from backend.util.trade_logger import log_trade_event
+
+# Standalone log for insufficient-resting-volume rejections (liquidity ceiling tracking)
+INSUFFICIENT_VOLUME_LOG_NAME = "insufficient_resting_volume_rejections.jsonl"
+
+
+def _log_insufficient_resting_volume_rejection(
+    data: Dict[str, Any],
+    response_status: int,
+    response_text: str,
+    count_fp: str,
+) -> None:
+    """Append one JSONL record to logs/insufficient_resting_volume_rejections.jsonl.
+    Rotates monthly: when the current month changes, the existing file is renamed to
+    insufficient_resting_volume_rejections_YYYY-MM.jsonl and a fresh .jsonl is used.
+    Used to track when we hit liquidity ceilings (position size vs available resting volume)."""
+    try:
+        est = datetime.now(ZoneInfo("America/New_York"))
+        utc = datetime.now(timezone.utc)
+        current_month = est.strftime("%Y-%m")
+        error_code = None
+        try:
+            rj = json.loads(response_text)
+            if isinstance(rj.get("error"), dict):
+                error_code = rj["error"].get("code") or rj["error"].get("message")
+            elif isinstance(rj.get("error"), str):
+                error_code = rj["error"]
+        except (json.JSONDecodeError, TypeError):
+            error_code = "unknown" if not response_text else response_text[:80]
+        record = {
+            "timestamp_utc": utc.isoformat(),
+            "timestamp_est": est.isoformat(),
+            "intent": data.get("intent", "open"),
+            "ticker": data.get("ticker"),
+            "contract": data.get("contract"),
+            "symbol": data.get("symbol"),
+            "monitor": data.get("monitor"),
+            "position_count_fp": count_fp,
+            "position": data.get("position"),
+            "side": data.get("side", "yes"),
+            "trade_id": data.get("id"),
+            "ticket_id": data.get("ticket_id"),
+            "kalshi_error_code": error_code,
+            "response_status": response_status,
+        }
+        log_dir = get_logs_dir()
+        Path(log_dir).mkdir(parents=True, exist_ok=True)
+        path = Path(log_dir) / INSUFFICIENT_VOLUME_LOG_NAME
+        if path.exists():
+            mtime = path.stat().st_mtime
+            file_month = datetime.fromtimestamp(mtime, tz=ZoneInfo("America/New_York")).strftime("%Y-%m")
+            if file_month != current_month:
+                archive_path = Path(log_dir) / f"insufficient_resting_volume_rejections_{file_month}.jsonl"
+                try:
+                    path.rename(archive_path)
+                except OSError as e:
+                    _te_logger.warning("Monthly rotation of rejection log failed (rename): %s", e)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+    except Exception as e:
+        _te_logger.warning("Failed to write insufficient_resting_volume rejection log: %s", e)
 
 
 def _te_est_formatter():
@@ -255,10 +315,12 @@ def trigger_trade():
             return jsonify({"status": "rejected", "error": f"timeout: {str(e)}"}), 500
 
         if response.status_code >= 400:
-            log_event(ticket_id, f"❌ TRADE REJECTED - Status: {response.status_code}, Response: {response.text}", trade_id=trade_id)
+            intent = data.get("intent", "open")
+            log_event(ticket_id, f"❌ TRADE REJECTED (intent={intent}) - Status: {response.status_code}, Response: {response.text}", trade_id=trade_id)
+            if "insufficient_resting_volume" in response.text.lower():
+                _log_insufficient_resting_volume_rejection(data, response.status_code, response.text, count_fp)
             # Use the trade ID if provided, otherwise use ticket_id
             trade_id = data.get("id")
-            intent = data.get("intent", "open")  # Get the original intent
             if trade_id:
                 status_payload = {"id": trade_id, "status": "error", "error_message": response.text, "intent": intent}
             else:
