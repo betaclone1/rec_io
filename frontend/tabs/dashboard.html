@@ -3842,6 +3842,8 @@
         },
         plugins: [customPlugin, crosshairPlugin, yAxisLabelsPlugin, glowPlugin],
         options: {
+          // Disable animations so the 30s refresh doesn't visibly re-animate the line (same as mobile)
+          animation: false,
           responsive: true,
           maintainAspectRatio: false,
           interaction: {

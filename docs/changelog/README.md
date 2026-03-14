@@ -4,7 +4,7 @@ This folder holds:
 
 - **MASTER_CHANGELOG.md** — Single internal changelog for production deployments.
 - **CHANGELOG_AGENT_INSTRUCTIONS.md** — Instructions for the production agent (or `/apply-update` action): read all open entries, execute each checklist fully, and update checkboxes. Use this when running the changelog workflow.
-- **TODO.md** — Timestamped backlog of tasks to return to (checklist format, technical notes, milestones/completion). Check and update periodically. Tasks marked totally completed and older than 3 months may be moved to an archival doc to keep TODO.md lean.
+- **TODO.md** — Pointer to task tracking: active backlog is in `.cursor/plans/`. Historical changelog backlog was archived to `archive/2026-03-housekeeping/docs/TODO_changelog_backlog.md`; we work from the PM system (plans) from here on.
 
 - **When to update:** Add a new timestamped entry whenever you are about to push an update to production (e.g. after merging a feature branch to `main`).
 - **What to include:** Summary of the change plus a **Production checklist**: markdown checkboxes (`- [ ]`) for every task to complete when applying the update (from local via /apply-update-from-local or on prod via /apply-update). Always include at least minimal items (e.g. "Confirm codebase changes", "Update local database" when schema changes exist). The agent both completes the tasks **and updates the checklist in `MASTER_CHANGELOG.md`** by checking off each box (`- [x]`) when done.

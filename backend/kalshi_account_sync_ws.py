@@ -379,7 +379,7 @@ def notify_frontend_db_change(db_name: str, change_data: dict = None):
         logger.error("Error notifying frontend: %s", e)
 
 def notify_monitor_manager(bankroll_stepped_down=False):
-    """Notify monitor_manager that bankroll has been updated. Pass bankroll_stepped_down=True when bankroll was stepped down due to significant drawdown (MTB <= 70% of prev)."""
+    """Notify monitor_manager that bankroll has been updated. Pass bankroll_stepped_down=True when bankroll was stepped down due to significant drawdown (MTB <= 70% of mtb_base_value, or 70% of prev bankroll if base not set)."""
     try:
         import requests
         from backend.core.port_config import get_port
@@ -1007,12 +1007,14 @@ def sync_balance():
                             # After internal transfer, use new MTB balance directly as bankroll_current (bypass ratchet).
                             bankroll_current = master_bankroll_balance
                         else:
-                            # Ratchet: bankroll_current from Master Trading Bankroll (step up / step down only on large drawdown / else hold)
+                            # Ratchet: bankroll_current from Master Trading Bankroll. Drawdown threshold pegged to mtb_base_value (70% of base); step up when MTB > prev, else hold unless drawdown.
+                            _, mtb_base = _get_mtb_snapshot_from_subaccounts(cursor)
+                            drawdown_threshold = (mtb_base * 0.7) if (mtb_base is not None and mtb_base > 0) else (prev_bankroll * 0.7) if prev_bankroll else None
                             if prev_bankroll is None:
                                 bankroll_current = master_bankroll_balance
                             elif master_bankroll_balance > prev_bankroll:
                                 bankroll_current = master_bankroll_balance
-                            elif master_bankroll_balance <= (prev_bankroll * 0.7):
+                            elif drawdown_threshold is not None and master_bankroll_balance <= drawdown_threshold:
                                 bankroll_current = master_bankroll_balance
                                 bankroll_stepped_down = True
                             else:

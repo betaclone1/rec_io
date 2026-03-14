@@ -29,6 +29,7 @@
 
 ### docs/
 - **127+ top-level .md files** — One-off reports, audits, summaries, proposals, diagnoses, and legacy guides. Kept in `docs/`: README, MASTER_DB_SCHEMA_REFERENCE, PRODUCTION_SYNC_CHECKLIST, PRODUCTION_DB_SCHEMA_AND_BACKFILL_MASTER, VERIFY_COMMAND, MONITORS_LIST_INFRASTRUCTURE, PROJECT_HOUSEKEEPING_AUDIT_PLAN, DEPLOYMENT_GUIDE, AUTHENTICATION_GUIDE, QUICK_INSTALL_GUIDE, DIGITAL_OCEAN_DEPLOYMENT_GUIDE, SYSTEM_DATA_PACKAGING, INSTALLATION_PACKAGE_SUMMARY, AUTOMATIC_MAINTENANCE_DEPLOYMENT_PROTECTION, MASTER_DATABASE_REGISTRATION_GUIDE, and **changelog/**.
+- **TODO_changelog_backlog.md** — Former `docs/changelog/TODO.md` content (archived when task tracking moved to `.cursor/plans/`). Historical backlog only; current tasks live in plans.
 - **VER3_ONBOARDING_DOCUMENTS/** — Full v2 snapshot (Jan 2025); reference only.
 - **archive_legacy/** — Former `docs/archive/` (deprecated services, old migration docs, etc.).
 

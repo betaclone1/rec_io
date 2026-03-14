@@ -6,6 +6,25 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-14 — Dashboard portfolio chart animation, sync bankroll drawdown threshold
+
+**Summary**
+
+- **Dashboard (desktop):** Portfolio chart now has `animation: false` so the 30s refresh does not visibly re-animate the line (matches mobile). Fixes chart "redrawing" every 30s on production when the tab is focused.
+- **kalshi_account_sync_ws:** Bankroll ratchet drawdown threshold is now pegged to `mtb_base_value` (70% of base) when set, instead of 70% of previous bankroll; docstring and logic updated.
+
+No DB migrations. Frontend and backend code only.
+
+**Production checklist**
+
+- [ ] Confirm codebase changes (pull latest on production):  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart application services so main_app serves updated frontend and kalshi_account_sync loads new code:  
+  `scripts/MASTER_RESTART.sh`
+- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Spot-check dashboard: portfolio chart does not visibly redraw every 30s.
+
+---
+
 ## 2026-03-14 — MTB snapshot and ret_pct_base on trades, insufficient-resting-volume log
 
 **Summary**
@@ -17,15 +36,15 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 **Production checklist**
 
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations in order (from project root):  
+- [x] Apply migrations in order (from project root):  
   `PYTHONPATH=$(pwd) python3 scripts/db/run_migration.py up 20260314_1200_trades_mtb_snapshot_columns`  
   `PYTHONPATH=$(pwd) python3 scripts/db/run_migration.py up 20260314_1210_trades_ret_pct_base`  
   `PYTHONPATH=$(pwd) python3 scripts/db/run_migration.py up 20260314_1220_backfill_ret_pct_base_from_ret_pct`
-- [ ] Restart application services so trade_manager and trade_executor load the new code:  
+- [x] Restart application services so trade_manager and trade_executor load the new code:  
   `scripts/MASTER_RESTART.sh`
-- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status.
+- [x] Verify: health (main_app :3000, trade_executor :8001), supervisor status.
 
 ---
 
@@ -63,7 +82,7 @@ No DB migrations. Prod will use new supervisord log path and retention after con
 - **Auto-entry and monitors:** Auto_entry_supervisor runs a 30s loop calling `periodic_status_sync()` so `auto_trade_status` stays in sync. On monitor deactivate, main_app sets `auto_trade_status = 'off'` and triggers `sync_monitor_processes` so AES/ATS tear down promptly. Monitor_manager `create_monitor` returns 207 and a clear message when spawn fails.
 - **AGENTS.md:** Command names updated to `/system-restart-local` and `/system-restart-production`.
 
-Plans: `paper-trade-fee-estimates` (implementation complete; plan still draft). No DB migrations; schema unchanged.
+Plans: `paper-trade-fee-estimates` (done). No DB migrations; schema unchanged.
 
 **Production checklist**
 

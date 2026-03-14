@@ -41,7 +41,7 @@ Minimal index for current system. Historical and one-off docs were moved to `arc
 ## Standards and changelog
 
 - **[PROFESSIONAL_DEV_STANDARDS_CHECKLIST.md](PROFESSIONAL_DEV_STANDARDS_CHECKLIST.md)** — Checklist for repo structure, tests, CI, env, and docs (research-backed).
-- **[changelog/](changelog/)** — [MASTER_CHANGELOG.md](changelog/MASTER_CHANGELOG.md) (releases), [TODO.md](changelog/TODO.md) (backlog), [todo_docs/](changelog/todo_docs/) (design and audit docs).
+- **[changelog/](changelog/)** — [MASTER_CHANGELOG.md](changelog/MASTER_CHANGELOG.md) (releases), [TODO.md](changelog/TODO.md) (pointer to task tracking in `.cursor/plans/`), [todo_docs/](changelog/todo_docs/) (design and audit docs).
 
 ## Archived
 
