@@ -1970,6 +1970,27 @@
       }
     }
 
+    // Reorder existing tile DOM nodes to match newMonitorIds; does not rebuild tiles (avoids icon reload).
+    function reorderMonitorTiles(newMonitorIds) {
+      const grid = document.getElementById('monitors-grid');
+      if (!grid) return;
+      const tileById = new Map();
+      let newMonitorTile = null;
+      grid.querySelectorAll('.monitor-tile').forEach(tile => {
+        if (tile.classList.contains('new-monitor')) {
+          newMonitorTile = tile;
+        } else {
+          const id = tile.getAttribute('data-monitor-id');
+          if (id) tileById.set(id, tile);
+        }
+      });
+      newMonitorIds.forEach(id => {
+        const tile = tileById.get(id);
+        if (tile) grid.appendChild(tile);
+      });
+      if (newMonitorTile) grid.appendChild(newMonitorTile);
+    }
+
     // Initialize monitors
     function initializeMonitors() {
       const grid = document.getElementById('monitors-grid');
@@ -3242,6 +3263,7 @@
         },
         plugins: [customPlugin, crosshairPlugin, yAxisLabelsPlugin, glowPlugin],
         options: {
+          animation: false,
           responsive: true,
           maintainAspectRatio: false,
           interaction: { intersect: false, mode: 'index' },
@@ -3571,6 +3593,7 @@
         },
         plugins: [customPlugin, crosshairPlugin, yAxisLabelsPlugin, glowPlugin],
         options: {
+          animation: false,
           responsive: true,
           maintainAspectRatio: false,
           interaction: { intersect: false, mode: 'index' },
@@ -4818,19 +4841,23 @@
         const newVisibleMonitors = monitors.filter(m => m.status !== 'archived' && m.id !== 'NEW_MONITOR');
         const newMonitorIds = newVisibleMonitors.map(m => m.id);
         
-        // Check for structural changes: additions, removals, or order changes
+        // Only full re-render when monitors were added or removed (rebuilds DOM and reloads icons).
         const hasAdditions = newMonitorIds.some(id => !oldMonitorIds.includes(id));
         const hasRemovals = oldMonitorIds.some(id => !newMonitorIds.includes(id));
-        const hasOrderChange = oldMonitorIds.length === newMonitorIds.length && 
+        const hasOrderChange = oldMonitorIds.length === newMonitorIds.length &&
                               oldMonitorIds.some((id, index) => newMonitorIds[index] !== id);
         
-        if (hasAdditions || hasRemovals || hasOrderChange) {
-          // Structural changes detected - re-render all tiles
-          console.log('Dashboard: Structural changes detected, re-rendering monitor tiles...');
+        if (hasAdditions || hasRemovals) {
+          console.log('Dashboard: Monitor list changed (add/remove), re-rendering tiles...');
           initializeMonitors();
           initializeSortable();
+        } else if (hasOrderChange) {
+          // Order changed (e.g. sort by PnL) — reorder DOM only; no tile rebuild, no icon reload
+          reorderMonitorTiles(newMonitorIds);
+          updateMonitorStatValues(oldMonitors, monitors);
+          console.log('Dashboard: Monitor order updated, stat values refreshed');
         } else {
-          // Only values changed - update stat values without re-rendering
+          // Same set and order — only refresh stat values
           updateMonitorStatValues(oldMonitors, monitors);
           console.log('Dashboard: Monitor stat values refreshed');
         }

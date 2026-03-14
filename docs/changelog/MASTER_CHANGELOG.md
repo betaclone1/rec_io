@@ -17,11 +17,11 @@ No DB migrations. Frontend and backend code only.
 
 **Production checklist**
 
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart application services so main_app serves updated frontend and kalshi_account_sync loads new code:  
+- [x] Restart application services so main_app serves updated frontend and kalshi_account_sync loads new code:  
   `scripts/MASTER_RESTART.sh`
-- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Spot-check dashboard: portfolio chart does not visibly redraw every 30s.
+- [x] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Spot-check dashboard: portfolio chart does not visibly redraw every 30s.
 
 ---
 
