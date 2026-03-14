@@ -20,13 +20,13 @@ No DB migrations. Prod will use new supervisord log path and retention after con
 
 **Production checklist**
 
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Regenerate supervisor config on prod so supervisord uses `logs/supervisord.log` with rotation (optional; run from project root):  
+- [x] Regenerate supervisor config on prod so supervisord uses `logs/supervisord.log` with rotation (optional; run from project root):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/config/generate_unified_supervisor_config.py`
-- [ ] Restart application services so system_monitor and active_trade_supervisor load the new code:  
+- [x] Restart application services so system_monitor and active_trade_supervisor load the new code:  
   `scripts/MASTER_RESTART.sh` (or equivalent supervisorctl restarts).
-- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Confirm system_monitor and all ATS processes RUNNING.
+- [x] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Confirm system_monitor and all ATS processes RUNNING.
 
 ---
 

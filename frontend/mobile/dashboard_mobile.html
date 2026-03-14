@@ -763,6 +763,36 @@
       filter: brightness(0.7);
     }
 
+    /* Compact tiles: hide stats row; show only monitor id in lower left (no extra height) */
+    .monitors-grid.compact-tiles .monitor-stats {
+      display: none !important;
+    }
+    .monitors-grid.compact-tiles .monitor-tile {
+      position: relative;
+    }
+    .monitors-grid.compact-tiles .monitor-bottom-row {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 0;
+      margin: 0;
+      overflow: visible;
+      display: block;
+    }
+    .monitors-grid.compact-tiles .monitor-bottom-row .monitor-uptime,
+    .monitors-grid.compact-tiles .monitor-bottom-row .paper-trading-toggle {
+      display: none !important;
+    }
+    .monitors-grid.compact-tiles .monitor-bottom-row .monitor-name {
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      padding: 0 0 6px 8px;
+      font-size: 10px;
+      color: #718096;
+    }
+
     /* List View Tile Layout */
     .list-view .monitor-tile {
       width: 80%;
@@ -1273,8 +1303,12 @@
     <div class="panels-row">
       <!-- Monitors Panel -->
       <div class="panel-container monitors-panel">
-        <div class="panel-header">
+        <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
           <span>Monitors</span>
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <img id="compactViewIcon" src="../images/icons/list_view_icon.png" alt="Compact" title="Compact: hide Win Streak, W/L, Ret%, PnL" style="width: 17px; height: 17px; opacity: 0.2; transition: opacity 0.2s; cursor: pointer;" onclick="setCompactTiles(true)" />
+            <img id="fullViewIcon" src="../images/icons/tile_view_icon.png" alt="Full" title="Full: show all stats" style="width: 17px; height: 17px; opacity: 1; transition: opacity 0.2s; cursor: pointer;" onclick="setCompactTiles(false)" />
+          </div>
         </div>
         <div class="monitors-grid" id="monitors-grid">
           <!-- Monitor tiles will be dynamically generated here -->
@@ -1320,6 +1354,7 @@
     let allHistoryData = []; // Store all data
     let currentView = 'all'; // Current view
     let currentViewMode = 'tile'; // Current view mode (tile/list)
+    let compactTiles = localStorage.getItem('rec_mobile_compact_tiles') === 'true'; // Hide winstreak, wl, ret, pnl on tiles
     let currentSortBy = 'name'; // Current sort criteria
     let currentChartType = 'pie'; // Current chart type (pie/bar)
     let portfolioPanelActiveTab = 'portfolio'; // 'bankroll' | 'portfolio' | 'pnl'
@@ -2000,37 +2035,24 @@
       return 0;
     }
 
-    // Simple toggle between List and Tile view
-    function toggleViewMode() {
-      const listViewIcon = document.getElementById('listViewIcon');
-      const tileViewIcon = document.getElementById('tileViewIcon');
+    // Set compact (true) or full (false) tile view. Mobile only: no list/tile row view; these icons toggle stats visibility.
+    function setCompactTiles(compact) {
+      if (compactTiles === compact) return;
+      compactTiles = compact;
+      localStorage.setItem('rec_mobile_compact_tiles', compactTiles ? 'true' : 'false');
       const grid = document.getElementById('monitors-grid');
-      
-      if (listViewIcon && tileViewIcon && grid) {
-        // Determine which view to switch to based on which icon was clicked
-        const isCurrentlyList = listViewIcon.style.opacity === '1';
-        
-        if (isCurrentlyList) {
-          // Switch to Tile view
-          listViewIcon.style.opacity = '0.2';
-          tileViewIcon.style.opacity = '1';
-          grid.classList.remove('list-view');
-          grid.classList.add('tile-view');
-          currentViewMode = 'tile';
+      const compactIcon = document.getElementById('compactViewIcon');
+      const fullIcon = document.getElementById('fullViewIcon');
+      if (grid) {
+        if (compactTiles) {
+          grid.classList.add('compact-tiles');
         } else {
-          // Switch to List view
-          listViewIcon.style.opacity = '1';
-          tileViewIcon.style.opacity = '0.2';
-          grid.classList.remove('tile-view');
-          grid.classList.add('list-view');
-          currentViewMode = 'list';
+          grid.classList.remove('compact-tiles');
         }
-        
-        // Re-render monitors with the new view mode
-        initializeMonitors();
-        
-        // Save the new view mode to database
-        saveDashboardPreferences();
+      }
+      if (compactIcon && fullIcon) {
+        compactIcon.style.opacity = compactTiles ? '1' : '0.2';
+        fullIcon.style.opacity = compactTiles ? '0.2' : '1';
       }
     }
 
@@ -2739,23 +2761,23 @@
             activeButton.classList.add('active');
           }
           
-          // Update monitor view mode based on loaded preference
-          const listViewIcon = document.getElementById('listViewIcon');
-          const tileViewIcon = document.getElementById('tileViewIcon');
+          // Mobile: always tile layout; only compact vs full (stats visible). Apply compact state and icon opacities.
           const grid = document.getElementById('monitors-grid');
-          
-          if (listViewIcon && tileViewIcon && grid) {
-            if (currentViewMode === 'list') {
-              listViewIcon.style.opacity = '1';
-              tileViewIcon.style.opacity = '0.2';
-              grid.classList.remove('tile-view');
-              grid.classList.add('list-view');
+          currentViewMode = 'tile';
+          if (grid) {
+            grid.classList.remove('list-view');
+            grid.classList.add('tile-view');
+            if (compactTiles) {
+              grid.classList.add('compact-tiles');
             } else {
-              listViewIcon.style.opacity = '0.2';
-              tileViewIcon.style.opacity = '1';
-              grid.classList.remove('list-view');
-              grid.classList.add('tile-view');
+              grid.classList.remove('compact-tiles');
             }
+          }
+          const compactIcon = document.getElementById('compactViewIcon');
+          const fullIcon = document.getElementById('fullViewIcon');
+          if (compactIcon && fullIcon) {
+            compactIcon.style.opacity = compactTiles ? '1' : '0.2';
+            fullIcon.style.opacity = compactTiles ? '0.2' : '1';
           }
           
           // Update allocation chart type button states

@@ -87,29 +87,12 @@
   <link href="https://fonts.googleapis.com/css2?family=Tektur:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles/global.css">
   
-  <!-- Preload ALL critical images -->
+  <!-- Preload only shell-critical images (sidebar logo, favicon, default-tab icon, collapse/expand). Others load when needed. -->
   <link rel="preload" href="/images/rec_logo_1.png" as="image" type="image/png">
   <link rel="preload" href="/images/rec_logo_browser_tab.png" as="image" type="image/png">
-  <link rel="preload" href="/images/rec_logo_trns.png" as="image" type="image/png">
-  <link rel="preload" href="/images/splash_page_bg.jpg" as="image" type="image/jpeg">
   <link rel="preload" href="/images/icons/dashboard_icon.png" as="image" type="image/png">
-  <link rel="preload" href="/images/icons/trade_monitor_icon.png" as="image" type="image/png">
-  <link rel="preload" href="/images/icons/trade_history.png" as="image" type="image/png">
-  <link rel="preload" href="/images/icons/account_manager_icon.png" as="image" type="image/png">
-  <link rel="preload" href="/images/icons/backtester_icon.png" as="image" type="image/png">
-  <link rel="preload" href="/images/icons/strategy_lab.png" as="image" type="image/png">
-  <link rel="preload" href="/images/icons/user_icon.png" as="image" type="image/png">
-  <link rel="preload" href="/images/icons/system_icon_HEALTHY.png" as="image" type="image/png">
-  <link rel="preload" href="/images/icons/system_icon_UNHEALTHY.png" as="image" type="image/png">
-  <link rel="preload" href="/images/icons/system_icon_OFFLINE.png" as="image" type="image/png">
-  <link rel="preload" href="/images/icons/sound_on_icon.png" as="image" type="image/png">
-  <link rel="preload" href="/images/icons/sound_off_icon.png" as="image" type="image/png">
-  <link rel="preload" href="/images/icons/help.png" as="image" type="image/png">
   <link rel="preload" href="/images/icons/sidebar_expand.png" as="image" type="image/png">
   <link rel="preload" href="/images/icons/sidebar_collapse.png" as="image" type="image/png">
-  <link rel="preload" href="/images/icons/panel_settings.png" as="image" type="image/png">
-  <link rel="preload" href="/images/icons/list_view_icon.png" as="image" type="image/png">
-  <link rel="preload" href="/images/icons/tile_view_icon.png" as="image" type="image/png">
   <style>
     /* Minimal layout CSS - no custom colors, only structure */
     body {
@@ -624,19 +607,18 @@
     
 
     
-    <!-- Main Content Area -->
+    <!-- Main Content Area: only default tab (Dashboard) loads on first paint; others load on first view -->
     <div class="main-content">
-      <!-- Preloaded iframes for each tab -->
       <iframe id="dashboardFrame" class="content-frame active" src="/tabs/dashboard.html"></iframe>
-      <iframe id="tradeMonitorFrame" class="content-frame" src="/tabs/trade_monitor.html"></iframe>
-      <iframe id="tradeHistoryFrame" class="content-frame" src="/tabs/trade_history.html"></iframe>
-      <iframe id="accountManagerFrame" class="content-frame" src="/tabs/account_manager.html"></iframe>
-      <iframe id="backtesterFrame" class="content-frame" src="/tabs/backtester.html"></iframe>
-      <iframe id="strategyLabFrame" class="content-frame" src="/tabs/strategy_lab.html"></iframe>
-      <iframe id="helpFrame" class="content-frame" src="/tabs/help.html"></iframe>
-      <iframe id="settingsFrame" class="content-frame" src="/tabs/settings.html"></iframe>
-      <iframe id="userSettingsFrame" class="content-frame" src="/tabs/user_settings.html"></iframe>
-      <iframe id="systemFrame" class="content-frame" src="/tabs/system.html"></iframe>
+      <iframe id="tradeMonitorFrame" class="content-frame" data-tab-src="/tabs/trade_monitor.html"></iframe>
+      <iframe id="tradeHistoryFrame" class="content-frame" data-tab-src="/tabs/trade_history.html"></iframe>
+      <iframe id="accountManagerFrame" class="content-frame" data-tab-src="/tabs/account_manager.html"></iframe>
+      <iframe id="backtesterFrame" class="content-frame" data-tab-src="/tabs/backtester.html"></iframe>
+      <iframe id="strategyLabFrame" class="content-frame" data-tab-src="/tabs/strategy_lab.html"></iframe>
+      <iframe id="helpFrame" class="content-frame" data-tab-src="/tabs/help.html"></iframe>
+      <iframe id="settingsFrame" class="content-frame" data-tab-src="/tabs/settings.html"></iframe>
+      <iframe id="userSettingsFrame" class="content-frame" data-tab-src="/tabs/user_settings.html"></iframe>
+      <iframe id="systemFrame" class="content-frame" data-tab-src="/tabs/system.html"></iframe>
     </div>
   </div>
 
@@ -751,29 +733,26 @@
         const targetFrameId = tabConfig[pageType];
         
         if (targetFrameId) {
-          // Hide all frames
-          contentFrames.forEach(frame => {
-            frame.classList.remove('active');
-          });
-          
-          // Show target frame
           const targetFrame = document.getElementById(targetFrameId);
-          if (targetFrame) {
-            targetFrame.classList.add('active');
+          if (!targetFrame) return;
+
+          // Lazy-load: set src on first visit so tab content loads only when opened
+          const tabSrc = targetFrame.getAttribute('data-tab-src');
+          if (tabSrc && targetFrame.dataset.srcSet !== 'true') {
+            targetFrame.dataset.srcSet = 'true';
+            targetFrame.src = tabSrc;
+            targetFrame.addEventListener('load', function onTabLoad() {
+              targetFrame.removeEventListener('load', onTabLoad);
+              broadcastTabVisibility();
+            }, { once: true });
           }
-          
-          // Notify all frames of visibility so tabs can pause when hidden (e.g. Trade Monitor)
-          const origin = window.location.origin;
-          contentFrames.forEach(frame => {
-            try {
-              if (frame.contentWindow) {
-                frame.contentWindow.postMessage(
-                  { type: 'tab-visibility', visible: frame.classList.contains('active') },
-                  origin
-                );
-              }
-            } catch (e) { /* cross-origin or not loaded */ }
-          });
+
+          // Hide all frames, then show target
+          contentFrames.forEach(frame => frame.classList.remove('active'));
+          targetFrame.classList.add('active');
+
+          // Notify all frames of visibility (tabs like Trade Monitor pause when hidden)
+          broadcastTabVisibility();
         }
         
         // Prevent URL from showing in browser status bar
@@ -798,13 +777,9 @@
       });
     }
     
-    // Initialize with trade monitor active
     window.addEventListener('DOMContentLoaded', async () => {
-      // All frames are preloaded, trade monitor is already active
-      console.log('All tabs preloaded and ready');
-      
-      // After iframes have had time to load, tell each tab whether it's visible (Trade Monitor pauses when hidden)
-      setTimeout(broadcastTabVisibility, 600);
+      // Only dashboard loads initially; other tabs load on first view. Tell visible tab it's active.
+      setTimeout(broadcastTabVisibility, 400);
       
       // Check for localhost environment and add visual indicator
       checkLocalhostEnvironment();
