@@ -2,6 +2,13 @@
 // Coordinates all frontend initialization and ensures everything is ready before displaying UI
 // This prevents race conditions and ensures system-agnostic loading
 
+// fetch() has no built-in timeout; use AbortController so requests cannot hang forever.
+function fetchWithTimeout(url, options = {}, ms) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), ms);
+    return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(id));
+}
+
 class SystemLoader {
     constructor() {
         this.loadingStates = {
@@ -192,7 +199,7 @@ class SystemLoader {
         const maxAttempts = 10;
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
-                const response = await fetch(window.location.origin + '/api/ports', { timeout: 5000 });
+                const response = await fetchWithTimeout(window.location.origin + '/api/ports', {}, 5000);
                 if (response.ok) {
                     const config = await response.json();
                     console.log('[SYSTEM LOADER] Port configuration loaded:', config);
@@ -224,7 +231,7 @@ class SystemLoader {
             
             while (attempts < maxAttempts) {
                 try {
-                    const response = await fetch(service.endpoint, { timeout: 3000 });
+                    const response = await fetchWithTimeout(service.endpoint, {}, 3000);
                     if (response.ok) {
                         console.log(`[SYSTEM LOADER] ${service.name} validated`);
                         break;
@@ -250,7 +257,7 @@ class SystemLoader {
     async testDatabaseConnections() {
         try {
             // Test main database
-            const response = await fetch(window.location.origin + '/api/db/health', { timeout: 5000 });
+            const response = await fetchWithTimeout(window.location.origin + '/api/db/health', {}, 5000);
             if (!response.ok) {
                 throw new Error('Database health check failed');
             }
@@ -279,7 +286,7 @@ class SystemLoader {
 
         for (const asset of criticalAssets) {
             try {
-                const response = await fetch(asset, { method: 'HEAD', timeout: 3000 });
+                const response = await fetchWithTimeout(asset, { method: 'HEAD' }, 3000);
                 if (!response.ok) {
                     throw new Error(`Asset ${asset} not available`);
                 }
@@ -302,7 +309,7 @@ class SystemLoader {
             ];
 
             for (const endpoint of dataEndpoints) {
-                const response = await fetch(endpoint, { timeout: 5000 });
+                const response = await fetchWithTimeout(endpoint, {}, 5000);
                 if (!response.ok) {
                     console.warn(`[SYSTEM LOADER] Data endpoint ${endpoint} not ready yet`);
                 }

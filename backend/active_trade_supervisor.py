@@ -1544,6 +1544,9 @@ def check_monitoring_failsafe():
     try:
         # Check if there are active trades
         conn = get_db_connection()
+        if conn is None:
+            log("❌ FAILSAFE: No DB connection; skipping failsafe check (restart would not help)")
+            return
         cursor = conn.cursor()
         active_trades_table = get_monitor_active_trades_table()
         cursor.execute(f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE status = 'active'")

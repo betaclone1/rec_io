@@ -6,6 +6,30 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-14 — Script crash fixes, critical-asset logging, push-and-update command
+
+**Summary**
+
+- **system_monitor:** Self-restart no longer kills the process; when system_monitor is in the failed list it launches a detached child to run `supervisorctl restart system_monitor` after a short delay, then exits so supervisor can respawn a new instance.
+- **active_trade_supervisor:** Failsafe skips when DB is unreachable (`get_db_connection()` returns None) instead of crashing and restart-looping.
+- **Critical-asset logging:** Supervisord log moved to `logs/supervisord.log` with rotation (50MB × 10 backups) in generator and local conf; system_monitor and cascading_failure_detector get higher retention (20MB/10MB × 10). Policy doc: `docs/CRITICAL_ASSET_LOGGING.md`.
+- **Push-commits-and-update-production:** New command and skill (prepare-update → commit & push with suggested message → apply-update-from-local). AGENTS.md updated.
+- **Frontend:** system-loader.js uses AbortController for fetch timeouts so health checks cannot hang indefinitely.
+
+No DB migrations. Prod will use new supervisord log path and retention after config is regenerated (or on next deploy with existing generated config).
+
+**Production checklist**
+
+- [ ] Confirm codebase changes (pull latest on production):  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Regenerate supervisor config on prod so supervisord uses `logs/supervisord.log` with rotation (optional; run from project root):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/config/generate_unified_supervisor_config.py`
+- [ ] Restart application services so system_monitor and active_trade_supervisor load the new code:  
+  `scripts/MASTER_RESTART.sh` (or equivalent supervisorctl restarts).
+- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Confirm system_monitor and all ATS processes RUNNING.
+
+---
+
 ## 2026-03-13 — Paper trade fee estimates, PnL/ret backfill, and monitor/AES tweaks
 
 **Summary**

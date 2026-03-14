@@ -857,8 +857,26 @@ class SystemMonitor:
                     self.restart_attempts += 1
                     _sm_logger.info("Attempting service recovery (attempt %s/%s)", self.restart_attempts, self.max_restart_attempts)
                     
-                    # Actually attempt to restart failed services
+                    # Actually attempt to restart failed services. For system_monitor (self), we cannot run supervisorctl restart ourselves — supervisor would SIGTERM us and the spawn may not complete. So we launch a detached child to request the restart after we exit; then we exit so supervisor can spawn a new instance.
                     for service_name in failed_services:
+                        if service_name == "system_monitor":
+                            try:
+                                from backend.util.paths import get_supervisorctl_path, get_supervisor_config_path
+                                ctl = get_supervisorctl_path()
+                                cfg = get_supervisor_config_path()
+                                _sm_logger.warning("system_monitor (self) is down — launching detached child to request restart, then exiting")
+                                env = os.environ.copy()
+                                env["_SM_SUPERVISORCTL"] = ctl
+                                env["_SM_SUPERVISOR_CONFIG"] = cfg
+                                subprocess.Popen(
+                                    ["sh", "-c", "sleep 2 && \"$_SM_SUPERVISORCTL\" -c \"$_SM_SUPERVISOR_CONFIG\" restart system_monitor"],
+                                    start_new_session=True,
+                                    env=env,
+                                )
+                                sys.exit(0)
+                            except Exception as e:
+                                _sm_logger.warning("Failed to arrange self-restart: %s", e)
+                            continue
                         _sm_logger.debug("Attempting to restart %s...", service_name)
                         
                         try:

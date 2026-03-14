@@ -193,6 +193,9 @@ class SupervisorConfigGenerator:
         # Create environment variables string
         env_vars = self._create_environment_variables(db_config, system_host)
         
+        # Log directory for supervisord and all program logs (durable; see docs/CRITICAL_ASSET_LOGGING.md)
+        log_dir = self.path_manager.get_log_directory()
+        
         # Get active monitors from database
         active_monitors = self._get_active_monitors()
         logger.info(f"Found {len(active_monitors)} active monitors: {active_monitors}")
@@ -333,10 +336,15 @@ class SupervisorConfigGenerator:
                 "port": ports.get(key, 8023 if symbol == 'BTC' else 8024)
             })
         
+        # Supervisord main log: durable path under logs/ with rotation (critical for incident review)
+        supervisord_log = os.path.join(log_dir, "supervisord.log")
+        
         # Generate supervisor configuration
         config_content = f"""[supervisord]
 nodaemon=true
-logfile=/tmp/supervisord.log
+logfile={supervisord_log}
+logfile_maxbytes=50MB
+logfile_backups=10
 pidfile=/tmp/supervisord.pid
 stdout_logfile_maxbytes=0
 stderr_logfile_maxbytes=0
@@ -353,16 +361,27 @@ supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
 
 """
         
+        # Critical assets get higher log retention (see docs/CRITICAL_ASSET_LOGGING.md)
+        CRITICAL_LOG_SERVICES = {"system_monitor", "cascading_failure_detector"}
+        CRITICAL_STDOUT_MAX, CRITICAL_STDOUT_BACKUPS = "20MB", 10
+        CRITICAL_STDERR_MAX, CRITICAL_STDERR_BACKUPS = "10MB", 10
+        DEFAULT_STDOUT_MAX, DEFAULT_STDOUT_BACKUPS = "10MB", 5
+        DEFAULT_STDERR_MAX, DEFAULT_STDERR_BACKUPS = "5MB", 5
+        
         # Generate program sections
         for service in services:
             service_name = service["name"]
             script_path = service["script"]
             port = service["port"]
             
-            # Get log file paths
-            log_dir = self.path_manager.get_log_directory()
             stdout_log = os.path.join(log_dir, f"{service_name}.out.log")
             stderr_log = os.path.join(log_dir, f"{service_name}.err.log")
+            if service_name in CRITICAL_LOG_SERVICES:
+                stderr_max, stderr_backups = CRITICAL_STDERR_MAX, CRITICAL_STDERR_BACKUPS
+                stdout_max, stdout_backups = CRITICAL_STDOUT_MAX, CRITICAL_STDOUT_BACKUPS
+            else:
+                stderr_max, stderr_backups = DEFAULT_STDERR_MAX, DEFAULT_STDERR_BACKUPS
+                stdout_max, stdout_backups = DEFAULT_STDOUT_MAX, DEFAULT_STDOUT_BACKUPS
             
             run_cmd = f'{python_executable} {project_root}/backend/{script_path}'
             # Create program section
@@ -375,11 +394,11 @@ startretries=3
 stopasgroup=true
 killasgroup=true
 stderr_logfile={stderr_log}
-stderr_logfile_maxbytes=5MB
-stderr_logfile_backups=5
+stderr_logfile_maxbytes={stderr_max}
+stderr_logfile_backups={stderr_backups}
 stdout_logfile={stdout_log}
-stdout_logfile_maxbytes=10MB
-stdout_logfile_backups=5
+stdout_logfile_maxbytes={stdout_max}
+stdout_logfile_backups={stdout_backups}
 environment={env_vars}
 
 """
