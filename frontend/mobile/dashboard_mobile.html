@@ -1780,11 +1780,11 @@
         if (data.status === 'ok') {
           monitors = data.monitors;
           
-          // Initialize cooldown timers from API data
+          // Sync cooldown timers from API so badge reverts when cooldown ends (no stale map entries)
+          cooldownTimers.clear();
           monitors.forEach(monitor => {
-            if (monitor.cooldown_timer && monitor.cooldown_timer > 0) {
+            if (monitor.id && monitor.id !== 'NEW_MONITOR' && monitor.cooldown_timer > 0) {
               cooldownTimers.set(monitor.id, monitor.cooldown_timer);
-              console.log(`Initialized cooldown timer for ${monitor.id}: ${monitor.cooldown_timer}s`);
             }
           });
           
@@ -5303,17 +5303,32 @@
       return ''; // Default no class
     }
 
-    // Hourly HTC and 15m HTC in cooldown: show red badge (INACTIVE, or ACTIVE with timer)
+    // Hourly HTC and 15m HTC: red badge only when IN cooldown (timer > 0). Otherwise normal colors (active=green, inactive=yellow).
     function getMonitorStatusClass(status, monitor) {
       const base = getStatusClass(status);
       if (!monitor || !monitor.strategy) return base;
       const s = (monitor.strategy || '').trim();
       if (s !== 'Hourly HTC' && s !== '15m HTC') return base;
-      if (base === 'inactive') return 'paused';
       const id = monitor.id;
-      const timerSec = (id != null && (cooldownTimers.get(id) ?? cooldownTimers.get('MON_0001_' + id))) ?? (monitor.cooldown_timer > 0 ? monitor.cooldown_timer : 0);
+      const numPart = (id != null && typeof id === 'string') ? id.split('_').pop() : (id != null ? String(id) : null);
+      const fromMap = (id != null && (cooldownTimers.get(id) ?? (numPart && cooldownTimers.get('MON_0001_' + numPart)) ?? (numPart && cooldownTimers.get(numPart))));
+      const fromMonitor = monitor.cooldown_timer != null ? Number(monitor.cooldown_timer) : 0;
+      const timerSec = (typeof fromMap === 'number' && fromMap > 0) ? fromMap : (typeof fromMonitor === 'number' && fromMonitor > 0 ? fromMonitor : 0);
       if (timerSec > 0) return 'paused';
       return base;
+    }
+
+    function clearCooldownTimerForMonitor(monitorId, monitor) {
+      if (monitorId != null) cooldownTimers.delete(monitorId);
+      if (monitor && monitor.id != null) {
+        cooldownTimers.delete(monitor.id);
+        monitor.cooldown_timer = 0;
+      }
+      const numPart = (monitorId || (monitor && monitor.id) || '').toString().replace(/^mon_?\d+_/i, '').replace(/^MON_?\d+_/i, '');
+      if (numPart) {
+        cooldownTimers.delete('MON_0001_' + numPart);
+        cooldownTimers.delete(numPart);
+      }
     }
 
     // Helper function to format cooldown timer as MM:SS
@@ -5475,26 +5490,27 @@
             
             const monitorId = data.data.monitor_id;
             const cooldownTimer = data.data.cooldown_timer;
+            const frontendId = (monitorId || '').toString().replace('MON_', 'mon_');
+            const monitor = monitors.find(m => String(m.id) === String(monitorId) || String(m.id) === String(frontendId));
             
-            // Store the cooldown timer value (or remove if timer is 0 or null)
-            if (cooldownTimer && cooldownTimer > 0) {
-              cooldownTimers.set(monitorId, cooldownTimer);
+            if (cooldownTimer != null && Number(cooldownTimer) > 0) {
+              cooldownTimers.set(monitorId, Number(cooldownTimer));
+              if (monitor) {
+                cooldownTimers.set(monitor.id, Number(cooldownTimer));
+                monitor.cooldown_timer = Number(cooldownTimer);
+              }
               console.log(`Stored cooldown timer for ${monitorId}: ${cooldownTimer}s`);
             } else {
-              cooldownTimers.delete(monitorId);
+              clearCooldownTimerForMonitor(monitorId, monitor);
               console.log(`Cleared cooldown timer for ${monitorId}`);
             }
             
-            // Update the display for any status (ACTIVE, PAUSED, etc.) if monitor exists
-            const frontendId = (monitorId || '').toString().replace('MON_', 'mon_');
-            const monitor = monitors.find(m => String(m.id) === String(monitorId) || String(m.id) === String(frontendId));
             if (monitor) {
-              const statusElement = document.querySelector(`[data-monitor-id="${monitor.id}"] .monitor-status`);
-              if (statusElement) {
+              document.querySelectorAll(`[data-monitor-id="${monitor.id}"] .monitor-status`).forEach(function(statusElement) {
                 statusElement.className = `monitor-status ${getMonitorStatusClass(monitor.auto_trade_status, monitor)}`;
                 statusElement.textContent = getStatusText(monitor.auto_trade_status, monitorId);
-                console.log(`Updated timer display for ${monitorId} (status: ${monitor.auto_trade_status})`);
-              }
+              });
+              console.log(`Updated timer display for ${monitorId} (status: ${monitor.auto_trade_status})`);
             }
           }
           
