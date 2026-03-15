@@ -1559,6 +1559,7 @@
 
         setTimeout(async () => {
           await refreshPortfolioPanel();
+          loadPerformanceData();
         }, 50);
       }
 
@@ -3324,7 +3325,9 @@
             pnlEl.className = 'performance-pnl' + (pnl > 0 ? ' positive' : pnl < 0 ? ' negative' : '');
           }
           if (retEl) {
-            const retPct = p.ret_pct != null ? p.ret_pct : (pnl === 0 ? 0 : null);
+            const useBase = (portfolioPanelActiveTab === 'bankroll');
+            const rawRet = useBase ? (p.ret_pct_base != null ? p.ret_pct_base : p.ret_pct) : p.ret_pct;
+            const retPct = rawRet != null ? rawRet : (pnl === 0 ? 0 : null);
             if (retPct != null) {
               retEl.textContent = retPct.toFixed(2) + '%';
               retEl.className = 'performance-ret' + (retPct > 0 ? ' positive' : retPct < 0 ? ' negative' : ' neutral');
@@ -5344,37 +5347,65 @@
     }
 
     async function toggleMonitorStatus(monitorId, monitorName, currentStatus) {
+      const tiles = document.querySelectorAll(`.monitor-tile[data-monitor-id="${monitorId}"]`);
+      const isActive = currentStatus === 'active';
+      const newStatus = isActive ? 'inactive' : 'active';
+      const action = isActive ? 'deactivate' : 'activate';
+
+      function setTileAndLightStatus(status) {
+        tiles.forEach(tile => {
+          if (status === 'inactive') tile.classList.add('inactive');
+          else tile.classList.remove('inactive');
+          const light = tile.querySelector('.status-light');
+          if (light) {
+            light.classList.remove('active', 'inactive');
+            light.classList.add(status === 'active' ? 'active' : 'inactive');
+            light.title = status === 'active' ? 'Click to deactivate monitor' : 'Click to activate monitor';
+          }
+        });
+      }
+      function setLightPointerEvents(enable) {
+        tiles.forEach(tile => {
+          const light = tile.querySelector('.status-light');
+          if (light) light.style.pointerEvents = enable ? '' : 'none';
+        });
+      }
+
+      setTileAndLightStatus(newStatus);
+      setLightPointerEvents(false);
+
+      const mon = monitors.find(m => m.id === monitorId);
+      if (mon) mon.status = newStatus;
+
       try {
-        const isActive = currentStatus === 'active';
         const endpoint = isActive ? '/api/monitor/deactivate' : '/api/monitor/activate';
-        const action = isActive ? 'deactivate' : 'activate';
-        
         const response = await fetch(endpoint, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             monitor_id: monitorId,
             monitor_name: monitorName,
             user_id: 'user_0001'
           })
         });
-
         const result = await response.json();
-        
         if (result.status === 'ok') {
           console.log(`Monitor ${action}d successfully:`, monitorName);
-          // Refresh the dashboard to show updated status
-          await loadMonitors(); // Fetch fresh data from backend
-          initializeMonitors(); // Re-render with updated data
+          await loadMonitors();
+          initializeMonitors();
         } else {
+          setTileAndLightStatus(currentStatus);
+          if (mon) mon.status = currentStatus;
           console.error(`Failed to ${action} monitor:`, result.message);
           alert(`Failed to ${action} monitor: ` + result.message);
         }
       } catch (error) {
+        setTileAndLightStatus(currentStatus);
+        if (mon) mon.status = currentStatus;
         console.error(`Error ${action}ing monitor:`, error);
         alert(`Error ${action}ing monitor: ` + error.message);
+      } finally {
+        setLightPointerEvents(true);
       }
     }
 

@@ -6,6 +6,26 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-15 — Monitor activate/deactivate sync, dashboard MTB and Ret % base, status-light UX
+
+**Summary**
+
+- **Monitor activate/deactivate:** main_app now runs in-process sync (generate_unified_supervisor_config + supervisorctl reread/update) after both deactivate and activate so AES/ATS tear down or spin up even if monitor_manager is unreachable. Doc clarification: `status` = script lifecycle; `auto_trade` / `auto_trade_status` = auto-trading only (monitor_manager, generate script, MASTER_DB_SCHEMA_REFERENCE).
+- **Dashboard (Bankroll view):** Bankroll chart and value use `mtb_base_value` (fallback to `bankroll_current`) from `/api/bankroll/history`. Performance panel Ret % boxes show sum of `ret_pct_base` when Bankroll tab is active, and `ret_pct` when Portfolio or PNL is active; `/api/performance/realized` now returns `ret_pct_base` per period. Desktop and mobile.
+- **Dashboard (monitor tile):** On status-light click, tile and light update immediately (optimistic) and the light is non-clickable until the request completes; revert on failure. Desktop and mobile.
+
+Plans: `monitor-activate-deactivate-and-dashboard-ui` (done). MTB dashboard work (Bankroll chart + Performance ret_pct_base) aligns with `mtb-account-dashboard` scope. No DB migrations.
+
+**Production checklist**
+
+- [ ] Confirm codebase changes (pull latest on production):  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart application services so main_app serves updated frontend and backend:  
+  `scripts/MASTER_RESTART.sh`
+- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Spot-check dashboard: Bankroll tab chart/value and Performance Ret % in Bankroll vs Portfolio view; monitor status-light toggles tile immediately.
+
+---
+
 ## 2026-03-14 — Dashboard portfolio chart animation, sync bankroll drawdown threshold
 
 **Summary**

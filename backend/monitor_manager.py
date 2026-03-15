@@ -110,7 +110,9 @@ class MonitorManager:
     # === MONITOR PROCESS MANAGEMENT ===
     
     def get_active_monitors(self) -> List[Dict]:
-        """Get active monitors from database"""
+        """Get monitors that should have AES/ATS script iterations running.
+        Uses only status: 'active' = scripts run, 'inactive' = they do not.
+        auto_trade / auto_trade_status are for auto-trading behavior only, not script lifecycle."""
         try:
             conn = self.get_database_connection()
             with conn.cursor() as cursor:

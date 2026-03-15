@@ -10016,6 +10016,11 @@ Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m va
 
 ### Table: `users.monitor_list_0001`
 
+#### Semantics (status vs auto_trade)
+
+- **`status`** (`'active'` | `'inactive'`): **Script lifecycle.** Determines whether AES/ATS script iterations for this monitor are running. Active = scripts run; inactive = they are torn down. Activate/deactivate endpoints and supervisor config use this only.
+- **`auto_trade`** / **`auto_trade_status`**:** Auto-trading only.** Whether the monitor may place trades automatically. Do not use for script lifecycle.
+
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
@@ -10025,15 +10030,15 @@ Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m va
 | `symbol` | `character varying(20)` | NO | - | |
 | `market` | `text` | YES | 'hourly' | Market interval: 'hourly' or '15m'. |
 | `strategy` | `character varying(100)` | YES | - | |
-| `auto_trade` | `boolean` | YES | false | |
-| `auto_trade_status` | `character varying(20)` | YES | 'inactive'::character varying | |
+| `auto_trade` | `boolean` | YES | false | Auto-trading only (not script lifecycle). |
+| `auto_trade_status` | `character varying(20)` | YES | 'inactive'::character varying | Auto-trading only (not script lifecycle). |
 | `trades` | `integer(32)` | YES | 0 | |
 | `win_loss` | `numeric(5,1)` | YES | 0.0 | |
 | `ret_pct` | `numeric(5,1)` | YES | 0.0 | |
 | `pnl` | `numeric(10,2)` | YES | 0.00 | |
 | `bankroll_allotment` | `numeric(5,1)` | YES | 0.0 | |
 | `bankroll_allotment_pct` | `real(24)` | YES | 0.00 | |
-| `status` | `character varying(20)` | YES | 'active'::character varying | |
+| `status` | `character varying(20)` | YES | 'active'::character varying | Script lifecycle: 'active' = AES/ATS run, 'inactive' = torn down. |
 | `created` | `timestamp without time zone` | YES | CURRENT_TIMESTAMP | |
 | `bankroll_allotment_total` | `integer(32)` | YES | 0 | |
 | `position_size` | `integer(32)` | YES | 1 | |

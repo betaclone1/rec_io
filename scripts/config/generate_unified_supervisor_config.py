@@ -73,7 +73,8 @@ class SupervisorConfigGenerator:
             return False
     
     def _get_active_monitors(self) -> list:
-        """Get active monitors from database"""
+        """Monitors that get AES/ATS programs in supervisor config.
+        Uses only status: 'active' = include, 'inactive' = omit. auto_trade/auto_trade_status are not used for script lifecycle."""
         try:
             conn = get_postgresql_connection()
             if not conn:

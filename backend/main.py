@@ -4893,19 +4893,20 @@ async def get_portfolio_history(period: str = "1m"):
 
 @app.get("/api/bankroll/history")
 async def get_bankroll_history(period: str = "1m"):
-    """Get historical bankroll_current data from account_balance for charting."""
+    """Get historical MTB base value from account_balance for Bankroll chart. Uses mtb_base_value with fallback to bankroll_current (cents to dollars)."""
     try:
         import psycopg2
         from datetime import datetime, timedelta
 
         conn = get_postgresql_connection()
-
+        # One value per row: prefer mtb_base_value, fallback to bankroll_current for older rows
+        select_val = "COALESCE(mtb_base_value, bankroll_current)"
         now = datetime.now()
         if period == "1d":
             today_5am = now.replace(hour=5, minute=0, second=0, microsecond=0)
             with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT timestamp, bankroll_current
+                cursor.execute(f"""
+                    SELECT timestamp, {select_val}
                     FROM users.account_balance_0001
                     WHERE timestamp < %s
                     ORDER BY timestamp DESC
@@ -4913,8 +4914,8 @@ async def get_bankroll_history(period: str = "1m"):
                 """, (today_5am.strftime('%Y-%m-%d %H:%M:%S'),))
                 last_before_5am = cursor.fetchone()
             with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT timestamp, bankroll_current
+                cursor.execute(f"""
+                    SELECT timestamp, {select_val}
                     FROM users.account_balance_0001
                     WHERE timestamp >= %s
                     ORDER BY timestamp ASC
@@ -4925,8 +4926,8 @@ async def get_bankroll_history(period: str = "1m"):
         elif period == "1w":
             start_time = now - timedelta(weeks=1)
             with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT timestamp, bankroll_current
+                cursor.execute(f"""
+                    SELECT timestamp, {select_val}
                     FROM users.account_balance_0001
                     WHERE timestamp >= %s
                     ORDER BY timestamp ASC
@@ -4935,8 +4936,8 @@ async def get_bankroll_history(period: str = "1m"):
         elif period == "1m":
             start_time = now - timedelta(days=30)
             with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT timestamp, bankroll_current
+                cursor.execute(f"""
+                    SELECT timestamp, {select_val}
                     FROM users.account_balance_0001
                     WHERE timestamp >= %s
                     ORDER BY timestamp ASC
@@ -4945,8 +4946,8 @@ async def get_bankroll_history(period: str = "1m"):
         elif period == "1y":
             start_time = now - timedelta(days=365)
             with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT timestamp, bankroll_current
+                cursor.execute(f"""
+                    SELECT timestamp, {select_val}
                     FROM users.account_balance_0001
                     WHERE timestamp >= %s
                     ORDER BY timestamp ASC
@@ -4955,8 +4956,8 @@ async def get_bankroll_history(period: str = "1m"):
         else:  # "all"
             start_time = datetime(2020, 1, 1)
             with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT timestamp, bankroll_current
+                cursor.execute(f"""
+                    SELECT timestamp, {select_val}
                     FROM users.account_balance_0001
                     WHERE timestamp >= %s
                     ORDER BY timestamp ASC
@@ -4967,10 +4968,10 @@ async def get_bankroll_history(period: str = "1m"):
 
         data = []
         for row in results:
-            timestamp, bankroll_current = row
+            timestamp, value_cents = row
             data.append({
                 "timestamp": timestamp if timestamp else None,
-                "bankroll": float(bankroll_current) / 100 if bankroll_current is not None else 0  # cents to dollars
+                "bankroll": float(value_cents) / 100 if value_cents is not None else 0  # cents to dollars
             })
 
         return {
@@ -5102,7 +5103,7 @@ async def get_performance_realized():
                 # Current period: [period_start, now] (to-date)
                 period_end = now
                 cursor.execute("""
-                    SELECT COALESCE(SUM(pnl), 0), COALESCE(SUM(ret_pct), 0)
+                    SELECT COALESCE(SUM(pnl), 0), COALESCE(SUM(ret_pct), 0), COALESCE(SUM(ret_pct_base), 0)
                     FROM users.trades_0001
                     WHERE (test_filter IS NULL OR test_filter = FALSE)
                       AND (paper_trade IS NULL OR paper_trade = FALSE)
@@ -5114,6 +5115,7 @@ async def get_performance_realized():
                 row = cursor.fetchone()
                 pnl = float(row[0]) if row and row[0] is not None else 0.0
                 ret_pct_sum = float(row[1]) if row and row[1] is not None else None
+                ret_pct_base_sum = float(row[2]) if row and row[2] is not None else None
 
                 # Previous period: same-length window (prev_start through prev_start + (now - period_start))
                 duration = period_end - period_start
@@ -5132,7 +5134,8 @@ async def get_performance_realized():
                 prev_pnl = float(prev_row[0]) if prev_row and prev_row[0] is not None else 0.0
 
                 ret_pct = round(ret_pct_sum, 2) if ret_pct_sum is not None else None
-                result[key] = {"pnl": round(pnl, 2), "ret_pct": ret_pct, "prev_pnl": round(prev_pnl, 2)}
+                ret_pct_base = round(ret_pct_base_sum, 2) if ret_pct_base_sum is not None else None
+                result[key] = {"pnl": round(pnl, 2), "ret_pct": ret_pct, "ret_pct_base": ret_pct_base, "prev_pnl": round(prev_pnl, 2)}
 
         conn.close()
         return {"status": "ok", "periods": result}
@@ -6259,7 +6262,7 @@ async def archive_monitor(request: dict):
 
 @app.post("/api/monitor/deactivate")
 async def deactivate_monitor(request: dict):
-    """Deactivate a monitor by setting auto_trade to FALSE, auto_trade_status to 'off', and status to 'inactive'"""
+    """Turn off a monitor: status = 'inactive' (stops AES/ATS scripts); also set auto_trade FALSE and auto_trade_status 'off' for UI/auto-trading."""
     try:
         from backend.core.config.database import get_postgresql_connection
         
@@ -6292,8 +6295,7 @@ async def deactivate_monitor(request: dict):
             return {"status": "error", "message": "Database connection failed"}
         
         with conn.cursor() as cursor:
-            # Set auto_trade to FALSE, status to 'inactive', and auto_trade_status to 'off'
-            # so AES/ATS clearly see this monitor as disabled and the UI reflects it.
+            # status = 'inactive' → AES/ATS for this monitor are torn down. auto_trade/auto_trade_status are for auto-trading only.
             cursor.execute(f"""
                 UPDATE users.monitor_list_{user_number}
                 SET auto_trade = FALSE, status = 'inactive', auto_trade_status = 'off'
@@ -6310,7 +6312,8 @@ async def deactivate_monitor(request: dict):
         _main_logger.debug(f"[DEACTIVATE] Monitor {monitor_name} (ID: {monitor_id}) deactivated successfully")
 
         # Trigger an immediate monitor process sync so AES/ATS for this monitor
-        # are torn down promptly, instead of waiting for the 10s watcher loop.
+        # are torn down promptly. Try monitor_manager HTTP first; then always run
+        # sync in-process so teardown happens even if monitor_manager is unreachable.
         try:
             import requests
             from backend.core.port_config import get_port
@@ -6326,8 +6329,44 @@ async def deactivate_monitor(request: dict):
                     f"[DEACTIVATE] ⚠️ sync_monitor_processes returned {sync_resp.status_code}: {sync_resp.text}"
                 )
         except Exception as e:
-            _main_logger.warning(f"[DEACTIVATE] ⚠️ Failed to trigger monitor process sync: {e}")
-        
+            _main_logger.warning(f"[DEACTIVATE] ⚠️ Failed to trigger monitor process sync via HTTP: {e}")
+
+        # Always run sync in-process so AES/ATS are torn down regardless of monitor_manager.
+        try:
+            import subprocess
+            from backend.util.paths import get_project_root, get_supervisorctl_path, get_supervisor_config_path
+
+            proot = get_project_root()
+            gen_script = os.path.join(proot, "scripts", "config", "generate_unified_supervisor_config.py")
+            if os.path.isfile(gen_script):
+                env = os.environ.copy()
+                env.setdefault("PYTHONPATH", proot)
+                env.setdefault("REC_PROJECT_ROOT", proot)
+                r0 = subprocess.run(
+                    [sys.executable, gen_script],
+                    cwd=proot,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if r0.returncode != 0:
+                    _main_logger.warning(f"[DEACTIVATE] ⚠️ generate_unified_supervisor_config failed: {r0.stderr or r0.stdout}")
+                else:
+                    ctl = get_supervisorctl_path()
+                    cfg = get_supervisor_config_path()
+                    for cmd in ["reread", "update"]:
+                        r = subprocess.run([ctl, "-c", cfg, cmd], cwd=proot, capture_output=True, text=True, timeout=10)
+                        if r.returncode != 0:
+                            _main_logger.warning(f"[DEACTIVATE] ⚠️ supervisorctl {cmd} failed: {r.stderr or r.stdout}")
+                            break
+                    else:
+                        _main_logger.debug("[DEACTIVATE] In-process monitor process sync completed")
+            else:
+                _main_logger.warning(f"[DEACTIVATE] ⚠️ generate script not found: {gen_script}")
+        except Exception as e:
+            _main_logger.warning(f"[DEACTIVATE] ⚠️ In-process monitor process sync failed: {e}")
+
         # Broadcast monitor list update to all connected WebSocket clients
         message = {
             "type": "monitor_list_updated",
@@ -6353,7 +6392,7 @@ async def deactivate_monitor(request: dict):
 
 @app.post("/api/monitor/activate")
 async def activate_monitor(request: dict):
-    """Activate a monitor by setting status to 'active'"""
+    """Turn on a monitor: status = 'active' so AES/ATS script iterations are started. Does not change auto_trade/auto_trade_status."""
     try:
         from backend.core.config.database import get_postgresql_connection
         
@@ -6401,7 +6440,62 @@ async def activate_monitor(request: dict):
         conn.close()
         
         _main_logger.debug(f"[ACTIVATE] Monitor {monitor_name} (ID: {monitor_id}) activated successfully")
-        
+
+        # Trigger sync so AES/ATS for this monitor are spun up. Try monitor_manager HTTP first;
+        # then always run sync in-process so spawn happens even if monitor_manager is unreachable.
+        try:
+            import requests
+            from backend.core.port_config import get_port
+
+            monitor_manager_port = get_port("monitor_manager")
+            sync_resp = requests.post(
+                f"http://localhost:{monitor_manager_port}/api/sync_monitor_processes",
+                json={"source": "main_app_activate", "monitor_id": monitor_id},
+                timeout=10,
+            )
+            if not sync_resp.ok:
+                _main_logger.warning(
+                    f"[ACTIVATE] ⚠️ sync_monitor_processes returned {sync_resp.status_code}: {sync_resp.text}"
+                )
+        except Exception as e:
+            _main_logger.warning(f"[ACTIVATE] ⚠️ Failed to trigger monitor process sync via HTTP: {e}")
+
+        # Always run sync in-process so AES/ATS are spawned regardless of monitor_manager.
+        try:
+            import subprocess
+            from backend.util.paths import get_project_root, get_supervisorctl_path, get_supervisor_config_path
+
+            proot = get_project_root()
+            gen_script = os.path.join(proot, "scripts", "config", "generate_unified_supervisor_config.py")
+            if os.path.isfile(gen_script):
+                env = os.environ.copy()
+                env.setdefault("PYTHONPATH", proot)
+                env.setdefault("REC_PROJECT_ROOT", proot)
+                r0 = subprocess.run(
+                    [sys.executable, gen_script],
+                    cwd=proot,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if r0.returncode != 0:
+                    _main_logger.warning(f"[ACTIVATE] ⚠️ generate_unified_supervisor_config failed: {r0.stderr or r0.stdout}")
+                else:
+                    ctl = get_supervisorctl_path()
+                    cfg = get_supervisor_config_path()
+                    for cmd in ["reread", "update"]:
+                        r = subprocess.run([ctl, "-c", cfg, cmd], cwd=proot, capture_output=True, text=True, timeout=10)
+                        if r.returncode != 0:
+                            _main_logger.warning(f"[ACTIVATE] ⚠️ supervisorctl {cmd} failed: {r.stderr or r.stdout}")
+                            break
+                    else:
+                        _main_logger.debug("[ACTIVATE] In-process monitor process sync completed")
+            else:
+                _main_logger.warning(f"[ACTIVATE] ⚠️ generate script not found: {gen_script}")
+        except Exception as e:
+            _main_logger.warning(f"[ACTIVATE] ⚠️ In-process monitor process sync failed: {e}")
+
         # Broadcast monitor list update to all connected WebSocket clients
         message = {
             "type": "monitor_list_updated",
