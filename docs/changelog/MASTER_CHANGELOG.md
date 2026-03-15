@@ -18,11 +18,11 @@ Plans: `monitor-activate-deactivate-and-dashboard-ui` (done). MTB dashboard work
 
 **Production checklist**
 
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart application services so main_app serves updated frontend and backend:  
+- [x] Restart application services so main_app serves updated frontend and backend:  
   `scripts/MASTER_RESTART.sh`
-- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Spot-check dashboard: Bankroll tab chart/value and Performance Ret % in Bankroll vs Portfolio view; monitor status-light toggles tile immediately.
+- [x] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Spot-check dashboard: Bankroll tab chart/value and Performance Ret % in Bankroll vs Portfolio view; monitor status-light toggles tile immediately.
 
 ---
 

@@ -1623,7 +1623,7 @@
           if (statusElement) {
             const status = newMonitor.auto_trade_status;
             statusElement.textContent = getStatusText(status, newMonitor.id);
-            statusElement.className = `monitor-status ${getStatusClass(status)}`;
+            statusElement.className = `monitor-status ${getMonitorStatusClass(status, newMonitor)}`;
           }
           
           // Update auto trade toggle (failsafe: same refresh loop as other tile data)
@@ -1804,7 +1804,7 @@
               <div class="monitor-strategy">${monitor.strategy}</div>
             </div>
             ${getAllocationBadgeMarkup(monitor)}
-            <div class="monitor-status ${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'active' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'inactive' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'disabled' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'paused' : ''}">${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'ACTIVE' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'INACTIVE' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'DISABLED' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'PAUSED' : monitor.auto_trade_status}</div>
+            <div class="monitor-status ${getMonitorStatusClass(monitor.auto_trade_status, monitor)}">${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'ACTIVE' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'INACTIVE' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'DISABLED' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'PAUSED' : monitor.auto_trade_status}</div>
             <div class="monitor-stats">
               <div style="text-align: center; min-width: 45px;">
                 <div class="stat-value stat-win-streak">${monitor.win_streak || 0}</div>
@@ -1876,7 +1876,7 @@
                 </div>
                 <div style="display: flex; align-items: center;">
                   ${getAllocationBadgeMarkup(monitor)}
-                  <div class="monitor-status ${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'active' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'inactive' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'disabled' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'paused' : ''}">${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'ACTIVE' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'INACTIVE' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'DISABLED' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'PAUSED' : monitor.auto_trade_status}</div>
+                  <div class="monitor-status ${getMonitorStatusClass(monitor.auto_trade_status, monitor)}">${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'ACTIVE' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'INACTIVE' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'DISABLED' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'PAUSED' : monitor.auto_trade_status}</div>
                 </div>
               </div>
             </div>
@@ -5619,12 +5619,25 @@
 
     // Helper function to get CSS class for auto trade status
     function getStatusClass(status) {
-      const statusLower = status.toLowerCase();
+      const statusLower = (status || '').toLowerCase();
       if (statusLower === 'active') return 'active';
       if (statusLower === 'inactive') return 'inactive';
       if (statusLower === 'disabled') return 'disabled';
       if (statusLower === 'paused') return 'paused';
       return ''; // Default no class
+    }
+
+    // Hourly HTC and 15m HTC in cooldown: show red badge (INACTIVE, or ACTIVE with timer)
+    function getMonitorStatusClass(status, monitor) {
+      const base = getStatusClass(status);
+      if (!monitor || !monitor.strategy) return base;
+      const s = (monitor.strategy || '').trim();
+      if (s !== 'Hourly HTC' && s !== '15m HTC') return base;
+      if (base === 'inactive') return 'paused';
+      const id = monitor.id;
+      const timerSec = (id != null && (cooldownTimers.get(id) ?? cooldownTimers.get('MON_0001_' + id))) ?? (monitor.cooldown_timer > 0 ? monitor.cooldown_timer : 0);
+      if (timerSec > 0) return 'paused';
+      return base;
     }
 
     // Helper function to format cooldown timer as MM:SS
@@ -5736,10 +5749,12 @@
             }
             
             // Update the display for any status (ACTIVE, PAUSED, etc.) if monitor exists
-            const monitor = monitors.find(m => m.id === monitorId);
+            const frontendId = (monitorId || '').toString().replace('MON_', 'mon_');
+            const monitor = monitors.find(m => String(m.id) === String(monitorId) || String(m.id) === String(frontendId));
             if (monitor) {
-              const statusElement = document.querySelector(`[data-monitor-id="${monitorId}"] .monitor-status`);
+              const statusElement = document.querySelector(`[data-monitor-id="${monitor.id}"] .monitor-status`);
               if (statusElement) {
+                statusElement.className = `monitor-status ${getMonitorStatusClass(monitor.auto_trade_status, monitor)}`;
                 statusElement.textContent = getStatusText(monitor.auto_trade_status, monitorId);
                 console.log(`Updated timer display for ${monitorId} (status: ${monitor.auto_trade_status})`);
               }
@@ -5761,10 +5776,11 @@
               // Cooldown can exist during ACTIVE status (for Hourly HTC during spike cooldown)
               
               // Update the visual status indicator
-              const statusElement = document.querySelector(`[data-monitor-id="${data.data.monitor_id}"] .monitor-status`);
+              const frontendId = (data.data.monitor_id || '').replace('MON_', 'mon_');
+              const monitor = monitors.find(m => m.id === frontendId);
+              const statusElement = document.querySelector(`[data-monitor-id="${frontendId}"] .monitor-status`);
               if (statusElement) {
-                // Update the CSS classes and text content
-                statusElement.className = `monitor-status ${getStatusClass(data.data.auto_trade_status)}`;
+                statusElement.className = `monitor-status ${getMonitorStatusClass(data.data.auto_trade_status, monitor)}`;
                 statusElement.textContent = getStatusText(data.data.auto_trade_status, data.data.monitor_id);
               }
               
