@@ -1011,13 +1011,19 @@ def sync_balance():
                             _, mtb_base = _get_mtb_snapshot_from_subaccounts(cursor)
                             drawdown_threshold = (mtb_base * 0.7) if (mtb_base is not None and mtb_base > 0) else (prev_bankroll * 0.7) if prev_bankroll else None
                             if prev_bankroll is None:
+                                # First bankroll initialization: no drawdown edge to detect yet.
                                 bankroll_current = master_bankroll_balance
                             elif master_bankroll_balance > prev_bankroll:
+                                # Normal ratchet up when MTB makes a new high.
                                 bankroll_current = master_bankroll_balance
                             elif drawdown_threshold is not None and master_bankroll_balance <= drawdown_threshold:
+                                # Drawdown branch: only trigger the one-time safety valve when we CROSS the threshold
+                                # from above to below (edge detector), not on every poll while below it.
                                 bankroll_current = master_bankroll_balance
-                                bankroll_stepped_down = True
+                                if prev_bankroll > drawdown_threshold:
+                                    bankroll_stepped_down = True
                             else:
+                                # Hold previous bankroll when neither stepping up nor crossing the drawdown threshold.
                                 bankroll_current = prev_bankroll
                     else:
                         # Hold bankroll_current; do not update subaccounts
