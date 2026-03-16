@@ -36,6 +36,7 @@ From **repo root** run these in sequence:
 2. `curl -sS -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/health` — expect 200.
 3. `curl -sS -o /dev/null -w "%{http_code}" http://127.0.0.1:8001/health` — expect 200.
 4. `tail -n 50 logs/trade_executor.out.log logs/main_app.out.log 2>/dev/null | grep -iE 'ERROR|FATAL|CRITICAL'` — note any matches or "none".
+5. (For this week’s ETH monitoring): `ssh -o BatchMode=yes root@137.184.224.94 "cd /opt/rec_io_server && tail -n 80 logs/symbol_price_watchdog_eth.out.log | grep -iE 'error|timeout' || echo 'no recent ETH price watchdog errors'"` — note whether ETH price watchdog is still seeing websocket/transport errors.
 
 Summarize in one line: e.g. "All RUNNING, health 200, no errors in tail" or list what failed.
 

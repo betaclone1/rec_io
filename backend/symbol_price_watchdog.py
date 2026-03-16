@@ -1,5 +1,6 @@
 import asyncio
 import websockets
+from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 import json
 from datetime import datetime, timedelta
 from datetime import timezone
@@ -1180,7 +1181,13 @@ async def log_symbol_price(symbol: str):
                             last_heartbeat = time.time()
 
                     except asyncio.TimeoutError:
-                        logger.warning("WebSocket timeout, reconnecting")
+                        logger.warning("[%s] WebSocket timeout, reconnecting", symbol)
+                        break
+                    except (ConnectionClosedError, ConnectionClosedOK) as e:
+                        logger.warning("[%s] WebSocket connection closed: %s. Reconnecting.", symbol, e)
+                        break
+                    except Exception as e:
+                        logger.error("[%s] Unexpected WebSocket error: %s. Reconnecting.", symbol, e, exc_info=True)
                         break
         except Exception as e:
             logger.error("Logger encountered an error: %s", e, exc_info=True)
