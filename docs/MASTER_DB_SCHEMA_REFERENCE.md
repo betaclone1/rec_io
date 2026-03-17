@@ -79,6 +79,29 @@ This syncs settlements, fills, and orders (with cursor pagination) and writes to
 
 ---
 
+## Real-time DB change notification (public)
+
+The system uses PostgreSQL NOTIFY plus a switchboard (LISTEN → Redis → WebSocket/backend subscribers) so that any writer (main app, scripts, other services) can drive real-time updates. Frontend and backend consumers subscribe once and receive the same payloads.
+
+### Function: `public.rec_io_db_notify()`
+
+- **Purpose:** Trigger function for DB-wide change notifications. Any table in any schema can use it.
+- **Channel:** Sends to `rec_io_db_changes` (override via env `PG_NOTIFY_CHANNEL` in the switchboard).
+- **Payload (JSON):** `{"schema":"<schema>","table":"<table>","op":"INSERT"|"UPDATE"|"DELETE"}`.
+
+### Adding a trigger to any table
+
+```sql
+CREATE TRIGGER <trigger_name>
+  AFTER INSERT OR UPDATE OR DELETE ON <schema>.<table>
+  FOR EACH ROW
+  EXECUTE PROCEDURE public.rec_io_db_notify();
+```
+
+The switchboard maps `(schema, table)` to a **stream name** via `backend/core/stream_registry.py` and publishes to Redis `rec_io:db_changes`. Frontend and backend subscribers filter by stream name and refetch or react as needed. **When adding a trigger for a new table:** add the same table to the stream registry (one entry per table). See [REALTIME_BACKBONE.md](REALTIME_BACKBONE.md) and [REDIS_DB_CHANGES_BACKEND_INTEGRATION.md](REDIS_DB_CHANGES_BACKEND_INTEGRATION.md).
+
+---
+
 ## Schema: `analytics`
 
 ### Table: `analytics.btc_fingerprint_-10`
@@ -10417,11 +10440,11 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
 | `id` | `integer(32)` | NO | nextval('users.trade_logs_0001_id_seq'::regclass) | |
-| `ticket_id` | `character varying(50)` | YES | - | |
+| `ticket_id` | `character varying(100)` | YES | - | |
 | `message` | `text` | YES | - | |
 | `timestamp` | `timestamp without time zone` | YES | CURRENT_TIMESTAMP | |
-| `service` | `character varying(50)` | YES | - | |
-| `user_id` | `character varying(50)` | YES | 'user_0001'::character varying | |
+| `service` | `character varying(100)` | YES | - | |
+| `user_id` | `character varying(100)` | YES | 'user_0001'::character varying | |
 
 #### Constraints
 
@@ -10484,8 +10507,9 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `bankroll` | `real(24)` | YES | - | |
 | `master_trading_bankroll` | `integer(32)` | YES | - | Snapshot of MTB balance in cents from account_balance at insert time. |
 | `mtb_base_value` | `integer(32)` | YES | - | Snapshot of MTB base_value in cents from account_balance at insert time. |
-| `ret_pct` | `real(24)` | YES | - | |
+| `ret_pct` | `real(24)` | YES | - | Return % vs bankroll at trade time (PnL / bankroll snapshot, net of fees). |
 | `ret_pct_base` | `real(24)` | YES | - | Return % vs mtb_base_value (same formula as ret_pct but denominator = mtb_base_value in cents). |
+| `roi_pct` | `real(24)` | YES | - | Per-trade return on investment (PnL / (buy_price × position) × 100), net of fees. |
 | `momentum_5s_avg` | `numeric(10,4)` | YES | - | |
 | `order_id` | `text` | YES | - | |
 | `order_id_open` | `text` | YES | - | |

@@ -48,6 +48,10 @@
 | @digitalocean | DO API, snapshots, backups, droplets. | .cursor/rules/digitalocean.mdc (or archive) |
 | @assistant | Gmail, Calendar, personal productivity. No backend/DB/trading. | .cursor/rules/assistant.mdc (or archive) |
 
+### Real-time backbone (scope and anti-bloat)
+
+When touching redis_switchboard, stream_registry, or adding real-time streams/consumers: follow docs/REALTIME_BACKBONE.md Section 0 (scope and boundaries) and Section 9 (checklist). The switchboard carries signals only; do not add application HTTP APIs or per-stream logic there. New capability = new stream (registry + trigger) or new service, not new endpoints on the switchboard.
+
 ### Frontend/mobile parity convention
 
 - When making **frontend changes** (desktop or mobile), always ask: **“Does this need a counterpart on the other surface?”**

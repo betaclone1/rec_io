@@ -1279,6 +1279,9 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                         buy_value = buy_price * position
                         sell_value = sell_price * position
                         pnl = round(sell_value - buy_value - total_fees, 2)
+                        roi_pct = None
+                        if buy_value is not None and buy_value > 0:
+                            roi_pct = round((pnl / buy_value) * 100.0, 5)
                         win_loss = "W" if pnl > 0 else "L" if pnl < 0 else "D"
                         
                         log_event(ticket_id, f"MANAGER: PnL calculation - buy: ${buy_price}, sell: ${sell_price}, total_fees: ${total_fees}, pnl: ${pnl}")
@@ -1332,8 +1335,8 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                                 log_event(ticket_id, f"MANAGER: ⚠️ FAILSAFE: Notified ATS instance {monitor_identifier} of monitoring failure")
                                 log(f"⚠️ FAILSAFE: Triggered ATS restart for monitor {monitor_identifier}")
                         
-                        # Update trade status to closed with all calculated values including ret_pct, ret_pct_base, and high/low prices
-                        update_trade_status_with_ret_pct(id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, total_fees, ret_pct, ret_pct_base, high_price, low_price)
+                        # Update trade status to closed with all calculated values including ret_pct, ret_pct_base, roi_pct, and high/low prices
+                        update_trade_status_with_ret_pct(id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, total_fees, roi_pct, ret_pct, ret_pct_base, high_price, low_price)
                         
                         log_event(ticket_id, f"MANAGER: CLOSE TRADE CONFIRMED - PnL: ${pnl}, W/L: {win_loss}, Fees: ${total_fees}")
                         log(f"CLOSE TRADE CONFIRMED: {expected_ticker}, PnL=${pnl}, W/L={win_loss}")
@@ -2159,7 +2162,7 @@ init_trades_db()
 
 
 
-def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_price=None, symbol_close=None, win_loss=None, pnl=None, close_method=None, fees=None, ret_pct=None, ret_pct_base=None, high_price=None, low_price=None):
+def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_price=None, symbol_close=None, win_loss=None, pnl=None, close_method=None, fees=None, roi_pct=None, ret_pct=None, ret_pct_base=None, high_price=None, low_price=None):
     """Update trade status in PostgreSQL database with ret_pct and ret_pct_base (return % vs mtb_base_value)."""
     if status == 'closed':
         if closed_at is None:
@@ -2189,11 +2192,32 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                 win_loss = None
 
             calculated_pnl = None
+            buy_value = None
             if buy_price is not None and sell_price is not None and position is not None:
                 buy_value = buy_price * position
                 sell_value = sell_price * position
                 fees = fees_paid if fees_paid is not None else 0.0
                 calculated_pnl = round(sell_value - buy_value - fees, 2)
+
+        # Calculate roi_pct if not provided and we have enough data
+        roi_value = roi_pct
+        if roi_value is None:
+            try:
+                if calculated_pnl is not None:
+                    if 'buy_value' not in locals() or buy_value is None:
+                        # Fetch buy_price/position if we didn't compute buy_value above
+                        pg_conn_roi = get_postgresql_connection()
+                        if pg_conn_roi:
+                            with pg_conn_roi.cursor() as cur_roi:
+                                cur_roi.execute("SELECT buy_price, position FROM users.trades_0001 WHERE id = %s", (trade_id,))
+                                row = cur_roi.fetchone()
+                                if row and row[0] is not None and row[1] is not None:
+                                    buy_value = row[0] * row[1]
+                            pg_conn_roi.close()
+                    if buy_value is not None and buy_value > 0:
+                        roi_value = round((calculated_pnl / buy_value) * 100.0, 5)
+            except Exception:
+                roi_value = roi_pct
 
     # Update PostgreSQL only
     try:
@@ -2230,9 +2254,9 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                     
                     cursor.execute("""
                         UPDATE users.trades_0001 
-                        SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, ret_pct = %s, ret_pct_base = %s, high_price = %s, low_price = %s, monitor_confirmed = %s
+                        SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, roi_pct = %s, ret_pct = %s, ret_pct_base = %s, high_price = %s, low_price = %s, monitor_confirmed = %s
                         WHERE id = %s
-                    """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, ret_pct, ret_pct_base, final_high_price, final_low_price, monitor_confirmed, trade_id))
+                    """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, roi_value, ret_pct, ret_pct_base, final_high_price, final_low_price, monitor_confirmed, trade_id))
                 else:
                     cursor.execute("""
                         UPDATE users.trades_0001 
@@ -2932,19 +2956,24 @@ async def add_trade(request: Request):
                             pnl = round(sell_value - buy_value - total_fees, 2)
                             win_loss = "W" if pnl > 0 else "L" if pnl < 0 else "D"
                             
-                            # Calculate ret_pct and ret_pct_base
+                            # Calculate ret_pct, ret_pct_base, and roi_pct
                             ret_pct = None
                             ret_pct_base = None
+                            roi_pct = None
                             if bankroll is not None and bankroll > 0:
                                 ret_pct = round((pnl / (bankroll / 100.0)) * 100, 5)
                             if mtb_base is not None and mtb_base > 0:
                                 ret_pct_base = round((pnl / (mtb_base / 100.0)) * 100, 5)
+                            if buy_price is not None and position is not None:
+                                buy_value = buy_price * position
+                                if buy_value > 0:
+                                    roi_pct = round((pnl / buy_value) * 100.0, 5)
                             
                             # Get high_price and low_price from active_trades
                             high_price, low_price = get_high_low_prices_from_active_trades(trade_id)
                             
                             # Update trade to closed with all calculated values (total_fees = open + close)
-                            update_trade_status_with_ret_pct(trade_id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, total_fees, ret_pct, ret_pct_base, high_price, low_price)
+                            update_trade_status_with_ret_pct(trade_id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, total_fees, roi_pct, ret_pct, ret_pct_base, high_price, low_price)
                             
                             # Set order_id_close to NULL for paper trades
                             pg_conn_update = get_postgresql_connection()
@@ -3802,13 +3831,18 @@ def check_expired_trades():
                     # Determine win_loss
                     win_loss = "W" if is_winner else "L"
                     
-                    # Calculate ret_pct and ret_pct_base
+                    # Calculate ret_pct, ret_pct_base, and roi_pct
                     ret_pct = None
                     ret_pct_base = None
+                    roi_pct = None
                     if bankroll is not None and bankroll > 0 and pnl is not None:
                         ret_pct = round((pnl / (bankroll / 100.0)) * 100, 5)
                     if mtb_base is not None and mtb_base > 0 and pnl is not None:
                         ret_pct_base = round((pnl / (mtb_base / 100.0)) * 100, 5)
+                    if buy_price is not None and position is not None and pnl is not None:
+                        buy_value = buy_price * position
+                        if buy_value > 0:
+                            roi_pct = round((pnl / buy_value) * 100.0, 5)
                     
                     # Finalize the trade
                     now_est = datetime.now(ZoneInfo("America/New_York"))
@@ -3824,6 +3858,7 @@ def check_expired_trades():
                         pnl=pnl,
                         close_method="expired",
                         fees=fees,
+                        roi_pct=roi_pct,
                         ret_pct=ret_pct,
                         ret_pct_base=ret_pct_base,
                         high_price=high_price,

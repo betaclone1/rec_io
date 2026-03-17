@@ -1327,6 +1327,33 @@ environment={env_vars}
             self.cleanup_thread = threading.Thread(target=self._daily_cleanup_loop, daemon=True)
             self.cleanup_thread.start()
             _logger.debug("Daily cleanup scheduler started")
+
+    def start_total_position_refresher(self, interval_seconds: int = 30):
+        """Start a lightweight background loop that periodically validates/recalculates total_position.
+
+        This is a temporary safety net for the legacy position sizing system: on each run we call
+        recalculate_monitor_total_positions(), which walks active monitors and recomputes
+        total_position from the current position_size / position_type / multiplier /
+        bankroll_allotment_total and caps. It is intentionally low-touch and scoped to
+        correcting drift; the long-term solution will live in the Redis refactor.
+        """
+        def _loop():
+            _logger.debug("Total position refresher loop started (interval=%ss)", interval_seconds)
+            while True:
+                try:
+                    result = self.recalculate_monitor_total_positions()
+                    if isinstance(result, dict) and result.get("status") == "success":
+                        _logger.debug(
+                            "Total position refresher: %s",
+                            result.get("message", "recalculated"),
+                        )
+                    else:
+                        _logger.debug("Total position refresher: %s", result)
+                except Exception as e:
+                    _logger.error("Total position refresher error: %s", e)
+                time.sleep(interval_seconds)
+
+        threading.Thread(target=_loop, daemon=True).start()
     
     def stop_daily_cleanup_scheduler(self):
         """Stop the daily cleanup scheduler thread"""
@@ -2247,6 +2274,10 @@ start_status_watcher()
 
 # Start the daily cleanup scheduler
 monitor_manager.start_daily_cleanup_scheduler()
+
+# Temporary safety net: periodically validate/recalculate total_position for all active monitors.
+# Long term this will be replaced by the Redis-backed position sizing pipeline.
+monitor_manager.start_total_position_refresher(interval_seconds=30)
 
 def _heartbeat_loop():
     while True:

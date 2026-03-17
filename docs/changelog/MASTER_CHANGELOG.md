@@ -6,6 +6,32 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-17 — Trade ROI %, monitor total_position refresher (temp), housekeeping
+
+**Summary**
+
+- **Trade ROI %:** Added `roi_pct` column to `users.trades_0001` and `users.trades_simulated_0001` (schema + reversible migration). `trade_manager` now computes per-trade return on investment net of fees as `(pnl / (buy_price × position)) × 100` when closing trades and writes it on update; helper also back-computes ROI when possible. A one-time backfill in the migration populates `roi_pct` for existing closed trades where `pnl`, `buy_price`, and `position` are available.
+- **Monitor total_position refresher (temporary safety net):** `monitor_manager` now starts a lightweight 30-second background loop on startup that calls `recalculate_monitor_total_positions()` to recompute `total_position` for active monitors from current monitor settings. This is explicitly a temporary guardrail to correct drift until the Redis-backed position sizing refactor replaces the legacy path.
+- **Docs and housekeeping:** `docs/MASTER_DB_SCHEMA_REFERENCE.md` updated for the new `roi_pct` column and clarified monitor semantics; minor PM/backtest/docs cleanup (retiring a few legacy PM/backtest docs) aligned with existing housekeeping work.
+
+Plans: `monitor-activate-deactivate-and-dashboard-ui` (context for monitor lifecycle/total_position notes). Redis refactor follow-ups live in `redis-platform-initiative` (no Redis code shipped in this batch).
+
+**DB migrations (required on production, in order)**
+
+- `20260317_add_roi_pct_to_trades` — add `roi_pct` to `users.trades_0001` and `users.trades_simulated_0001` and backfill for existing closed trades.
+
+**Production checklist**
+
+- [ ] Confirm codebase changes (pull latest on production):  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations in order (from project root):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260317_add_roi_pct_to_trades`
+- [ ] Restart application services so `trade_manager` and `monitor_manager` load the new code (standard restart):  
+  `scripts/MASTER_RESTART.sh`
+- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Spot-check: new closed trades have `roi_pct` populated and reasonable; `total_position` on monitor tiles in dashboard reflects updated monitor settings after edits and restarts.
+
+---
+
 ## 2026-03-15 — Monitor activate/deactivate sync, dashboard MTB and Ret % base, status-light UX
 
 **Summary**
