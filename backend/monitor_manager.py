@@ -765,19 +765,35 @@ environment={env_vars}
         conn = None
         try:
             conn = self.get_database_connection()
-            
+
             with conn.cursor() as cursor:
-                # Get all active monitors
+                # Get all active monitors; include performance_based_allocation
                 cursor.execute("""
-                    SELECT id, name, position_size, position_type, multiplier, bankroll_allotment_total, current_max_pct_exposure 
+                    SELECT id,
+                           name,
+                           position_size,
+                           position_type,
+                           multiplier,
+                           bankroll_allotment_total,
+                           current_max_pct_exposure,
+                           performance_based_allocation
                     FROM users.monitor_list_0001 
                     WHERE status = 'active'
                 """)
-                
+
                 monitors = cursor.fetchall()
                 updated_count = 0
-                
-                for monitor_id, monitor_name, position_size, position_type, multiplier, bankroll_allotment_total, current_max_pct_exposure in monitors:
+
+                for (
+                    monitor_id,
+                    monitor_name,
+                    position_size,
+                    position_type,
+                    multiplier,
+                    bankroll_allotment_total,
+                    current_max_pct_exposure,
+                    performance_based_allocation,
+                ) in monitors:
                     if position_size is None or position_type is None or multiplier is None:
                         continue
                     
@@ -797,7 +813,9 @@ environment={env_vars}
                             allotment_dollars = bankroll_allotment_total / 100
                             base_pct = (position_size or 0) / 100.0
                             effective_pct = base_pct * multiplier_value
-                            if max_pct_cap is not None and max_pct_cap > 0:
+                            # Only apply current_max_pct_exposure cap when performance-based
+                            # allocation is enabled for this monitor.
+                            if performance_based_allocation and max_pct_cap is not None and max_pct_cap > 0:
                                 effective_pct = min(effective_pct, max_pct_cap)
                             new_total_position = int(round(allotment_dollars * effective_pct))
                             if new_total_position < 1:
