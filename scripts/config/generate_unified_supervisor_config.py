@@ -219,6 +219,16 @@ class SupervisorConfigGenerator:
                 "port": ports.get("trade_executor", 8001)
             },
             {
+                "name": "read_api",
+                "script": "read_api.py",
+                "port": ports.get("read_api", 3050)
+            },
+            {
+                "name": "redis_switchboard",
+                "script": "redis_switchboard.py",
+                "port": ports.get("redis_switchboard", 3010)
+            },
+            {
                 "name": "symbol_price_watchdog_btc",
                 "script": "symbol_price_watchdog.py BTC",
                 "port": ports.get("symbol_price_watchdog_btc", 8008)

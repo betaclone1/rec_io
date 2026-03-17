@@ -4783,366 +4783,47 @@ async def get_current_portfolio():
 
 @app.get("/api/portfolio/history")
 async def get_portfolio_history(period: str = "1m"):
-    """Get historical portfolio data from PostgreSQL for charting"""
+    """Proxy: delegate portfolio history to read_api service."""
     try:
-        import psycopg2
-        from datetime import datetime, timedelta
-        
-        # Connect to PostgreSQL
-        conn = get_postgresql_connection()
-        
-        # Calculate time range based on period
-        now = datetime.now()
-        if period == "1d":
-            # For 1D, start at 05:00 on current day
-            today_5am = now.replace(hour=5, minute=0, second=0, microsecond=0)
-            
-            # Get the last value before 05:00 today to use as starting point
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT timestamp, portfolio
-                    FROM users.account_balance_0001 
-                    WHERE timestamp < %s
-                    ORDER BY timestamp DESC
-                    LIMIT 1
-                """, (today_5am.strftime('%Y-%m-%d %H:%M:%S'),))
-                
-                last_before_5am = cursor.fetchone()
-            
-            # Get all data from 05:00 today onwards
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT timestamp, portfolio
-                    FROM users.account_balance_0001 
-                    WHERE timestamp >= %s
-                    ORDER BY timestamp ASC
-                """, (today_5am.strftime('%Y-%m-%d %H:%M:%S'),))
-                
-                results = cursor.fetchall()
-            
-            # If we have a last value before 5am, prepend it to the results
-            if last_before_5am:
-                results = [last_before_5am] + list(results)
-                
-        elif period == "1w":
-            start_time = now - timedelta(weeks=1)
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT timestamp, portfolio
-                    FROM users.account_balance_0001 
-                    WHERE timestamp >= %s
-                    ORDER BY timestamp ASC
-                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
-                
-                results = cursor.fetchall()
-        elif period == "1m":
-            start_time = now - timedelta(days=30)
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT timestamp, portfolio
-                    FROM users.account_balance_0001 
-                    WHERE timestamp >= %s
-                    ORDER BY timestamp ASC
-                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
-                
-                results = cursor.fetchall()
-        elif period == "1y":
-            start_time = now - timedelta(days=365)
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT timestamp, portfolio
-                    FROM users.account_balance_0001 
-                    WHERE timestamp >= %s
-                    ORDER BY timestamp ASC
-                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
-                
-                results = cursor.fetchall()
-        else:  # "All"
-            start_time = datetime(2020, 1, 1)  # Default start date
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT timestamp, portfolio
-                    FROM users.account_balance_0001 
-                    WHERE timestamp >= %s
-                    ORDER BY timestamp ASC
-                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
-                
-                results = cursor.fetchall()
-            
-        conn.close()
-        
-        # Format results for charting
-        data = []
-        for row in results:
-            timestamp, portfolio = row
-            data.append({
-                "timestamp": timestamp if timestamp else None,
-                "portfolio": float(portfolio) / 100 if portfolio else 0  # Convert cents to dollars
-            })
-        
-        return {
-            "status": "ok",
-            "period": period,
-            "count": len(data),
-            "data": data
-        }
-        
+        resp = requests.get("http://localhost:3050/api/portfolio/history", params={"period": period}, timeout=5)
+        resp.raise_for_status()
+        return resp.json()
     except Exception as e:
-        _main_logger.warning(f"Error getting portfolio history: {e}")
-        return {"status": "error", "message": str(e)}
+        _main_logger.warning(f"[read_api proxy] Error getting portfolio history from read_api: {e}")
+        return {"status": "error", "message": "read_api proxy failed for /api/portfolio/history"}
 
 @app.get("/api/bankroll/history")
 async def get_bankroll_history(period: str = "1m"):
-    """Get historical MTB base value from account_balance for Bankroll chart. Uses mtb_base_value with fallback to bankroll_current (cents to dollars)."""
+    """Proxy: delegate bankroll history to read_api service."""
     try:
-        import psycopg2
-        from datetime import datetime, timedelta
-
-        conn = get_postgresql_connection()
-        # One value per row: prefer mtb_base_value, fallback to bankroll_current for older rows
-        select_val = "COALESCE(mtb_base_value, bankroll_current)"
-        now = datetime.now()
-        if period == "1d":
-            today_5am = now.replace(hour=5, minute=0, second=0, microsecond=0)
-            with conn.cursor() as cursor:
-                cursor.execute(f"""
-                    SELECT timestamp, {select_val}
-                    FROM users.account_balance_0001
-                    WHERE timestamp < %s
-                    ORDER BY timestamp DESC
-                    LIMIT 1
-                """, (today_5am.strftime('%Y-%m-%d %H:%M:%S'),))
-                last_before_5am = cursor.fetchone()
-            with conn.cursor() as cursor:
-                cursor.execute(f"""
-                    SELECT timestamp, {select_val}
-                    FROM users.account_balance_0001
-                    WHERE timestamp >= %s
-                    ORDER BY timestamp ASC
-                """, (today_5am.strftime('%Y-%m-%d %H:%M:%S'),))
-                results = cursor.fetchall()
-            if last_before_5am:
-                results = [last_before_5am] + list(results)
-        elif period == "1w":
-            start_time = now - timedelta(weeks=1)
-            with conn.cursor() as cursor:
-                cursor.execute(f"""
-                    SELECT timestamp, {select_val}
-                    FROM users.account_balance_0001
-                    WHERE timestamp >= %s
-                    ORDER BY timestamp ASC
-                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
-                results = cursor.fetchall()
-        elif period == "1m":
-            start_time = now - timedelta(days=30)
-            with conn.cursor() as cursor:
-                cursor.execute(f"""
-                    SELECT timestamp, {select_val}
-                    FROM users.account_balance_0001
-                    WHERE timestamp >= %s
-                    ORDER BY timestamp ASC
-                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
-                results = cursor.fetchall()
-        elif period == "1y":
-            start_time = now - timedelta(days=365)
-            with conn.cursor() as cursor:
-                cursor.execute(f"""
-                    SELECT timestamp, {select_val}
-                    FROM users.account_balance_0001
-                    WHERE timestamp >= %s
-                    ORDER BY timestamp ASC
-                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
-                results = cursor.fetchall()
-        else:  # "all"
-            start_time = datetime(2020, 1, 1)
-            with conn.cursor() as cursor:
-                cursor.execute(f"""
-                    SELECT timestamp, {select_val}
-                    FROM users.account_balance_0001
-                    WHERE timestamp >= %s
-                    ORDER BY timestamp ASC
-                """, (start_time.strftime('%Y-%m-%d %H:%M:%S'),))
-                results = cursor.fetchall()
-
-        conn.close()
-
-        data = []
-        for row in results:
-            timestamp, value_cents = row
-            data.append({
-                "timestamp": timestamp if timestamp else None,
-                "bankroll": float(value_cents) / 100 if value_cents is not None else 0  # cents to dollars
-            })
-
-        return {
-            "status": "ok",
-            "period": period,
-            "count": len(data),
-            "data": data
-        }
-
+        resp = requests.get("http://localhost:3050/api/bankroll/history", params={"period": period}, timeout=5)
+        resp.raise_for_status()
+        return resp.json()
     except Exception as e:
-        _main_logger.warning(f"Error getting bankroll history: {e}")
-        return {"status": "error", "message": str(e)}
+        _main_logger.warning(f"[read_api proxy] Error getting bankroll history from read_api: {e}")
+        return {"status": "error", "message": "read_api proxy failed for /api/bankroll/history"}
 
 @app.get("/api/pnl/history")
 async def get_pnl_history(period: str = "1m"):
-    """Get cumulative PnL from trades_0001 for charting. Only counts trades where test_filter and paper_trade are FALSE.
-    Returns time series starting at $0 for the selected window (1d=24h, 1w=7d, 1m=30d, 1y=365d, all)."""
+    """Proxy: delegate PnL history to read_api service."""
     try:
-        import psycopg2
-        from datetime import datetime, timedelta
-
-        conn = get_postgresql_connection()
-
-        now = datetime.now()
-        start_time = None
-        if period == "1d":
-            start_time = now - timedelta(hours=24)
-        elif period == "1w":
-            start_time = now - timedelta(days=7)
-        elif period == "1m":
-            start_time = now - timedelta(days=30)
-        elif period == "1y":
-            start_time = now - timedelta(days=365)
-        else:  # "all"
-            start_time = datetime(2020, 1, 1)
-
-        start_date_sql = start_time.strftime("%Y-%m-%d")
-
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                SELECT COALESCE(
-                    CASE WHEN closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE NULL END,
-                    created_at
-                ) AS ts, pnl
-                FROM users.trades_0001
-                WHERE (test_filter IS NULL OR test_filter = FALSE)
-                  AND (paper_trade IS NULL OR paper_trade = FALSE)
-                  AND LOWER(TRIM(status)) IN ('closed', 'settled')
-                  AND pnl IS NOT NULL
-                  AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN (closed_at::timestamptz)::date ELSE created_at::date END) >= %s::date
-                ORDER BY ts ASC
-            """, (start_date_sql,))
-            rows = cursor.fetchall()
-
-        conn.close()
-
-        # Build cumulative series starting at $0
-        data = []
-        cumulative = 0.0
-        # First point: start of window at $0
-        data.append({"timestamp": start_date_sql + "T00:00:00", "pnl": 0.0})
-        for (ts, pnl) in rows:
-            pnl_val = float(pnl) if pnl is not None else 0.0
-            cumulative += pnl_val
-            ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
-            data.append({"timestamp": ts_str, "pnl": round(cumulative, 2)})
-
-        return {
-            "status": "ok",
-            "period": period,
-            "count": len(data),
-            "data": data,
-            "total_pnl": round(cumulative, 2)
-        }
-
+        resp = requests.get(f"http://localhost:3050/api/pnl/history", params={"period": period}, timeout=5)
+        resp.raise_for_status()
+        return resp.json()
     except Exception as e:
-        _main_logger.warning(f"Error getting PnL history: {e}")
-        return {"status": "error", "message": str(e)}
+        _main_logger.warning(f"[read_api proxy] Error getting PnL history from read_api: {e}")
+        return {"status": "error", "message": "read_api proxy failed for /api/pnl/history"}
 
 @app.get("/api/performance/realized")
 async def get_performance_realized():
-    """Realized PnL to-date for Day/Week/Month/Year: current period from period start through now,
-    and prev_pnl for the same-length window in the previous period (e.g. yesterday 00:00–18:00 vs today 00:00–18:00).
-    Only trades where paper_trade and test_filter are FALSE. All times America/New_York."""
+    """Proxy: delegate realized performance summary to read_api service."""
     try:
-        import psycopg2
-        from datetime import datetime, timedelta
-        from zoneinfo import ZoneInfo
-
-        conn = get_postgresql_connection()
-        with conn.cursor() as tz_cur:
-            tz_cur.execute("SET TIME ZONE 'America/New_York'")
-        eastern = ZoneInfo("America/New_York")
-        now = datetime.now(eastern)
-        today = now.date()
-
-        # Period starts (00:00:00 Eastern, timezone-aware)
-        def et_start(y, m, d):
-            return datetime(y, m, d, 0, 0, 0, tzinfo=eastern)
-
-        day_start = et_start(today.year, today.month, today.day)
-        days_since_sunday = (today.weekday() + 1) % 7
-        sunday = today - timedelta(days=days_since_sunday)
-        week_start = et_start(sunday.year, sunday.month, sunday.day)
-        month_start = et_start(today.year, today.month, 1)
-        year_start = et_start(today.year, 1, 1)
-
-        # Previous period starts (same calendar window, prior period)
-        yesterday = today - timedelta(days=1)
-        prev_sunday = sunday - timedelta(days=7)
-        prev_month_first = (today.replace(day=1) - timedelta(days=1)).replace(day=1)
-        prev_year_first = today.replace(month=1, day=1, year=today.year - 1)
-
-        prev_day_start = et_start(yesterday.year, yesterday.month, yesterday.day)
-        prev_week_start = et_start(prev_sunday.year, prev_sunday.month, prev_sunday.day)
-        prev_month_start = et_start(prev_month_first.year, prev_month_first.month, prev_month_first.day)
-        prev_year_start = et_start(prev_year_first.year, prev_year_first.month, prev_year_first.day)
-
-        periods = [
-            ("day", day_start, prev_day_start),
-            ("week", week_start, prev_week_start),
-            ("month", month_start, prev_month_start),
-            ("year", year_start, prev_year_start),
-        ]
-
-        result = {}
-        with conn.cursor() as cursor:
-            for key, period_start, prev_start in periods:
-                # Current period: [period_start, now] (to-date)
-                period_end = now
-                cursor.execute("""
-                    SELECT COALESCE(SUM(pnl), 0), COALESCE(SUM(ret_pct), 0), COALESCE(SUM(ret_pct_base), 0)
-                    FROM users.trades_0001
-                    WHERE (test_filter IS NULL OR test_filter = FALSE)
-                      AND (paper_trade IS NULL OR paper_trade = FALSE)
-                      AND LOWER(TRIM(status)) IN ('closed', 'settled')
-                      AND pnl IS NOT NULL
-                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) >= %s
-                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) <= %s
-                """, (period_start, period_end))
-                row = cursor.fetchone()
-                pnl = float(row[0]) if row and row[0] is not None else 0.0
-                ret_pct_sum = float(row[1]) if row and row[1] is not None else None
-                ret_pct_base_sum = float(row[2]) if row and row[2] is not None else None
-
-                # Previous period: same-length window (prev_start through prev_start + (now - period_start))
-                duration = period_end - period_start
-                prev_end = prev_start + duration
-                cursor.execute("""
-                    SELECT COALESCE(SUM(pnl), 0)
-                    FROM users.trades_0001
-                    WHERE (test_filter IS NULL OR test_filter = FALSE)
-                      AND (paper_trade IS NULL OR paper_trade = FALSE)
-                      AND LOWER(TRIM(status)) IN ('closed', 'settled')
-                      AND pnl IS NOT NULL
-                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) >= %s
-                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) <= %s
-                """, (prev_start, prev_end))
-                prev_row = cursor.fetchone()
-                prev_pnl = float(prev_row[0]) if prev_row and prev_row[0] is not None else 0.0
-
-                ret_pct = round(ret_pct_sum, 2) if ret_pct_sum is not None else None
-                ret_pct_base = round(ret_pct_base_sum, 2) if ret_pct_base_sum is not None else None
-                result[key] = {"pnl": round(pnl, 2), "ret_pct": ret_pct, "ret_pct_base": ret_pct_base, "prev_pnl": round(prev_pnl, 2)}
-
-        conn.close()
-        return {"status": "ok", "periods": result}
-
+        resp = requests.get("http://localhost:3050/api/performance/realized", timeout=5)
+        resp.raise_for_status()
+        return resp.json()
     except Exception as e:
-        _main_logger.warning(f"Error getting performance realized: {e}")
-        return {"status": "error", "message": str(e)}
+        _main_logger.warning(f"[read_api proxy] Error getting performance realized from read_api: {e}")
+        return {"status": "error", "message": "read_api proxy failed for /api/performance/realized"}
 
 @app.get("/api/dashboard/preferences")
 async def get_dashboard_preferences(mode: str = "prod"):

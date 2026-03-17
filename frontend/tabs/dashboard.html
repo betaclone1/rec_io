@@ -1483,6 +1483,9 @@
     let currentSortBy = 'name'; // Current sort criteria
     let currentChartType = 'pie'; // Current chart type (pie/bar)
 
+    // Second WebSocket: db_changes (Redis-backed backbone, via switchboard)
+    let wsDbChanges = null;
+
     // Load account mode from localStorage or default to prod
     document.addEventListener('DOMContentLoaded', async function() {
       const savedMode = localStorage.getItem('rec_account_mode');
@@ -1529,9 +1532,10 @@
       // Portfolio panel tabs (Bankroll, Portfolio, PNL)
       initializePortfolioPanelTabs();
       
-      // Connect to WebSocket after everything is loaded
-      console.log('Dashboard: All monitors loaded, now connecting to WebSocket...');
-      connectWebSocket();
+      // Connect to WebSockets after everything is loaded
+      console.log('Dashboard: All monitors loaded, now connecting to WebSockets (preferences + db_changes)...');
+      connectWebSocket();          // Preferences (existing behavior, stays on main for now)
+      connectDbChangesWebSocket(); // New: db_changes from Redis backbone via switchboard
     });
 
     // Monitors data - will be loaded from API
@@ -3083,20 +3087,38 @@
         const data = await response.json();
         const history = data.data || [];
         allBankrollHistoryData = history;
-        const lastVal = history.length > 0 ? (history[history.length - 1].bankroll || 0) : 0;
-        const formatted = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(lastVal);
-        const el = document.getElementById('portfolio-value');
-        if (el) { el.textContent = formatted; el.style.color = ''; }
-        renderBankrollChart(history);
-        updateBankrollChange();
+        applyBankrollView();
       } catch (error) {
         console.error('Error loading bankroll history:', error);
         allBankrollHistoryData = [];
-        const el = document.getElementById('portfolio-value');
-        if (el) el.textContent = '—';
-        renderBankrollChart([]);
-        updateBankrollChange();
+        applyBankrollView();
       }
+    }
+
+    function applyBankrollView() {
+      const el = document.getElementById('portfolio-value');
+      const filteredData = filterDataByView(allBankrollHistoryData || [], currentView);
+      if (!filteredData.length) {
+        if (el) {
+          el.textContent = '—';
+          el.style.color = '';
+        }
+        updateBankrollChange();
+        return;
+      }
+      const lastValue = filteredData[filteredData.length - 1].bankroll || 0;
+      const formatted = new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      }).format(lastValue);
+      if (el) {
+        el.textContent = formatted;
+        el.style.color = '';
+      }
+      updateBankrollChange();
+      renderBankrollChartFromState();
     }
 
     function updateBankrollChange() {
@@ -3120,7 +3142,8 @@
       changeEl.className = `change-element ${isPositive ? 'positive' : 'negative'}`;
     }
 
-    function renderBankrollChart(history) {
+    function renderBankrollChartFromState() {
+      const history = allBankrollHistoryData || [];
       const ctx = document.getElementById('bankroll-chart');
       if (!ctx) return;
       if (bankrollChart) {
@@ -3416,24 +3439,32 @@
         const data = await response.json();
         const history = data.data || [];
         const totalPnl = data.total_pnl != null ? data.total_pnl : 0;
-        const formattedValue = new Intl.NumberFormat('en-US', {
-          style: 'currency',
-          currency: 'USD',
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2,
-          signDisplay: 'auto'
-        }).format(totalPnl);
-        const portfolioElement = document.getElementById('portfolio-value');
-        if (portfolioElement) { portfolioElement.textContent = formattedValue; portfolioElement.style.color = ''; }
         allPnlHistoryData = history.length > 0 ? history : [{ timestamp: new Date().toISOString(), pnl: 0 }];
-        renderPnlChart(allPnlHistoryData);
-        updatePnlChange();
+        applyPnlView(totalPnl);
       } catch (error) {
         console.error('Error loading PnL history:', error);
         allPnlHistoryData = [];
-        renderPnlChart([{ timestamp: new Date().toISOString(), pnl: 0 }]);
-        updatePnlChange();
+        applyPnlView(0);
       }
+    }
+
+    function applyPnlView(totalPnlOverride) {
+      const portfolioElement = document.getElementById('portfolio-value');
+      const totalPnl = (typeof totalPnlOverride === 'number') ? totalPnlOverride :
+        (allPnlHistoryData.length ? allPnlHistoryData[allPnlHistoryData.length - 1].pnl || 0 : 0);
+      const formattedValue = new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+        signDisplay: 'auto'
+      }).format(totalPnl);
+      if (portfolioElement) {
+        portfolioElement.textContent = formattedValue;
+        portfolioElement.style.color = '';
+      }
+      updatePnlChange();
+      renderPnlChartFromState();
     }
 
     function updatePnlChange() {
@@ -3457,7 +3488,8 @@
       changeEl.className = `change-element ${isPositive ? 'positive' : 'negative'}`;
     }
 
-    function renderPnlChart(history) {
+    function renderPnlChartFromState() {
+      const history = allPnlHistoryData || [];
       const ctx = document.getElementById('pnl-chart');
       if (!ctx) return;
       if (pnlChart) {
@@ -5834,6 +5866,86 @@
 
       ws.onerror = function(error) {
         console.error('Dashboard WebSocket error:', error);
+      };
+    }
+
+    function connectDbChangesWebSocket() {
+      // Close existing db_changes connection if any
+      if (wsDbChanges) {
+        try {
+          wsDbChanges.close();
+        } catch (e) {
+          console.error('Error closing existing db_changes WebSocket:', e);
+        }
+      }
+
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const switchboardPort = 3010; // SWITCHBOARD_PORT (see backend/redis_switchboard.py and supervisord.conf)
+      const wsUrl = `${protocol}//${window.location.hostname}:${switchboardPort}/ws/db_changes`;
+      console.log('Connecting db_changes WebSocket to:', wsUrl);
+
+      wsDbChanges = new WebSocket(wsUrl);
+
+      wsDbChanges.onopen = function() {
+        console.log('Dashboard db_changes WebSocket connected');
+      };
+
+      wsDbChanges.onclose = function(ev) {
+        console.log('Dashboard db_changes WebSocket closed', ev.code, ev.reason);
+        // Basic reconnect with backoff could be added later if needed
+      };
+
+      wsDbChanges.onerror = function(err) {
+        console.error('Dashboard db_changes WebSocket error:', err);
+      };
+
+      wsDbChanges.onmessage = async function(event) {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type !== 'db_change') {
+            return;
+          }
+
+          const stream = msg.database;
+          // Streams that matter for bankroll / portfolio / performance panels.
+          // Exact stream names will be wired as we add triggers + registry entries.
+          const bankrollRelatedStreams = new Set([
+            'trades',
+            'fills',
+            'positions',
+            'settlements',
+            'account_balance',
+            'subaccounts',
+          ]);
+
+          if (!bankrollRelatedStreams.has(stream)) {
+            return;
+          }
+
+          console.log('Dashboard db_changes: refreshing bankroll/portfolio/performance for stream:', stream);
+
+          // Let the existing tab-aware helper decide what to refresh for the portfolio panel.
+          try {
+            await refreshPortfolioPanel();
+          } catch (e) {
+            console.error('Error refreshing portfolio panel after db_change:', e);
+          }
+
+          // Performance panel + cash balance
+          try {
+            await loadPerformanceData();
+          } catch (e) {
+            console.error('Error refreshing performance data after db_change:', e);
+          }
+
+          try {
+            await loadPerformancePanelCashBalance();
+          } catch (e) {
+            console.error('Error refreshing performance cash balance after db_change:', e);
+          }
+        } catch (e) {
+          console.error('Error handling db_changes WebSocket message on dashboard:', e);
+        }
       };
     }
 
