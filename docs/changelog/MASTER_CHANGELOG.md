@@ -22,13 +22,13 @@ Plans: `monitor-activate-deactivate-and-dashboard-ui` (context for monitor lifec
 
 **Production checklist**
 
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations in order (from project root):  
+- [x] Apply migrations in order (from project root):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260317_add_roi_pct_to_trades`
-- [ ] Restart application services so `trade_manager` and `monitor_manager` load the new code (standard restart):  
+- [x] Restart application services so `trade_manager` and `monitor_manager` load the new code (standard restart):  
   `scripts/MASTER_RESTART.sh`
-- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Spot-check: new closed trades have `roi_pct` populated and reasonable; `total_position` on monitor tiles in dashboard reflects updated monitor settings after edits and restarts.
+- [x] Verify: health (main_app :3000, trade_executor :8001), supervisor status. Spot-check: new closed trades have `roi_pct` populated and reasonable; `total_position` on monitor tiles in dashboard reflects updated monitor settings after edits and restarts.
 
 ---
 
