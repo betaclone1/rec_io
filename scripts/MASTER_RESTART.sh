@@ -276,6 +276,67 @@ check_external_connections() {
     fi
 }
 
+# Function to ensure python dependencies are installed.
+# Runs pip install only when requirements files change, to avoid re-installing everything on every restart.
+ensure_dependencies() {
+    print_status "Ensuring Python dependencies (requirements sync)..."
+
+    # requirements*.txt live at the project root
+    local req_core="$REC_PROJECT_ROOT/requirements-core.txt"
+    local req_full="$REC_PROJECT_ROOT/requirements.txt"
+
+    # Use the venv python executable discovered by unified config
+    local py="$REC_PYTHON_EXECUTABLE"
+
+    if [ ! -f "$py" ]; then
+        print_error "Python executable not found: $py"
+        return 1
+    fi
+
+    if [ ! -f "$req_core" ] && [ ! -f "$req_full" ]; then
+        print_warning "No requirements-core.txt or requirements.txt found; skipping dependency install."
+        return 0
+    fi
+
+    local marker="$REC_PROJECT_ROOT/.requirements_installed_marker"
+
+    # Hash the requirements files so we can skip pip install if nothing changed.
+    local core_hash=""
+    local full_hash=""
+    if [ -f "$req_core" ]; then
+        core_hash="$(sha256sum "$req_core" | awk '{print $1}')"
+    fi
+    if [ -f "$req_full" ]; then
+        full_hash="$(sha256sum "$req_full" | awk '{print $1}')"
+    fi
+
+    local prev_core=""
+    local prev_full=""
+    if [ -f "$marker" ]; then
+        read -r prev_core prev_full < "$marker" || true
+    fi
+
+    if [ -n "$core_hash" ] && [ -n "$full_hash" ] && [ "$core_hash" = "$prev_core" ] && [ "$full_hash" = "$prev_full" ]; then
+        print_success "Dependencies up to date (requirements unchanged)."
+        return 0
+    fi
+
+    print_status "Installing dependencies into venv..."
+
+    # Upgrade pip only when we have to do an install (keeps restarts fast).
+    "$py" -m pip install --upgrade pip
+
+    if [ -f "$req_core" ]; then
+        "$py" -m pip install -r "$req_core"
+    fi
+    if [ -f "$req_full" ]; then
+        "$py" -m pip install -r "$req_full"
+    fi
+
+    echo "${core_hash} ${full_hash}" > "$marker"
+    print_success "Python dependencies ensured."
+}
+
 # Function to perform complete restart
 master_restart() {
     print_header
@@ -349,6 +410,10 @@ EOF
     
     # Wait for processes to fully terminate
     /bin/sleep 3
+    echo ""
+
+    # Step 2.5: Install new dependencies if requirements changed
+    ensure_dependencies
     echo ""
     
     # Step 3: Flush all ports
