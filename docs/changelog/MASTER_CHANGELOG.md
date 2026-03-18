@@ -6,6 +6,33 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-18 — Real-time backbone Phase 1a: read_api + dashboard bankroll panel
+
+**Summary**
+- **Dashboard (Bankroll / Portfolio / PnL top panel):** Implemented Redis-backed real-time data backbone for the panel as a proof of concept: PostgreSQL `users.account_balance_0001` NOTIFY events are routed through `redis_switchboard` and the dashboard WebSocket (`/ws/db_changes`), while the panel’s data is served by the new `read_api` service (`/api/portfolio/history`, `/api/bankroll/history`, `/api/pnl/history`, `/api/performance/realized`). `main.py` now acts as a thin HTTP proxy for these endpoints.
+- **Services & system UI:** Added `redis_switchboard` and `read_api` as supervisor-managed core services and exposed them in the desktop/mobile system status UI; desktop and mobile dashboard assets were updated in lockstep to use the same event-driven refresh pattern.
+- **monitor_manager cap semantics:** `monitor_manager` bulk notification now applies `current_max_pct_exposure` capping only when `performance_based_allocation` is enabled for the monitor.
+
+Plans: `redis-platform-initiative` (Phase 1a complete), `mtb-account-dashboard` (dashboard/MTB context), `monitor-activate-deactivate-and-dashboard-ui` (monitor lifecycle context).
+
+**DB migrations (required on production, in order)**
+- `20260316_1600_redis_basic_test_notify_trigger` — create NOTIFY trigger for `testing.redis_basic_test` so the Redis switchboard can push DB changes.
+- `20260316_1800_rec_io_db_notify_public` — create `public.rec_io_db_notify()` and repoint `testing.redis_basic_test` trigger to the public function.
+- `20260317_1400_account_balance_db_notify` — add NOTIFY trigger on `users.account_balance_0001` so `account_balance` stream refreshes the dashboard panel.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations in order (from project root):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260316_1600_redis_basic_test_notify_trigger`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260316_1800_rec_io_db_notify_public`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260317_1400_account_balance_db_notify`
+- [ ] Restart application services so `redis_switchboard` and `read_api` load the new code (standard restart):  
+  `scripts/MASTER_RESTART.sh`
+- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status includes `redis_switchboard` and `read_api`. Spot-check dashboard: Bankroll/Portfolio/PnL top panel updates after changing the latest `users.account_balance_0001` row (event-driven, no interval polling).
+
+---
+
 ## 2026-03-17 — Trade ROI %, monitor total_position refresher (temp), housekeeping
 
 **Summary**
