@@ -63,6 +63,34 @@ def init_database():
         cursor.execute("CREATE SCHEMA IF NOT EXISTS users;")
         cursor.execute("CREATE SCHEMA IF NOT EXISTS live_data;")
         cursor.execute("CREATE SCHEMA IF NOT EXISTS system;")
+        cursor.execute("CREATE SCHEMA IF NOT EXISTS testing;")
+
+        # Redis switchboard pilot: minimal testing table for DB -> NOTIFY -> Redis -> WS.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS testing.redis_basic_test (
+                id SERIAL PRIMARY KEY,
+                test_value_1 NUMERIC,
+                test_value_2 NUMERIC,
+                test_value_3 NUMERIC,
+                test_value_4 NUMERIC,
+                test_value_5 NUMERIC,
+                test_value_6 NUMERIC,
+                test_value_7 NUMERIC,
+                test_value_8 NUMERIC,
+                test_value_9 NUMERIC,
+                test_value_10 NUMERIC,
+                test_value_11 NUMERIC,
+                test_value_12 NUMERIC,
+                test_value_13 NUMERIC,
+                test_value_14 NUMERIC,
+                test_value_15 NUMERIC,
+                test_value_16 NUMERIC,
+                test_value_17 NUMERIC,
+                test_value_18 NUMERIC,
+                test_value_19 NUMERIC,
+                test_value_20 NUMERIC
+            );
+        """)
         
         # Create core tables
         cursor.execute("""

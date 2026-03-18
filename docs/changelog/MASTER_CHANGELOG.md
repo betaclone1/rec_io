@@ -16,14 +16,16 @@ This changelog is used when pushing updates to production. Each entry is timesta
 Plans: `redis-platform-initiative` (Phase 1a complete), `mtb-account-dashboard` (dashboard/MTB context), `monitor-activate-deactivate-and-dashboard-ui` (monitor lifecycle context).
 
 **DB migrations (required on production, in order)**
+- `20260318_2000_testing_redis_basic_test_create` — create minimal `testing.redis_basic_test` so trigger migrations for Redis switchboard pilot can attach.
 - `20260316_1600_redis_basic_test_notify_trigger` — create NOTIFY trigger for `testing.redis_basic_test` so the Redis switchboard can push DB changes.
 - `20260316_1800_rec_io_db_notify_public` — create `public.rec_io_db_notify()` and repoint `testing.redis_basic_test` trigger to the public function.
 - `20260317_1400_account_balance_db_notify` — add NOTIFY trigger on `users.account_balance_0001` so `account_balance` stream refreshes the dashboard panel.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `git fetch && git checkout main && git pull --ff-only origin main`
 - [ ] Apply migrations in order (from project root):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260318_2000_testing_redis_basic_test_create`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260316_1600_redis_basic_test_notify_trigger`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260316_1800_rec_io_db_notify_public`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260317_1400_account_balance_db_notify`

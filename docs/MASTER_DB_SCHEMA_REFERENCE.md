@@ -9650,6 +9650,38 @@ Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m va
 
 ---
 
+### Table: `testing.redis_basic_test`
+
+#### Columns
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | nextval('testing.redis_basic_test_id_seq'::regclass) | |
+| `test_value_1` | `numeric(10,4)` | YES | - | |
+| `test_value_2` | `numeric(10,4)` | YES | - | |
+| `test_value_3` | `numeric(10,4)` | YES | - | |
+| `test_value_4` | `numeric(10,4)` | YES | - | |
+| `test_value_5` | `numeric(10,4)` | YES | - | |
+| `test_value_6` | `numeric(10,4)` | YES | - | |
+| `test_value_7` | `numeric(10,4)` | YES | - | |
+| `test_value_8` | `numeric(10,4)` | YES | - | |
+| `test_value_9` | `numeric(10,4)` | YES | - | |
+| `test_value_10` | `numeric(10,4)` | YES | - | |
+| `test_value_11` | `numeric(10,4)` | YES | - | |
+| `test_value_12` | `numeric(10,4)` | YES | - | |
+| `test_value_13` | `numeric(10,4)` | YES | - | |
+| `test_value_14` | `numeric(10,4)` | YES | - | |
+| `test_value_15` | `numeric(10,4)` | YES | - | |
+| `test_value_16` | `numeric(10,4)` | YES | - | |
+| `test_value_17` | `numeric(10,4)` | YES | - | |
+| `test_value_18` | `numeric(10,4)` | YES | - | |
+| `test_value_19` | `numeric(10,4)` | YES | - | |
+| `test_value_20` | `numeric(10,4)` | YES | - | |
+
+#### Constraints
+- **Primary Key:** `redis_basic_test_pkey` on `id`
+
+---
+
 ## Schema: `users`
 
 ### Table: `users.account_balance_0001`
