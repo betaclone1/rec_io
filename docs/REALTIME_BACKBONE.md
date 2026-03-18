@@ -180,8 +180,9 @@ This pattern (read_api as canonical read surface, main as front door only, Redis
 | Stream name       | Source (schema.table)        | Notes                    |
 |-------------------|------------------------------|---------------------------|
 | `redis_basic_test` | testing.redis_basic_test   | Pilot / test stream       |
+| `account_balance` | users.account_balance_0001 | Dashboard bankroll/portfolio panel |
 
-As you add production streams (e.g. `trades`, `fills`, `positions`, `settlements`, `orderbook`), add them to the registry and to this table. Keep the table in sync with `backend/core/stream_registry.py`.
+Planned next (Phase 1b): `trades` (users.trades_0001), `subaccounts` (users.subaccounts_0001) for the Performance panel. Add them to the registry and to this table when implemented. Keep the table in sync with `backend/core/stream_registry.py`.
 
 ---
 
