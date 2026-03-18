@@ -351,39 +351,38 @@ ensure_dependencies() {
         full_install_ok=$?
     fi
 
-    # Best-effort SciPy install(s). If wheels are unavailable, pip will fail; we warn and continue.
-    # Prefer installing the core SciPy version first, if present.
-    local scipy_core_ver=""
-    local scipy_full_ver=""
-    scipy_core_ver="$(awk -F'==' '/^scipy==/ {print $2; exit}' "$req_core" 2>/dev/null || true)"
-    scipy_full_ver="$(awk -F'==' '/^scipy==/ {print $2; exit}' "$req_full" 2>/dev/null || true)"
+    # SciPy is a frequent source of install failures (no wheel for platform/Python,
+    # or missing native toolchain). If it's already importable, we skip installing
+    # a potentially pinned version; restart must keep progressing.
+    local scipy_version=""
+    scipy_version="$("$py" -c "import scipy,sys; sys.stdout.write(getattr(scipy,'__version__',''))" 2>/dev/null || true)"
 
-    if [ -n "$scipy_core_ver" ]; then
-        "$py" -m pip install --only-binary=:all: "scipy==$scipy_core_ver"
-    fi
-    if [ -n "$scipy_full_ver" ] && [ "$scipy_full_ver" != "$scipy_core_ver" ]; then
-        "$py" -m pip install --only-binary=:all: "scipy==$scipy_full_ver"
-    fi
+    if [ -z "$scipy_version" ]; then
+        print_warning "SciPy not found in venv; attempting pinned SciPy install best-effort..."
 
-    local scipy_check_ok=0
-    "$py" -c "import scipy 2>/dev/null" >/dev/null
-    if [ $? -eq 0 ]; then
-        scipy_check_ok=1
+        # Prefer installing the core SciPy version first, if present.
+        local scipy_core_ver=""
+        local scipy_full_ver=""
+        scipy_core_ver="$(awk -F'==' '/^scipy==/ {print $2; exit}' "$req_core" 2>/dev/null || true)"
+        scipy_full_ver="$(awk -F'==' '/^scipy==/ {print $2; exit}' "$req_full" 2>/dev/null || true)"
+
+        if [ -n "$scipy_core_ver" ]; then
+            "$py" -m pip install --only-binary=:all: "scipy==$scipy_core_ver" || true
+        elif [ -n "$scipy_full_ver" ]; then
+            "$py" -m pip install --only-binary=:all: "scipy==$scipy_full_ver" || true
+        fi
+    else
+        print_warning "SciPy already installed (version=${scipy_version}); skipping SciPy install."
     fi
 
     set -e
 
-    # Update marker only if the "non-scipy" portion succeeded for files we have.
-    # This prevents infinite loops if the filtered install fails due to networking/auth.
-    if [ "$core_install_ok" = "0" ] && [ "$full_install_ok" = "0" ]; then
+    # Update marker if at least one requirements install succeeded (SciPy is best-effort).
+    if [ "$core_install_ok" = "0" ] || [ "$full_install_ok" = "0" ]; then
         echo "${core_hash} ${full_hash}" > "$marker"
-        if [ "$scipy_check_ok" = "1" ]; then
-            print_success "Python dependencies ensured (including SciPy)."
-        else
-            print_warning "Python dependencies ensured (SciPy missing or failed to install)."
-        fi
+        print_success "Python dependencies ensured (SciPy best-effort)."
     else
-        print_warning "Dependency install encountered errors (non-SciPy deps may be missing). Not updating marker."
+        print_warning "Dependency install failed for both requirements sets (non-SciPy deps may be missing). Not updating marker."
     fi
 }
 
