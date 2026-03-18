@@ -321,20 +321,70 @@ ensure_dependencies() {
         return 0
     fi
 
-    print_status "Installing dependencies into venv..."
+    print_status "Installing dependencies into venv (best-effort)..."
 
-    # Upgrade pip only when we have to do an install (keeps restarts fast).
-    "$py" -m pip install --upgrade pip
+    # SciPy is the main source of install failures across environments because it may require
+    # wheels (which depend on Python version) or a native toolchain (gfortran/clang toolchain).
+    # We still want restart to succeed and we still want "new deps" like redis to install.
+    # So: install everything EXCEPT SciPy first, then attempt SciPy as best-effort.
+
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+
+    # Filter SciPy out: lines starting with "scipy" + a version/operator are removed.
+    # Keep comments/blank lines and all other deps.
+    local core_no_scipy="$tmpdir/requirements-core.no-scipy.txt"
+    local full_no_scipy="$tmpdir/requirements.no-scipy.txt"
+    local core_install_ok=1
+    local full_install_ok=1
+
+    set +e
 
     if [ -f "$req_core" ]; then
-        "$py" -m pip install -r "$req_core"
+        awk '!/^scipy[=<>!~]/ {print}' "$req_core" > "$core_no_scipy"
+        "$py" -m pip install -r "$core_no_scipy"
+        core_install_ok=$?
     fi
     if [ -f "$req_full" ]; then
-        "$py" -m pip install -r "$req_full"
+        awk '!/^scipy[=<>!~]/ {print}' "$req_full" > "$full_no_scipy"
+        "$py" -m pip install -r "$full_no_scipy"
+        full_install_ok=$?
     fi
 
-    echo "${core_hash} ${full_hash}" > "$marker"
-    print_success "Python dependencies ensured."
+    # Best-effort SciPy install(s). If wheels are unavailable, pip will fail; we warn and continue.
+    # Prefer installing the core SciPy version first, if present.
+    local scipy_core_ver=""
+    local scipy_full_ver=""
+    scipy_core_ver="$(awk -F'==' '/^scipy==/ {print $2; exit}' "$req_core" 2>/dev/null || true)"
+    scipy_full_ver="$(awk -F'==' '/^scipy==/ {print $2; exit}' "$req_full" 2>/dev/null || true)"
+
+    if [ -n "$scipy_core_ver" ]; then
+        "$py" -m pip install --only-binary=:all: "scipy==$scipy_core_ver"
+    fi
+    if [ -n "$scipy_full_ver" ] && [ "$scipy_full_ver" != "$scipy_core_ver" ]; then
+        "$py" -m pip install --only-binary=:all: "scipy==$scipy_full_ver"
+    fi
+
+    local scipy_check_ok=0
+    "$py" -c "import scipy 2>/dev/null" >/dev/null
+    if [ $? -eq 0 ]; then
+        scipy_check_ok=1
+    fi
+
+    set -e
+
+    # Update marker only if the "non-scipy" portion succeeded for files we have.
+    # This prevents infinite loops if the filtered install fails due to networking/auth.
+    if [ "$core_install_ok" = "0" ] && [ "$full_install_ok" = "0" ]; then
+        echo "${core_hash} ${full_hash}" > "$marker"
+        if [ "$scipy_check_ok" = "1" ]; then
+            print_success "Python dependencies ensured (including SciPy)."
+        else
+            print_warning "Python dependencies ensured (SciPy missing or failed to install)."
+        fi
+    else
+        print_warning "Dependency install encountered errors (non-SciPy deps may be missing). Not updating marker."
+    fi
 }
 
 # Function to perform complete restart
