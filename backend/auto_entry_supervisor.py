@@ -3727,48 +3727,81 @@ def check_auto_entry_conditions_momentum_contain():
             log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Invalid strike_tier: {strike_tier}")
             return
         
-        # Find the actual available strikes from the strike table
-        # We need the strike immediately above and immediately below the current price
+        # Select strikes using the unified bracket-width methodology:
+        # 1) Compute ideal endpoints from 0.35% total bracket width.
+        # 2) Map each endpoint to the closest available strike that is strictly
+        #    below (YES leg) / strictly above (NO leg).
         strikes = strike_table_data.get("strikes", [])
-        strike_above_data = None
-        strike_below_data = None
+        strike_above_data = None  # NO leg (must be > current_price)
+        strike_below_data = None  # YES leg (must be < current_price)
         
-        # Find the closest strike above current price (>= current_price)
-        closest_above = None
-        closest_above_distance = float('inf')
+        # NOTE: hardcoded for now; we may later make this configurable per user/symbol.
+        min_bracket_width_pct = 0.0035  # 0.35% total bracket width
+        current_price_f = float(current_price)
+        ideal_bracket_width = current_price_f * min_bracket_width_pct
+        ideal_lower = current_price_f - ideal_bracket_width / 2  # YES endpoint
+        ideal_upper = current_price_f + ideal_bracket_width / 2  # NO endpoint
         
-        # Find the closest strike below current price (<= current_price)
-        closest_below = None
-        closest_below_distance = float('inf')
+        eps = 1e-9
+        best_yes = None
+        best_yes_dist = float('inf')
+        best_yes_strike_val = None
+        
+        best_no = None
+        best_no_dist = float('inf')
+        best_no_strike_val = None
         
         for strike in strikes:
-            strike_value = strike.get("strike")
-            if strike_value is None:
+            strike_value_raw = strike.get("strike")
+            if strike_value_raw is None:
+                continue
+            try:
+                strike_value = float(strike_value_raw)
+            except (ValueError, TypeError):
                 continue
             
-            # Check if this strike is above the current price
-            if strike_value >= current_price:
-                distance = strike_value - current_price
-                if distance < closest_above_distance:
-                    closest_above_distance = distance
-                    closest_above = strike
+            # YES leg: strictly below symbol value
+            if strike_value < current_price_f:
+                dist = abs(strike_value - ideal_lower)
+                if (dist < best_yes_dist - eps or
+                    abs(dist - best_yes_dist) <= eps and
+                    (best_yes_strike_val is None or strike_value > best_yes_strike_val)):
+                    best_yes = strike
+                    best_yes_dist = dist
+                    best_yes_strike_val = strike_value
             
-            # Check if this strike is below the current price
-            if strike_value <= current_price:
-                distance = current_price - strike_value
-                if distance < closest_below_distance:
-                    closest_below_distance = distance
-                    closest_below = strike
+            # NO leg: strictly above symbol value
+            elif strike_value > current_price_f:
+                dist = abs(strike_value - ideal_upper)
+                if (dist < best_no_dist - eps or
+                    abs(dist - best_no_dist) <= eps and
+                    (best_no_strike_val is None or strike_value < best_no_strike_val)):
+                    best_no = strike
+                    best_no_dist = dist
+                    best_no_strike_val = strike_value
         
-        strike_above_data = closest_above
-        strike_below_data = closest_below
+        strike_below_data = best_yes
+        strike_above_data = best_no
         
-        # Log the found strikes for debugging
-        above_strike = strike_above_data.get('strike') if strike_above_data else None
-        below_strike = strike_below_data.get('strike') if strike_below_data else None
-        below_str = f"${below_strike:,.0f}" if below_strike else "N/A"
-        above_str = f"${above_strike:,.0f}" if above_strike else "N/A"
-        log(f"[AUTO ENTRY MOMENTUM CONTAIN] 🎯 Current price: ${current_price:,.2f}, Strike tier: ${strike_tier:,}, Found below: {below_str}, Found above: {above_str}")
+        # Log the ideal endpoints and selected strikes for debugging
+        below_strike_val = float(strike_below_data.get("strike")) if strike_below_data and strike_below_data.get("strike") is not None else None
+        above_strike_val = float(strike_above_data.get("strike")) if strike_above_data and strike_above_data.get("strike") is not None else None
+        
+        below_str = f"${below_strike_val:,.0f}" if below_strike_val is not None else "N/A"
+        above_str = f"${above_strike_val:,.0f}" if above_strike_val is not None else "N/A"
+        ideal_lower_str = f"${ideal_lower:,.2f}"
+        ideal_upper_str = f"${ideal_upper:,.2f}"
+        
+        bracket_width = None
+        if below_strike_val is not None and above_strike_val is not None:
+            bracket_width = above_strike_val - below_strike_val
+        
+        bracket_width_str = f"${bracket_width:,.2f}" if bracket_width is not None else "N/A"
+        log(
+            f"[AUTO ENTRY MOMENTUM CONTAIN] 🎯 Current price: ${current_price_f:,.2f}, Strike tier: ${strike_tier:,} | "
+            f"Ideal YES: {ideal_lower_str}, Ideal NO: {ideal_upper_str} | Selected below(YES): {below_str}, Selected above(NO): {above_str} | "
+            f"Bracket width: {bracket_width_str}"
+        )
         
         # Check if we already have active trades on these strikes (FLIPPED SIDES from Breakout)
         # Momentum Contain: NO at strike above, YES at strike below
