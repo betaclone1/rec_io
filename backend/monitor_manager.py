@@ -79,6 +79,10 @@ class MonitorManager:
         self.active_monitors = {}  # Will track all active monitors
         self.monitor_states = {}   # Will track state of all monitor components
         self.frontend_connections = set()  # Will track frontend connections
+
+        # Regime Monitor (LIVE<->PAPER) cooldown bookkeeping (in-memory only)
+        # Keyed by monitor name (e.g. "mon_0001_10001")
+        self._regime_last_switch_at: Dict[str, float] = {}
         
         # Port allocation for monitor processes
         self.monitor_port_base = 8013
@@ -1038,6 +1042,155 @@ environment={env_vars}
             if conn:
                 conn.close()
 
+    def _parse_monitor_name_for_user_and_id(self, monitor_name: str) -> Optional[Dict[str, str]]:
+        """
+        Parse monitor identifier like "mon_0001_10001" into (user_number, monitor_id).
+        """
+        if not monitor_name:
+            return None
+        parts = str(monitor_name).split("_")
+        if len(parts) < 3:
+            return None
+        if parts[0].lower() != "mon":
+            return None
+        return {"user_number": parts[-2], "monitor_id": parts[-1]}
+
+    def _regime_window_to_interval(self, regime_window: str) -> Optional[str]:
+        """
+        Convert regime_window selector into a Postgres interval expression string.
+        """
+        window = (regime_window or "").strip()
+        mapping = {
+            "30d": "30 days",
+            "7d": "7 days",
+            "1d": "1 day",
+            "12h": "12 hours",
+        }
+        return mapping.get(window)
+
+    def _evaluate_and_switch_regime(self, monitor_name: str) -> None:
+        """
+        After a trade close, evaluate rolling SUM(ret_pct_base) for the monitor's
+        configured regime_window and switch monitor_list.paper_trade accordingly.
+        """
+        if not monitor_name:
+            return
+
+        parsed = self._parse_monitor_name_for_user_and_id(monitor_name)
+        if not parsed:
+            return
+
+        user_number = parsed["user_number"]
+        monitor_id = parsed["monitor_id"]
+
+        # MVP threshold is fixed at 0.0 (fees-inclusive ret_pct_base is already computed at trade close).
+        threshold = 0.0
+        cooldown_seconds = 3600  # in-process safety valve to prevent flapping
+
+        conn = None
+        try:
+            conn = self.get_database_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT regime_monitor_enabled, regime_window, paper_trade
+                    FROM users.monitor_list_{user_number}
+                    WHERE id = %s
+                    """,
+                    (monitor_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return
+
+                regime_enabled, regime_window, current_paper_trade = row
+                if not regime_enabled:
+                    return
+
+                interval_str = self._regime_window_to_interval(regime_window or "30d")
+                if not interval_str:
+                    interval_str = "30 days"
+
+                cursor.execute(
+                    """
+                    SELECT
+                      COALESCE(SUM(ret_pct_base), 0),
+                      COUNT(*)
+                    FROM users.trades_0001
+                    WHERE monitor = %s
+                      AND LOWER(TRIM(status)) IN ('closed', 'settled')
+                      AND (test_filter IS NULL OR test_filter = FALSE)
+                      AND ret_pct_base IS NOT NULL
+                      AND (CASE
+                             WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}'
+                             THEN closed_at::timestamptz
+                             ELSE created_at
+                           END) >= NOW() - %s::interval
+                    """,
+                    (monitor_name, interval_str),
+                )
+                window_ret_base, window_trade_count = cursor.fetchone()
+
+                window_ret_base = float(window_ret_base or 0.0)
+                window_trade_count = int(window_trade_count or 0)
+                if window_trade_count <= 0:
+                    return
+
+                desired_paper_trade = window_ret_base < threshold
+                current_paper_trade = bool(current_paper_trade)
+
+                if desired_paper_trade == current_paper_trade:
+                    return
+
+                now_ts = time.time()
+                last_switch_ts = self._regime_last_switch_at.get(monitor_name)
+                if last_switch_ts is not None and (now_ts - last_switch_ts) < cooldown_seconds:
+                    self.log_event(
+                        "REGIME_COOLDOWN",
+                        f"Skipping regime switch for {monitor_name} due to cooldown",
+                        {
+                            "window_ret_base": window_ret_base,
+                            "window_trade_count": window_trade_count,
+                            "cooldown_seconds": cooldown_seconds,
+                            "elapsed_seconds": round(now_ts - last_switch_ts, 2),
+                        },
+                    )
+                    return
+
+                cursor.execute(
+                    f"""
+                    UPDATE users.monitor_list_{user_number}
+                    SET paper_trade = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                    """,
+                    (desired_paper_trade, monitor_id),
+                )
+                conn.commit()
+
+                self._regime_last_switch_at[monitor_name] = now_ts
+                self.log_event(
+                    "REGIME_SWITCH",
+                    f"Regime switch applied for {monitor_name}",
+                    {
+                        "desired_paper_trade": desired_paper_trade,
+                        "window_ret_base": window_ret_base,
+                        "window_trade_count": window_trade_count,
+                        "regime_window": regime_window,
+                    },
+                )
+                self._notify_frontend_monitor_list_updated(
+                    f"Regime switch: {monitor_name} -> {'PAPER' if desired_paper_trade else 'LIVE'}"
+                )
+
+        except Exception as e:
+            self.log_event("ERROR", f"Regime monitor evaluation failed for {monitor_name}: {e}")
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+
     def handle_trade_status_update(self, trade_id: int, status: str, monitor: str = None, bulk_update: bool = False, ticker: str = None) -> Dict[str, Any]:
         """
         Handle trade status updates and automatically update monitor statistics if needed
@@ -1067,7 +1220,14 @@ environment={env_vars}
                     }, timeout=1)
                 except Exception as e:
                     self.log_event("WEBSOCKET_ERROR", f"Failed to send monitor statistics update notification: {str(e)}")
-                
+
+                # Regime Monitor: evaluate rolling performance and switch LIVE/PAPER if enabled.
+                try:
+                    if status in ("closed", "settled") and monitor:
+                        self._evaluate_and_switch_regime(monitor)
+                except Exception as e:
+                    self.log_event("ERROR", f"Regime evaluation hook failed: {e}")
+
                 return result
             else:
                 return {"status": "skipped", "message": f"Trade status {status} does not require statistics update"}

@@ -1680,7 +1680,10 @@
             </div>
             <div class="monitor-bottom-row">
               <div class="monitor-uptime">${monitor.uptime}</div>
-              <div class="paper-trading-toggle ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}" onclick="togglePaperTrade('${monitor.id}')" title="Click to toggle between LIVE and PAPER trading">
+              <div class="paper-trading-toggle ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}"
+                onclick="togglePaperTrade('${monitor.id}')"
+                title="${(monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1) ? 'Regime Monitor controls LIVE/PAPER' : 'Click to toggle between LIVE and PAPER trading'}"
+                style="${(monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1) ? 'pointer-events:none; opacity:0.55;' : ''}">
                 <div class="paper-trading-toggle-slider"></div>
                 <div class="paper-trading-toggle-option">LIVE</div>
                 <div class="paper-trading-toggle-option">PAPER</div>
@@ -1763,7 +1766,10 @@
             </div>
             <div class="monitor-bottom-row">
               <div class="monitor-uptime">${monitor.uptime}</div>
-              <div class="paper-trading-toggle ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}" onclick="togglePaperTrade('${monitor.id}')" title="Click to toggle between LIVE and PAPER trading">
+              <div class="paper-trading-toggle ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}"
+                onclick="togglePaperTrade('${monitor.id}')"
+                title="${(monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1) ? 'Regime Monitor controls LIVE/PAPER' : 'Click to toggle between LIVE and PAPER trading'}"
+                style="${(monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1) ? 'pointer-events:none; opacity:0.55;' : ''}">
                 <div class="paper-trading-toggle-slider"></div>
                 <div class="paper-trading-toggle-option">LIVE</div>
                 <div class="paper-trading-toggle-option">PAPER</div>
@@ -2618,6 +2624,11 @@
       
       // Get current paper_trade value (handle various formats)
       const currentPaperTrade = monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1;
+      const regimeEnabled = monitor && (monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1);
+      if (regimeEnabled) {
+        console.log(`Ignoring manual paper toggle for ${monitorId} because regime monitor is enabled`);
+        return;
+      }
       const newPaperTrade = !currentPaperTrade;
       
       console.log(`Toggling paper trade from ${currentPaperTrade} to ${newPaperTrade} for ${monitorId}`);
@@ -5661,6 +5672,11 @@
                     options[1].style.color = '#a0aec0';
                   }
                 }
+
+                const regimeEnabled = monitor && (monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1);
+                toggleElement.style.pointerEvents = regimeEnabled ? 'none' : '';
+                toggleElement.style.opacity = regimeEnabled ? '0.55' : '';
+                toggleElement.title = regimeEnabled ? 'Regime Monitor controls LIVE/PAPER' : 'Click to toggle between LIVE and PAPER trading';
                 console.log('Updated paper trading toggle visual state for', frontendMonitorId);
               }
               
@@ -5891,6 +5907,22 @@
     <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border-radius:8px; min-width:360px; width:92%; max-width:440px; box-shadow:0 4px 32px rgba(0,0,0,0.25); padding:20px; display:flex; flex-direction:column; max-height:80vh; overflow:auto;">
       <div id="mobileUnifiedAutoTradeModalTitle" style="font-size:16px; font-weight:600; margin-bottom:16px; color:#222;">Auto Trade Settings</div>
       <div style="flex:1 1 auto; display:flex; flex-direction:column; justify-content:flex-start; align-items:stretch; overflow-y:auto; min-height:0;">
+        <!-- Regime Monitor Settings (LIVE<->PAPER auto-switch) -->
+        <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Regime Monitor</div>
+        <div style="position:relative; margin-bottom:16px; width:100%; display:flex; align-items:center; gap:10px;">
+          <input type="checkbox" id="m_regimeMonitorEnabled" style="width:16px; height:16px; accent-color:#007bff;">
+          <span style="font-size:13px; color:#666;">Auto-switch LIVE/PAPER based on rolling performance</span>
+        </div>
+        <label for="m_regimeWindowSelect" style="font-size:14px; color:#333; margin-bottom:8px; font-weight:500;">Regime Window:</label>
+        <div style="position:relative; margin-bottom:24px; width:100%;">
+          <select id="m_regimeWindowSelect" style="width:100%; padding:10px 12px; border-radius:6px; border:1px solid #ddd; background:#fff; font-size:14px;">
+            <option value="30d">30 Days</option>
+            <option value="7d">7 Days</option>
+            <option value="1d">1 Day</option>
+            <option value="12h">12 Hours</option>
+          </select>
+        </div>
+
         <!-- HOURLY HTC Strategy Section -->
         <div id="m_htcStrategySection" style="display: contents;">
         <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Auto Entry</div>
@@ -7042,6 +7074,26 @@
           if (el) el.checked = !!value;
         };
 
+        // Regime Monitor settings (common across strategies)
+        setChk('m_regimeMonitorEnabled', data.regime_monitor_enabled ?? false);
+        setVal('m_regimeWindowSelect', data.regime_window ?? '30d');
+
+        // Grey out/disable dropdown when autoswitch is off.
+        const regimeCb = document.getElementById('m_regimeMonitorEnabled');
+        const regimeSel = document.getElementById('m_regimeWindowSelect');
+        const updateRegimeWindowDisabled = () => {
+          if (!regimeCb || !regimeSel) return;
+          const disabled = !regimeCb.checked;
+          regimeSel.disabled = disabled;
+          regimeSel.style.opacity = disabled ? '0.55' : '';
+          regimeSel.style.cursor = disabled ? 'not-allowed' : '';
+        };
+        updateRegimeWindowDisabled();
+        if (regimeCb && !regimeCb._regimeWindowWired) {
+          regimeCb._regimeWindowWired = true;
+          regimeCb.addEventListener('change', updateRegimeWindowDisabled);
+        }
+
         // Common settings (both strategies) — 15m HTC uses 0:00–15:00 (900s)
         const timeMax = (currentStrategy && currentStrategy.toUpperCase().includes('15M HTC')) ? 900 : 3600;
         window.dashboardMobileTimeWindowMaxSeconds = timeMax;
@@ -7225,6 +7277,11 @@
               min_time: saveIsMS ? msState.minTimeSeconds : state.minTimeSeconds,
               max_time: saveIsMS ? msState.maxTimeSeconds : state.maxTimeSeconds
             };
+
+            const regimeMonitorEnabledEl = document.getElementById('m_regimeMonitorEnabled');
+            const regimeWindowEl = document.getElementById('m_regimeWindowSelect');
+            payload.regime_monitor_enabled = regimeMonitorEnabledEl ? regimeMonitorEnabledEl.checked : false;
+            payload.regime_window = regimeWindowEl ? regimeWindowEl.value : '30d';
             
             // Determine strategy for save (reuse variables from outer scope, but need local copies for Breakout/Contain)
             const saveIsMB = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
@@ -7331,6 +7388,18 @@
               });
               const json = await response.json();
               if (json && json.status !== 'error') {
+                const monitorObj = monitors && monitors.find(m => m.id === tileId);
+                if (monitorObj) {
+                  monitorObj.regime_monitor_enabled = payload.regime_monitor_enabled;
+                  monitorObj.regime_window = payload.regime_window;
+                  const toggleEl = document.querySelector(`[data-monitor-id="${tileId}"] .paper-trading-toggle`);
+                  if (toggleEl) {
+                    const regimeEnabled = monitorObj.regime_monitor_enabled === true || monitorObj.regime_monitor_enabled === 'true' || monitorObj.regime_monitor_enabled === 1;
+                    toggleEl.style.pointerEvents = regimeEnabled ? 'none' : '';
+                    toggleEl.style.opacity = regimeEnabled ? '0.55' : '';
+                    toggleEl.title = regimeEnabled ? 'Regime Monitor controls LIVE/PAPER' : 'Click to toggle between LIVE and PAPER trading';
+                  }
+                }
                 hideModal();
               }
             } catch (error) {

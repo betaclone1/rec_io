@@ -1871,9 +1871,9 @@ async def get_account_balance(mode: str = "prod"):
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             # Get the latest account balance
             cursor.execute("""
-                SELECT portfolio, positions, bankroll_current, timestamp 
+                SELECT portfolio, positions, bankroll_current
                 FROM users.account_balance_0001 
-                ORDER BY timestamp DESC 
+                ORDER BY id DESC 
                 LIMIT 1
             """)
             balance_result = cursor.fetchone()
@@ -2538,13 +2538,13 @@ async def get_eth_price():
 async def get_live_symbol_status_snapshot():
     """
     Standalone live UI snapshot:
-    BTC/ETH symbol, price, momentum_percentile, volatility_percentile, movement_percentile.
+    BTC/ETH/SOL/XRP symbol, price, momentum_percentile, volatility_percentile, movement_percentile.
     Values are pulled from live_data.live_symbol_status (trigger-synced from live_price_log_1s_*).
     """
     try:
         import psycopg2
 
-        allowed = ("BTC", "ETH")
+        allowed = ("BTC", "ETH", "SOL", "XRP")
         conn = get_postgresql_connection()
         cursor = conn.cursor()
 
@@ -3009,7 +3009,8 @@ async def get_auto_entry_settings(monitor_id: str = None):
                        min_volume, win_streak_threshold, performance_based_allocation,
                        momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target,
                        min_ask, max_ask, loss_prevention_toggle, max_price_spread, prob_adj,
-                       min_cooldown_timer, max_cooldown_timer
+                       min_cooldown_timer, max_cooldown_timer,
+                       regime_monitor_enabled, regime_window
                 FROM users.monitor_list_0001 WHERE id = %s
             """, (monitor_id,))
             result = cursor.fetchone()
@@ -3047,7 +3048,9 @@ async def get_auto_entry_settings(monitor_id: str = None):
                     "max_price_spread": float(result[26]) if result[26] is not None else 0.0300,
                     "prob_adj": float(result[27]) if result[27] is not None else 5.00,
                     "min_cooldown_timer": result[28] if result[28] is not None else None,
-                    "max_cooldown_timer": result[29] if result[29] is not None else None
+                    "max_cooldown_timer": result[29] if result[29] is not None else None,
+                    "regime_monitor_enabled": bool(result[30]) if result[30] is not None else False,
+                    "regime_window": str(result[31]) if result[31] is not None else "30d"
                 }
             else:
                 return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
@@ -3081,6 +3084,26 @@ async def set_auto_entry_settings(request: Request):
             update_values = []
             
             # Auto entry parameters
+            if "regime_monitor_enabled" in data:
+                reg_enabled = data["regime_monitor_enabled"]
+                if isinstance(reg_enabled, str):
+                    reg_enabled = reg_enabled.lower() in ("true", "1", "yes")
+                update_fields.append("regime_monitor_enabled = %s")
+                update_values.append(bool(reg_enabled))
+
+            if "regime_window" in data:
+                regime_window = data["regime_window"]
+                if regime_window is not None:
+                    regime_window = str(regime_window).strip()
+                    allowed = {"30d", "7d", "1d", "12h"}
+                    if regime_window not in allowed:
+                        return {
+                            "status": "error",
+                            "message": f"Invalid regime_window: {regime_window}. Allowed: {sorted(list(allowed))}"
+                        }
+                    update_fields.append("regime_window = %s")
+                    update_values.append(regime_window)
+
             if "min_probability" in data:
                 update_fields.append("min_probability = %s")
                 update_values.append(float(data["min_probability"]))
@@ -3193,6 +3216,7 @@ async def set_auto_entry_settings(request: Request):
                            momentum_spike_threshold, verification_period_enabled, verification_period_seconds,
                            min_volume, win_streak_threshold, performance_based_allocation,
                            momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target
+                           ,regime_monitor_enabled, regime_window
                     FROM users.monitor_list_0001 WHERE id = %s
                 """, (monitor_id,))
                 updated_result = cursor.fetchone()
@@ -3219,7 +3243,9 @@ async def set_auto_entry_settings(request: Request):
                         "performance_based_allocation": updated_result[17],
                         "momentum_scalp_entry_threshold": float(updated_result[18]) if updated_result[18] is not None else None,
                         "momentum_scalp_trailing_stop_amount": float(updated_result[19]) if updated_result[19] is not None else None,
-                        "momentum_scalp_profit_target": float(updated_result[20]) if updated_result[20] is not None else None
+                        "momentum_scalp_profit_target": float(updated_result[20]) if updated_result[20] is not None else None,
+                        "regime_monitor_enabled": bool(updated_result[21]) if updated_result[21] is not None else False,
+                        "regime_window": str(updated_result[22]) if updated_result[22] is not None else "30d"
                     }
                     conn.commit()
                     conn.close()
@@ -5029,6 +5055,8 @@ async def get_monitors(user_id: str = "user_0001"):
                     current_max_pct_exposure,
                     performance_based_allocation,
                     paper_trade,
+                    regime_monitor_enabled,
+                    regime_window,
                     market
                 FROM users.monitor_list_{user_number}
                 WHERE status != 'ARCHIVED'
@@ -5066,6 +5094,8 @@ async def get_monitors(user_id: str = "user_0001"):
                 current_max_pct_exposure,
                 performance_based_allocation,
                 paper_trade,
+                regime_monitor_enabled,
+                regime_window,
                 market,
             ) = row
             
@@ -5114,6 +5144,8 @@ async def get_monitors(user_id: str = "user_0001"):
                 "current_max_pct_exposure": current_max_pct_exposure,
                 "performance_based_allocation": performance_based_allocation,
                 "paper_trade": paper_trade or False,
+                "regime_monitor_enabled": regime_monitor_enabled or False,
+                "regime_window": regime_window or "30d",
                 "market": (market or "").strip().lower() if market else None,
             }
             monitors.append(formatted_monitor)

@@ -6,6 +6,33 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-20 — Regime monitor auto-switch (LIVE/PAPER) + dashboard parity
+
+**Summary**
+- **Per-monitor regime controls:** Added `regime_monitor_enabled` and `regime_window` (`30d`, `7d`, `1d`, `12h`) to monitor settings so each monitor can independently enable/disable rolling performance-based mode switching.
+- **Auto-switch behavior:** `monitor_manager` now evaluates rolling `SUM(ret_pct_base)` on trade close events and, when regime monitoring is enabled, switches `paper_trade` automatically (`< 0` => PAPER, `>= 0` => LIVE) with cooldown guardrails and frontend refresh notifications.
+- **API + UI wiring:** Exposed regime settings via monitor/settings endpoints; desktop and mobile auto-trade modals now support regime toggle/window, disable manual LIVE/PAPER toggle while active, and include clearer labels/tooltip behavior.
+- **DB + schema alignment:** Added reversible migration `20260320_2000_regime_monitor_columns` and aligned `backend/core/config/database.py` + `docs/MASTER_DB_SCHEMA_REFERENCE.md`.
+- **Dashboard history stability fix:** Included `read_api` history-query updates from parallel UI remediation work (`updated_at` ordering/time filtering adjustments).
+
+Plans: `regime-monitor_4935aaf6.plan.md` (implemented), plus `read_api` UI stability follow-up from parallel agent work.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply DB migration for regime monitor columns (from project root):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260320_2000_regime_monitor_columns`
+- [ ] Restart application services so `main_app`, `monitor_manager`, and dashboard assets load the new behavior:  
+  `./scripts/MASTER_RESTART.sh`
+- [ ] Verify:
+  - health endpoints (`main_app` :3000, `trade_executor` :8001) and supervisor `RUNNING`
+  - monitor settings modal (desktop + mobile) shows regime controls with `30 Days / 7 Days / 1 Day / 12 Hours`
+  - when regime toggle is OFF, regime window dropdown is disabled/greyed out
+  - when regime toggle is ON and rolling `SUM(ret_pct_base)` is negative, monitor flips to PAPER and manual LIVE/PAPER toggle is disabled with tooltip text
+  - `read_api` portfolio/bankroll history charts load correctly across 1d/1w/1m/1y/all periods
+
+---
+
 ## 2026-03-19 — Momentum Contain (AES): minimum-width, centered bracket strike selection
 
 **Summary**

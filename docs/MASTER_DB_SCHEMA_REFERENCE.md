@@ -10150,6 +10150,8 @@ Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m va
 | `performance_based_allocation` | `boolean` | NO | false | |
 | `max_price_spread` | `numeric(6,4)` | YES | 0.0300 | |
 | `paper_trade` | `boolean` | YES | false | |
+| `regime_monitor_enabled` | `boolean` | YES | false | Enable regime monitor auto-switch between LIVE/PAPER for this monitor. |
+| `regime_window` | `text` | YES | 30d | Rolling lookback window for regime evaluation (allowed: 30d, 7d, 1d, 12h). |
 | `prob_adj` | `numeric(5,2)` | YES | 5.00 | |
 
 #### Constraints

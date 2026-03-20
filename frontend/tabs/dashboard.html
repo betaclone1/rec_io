@@ -1920,7 +1920,10 @@
             </div>
             <div class="monitor-bottom-row">
               <div class="monitor-uptime">${monitor.uptime}</div>
-              <div class="paper-trading-toggle ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}" onclick="togglePaperTrade('${monitor.id}')" title="Click to toggle between LIVE and PAPER trading">
+              <div class="paper-trading-toggle ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}"
+                onclick="togglePaperTrade('${monitor.id}')"
+                data-tooltip="${(monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1) ? 'Regime Monitoring ON' : ''}"
+                style="${(monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1) ? 'opacity:0.55; cursor:not-allowed;' : ''}">
                 <div class="paper-trading-toggle-slider"></div>
                 <div class="paper-trading-toggle-option">LIVE</div>
                 <div class="paper-trading-toggle-option">PAPER</div>
@@ -5704,6 +5707,11 @@
         // Get current state
         const monitor = monitors.find(m => m.id === monitorId);
         const currentPaperTrade = monitor ? (monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) : false;
+        const regimeEnabled = monitor && (monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1);
+        if (regimeEnabled) {
+          console.log(`Ignoring manual paper toggle for ${monitorId} because regime monitor is enabled`);
+          return;
+        }
         const newPaperTrade = !currentPaperTrade;
         
         // Optimistically update UI
@@ -5744,6 +5752,7 @@
         
         // Update toggle switch state
         const toggle = tile.querySelector('.paper-trading-toggle');
+        const monitorData = monitors.find(m => m.id === monitorId);
         if (toggle) {
           if (paperTrade) {
             toggle.classList.remove('live-mode');
@@ -5766,13 +5775,23 @@
               options[1].style.color = '#a0aec0'; // PAPER inactive
             }
           }
+
+          // If regime monitor is enabled, keep manual toggling disabled in UI.
+          const regimeEnabled = monitorData && (monitorData.regime_monitor_enabled === true || monitorData.regime_monitor_enabled === 'true' || monitorData.regime_monitor_enabled === 1);
+          if (monitorData && toggle) {
+            toggle.style.pointerEvents = '';
+            toggle.style.opacity = regimeEnabled ? '0.55' : '';
+            toggle.style.cursor = regimeEnabled ? 'not-allowed' : '';
+            if (regimeEnabled) {
+              toggle.dataset.tooltip = 'Regime Monitoring ON';
+            } else {
+              delete toggle.dataset.tooltip;
+            }
+          }
         }
-        
+
         // Update monitor data
-        const monitor = monitors.find(m => m.id === monitorId);
-        if (monitor) {
-          monitor.paper_trade = paperTrade;
-        }
+        if (monitorData) monitorData.paper_trade = paperTrade;
       }
     }
 
@@ -6211,6 +6230,22 @@
     <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border-radius:8px; min-width:567px; box-shadow:0 4px 32px rgba(0,0,0,0.25); padding:20px; display:flex; flex-direction:column; max-height:80vh; overflow:auto;">
       <div id="unifiedAutoTradeModalTitle" style="font-size:16px; font-weight:600; margin-bottom:16px; color:#222;">Auto Trade Settings</div>
       <div style="flex:1 1 auto; display:flex; flex-direction:column; justify-content:flex-start; align-items:stretch; overflow-y:auto; min-height:0;">
+        <!-- Regime Monitor Settings (LIVE<->PAPER auto-switch) -->
+        <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Regime Monitor</div>
+        <div style="position:relative; margin-bottom:16px; width:100%; display:flex; align-items:center; gap:10px;">
+          <input type="checkbox" id="regimeMonitorEnabled" style="width:16px; height:16px; accent-color:#007bff;" />
+          <span style="font-size:13px; color:#666;">Auto-switch LIVE/PAPER based on rolling performance</span>
+        </div>
+        <label for="regimeWindowSelect" style="font-size:14px; color:#333; margin-bottom:8px; font-weight:500;">Regime Window:</label>
+        <div style="position:relative; margin-bottom:24px; width:100%;">
+          <select id="regimeWindowSelect" style="width:100%; padding:10px 12px; border-radius:6px; border:1px solid #ddd; background:#fff; font-size:14px;">
+            <option value="30d">30 Days</option>
+            <option value="7d">7 Days</option>
+            <option value="1d">1 Day</option>
+            <option value="12h">12 Hours</option>
+          </select>
+        </div>
+
         <!-- HOURLY HTC Strategy Section -->
         <div id="htcStrategySection" style="display: contents;">
         <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Auto Entry</div>
@@ -7457,6 +7492,26 @@
         };
         const setChk = (id,v) => { const el=document.getElementById(id); if (el) el.checked=!!v; };
         
+          // Regime Monitor settings (common across strategies)
+          setChk('regimeMonitorEnabled', data.regime_monitor_enabled ?? false);
+          setVal('regimeWindowSelect', data.regime_window ?? '30d');
+
+          // Grey out/disable dropdown when autoswitch is off.
+          const regimeCb = document.getElementById('regimeMonitorEnabled');
+          const regimeSel = document.getElementById('regimeWindowSelect');
+          const updateRegimeWindowDisabled = () => {
+            if (!regimeCb || !regimeSel) return;
+            const disabled = !regimeCb.checked;
+            regimeSel.disabled = disabled;
+            regimeSel.style.opacity = disabled ? '0.55' : '';
+            regimeSel.style.cursor = disabled ? 'not-allowed' : '';
+          };
+          updateRegimeWindowDisabled();
+          if (regimeCb && !regimeCb._regimeWindowWired) {
+            regimeCb._regimeWindowWired = true;
+            regimeCb.addEventListener('change', updateRegimeWindowDisabled);
+          }
+
         // Determine which strategy section to populate (use the strategy from monitor data)
         const isMomentumScalp = currentStrategy && (currentStrategy.toUpperCase().includes('MOMENTUM SCALP') || currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL'));
       const isMomentumReversal = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL');
@@ -7811,6 +7866,11 @@
           min_time: dashboardMinTimeSeconds,
           max_time: dashboardMaxTimeSeconds
         };
+
+        const regimeMonitorEnabledEl = document.getElementById('regimeMonitorEnabled');
+        const regimeWindowEl = document.getElementById('regimeWindowSelect');
+        payload.regime_monitor_enabled = regimeMonitorEnabledEl ? regimeMonitorEnabledEl.checked : false;
+        payload.regime_window = regimeWindowEl ? regimeWindowEl.value : '30d';
         
         if (isMomentumScalp) {
           // MOMENTUM SCALP specific fields
@@ -7920,6 +7980,13 @@
           const j = await resp.json();
           if (j && j.status !== 'error') {
             dashboardSettingsCache[tileId] = { ...dashboardSettingsCache[tileId], ...payload };
+            const monitorObj = monitors.find(m => m.id === tileId);
+            if (monitorObj) {
+              monitorObj.regime_monitor_enabled = payload.regime_monitor_enabled;
+              monitorObj.regime_window = payload.regime_window;
+              // Apply UI disablement state immediately (paper_trade itself only changes on regime evaluation).
+              updatePaperTradingUI(tileId, monitorObj.paper_trade || false);
+            }
             closeUnifiedAutoTradeSettings();
           }
         }catch(e){ console.error('Save failed', e); }
@@ -7957,6 +8024,85 @@
         delete modal._keydownHandler;
       }
     }
+
+    // Fast custom tooltip for disabled LIVE/PAPER toggle.
+    (function initFastTooltipForPaperToggle(){
+      let tooltipEl = null;
+      let activeAnchor = null;
+      let showTimer = null;
+
+      const ensureTooltip = () => {
+        if (tooltipEl) return tooltipEl;
+        tooltipEl = document.createElement('div');
+        tooltipEl.style.position = 'fixed';
+        tooltipEl.style.zIndex = '20000';
+        tooltipEl.style.pointerEvents = 'none';
+        tooltipEl.style.background = 'rgba(24, 24, 27, 0.95)';
+        tooltipEl.style.color = '#fff';
+        tooltipEl.style.fontSize = '12px';
+        tooltipEl.style.padding = '6px 8px';
+        tooltipEl.style.borderRadius = '6px';
+        tooltipEl.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)';
+        tooltipEl.style.opacity = '0';
+        tooltipEl.style.transition = 'opacity 90ms ease';
+        tooltipEl.style.whiteSpace = 'nowrap';
+        document.body.appendChild(tooltipEl);
+        return tooltipEl;
+      };
+
+      const positionTooltip = (evt) => {
+        if (!tooltipEl || !activeAnchor) return;
+        const offset = 12;
+        let x = evt.clientX + offset;
+        let y = evt.clientY + offset;
+        const maxX = window.innerWidth - tooltipEl.offsetWidth - 8;
+        const maxY = window.innerHeight - tooltipEl.offsetHeight - 8;
+        if (x > maxX) x = maxX;
+        if (y > maxY) y = maxY;
+        tooltipEl.style.left = `${Math.max(8, x)}px`;
+        tooltipEl.style.top = `${Math.max(8, y)}px`;
+      };
+
+      const hideTooltip = () => {
+        if (showTimer) {
+          clearTimeout(showTimer);
+          showTimer = null;
+        }
+        activeAnchor = null;
+        if (tooltipEl) tooltipEl.style.opacity = '0';
+      };
+
+      document.addEventListener('mouseover', (evt) => {
+        const anchor = evt.target && evt.target.closest ? evt.target.closest('.paper-trading-toggle[data-tooltip]') : null;
+        if (!anchor || !anchor.dataset.tooltip) {
+          hideTooltip();
+          return;
+        }
+        activeAnchor = anchor;
+        const el = ensureTooltip();
+        el.textContent = anchor.dataset.tooltip;
+        positionTooltip(evt);
+        if (showTimer) clearTimeout(showTimer);
+        showTimer = setTimeout(() => {
+          if (activeAnchor === anchor) el.style.opacity = '1';
+        }, 80);
+      });
+
+      document.addEventListener('mousemove', (evt) => {
+        if (!activeAnchor) return;
+        positionTooltip(evt);
+      });
+
+      document.addEventListener('mouseout', (evt) => {
+        if (!activeAnchor) return;
+        const related = evt.relatedTarget;
+        if (related && activeAnchor.contains && activeAnchor.contains(related)) return;
+        hideTooltip();
+      });
+
+      document.addEventListener('scroll', hideTooltip, true);
+      window.addEventListener('blur', hideTooltip);
+    })();
   </script>
 
   <!-- Archive Confirmation Modal -->

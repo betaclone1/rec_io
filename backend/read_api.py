@@ -50,7 +50,10 @@ async def get_portfolio_history(period: str = "1m") -> Dict[str, Any]:
         if not conn:
             return {"status": "error", "message": "No DB connection"}
 
-        now = datetime.now()
+        # Use a timezone-aware reference for consistent timestamptz filtering.
+        from zoneinfo import ZoneInfo  # local import to keep startup fast
+        eastern = ZoneInfo("America/New_York")
+        now = datetime.now(eastern)
         results: List[Any] = []
 
         if period == "1d":
@@ -58,25 +61,25 @@ async def get_portfolio_history(period: str = "1m") -> Dict[str, Any]:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT timestamp, portfolio
+                    SELECT updated_at, portfolio
                     FROM users.account_balance_0001 
-                    WHERE timestamp < %s
-                    ORDER BY timestamp DESC
+                    WHERE updated_at < %s
+                    ORDER BY updated_at DESC, id DESC
                     LIMIT 1
                 """,
-                    (today_5am.strftime("%Y-%m-%d %H:%M:%S"),),
+                    (today_5am,),
                 )
                 last_before_5am = cursor.fetchone()
 
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT timestamp, portfolio
+                    SELECT updated_at, portfolio
                     FROM users.account_balance_0001 
-                    WHERE timestamp >= %s
-                    ORDER BY timestamp ASC
+                    WHERE updated_at >= %s
+                    ORDER BY updated_at ASC, id ASC
                 """,
-                    (today_5am.strftime("%Y-%m-%d %H:%M:%S"),),
+                    (today_5am,),
                 )
                 results = cursor.fetchall()
 
@@ -91,17 +94,17 @@ async def get_portfolio_history(period: str = "1m") -> Dict[str, Any]:
             elif period == "1y":
                 start_time = now - timedelta(days=365)
             else:  # "all"
-                start_time = datetime(2020, 1, 1)
+                start_time = datetime(2020, 1, 1, tzinfo=eastern)
 
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT timestamp, portfolio
+                    SELECT updated_at, portfolio
                     FROM users.account_balance_0001 
-                    WHERE timestamp >= %s
-                    ORDER BY timestamp ASC
+                    WHERE updated_at >= %s
+                    ORDER BY updated_at ASC, id ASC
                 """,
-                    (start_time.strftime("%Y-%m-%d %H:%M:%S"),),
+                    (start_time,),
                 )
                 results = cursor.fetchall()
 
@@ -137,7 +140,10 @@ async def get_bankroll_history(period: str = "1m") -> Dict[str, Any]:
             return {"status": "error", "message": "No DB connection"}
 
         select_val = "COALESCE(mtb_base_value, bankroll_current)"
-        now = datetime.now()
+        # Use a timezone-aware reference for consistent timestamptz filtering.
+        from zoneinfo import ZoneInfo  # local import to keep startup fast
+        eastern = ZoneInfo("America/New_York")
+        now = datetime.now(eastern)
         results: List[Any] = []
 
         if period == "1d":
@@ -145,25 +151,25 @@ async def get_bankroll_history(period: str = "1m") -> Dict[str, Any]:
             with conn.cursor() as cursor:
                 cursor.execute(
                     f"""
-                    SELECT timestamp, {select_val}
+                    SELECT updated_at, {select_val}
                     FROM users.account_balance_0001
-                    WHERE timestamp < %s
-                    ORDER BY timestamp DESC
+                    WHERE updated_at < %s
+                    ORDER BY updated_at DESC, id DESC
                     LIMIT 1
                 """,
-                    (today_5am.strftime("%Y-%m-%d %H:%M:%S"),),
+                    (today_5am,),
                 )
                 last_before_5am = cursor.fetchone()
 
             with conn.cursor() as cursor:
                 cursor.execute(
                     f"""
-                    SELECT timestamp, {select_val}
+                    SELECT updated_at, {select_val}
                     FROM users.account_balance_0001
-                    WHERE timestamp >= %s
-                    ORDER BY timestamp ASC
+                    WHERE updated_at >= %s
+                    ORDER BY updated_at ASC, id ASC
                 """,
-                    (today_5am.strftime("%Y-%m-%d %H:%M:%S"),),
+                    (today_5am,),
                 )
                 results = cursor.fetchall()
 
@@ -178,17 +184,17 @@ async def get_bankroll_history(period: str = "1m") -> Dict[str, Any]:
             elif period == "1y":
                 start_time = now - timedelta(days=365)
             else:  # "all"
-                start_time = datetime(2020, 1, 1)
+                start_time = datetime(2020, 1, 1, tzinfo=eastern)
 
             with conn.cursor() as cursor:
                 cursor.execute(
                     f"""
-                    SELECT timestamp, {select_val}
+                    SELECT updated_at, {select_val}
                     FROM users.account_balance_0001
-                    WHERE timestamp >= %s
-                    ORDER BY timestamp ASC
+                    WHERE updated_at >= %s
+                    ORDER BY updated_at ASC, id ASC
                 """,
-                    (start_time.strftime("%Y-%m-%d %H:%M:%S"),),
+                    (start_time,),
                 )
                 results = cursor.fetchall()
 
