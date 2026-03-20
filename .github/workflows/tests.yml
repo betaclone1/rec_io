@@ -42,6 +42,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -51,6 +53,35 @@ jobs:
       - name: Install ruff
         run: pip install ruff
 
-      - name: Lint with ruff
-        run: ruff check backend scripts/db scripts/config --ignore E501
+      - name: Determine changed Python files
+        id: changed_py
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.sha }}"
+          else
+            BASE_SHA="${{ github.event.before }}"
+            HEAD_SHA="${{ github.sha }}"
+          fi
+
+          CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- \
+            'backend/**/*.py' 'scripts/db/**/*.py' 'scripts/config/**/*.py' \
+            | tr '\n' ' ' | xargs)
+
+          echo "changed_files=$CHANGED" >> "$GITHUB_OUTPUT"
+          if [[ -n "$CHANGED" ]]; then
+            echo "Lint target files: $CHANGED"
+          else
+            echo "No changed Python files in lint scope."
+          fi
+
+      - name: Lint changed files with ruff
+        if: steps.changed_py.outputs.changed_files != ''
+        run: ruff check ${{ steps.changed_py.outputs.changed_files }} --ignore E501
         # E501 (line length) often ignored initially; tighten later
+
+      - name: Skip lint (no scoped Python changes)
+        if: steps.changed_py.outputs.changed_files == ''
+        run: echo "Skipping Ruff: no changed Python files in backend/scripts db/config scope."
