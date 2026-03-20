@@ -15,6 +15,7 @@ import requests
 import json
 import time
 import os
+from pathlib import Path
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import pytz
@@ -63,6 +64,104 @@ def _configure_logging():
 
 logger = _configure_logging()
 HEARTBEAT_INTERVAL_SEC = 300
+
+
+def _iso_now_est():
+    return datetime.now(ZoneInfo("America/New_York")).isoformat(timespec="seconds")
+
+
+class OutageTracker:
+    """Track functional market-data outages with low log volume."""
+
+    def __init__(self, symbol, interval):
+        self.symbol = symbol.lower()
+        self.interval = interval
+        self.in_outage = False
+        self.started_at = None
+        self.last_failure_reason = None
+        self.fail_count = 0
+        self.status_path = Path("logs") / f"kalshi_market_watchdog_status_{interval}_{self.symbol}.json"
+        self.outage_path = Path("logs") / f"kalshi_market_watchdog_outages_{interval}_{self.symbol}.jsonl"
+        self._ensure_log_dir()
+        self._write_status(state="healthy")
+
+    def _ensure_log_dir(self):
+        self.status_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _write_status(self, state, extra=None):
+        payload = {
+            "service": "kalshi_market_watchdog",
+            "symbol": self.symbol.upper(),
+            "interval": self.interval,
+            "state": state,
+            "updated_at": _iso_now_est(),
+        }
+        if extra:
+            payload.update(extra)
+        self.status_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    def _append_outage_event(self, payload):
+        with self.outage_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload) + "\n")
+
+    def mark_failure(self, reason):
+        now = datetime.now(ZoneInfo("America/New_York"))
+        if not self.in_outage:
+            self.in_outage = True
+            self.started_at = now
+            self.fail_count = 1
+            self.last_failure_reason = reason
+            logger.warning("DATA OUTAGE STARTED (%s): %s", now.isoformat(timespec="seconds"), reason)
+            self._write_status(
+                state="outage",
+                extra={
+                    "outage_started_at": now.isoformat(timespec="seconds"),
+                    "fail_count": self.fail_count,
+                    "last_failure_reason": self.last_failure_reason,
+                },
+            )
+            return
+
+        self.fail_count += 1
+        self.last_failure_reason = reason
+        self._write_status(
+            state="outage",
+            extra={
+                "outage_started_at": self.started_at.isoformat(timespec="seconds"),
+                "fail_count": self.fail_count,
+                "last_failure_reason": self.last_failure_reason,
+            },
+        )
+
+    def mark_success(self, event_ticker):
+        now = datetime.now(ZoneInfo("America/New_York"))
+        if self.in_outage and self.started_at:
+            duration_sec = int((now - self.started_at).total_seconds())
+            logger.warning(
+                "DATA OUTAGE ENDED (%s): duration=%ss fail_count=%s recovered_event=%s",
+                now.isoformat(timespec="seconds"),
+                duration_sec,
+                self.fail_count,
+                event_ticker,
+            )
+            self._append_outage_event(
+                {
+                    "service": "kalshi_market_watchdog",
+                    "symbol": self.symbol.upper(),
+                    "interval": self.interval,
+                    "outage_started_at": self.started_at.isoformat(timespec="seconds"),
+                    "outage_ended_at": now.isoformat(timespec="seconds"),
+                    "duration_seconds": duration_sec,
+                    "fail_count": self.fail_count,
+                    "last_failure_reason": self.last_failure_reason,
+                    "recovered_event_ticker": event_ticker,
+                }
+            )
+            self.in_outage = False
+            self.started_at = None
+            self.fail_count = 0
+            self.last_failure_reason = None
+        self._write_status(state="healthy", extra={"last_success_event_ticker": event_ticker})
 
 
 def _market_cents_from_dollars(dollars_val, legacy_cents):
@@ -621,6 +720,7 @@ def main():
         connection.close()
     previous_event_ticker = None
     last_heartbeat = time.time()
+    outage_tracker = OutageTracker(SYMBOL, INTERVAL)
     while True:
         try:
             event_ticker, event_data = get_current_event_ticker(SYMBOL, INTERVAL)
@@ -652,6 +752,7 @@ def main():
                 success = save_market_data_to_postgresql(event_ticker, filtered_markets, SYMBOL, INTERVAL)
                 if not success:
                     logger.error("Failed to save data for %s", event_ticker)
+                    outage_tracker.mark_failure(f"save_failed event={event_ticker}")
                 elif INTERVAL == "15m" and (previous_event_ticker is None or previous_event_ticker != event_ticker):
                     backfill_15m_strike_from_price_log(SYMBOL, event_ticker)
                 if preserved_rows:
@@ -663,9 +764,12 @@ def main():
                             logger.info("Preserved %d rows for open trades across rotation", len(preserved_rows))
                         finally:
                             conn2.close()
+                if success:
+                    outage_tracker.mark_success(event_ticker)
                 previous_event_ticker = event_ticker
             else:
                 logger.debug("No active event found - continuing with last known market")
+                outage_tracker.mark_failure("event_resolution_failed")
             if time.time() - last_heartbeat >= HEARTBEAT_INTERVAL_SEC:
                 logger.info("heartbeat")
                 last_heartbeat = time.time()

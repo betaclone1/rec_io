@@ -23,15 +23,15 @@ Plans: `logging-audit`, `db-prod-schema-alignment`, `monitor-script-lifecycle-in
 3. `20260320_2100_sol_xrp_live_tables`
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations in order (from project root):  
+- [x] Apply migrations in order (from project root):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260316_1500_trade_logs_widen_varchar`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260316_1700_redis_basic_test_add_columns`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260320_2100_sol_xrp_live_tables`
-- [ ] Restart services after migrations/code sync:  
+- [x] Restart services after migrations/code sync:  
   `./scripts/MASTER_RESTART.sh`
-- [ ] Verify:
+- [x] Verify:
   - health endpoints (`main_app` :3000, `trade_executor` :8001)
   - supervisor status is RUNNING for core services
   - Help Center renders from `/data/help_center_index.json` on desktop/mobile

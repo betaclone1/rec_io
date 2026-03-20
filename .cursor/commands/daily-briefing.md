@@ -52,6 +52,50 @@ ssh -o BatchMode=yes -o ConnectTimeout=10 root@137.184.224.94 "cd /opt/rec_io_se
 
 Summarize: "Prod: RUNNING, 200/200, no errors" or list what failed. If SSH fails, say "Prod: SSH failed — [reason]."
 
+Then run a **market-watchdog outage check on production since the observability start marker only** (ignore older logs entirely):
+
+1. Read local marker from `.cursor/archive/watchdog_observability_start.txt` (single ISO timestamp).
+2. Use that exact timestamp as `START_TS` in this production command:
+
+```bash
+ssh -o BatchMode=yes -o ConnectTimeout=10 root@137.184.224.94 "cd /opt/rec_io_server && START_TS='REPLACE_WITH_MARKER' python3 - <<'PY'
+from pathlib import Path
+import os
+
+start_ts = os.environ['START_TS']
+logs = [
+    'logs/kalshi_market_watchdog_15m_btc.out.log',
+    'logs/kalshi_market_watchdog_15m_eth.out.log',
+    'logs/kalshi_market_watchdog_hourly_btc.out.log',
+    'logs/kalshi_market_watchdog_hourly_eth.out.log',
+]
+
+def scan(path):
+    p = Path(path)
+    if not p.exists():
+        return (0, 0, 0)
+    started = ended = warning = 0
+    for line in p.read_text(encoding='utf-8', errors='ignore').splitlines():
+        ts = line[:25] if len(line) >= 25 else ''
+        if not ts or ts < start_ts:
+            continue
+        if 'DATA OUTAGE STARTED' in line:
+            started += 1
+        elif 'DATA OUTAGE ENDED' in line:
+            ended += 1
+        elif 'WARNING [kalshi_market_watchdog]' in line:
+            warning += 1
+    return started, ended, warning
+
+for lp in logs:
+    s, e, w = scan(lp)
+    print(f'{lp}: outage_started={s} outage_ended={e} warnings={w}')
+PY"
+```
+
+In the **System** section output, include one short line summarizing this check as:
+`Prod watchdogs since marker: <per-log counts>` (or SSH failure reason).
+
 ---
 
 ## Step 5 — Monitor_confirmed

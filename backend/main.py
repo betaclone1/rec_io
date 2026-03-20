@@ -3261,7 +3261,8 @@ async def set_auto_entry_settings(request: Request):
                             json={
                                 "monitor_id": int(monitor_id),
                                 "user_number": "0001",
-                                "full_sweep": True,
+                                "full_sweep": False,
+                                "force_immediate": True,
                                 "source": "set_auto_entry_settings",
                             },
                             timeout=3,

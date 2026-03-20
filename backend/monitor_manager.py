@@ -1068,7 +1068,7 @@ environment={env_vars}
         }
         return mapping.get(window)
 
-    def _evaluate_and_switch_regime(self, monitor_name: str) -> None:
+    def _evaluate_and_switch_regime(self, monitor_name: str, force_immediate: bool = False) -> None:
         """
         After a trade close, evaluate rolling SUM(ret_pct_base) for the monitor's
         configured regime_window and switch monitor_list.paper_trade accordingly.
@@ -1144,7 +1144,7 @@ environment={env_vars}
 
                 now_ts = time.time()
                 last_switch_ts = self._regime_last_switch_at.get(monitor_name)
-                if last_switch_ts is not None and (now_ts - last_switch_ts) < cooldown_seconds:
+                if (not force_immediate) and last_switch_ts is not None and (now_ts - last_switch_ts) < cooldown_seconds:
                     self.log_event(
                         "REGIME_COOLDOWN",
                         f"Skipping regime switch for {monitor_name} due to cooldown",
@@ -1236,7 +1236,7 @@ environment={env_vars}
             self.log_event("ERROR", f"Error handling trade status update: {e}")
             return {"status": "error", "message": str(e)}
 
-    def reconcile_regime_for_monitor(self, monitor_id: int, user_number: str = "0001") -> Dict[str, Any]:
+    def reconcile_regime_for_monitor(self, monitor_id: int, user_number: str = "0001", force_immediate: bool = False) -> Dict[str, Any]:
         """Immediately run regime evaluation for a single monitor."""
         conn = None
         try:
@@ -1251,7 +1251,7 @@ environment={env_vars}
                     return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
                 monitor_name = row[0]
 
-            self._evaluate_and_switch_regime(monitor_name)
+            self._evaluate_and_switch_regime(monitor_name, force_immediate=force_immediate)
             return {
                 "status": "success",
                 "message": f"Regime reconcile completed for monitor {monitor_name}",
@@ -1264,7 +1264,7 @@ environment={env_vars}
             if conn:
                 conn.close()
 
-    def reconcile_regime_full_sweep(self, user_number: str = "0001") -> Dict[str, Any]:
+    def reconcile_regime_full_sweep(self, user_number: str = "0001", force_immediate: bool = False) -> Dict[str, Any]:
         """Run regime evaluation across the monitor list immediately."""
         conn = None
         try:
@@ -1283,7 +1283,7 @@ environment={env_vars}
 
             reconciled = 0
             for monitor_name in monitor_names:
-                self._evaluate_and_switch_regime(monitor_name)
+                self._evaluate_and_switch_regime(monitor_name, force_immediate=force_immediate)
                 reconciled += 1
 
             return {
@@ -2423,11 +2423,12 @@ def regime_reconcile():
         user_number = str(data.get('user_number', '0001'))
         full_sweep = bool(data.get('full_sweep', False))
         monitor_id = data.get('monitor_id')
+        force_immediate = bool(data.get('force_immediate', False))
 
         if full_sweep or monitor_id is None:
-            result = monitor_manager.reconcile_regime_full_sweep(user_number=user_number)
+            result = monitor_manager.reconcile_regime_full_sweep(user_number=user_number, force_immediate=force_immediate)
         else:
-            result = monitor_manager.reconcile_regime_for_monitor(int(monitor_id), user_number=user_number)
+            result = monitor_manager.reconcile_regime_for_monitor(int(monitor_id), user_number=user_number, force_immediate=force_immediate)
 
         if result.get("status") == "success":
             return jsonify({"success": True, **result})
