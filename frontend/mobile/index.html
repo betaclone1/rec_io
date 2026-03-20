@@ -186,6 +186,9 @@
             
             <!-- System Page -->
             <iframe id="system-frame" class="page-frame" src=""></iframe>
+
+            <!-- Help Page -->
+            <iframe id="help-frame" class="page-frame" src=""></iframe>
         </div>
 
         <!-- Bottom Tab Navigation -->
@@ -209,6 +212,10 @@
             <a href="#" class="tab-item" data-tab="system">
                 <img src="../images/icons/system_icon_HEALTHY.png" alt="System" class="tab-icon">
                 <span class="tab-label">System</span>
+            </a>
+            <a href="#" class="tab-item" data-tab="help">
+                <img src="../images/icons/help.png" alt="Help" class="tab-icon">
+                <span class="tab-label">Help</span>
             </a>
         </div>
     </div>
@@ -237,7 +244,8 @@
                 history: `/mobile/trade_history?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`,
                 account: `/mobile/account_manager?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`,
                 user: `/mobile/user?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`,
-                system: `/mobile/system?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`
+                system: `/mobile/system?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`,
+                help: `/tabs/help.html`
             };
 
             // Load only the dashboard iframe on startup; other tabs load when first opened

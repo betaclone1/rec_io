@@ -30,7 +30,7 @@ def get_symbol_selection():
     print("Select symbols to process:")
     print("  - Enter numbers separated by spaces (e.g., '1 2 3' for BTC, ETH, SOL)")
     print("  - Enter 'all' for all symbols")
-    print("  - Enter 'popular' for BTC, ETH, SOL")
+    print("  - Enter 'popular' for BTC, ETH, SOL, XRP")
     print("  - Enter 'q' to quit")
     print()
     
@@ -42,7 +42,7 @@ def get_symbol_selection():
         elif choice == 'all':
             return symbols
         elif choice == 'popular':
-            return ['btc', 'eth', 'xrp']
+            return ['btc', 'eth', 'sol', 'xrp']
         else:
             try:
                 indices = [int(x) - 1 for x in choice.split()]

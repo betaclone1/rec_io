@@ -1,0 +1,272 @@
+{
+  "version": "1.1.0",
+  "updated_at": "2026-03-20",
+  "categories": [
+    "Getting Started",
+    "Using the Product",
+    "Automation and Trading",
+    "Data and Real-Time",
+    "Troubleshooting",
+    "Operations and Deployment"
+  ],
+  "global_keywords": [
+    "dashboard",
+    "monitor",
+    "allocation",
+    "portfolio",
+    "bankroll",
+    "performance",
+    "account",
+    "history",
+    "auto-trade",
+    "paper trading",
+    "cooldown",
+    "status",
+    "real-time",
+    "websocket",
+    "restart",
+    "troubleshooting"
+  ],
+  "articles": [
+    {
+      "id": "getting-started-system-overview",
+      "title": "System Overview",
+      "slug": "getting-started/system-overview",
+      "category": "Getting Started",
+      "audience": "mixed",
+      "summary": "A plain-language map of the platform so you know where to go for each task.",
+      "keywords": ["overview", "dashboard", "monitor", "account", "operations"],
+      "related_docs": [],
+      "faq": [
+        "Where should I spend most of my time day to day",
+        "Which sections are for trading versus system maintenance"
+      ],
+      "content": [
+        "Use Dashboard for live monitor control, bankroll/portfolio view, and quick status checks.",
+        "Use Trade Monitor when you want detailed per-monitor state, active trade context, and settings.",
+        "Use Account views for balances, transfer context, and historical outcomes over time.",
+        "Use System/Operations views only when diagnosing issues or managing service health."
+      ]
+    },
+    {
+      "id": "using-product-dashboard-navigation",
+      "title": "Dashboard Layout and Navigation",
+      "slug": "using-product/dashboard-navigation",
+      "category": "Using the Product",
+      "audience": "trader",
+      "summary": "What each major dashboard area does and how to move through routine workflows.",
+      "keywords": ["dashboard", "tabs", "navigation", "tiles", "panels"],
+      "related_docs": [],
+      "faq": [
+        "What is the fastest way to find a specific monitor",
+        "Why does the panel value change when I switch tabs"
+      ],
+      "content": [
+        "Top panel: switch between Portfolio, Bankroll, and PnL tabs to change what value and chart are shown.",
+        "View buttons (1d/1w/1m/1y/all) only change the time window, not the underlying account state.",
+        "Monitor tiles show each monitor's current status and core stats, while list view favors scanning many monitors quickly.",
+        "Use the search/filter controls first when troubleshooting monitor behavior to avoid changing the wrong monitor."
+      ]
+    },
+    {
+      "id": "using-product-monitor-management",
+      "title": "Monitor Management",
+      "slug": "using-product/monitor-management",
+      "category": "Using the Product",
+      "audience": "trader",
+      "summary": "How to create, enable, pause, and tune monitors safely.",
+      "keywords": ["monitor", "activate", "deactivate", "auto-trade", "settings"],
+      "related_docs": [],
+      "faq": [
+        "What is the difference between deactivating and disabling auto-trade",
+        "When should I use paper trade mode"
+      ],
+      "content": [
+        "Activate/deactivate controls whether the monitor is in the live rotation.",
+        "Auto-trade controls execution behavior for that monitor while it is active.",
+        "Paper trade mode keeps logic running but prevents live execution so you can validate behavior safely.",
+        "Change one setting at a time and observe at least one full cycle before making additional tuning changes."
+      ]
+    },
+    {
+      "id": "using-product-allocation-and-bankroll",
+      "title": "Allocation and Bankroll Controls",
+      "slug": "using-product/allocation-and-bankroll",
+      "category": "Using the Product",
+      "audience": "trader",
+      "summary": "How monitor allocation percentages and bankroll values affect behavior.",
+      "keywords": ["allocation", "bankroll", "percentage", "position sizing", "risk"],
+      "related_docs": [],
+      "faq": [
+        "Why does monitor allocation not match expected dollar amount immediately",
+        "Does changing allocation rewrite history"
+      ],
+      "content": [
+        "Allocation percentages define how much of available strategy capital each monitor can use.",
+        "Bankroll values represent current baseline capital used for performance and sizing context.",
+        "Allocation edits affect future behavior; they do not rewrite previously recorded trades.",
+        "After major allocation changes, verify monitor status and expected position sizing before re-enabling full automation."
+      ]
+    },
+    {
+      "id": "using-product-account-history",
+      "title": "Account and History Views",
+      "slug": "using-product/account-history",
+      "category": "Using the Product",
+      "audience": "mixed",
+      "summary": "How to read balances, PnL, and historical data correctly.",
+      "keywords": ["account", "history", "balance", "pnl", "performance"],
+      "related_docs": [],
+      "faq": [
+        "Which value is cash versus total portfolio",
+        "Why do some history views update after new fills settle"
+      ],
+      "content": [
+        "Portfolio includes current account context used by the dashboard portfolio panel.",
+        "Bankroll reflects current strategy base context used for risk and return framing.",
+        "PnL view is cumulative over the selected time window and can differ from point-in-time cash changes.",
+        "Use day/week/month/year windows to answer specific questions instead of comparing all windows at once."
+      ]
+    },
+    {
+      "id": "automation-trading-lifecycle",
+      "title": "Automated Trade Lifecycle",
+      "slug": "automation/automated-trade-lifecycle",
+      "category": "Automation and Trading",
+      "audience": "mixed",
+      "summary": "What happens from signal detection through entry, management, and exit.",
+      "keywords": ["lifecycle", "entry", "management", "exit", "automation"],
+      "related_docs": [],
+      "faq": [
+        "What conditions must be true before an entry can fire",
+        "Why would a monitor skip an otherwise valid-looking setup"
+      ],
+      "content": [
+        "A monitor evaluates market conditions and strategy thresholds before attempting entry.",
+        "Once active, state transitions move through entry checks, execution attempts, and trade management.",
+        "Exits occur by strategy logic, risk controls, or explicit stop conditions.",
+        "Final outcomes are reflected in history and performance views after synchronization completes."
+      ]
+    },
+    {
+      "id": "automation-live-trade-monitoring",
+      "title": "Live Trade Monitoring and Statuses",
+      "slug": "automation/live-trade-monitoring",
+      "category": "Automation and Trading",
+      "audience": "trader",
+      "summary": "How to interpret monitor statuses, cooldowns, and transitions in real time.",
+      "keywords": ["status", "cooldown", "active", "paused", "monitoring"],
+      "related_docs": [],
+      "faq": [
+        "What does cooldown mean in practice",
+        "Why can status appear to move quickly between states"
+      ],
+      "content": [
+        "Status labels describe where the monitor is in its current decision or execution cycle.",
+        "Cooldown indicates a temporary block before the monitor is allowed to re-enter.",
+        "Brief status changes can be normal when data and execution updates arrive close together.",
+        "Investigate only if a state remains stuck longer than expected for that strategy."
+      ]
+    },
+    {
+      "id": "data-realtime-updates",
+      "title": "How Real-Time Updates Work",
+      "slug": "data/how-real-time-updates-work",
+      "category": "Data and Real-Time",
+      "audience": "mixed",
+      "summary": "What should update instantly, what updates on read, and what to expect during load.",
+      "keywords": ["real-time", "updates", "latency", "refresh", "accuracy"],
+      "related_docs": [],
+      "faq": [
+        "Why can I see a short delay before a panel updates",
+        "How do I tell delay from stale data"
+      ],
+      "content": [
+        "Most dashboard values update when change events arrive and the UI re-queries the latest data.",
+        "A short delay can happen during busy periods, but values should converge to the latest recorded state.",
+        "Switching tabs should not change the underlying account state; it only changes what slice is visible.",
+        "If one panel is stale while others update, treat that as a targeted issue rather than a full system outage."
+      ]
+    },
+    {
+      "id": "troubleshooting-stale-or-wrong-values",
+      "title": "Stale or Unexpected Values",
+      "slug": "troubleshooting/stale-or-wrong-values",
+      "category": "Troubleshooting",
+      "audience": "mixed",
+      "summary": "A practical checklist when values appear frozen, delayed, or inconsistent.",
+      "keywords": ["stale", "wrong value", "not updating", "diagnostics", "checklist"],
+      "related_docs": [],
+      "faq": [
+        "What should I check first when a panel stops updating",
+        "How do I confirm if the issue is display-only"
+      ],
+      "content": [
+        "First, confirm whether the issue affects one panel or the entire dashboard.",
+        "Check whether monitor statuses and other live metrics are still moving; this separates UI-only from broader issues.",
+        "If only portfolio/bankroll appears stale, compare against the latest known account snapshot and reload the page once.",
+        "If stale behavior persists after restart or page reload, escalate with timestamped examples and affected panels."
+      ]
+    },
+    {
+      "id": "troubleshooting-monitor-not-firing",
+      "title": "Monitor Not Firing Entries",
+      "slug": "troubleshooting/monitor-not-firing",
+      "category": "Troubleshooting",
+      "audience": "trader",
+      "summary": "Why a monitor may stay idle and how to check gating settings quickly.",
+      "keywords": ["monitor idle", "no entries", "auto-trade", "filters", "cooldown"],
+      "related_docs": [],
+      "faq": [
+        "Can cooldown alone block entries",
+        "Do paper-trade settings affect live auto-trade behavior"
+      ],
+      "content": [
+        "Verify monitor is active and auto-trade is enabled for the intended mode.",
+        "Check cooldown and threshold settings first; these are common entry blockers.",
+        "Confirm allocation and bankroll context are sufficient for expected position sizing.",
+        "Review recent status transitions to identify where the decision flow is stopping."
+      ]
+    },
+    {
+      "id": "ops-restart-and-health-checks",
+      "title": "Restart and Health Checks",
+      "slug": "operations/restart-and-health-checks",
+      "category": "Operations and Deployment",
+      "audience": "operator",
+      "summary": "Safe restart flow and the minimum checks before returning to normal operation.",
+      "keywords": ["restart", "health", "services", "verification", "operations"],
+      "related_docs": [],
+      "faq": [
+        "What must be verified immediately after restart",
+        "When is it safe to resume normal trading behavior"
+      ],
+      "content": [
+        "Restart services through the standard supervised flow, not ad-hoc process kills.",
+        "Verify core pages load and key account/monitor values return expected data.",
+        "Confirm real-time updates are flowing before declaring recovery complete.",
+        "Only resume full operation after both service health and user-facing behavior look normal."
+      ]
+    },
+    {
+      "id": "ops-deployment-safety-baseline",
+      "title": "Deployment Safety Baseline",
+      "slug": "operations/deployment-safety-baseline",
+      "category": "Operations and Deployment",
+      "audience": "operator",
+      "summary": "How to deploy with low risk and quickly validate production behavior.",
+      "keywords": ["deployment", "validation", "rollback", "safe release", "checks"],
+      "related_docs": [],
+      "faq": [
+        "What are the must-pass checks right after deploy",
+        "What should trigger rollback consideration"
+      ],
+      "content": [
+        "Use a consistent pre-deploy and post-deploy checklist for every release.",
+        "Validate monitor controls, account panels, and real-time updates first because they are most user-visible.",
+        "Capture a short verification note after each deployment for future troubleshooting context.",
+        "If core workflows fail or values are clearly wrong, pause and stabilize before further changes."
+      ]
+    }
+  ]
+}

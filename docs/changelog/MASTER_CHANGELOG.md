@@ -6,6 +6,40 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-20 — Multi-initiative sync: help center, regime reconcile, SOL/XRP feed, tooling/docs baseline
+
+**Summary**
+- Added a data-driven Help Center experience (`frontend/tabs/help.html` + `frontend/data/help_center_index.json`) and linked supporting docs so in-app help can be browsed and searched without hardcoded placeholder content.
+- Added immediate regime reconciliation hooks between `main_app` and `monitor_manager` after auto-entry settings updates, including a dedicated reconcile API for single-monitor and full-sweep mode checks.
+- Extended symbol/feed and analytics support to include SOL/XRP paths in watchdog + analytics tooling and added the related DB migration pair for SOL/XRP live tables.
+- Consolidated command/skill/rules/plans documentation and removed deprecated `.cursor/pm` path references across active workflow docs.
+- Added diagnostics/testing/ops scaffolding (snapshot helper, diagnostics scripts, migration docs, workflow docs) needed for ongoing production maintenance and investigations.
+
+Plans: `logging-audit`, `db-prod-schema-alignment`, `monitor-script-lifecycle-investigation`, `monitor-activate-deactivate-and-dashboard-ui`, `frontend-mobile-parity-rule`, `live-price-feed-hygiene`, `housekeeping-backlog`.
+
+**DB migrations (required on production, in order)**
+1. `20260316_1500_trade_logs_widen_varchar`
+2. `20260316_1700_redis_basic_test_add_columns`
+3. `20260320_2100_sol_xrp_live_tables`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations in order (from project root):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260316_1500_trade_logs_widen_varchar`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260316_1700_redis_basic_test_add_columns`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260320_2100_sol_xrp_live_tables`
+- [ ] Restart services after migrations/code sync:  
+  `./scripts/MASTER_RESTART.sh`
+- [ ] Verify:
+  - health endpoints (`main_app` :3000, `trade_executor` :8001)
+  - supervisor status is RUNNING for core services
+  - Help Center renders from `/data/help_center_index.json` on desktop/mobile
+  - regime reconcile endpoint responds and monitor mode refreshes after settings save
+  - SOL/XRP price feed paths and related tables are present/healthy
+
+---
+
 ## 2026-03-20 — Regime monitor auto-switch (LIVE/PAPER) + dashboard parity
 
 **Summary**
@@ -18,13 +52,13 @@ This changelog is used when pushing updates to production. Each entry is timesta
 Plans: `regime-monitor_4935aaf6.plan.md` (implemented), plus `read_api` UI stability follow-up from parallel agent work.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply DB migration for regime monitor columns (from project root):  
+- [x] Apply DB migration for regime monitor columns (from project root):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260320_2000_regime_monitor_columns`
-- [ ] Restart application services so `main_app`, `monitor_manager`, and dashboard assets load the new behavior:  
+- [x] Restart application services so `main_app`, `monitor_manager`, and dashboard assets load the new behavior:  
   `./scripts/MASTER_RESTART.sh`
-- [ ] Verify:
+- [x] Verify:
   - health endpoints (`main_app` :3000, `trade_executor` :8001) and supervisor `RUNNING`
   - monitor settings modal (desktop + mobile) shows regime controls with `30 Days / 7 Days / 1 Day / 12 Hours`
   - when regime toggle is OFF, regime window dropdown is disabled/greyed out
@@ -317,7 +351,7 @@ Plans: `db-prod-schema-alignment` (in progress). Schema ref: `docs/MASTER_DB_SCH
 **Summary**
 
 - **PM / update flow:** Wired `/prepare-update` to treat `.cursor/plans/*.md` as the canonical record of work done, and to always create a fresh changelog entry with an open Production checklist that references the relevant plans for each batch. Updated the updater rules so changelog entries explicitly list associated plans and include a standard “Confirm codebase changes (pull latest on production)” task.
-- **Backlog cleanup:** Retired legacy PM/brain docs under `.cursor/pm/brain` in favor of plans, and clarified that active task tracking lives solely in `.cursor/plans/`.
+- **Backlog cleanup:** Retired legacy PM/brain docs under `.cursor/brain` in favor of plans, and clarified that active task tracking lives solely in `.cursor/plans/`.
 - **Account history filters:** Stabilized the Strategy dropdown options on desktop and mobile trade history so they are cleaned, deduplicated, and ordered with core strategies first and the rest sorted alphabetically, driven by `/api/strategies`.
 - **Mobile UX:** Improved mobile trade history dropdown labels so when multiple values are selected the buttons read “Multiple Strategies / Symbols / Contracts / Days / Monitors,” making each control self-explanatory without external labels.
 - **Frontend parity convention:** Documented a mobile-parity convention in `AGENTS.md` so future frontend changes consider whether a corresponding change is needed on mobile.
@@ -469,7 +503,7 @@ No DB schema changes. Backend (kalshi_account_sync_ws, monitor_manager) and fron
 - **Trade history (desktop + mobile):** Strategy and Symbol dropdowns are populated from the database (`strategy_list`, `symbols_list`). Contract, Monitor, and Day dropdowns use **All | None** links instead of a single "Select All" checkbox. Reset sets Strategy to only strategies with `default=TRUE` in `strategy_list`; Symbol and other dropdowns reset to all selected. Preferences persist per-strategy and per-symbol selection via JSONB.
 - **Backend:** `/api/strategies` returns `strategies` and `default_strategy_names`. `get_trade_history_preferences` and `save_trade_history_preferences` read/write `strategy_selection` and `symbol_selection` (JSONB); fallbacks when columns are missing for backward compatibility.
 - **Migrations:** Three reversible migrations: `20260310_1200_trade_history_preferences_strategy_selection` (strategy_selection JSONB), `20260310_1210_trade_history_preferences_symbol_selection` (symbol_selection JSONB), `20260310_1220_strategy_list_default_column` (`"default"` boolean on strategy_list_0001). Apply in order from project root with `PYTHONPATH=. venv/bin/python scripts/db/run_migration.py up <slug>`.
-- **PM:** One-time migration/backfill script cleanup tracking documented in `.cursor/pm/brain/06_conventions_insights.md` and INDEX (HOUSEKEEPING_SCRIPTS_INVENTORY + MASTER_CHANGELOG).
+- **PM:** One-time migration/backfill script cleanup tracking documented in `docs/LOGGING_INVENTORY.md` and INDEX (HOUSEKEEPING_SCRIPTS_INVENTORY + MASTER_CHANGELOG).
 
 **Production checklist**
 
@@ -519,7 +553,7 @@ No DB schema changes. Backend (kalshi_account_sync_ws, monitor_manager) and fron
 **Summary**
 
 - **OpSec audit fixes:** Production now requires `DB_PASSWORD` or `REC_DB_PASS` when `REC_ENVIRONMENT=production` (no default). All backend and scripts use `get_database_config()` / `get_postgresql_connection()`. Auth: `local_dev_` bypass only when not production; bcrypt required for new password hashes; change_password uses centralized config. CORS: in production, explicit origins only (no `"*"`). Password prints removed from setup_auth/install (archive). bcrypt added to requirements.txt.
-- **Production server agent:** Before or immediately after pull, ensure the production server has **DB_PASSWORD** or **REC_DB_PASS** set in the environment (e.g. in `.env` or in the env that feeds supervisor). If not set, app and config generation will fail until set. See **.cursor/pm/OPSEC_AUDIT_AND_UPGRADE.md** section "Production server: OpSec update (2026-03-08)" for full instructions.
+- **Production server agent:** Before or immediately after pull, ensure the production server has **DB_PASSWORD** or **REC_DB_PASS** set in the environment (e.g. in `.env` or in the env that feeds supervisor). If not set, app and config generation will fail until set. See **.cursor/OPSEC_AUDIT_AND_UPGRADE.md** section "Production server: OpSec update (2026-03-08)" for full instructions.
 
 **Production checklist**
 
@@ -538,7 +572,7 @@ No DB schema changes. Backend (kalshi_account_sync_ws, monitor_manager) and fron
 - **@digitalocean agent:** Rule and AGENTS.md entry; authority on DO API, snapshots, backups, droplets. MCP **digitalocean-droplets** (remote) in mcp.json with token; tool **snapshot-droplet** for autonomous snapshot create.
 - **Prepare-update:** Step 1 added: create prod snapshot **rec-io-prod-pre-update-YYYY-MM-DD** (droplet 513735057) before verify/audit/changelog so the update is revertable.
 - **/apply-update:** Slash command and APPLY_UPDATE_COMMAND.md for production to run open MASTER_CHANGELOG checklists and calibrate server.
-- **Scripts/docs:** scripts/do/snapshot_prod.sh, .cursor/pm/DIGITALOCEAN_INTEGRATION.md, DO_AGENT_SNAPSHOT_FIX.md, sandbox.json (optional .env read). .env.example and master .env include DIGITALOCEAN_API_TOKEN.
+- **Scripts/docs:** scripts/do/snapshot_prod.sh, docs/DEPLOYMENT_GUIDE.md, DO_AGENT_SNAPSHOT_FIX.md, sandbox.json (optional .env read). .env.example and master .env include DIGITALOCEAN_API_TOKEN.
 
 **Production checklist**
 
@@ -552,9 +586,9 @@ No DB schema changes. Backend (kalshi_account_sync_ws, monitor_manager) and fron
 
 **Summary**
 
-- **Cursor / PM:** Slash commands and PM docs moved or added under `.cursor/`: commands (`verify`, `log-chat`, `system-restart`, `prepare-update`), PM brain (from `docs/pm_brain/` to `.cursor/pm/brain/`), new brain docs (INDEX, config/env, proposed tasks, context retention, chat summary log), PM command docs (VERIFY, LOG_CHAT, SYSTEM_RESTART, PREPARE_UPDATE, ORG_CHART, DB_REVERSIBLE_MIGRATIONS), and rules (db, kalshi, pm). Skills added for verify, log-chat, system-restart, prepare-update.
+- **Cursor / PM:** Slash commands and PM docs moved or added under `.cursor/`: commands (`verify`, `log-chat`, `system-restart`, `prepare-update`), PM brain (from `docs/pm_brain/` to `.cursor/plans/`), new brain docs (INDEX, config/env, proposed tasks, context retention, chat summary log), PM command docs (VERIFY, LOG_CHAT, SYSTEM_RESTART, PREPARE_UPDATE, ORG_CHART, DB_REVERSIBLE_MIGRATIONS), and rules (db, kalshi, pm). Skills added for verify, log-chat, system-restart, prepare-update.
 - **CI:** `.github/workflows/db-schema-drift.yml` added (runs schema drift check on push/PR to main and master).
-- **Archive:** `docs/pm_brain/` content moved to `.cursor/pm/brain/`; many legacy docs and corrupted `MASTER_PORT_MANIFEST.json` snapshots moved to `archive/2026-03-housekeeping/` (docs and backend/core/config corrupt copies). `AGENTS.md` and `.gitignore` updated for new paths and ignores.
+- **Archive:** `docs/pm_brain/` content moved to `.cursor/plans/`; many legacy docs and corrupted `MASTER_PORT_MANIFEST.json` snapshots moved to `archive/2026-03-housekeeping/` (docs and backend/core/config corrupt copies). `AGENTS.md` and `.gitignore` updated for new paths and ignores.
 - **No application or DB changes:** No backend code, schema, or migrations in this commit. Production behavior unchanged.
 
 **Production checklist**
@@ -653,7 +687,7 @@ Each entry below uses:
 
 - **Drift check:** `scripts/db/check_db_schema_drift.py` compares `backend/core/config/database.py` with `docs/MASTER_DB_SCHEMA_REFERENCE.md` for critical tables (trades_0001, trades_simulated_0001, monitor_list_0001, strategy_list_0001); exits with error if definitions drift. No DB connection required.
 - **CI:** `.github/workflows/db-schema-drift.yml` runs the drift check on push/PR to main and master.
-- **Reversible migrations:** `scripts/db/run_migration.py` (list / up / down); migrations live in `scripts/migrations/` as `YYYYMMDD_HHMM_slug.up.sql` and `.down.sql`; applied migrations tracked in `system.schema_migrations`. See `.cursor/pm/DB_REVERSIBLE_MIGRATIONS.md`.
+- **Reversible migrations:** `scripts/db/run_migration.py` (list / up / down); migrations live in `scripts/migrations/` as `YYYYMMDD_HHMM_slug.up.sql` and `.down.sql`; applied migrations tracked in `system.schema_migrations`. See `scripts/migrations/README.md`.
 - **update_db_schema_to_reference.py:** Now uses `get_postgresql_connection()` from project config (env); docstring states type/default fixes are out of scope (use reversible migrations or manual ALTERs).
 - **Audit findings:** `docs/changelog/DB_MAINTENANCE_AUDIT_FINDINGS.md` documents local audit and single source of truth. **Local alignment complete:** drift check passes. Prod schema changes are part of the normal update process; @updater coordinates and verifies when pushing to production.
 

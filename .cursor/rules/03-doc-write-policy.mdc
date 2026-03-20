@@ -1,0 +1,17 @@
+---
+description: "Documentation write policy: when and what to write."
+globs: ["*.md", "*.mdc", "docs/**", ".cursor/**"]
+alwaysApply: false
+---
+
+# Doc write policy
+
+- **Stable law only in rules:** `.cursor/rules/*` and `AGENTS.md` contain stable operating law, roles, and handoff contracts. Do not update them from routine task execution; only when explicitly changing governance or agent definitions.
+- **Plans over logs:** Active task memory lives in `.cursor/plans/` (one plan file per task). Do not create rolling memory logs, chat-summary vaults, or append-only persistent context files.
+- **Promotion is explicit:** Knowledge promotion (e.g. adding to rules or reference docs) happens only when justified and via the promote-knowledge workflow; default to ephemeral chat.
+- **Reference docs:** Update `docs/MASTER_DB_SCHEMA_REFERENCE.md`, changelog, and schema brain when DB or release-relevant changes occur; see code-change-safety and planning-standard.
+- **Feature change documentation gate (mandatory):** Any change that adds, removes, or materially changes user-visible behavior, workflows, data flows, APIs consumed by UI, monitor/trading behavior, or operational procedures must include doc updates in the same task:
+  - update `docs/SYSTEM_BIBLE.md` (feature map and/or flow sections), and
+  - update `docs/HELP_CENTER_CONTENT_MAP.md` (article stubs, FAQ seeds, metadata, keywords, related docs),
+  - unless explicitly marked as **No manual/help-center impact** with a brief rationale.
+- **Definition of done for feature work:** A feature task is not complete until `SYSTEM_BIBLE` and `HELP_CENTER_CONTENT_MAP` are updated (or explicitly marked no-impact), plus any relevant changelog/schema references.

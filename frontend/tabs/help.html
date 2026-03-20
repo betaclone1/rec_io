@@ -4,100 +4,479 @@
   <meta charset="UTF-8" />
   <meta http-equiv="X-UA-Compatible" content="IE=edge" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Help</title>
+  <title>Help Center</title>
   <link rel="stylesheet" href="/styles/global.css" />
-  
-  <!-- Preload ALL critical images -->
-  <link rel="preload" href="/images/icons/help.png" as="image" type="image/png">
-  
   <script src="/js/globals.js"></script>
   <style>
-    .coming-soon-container {
+    :root {
+      --help-bg: #101018;
+      --help-panel: #232e3f;
+      --help-panel-soft: #1b2433;
+      --help-border: #3a4a63;
+      --help-text: #e5ecf5;
+      --help-muted: #a8b3c5;
+      --help-accent: #7cc4ff;
+      --help-chip: #304058;
+    }
+
+    body {
+      margin: 0;
+      padding: 10px;
+      background: var(--help-bg);
+      color: var(--help-text);
+      overflow: hidden;
+    }
+
+    .help-layout {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 12px;
+      height: calc(100vh - 20px);
+    }
+
+    .help-panel {
+      background: var(--help-panel);
+      border: 1px solid var(--help-border);
+      border-radius: 8px;
+      min-height: 0;
+    }
+
+    .help-sidebar {
+      padding: 12px;
+      overflow: auto;
+    }
+
+    .help-brand {
       display: flex;
-      flex-direction: column;
       align-items: center;
-      justify-content: center;
-      height: 100vh;
-      text-align: center;
-      padding: 20px;
+      gap: 8px;
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 12px;
     }
-    
-    .coming-soon-icon {
-      width: 120px;
-      height: 120px;
-      margin-bottom: 30px;
-      opacity: 0.7;
+
+    .help-brand img {
+      width: 20px;
+      height: 20px;
+      opacity: 0.9;
     }
-    
-    .coming-soon-title {
-      font-size: 2.5rem;
-      font-weight: bold;
-      margin-bottom: 20px;
-      color: var(--text-primary);
-    }
-    
-    .coming-soon-subtitle {
-      font-size: 1.2rem;
-      color: var(--text-secondary);
-      margin-bottom: 30px;
-      max-width: 600px;
-      line-height: 1.6;
-    }
-    
-    .feature-list {
+
+    .category-btn {
+      width: 100%;
       text-align: left;
-      max-width: 500px;
-      margin: 0 auto;
+      background: var(--help-panel-soft);
+      border: 1px solid var(--help-border);
+      border-radius: 6px;
+      color: var(--help-text);
+      padding: 8px 10px;
+      margin-bottom: 8px;
+      font-size: 12px;
     }
-    
-    .feature-list h3 {
-      color: var(--text-primary);
-      margin-bottom: 15px;
+
+    .category-btn.active {
+      border-color: var(--help-accent);
+      box-shadow: inset 0 0 0 1px var(--help-accent);
     }
-    
-    .feature-list ul {
-      list-style: none;
-      padding: 0;
+
+    .help-main {
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 10px;
+      padding: 12px;
+      overflow: hidden;
     }
-    
-    .feature-list li {
-      padding: 8px 0;
-      color: var(--text-secondary);
-      position: relative;
-      padding-left: 25px;
+
+    .help-header h1 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.2;
     }
-    
-    .feature-list li::before {
-      content: "→";
-      position: absolute;
-      left: 0;
-      color: var(--accent-color);
-      font-weight: bold;
+
+    .help-header p {
+      margin: 6px 0 0 0;
+      color: var(--help-muted);
+      font-size: 13px;
+    }
+
+    .help-toolbar {
+      display: grid;
+      grid-template-columns: 1fr 150px;
+      gap: 10px;
+    }
+
+    .help-search,
+    .help-audience {
+      background: var(--help-panel-soft);
+      border: 1px solid var(--help-border);
+      color: var(--help-text);
+      border-radius: 6px;
+      padding: 9px 10px;
+      font-size: 13px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    .help-content {
+      display: grid;
+      grid-template-columns: minmax(320px, 46%) 1fr;
+      gap: 10px;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .results-list,
+    .article-detail {
+      background: var(--help-panel-soft);
+      border: 1px solid var(--help-border);
+      border-radius: 8px;
+      overflow: auto;
+      min-height: 0;
+    }
+
+    .results-list {
+      padding: 8px;
+    }
+
+    .result-card {
+      border: 1px solid var(--help-border);
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 8px;
+      background: #202b3a;
+      color: var(--help-text);
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .result-card.active {
+      border-color: var(--help-accent);
+      box-shadow: inset 0 0 0 1px var(--help-accent);
+    }
+
+    .result-card h3 {
+      margin: 0 0 5px 0;
+      font-size: 14px;
+      color: var(--help-text);
+    }
+
+    .result-meta {
+      color: var(--help-muted);
+      font-size: 11px;
+      margin-bottom: 6px;
+    }
+
+    .result-summary {
+      color: var(--help-text);
+      margin: 0;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .chips {
+      margin-top: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .chip {
+      border-radius: 99px;
+      padding: 3px 8px;
+      font-size: 11px;
+      color: #d7e5f8;
+      background: var(--help-chip);
+      border: 1px solid #4a607e;
+    }
+
+    .article-detail {
+      padding: 14px;
+    }
+
+    .article-detail h2 {
+      margin: 0;
+      font-size: 20px;
+    }
+
+    .article-detail .detail-meta {
+      margin-top: 6px;
+      color: var(--help-muted);
+      font-size: 12px;
+    }
+
+    .article-detail .detail-summary {
+      margin-top: 12px;
+      font-size: 14px;
+      line-height: 1.6;
+      color: var(--help-text);
+    }
+
+    .article-section-title {
+      margin-top: 18px;
+      margin-bottom: 8px;
+      font-size: 13px;
+      color: var(--help-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .plain-list {
+      margin: 0;
+      padding-left: 18px;
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--help-text);
+    }
+
+    .article-detail code,
+    .no-results code {
+      color: #cfe3ff;
+      background: #1a2636;
+      border: 1px solid var(--help-border);
+      border-radius: 4px;
+      padding: 1px 4px;
+    }
+
+    .no-results {
+      color: var(--help-muted);
+      font-size: 13px;
+      padding: 10px;
+    }
+
+    @media (max-width: 1100px) {
+      .help-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .help-sidebar {
+        max-height: 180px;
+      }
+
+      .help-content {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
 <body>
-  <div class="coming-soon-container">
-    <img src="/images/icons/help.png" alt="Help" class="coming-soon-icon">
-    <h1 class="coming-soon-title">Help Center</h1>
-    <p class="coming-soon-subtitle">
-      Comprehensive documentation, tutorials, and support resources to help you 
-      get the most out of the rec.io trading platform.
-    </p>
-    
-    <div class="feature-list">
-      <h3>Coming Features:</h3>
-      <ul>
-        <li>Interactive tutorials</li>
-        <li>Video guides</li>
-        <li>FAQ section</li>
-        <li>API documentation</li>
-        <li>Strategy examples</li>
-        <li>Troubleshooting guides</li>
-        <li>Community support</li>
-        <li>Live chat support</li>
-      </ul>
-    </div>
+  <div class="help-layout">
+    <aside class="help-panel help-sidebar">
+      <div class="help-brand">
+        <img src="/images/icons/help.png" alt="Help icon" />
+        <span>Help Center</span>
+      </div>
+      <div id="categoryList"></div>
+    </aside>
+
+    <main class="help-panel help-main">
+      <header class="help-header">
+        <h1>REC.IO Help Center</h1>
+        <p>Search by topic, workflow, or keyword. Content source: system manual backbone.</p>
+      </header>
+
+      <section class="help-toolbar">
+        <input id="searchInput" class="help-search" type="search" placeholder="Search help topics (e.g. monitor, restart, real-time)" />
+        <select id="audienceFilter" class="help-audience">
+          <option value="all">All audiences</option>
+          <option value="operator">Operator</option>
+          <option value="trader">Trader</option>
+          <option value="developer">Developer</option>
+          <option value="mixed">Mixed</option>
+        </select>
+      </section>
+
+      <section class="help-content">
+        <div id="resultsList" class="results-list"></div>
+        <article id="articleDetail" class="article-detail"></article>
+      </section>
+    </main>
   </div>
+
+  <script>
+    (function () {
+      const state = {
+        data: null,
+        activeCategory: "all",
+        query: "",
+        audience: "all",
+        selectedId: null
+      };
+
+      const categoryList = document.getElementById("categoryList");
+      const searchInput = document.getElementById("searchInput");
+      const audienceFilter = document.getElementById("audienceFilter");
+      const resultsList = document.getElementById("resultsList");
+      const articleDetail = document.getElementById("articleDetail");
+
+      function normalize(v) {
+        return (v || "").toLowerCase().trim();
+      }
+
+      function matchesQuery(article, q) {
+        if (!q) return true;
+        const haystack = [
+          article.title,
+          article.summary,
+          article.category,
+          article.audience,
+          ...(article.keywords || []),
+          ...(article.faq || []),
+          ...(article.related_docs || [])
+        ].join(" ").toLowerCase();
+        return haystack.includes(q);
+      }
+
+      function getFilteredArticles() {
+        if (!state.data) return [];
+        const q = normalize(state.query);
+        return state.data.articles.filter((article) => {
+          const categoryMatch = state.activeCategory === "all" || article.category === state.activeCategory;
+          const audienceMatch = state.audience === "all" || article.audience === state.audience || article.audience === "mixed";
+          const queryMatch = matchesQuery(article, q);
+          return categoryMatch && audienceMatch && queryMatch;
+        });
+      }
+
+      function getArticleById(id) {
+        if (!state.data) return null;
+        return state.data.articles.find((a) => a.id === id) || null;
+      }
+
+      function getArticleBySlug(slug) {
+        if (!state.data || !slug) return null;
+        return state.data.articles.find((a) => a.slug === slug) || null;
+      }
+
+      function applyHashSelection() {
+        const hash = window.location.hash || "";
+        const prefix = "#/help/";
+        if (!hash.startsWith(prefix)) return false;
+        const slug = decodeURIComponent(hash.slice(prefix.length));
+        const article = getArticleBySlug(slug);
+        if (!article) return false;
+        state.selectedId = article.id;
+        state.activeCategory = article.category || "all";
+        return true;
+      }
+
+      function syncHashFromArticle(article) {
+        if (!article || !article.slug) return;
+        const targetHash = "#/help/" + encodeURIComponent(article.slug);
+        if (window.location.hash !== targetHash) {
+          window.history.replaceState(null, "", targetHash);
+        }
+      }
+
+      function renderCategories() {
+        if (!state.data) return;
+        const categories = ["All Sections"].concat(state.data.categories);
+        categoryList.innerHTML = "";
+        categories.forEach((category, index) => {
+          const value = index === 0 ? "all" : category;
+          const btn = document.createElement("button");
+          btn.className = "category-btn" + (state.activeCategory === value ? " active" : "");
+          btn.textContent = category;
+          btn.type = "button";
+          btn.addEventListener("click", () => {
+            state.activeCategory = value;
+            renderAll();
+          });
+          categoryList.appendChild(btn);
+        });
+      }
+
+      function renderResults() {
+        const filtered = getFilteredArticles();
+        resultsList.innerHTML = "";
+
+        if (!filtered.length) {
+          resultsList.innerHTML = '<div class="no-results">No topics matched your filters. Try broader keywords.</div>';
+          articleDetail.innerHTML = '<h2>No topic selected</h2><p class="detail-summary">Adjust filters or search to view article details.</p>';
+          return;
+        }
+
+        const selectedExists = filtered.some((a) => a.id === state.selectedId);
+        if (!selectedExists) state.selectedId = filtered[0].id;
+
+        filtered.forEach((article) => {
+          const card = document.createElement("button");
+          card.type = "button";
+          card.className = "result-card" + (article.id === state.selectedId ? " active" : "");
+          card.innerHTML = [
+            "<h3>" + article.title + "</h3>",
+            '<div class="result-meta">' + article.category + " · " + article.audience + "</div>",
+            '<p class="result-summary">' + article.summary + "</p>",
+            '<div class="chips">' + (article.keywords || []).slice(0, 4).map((k) => '<span class="chip">' + k + "</span>").join("") + "</div>"
+          ].join("");
+          card.addEventListener("click", () => {
+            state.selectedId = article.id;
+            renderResults();
+            renderDetail();
+          });
+          resultsList.appendChild(card);
+        });
+      }
+
+      function renderDetail() {
+        const filtered = getFilteredArticles();
+        const article = filtered.find((a) => a.id === state.selectedId) || filtered[0];
+        if (!article) return;
+        syncHashFromArticle(article);
+
+        const faqItems = (article.faq || []).map((q) => "<li>" + q + "</li>").join("");
+        const bodyItems = (article.content || []).map((line) => "<li>" + line + "</li>").join("");
+
+        articleDetail.innerHTML = [
+          "<h2>" + article.title + "</h2>",
+          '<div class="detail-meta">' + article.category + " · audience: " + article.audience + "</div>",
+          '<p class="detail-summary">' + article.summary + "</p>",
+          '<div class="article-section-title">Keywords</div>',
+          '<div class="chips">' + (article.keywords || []).map((k) => '<span class="chip">' + k + "</span>").join("") + "</div>",
+          '<div class="article-section-title">How It Works</div>',
+          bodyItems ? '<ul class="plain-list">' + bodyItems + "</ul>" : '<p class="detail-summary">No guidance has been added for this topic yet.</p>',
+          '<div class="article-section-title">Common Questions</div>',
+          faqItems ? '<ul class="plain-list">' + faqItems + "</ul>" : '<p class="detail-summary">No common questions are listed for this topic yet.</p>'
+        ].join("");
+      }
+
+      function renderAll() {
+        renderCategories();
+        renderResults();
+        renderDetail();
+      }
+
+      async function init() {
+        try {
+          const response = await fetch("/data/help_center_index.json", { cache: "no-store" });
+          if (!response.ok) throw new Error("Failed to load help center index");
+          state.data = await response.json();
+          const hashMatched = applyHashSelection();
+          if (!hashMatched && !state.selectedId && state.data.articles.length) {
+            state.selectedId = state.data.articles[0].id;
+          }
+          renderAll();
+        } catch (err) {
+          resultsList.innerHTML = '<div class="no-results">Help content failed to load. Try reloading the page.</div>';
+          articleDetail.innerHTML = "<h2>Load error</h2><p class='detail-summary'>Unable to initialize help content index.</p>";
+          console.error(err);
+        }
+      }
+
+      searchInput.addEventListener("input", (e) => {
+        state.query = e.target.value || "";
+        renderAll();
+      });
+
+      audienceFilter.addEventListener("change", (e) => {
+        state.audience = e.target.value;
+        renderAll();
+      });
+
+      window.addEventListener("hashchange", () => {
+        if (applyHashSelection()) renderAll();
+      });
+
+      init();
+    })();
+  </script>
 </body>
 </html>

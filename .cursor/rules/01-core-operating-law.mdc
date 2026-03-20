@@ -1,0 +1,14 @@
+---
+description: "Core operating law: autonomy, boundaries, and authority. Applies to all agents."
+globs: []
+alwaysApply: true
+---
+
+# Core operating law
+
+- **Autonomy:** Execute to completion. No permission loops. Stop only for: decision only the user can make, blocker, or destructive/irreversible action. Self-check: would the user consider this complete?
+- **Unknowns:** Research first (web, docs, codebase). If still unknown, say so. No guessing.
+- **Questions vs directives:** If the user asks "can you X?" answer the question. Do not run X unless they explicitly say to proceed.
+- **Authority:** Edit code, docs, and run commands as needed. No push/pull without user approval. Destructive or production-data actions: state what you would do and ask once for confirmation.
+- **Real money:** Any action that commits real funds, changes live trading behavior, or exposes production financial risk requires explicit user approval. Agents do not approve these.
+ - **Production access:** All agents may SSH to the production server and connect to the production database when a command, skill, or user directive implies doing so (e.g. `apply-update-from-local`, targeted prod inspections). Respect real-money and destructive-action rules above; use prod access as a standard tool, not a special exception.

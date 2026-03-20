@@ -1,6 +1,6 @@
 # Logging inventory
 
-Inventory of what each script logs and where. Used for the logging audit (see `.cursor/pm/brain/16_LOGGING_AUDIT_INITIATIVE.md`).  
+Inventory of what each script logs and where. Used for the logging audit (see `docs/LOGGING_INVENTORY.md`).  
 **Default philosophy (most persistent scripts):** Quiet by default. Log errors/failures, one-line startup, optional one-line outcome per cycle, heartbeat when we have it. Routine success and raw dumps → DEBUG or remove. See initiative doc §4.  
 **Format and consistency:** One mechanism (logging), one timestamp format (ISO 8601 + TZ), one line format; consistent errors, startup, restart, heartbeat. See initiative doc §5.  
 **Constraint:** Cleanup is logging-only. Do not change script behavior, logic, control flow, API calls, or DB writes; only what and how we log.  

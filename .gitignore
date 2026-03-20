@@ -58,7 +58,7 @@ __pycache__/
 .cursor/gcp-oauth.keys.json
 .cursor/gdrive-server-credentials.json
 .cursor/gdrive-auth-url.txt
-.cursor/pm/*reviewed_drive*.json
+.cursor/*reviewed_drive*.json
 
 # Kalshi credentials and private info
 backend/api/kalshi-api/kalshi-credentials/
@@ -149,7 +149,7 @@ rec_io_db_backup.sql
 *.sql
 !backend/data/historical_data/**
 # Reversible migrations must be tracked (identical codebase across envs).
-# When adding other must-track paths, add exceptions here; see .cursor/pm/brain/06_conventions_insights.md "Must-track paths".
+# When adding other must-track paths, add exceptions here; see docs/LOGGING_INVENTORY.md "Must-track paths".
 !scripts/migrations/
 !scripts/migrations/*.sql
 

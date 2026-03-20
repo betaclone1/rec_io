@@ -489,11 +489,25 @@ def _perform_full_download_pg(symbol: str, table_name: str) -> Tuple[str, int]:
     
     all_bars = []
     current_time = symbol_exchange.milliseconds()
+    # When Coinbase returns no bars for very old `since` (common for newer listings),
+    # advance in coarse steps until we reach the first available range.
+    bootstrap_attempts = 0
+    max_bootstrap_attempts = 80  # ~80 months max scan window
+    bootstrap_step_ms = 30 * 24 * 60 * 60 * 1000  # 30 days
     
     while since < current_time:
         try:
             bars = symbol_exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
             if not bars:
+                if not all_bars and bootstrap_attempts < max_bootstrap_attempts:
+                    bootstrap_attempts += 1
+                    since += bootstrap_step_ms
+                    print(
+                        f"No data at requested start point; advancing bootstrap window "
+                        f"({bootstrap_attempts}/{max_bootstrap_attempts}) to "
+                        f"{pd.to_datetime(since, unit='ms')}"
+                    )
+                    continue
                 print("No more data returned. Exiting.")
                 break
 

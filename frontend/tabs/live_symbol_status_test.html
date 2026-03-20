@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Live Symbol Status Test</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      background: #0b1220;
+      color: #e6edf3;
+      margin: 0;
+      padding: 24px;
+    }
+
+    .header {
+      display: flex;
+      gap: 16px;
+      align-items: baseline;
+      flex-wrap: wrap;
+    }
+
+    h1 {
+      font-size: 20px;
+      margin: 0;
+    }
+
+    .meta {
+      color: #9fb1cc;
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    .status-row {
+      margin-top: 18px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .pill {
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.10);
+      font-size: 12px;
+      color: #cfe0ff;
+    }
+
+    table {
+      width: 520px;
+      max-width: 100%;
+      border-collapse: collapse;
+      margin-top: 18px;
+      overflow: hidden;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.10);
+      background: rgba(255,255,255,0.04);
+    }
+
+    th, td {
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      text-align: left;
+    }
+
+    th {
+      font-size: 12px;
+      letter-spacing: 0.03em;
+      color: #9fb1cc;
+      font-weight: 600;
+    }
+
+    td {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 13px;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    .val-null {
+      color: #6b7c95;
+      font-style: italic;
+    }
+
+    .error {
+      margin-top: 12px;
+      color: #ffb3b3;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Live Symbol Status Test (BTC/ETH)</h1>
+    <div class="meta">Updates via DB-driven Redis WebSocket signals → snapshot refetch.</div>
+  </div>
+
+  <div class="status-row">
+    <div class="pill">WS: <span id="wsState">connecting…</span></div>
+    <div class="pill">Last signal: <span id="lastSignal">—</span></div>
+    <div class="pill">Snapshot ts: <span id="snapshotTs">—</span></div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Symbol</th>
+        <th>Price</th>
+        <th>Momentum %</th>
+        <th>Volatility %</th>
+        <th>Movement %</th>
+      </tr>
+    </thead>
+    <tbody id="rows">
+      <tr>
+        <td>BTC</td><td class="val-null" id="price_BTC">—</td><td class="val-null" id="mom_BTC">—</td><td class="val-null" id="vol_BTC">—</td><td class="val-null" id="mov_BTC">—</td>
+      </tr>
+      <tr>
+        <td>ETH</td><td class="val-null" id="price_ETH">—</td><td class="val-null" id="mom_ETH">—</td><td class="val-null" id="vol_ETH">—</td><td class="val-null" id="mov_ETH">—</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="error" id="error"></div>
+
+  <script>
+    const switchboardPort = 3010; // see backend/redis_switchboard.py
+    const wsUrl = (() => {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${protocol}//${window.location.hostname}:${switchboardPort}/ws/db_changes`;
+    })();
+
+    function setVal(id, v) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (v === null || v === undefined) {
+        el.textContent = '—';
+        el.classList.add('val-null');
+      } else {
+        el.textContent = (typeof v === 'number' ? v.toString() : String(v));
+        el.classList.remove('val-null');
+      }
+    }
+
+    async function fetchSnapshot() {
+      const res = await fetch('/api/live_symbol_status_snapshot', { cache: 'no-store' });
+      const d = await res.json();
+      if (!d || d.status !== 'ok') {
+        throw new Error(d && d.message ? d.message : 'snapshot failed');
+      }
+
+      document.getElementById('snapshotTs').textContent = d.timestamp || '—';
+      for (const row of d.symbols || []) {
+        const sym = row.symbol;
+        setVal(`price_${sym}`, row.price != null ? row.price : null);
+        setVal(`mom_${sym}`, row.momentum_percentile);
+        setVal(`vol_${sym}`, row.volatility_percentile);
+        setVal(`mov_${sym}`, row.movement_percentile);
+      }
+    }
+
+    function connectWS() {
+      const ws = new WebSocket(wsUrl);
+      ws.onopen = () => {
+        document.getElementById('wsState').textContent = 'connected';
+      };
+      ws.onclose = () => {
+        document.getElementById('wsState').textContent = 'closed';
+      };
+      ws.onerror = () => {
+        document.getElementById('wsState').textContent = 'error';
+      };
+
+      ws.onmessage = async (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (!msg || msg.type !== 'db_change') return;
+          if (msg.database !== 'live_symbol_status') return;
+
+          document.getElementById('lastSignal').textContent = new Date().toLocaleTimeString();
+          await fetchSnapshot();
+        } catch (e) {
+          document.getElementById('error').textContent = String(e);
+        }
+      };
+    }
+
+    (async () => {
+      try {
+        await fetchSnapshot();
+      } catch (e) {
+        document.getElementById('error').textContent = String(e);
+      }
+      connectWS();
+    })();
+  </script>
+</body>
+</html>
+

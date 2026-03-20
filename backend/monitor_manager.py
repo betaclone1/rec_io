@@ -1236,6 +1236,68 @@ environment={env_vars}
             self.log_event("ERROR", f"Error handling trade status update: {e}")
             return {"status": "error", "message": str(e)}
 
+    def reconcile_regime_for_monitor(self, monitor_id: int, user_number: str = "0001") -> Dict[str, Any]:
+        """Immediately run regime evaluation for a single monitor."""
+        conn = None
+        try:
+            conn = self.get_database_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT name FROM users.monitor_list_{user_number} WHERE id = %s",
+                    (monitor_id,),
+                )
+                row = cursor.fetchone()
+                if not row or not row[0]:
+                    return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
+                monitor_name = row[0]
+
+            self._evaluate_and_switch_regime(monitor_name)
+            return {
+                "status": "success",
+                "message": f"Regime reconcile completed for monitor {monitor_name}",
+                "monitor": monitor_name,
+            }
+        except Exception as e:
+            self.log_event("ERROR", f"Error reconciling regime for monitor {monitor_id}: {e}")
+            return {"status": "error", "message": str(e)}
+        finally:
+            if conn:
+                conn.close()
+
+    def reconcile_regime_full_sweep(self, user_number: str = "0001") -> Dict[str, Any]:
+        """Run regime evaluation across the monitor list immediately."""
+        conn = None
+        try:
+            conn = self.get_database_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT name
+                    FROM users.monitor_list_{user_number}
+                    WHERE name IS NOT NULL
+                      AND status != 'ARCHIVED'
+                    ORDER BY id
+                    """
+                )
+                monitor_names = [row[0] for row in cursor.fetchall() if row and row[0]]
+
+            reconciled = 0
+            for monitor_name in monitor_names:
+                self._evaluate_and_switch_regime(monitor_name)
+                reconciled += 1
+
+            return {
+                "status": "success",
+                "message": f"Regime full sweep completed ({reconciled} monitors checked)",
+                "count": reconciled,
+            }
+        except Exception as e:
+            self.log_event("ERROR", f"Error running regime full sweep: {e}")
+            return {"status": "error", "message": str(e)}
+        finally:
+            if conn:
+                conn.close()
+
     def periodic_monitor_statistics_update(self) -> Dict[str, Any]:
         """
         Periodically update all monitor statistics from trades database
@@ -2352,6 +2414,27 @@ def trade_status_update():
     except Exception as e:
         _logger.error("Error handling trade status update: %s", e)
         return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/regime/reconcile', methods=['POST'])
+def regime_reconcile():
+    """Trigger immediate regime reconciliation after monitor setting changes."""
+    try:
+        data = request.get_json(silent=True) or {}
+        user_number = str(data.get('user_number', '0001'))
+        full_sweep = bool(data.get('full_sweep', False))
+        monitor_id = data.get('monitor_id')
+
+        if full_sweep or monitor_id is None:
+            result = monitor_manager.reconcile_regime_full_sweep(user_number=user_number)
+        else:
+            result = monitor_manager.reconcile_regime_for_monitor(int(monitor_id), user_number=user_number)
+
+        if result.get("status") == "success":
+            return jsonify({"success": True, **result})
+        return jsonify({"success": False, **result}), 400
+    except Exception as e:
+        _logger.error("Error reconciling regime settings: %s", e)
+        return jsonify({"success": False, "error": str(e)}), 500
 
 class MonitorStatusWatcher:
     """Background thread to watch for monitor status changes"""

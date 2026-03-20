@@ -58,4 +58,4 @@ When touching redis_switchboard, stream_registry, or adding real-time streams/co
   - If yes, either implement the corresponding change on the other surface in the same task/PR, or explicitly note why parity is not needed.
   - When in doubt, favor keeping **core flows and key views** (e.g. dashboards, account history, trade details) reasonably in sync between desktop and mobile.
 
-**Commands (see .cursor/commands/ and .cursor/pm/):** /verify-local, /verify-production, /system-restart-local, /system-restart-production, /prepare-update, /push-commits-and-update-production, /apply-update, /apply-update-from-local, /simple-pull, /confirm-update, /daily-briefing. Workflow: /start-task, /inspect-surface, /implement-plan, /review-change, /promote-knowledge.
+**Commands (see .cursor/commands/ and .cursor/):** /verify-local, /verify-production, /system-restart-local, /system-restart-production, /prepare-update, /push-commits-and-update-production, /apply-update, /apply-update-from-local, /simple-pull, /confirm-update, /daily-briefing. Workflow: /start-task, /inspect-surface, /implement-plan, /review-change, /promote-knowledge.

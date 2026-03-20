@@ -6,6 +6,8 @@ Minimal index for current system. Historical and one-off docs were moved to `arc
 
 | Doc | Use |
 |-----|-----|
+| [SYSTEM_BIBLE.md](SYSTEM_BIBLE.md) | Canonical product/manual backbone: feature inventory, end-to-end flows, Help Center IA seed, and search tags. |
+| [HELP_CENTER_CONTENT_MAP.md](HELP_CENTER_CONTENT_MAP.md) | UI-ready Help Center contract: categories, article stubs, FAQ seeds, metadata, and search mapping. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | High-level components, data flow, and key paths. |
 | [REDIS_ARCHITECTURE.md](REDIS_ARCHITECTURE.md) | **Redis / real-time architecture (full):** read_api (name, role, endpoints), switchboard, main slimmed, end-to-end flow, supervisor target. Single source for how the pieces fit together. |
 | [REALTIME_BACKBONE.md](REALTIME_BACKBONE.md) | **Real-time backbone:** PostgreSQL + Redis pipeline, stream registry, payload contract, scope governance (Section 0). PM: `.cursor/plans/redis-platform-initiative.md`. |
@@ -23,7 +25,7 @@ Minimal index for current system. Historical and one-off docs were moved to `arc
 | [REDIS_LEGACY_COMMS_AUDIT.md](REDIS_LEGACY_COMMS_AUDIT.md) | Checklist: legacy notify/broadcast and WS usage (backend + frontend) to migrate to Redis/WS |
 | [DERIVED_DATA_COMPUTE_MODEL.md](DERIVED_DATA_COMPUTE_MODEL.md) | Derived data / compute: on-demand read APIs, no backend watchers; when to use alternatives |
 
-**Agent command docs** (verify, system-restart, log-chat) live in **`.cursor/pm/`**, not in `docs/`. See [.cursor/pm/README.md](../.cursor/pm/README.md).
+**Agent command docs** (verify, system-restart, log-chat) live in **`.cursor/`**, not in `docs/`. See [.cursor/commands/README.md](../.cursor/commands/README.md).
 
 ## Deploy and install
 

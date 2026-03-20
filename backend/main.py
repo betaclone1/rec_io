@@ -665,6 +665,7 @@ app.mount("/audio", CacheBustingStaticFiles(directory=f"{frontend_dir}/audio"), 
 app.mount("/js", CacheBustingStaticFiles(directory=f"{frontend_dir}/js"), name="js")
 app.mount("/images", CacheBustingStaticFiles(directory=f"{frontend_dir}/images"), name="images")
 app.mount("/styles", CacheBustingStaticFiles(directory=f"{frontend_dir}/styles"), name="styles")
+app.mount("/data", CacheBustingStaticFiles(directory=f"{frontend_dir}/data"), name="data")
 
 # Health check endpoint
 @app.get("/health")
@@ -3249,6 +3250,27 @@ async def set_auto_entry_settings(request: Request):
                     }
                     conn.commit()
                     conn.close()
+
+                    # Immediately reconcile regime mode after any monitor settings save.
+                    # Full sweep keeps the monitor list coherent when related settings interact.
+                    try:
+                        import requests
+                        monitor_manager_port = get_port("monitor_manager")
+                        requests.post(
+                            f"http://localhost:{monitor_manager_port}/api/regime/reconcile",
+                            json={
+                                "monitor_id": int(monitor_id),
+                                "user_number": "0001",
+                                "full_sweep": True,
+                                "source": "set_auto_entry_settings",
+                            },
+                            timeout=3,
+                        )
+                    except Exception as reconcile_err:
+                        _main_logger.debug(
+                            f"[Auto Entry Settings] ⚠️ Regime reconcile call failed after save: {reconcile_err}"
+                        )
+
                     return {"status": "ok", **updated_settings}
                 else:
                     return {"status": "error", "message": "Failed to retrieve updated settings"}

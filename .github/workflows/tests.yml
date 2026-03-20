@@ -1,0 +1,56 @@
+# Run unit tests, optional coverage, and lint. Integration tests can be run separately or on schedule.
+name: Tests and lint
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run unit tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          pytest tests/unit -v --tb=short
+        # Run only unit by default; add 'pytest tests/ -v' or -m "integration" for full suite if desired
+
+      - name: Run tests with coverage (unit only)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          pytest tests/unit -v --cov=backend --cov-report=term-missing --cov-fail-under=0
+        # cov-fail-under=0 allows passing while coverage is low; raise later (e.g. 70)
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint with ruff
+        run: ruff check backend scripts/db scripts/config --ignore E501
+        # E501 (line length) often ignored initially; tighten later

@@ -1,0 +1,9 @@
+{
+  "name": "rec-io-gdrive-scripts",
+  "private": true,
+  "description": "Scripts to create/write Google Drive files using the same OAuth credentials as the gdrive MCP.",
+  "type": "module",
+  "dependencies": {
+    "googleapis": "^144.0.0"
+  }
+}

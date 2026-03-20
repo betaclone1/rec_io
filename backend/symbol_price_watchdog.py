@@ -83,6 +83,22 @@ SYMBOL_CONFIG = {
         'heartbeat_file': 'eth_logger_heartbeat_postgresql.txt',
         'price_change_file': 'eth_price_change_postgresql.json'
     },
+    'SOL': {
+        'method': 'coinbase',
+        'api_endpoint': 'wss://ws-feed.exchange.coinbase.com',
+        'product_id': 'SOL-USD',
+        'table_name': 'live_price_log_1s_sol',
+        'heartbeat_file': 'sol_logger_heartbeat_postgresql.txt',
+        'price_change_file': 'sol_price_change_postgresql.json'
+    },
+    'XRP': {
+        'method': 'coinbase',
+        'api_endpoint': 'wss://ws-feed.exchange.coinbase.com',
+        'product_id': 'XRP-USD',
+        'table_name': 'live_price_log_1s_xrp',
+        'heartbeat_file': 'xrp_logger_heartbeat_postgresql.txt',
+        'price_change_file': 'xrp_price_change_postgresql.json'
+    },
     'SPX': {
         'method': 'yahoo_finance',
         'yahoo_symbol': '^SPX',
@@ -1196,7 +1212,7 @@ async def log_symbol_price(symbol: str):
             await asyncio.sleep(5)
 
 async def poll_kraken_price_changes(symbol: str):
-    """Poll Kraken for price changes (supports BTC and ETH)"""
+    """Poll Kraken for price changes (supports BTC, ETH, SOL, XRP)."""
     while True:
         try:
             # Configure Kraken API endpoints for different symbols
@@ -1204,6 +1220,10 @@ async def poll_kraken_price_changes(symbol: str):
                 url = "https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=60"
             elif symbol == 'ETH':
                 url = "https://api.kraken.com/0/public/OHLC?pair=ETHUSD&interval=60"
+            elif symbol == 'SOL':
+                url = "https://api.kraken.com/0/public/OHLC?pair=SOLUSD&interval=60"
+            elif symbol == 'XRP':
+                url = "https://api.kraken.com/0/public/OHLC?pair=XRPUSD&interval=60"
             else:
                 # Skip for unsupported symbols
                 await asyncio.sleep(60)
@@ -1326,7 +1346,7 @@ async def main():
         # Yahoo Finance symbols (SPX, NDX, etc.) - run synchronously
         handle_yahoo_finance_symbol(symbol)
     else:
-        # Coinbase symbols (BTC, ETH) - run async
+        # Coinbase symbols (BTC, ETH, SOL, XRP) - run async
         await asyncio.gather(
             log_symbol_price(symbol),
             poll_kraken_price_changes(symbol)

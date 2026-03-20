@@ -16,4 +16,4 @@ Review the latest MASTER_CHANGELOG entries and instruction docs, run each **open
 4. **After all checklist tasks** — Run the verify workflow (health, supervisor status, recent logs, status block) to confirm the system is up and running.
 5. **Use project root** — All commands from project root. Python: `PYTHONPATH=$(pwd) venv/bin/python` (or the exact command given in the checklist).
 
-See .cursor/pm/APPLY_UPDATE_COMMAND.md and docs/changelog/CHANGELOG_AGENT_INSTRUCTIONS.md.
+See .cursor/commands/apply-update.md and docs/changelog/CHANGELOG_AGENT_INSTRUCTIONS.md.

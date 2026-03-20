@@ -1,0 +1,12 @@
+---
+description: "Planning standard: plan file format and when to create/update plans."
+globs: [".cursor/plans/**"]
+alwaysApply: false
+---
+
+# Planning standard
+
+- **One plan per task:** For non-trivial work, create or use a single plan file in `.cursor/plans/`. Name by task (e.g. `add-login-api.md`). See `.cursor/plans/README.md` for template and usage.
+- **Plan contents:** Goal, scope, steps (ordered), completion criteria, and optionally blockers/decisions. Keep plans concise; update in place as work progresses.
+- **Lifecycle:** Create plan when starting a task (start-task); update during implement-plan; close or archive when done. Do not create multiple plan files for the same task or append rolling summaries to plans.
+- **No plan required:** One-off questions, quick edits, or verification-only work may skip creating a plan.

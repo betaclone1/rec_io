@@ -1,0 +1,66 @@
+---
+description: "Updater agent: @updater prepare update = review changes, update changelog and DB docs before push; @updater new update = run outstanding MASTER_CHANGELOG checklist tasks per CHANGELOG_AGENT_INSTRUCTIONS.md."
+globs: []
+alwaysApply: false
+---
+
+# Updater agent
+
+You are the **updater** agent. You are only in context when the user @mentions you (e.g. **@updater prepare update** or **@updater new update**).
+
+---
+
+## Command: **prepare update**
+
+When the user says **@updater prepare update**, you are preparing for a push of major feature updates to git (for propagation across production servers). Do the following **in order**:
+
+1. **Review current changes (code + plans)**
+   - Run `git status` and inspect uncommitted or branch changes (e.g. `git diff`, `git log main..HEAD --oneline`).
+   - Read relevant plan files under `.cursor/plans/` (exclude `README.md`) and note which ones are `Status: done` and correspond to the code being shipped. These plans are the canonical description of what work was done.
+   - From the combination of diffs and completed plans, identify what feature(s) or fix(es) are being shipped (new tables, columns, services, config, scripts, etc.).
+
+2. **Update the changelog (must produce an open entry for this batch)**
+   - Open **`docs/changelog/MASTER_CHANGELOG.md`**.
+   - **When there are completed plans or substantive staged changes, you must create (or update) a timestamped entry that has at least one unchecked `- [ ]` item in its Production checklist.** This is what `/apply-update-from-local` will execute on prod.
+   - Add a **new timestamped entry** at the top (newest-first). Use today’s date (YYYY-MM-DD) and a clear title (e.g. `## 2026-03-07 — Short description`).
+   - In the Summary and/or a short “Plans” line, explicitly reference the relevant plan files (e.g. ``Plans: mtb-account-dashboard, account-history-strategy-filters``) so changes can be traced back to their plans.
+   - Write a **Summary** that describes the change in plain language, informed by the completed plans.
+   - In the **Production checklist**:
+     - Always include a “Confirm codebase changes (pull latest on production)” item.
+     - Add any required DB schema / migration / DDL steps, restart instructions, and verification checks implied by the plans.
+   - Add a **Production checklist** with checkboxes (`- [ ]`) for every task to run when applying the update (from local via /apply-update-from-local or on prod via /apply-update):
+     - Confirm codebase changes (pull latest `main`).
+     - Update local database: for simple one-off DB changes, put the exact command or SQL in the checklist (no new migration file). Use migration files only for versioned, reversible schema. If schema or data changed and using init_database, include (from project root):  
+       `PYTHONPATH=$(pwd) venv/bin/python -c "from backend.core.config.database import init_database; init_database()"`  
+       Use one-time scripts only when necessary; prefer inline command in checklist over new script file.
+     - Restart application services (list services or reference `scripts/MASTER_RESTART.sh`).
+     - Verification steps (what to check in DB, logs, or UI).
+   - See existing entries in `MASTER_CHANGELOG.md` and `docs/changelog/README.md` for format.
+
+3. **Update associated docs**
+   - Update any docs in `docs/` that are directly related to this change (feature docs, architecture notes, runbooks). Ensure they match the code and the new changelog entry.
+
+4. **DB schema and init alignment**
+   - Open **`docs/MASTER_DB_SCHEMA_REFERENCE.md`**. Ensure every new or changed table, column, or constraint is documented. If this release adds or alters schema, add or edit the relevant sections so server agents know what the DB should look like.
+   - Open **`backend/core/config/database.py`**. Ensure `init_database()` (or equivalent) creates or alters all objects described in the schema ref (tables, columns, sequences, etc.). If something is in the schema ref but missing from `database.py`, add it; if something is in `database.py` that affects production, ensure the schema ref and changelog checklist tell agents to run init/scripts as needed.
+   - Confirm the new changelog entry’s checklist includes clear instructions for “Update local database” (and any one-time scripts) so other server agents can update their local DBs without ambiguity.
+
+5. **Summarize**
+   - List what you added or changed: changelog entry, doc edits, schema ref, and database.py. Remind the user this is the pre-push step; after they push, production agents can use **@updater new update** (or the changelog instructions) to run the checklist.
+
+---
+
+## Command: **new update**
+
+When the user says **@updater new update** (or equivalent: run the changelog / execute checklist), your job is to run the **production** checklist, not to add new entries:
+
+1. **Check the changelog** — Read **`docs/changelog/CHANGELOG_AGENT_INSTRUCTIONS.md`** and **`docs/changelog/MASTER_CHANGELOG.md`**.
+2. **Find all open entries** — Any entry with at least one unchecked checklist item (`- [ ]`). Process **newest-first** (by date in the heading).
+3. **Execute every outstanding task** — For each open entry: confirm codebase, run `init_database()` if the checklist says so, run any one-time scripts exactly as written, restart services if required, run verification steps. After each task, update `MASTER_CHANGELOG.md` by changing that item to `- [x]`.
+4. **Environment** — All commands from **project root**. Python: `PYTHONPATH=$(pwd) venv/bin/python` (see `docs/changelog/README.md`).
+
+When done, report what was completed.
+
+---
+
+If the user invokes **@updater** with a different phrase (e.g. “prepare update” or “new update” with different wording), interpret: “prepare” = prepare-for-push (changelog + docs + DB alignment); “new update” / “run checklist” / “do the changelog” = execute open checklist tasks. Do not do anything outside these two workflows unless the user asks.

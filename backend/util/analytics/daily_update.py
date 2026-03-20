@@ -352,8 +352,8 @@ def main():
     """Main daily update function."""
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Run daily historical data update")
-    parser.add_argument("--symbols", nargs="+", default=["BTC", "ETH", "SPX", "NDX"], 
-                       help="Symbols to process (default: BTC ETH SPX NDX)")
+    parser.add_argument("--symbols", nargs="+", default=["BTC", "ETH", "SOL", "XRP", "SPX", "NDX"], 
+                       help="Symbols to process (default: BTC ETH SOL XRP SPX NDX)")
     parser.add_argument("--test", action="store_true", help="Run in test mode with verbose output")
     args = parser.parse_args()
     

@@ -8271,7 +8271,7 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 ### Table: `live_data.live_price_log_1s_btc`
 
-**Population (movement columns):** `move_1m` … `move_30m`, `movement`, and `movement_percentile` are written by `backend/symbol_price_watchdog.py` on each tick. High/low/open per window are derived from ticks in the same table; the weighted composite and percentile use `analytics.{symbol}_movement_profile` (which has column **movement_value** at each percentile). Same applies to `live_price_log_1s_eth`, `live_price_log_1s_spx`, and `live_price_log_1s_ndx`.
+**Population (movement columns):** `move_1m` … `move_30m`, `movement`, and `movement_percentile` are written by `backend/symbol_price_watchdog.py` on each tick. High/low/open per window are derived from ticks in the same table; the weighted composite and percentile use `analytics.{symbol}_movement_profile` (which has column **movement_value** at each percentile). Same applies to `live_price_log_1s_eth`, `live_price_log_1s_sol`, `live_price_log_1s_xrp`, `live_price_log_1s_spx`, and `live_price_log_1s_ndx`.
 
 #### Columns
 
@@ -8837,6 +8837,8 @@ Kalshi 15-minute market data for ETH. One row per current 15m window; truncated 
 | `change3h` | `numeric(10,6)` | YES | - | |
 | `change1d` | `numeric(10,6)` | YES | - | |
 | `timestamp` | `timestamp without time zone` | YES | CURRENT_TIMESTAMP | |
+
+`live_data.price_change_sol` and `live_data.price_change_xrp` use the same column set and data types as `live_data.price_change_eth`.
 
 #### Constraints
 

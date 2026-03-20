@@ -11,7 +11,7 @@ Usage:
   python3 scripts/db/run_migration.py down <migration_id>
 
 Uses backend.core.config.database.get_postgresql_connection() (DB_* / REC_DB_* env).
-See .cursor/pm/DB_REVERSIBLE_MIGRATIONS.md.
+See scripts/migrations/README.md.
 """
 
 import os
