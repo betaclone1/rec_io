@@ -1672,6 +1672,18 @@
               existingBadge.remove();
             }
           }
+
+          // Regime LIVE/PAPER tooltip + styling (sync regime_window label on poll refresh)
+          const paperTogglePoll = tile.querySelector('.paper-trading-toggle');
+          if (paperTogglePoll) {
+            const rePoll = newMonitor.regime_monitor_enabled === true || newMonitor.regime_monitor_enabled === 'true' || newMonitor.regime_monitor_enabled === 1;
+            paperTogglePoll.style.pointerEvents = '';
+            paperTogglePoll.style.opacity = rePoll ? '0.55' : '';
+            paperTogglePoll.style.cursor = rePoll ? 'not-allowed' : '';
+            const tipPoll = regimePaperToggleTooltipText(newMonitor);
+            if (tipPoll) paperTogglePoll.dataset.tooltip = tipPoll;
+            else delete paperTogglePoll.dataset.tooltip;
+          }
         }
       });
     }
@@ -1790,6 +1802,28 @@
       return `<div class="${badge.className}">${badge.text}</div>`;
     }
 
+    function escapeHtmlAttr(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;');
+    }
+
+    function formatRegimeWindowLabel(rw) {
+      const key = (rw == null || rw === undefined || String(rw).trim() === '') ? '30d' : String(rw).trim();
+      const map = { '30d': '30 Days', '7d': '7 Days', '1d': '1 Day', '12h': '12 Hours' };
+      return map[key] || key;
+    }
+
+    /** Tooltip for LIVE/PAPER switch when regime monitor is enabled (desktop custom tooltip). */
+    function regimePaperToggleTooltipText(monitor) {
+      if (!monitor) return '';
+      const re = monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1;
+      if (!re) return '';
+      return 'Regime Monitoring ON — ' + formatRegimeWindowLabel(monitor.regime_window);
+    }
+
     // Create monitor tile HTML
     function createMonitorTile(monitor, index) {
       const isListView = currentViewMode === 'list';
@@ -1862,6 +1896,8 @@
         `;
       } else {
         // Tile view layout - original vertical arrangement
+        const regimePaperTip = regimePaperToggleTooltipText(monitor);
+        const regimePaperTipAttr = regimePaperTip ? ` data-tooltip="${escapeHtmlAttr(regimePaperTip)}"` : '';
         return `
           <div class="monitor-tile tile-view ${monitor.status === 'inactive' ? 'inactive' : ''} ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
             <div style="display: flex; align-items: flex-start; margin-bottom: 10px;">
@@ -1922,7 +1958,7 @@
               <div class="monitor-uptime">${monitor.uptime}</div>
               <div class="paper-trading-toggle ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}"
                 onclick="togglePaperTrade('${monitor.id}')"
-                data-tooltip="${(monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1) ? 'Regime Monitoring ON' : ''}"
+                ${regimePaperTipAttr}
                 style="${(monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1) ? 'opacity:0.55; cursor:not-allowed;' : ''}">
                 <div class="paper-trading-toggle-slider"></div>
                 <div class="paper-trading-toggle-option">LIVE</div>
@@ -5783,7 +5819,9 @@
             toggle.style.opacity = regimeEnabled ? '0.55' : '';
             toggle.style.cursor = regimeEnabled ? 'not-allowed' : '';
             if (regimeEnabled) {
-              toggle.dataset.tooltip = 'Regime Monitoring ON';
+              const tip = regimePaperToggleTooltipText(monitorData);
+              if (tip) toggle.dataset.tooltip = tip;
+              else delete toggle.dataset.tooltip;
             } else {
               delete toggle.dataset.tooltip;
             }

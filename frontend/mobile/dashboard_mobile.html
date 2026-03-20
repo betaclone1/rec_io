@@ -1499,6 +1499,14 @@
               existingBadge.remove();
             }
           }
+
+          const paperTogglePoll = tile.querySelector('.paper-trading-toggle');
+          if (paperTogglePoll) {
+            const rePoll = newMonitor.regime_monitor_enabled === true || newMonitor.regime_monitor_enabled === 'true' || newMonitor.regime_monitor_enabled === 1;
+            paperTogglePoll.style.pointerEvents = rePoll ? 'none' : '';
+            paperTogglePoll.style.opacity = rePoll ? '0.55' : '';
+            paperTogglePoll.title = regimePaperToggleTooltipText(newMonitor) || 'Click to toggle between LIVE and PAPER trading';
+          }
         }
       });
     }
@@ -1624,6 +1632,32 @@
       return `<div class="${badge.className}">${badge.text}</div>`;
     }
 
+    function escapeHtmlAttr(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;');
+    }
+
+    function formatRegimeWindowLabel(rw) {
+      const key = (rw == null || rw === undefined || String(rw).trim() === '') ? '30d' : String(rw).trim();
+      const map = { '30d': '30 Days', '7d': '7 Days', '1d': '1 Day', '12h': '12 Hours' };
+      return map[key] || key;
+    }
+
+    /** Native title for LIVE/PAPER when regime is on; empty when off (use default tap hint). */
+    function regimePaperToggleTooltipText(monitor) {
+      if (!monitor) return '';
+      const re = monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1;
+      if (!re) return '';
+      return 'Regime Monitoring ON — ' + formatRegimeWindowLabel(monitor.regime_window);
+    }
+
+    function regimePaperToggleTitleAttr(monitor) {
+      return escapeHtmlAttr(regimePaperToggleTooltipText(monitor) || 'Click to toggle between LIVE and PAPER trading');
+    }
+
     // Create monitor tile HTML
     function createMonitorTile(monitor, index) {
       const isListView = currentViewMode === 'list';
@@ -1682,7 +1716,7 @@
               <div class="monitor-uptime">${monitor.uptime}</div>
               <div class="paper-trading-toggle ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}"
                 onclick="togglePaperTrade('${monitor.id}')"
-                title="${(monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1) ? 'Regime Monitor controls LIVE/PAPER' : 'Click to toggle between LIVE and PAPER trading'}"
+                title="${regimePaperToggleTitleAttr(monitor)}"
                 style="${(monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1) ? 'pointer-events:none; opacity:0.55;' : ''}">
                 <div class="paper-trading-toggle-slider"></div>
                 <div class="paper-trading-toggle-option">LIVE</div>
@@ -1768,7 +1802,7 @@
               <div class="monitor-uptime">${monitor.uptime}</div>
               <div class="paper-trading-toggle ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}"
                 onclick="togglePaperTrade('${monitor.id}')"
-                title="${(monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1) ? 'Regime Monitor controls LIVE/PAPER' : 'Click to toggle between LIVE and PAPER trading'}"
+                title="${regimePaperToggleTitleAttr(monitor)}"
                 style="${(monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1) ? 'pointer-events:none; opacity:0.55;' : ''}">
                 <div class="paper-trading-toggle-slider"></div>
                 <div class="paper-trading-toggle-option">LIVE</div>
@@ -5676,7 +5710,7 @@
                 const regimeEnabled = monitor && (monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1);
                 toggleElement.style.pointerEvents = regimeEnabled ? 'none' : '';
                 toggleElement.style.opacity = regimeEnabled ? '0.55' : '';
-                toggleElement.title = regimeEnabled ? 'Regime Monitor controls LIVE/PAPER' : 'Click to toggle between LIVE and PAPER trading';
+                toggleElement.title = regimePaperToggleTooltipText(monitor) || 'Click to toggle between LIVE and PAPER trading';
                 console.log('Updated paper trading toggle visual state for', frontendMonitorId);
               }
               
@@ -7397,7 +7431,7 @@
                     const regimeEnabled = monitorObj.regime_monitor_enabled === true || monitorObj.regime_monitor_enabled === 'true' || monitorObj.regime_monitor_enabled === 1;
                     toggleEl.style.pointerEvents = regimeEnabled ? 'none' : '';
                     toggleEl.style.opacity = regimeEnabled ? '0.55' : '';
-                    toggleEl.title = regimeEnabled ? 'Regime Monitor controls LIVE/PAPER' : 'Click to toggle between LIVE and PAPER trading';
+                    toggleEl.title = regimePaperToggleTooltipText(monitorObj) || 'Click to toggle between LIVE and PAPER trading';
                   }
                 }
                 hideModal();
