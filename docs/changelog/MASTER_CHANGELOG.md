@@ -6,6 +6,17 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-21 — Regime monitor: rolling sum uses `ret_pct`
+
+**Summary**
+- **Metric alignment:** `monitor_manager` regime evaluation now rolls up **`SUM(ret_pct)`** (and requires `ret_pct IS NOT NULL`) instead of `SUM(ret_pct_base)`, matching dashboard monitor tiles and trade-history return semantics.
+- **Logging:** `REGIME_SWITCH` / `REGIME_COOLDOWN` payload field renamed from `window_ret_base` to `window_ret_pct`.
+
+**Production checklist**
+- [x] Pull latest on production and restart **`monitor_manager`** (or full `./scripts/MASTER_RESTART.sh`).
+
+---
+
 ## 2026-03-20 — Multi-initiative sync: help center, regime reconcile, SOL/XRP feed, tooling/docs baseline
 
 **Summary**
@@ -44,7 +55,7 @@ Plans: `logging-audit`, `db-prod-schema-alignment`, `monitor-script-lifecycle-in
 
 **Summary**
 - **Per-monitor regime controls:** Added `regime_monitor_enabled` and `regime_window` (`30d`, `7d`, `1d`, `12h`) to monitor settings so each monitor can independently enable/disable rolling performance-based mode switching.
-- **Auto-switch behavior:** `monitor_manager` now evaluates rolling `SUM(ret_pct_base)` on trade close events and, when regime monitoring is enabled, switches `paper_trade` automatically (`< 0` => PAPER, `>= 0` => LIVE) with cooldown guardrails and frontend refresh notifications.
+- **Auto-switch behavior:** `monitor_manager` evaluates rolling `SUM(ret_pct)` on trade close events (same basis as dashboard tile / trade-history return sums) and, when regime monitoring is enabled, switches `paper_trade` automatically (`< 0` => PAPER, `>= 0` => LIVE) with cooldown guardrails and frontend refresh notifications.
 - **API + UI wiring:** Exposed regime settings via monitor/settings endpoints; desktop and mobile auto-trade modals now support regime toggle/window, disable manual LIVE/PAPER toggle while active, and include clearer labels/tooltip behavior.
 - **DB + schema alignment:** Added reversible migration `20260320_2000_regime_monitor_columns` and aligned `backend/core/config/database.py` + `docs/MASTER_DB_SCHEMA_REFERENCE.md`.
 - **Dashboard history stability fix:** Included `read_api` history-query updates from parallel UI remediation work (`updated_at` ordering/time filtering adjustments).
@@ -62,7 +73,7 @@ Plans: `regime-monitor_4935aaf6.plan.md` (implemented), plus `read_api` UI stabi
   - health endpoints (`main_app` :3000, `trade_executor` :8001) and supervisor `RUNNING`
   - monitor settings modal (desktop + mobile) shows regime controls with `30 Days / 7 Days / 1 Day / 12 Hours`
   - when regime toggle is OFF, regime window dropdown is disabled/greyed out
-  - when regime toggle is ON and rolling `SUM(ret_pct_base)` is negative, monitor flips to PAPER and manual LIVE/PAPER toggle is disabled with tooltip text
+  - when regime toggle is ON and rolling `SUM(ret_pct)` is negative, monitor flips to PAPER and manual LIVE/PAPER toggle is disabled with tooltip text
   - `read_api` portfolio/bankroll history charts load correctly across 1d/1w/1m/1y/all periods
 
 ---

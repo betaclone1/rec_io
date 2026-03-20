@@ -1054,8 +1054,9 @@ environment={env_vars}
 
     def _evaluate_and_switch_regime(self, monitor_name: str, force_immediate: bool = False) -> None:
         """
-        After a trade close, evaluate rolling SUM(ret_pct_base) for the monitor's
+        After a trade close, evaluate rolling SUM(ret_pct) for the monitor's
         configured regime_window and switch monitor_list.paper_trade accordingly.
+        Matches dashboard tile / trade-history style return (sum of per-trade ret_pct).
         """
         if not monitor_name:
             return
@@ -1067,7 +1068,7 @@ environment={env_vars}
         user_number = parsed["user_number"]
         monitor_id = parsed["monitor_id"]
 
-        # MVP threshold is fixed at 0.0 (fees-inclusive ret_pct_base is already computed at trade close).
+        # MVP threshold is fixed at 0.0 (PnL/fees already reflected in ret_pct at trade close).
         threshold = 0.0
         cooldown_seconds = 3600  # in-process safety valve to prevent flapping
 
@@ -1098,13 +1099,13 @@ environment={env_vars}
                 cursor.execute(
                     """
                     SELECT
-                      COALESCE(SUM(ret_pct_base), 0),
+                      COALESCE(SUM(ret_pct), 0),
                       COUNT(*)
                     FROM users.trades_0001
                     WHERE monitor = %s
                       AND LOWER(TRIM(status)) IN ('closed', 'settled')
                       AND (test_filter IS NULL OR test_filter = FALSE)
-                      AND ret_pct_base IS NOT NULL
+                      AND ret_pct IS NOT NULL
                       AND (CASE
                              WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}'
                              THEN closed_at::timestamptz
@@ -1113,14 +1114,14 @@ environment={env_vars}
                     """,
                     (monitor_name, interval_str),
                 )
-                window_ret_base, window_trade_count = cursor.fetchone()
+                window_ret_pct, window_trade_count = cursor.fetchone()
 
-                window_ret_base = float(window_ret_base or 0.0)
+                window_ret_pct = float(window_ret_pct or 0.0)
                 window_trade_count = int(window_trade_count or 0)
                 if window_trade_count <= 0:
                     return
 
-                desired_paper_trade = window_ret_base < threshold
+                desired_paper_trade = window_ret_pct < threshold
                 current_paper_trade = bool(current_paper_trade)
 
                 if desired_paper_trade == current_paper_trade:
@@ -1133,7 +1134,7 @@ environment={env_vars}
                         "REGIME_COOLDOWN",
                         f"Skipping regime switch for {monitor_name} due to cooldown",
                         {
-                            "window_ret_base": window_ret_base,
+                            "window_ret_pct": window_ret_pct,
                             "window_trade_count": window_trade_count,
                             "cooldown_seconds": cooldown_seconds,
                             "elapsed_seconds": round(now_ts - last_switch_ts, 2),
@@ -1157,7 +1158,7 @@ environment={env_vars}
                     f"Regime switch applied for {monitor_name}",
                     {
                         "desired_paper_trade": desired_paper_trade,
-                        "window_ret_base": window_ret_base,
+                        "window_ret_pct": window_ret_pct,
                         "window_trade_count": window_trade_count,
                         "regime_window": regime_window,
                     },
@@ -1622,7 +1623,22 @@ try:
     monitor_manager.log_event("STARTUP", "Initializing monitor statistics from trades database")
     stats_result = monitor_manager.update_monitor_statistics_from_trades()
     monitor_manager.log_event("STARTUP", f"Monitor statistics initialization completed: {stats_result}")
-    
+
+    # Align LIVE/PAPER with rolling performance for monitors that have regime monitoring enabled.
+    # force_immediate=True: first evaluation after process start should not sit behind cooldown.
+    try:
+        monitor_manager.log_event("STARTUP", "Running regime monitor reconciliation on startup")
+        regime_result = monitor_manager.reconcile_regime_full_sweep(
+            user_number="0001", force_immediate=True
+        )
+        monitor_manager.log_event(
+            "STARTUP", f"Startup regime reconciliation completed: {regime_result}"
+        )
+    except Exception as regime_err:
+        monitor_manager.log_event(
+            "STARTUP_ERROR", f"Startup regime reconciliation failed: {regime_err}"
+        )
+
 except Exception as e:
     monitor_manager.log_event("STARTUP_ERROR", f"Failed to initialize on startup: {str(e)}")
 
