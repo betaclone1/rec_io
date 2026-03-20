@@ -440,48 +440,32 @@ environment={env_vars}
     def handle_bankroll_update(self, bankroll_stepped_down: bool = False) -> Dict[str, Any]:
         """
         Handle bankroll update notification from kalshi_account_sync.
-        When bankroll_stepped_down is True (significant drawdown), set all monitors' auto_trade to FALSE
-        so auto entry is halted until the user manually re-enables it.
+        Preserve drawdown/bankroll sync behavior, but do not disable monitor auto-trading.
         """
         try:
             self.log_event("BANKROLL_UPDATE", "Processing bankroll update notification")
-            
-            # Update bankroll allotments for active monitors (includes total_position calculation)
+
+            # Keep bankroll/allotment sync behavior.
             allotment_result = self.update_monitor_bankroll_allotments(0)  # bankroll parameter not used anymore
-            
-            # Drawdown safety valve: set all monitors' auto_trade to FALSE so auto entry is halted until user re-enables
+
+            # Drawdown safety behavior preserved as an event only; auto_trade state is not modified.
             if bankroll_stepped_down:
-                conn = None
-                try:
-                    conn = self.get_database_connection()
-                    with conn.cursor() as cursor:
-                        cursor.execute("""
-                            UPDATE users.monitor_list_0001
-                            SET auto_trade = FALSE, auto_trade_status = 'off', updated_at = CURRENT_TIMESTAMP
-                        """)
-                        n_updated = cursor.rowcount
-                    conn.commit()
-                    self.log_event(
-                        "AUTO_ENTRY_HALTED_DRAWDOWN",
-                        f"Significant drawdown detected; set auto_trade=FALSE for all monitors (rows_updated={n_updated}). Re-enable manually when ready."
-                    )
-                finally:
-                    if conn:
-                        conn.close()
-            
-            # Combine results
+                self.log_event(
+                    "DRAWDOWN_DETECTED_NO_AUTOTRADE_SHUTOFF",
+                    "Significant drawdown detected; auto_trade state left unchanged by policy."
+                )
+
             combined_result = {
                 "status": "success",
                 "allotment_update": allotment_result,
                 "bankroll_stepped_down": bankroll_stepped_down,
                 "message": "Bankroll update processed successfully"
             }
-            
+
             self.log_event("BANKROLL_UPDATE", "Bankroll update processed successfully", combined_result)
-            # Whenever we change monitor_list, alert frontend
             self._notify_frontend_monitor_list_updated("Bankroll / monitor list updated")
             return combined_result
-            
+
         except Exception as e:
             self.log_event("ERROR", f"Bankroll update failed: {str(e)}")
             return {"status": "error", "message": str(e)}
