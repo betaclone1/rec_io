@@ -1051,65 +1051,67 @@ def insert_tick(symbol: str, timestamp: str, price: float):
             movement_data.get('movement_percentile'),
         ))
         
-        # Dual write: keep live_symbol_status in sync with latest tick for this symbol
-        tick_values = (
-            timestamp,
-            price,
-            one_minute_avg,
-            momentum_data.get('momentum'),
-            momentum_data.get('delta_1m'),
-            momentum_data.get('delta_2m'),
-            momentum_data.get('delta_3m'),
-            momentum_data.get('delta_4m'),
-            momentum_data.get('delta_15m'),
-            momentum_data.get('delta_30m'),
-            momentum_percentile,
-            momentum_5s_avg,
-            momentum_30s_avg,
-            volatility_value,
-            volatility_percentile,
-            movement_data.get('move_1m'),
-            movement_data.get('move_2m'),
-            movement_data.get('move_3m'),
-            movement_data.get('move_4m'),
-            movement_data.get('move_15m'),
-            movement_data.get('move_30m'),
-            movement_data.get('movement'),
-            movement_data.get('movement_percentile'),
-        )
-        cursor.execute("""
-            UPDATE live_data.live_symbol_status SET
-                "timestamp" = %s,
-                price = %s,
-                one_minute_avg = %s,
-                momentum = %s,
-                delta_1m = %s,
-                delta_2m = %s,
-                delta_3m = %s,
-                delta_4m = %s,
-                delta_15m = %s,
-                delta_30m = %s,
-                momentum_percentile = %s,
-                momentum_5s_avg = %s,
-                volatility = %s,
-                volatility_percentile = %s,
-                momentum_30s_avg = %s,
-                move_1m = %s,
-                move_2m = %s,
-                move_3m = %s,
-                move_4m = %s,
-                move_15m = %s,
-                move_30m = %s,
-                movement = %s,
-                movement_percentile = %s
-            WHERE symbol = %s
-        """, tick_values + (symbol,))
-        if cursor.rowcount == 0:
+        # Dual write to live_symbol_status is now trigger-driven for BTC/ETH.
+        # For other symbols (SPX/NDX), we keep the Python-side dual-write behavior.
+        if symbol not in ("BTC", "ETH"):
+            tick_values = (
+                timestamp,
+                price,
+                one_minute_avg,
+                momentum_data.get('momentum'),
+                momentum_data.get('delta_1m'),
+                momentum_data.get('delta_2m'),
+                momentum_data.get('delta_3m'),
+                momentum_data.get('delta_4m'),
+                momentum_data.get('delta_15m'),
+                momentum_data.get('delta_30m'),
+                momentum_percentile,
+                momentum_5s_avg,
+                momentum_30s_avg,
+                volatility_value,
+                volatility_percentile,
+                movement_data.get('move_1m'),
+                movement_data.get('move_2m'),
+                movement_data.get('move_3m'),
+                movement_data.get('move_4m'),
+                movement_data.get('move_15m'),
+                movement_data.get('move_30m'),
+                movement_data.get('movement'),
+                movement_data.get('movement_percentile'),
+            )
             cursor.execute("""
-                INSERT INTO live_data.live_symbol_status
-                (symbol, "timestamp", price, one_minute_avg, momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg, volatility, volatility_percentile, momentum_30s_avg, move_1m, move_2m, move_3m, move_4m, move_15m, move_30m, movement, movement_percentile)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (symbol,) + tick_values)
+                UPDATE live_data.live_symbol_status SET
+                    "timestamp" = %s,
+                    price = %s,
+                    one_minute_avg = %s,
+                    momentum = %s,
+                    delta_1m = %s,
+                    delta_2m = %s,
+                    delta_3m = %s,
+                    delta_4m = %s,
+                    delta_15m = %s,
+                    delta_30m = %s,
+                    momentum_percentile = %s,
+                    momentum_5s_avg = %s,
+                    volatility = %s,
+                    volatility_percentile = %s,
+                    momentum_30s_avg = %s,
+                    move_1m = %s,
+                    move_2m = %s,
+                    move_3m = %s,
+                    move_4m = %s,
+                    move_15m = %s,
+                    move_30m = %s,
+                    movement = %s,
+                    movement_percentile = %s
+                WHERE symbol = %s
+            """, tick_values + (symbol,))
+            if cursor.rowcount == 0:
+                cursor.execute("""
+                    INSERT INTO live_data.live_symbol_status
+                    (symbol, "timestamp", price, one_minute_avg, momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg, volatility, volatility_percentile, momentum_30s_avg, move_1m, move_2m, move_3m, move_4m, move_15m, move_30m, movement, movement_percentile)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (symbol,) + tick_values)
         
         # ROLLING WINDOW: Clean up data older than 30 days
         dt = datetime.now(ZoneInfo("America/New_York")).replace(microsecond=0)

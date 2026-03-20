@@ -1496,8 +1496,8 @@
       // STEP 1: Load dashboard preferences FIRST - this sets currentView and portfolioPanelActiveTab
       await loadDashboardPreferences();
 
-      // STEP 2: One path to refresh portfolio panel (top line + chart + delta for active tab)
-      await refreshPortfolioPanel();
+      // STEP 2: Preload all portfolio panel tabs so first switch has no visual glitch
+      await preloadPortfolioPanelTabs();
 
       // STEP 3: Load monitors data
       await loadMonitors();
@@ -1565,12 +1565,22 @@
         tabEl.style.opacity = '1';
         contentEl.classList.add('active');
 
+        // Fast path: update top line + delta immediately from whatever data is already in memory.
+        // This prevents UI lag when tab switching, especially when the async refetch is slow in prod.
+        syncPortfolioPanelTopLineAndDeltaFromState();
+
         saveDashboardPreferences();
 
-        setTimeout(async () => {
-          await refreshPortfolioPanel();
-          loadPerformanceData();
-        }, 50);
+        // No fetch here. Since charts are kept in sync via `db_changes`,
+        // tab switching should only toggle visibility + resize the active canvas.
+        setTimeout(() => {
+          if (portfolioPanelActiveTab === 'portfolio' && portfolioChart) portfolioChart.resize();
+          if (portfolioPanelActiveTab === 'bankroll' && bankrollChart) bankrollChart.resize();
+          if (portfolioPanelActiveTab === 'pnl' && pnlChart) pnlChart.resize();
+        }, 0);
+
+        // Performance panel depends on which tab is the bankroll base.
+        loadPerformanceData();
       }
 
       if (bankrollTab) bankrollTab.addEventListener('click', () => switchTo(bankrollTab, bankrollContent, 'bankroll'));
@@ -2960,6 +2970,233 @@
       changeElement.className = `change-element ${isPositive ? 'positive' : 'negative'}`;
     }
 
+    // Fast sync used during tab switching: update top line + delta from in-memory state.
+    // We intentionally avoid chart re-renders here to keep the canvas switch instant.
+    function syncPortfolioPanelTopLineAndDeltaFromState() {
+      const portfolioElement = document.getElementById('portfolio-value');
+      if (!portfolioElement) return;
+
+      if (portfolioPanelActiveTab === 'portfolio') {
+        const filteredData = filterDataByView(allHistoryData, currentView);
+        const lastVal = filteredData.length
+          ? (filteredData[filteredData.length - 1].portfolio || 0)
+          : 0;
+
+        const formatted = new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: 'USD',
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
+        }).format(lastVal);
+
+        portfolioElement.textContent = formatted;
+        portfolioElement.style.color = '';
+        updatePortfolioChange();
+        return;
+      }
+
+      if (portfolioPanelActiveTab === 'bankroll') {
+        const history = allBankrollHistoryData || [];
+        const filteredData = filterDataByView(history, currentView);
+
+        if (!filteredData.length) {
+          portfolioElement.textContent = '—';
+          portfolioElement.style.color = '';
+          const changeEl = document.getElementById('portfolio-change');
+          if (changeEl) changeEl.textContent = '';
+          return;
+        }
+
+        const lastValue = filteredData[filteredData.length - 1].bankroll || 0;
+        const formatted = new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: 'USD',
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
+        }).format(lastValue);
+
+        portfolioElement.textContent = formatted;
+        portfolioElement.style.color = '';
+        updateBankrollChange();
+        return;
+      }
+
+      if (portfolioPanelActiveTab === 'pnl') {
+        const history = allPnlHistoryData || [];
+        const filteredData = filterDataByView(history, currentView);
+
+        if (!filteredData.length) {
+          portfolioElement.textContent = new Intl.NumberFormat('en-US', {
+            style: 'currency',
+            currency: 'USD',
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+            signDisplay: 'auto'
+          }).format(0);
+          portfolioElement.style.color = '';
+          const changeEl = document.getElementById('portfolio-change');
+          if (changeEl) changeEl.textContent = '';
+          return;
+        }
+
+        const lastPnl = filteredData[filteredData.length - 1].pnl || 0;
+        const formattedValue = new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: 'USD',
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+          signDisplay: 'auto'
+        }).format(lastPnl);
+
+        portfolioElement.textContent = formattedValue;
+        portfolioElement.style.color = '';
+        updatePnlChange();
+      }
+    }
+
+    let portfolioPanelTabsDataRefreshInFlight = false;
+    let portfolioPanelTabsDataRefreshQueued = false;
+
+    async function refreshPortfolioPanelAllTabsData({ rerenderActive = true, rerenderAllCharts = false } = {}) {
+      // Avoid overlapping fetches from rapid `db_changes` bursts.
+      if (portfolioPanelTabsDataRefreshInFlight) {
+        portfolioPanelTabsDataRefreshQueued = true;
+        return;
+      }
+
+      portfolioPanelTabsDataRefreshInFlight = true;
+      try {
+        const origin = window.location.origin;
+
+        const [portfolioRes, bankrollRes, pnlRes] = await Promise.all([
+          fetch(`${origin}/api/portfolio/history?period=1y`),
+          fetch(`${origin}/api/bankroll/history?period=1y`),
+          fetch(`${origin}/api/pnl/history?period=1y`)
+        ]);
+
+        if (portfolioRes.ok) {
+          const data = await portfolioRes.json();
+          allHistoryData = data.data || [];
+        } else {
+          allHistoryData = [];
+        }
+
+        if (bankrollRes.ok) {
+          const data = await bankrollRes.json();
+          allBankrollHistoryData = data.data || [];
+        } else {
+          allBankrollHistoryData = [];
+        }
+
+        if (pnlRes.ok) {
+          const data = await pnlRes.json();
+          const history = data.data || [];
+          allPnlHistoryData = history.length > 0 ? history : [{ timestamp: new Date().toISOString(), pnl: 0 }];
+        } else {
+          allPnlHistoryData = [{ timestamp: new Date().toISOString(), pnl: 0 }];
+        }
+
+        // Re-render behavior:
+        // - rerenderAllCharts: keep all hidden charts up-to-date so tab switching has no glitch.
+        // - otherwise: re-render only the active chart/value.
+        if (rerenderAllCharts) {
+          renderPortfolioChart(allHistoryData);
+          renderBankrollChartFromState();
+          renderPnlChartFromState();
+          syncPortfolioPanelTopLineAndDeltaFromState();
+        } else if (rerenderActive) {
+          if (portfolioPanelActiveTab === 'portfolio') {
+            applyPortfolioView();
+          } else if (portfolioPanelActiveTab === 'bankroll') {
+            applyBankrollView();
+          } else if (portfolioPanelActiveTab === 'pnl') {
+            applyPnlView();
+          }
+        } else {
+          syncPortfolioPanelTopLineAndDeltaFromState();
+        }
+      } catch (e) {
+        console.error('Error refreshing all portfolio panel tabs data:', e);
+      } finally {
+        portfolioPanelTabsDataRefreshInFlight = false;
+        if (portfolioPanelTabsDataRefreshQueued) {
+          portfolioPanelTabsDataRefreshQueued = false;
+          // Run once more to catch up.
+          await refreshPortfolioPanelAllTabsData({ rerenderActive, rerenderAllCharts });
+        }
+      }
+    }
+
+    async function preloadPortfolioPanelTabs() {
+      // Preload all portfolio panel tabs on page load so the first switch
+      // doesn't have to fetch/render charts and thus avoids the initial glitch.
+      const origin = window.location.origin;
+
+      try {
+        const [portfolioRes, bankrollRes, pnlRes] = await Promise.all([
+          fetch(`${origin}/api/portfolio/history?period=1y`),
+          fetch(`${origin}/api/bankroll/history?period=1y`),
+          fetch(`${origin}/api/pnl/history?period=1y`)
+        ]);
+
+        if (portfolioRes.ok) {
+          const data = await portfolioRes.json();
+          allHistoryData = data.data || [];
+        } else {
+          allHistoryData = [];
+        }
+
+        if (bankrollRes.ok) {
+          const data = await bankrollRes.json();
+          allBankrollHistoryData = data.data || [];
+        } else {
+          allBankrollHistoryData = [];
+        }
+
+        if (pnlRes.ok) {
+          const data = await pnlRes.json();
+          const history = data.data || [];
+          allPnlHistoryData = history.length > 0 ? history : [{ timestamp: new Date().toISOString(), pnl: 0 }];
+        } else {
+          allPnlHistoryData = [{ timestamp: new Date().toISOString(), pnl: 0 }];
+        }
+      } catch (e) {
+        console.error('Error preloading portfolio panel tabs:', e);
+        allHistoryData = [];
+        allBankrollHistoryData = [];
+        allPnlHistoryData = [{ timestamp: new Date().toISOString(), pnl: 0 }];
+      }
+
+      // Render all canvases once from the preloaded in-memory state.
+      try {
+        renderPortfolioChart(allHistoryData);
+      } catch (e) {
+        console.error('Error rendering portfolio chart during preload:', e);
+      }
+
+      try {
+        renderBankrollChartFromState();
+      } catch (e) {
+        console.error('Error rendering bankroll chart during preload:', e);
+      }
+
+      try {
+        renderPnlChartFromState();
+      } catch (e) {
+        console.error('Error rendering pnl chart during preload:', e);
+      }
+
+      // Finally, set the top line and delta for the currently active tab.
+      syncPortfolioPanelTopLineAndDeltaFromState();
+
+      // Ensure canvases get their correct dimensions after charts are created.
+      setTimeout(() => {
+        if (portfolioChart) portfolioChart.resize();
+        if (bankrollChart) bankrollChart.resize();
+        if (pnlChart) pnlChart.resize();
+      }, 150);
+    }
+
     async function setChartView(view) {
       currentView = view;
 
@@ -2969,12 +3206,25 @@
 
       saveDashboardPreferences();
 
-      // Time-window only: reapply filter from existing data (instant). Full refresh does refetch on interval/tab.
-      if (portfolioPanelActiveTab === 'portfolio') {
-        applyPortfolioView();
-      } else {
-        await refreshPortfolioPanel();
+      // Re-render all three charts from already-fetched state so tab switching
+      // stays glitch-free even if a given view wasn't active during updates.
+      try {
+        renderPortfolioChart(allHistoryData);
+      } catch (e) {
+        console.error('Error rendering portfolio chart for new view:', e);
       }
+      try {
+        renderBankrollChartFromState();
+      } catch (e) {
+        console.error('Error rendering bankroll chart for new view:', e);
+      }
+      try {
+        renderPnlChartFromState();
+      } catch (e) {
+        console.error('Error rendering pnl chart for new view:', e);
+      }
+
+      syncPortfolioPanelTopLineAndDeltaFromState();
 
       if (window.monitorHistoryDisplay) {
         window.monitorHistoryDisplay.refresh(view);
@@ -4855,15 +5105,11 @@
       return 1871.27; // Default value from your dummy data
     }
 
-    setInterval(() => { refreshPortfolioPanel(); }, 30000);
-
     // Refresh Performance panel (realized PnL + cash balance) at same rate as Portfolio panel
     setInterval(() => {
       loadPerformanceData();
       loadPerformancePanelCashBalance();
     }, 30000);
-
-    setInterval(() => { refreshPortfolioPanel(); }, 300000);
     
     // TODO: Re-enable allocation data refresh when ready
     // setInterval(loadAllocationData, 30000);
@@ -5926,7 +6172,9 @@
 
           // Let the existing tab-aware helper decide what to refresh for the portfolio panel.
           try {
-            await refreshPortfolioPanel();
+            // Keep all three charts in sync so switching to a previously-hidden tab
+            // never shows stale/half-updated visuals.
+            await refreshPortfolioPanelAllTabsData({ rerenderActive: false, rerenderAllCharts: true });
           } catch (e) {
             console.error('Error refreshing portfolio panel after db_change:', e);
           }

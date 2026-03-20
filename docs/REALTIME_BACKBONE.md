@@ -181,6 +181,9 @@ This pattern (read_api as canonical read surface, main as front door only, Redis
 |-------------------|------------------------------|---------------------------|
 | `redis_basic_test` | testing.redis_basic_test   | Pilot / test stream       |
 | `account_balance` | users.account_balance_0001 | Dashboard bankroll/portfolio panel |
+| `live_symbol_status` | live_data.live_symbol_status | Canonical snapshot of latest symbol conditions (BTC/ETH): refetch on `db_change` |
+
+**Canonical current-state rule (symbols):** treat `live_data.live_symbol_status` as the source of truth for "current" symbol price + condition percentiles (momentum/volatility/movement). The `live_price_log_1s_*` tables are the higher-resolution per-tick log used to derive/validate the snapshot and for debugging/analysis; consumers should prefer `live_symbol_status` for real-time decisions.
 
 Planned next (Phase 1b): `trades` (users.trades_0001), `subaccounts` (users.subaccounts_0001) for the Performance panel. Add them to the registry and to this table when implemented. Keep the table in sync with `backend/core/stream_registry.py`.
 

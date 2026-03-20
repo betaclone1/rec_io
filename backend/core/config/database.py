@@ -804,6 +804,12 @@ def init_database():
                 daily_update TEXT
             );
         """)
+
+        # Trigger-driven live_symbol_status sync depends on a deterministic uniqueness guarantee per symbol.
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS live_symbol_status_symbol_uniq_all
+            ON live_data.live_symbol_status USING btree (symbol);
+        """)
         cursor.execute("""
             DO $$
             DECLARE

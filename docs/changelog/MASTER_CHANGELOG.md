@@ -6,6 +6,22 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-19 — Momentum Contain (AES): minimum-width, centered bracket strike selection
+
+**Summary**
+- **Strike selection:** `check_auto_entry_conditions_momentum_contain()` now builds the YES/NO bracket from available strikes using a minimum width of **0.35%** of spot, then picks the **smallest actual width not below** that minimum, with **price as close to the bracket midpoint as possible** (strict `YES < price < NO`). Applies uniformly across symbols (BTC/ETH) based on the live strike table.
+
+**Docs:** `docs/MOMENTUM_CONTAIN_SYMBOL_SILO_TEMPORARY.md` (strategy write-up; add to repo if not already tracked).
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart application services so auto-entry supervisors load the new logic:  
+  `./scripts/MASTER_RESTART.sh`
+- [ ] Verify: health (`main_app` :3000, `trade_executor` :8001), supervisor `RUNNING` for `auto_entry_supervisor_*`. Optional: tail AES logs for `[AUTO ENTRY MOMENTUM CONTAIN] 🎯` (min width, selected strikes, midpoint, center offset).
+
+---
+
 ## 2026-03-18 — Real-time backbone Phase 1a: read_api + dashboard bankroll panel
 
 **Summary**
@@ -16,7 +32,8 @@ This changelog is used when pushing updates to production. Each entry is timesta
 Plans: `redis-platform-initiative` (Phase 1a complete), `mtb-account-dashboard` (dashboard/MTB context), `monitor-activate-deactivate-and-dashboard-ui` (monitor lifecycle context).
 
 **DB migrations (required on production, in order)**
-- `20260318_2000_testing_redis_basic_test_create` — create minimal `testing.redis_basic_test` so trigger migrations for Redis switchboard pilot can attach.
+- **Prerequisite:** `testing.redis_basic_test` is created/aligned by `init_database()` in `backend/core/config/database.py` (no separate `run_migration` slug for table create). If production DB predates that table, run once from project root:  
+  `PYTHONPATH=$(pwd) venv/bin/python -c "from backend.core.config.database import init_database; init_database()"`
 - `20260316_1600_redis_basic_test_notify_trigger` — create NOTIFY trigger for `testing.redis_basic_test` so the Redis switchboard can push DB changes.
 - `20260316_1800_rec_io_db_notify_public` — create `public.rec_io_db_notify()` and repoint `testing.redis_basic_test` trigger to the public function.
 - `20260317_1400_account_balance_db_notify` — add NOTIFY trigger on `users.account_balance_0001` so `account_balance` stream refreshes the dashboard panel.
@@ -25,13 +42,42 @@ Plans: `redis-platform-initiative` (Phase 1a complete), `mtb-account-dashboard` 
 - [x] Confirm codebase changes (pull latest on production):  
   `git fetch && git checkout main && git pull --ff-only origin main`
 - [ ] Apply migrations in order (from project root):  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260318_2000_testing_redis_basic_test_create`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260316_1600_redis_basic_test_notify_trigger`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260316_1800_rec_io_db_notify_public`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260317_1400_account_balance_db_notify`
 - [ ] Restart application services so `redis_switchboard` and `read_api` load the new code (standard restart):  
   `scripts/MASTER_RESTART.sh`
 - [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status includes `redis_switchboard` and `read_api`. Spot-check dashboard: Bankroll/Portfolio/PnL top panel updates after changing the latest `users.account_balance_0001` row (event-driven, no interval polling).
+
+---
+
+## 2026-03-18 — Live price feed hygiene: Postgres trigger sync to `live_symbol_status`
+
+**Summary**
+- **Watchdog CPU hygiene:** Updated `backend/symbol_price_watchdog.py` so BTC/ETH no longer dual-write derived fields into `live_data.live_symbol_status`.
+- **DB responsibility:** Added reversible Postgres triggers that keep `live_data.live_symbol_status` synchronized from the newest rows in `live_data.live_price_log_1s_btc` / `live_data.live_price_log_1s_eth`.
+- **Safety model:** Added a deterministic uniqueness guarantee for `live_data.live_symbol_status(symbol)` so the trigger upsert can reliably use `ON CONFLICT (symbol)`.
+
+**DB migrations (required on production, in order)**
+1. `20260318_1300_live_symbol_status_sync_from_live_price_logs` — add trigger sync functions + triggers on `live_price_log_1s_btc` / `live_price_log_1s_eth`, plus the initial `live_symbol_status(symbol)` uniqueness guarantee.
+2. `20260318_1310_live_symbol_status_unique_on_symbol_non_partial` — replace the partial uniqueness index with a full-table uniqueness index compatible with `ON CONFLICT (symbol)`.
+3. `20260318_1405_live_symbol_status_db_notify_trigger` — add `AFTER INSERT OR UPDATE OR DELETE` NOTIFY trigger on `live_data.live_symbol_status` so Redis websocket signals `db_change` updates for the standalone live UI.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations in order (from project root):
+  - `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260318_1300_live_symbol_status_sync_from_live_price_logs`
+  - `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260318_1310_live_symbol_status_unique_on_symbol_non_partial`
+- [ ] Apply DB notify trigger migration (required for websocket signals):
+  - `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260318_1405_live_symbol_status_db_notify_trigger`
+- [ ] Restart watchdog services so they no longer write `live_symbol_status` directly:
+  - `supervisorctl restart symbol_price_watchdog_btc`
+  - `supervisorctl restart symbol_price_watchdog_eth`
+- [ ] Verify:
+  - Update/observe a row in `live_data.live_price_log_1s_btc` and confirm `live_data.live_symbol_status` for `symbol='BTC'` changes within the same tick.
+  - Same check for `symbol='ETH'`.
+- [ ] Verify standalone UI: open `/tabs/live_symbol_status_test.html` and confirm values refresh on `live_symbol_status` db_change events.
 
 ---
 

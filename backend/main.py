@@ -2534,6 +2534,68 @@ async def get_eth_price():
         _main_logger.warning(f"Error getting ETH price from PostgreSQL: {e}")
         return {"price": None, "error": str(e)}
 
+@app.get("/api/live_symbol_status_snapshot")
+async def get_live_symbol_status_snapshot():
+    """
+    Standalone live UI snapshot:
+    BTC/ETH symbol, price, momentum_percentile, volatility_percentile, movement_percentile.
+    Values are pulled from live_data.live_symbol_status (trigger-synced from live_price_log_1s_*).
+    """
+    try:
+        import psycopg2
+
+        allowed = ("BTC", "ETH")
+        conn = get_postgresql_connection()
+        cursor = conn.cursor()
+
+        out = []
+        for sym in allowed:
+            cursor.execute(
+                """
+                SELECT
+                    symbol,
+                    price,
+                    momentum_percentile,
+                    volatility_percentile,
+                    movement_percentile,
+                    "timestamp"
+                FROM live_data.live_symbol_status
+                WHERE symbol = %s
+                """,
+                (sym,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                continue
+
+            symbol, price, mom_pct, vol_pct, mov_pct, ts = row
+            out.append(
+                {
+                    "symbol": symbol,
+                    "price": float(price) if price is not None else None,
+                    "momentum_percentile": float(mom_pct) if mom_pct is not None else None,
+                    "volatility_percentile": float(vol_pct) if vol_pct is not None else None,
+                    "movement_percentile": float(mov_pct) if mov_pct is not None else None,
+                    "timestamp": ts,
+                }
+            )
+
+        conn.close()
+
+        # Convenience: include a single timestamp based on BTC if present, else ETH.
+        ts_out = None
+        for sym in allowed:
+            found = next((r for r in out if r["symbol"] == sym), None)
+            if found and found.get("timestamp"):
+                ts_out = found["timestamp"]
+                break
+
+        return {"status": "ok", "timestamp": ts_out, "symbols": out}
+
+    except Exception as e:
+        _main_logger.warning(f"Error getting live symbol status snapshot: {e}")
+        return {"status": "error", "message": str(e), "symbols": []}
+
 @app.get("/api/momentum_score")
 async def get_momentum_score():
     """Get current momentum score for mobile directly from PostgreSQL."""

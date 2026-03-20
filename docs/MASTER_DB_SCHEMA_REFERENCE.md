@@ -8505,6 +8505,10 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
   ```sql
   CREATE UNIQUE INDEX live_symbol_status_pkey ON live_data.live_symbol_status USING btree (id)
   ```
+- `live_symbol_status_symbol_uniq_all`
+  ```sql
+  CREATE UNIQUE INDEX live_symbol_status_symbol_uniq_all ON live_data.live_symbol_status USING btree (symbol)
+  ```
 
 ---
 

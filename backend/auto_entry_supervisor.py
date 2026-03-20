@@ -3727,10 +3727,11 @@ def check_auto_entry_conditions_momentum_contain():
             log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Invalid strike_tier: {strike_tier}")
             return
         
-        # Select strikes using the unified bracket-width methodology:
-        # 1) Compute ideal endpoints from 0.35% total bracket width.
-        # 2) Map each endpoint to the closest available strike that is strictly
-        #    below (YES leg) / strictly above (NO leg).
+        # Select strikes using the unified minimum-width + centering methodology:
+        # 1) Compute minimum bracket width from 0.35% of current price.
+        # 2) Find the valid YES/NO pair (YES < price < NO) whose bracket width is
+        #    closest to that minimum without going below it.
+        # 3) For ties on width excess, keep price as centered as possible.
         strikes = strike_table_data.get("strikes", [])
         strike_above_data = None  # NO leg (must be > current_price)
         strike_below_data = None  # YES leg (must be < current_price)
@@ -3738,19 +3739,11 @@ def check_auto_entry_conditions_momentum_contain():
         # NOTE: hardcoded for now; we may later make this configurable per user/symbol.
         min_bracket_width_pct = 0.0035  # 0.35% total bracket width
         current_price_f = float(current_price)
-        ideal_bracket_width = current_price_f * min_bracket_width_pct
-        ideal_lower = current_price_f - ideal_bracket_width / 2  # YES endpoint
-        ideal_upper = current_price_f + ideal_bracket_width / 2  # NO endpoint
-        
-        eps = 1e-9
-        best_yes = None
-        best_yes_dist = float('inf')
-        best_yes_strike_val = None
-        
-        best_no = None
-        best_no_dist = float('inf')
-        best_no_strike_val = None
-        
+        min_bracket_width = current_price_f * min_bracket_width_pct
+
+        # Parse and partition available strikes once.
+        below_candidates = []  # [(strike_value, strike_data)]
+        above_candidates = []  # [(strike_value, strike_data)]
         for strike in strikes:
             strike_value_raw = strike.get("strike")
             if strike_value_raw is None:
@@ -3759,48 +3752,71 @@ def check_auto_entry_conditions_momentum_contain():
                 strike_value = float(strike_value_raw)
             except (ValueError, TypeError):
                 continue
-            
-            # YES leg: strictly below symbol value
+
             if strike_value < current_price_f:
-                dist = abs(strike_value - ideal_lower)
-                if (dist < best_yes_dist - eps or
-                    abs(dist - best_yes_dist) <= eps and
-                    (best_yes_strike_val is None or strike_value > best_yes_strike_val)):
-                    best_yes = strike
-                    best_yes_dist = dist
-                    best_yes_strike_val = strike_value
-            
-            # NO leg: strictly above symbol value
+                below_candidates.append((strike_value, strike))
             elif strike_value > current_price_f:
-                dist = abs(strike_value - ideal_upper)
-                if (dist < best_no_dist - eps or
-                    abs(dist - best_no_dist) <= eps and
-                    (best_no_strike_val is None or strike_value < best_no_strike_val)):
-                    best_no = strike
-                    best_no_dist = dist
-                    best_no_strike_val = strike_value
-        
-        strike_below_data = best_yes
-        strike_above_data = best_no
-        
-        # Log the ideal endpoints and selected strikes for debugging
+                above_candidates.append((strike_value, strike))
+
+        # Search for best valid pair:
+        # priority 1: smallest non-negative width excess
+        # priority 2: smallest midpoint distance from current price
+        # priority 3: deterministic tie-break on lower strike (smaller first)
+        best_pair = None
+        best_pair_key = None
+        for below_strike_val, below_strike_data in below_candidates:
+            for above_strike_val, above_strike_data in above_candidates:
+                bracket_width = above_strike_val - below_strike_val
+                if bracket_width < min_bracket_width:
+                    continue
+
+                width_excess = bracket_width - min_bracket_width
+                midpoint = (below_strike_val + above_strike_val) / 2.0
+                center_offset = abs(current_price_f - midpoint)
+                pair_key = (
+                    round(width_excess, 12),
+                    round(center_offset, 12),
+                    below_strike_val
+                )
+                if best_pair_key is None or pair_key < best_pair_key:
+                    best_pair_key = pair_key
+                    best_pair = (
+                        below_strike_data,
+                        above_strike_data,
+                        below_strike_val,
+                        above_strike_val,
+                        bracket_width,
+                        midpoint,
+                        center_offset,
+                        width_excess
+                    )
+
+        if best_pair:
+            strike_below_data = best_pair[0]
+            strike_above_data = best_pair[1]
+
+        # Log selection details for debugging
         below_strike_val = float(strike_below_data.get("strike")) if strike_below_data and strike_below_data.get("strike") is not None else None
         above_strike_val = float(strike_above_data.get("strike")) if strike_above_data and strike_above_data.get("strike") is not None else None
         
         below_str = f"${below_strike_val:,.0f}" if below_strike_val is not None else "N/A"
         above_str = f"${above_strike_val:,.0f}" if above_strike_val is not None else "N/A"
-        ideal_lower_str = f"${ideal_lower:,.2f}"
-        ideal_upper_str = f"${ideal_upper:,.2f}"
-        
-        bracket_width = None
+        min_width_str = f"${min_bracket_width:,.2f}"
+        selected_width = None
+        midpoint = None
+        center_offset = None
         if below_strike_val is not None and above_strike_val is not None:
-            bracket_width = above_strike_val - below_strike_val
-        
-        bracket_width_str = f"${bracket_width:,.2f}" if bracket_width is not None else "N/A"
+            selected_width = above_strike_val - below_strike_val
+            midpoint = (below_strike_val + above_strike_val) / 2.0
+            center_offset = abs(current_price_f - midpoint)
+
+        selected_width_str = f"${selected_width:,.2f}" if selected_width is not None else "N/A"
+        midpoint_str = f"${midpoint:,.2f}" if midpoint is not None else "N/A"
+        center_offset_str = f"${center_offset:,.2f}" if center_offset is not None else "N/A"
         log(
             f"[AUTO ENTRY MOMENTUM CONTAIN] 🎯 Current price: ${current_price_f:,.2f}, Strike tier: ${strike_tier:,} | "
-            f"Ideal YES: {ideal_lower_str}, Ideal NO: {ideal_upper_str} | Selected below(YES): {below_str}, Selected above(NO): {above_str} | "
-            f"Bracket width: {bracket_width_str}"
+            f"Min width (0.35%): {min_width_str} | Selected below(YES): {below_str}, Selected above(NO): {above_str} | "
+            f"Selected width: {selected_width_str} | Midpoint: {midpoint_str} | Center offset: {center_offset_str}"
         )
         
         # Check if we already have active trades on these strikes (FLIPPED SIDES from Breakout)

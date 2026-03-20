@@ -18,6 +18,8 @@ TABLE_TO_STREAM: Dict[Tuple[str, str], str] = {
     ("testing", "redis_basic_test"): "redis_basic_test",
     # Account / bankroll / portfolio top-level values (dashboard, account_manager, etc.)
     ("users", "account_balance_0001"): "account_balance",
+    # Live price feed snapshot table (used by the standalone live UI)
+    ("live_data", "live_symbol_status"): "live_symbol_status",
 }
 
 
