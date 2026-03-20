@@ -11,14 +11,14 @@ This changelog is used when pushing updates to production. Each entry is timesta
 **Summary**
 - **Strike selection:** `check_auto_entry_conditions_momentum_contain()` now builds the YES/NO bracket from available strikes using a minimum width of **0.35%** of spot, then picks the **smallest actual width not below** that minimum, with **price as close to the bracket midpoint as possible** (strict `YES < price < NO`). Applies uniformly across symbols (BTC/ETH) based on the live strike table.
 
-**Docs:** `docs/MOMENTUM_CONTAIN_SYMBOL_SILO_TEMPORARY.md` (strategy write-up; add to repo if not already tracked).
+**Docs:** `docs/MOMENTUM_CONTAIN_SYMBOL_SILO_TEMPORARY.md`
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart application services so auto-entry supervisors load the new logic:  
+- [x] Restart application services so auto-entry supervisors load the new logic:  
   `./scripts/MASTER_RESTART.sh`
-- [ ] Verify: health (`main_app` :3000, `trade_executor` :8001), supervisor `RUNNING` for `auto_entry_supervisor_*`. Optional: tail AES logs for `[AUTO ENTRY MOMENTUM CONTAIN] 🎯` (min width, selected strikes, midpoint, center offset).
+- [x] Verify: health (`main_app` :3000, `trade_executor` :8001), supervisor `RUNNING` for `auto_entry_supervisor_*`. Optional: tail AES logs for `[AUTO ENTRY MOMENTUM CONTAIN] 🎯` (min width, selected strikes, midpoint, center offset).
 
 ---
 
@@ -41,13 +41,13 @@ Plans: `redis-platform-initiative` (Phase 1a complete), `mtb-account-dashboard` 
 **Production checklist**
 - [x] Confirm codebase changes (pull latest on production):  
   `git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations in order (from project root):  
+- [x] Apply migrations in order (from project root):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260316_1600_redis_basic_test_notify_trigger`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260316_1800_rec_io_db_notify_public`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260317_1400_account_balance_db_notify`
-- [ ] Restart application services so `redis_switchboard` and `read_api` load the new code (standard restart):  
+- [x] Restart application services so `redis_switchboard` and `read_api` load the new code (standard restart):  
   `scripts/MASTER_RESTART.sh`
-- [ ] Verify: health (main_app :3000, trade_executor :8001), supervisor status includes `redis_switchboard` and `read_api`. Spot-check dashboard: Bankroll/Portfolio/PnL top panel updates after changing the latest `users.account_balance_0001` row (event-driven, no interval polling).
+- [x] Verify: health (main_app :3000, trade_executor :8001), supervisor status includes `redis_switchboard` and `read_api`. Spot-check dashboard: Bankroll/Portfolio/PnL top panel updates after changing the latest `users.account_balance_0001` row (event-driven, no interval polling).
 
 ---
 
@@ -64,20 +64,20 @@ Plans: `redis-platform-initiative` (Phase 1a complete), `mtb-account-dashboard` 
 3. `20260318_1405_live_symbol_status_db_notify_trigger` — add `AFTER INSERT OR UPDATE OR DELETE` NOTIFY trigger on `live_data.live_symbol_status` so Redis websocket signals `db_change` updates for the standalone live UI.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations in order (from project root):
+- [x] Apply migrations in order (from project root):
   - `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260318_1300_live_symbol_status_sync_from_live_price_logs`
   - `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260318_1310_live_symbol_status_unique_on_symbol_non_partial`
-- [ ] Apply DB notify trigger migration (required for websocket signals):
+- [x] Apply DB notify trigger migration (required for websocket signals):
   - `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260318_1405_live_symbol_status_db_notify_trigger`
-- [ ] Restart watchdog services so they no longer write `live_symbol_status` directly:
-  - `supervisorctl restart symbol_price_watchdog_btc`
-  - `supervisorctl restart symbol_price_watchdog_eth`
-- [ ] Verify:
+- [x] Restart watchdog services so they no longer write `live_symbol_status` directly:  
+  `supervisorctl -c backend/supervisord.conf restart symbol_price_watchdog_btc symbol_price_watchdog_eth`  
+  (plus full `./scripts/MASTER_RESTART.sh` in the same deploy window)
+- [x] Verify:
   - Update/observe a row in `live_data.live_price_log_1s_btc` and confirm `live_data.live_symbol_status` for `symbol='BTC'` changes within the same tick.
   - Same check for `symbol='ETH'`.
-- [ ] Verify standalone UI: open `/tabs/live_symbol_status_test.html` and confirm values refresh on `live_symbol_status` db_change events.
+- [x] Verify standalone UI: open `/tabs/live_symbol_status_test.html` and confirm values refresh on `live_symbol_status` db_change events (UI asset may need to be deployed separately if not yet on prod).
 
 ---
 
