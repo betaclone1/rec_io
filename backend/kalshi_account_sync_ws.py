@@ -379,7 +379,7 @@ def notify_frontend_db_change(db_name: str, change_data: dict = None):
         logger.error("Error notifying frontend: %s", e)
 
 def notify_monitor_manager(bankroll_stepped_down=False):
-    """Notify monitor_manager that bankroll has been updated. Pass bankroll_stepped_down=True when bankroll was stepped down due to significant drawdown (MTB <= 70% of mtb_base_value, or 70% of prev bankroll if base not set)."""
+    """Notify monitor_manager that bankroll has been updated. Pass bankroll_stepped_down=True when bankroll was stepped down due to significant drawdown (MTB <= 70% of prior bankroll_current)."""
     try:
         import requests
         from backend.core.port_config import get_port
@@ -1007,9 +1007,8 @@ def sync_balance():
                             # After internal transfer, use new MTB balance directly as bankroll_current (bypass ratchet).
                             bankroll_current = master_bankroll_balance
                         else:
-                            # Ratchet: bankroll_current from Master Trading Bankroll. Drawdown threshold pegged to mtb_base_value (70% of base); step up when MTB > prev, else hold unless drawdown.
-                            _, mtb_base = _get_mtb_snapshot_from_subaccounts(cursor)
-                            drawdown_threshold = (mtb_base * 0.7) if (mtb_base is not None and mtb_base > 0) else (prev_bankroll * 0.7) if prev_bankroll else None
+                            # Ratchet: bankroll_current from Master Trading Bankroll. Drawdown threshold pegged to prior bankroll_current (70%); step up when MTB > prev, else hold unless drawdown.
+                            drawdown_threshold = (prev_bankroll * 0.7) if prev_bankroll else None
                             if prev_bankroll is None:
                                 # First bankroll initialization: no drawdown edge to detect yet.
                                 bankroll_current = master_bankroll_balance
@@ -1082,7 +1081,7 @@ def sync_balance():
                             "total_portfolio": total_portfolio_value
                         })
 
-                        # Notify monitor_manager of bankroll update (pass drawdown flag so it can set all auto_trade=FALSE)
+                        # Notify monitor_manager of bankroll update (pass drawdown flag for allotment refresh / logging)
                         notify_monitor_manager(bankroll_stepped_down=bankroll_stepped_down)
                     # Sync Kalshi v1 account/history into users.account_history_0001 (simple UPDATE-then-INSERT, no ON CONFLICT)
                     cursor.execute("SELECT kalshi_user_id FROM users.user_info_0001 WHERE user_no = '0001'")
