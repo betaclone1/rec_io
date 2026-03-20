@@ -439,13 +439,13 @@ EOF
     print_warning "Killing all tail processes..."
     ps aux 2>/dev/null | grep "tail.*log" | grep -v grep | awk '{print $2}' | xargs -r kill 2>/dev/null || true
     
-    # Kill all Python processes related to our project - BULLETPROOF
+    # Kill core Python backend processes (exclude analytics tooling)
     print_warning "Killing all Python backend processes..."
-    ps aux 2>/dev/null | grep python | grep -E "(backend|main\.py|trade_manager|trade_executor|active_trade_supervisor|auto_entry_supervisor|symbol_price_watchdog|strike_table_generator|kalshi_account_sync|kalshi_market_watchdog|cascading_failure_detector|system_monitor)" | grep -v grep | grep -v "MASTER_RESTART" | awk '{print $2}' | xargs -r kill 2>/dev/null || true
+    ps aux 2>/dev/null | grep python | grep -E "(main\.py|trade_manager|trade_executor|active_trade_supervisor|auto_entry_supervisor|symbol_price_watchdog|strike_table_generator|kalshi_account_sync|kalshi_market_watchdog|cascading_failure_detector|system_monitor)" | grep -v grep | grep -v "MASTER_RESTART" | grep -Ev "(analytics_gui\.py|analytics_updater\.py|daily_update\.py|daily_update_lightweight\.py|symbol_data_fetch_pg\.py|momentum_generator_pg\.py|movement_generator_pg\.py|volatility_generator_pg\.py|fingerprint_generator_postgresql\.py|probability_lookup_generator\.py|symbol_profiler\.py)" | awk '{print $2}' | xargs -r kill 2>/dev/null || true
     
-    # Kill any processes with our project path in the command line - BULLETPROOF
+    # Kill any remaining project processes, but preserve analytics tooling
     print_warning "Killing processes with project path..."
-    ps aux 2>/dev/null | grep -E "(rec_io|rec_io_20)" | grep -v grep | grep -v "MASTER_RESTART" | awk '{print $2}' | xargs -r kill 2>/dev/null || true
+    ps aux 2>/dev/null | grep -E "(rec_io|rec_io_20)" | grep -v grep | grep -v "MASTER_RESTART" | grep -Ev "(analytics_gui\.py|analytics_updater\.py|daily_update\.py|daily_update_lightweight\.py|symbol_data_fetch_pg\.py|momentum_generator_pg\.py|movement_generator_pg\.py|volatility_generator_pg\.py|fingerprint_generator_postgresql\.py|probability_lookup_generator\.py|symbol_profiler\.py)" | awk '{print $2}' | xargs -r kill 2>/dev/null || true
     
     # Kill any processes using our ports - BULLETPROOF
     print_warning "Killing processes using our ports..."
@@ -570,9 +570,8 @@ emergency_restart() {
     print_warning "Killing all tail processes..."
     pkill -f "tail.*log" || true
     
-    # Kill all Python processes related to our project - MORE COMPREHENSIVE
+    # Kill core Python backend processes related to our project - MORE COMPREHENSIVE
     print_warning "Killing all Python backend processes..."
-    pkill -f "python.*backend" || true
     pkill -f "python.*main.py" || true
     pkill -f "python.*trade_manager.py" || true
     pkill -f "python.*trade_executor.py" || true
@@ -581,10 +580,9 @@ emergency_restart() {
     pkill -f "python.*kalshi_account_sync.py" || true
     pkill -f "python.*kalshi_market_watchdog.py" || true
     
-    # Kill any processes with our project path in the command line
+    # Kill any remaining project processes, excluding analytics tooling
     print_warning "Killing processes with project path..."
-    pkill -f "rec_io" || true
-    pkill -f "rec_io_20" || true
+    ps aux | grep -E "(rec_io|rec_io_20)" | grep -v grep | grep -v "MASTER_RESTART" | grep -Ev "(analytics_gui\.py|analytics_updater\.py|daily_update\.py|daily_update_lightweight\.py|symbol_data_fetch_pg\.py|momentum_generator_pg\.py|movement_generator_pg\.py|volatility_generator_pg\.py|fingerprint_generator_postgresql\.py|probability_lookup_generator\.py|symbol_profiler\.py)" | awk '{print $2}' | xargs -r kill -9 2>/dev/null || true
     
     # Kill any processes using our ports
     print_warning "Killing processes using our ports..."
@@ -592,9 +590,9 @@ emergency_restart() {
         lsof -ti :$port | xargs kill -9 2>/dev/null || true
     done
     
-    # Kill any remaining Python processes that might be ours
+    # Kill any remaining Python processes that might be ours (exclude analytics tooling)
     print_warning "Killing any remaining suspicious Python processes..."
-    ps aux | grep python | grep -E "(backend|trade|kalshi|btc)" | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null || true
+    ps aux | grep python | grep -E "(trade|kalshi|btc|eth|spx|ndx|xrp|sol)" | grep -v grep | grep -Ev "(analytics_gui\.py|analytics_updater\.py|daily_update\.py|daily_update_lightweight\.py|symbol_data_fetch_pg\.py|momentum_generator_pg\.py|movement_generator_pg\.py|volatility_generator_pg\.py|fingerprint_generator_postgresql\.py|probability_lookup_generator\.py|symbol_profiler\.py)" | awk '{print $2}' | xargs -r kill -9 2>/dev/null || true
     
     # Clean up socket files
     rm -f /tmp/supervisord.sock /tmp/supervisord.pid

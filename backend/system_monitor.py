@@ -136,8 +136,9 @@ class SystemMonitor:
                 {"name": "trade_executor", "script": "trade_executor.py"},
                 {"name": "symbol_price_watchdog_btc", "script": "symbol_price_watchdog.py BTC"},
                 {"name": "symbol_price_watchdog_eth", "script": "symbol_price_watchdog.py ETH"},
-                {"name": "symbol_price_watchdog_sol", "script": "symbol_price_watchdog.py SOL"},
-                {"name": "symbol_price_watchdog_xrp", "script": "symbol_price_watchdog.py XRP"},
+                # SOL/XRP watchdogs are not yet deployed in supervisor; do not include in health checks.
+                # {"name": "symbol_price_watchdog_sol", "script": "symbol_price_watchdog.py SOL"},
+                # {"name": "symbol_price_watchdog_xrp", "script": "symbol_price_watchdog.py XRP"},
                 # SPX/NDX not currently traded; uncomment to re-enable later.
                 # {"name": "symbol_price_watchdog_ndx", "script": "symbol_price_watchdog.py NDX"},
                 # {"name": "symbol_price_watchdog_spx", "script": "symbol_price_watchdog.py SPX"},
