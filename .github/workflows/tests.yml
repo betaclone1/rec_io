@@ -84,4 +84,4 @@ jobs:
 
       - name: Skip lint (no scoped Python changes)
         if: steps.changed_py.outputs.changed_files == ''
-        run: echo "Skipping Ruff: no changed Python files in backend/scripts db/config scope."
+        run: 'echo "Skipping Ruff: no changed Python files in backend/scripts db/config scope."'
