@@ -81,21 +81,20 @@
     <img src="/images/icons/backtester_icon.png" alt="Backtester" class="coming-soon-icon">
     <h1 class="coming-soon-title">Backtester</h1>
     <p class="coming-soon-subtitle">
-      Advanced backtesting engine for strategy validation and performance analysis. 
-      Test your trading strategies against historical data with comprehensive analytics.
+      Major initiative: dial in <strong>auto-trade settings</strong> (same dimensions as
+      <code>auto_entry_supervisor</code> and <code>monitor_list</code>), pick monitors and time ranges,
+      and review results in the browser. Today the engine runs as a CLI under
+      <code>scripts/backtest/</code>; this tab will become the interactive surface.
     </p>
     
     <div class="feature-list">
-      <h3>Coming Features:</h3>
+      <h3>Product direction (see repo <code>docs/BACKTESTING.md</code>)</h3>
       <ul>
-        <li>Historical data backtesting</li>
-        <li>Strategy performance metrics</li>
-        <li>Risk analysis and drawdown tracking</li>
-        <li>Parameter optimization</li>
-        <li>Real-time strategy comparison</li>
-        <li>Custom indicator testing</li>
-        <li>Portfolio backtesting</li>
-        <li>Export and reporting tools</li>
+        <li>Mirror everything the supervisor uses for <strong>entry</strong> (TTC window, prob, momentum, asks, cooldowns, etc.)</li>
+        <li>Historical + <strong>hypothetical</strong> economics (position size, fees, returns)</li>
+        <li><strong>TTC sweeps</strong> and <strong>multi-parameter search</strong> for better defaults</li>
+        <li>Elegant in-app tables and charts; export for review</li>
+        <li>Future: scheduled optimization and <strong>suggested</strong> setting updates within owner guardrails</li>
       </ul>
     </div>
   </div>

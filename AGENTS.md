@@ -4,6 +4,8 @@
 
 **DB changes (non-negotiable):** When the user asks to add or modify anything in the database (column, table, schema, etc.), do the full protocol: (1) create migration up/down in `scripts/migrations/`, (2) run `python3 scripts/db/run_migration.py up <migration_id>`, (3) update `docs/MASTER_DB_SCHEMA_REFERENCE.md`, (4) update `backend/core/config/database.py` and schema brain, (5) run `scripts/db/check_db_schema_drift.py`. No DB change is done until the migration has been applied.
 
+**Migration hygiene (non-negotiable for agents):** One logical schema change → **one** migration id (pair of files), batched DDL when it belongs together. Search existing migrations before adding a new id. If a draft was never applied, delete superseded pairs in the same change. Do not delete pairs that are already applied on prod without explicit owner decision (breaks `down` / history). See `.cursor/rules/05-db-migration-hygiene.mdc`.
+
 ---
 
 ## Workflow agents (PM, Explorer, Builder, Reviewer)
@@ -41,7 +43,7 @@
 | Agent | Role | Rule |
 |-------|------|------|
 | @db | DB operations, schema, migrations, reference. | .cursor/rules/db.mdc (or archive) |
-| @analyst | Production trade/price analysis, backtests, and strategy diagnostics. | docs/backtests/README.md (and method specs under docs/backtests/). |
+| @analyst | Production trade/price analysis, **auto-trade backtests** (`docs/BACKTESTING.md`), and strategy diagnostics. | `docs/BACKTESTING.md` (initiative + CLI); legacy `docs/backtests/` if present. |
 | @frontend | Frontend, HTML/JS/CSS, mobile, UI/UX. | .cursor/rules/frontend.mdc (or archive) |
 | @updater | Changelog, prepare update, production checklist. | .cursor/rules/updater.mdc (or archive) |
 | @kalshi | Kalshi API, WebSocket, broker. | .cursor/rules/kalshi.mdc (or archive) |
