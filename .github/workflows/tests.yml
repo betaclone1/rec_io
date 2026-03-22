@@ -78,10 +78,10 @@ jobs:
           fi
 
       - name: Lint changed files with ruff
-        if: steps.changed_py.outputs.changed_files != ''
+        if: ${{ steps.changed_py.outputs.changed_files != '' }}
         run: ruff check ${{ steps.changed_py.outputs.changed_files }} --ignore E501
         # E501 (line length) often ignored initially; tighten later
 
       - name: Skip lint (no scoped Python changes)
-        if: steps.changed_py.outputs.changed_files == ''
-        run: 'echo "Skipping Ruff: no changed Python files in backend/scripts db/config scope."'
+        if: ${{ steps.changed_py.outputs.changed_files == '' }}
+        run: echo "Skipping Ruff (no changed Python files in backend/scripts db/config scope)."
