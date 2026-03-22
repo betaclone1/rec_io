@@ -1,0 +1,27 @@
+---
+description: "Keep scripts/migrations lean: one pair per logical change, no abandoned drafts."
+alwaysApply: true
+---
+
+# DB migration hygiene (agent responsibility)
+
+Agents share responsibility for not bloating `scripts/migrations/`. The owner should not have to manually delete piles of one-off scripts.
+
+## Before you add files
+
+1. **Search** `scripts/migrations/` for the same table/feature. If a migration for this change is not yet applied anywhere, **extend that migration** (same `migration_id`) instead of adding a second pair.
+2. **One logical change → one `YYYYMMDD_HHMM_slug` pair** (`.up.sql` + `.down.sql`). Put all related DDL for that change in that pair (e.g. several columns on one table in one migration), not three pairs for one feature.
+3. **No speculative retries:** If you wrote a migration then changed approach **before** `run_migration.py up` was run on any shared DB, **delete the superseded `.up.sql`/`.down.sql` in the same change** as the replacement. Do not leave orphan drafts.
+
+## New tables (time-series / analytics)
+
+When adding a table keyed by an instant and intended to align with **`historical_data.*_price_history`**, put **`"timestamp" TIMESTAMP WITHOUT TIME ZONE`** (US Eastern wall time, no TZ — same convention as `symbol_data_fetch_pg.convert_utc_to_east_coast`) as the **first** column in `CREATE TABLE`, then business keys (e.g. `end_period_ts`). Avoid storing full raw API blobs in DB columns unless there is a clear retention need.
+
+## After you add files
+
+4. **Same PR / same task:** Complete the full DB protocol (migration + apply where appropriate + schema reference + drift check per `AGENTS.md`). Half-finished migrations left in the tree are debt.
+5. **Do not delete** migration pairs that may already be in `system.schema_migrations` on prod (or you break `down` and confuse history). Cleanup of **applied** migrations is **archive/rename policy** only, and only when the user explicitly wants it and understands the runner implications.
+
+## Summary
+
+Prefer **fewer, larger, coherent migrations** over many tiny timestamped files. Remove **unapplied** mistakes; never silently remove **applied** history.

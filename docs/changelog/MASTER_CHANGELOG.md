@@ -6,6 +6,40 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-22 — Backtesting stack, auto-entry HTC gates, testing Kalshi 1m candle tables, migration hygiene rules
+
+**Summary**
+- **Backtesting / analytics:** Expanded backtest tooling (`core_backtester.py`, market simulator, price estimator, Kalshi candle helpers, risk/HTC replay helpers), updated `docs/BACKTESTING.md` / `docs/backtests/README.md`, and added `docs/BACKTEST_PRICE_ESTIMATOR.md`.
+- **Auto-entry:** `auto_entry_supervisor` updates plus new `backend/util/auto_entry_htc_gates.py` for HTC-style gating behavior.
+- **Dashboard:** Desktop and mobile dashboard HTML updates aligned with ongoing MTB / backtest UX work.
+- **Testing schema (PostgreSQL):** Reversible migrations add/iterate `testing` candlestick 1m tables for specific Kalshi tickers (see ordered list below). Optional one-off populate scripts under `scripts/testing/`.
+- **Agent governance:** `AGENTS.md` and `.cursor/rules/05-db-migration-hygiene.mdc` — batch DDL, one migration id per logical change, delete unapplied superseded pairs; `scripts/migrations/README.md` and Builder skill cross-links.
+
+Plans: `candlestick-charting-frontend` (partial / experimental tables), `paper-trade-fee-estimates` (context), prior backtest initiative commit on branch.
+
+**DB migrations (required on production, in lexicographic / dependency order)**
+
+1. `20260321_2200_testing_candlesticks_1m_kxbtcd_26mar2116`
+2. `20260321_2300_testing_candlesticks_1m_timestamp_est`
+3. `20260322_1000_testing_candlesticks_1m_drop_payload_timestamp_first`
+4. `20260322_1400_testing_candlesticks_1m_kxbtcd_26jan1320`
+5. `20260322_1420_testing_candlesticks_1m_kxbtc15m_26mar191745_45`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations in order (from project root):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260321_2200_testing_candlesticks_1m_kxbtcd_26mar2116`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260321_2300_testing_candlesticks_1m_timestamp_est`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260322_1000_testing_candlesticks_1m_drop_payload_timestamp_first`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260322_1400_testing_candlesticks_1m_kxbtcd_26jan1320`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260322_1420_testing_candlesticks_1m_kxbtc15m_26mar191745_45`
+- [ ] Restart application services:  
+  `./scripts/MASTER_RESTART.sh`
+- [ ] Verify: health (`main_app` :3000, `trade_executor` :8001), supervisor `RUNNING`; optional — confirm `testing` candlestick tables exist if using backfill scripts.
+
+---
+
 ## 2026-03-21 — Regime monitor: rolling sum uses `ret_pct`
 
 **Summary**

@@ -43,7 +43,7 @@
 | Agent | Role | Rule |
 |-------|------|------|
 | @db | DB operations, schema, migrations, reference. | .cursor/rules/db.mdc (or archive) |
-| @analyst | Production trade/price analysis, **auto-trade backtests** (`docs/BACKTESTING.md`), and strategy diagnostics. | `docs/BACKTESTING.md` (initiative + CLI); legacy `docs/backtests/` if present. |
+| @analyst | Production trade/price analysis, **auto-trade backtests** (`docs/BACKTESTING.md`), **hypothetical fill pricing** (`docs/BACKTEST_PRICE_ESTIMATOR.md`), strategy diagnostics. | `docs/BACKTESTING.md`; `docs/BACKTEST_PRICE_ESTIMATOR.md`; legacy `docs/backtests/` if present. |
 | @frontend | Frontend, HTML/JS/CSS, mobile, UI/UX. | .cursor/rules/frontend.mdc (or archive) |
 | @updater | Changelog, prepare update, production checklist. | .cursor/rules/updater.mdc (or archive) |
 | @kalshi | Kalshi API, WebSocket, broker. | .cursor/rules/kalshi.mdc (or archive) |

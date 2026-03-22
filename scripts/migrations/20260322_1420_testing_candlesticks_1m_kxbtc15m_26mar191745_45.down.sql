@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS testing."candlesticks_1m_KXBTC15M-26MAR191745-45";

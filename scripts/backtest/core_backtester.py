@@ -49,6 +49,21 @@ contribution in %-points); use ``mean_ret_pct`` for per-trade average. Requires
 ``--hypothetical-position``. Grids: ``--optimize-ttc-min-range`` / ``--optimize-ttc-max-range``
 (``LO:HI`` minutes) and ``--optimize-ttc-step-seconds``.
 
+**Risk replay (loss prevention + sizing + optional regime):** ``--lp-streak-threshold-sweep LOW:HIGH``
+replays cycles like ``trade_manager`` (ticker-prefix cycles; momentum = one streak increment per
+winning cycle). Position contracts use ``monitor_manager`` math: ``percent`` mode uses
+``bankroll_allotment_total`` and each row's ``multiplier``; PBA applies ``current_max_pct_exposure``
+cap when ``performance_based_allocation`` is on. Optional ``--lp-sweep-apply-regime`` drops rows that
+would be paper-only under ``regime_monitor`` (rolling sum of prior ``ret_pct`` in ``regime_window``).
+Mutually exclusive with ``--hypothetical-position`` and TTC optimization flags.
+Optional ``--compound-start-usd`` (with the LP sweep): trades processed in global time order; bankroll
+starts at that USD amount (cent-rounded); each closed trade adds hypo PnL; **percent** sizing uses
+the running balance as the allotment dollars base; ``sum_hypo_ret_pct`` becomes the sum of
+``100 * pnl / entry_balance`` per trade (``sum_hypo_ret_pct_base`` is 0 in this mode).
+
+**Combo grid:** ``--combo-risk-grid`` + ``--compound-start-usd`` grids min-prob, TTC band, and LP
+threshold; objective is **total return %** ``(ending/start-1)×100`` on the compounded bankroll.
+
 Uses ``created_at`` (timestamptz) for the window. Default: exclude ``test_filter=TRUE``.
 
 DB: ``scripts/backtest/helpers/db.py`` (SSH prod default, etc.).
@@ -56,19 +71,19 @@ DB: ``scripts/backtest/helpers/db.py`` (SSH prod default, etc.).
 **Initiative (scope, supervisor parity, minutes vs seconds, UI roadmap):** ``docs/BACKTESTING.md``.
 
 Example:
-  python3 scripts/backtest/simple_backtest.py \\
+  python3 scripts/backtest/core_backtester.py \\
     --monitors mon_0001_10002 \\
     --start 2026-01-01T00:00:00-05:00 \\
     --end 2027-01-01T00:00:00-05:00 \\
     --min-prob 96 --paper live
 
-  python3 scripts/backtest/simple_backtest.py \\
+  python3 scripts/backtest/core_backtester.py \\
     --monitors mon_0001_10002 \\
     --start 2026-01-01T00:00:00-05:00 \\
     --end 2027-01-01T00:00:00-05:00 \\
     --min-prob 97 --trade-filter momentum_percentile:gte:50
 
-  python3 scripts/backtest/simple_backtest.py \\
+  python3 scripts/backtest/core_backtester.py \\
     --monitors mon_0001_10026 \\
     --start 2026-03-01T00:00:00-05:00 \\
     --end 2026-04-01T00:00:00-05:00 \\
@@ -94,10 +109,15 @@ from scripts.backtest.helpers.constants import TRADES_TABLE
 from scripts.backtest.helpers.db import get_connection
 from scripts.backtest.helpers.filters import exclude_test_filter_sql
 from scripts.backtest.helpers.monitor_context import (
+    fetch_monitor_risk_settings,
     fetch_monitor_settings,
     format_monitor_settings_brief,
     is_cycle_based_strategy,
     parse_monitor_token,
+)
+from scripts.backtest.helpers.risk_replay import (
+    replay_loss_prevention_threshold,
+    sweep_loss_prevention_thresholds,
 )
 from scripts.backtest.helpers.trade_filters import (
     TradeWhereParts,
@@ -170,6 +190,24 @@ def _parse_grid_step_seconds(s: str) -> float:
         raise argparse.ArgumentTypeError(
             "grid step seconds must be >= 1 (finest supported step is one second)"
         )
+
+
+def _parse_lp_streak_sweep(s: str) -> tuple[int, int]:
+    """Inclusive integer range ``LOW:HIGH`` for win_streak_threshold sweep (order-independent)."""
+    parts = s.strip().split(":")
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError(
+            f"Expected LOW:HIGH for --lp-streak-threshold-sweep (e.g. 1:30); got {s!r}"
+        )
+    try:
+        a = int(parts[0].strip())
+        b = int(parts[1].strip())
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"Invalid integer bounds in {s!r}") from e
+    if a < 1 or b < 1:
+        raise argparse.ArgumentTypeError("LP streak sweep bounds must be >= 1")
+    lo, hi = (a, b) if a <= b else (b, a)
+    return (lo, hi)
     return x
 
 
@@ -458,6 +496,395 @@ def fetch_hypothetical_enriched_bundles(
     finally:
         conn.close()
     return bundles
+
+
+def _objective_from_replay_result(
+    res: Any,
+    objective: str,
+) -> float:
+    if objective == "sum_ret_pct":
+        return float(res.sum_hypo_ret_pct)
+    if objective == "sum_ret_pct_base":
+        return float(res.sum_hypo_ret_pct_base)
+    if objective == "sum_pnl":
+        return float(res.sum_hypo_pnl)
+    raise ValueError(objective)
+
+
+def _total_return_pct_compound(res: Any) -> float:
+    """Whole-period return vs starting compound bankroll (percent points)."""
+    fc = res.final_bankroll_cents
+    sc = res.compound_start_cents
+    if fc is None or sc is None or sc <= 0:
+        return float("-inf")
+    return (fc / sc - 1.0) * 100.0
+
+
+def _parse_combo_prob_range(s: str) -> tuple[float, float, float]:
+    """``LOW:HIGH:STEP`` for min-probability grid (DB scale, e.g. 90:98:2)."""
+    parts = s.strip().split(":")
+    if len(parts) != 3:
+        raise argparse.ArgumentTypeError(
+            f"Expected LOW:HIGH:STEP for combo prob grid (e.g. 90:98:2); got {s!r}"
+        )
+    try:
+        lo, hi, step = float(parts[0]), float(parts[1]), float(parts[2])
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"Invalid combo prob range {s!r}") from e
+    if step <= 0:
+        raise argparse.ArgumentTypeError("combo prob STEP must be positive")
+    if lo > hi:
+        lo, hi = hi, lo
+    return (lo, hi, step)
+
+
+def _prob_grid_values(lo: float, hi: float, step: float) -> list[float]:
+    out: list[float] = []
+    x = lo
+    n = 0
+    while x <= hi + 1e-9:
+        out.append(round(x, 6))
+        x += step
+        n += 1
+        if n > 50_000:
+            raise ValueError("prob grid exceeded 50000 points; increase STEP")
+    return out
+
+
+_COMBO_GRID_MAX_EVALS = 500_000
+
+
+def _filter_enriched_for_combo(
+    enriched: Sequence[dict[str, Any]],
+    *,
+    min_prob: float,
+    min_ttc: float,
+    max_ttc: float,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for r in enriched:
+        p = r.get("prob")
+        try:
+            pv = float(p) if p is not None else None
+        except (TypeError, ValueError):
+            pv = None
+        if pv is None or pv < min_prob:
+            continue
+        ttc = r.get("_ttc")
+        if ttc is None:
+            continue
+        if ttc < min_ttc or ttc > max_ttc:
+            continue
+        out.append(r)
+    return out
+
+
+def _run_combo_risk_grid_for_monitor(
+    *,
+    monitor: str,
+    risk: dict[str, Any],
+    enriched: list[dict[str, Any]],
+    compound_cents: int,
+    prob_lo: float,
+    prob_hi: float,
+    prob_step: float,
+    ttc_min_range: tuple[float, float],
+    ttc_max_range: tuple[float, float],
+    ttc_step_seconds: float,
+    lp_lo: int,
+    lp_hi: int,
+    min_closed_trades: int,
+    apply_regime_filter: bool,
+) -> tuple[list[dict[str, Any]], int, int]:
+    """
+    Cartesian grid: min_prob × (min_ttc,max_ttc TTC band) × LP threshold.
+    Objective: maximize total return % vs compound start (final/start-1)*100.
+    Returns (sorted results desc, skipped_short_filter_combos, eval_count).
+    """
+    prob_vals = _prob_grid_values(prob_lo, prob_hi, prob_step)
+    min_grid = _minute_grid_ascending(ttc_min_range[0], ttc_min_range[1], ttc_step_seconds)
+    max_grid = _minute_grid_ascending(ttc_max_range[0], ttc_max_range[1], ttc_step_seconds)
+    pair_count = sum(1 for mn in min_grid for mx in max_grid if mn <= mx)
+    eval_count = pair_count * len(prob_vals) * (lp_hi - lp_lo + 1)
+    if eval_count > _COMBO_GRID_MAX_EVALS:
+        raise ValueError(
+            f"combo grid would run {eval_count} replays (cap {_COMBO_GRID_MAX_EVALS}); "
+            "widen --combo-ttc-step-seconds, narrow prob/LP/TTC ranges, or raise cap in code"
+        )
+
+    results: list[dict[str, Any]] = []
+    skipped_short = 0
+    ran = 0
+    for min_prob in prob_vals:
+        for mn in min_grid:
+            for mx in max_grid:
+                if mn > mx:
+                    continue
+                filtered = _filter_enriched_for_combo(
+                    enriched, min_prob=min_prob, min_ttc=mn, max_ttc=mx
+                )
+                closed_ct = sum(
+                    1
+                    for r in filtered
+                    if str(r.get("status") or "").strip().lower() in ("closed", "settled")
+                )
+                if closed_ct < min_closed_trades:
+                    skipped_short += 1
+                    continue
+                clean_rows = [{k: v for k, v in r.items() if k != "_ttc"} for r in filtered]
+                for lp_th in range(lp_lo, lp_hi + 1):
+                    res = replay_loss_prevention_threshold(
+                        clean_rows,
+                        risk,
+                        win_streak_threshold=lp_th,
+                        apply_regime_filter=apply_regime_filter,
+                        compound_start_cents=compound_cents,
+                    )
+                    ran += 1
+                    tr = _total_return_pct_compound(res)
+                    results.append(
+                        {
+                            "monitor": monitor,
+                            "min_prob": float(min_prob),
+                            "min_ttc": float(mn),
+                            "max_ttc": float(mx),
+                            "lp_threshold": int(lp_th),
+                            "total_return_pct": float(tr),
+                            "sum_hypo_ret_pct": float(res.sum_hypo_ret_pct),
+                            "sum_hypo_pnl": float(res.sum_hypo_pnl),
+                            "final_bankroll_cents": res.final_bankroll_cents,
+                            "closed_trades": int(res.closed_trades_count),
+                        }
+                    )
+    results.sort(key=lambda r: r["total_return_pct"], reverse=True)
+    return results, skipped_short, ran
+
+
+def _print_combo_pool_diagnostics(enriched: Sequence[dict[str, Any]], *, ttc_timezone: str) -> None:
+    """Observed prob/TTC on closed/settled rows in the wide fetch (before combo filters)."""
+    probs: list[float] = []
+    ttcs: list[float] = []
+    for r in enriched:
+        if str(r.get("status") or "").strip().lower() not in ("closed", "settled"):
+            continue
+        p = r.get("prob")
+        try:
+            if p is not None:
+                probs.append(float(p))
+        except (TypeError, ValueError):
+            pass
+        t = r.get("_ttc")
+        if t is not None:
+            ttcs.append(float(t))
+    print("  Wide-pool diagnostics (closed/settled only, before prob/TTC grid filters):")
+    if probs:
+        print(
+            f"    t.prob: min={min(probs):.4g} max={max(probs):.4g} "
+            "(same scale as --min-prob; typically 0–100)"
+        )
+    else:
+        print("    t.prob: (no numeric values on closed/settled rows)")
+    if ttcs:
+        print(
+            f"    open→next-boundary TTC min ({ttc_timezone}): "
+            f"min={min(ttcs):.4g} max={max(ttcs):.4g} minutes"
+        )
+    else:
+        print(f"    TTC: (none computed; check created_at / timezone)")
+    print()
+
+
+def _print_combo_risk_grid_report(
+    monitor: str,
+    rows: list[dict[str, Any]],
+    *,
+    top_k: int,
+    compound_usd: float,
+    skipped_short: int,
+    filter_lines: list[str],
+    include_test_filter: bool,
+    eval_count: int,
+) -> None:
+    print("Active filters:")
+    for ln in filter_lines:
+        print(f"  {ln}")
+    print()
+    print(
+        "Combo risk grid: maximize **total return %** = (ending_bankroll / start - 1) × 100 "
+        f"with compound start {_fmt_usd_from_cents(int(round(compound_usd * 100)))}."
+    )
+    print(
+        "  Each point = filter trades by min_prob + open→next-boundary TTC band, "
+        "then compound LP replay over LP win_streak_threshold."
+    )
+    print(
+        "  Table columns are **filter settings**, not observed mins: e.g. min_prob=90 means "
+        "keep rows with prob>=90; if every row is already >=95, 90–94 are equivalent. "
+        "TTC max above your data max is non-binding (e.g. max=18 when all TTC<=15)."
+    )
+    note = (
+        "Including test_filter=TRUE rows."
+        if include_test_filter
+        else "Excluding test_filter=TRUE rows (default)."
+    )
+    print(f"  {note}")
+    print(
+        f"  Replay evaluations: {eval_count}  "
+        f"(skipped min-prob×TTC combos with too few closed: {skipped_short})"
+    )
+    print()
+
+    print(f"  Top {min(top_k, len(rows))} grid points by total_return_pct")
+    hdr = (
+        "rank",
+        "total_ret%",
+        "min_prob",
+        "min_ttc",
+        "max_ttc",
+        "lp_thr",
+        "closed",
+        "ending$",
+    )
+    show = rows[:top_k]
+    body: list[list[str]] = []
+    for i, r in enumerate(show, start=1):
+        body.append(
+            [
+                str(i),
+                f"{r['total_return_pct']:.4f}",
+                f"{r['min_prob']:.4g}",
+                f"{r['min_ttc']:.6g}",
+                f"{r['max_ttc']:.6g}",
+                str(r["lp_threshold"]),
+                str(r["closed_trades"]),
+                _fmt_usd_from_cents(r["final_bankroll_cents"]),
+            ]
+        )
+    print(_text_table(list(hdr), body, aligns=["r"] * len(hdr), indent="  "))
+    print()
+    if rows:
+        b = rows[0]
+        print(
+            "  Best: "
+            f"min_prob>={b['min_prob']:.4g}  "
+            f"TTC [{b['min_ttc']:.4g},{b['max_ttc']:.4g}] min  "
+            f"LP streak threshold={b['lp_threshold']}  "
+            f"total_ret%={b['total_return_pct']:.4f}  "
+            f"ending={_fmt_usd_from_cents(b['final_bankroll_cents'])}  "
+            f"closed={b['closed_trades']}"
+        )
+
+
+def _fmt_usd_from_cents(cents: int | None) -> str:
+    if cents is None:
+        return "n/a"
+    return f"${cents / 100.0:,.2f}"
+
+
+def _print_lp_streak_threshold_sweep_report(
+    blocks: list[dict[str, Any]],
+    *,
+    include_test_filter: bool,
+    filter_lines: list[str],
+    sweep_lo: int,
+    sweep_hi: int,
+    apply_regime: bool,
+    objective: str,
+    compound_start_usd: float | None,
+) -> None:
+    print("Active filters:")
+    for ln in filter_lines:
+        print(f"  {ln}")
+    print()
+    print(
+        "Loss-prevention + dynamic sizing replay: cycle grouping matches trade_manager "
+        "(ticker prefix); position contracts match monitor_manager (percent×allotment×trade "
+        "multiplier, PBA max_pct cap when performance_based_allocation is on)."
+    )
+    print(
+        f"  Sweep win_streak_threshold: {sweep_lo}..{sweep_hi} (inclusive). "
+        f"Objective: maximize {objective}."
+    )
+    print(
+        f"  Regime pre-filter (rolling sum ret_pct): {'on' if apply_regime else 'off'} "
+        "(when on, uses monitor regime_monitor_enabled / regime_window)."
+    )
+    note = (
+        "Including test_filter=TRUE rows."
+        if include_test_filter
+        else "Excluding test_filter=TRUE rows (default)."
+    )
+    print(f"  {note}")
+    if compound_start_usd is not None:
+        print(
+            f"  Compounding: start {_fmt_usd_from_cents(int(round(compound_start_usd * 100)))} "
+            "(percent strategies size from running balance after each trade; "
+            "sum_hypo_ret_pct = sum of per-trade 100×pnl/entry_balance; "
+            "sum_hypo_ret_pct_base column is 0)."
+        )
+    print()
+
+    for blk in blocks:
+        print(f"--- {blk['monitor']} ---")
+        risk = blk.get("risk") or {}
+        print(
+            f"  strategy={risk.get('strategy')!r}  "
+            f"position={risk.get('position_size')} {risk.get('position_type')!r}  "
+            f"PBA={risk.get('performance_based_allocation')}  "
+            f"allotment_total_cents={risk.get('bankroll_allotment_total')}  "
+            f"loss_prevention_toggle={risk.get('loss_prevention_toggle')}  "
+            f"DB win_streak_threshold={risk.get('win_streak_threshold')}"
+        )
+        if apply_regime and risk.get("regime_monitor_enabled"):
+            print(
+                f"  regime: enabled  window={risk.get('regime_window')!r} "
+                "(threshold sum ret_pct < 0 would be paper-only; those rows skipped)"
+            )
+        elif apply_regime:
+            print("  regime: disabled on monitor (pre-filter is a no-op)")
+        print()
+        hdr = ("thr", "sum_hypo_ret_pct", "sum_hypo_ret_base", "sum_hypo_pnl", "n_closed")
+        aligns = ("r", "r", "r", "r", "r")
+        lines = []
+        for th, rres, _score in blk["sweep_rows"]:
+            lines.append(
+                [
+                    str(th),
+                    f"{rres.sum_hypo_ret_pct:.6g}",
+                    f"{rres.sum_hypo_ret_pct_base:.6g}",
+                    f"{rres.sum_hypo_pnl:.2f}",
+                    str(rres.closed_trades_count),
+                ]
+            )
+        print(_text_table(list(hdr), lines, aligns=list(aligns), indent="  "))
+        best = blk.get("best")
+        if best:
+            bth, br, bsc = best
+            print()
+            end_b = (
+                f"  ending_bankroll={_fmt_usd_from_cents(br.final_bankroll_cents)}"
+                if br.final_bankroll_cents is not None
+                else ""
+            )
+            print(
+                f"  Best threshold={bth}  {objective}={bsc:.6g}  "
+                f"sum_hypo_ret_pct={br.sum_hypo_ret_pct:.6g}  "
+                f"closed_trades={br.closed_trades_count}{end_b}"
+            )
+        cur_th = risk.get("win_streak_threshold")
+        if cur_th is not None and blk.get("baseline") is not None:
+            br0 = blk["baseline"]
+            print()
+            end0 = (
+                f"  ending_bankroll={_fmt_usd_from_cents(br0.final_bankroll_cents)}"
+                if br0.final_bankroll_cents is not None
+                else ""
+            )
+            print(
+                f"  At DB threshold={cur_th}: sum_hypo_ret_pct={br0.sum_hypo_ret_pct:.6g}  "
+                f"sum_hypo_pnl={br0.sum_hypo_pnl:.2f}  closed={br0.closed_trades_count}{end0}"
+            )
+        print()
 
 
 def _print_optimize_ttc_window_report(
@@ -881,6 +1308,34 @@ def _fetch_raw_trade_rows(
             t.buy_price, t.sell_price, t.position,
             t.bankroll, t.mtb_base_value, t.prob, t.paper_trade,
             t.win_loss, t.contract, t.date, t.trade_strategy
+        FROM {TRADES_TABLE} t
+        WHERE t.monitor = %s
+          AND t.created_at >= %s AND t.created_at < %s
+          {test_clause}
+          {extra.sql()}
+        ORDER BY t.created_at
+    """
+    cur.execute(sql, (monitor, start, end, *extra.params))
+    cols = [d[0] for d in cur.description]
+    rows = cur.fetchall()
+    return [dict(zip(cols, row)) for row in rows]
+
+
+def _fetch_risk_replay_trade_rows(
+    cur,
+    monitor: str,
+    start: datetime,
+    end: datetime,
+    test_clause: str,
+    extra: TradeWhereParts,
+) -> list[dict[str, Any]]:
+    sql = f"""
+        SELECT
+            t.id, t.created_at, t.closed_at, t.status,
+            t.buy_price, t.sell_price, t.position,
+            t.bankroll, t.mtb_base_value, t.prob, t.paper_trade,
+            t.win_loss, t.contract, t.date, t.trade_strategy,
+            t.ticker, t.multiplier, t.weekly_cycle, t.ret_pct
         FROM {TRADES_TABLE} t
         WHERE t.monitor = %s
           AND t.created_at >= %s AND t.created_at < %s
@@ -1748,6 +2203,103 @@ def main(argv: list[str] | None = None) -> int:
             "Use 1 to include narrow windows (mean_* can spike on one trade)."
         ),
     )
+    p.add_argument(
+        "--lp-streak-threshold-sweep",
+        type=_parse_lp_streak_sweep,
+        default=None,
+        metavar="LOW:HIGH",
+        help=(
+            "Replay loss prevention + dynamic sizing (monitor percent/contracts × each trade's "
+            "multiplier, PBA max_pct cap). Sweep integer win_streak_threshold from LOW through "
+            "HIGH inclusive; rank by --lp-sweep-objective. Mutually exclusive with "
+            "--hypothetical-position and TTC optimization/sweep flags."
+        ),
+    )
+    p.add_argument(
+        "--lp-sweep-apply-regime",
+        action="store_true",
+        help=(
+            "With --lp-streak-threshold-sweep: drop trades that would be paper-only under "
+            "regime_monitor (rolling sum of prior ret_pct in regime_window < 0)."
+        ),
+    )
+    p.add_argument(
+        "--lp-sweep-objective",
+        choices=("sum_ret_pct", "sum_ret_pct_base", "sum_pnl"),
+        default="sum_ret_pct",
+        help="Metric to maximize for --lp-streak-threshold-sweep (default sum_ret_pct).",
+    )
+    p.add_argument(
+        "--compound-start-usd",
+        type=float,
+        default=None,
+        metavar="USD",
+        help=(
+            "Starting bankroll in US dollars for compound replay (e.g. 5000). Required with "
+            "--combo-risk-grid; with --lp-streak-threshold-sweep optional. "
+            "Trades run in global time order; balance compounds after each closed trade; "
+            "percent sizing uses the running balance."
+        ),
+    )
+    p.add_argument(
+        "--combo-risk-grid",
+        action="store_true",
+        help=(
+            "Grid search: (--combo-min-prob-range) × TTC band × (--combo-lp-range) LP thresholds. "
+            "Requires --compound-start-usd. Maximizes total return %% = (final/start-1)×100. "
+            "One DB fetch per monitor; filters in Python. Mutually exclusive with LP sweep, "
+            "hypothetical position, and TTC optimize/sweep."
+        ),
+    )
+    p.add_argument(
+        "--combo-min-prob-range",
+        type=_parse_combo_prob_range,
+        default=_parse_combo_prob_range("90:98:2"),
+        metavar="LO:HI:STEP",
+        help="Min t.prob grid (DB scale). Default 90:98:2.",
+    )
+    p.add_argument(
+        "--combo-lp-range",
+        type=_parse_lp_streak_sweep,
+        default=_parse_lp_streak_sweep("1:30"),
+        metavar="LO:HI",
+        help="Inclusive LP win_streak_threshold sweep. Default 1:30.",
+    )
+    p.add_argument(
+        "--combo-ttc-min-range",
+        type=_parse_max_ttc_sweep,
+        default=(0.0, 30.0),
+        metavar="LO:HI",
+        help="Grid axis for MIN open→next-boundary TTC (minutes). Default 0:30.",
+    )
+    p.add_argument(
+        "--combo-ttc-max-range",
+        type=_parse_max_ttc_sweep,
+        default=(0.0, 30.0),
+        metavar="LO:HI",
+        help="Grid axis for MAX open→next-boundary TTC (minutes). Default 0:30.",
+    )
+    p.add_argument(
+        "--combo-ttc-step-seconds",
+        type=_parse_grid_step_seconds,
+        default=180.0,
+        metavar="SEC",
+        help="Step for both TTC axes on the combo grid (default 180 = 3 min). Minimum 1.",
+    )
+    p.add_argument(
+        "--combo-min-closed-trades",
+        type=int,
+        default=30,
+        metavar="K",
+        help="Skip a (min_prob,TTC band) slice if fewer than K closed/settled trades (default 30).",
+    )
+    p.add_argument(
+        "--combo-top",
+        type=int,
+        default=25,
+        metavar="N",
+        help="Print top N grid points per monitor (default 25).",
+    )
     args = p.parse_args(argv)
 
     if args.end <= args.start:
@@ -1801,6 +2353,301 @@ def main(argv: list[str] | None = None) -> int:
     if args.optimize_ttc_min_closed_trades < 1:
         print("error: --optimize-ttc-min-closed-trades must be >= 1", file=sys.stderr)
         return 2
+
+    if args.compound_start_usd is not None:
+        if args.lp_streak_threshold_sweep is None and not args.combo_risk_grid:
+            print(
+                "error: --compound-start-usd requires --lp-streak-threshold-sweep or --combo-risk-grid",
+                file=sys.stderr,
+            )
+            return 2
+        if args.compound_start_usd <= 0:
+            print("error: --compound-start-usd must be positive", file=sys.stderr)
+            return 2
+
+    if args.combo_risk_grid:
+        if args.compound_start_usd is None:
+            print(
+                "error: --combo-risk-grid requires --compound-start-usd",
+                file=sys.stderr,
+            )
+            return 2
+        if args.lp_streak_threshold_sweep is not None:
+            print(
+                "error: use either --combo-risk-grid or --lp-streak-threshold-sweep, not both",
+                file=sys.stderr,
+            )
+            return 2
+        if args.hypothetical_position is not None:
+            print(
+                "error: --combo-risk-grid cannot be combined with --hypothetical-position",
+                file=sys.stderr,
+            )
+            return 2
+        if args.optimize_ttc_window:
+            print(
+                "error: --combo-risk-grid cannot be combined with --optimize-ttc-window",
+                file=sys.stderr,
+            )
+            return 2
+        if args.max_ttc_sweep is not None:
+            print(
+                "error: --combo-risk-grid cannot be combined with --max-ttc-sweep",
+                file=sys.stderr,
+            )
+            return 2
+        if args.min_prob is not None or args.max_prob is not None:
+            print(
+                "error: --combo-risk-grid uses --combo-min-prob-range; "
+                "do not pass --min-prob or --max-prob",
+                file=sys.stderr,
+            )
+            return 2
+        if args.min_ttc_minutes is not None or args.max_ttc_minutes is not None:
+            print(
+                "error: --combo-risk-grid uses --combo-ttc-*-range; "
+                "do not pass --min-ttc-minutes or --max-ttc-minutes",
+                file=sys.stderr,
+            )
+            return 2
+        if args.combo_top < 1:
+            print("error: --combo-top must be >= 1", file=sys.stderr)
+            return 2
+        if args.combo_min_closed_trades < 1:
+            print("error: --combo-min-closed-trades must be >= 1", file=sys.stderr)
+            return 2
+
+        compound_cents = int(round(float(args.compound_start_usd) * 100.0))
+        if compound_cents < 1:
+            print("error: --compound-start-usd rounds to < 1 cent", file=sys.stderr)
+            return 2
+        pl_lo, pl_hi = args.combo_lp_range
+        prob_lo, prob_hi, prob_step = args.combo_min_prob_range
+        test_clause = _test_clause(args.include_test_filter)
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                for monitor in args.monitors:
+                    parsed = parse_monitor_token(monitor)
+                    if not parsed:
+                        print(f"error: cannot parse monitor label {monitor!r}", file=sys.stderr)
+                        return 2
+                    u, mid = parsed
+                    risk = fetch_monitor_risk_settings(cur, u, mid)
+                    if not risk:
+                        print(
+                            f"error: no monitor_list row for {monitor} (user {u} id {mid})",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    strategy = risk.get("strategy")
+                    grid_15m = strategy_implies_15m_ttc_grid(strategy)
+                    extra = build_trade_where_parts(
+                        paper_mode=args.paper,
+                        min_prob=None,
+                        max_prob=None,
+                        min_ttc_minutes=None,
+                        max_ttc_minutes=None,
+                        ttc_timezone=args.ttc_timezone,
+                        ttc_grid_15m=grid_15m,
+                        trade_filters=args.trade_filter or [],
+                    )
+                    raw = _fetch_risk_replay_trade_rows(
+                        cur, monitor, args.start, args.end, test_clause, extra
+                    )
+                    enriched: list[dict[str, Any]] = []
+                    for r in raw:
+                        ttc = open_to_next_boundary_minutes(
+                            r["created_at"],
+                            args.ttc_timezone,
+                            grid_15m=grid_15m,
+                        )
+                        enriched.append({**r, "_ttc": ttc})
+                    print(f"--- {monitor} (combo grid) ---")
+                    _print_combo_pool_diagnostics(
+                        enriched, ttc_timezone=args.ttc_timezone
+                    )
+                    try:
+                        rows_out, skipped_short, ran = _run_combo_risk_grid_for_monitor(
+                            monitor=monitor,
+                            risk=risk,
+                            enriched=enriched,
+                            compound_cents=compound_cents,
+                            prob_lo=prob_lo,
+                            prob_hi=prob_hi,
+                            prob_step=prob_step,
+                            ttc_min_range=args.combo_ttc_min_range,
+                            ttc_max_range=args.combo_ttc_max_range,
+                            ttc_step_seconds=args.combo_ttc_step_seconds,
+                            lp_lo=pl_lo,
+                            lp_hi=pl_hi,
+                            min_closed_trades=args.combo_min_closed_trades,
+                            apply_regime_filter=args.lp_sweep_apply_regime,
+                        )
+                    except ValueError as e:
+                        print(f"error: {e}", file=sys.stderr)
+                        return 2
+                    filter_lines = format_filters_for_display(
+                        paper_mode=args.paper,
+                        min_prob=None,
+                        max_prob=None,
+                        min_ttc=None,
+                        max_ttc=None,
+                        ttc_timezone=args.ttc_timezone,
+                        trade_filters=args.trade_filter or [],
+                    )
+                    filter_lines.append(
+                        "TTC stepping: 15m grid if monitor strategy contains '15m'; else hourly."
+                    )
+                    filter_lines.append(
+                        f"combo grid prob {prob_lo:g}:{prob_hi:g} step {prob_step:g}; "
+                        f"LP {pl_lo}..{pl_hi}; TTC min axis {args.combo_ttc_min_range}; "
+                        f"TTC max axis {args.combo_ttc_max_range}; step {args.combo_ttc_step_seconds:g}s"
+                    )
+                    _print_combo_risk_grid_report(
+                        monitor,
+                        rows_out,
+                        top_k=args.combo_top,
+                        compound_usd=float(args.compound_start_usd),
+                        skipped_short=skipped_short,
+                        filter_lines=filter_lines,
+                        include_test_filter=args.include_test_filter,
+                        eval_count=ran,
+                    )
+        finally:
+            conn.close()
+        return 0
+
+    if args.lp_streak_threshold_sweep is not None:
+        if args.hypothetical_position is not None:
+            print(
+                "error: --lp-streak-threshold-sweep cannot be combined with --hypothetical-position",
+                file=sys.stderr,
+            )
+            return 2
+        if args.optimize_ttc_window:
+            print(
+                "error: --lp-streak-threshold-sweep cannot be combined with --optimize-ttc-window",
+                file=sys.stderr,
+            )
+            return 2
+        if args.max_ttc_sweep is not None:
+            print(
+                "error: --lp-streak-threshold-sweep cannot be combined with --max-ttc-sweep",
+                file=sys.stderr,
+            )
+            return 2
+
+    if args.lp_streak_threshold_sweep is not None:
+        lo, hi = args.lp_streak_threshold_sweep
+        compound_cents: int | None = None
+        if args.compound_start_usd is not None:
+            compound_cents = int(round(float(args.compound_start_usd) * 100.0))
+            if compound_cents < 1:
+                print("error: --compound-start-usd rounds to < 1 cent", file=sys.stderr)
+                return 2
+        test_clause = _test_clause(args.include_test_filter)
+        blocks: list[dict[str, Any]] = []
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                for monitor in args.monitors:
+                    parsed = parse_monitor_token(monitor)
+                    if not parsed:
+                        print(f"error: cannot parse monitor label {monitor!r}", file=sys.stderr)
+                        return 2
+                    u, mid = parsed
+                    risk = fetch_monitor_risk_settings(cur, u, mid)
+                    if not risk:
+                        print(
+                            f"error: no monitor_list row for {monitor} (user {u} id {mid})",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    strategy = risk.get("strategy")
+                    grid_15m = strategy_implies_15m_ttc_grid(strategy)
+                    extra = build_trade_where_parts(
+                        paper_mode=args.paper,
+                        min_prob=args.min_prob,
+                        max_prob=args.max_prob,
+                        min_ttc_minutes=args.min_ttc_minutes,
+                        max_ttc_minutes=args.max_ttc_minutes,
+                        ttc_timezone=args.ttc_timezone,
+                        ttc_grid_15m=grid_15m,
+                        trade_filters=args.trade_filter or [],
+                    )
+                    raw = _fetch_risk_replay_trade_rows(
+                        cur, monitor, args.start, args.end, test_clause, extra
+                    )
+                    sweep_rows = sweep_loss_prevention_thresholds(
+                        raw,
+                        risk,
+                        lo=lo,
+                        hi=hi,
+                        apply_regime_filter=args.lp_sweep_apply_regime,
+                        objective=lambda r: _objective_from_replay_result(
+                            r, args.lp_sweep_objective
+                        ),
+                        compound_start_cents=compound_cents,
+                    )
+                    best = max(sweep_rows, key=lambda x: x[2])
+                    db_th = risk.get("win_streak_threshold")
+                    baseline = None
+                    try:
+                        db_th_int = int(db_th) if db_th is not None else None
+                    except (TypeError, ValueError):
+                        db_th_int = None
+                    if db_th_int is not None:
+                        baseline = replay_loss_prevention_threshold(
+                            raw,
+                            risk,
+                            win_streak_threshold=db_th_int,
+                            apply_regime_filter=args.lp_sweep_apply_regime,
+                            compound_start_cents=compound_cents,
+                        )
+                    blocks.append(
+                        {
+                            "monitor": monitor,
+                            "risk": risk,
+                            "sweep_rows": sweep_rows,
+                            "best": best,
+                            "baseline": baseline,
+                        }
+                    )
+        finally:
+            conn.close()
+
+        filter_lines = format_filters_for_display(
+            paper_mode=args.paper,
+            min_prob=args.min_prob,
+            max_prob=args.max_prob,
+            min_ttc=args.min_ttc_minutes,
+            max_ttc=args.max_ttc_minutes,
+            ttc_timezone=args.ttc_timezone,
+            trade_filters=args.trade_filter or [],
+        )
+        filter_lines.append(
+            "TTC stepping: 15m grid if monitor strategy contains '15m'; else hourly (per monitor)."
+        )
+        filter_lines.append(
+            f"LP streak sweep {lo}..{hi}; objective={args.lp_sweep_objective}; "
+            f"regime pre-filter={'on' if args.lp_sweep_apply_regime else 'off'}"
+        )
+        if args.compound_start_usd is not None:
+            filter_lines.append(
+                f"Compounding: start USD={args.compound_start_usd:g} ({compound_cents} cents)"
+            )
+        _print_lp_streak_threshold_sweep_report(
+            blocks,
+            include_test_filter=args.include_test_filter,
+            filter_lines=filter_lines,
+            sweep_lo=lo,
+            sweep_hi=hi,
+            apply_regime=args.lp_sweep_apply_regime,
+            objective=args.lp_sweep_objective,
+            compound_start_usd=args.compound_start_usd,
+        )
+        return 0
 
     if args.optimize_ttc_window:
         try:

@@ -8050,6 +8050,16 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 ## Schema: `historical_data`
 
+### Ephemeral: `historical_data.kalshi_candles_1m_*_*` (scratch)
+
+**Not** created by `database.py` or routine migrations. Tables matching **`kalshi_candles_1m_<slug>_<YYYYMMDD>`** are created by **`scripts/backtest/helpers/kalshi_market_candles_scratch.py`** for ad-hoc analysis (Kalshi 1m OHLC for a market’s trading window). **`YYYYMMDD`** is a UTC calendar date suffix for rotation. **Row count** follows Kalshi’s session length (e.g. **15** rows for a **15m** contract, **~60** for a typical **hourly** contract); see **`docs/BACKTESTING.md`** §5.4.
+
+**Column layout** matches testing Kalshi candle tables: **`timestamp`** (`timestamp without time zone`, US Eastern wall time, first column), **`end_period_ts`** (PK), **`market_ticker`**, bid/ask/trade dollar columns, **`volume_fp`**, **`open_interest_fp`**, **`created_at`**.
+
+**Cleanup:** `kalshi_market_candles_scratch.py --cleanup-only --retention-days N` drops tables whose suffix date is older than **`UTC today − N`** days.
+
+---
+
 ### Table: `historical_data.btc_price_history`
 
 #### Columns
@@ -9685,6 +9695,69 @@ Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m va
 
 #### Constraints
 - **Primary Key:** `redis_basic_test_pkey` on `id`
+
+---
+
+### Table: `testing.candlesticks_1m_KXBTCD-26MAR2116-T70399.99`
+
+Kalshi **1-minute** candlestick snapshot table for a single market (testing / backfill). SQL references must quote the table name: `testing."candlesticks_1m_KXBTCD-26MAR2116-T70399.99"`.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `timestamp` | `timestamp without time zone` | NO | - | Bar end instant as **US Eastern** wall time (`America/New_York`), no TZ — same convention as `historical_data.btc_price_history.timestamp` (first column for joins with price history) |
+| `end_period_ts` | `bigint(64)` | NO | - | Unix seconds: end of the 1m bar (Kalshi `end_period_ts`) |
+| `market_ticker` | `text` | NO | `KXBTCD-26MAR2116-T70399.99` | Market ticker (redundant with table name; safe for inserts) |
+| `price_open_dollars` | `numeric(20,6)` | YES | - | Trade YES `price.open_dollars` |
+| `price_high_dollars` | `numeric(20,6)` | YES | - | Trade YES `price.high_dollars` |
+| `price_low_dollars` | `numeric(20,6)` | YES | - | Trade YES `price.low_dollars` |
+| `price_close_dollars` | `numeric(20,6)` | YES | - | Trade YES `price.close_dollars` |
+| `price_mean_dollars` | `numeric(20,6)` | YES | - | Trade YES `price.mean_dollars` |
+| `price_previous_dollars` | `numeric(20,6)` | YES | - | Trade YES `price.previous_dollars` |
+| `yes_bid_open_dollars` | `numeric(20,6)` | YES | - | `yes_bid.open_dollars` |
+| `yes_bid_high_dollars` | `numeric(20,6)` | YES | - | `yes_bid.high_dollars` |
+| `yes_bid_low_dollars` | `numeric(20,6)` | YES | - | `yes_bid.low_dollars` |
+| `yes_bid_close_dollars` | `numeric(20,6)` | YES | - | `yes_bid.close_dollars` |
+| `yes_ask_open_dollars` | `numeric(20,6)` | YES | - | `yes_ask.open_dollars` |
+| `yes_ask_high_dollars` | `numeric(20,6)` | YES | - | `yes_ask.high_dollars` |
+| `yes_ask_low_dollars` | `numeric(20,6)` | YES | - | `yes_ask.low_dollars` |
+| `yes_ask_close_dollars` | `numeric(20,6)` | YES | - | `yes_ask.close_dollars` |
+| `volume_fp` | `numeric(20,2)` | YES | - | `volume_fp` |
+| `open_interest_fp` | `numeric(20,2)` | YES | - | `open_interest_fp` |
+| `created_at` | `timestamp with time zone` | NO | `now()` | Row insert time |
+
+#### Constraints
+
+- **Primary Key:** `candle_1m_kxbtcd_26mar2116_rebuild_pkey` on `end_period_ts` (name from rebuild migration; functionally unique on `end_period_ts`)
+
+---
+
+### Table: `testing.candlesticks_1m_KXBTCD-26JAN1320-T95499.99`
+
+Same layout as `testing.candlesticks_1m_KXBTCD-26MAR2116-T70399.99` (Kalshi 1m bars, **`timestamp` first**, US Eastern naive). SQL: `testing."candlesticks_1m_KXBTCD-26JAN1320-T95499.99"`. Populate from API: `scripts/testing/populate_kalshi_testing_candles_1m.py --ticker KXBTCD-26JAN1320-T95499.99` after migration.
+
+#### Columns
+
+Same as `testing.candlesticks_1m_KXBTCD-26MAR2116-T70399.99` except `market_ticker` default is `KXBTCD-26JAN1320-T95499.99`.
+
+#### Constraints
+
+- **Primary Key:** system-generated `*_pkey` on `end_period_ts`
+
+---
+
+### Table: `testing.candlesticks_1m_KXBTC15M-26MAR191745-45`
+
+Same layout as `testing.candlesticks_1m_KXBTCD-26JAN1320-T95499.99` (Kalshi 1m bars, **`timestamp` first**, US Eastern naive). SQL: `testing."candlesticks_1m_KXBTC15M-26MAR191745-45"`. Used by `scripts/backtest/backtest_market_simulator.py` (default ticker). Migration: `20260322_1420_testing_candlesticks_1m_kxbtc15m_26mar191745_45`. Populate: `run_fill` / `--fetch-candles` on that script or `populate_kalshi_testing_candles_1m.py --ticker KXBTC15M-26MAR191745-45`.
+
+#### Columns
+
+Same as `testing.candlesticks_1m_KXBTCD-26JAN1320-T95499.99` except `market_ticker` default is `KXBTC15M-26MAR191745-45`.
+
+#### Constraints
+
+- **Primary Key:** `candlesticks_1m_kxbtc15m_26mar191745_45_pkey` on `end_period_ts` (name may vary by PostgreSQL)
 
 ---
 

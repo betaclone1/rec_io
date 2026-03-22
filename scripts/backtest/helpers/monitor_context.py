@@ -57,6 +57,31 @@ def fetch_monitor_settings(cur, user_number: str, monitor_id: int) -> Optional[d
     return dict(zip(cols, row))
 
 
+def fetch_monitor_risk_settings(cur, user_number: str, monitor_id: int) -> Optional[dict[str, Any]]:
+    """Columns needed for risk replay: sizing, loss prevention, optional regime pre-filter."""
+    table = monitor_list_table_name(user_number)
+    cur.execute(
+        f"""
+        SELECT
+            id, name, symbol, strategy,
+            position_size, position_type, multiplier,
+            bankroll_allotment_total,
+            current_max_pct_exposure,
+            performance_based_allocation,
+            win_streak_threshold, loss_prevention_toggle,
+            regime_monitor_enabled, regime_window
+        FROM {table}
+        WHERE id = %s
+        """,
+        (monitor_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    cols = [d[0] for d in cur.description]
+    return dict(zip(cols, row))
+
+
 def format_monitor_settings_brief(m: Mapping[str, Any]) -> str:
     parts = [
         f"id={m.get('id')}",

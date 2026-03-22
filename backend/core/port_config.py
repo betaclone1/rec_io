@@ -30,6 +30,8 @@ DEFAULT_PORTS = {
     "trade_manager": 4000,
     "trade_executor": 8001,
     "active_trade_supervisor": 6000,
+    "redis_switchboard": 3010,
+    "read_api": 3050,
 
     "kalshi_account_sync": 8004,
     "kalshi_market_watchdog_hourly_btc": 8005,

@@ -1486,6 +1486,9 @@
     // Second WebSocket: db_changes (Redis-backed backbone, via switchboard)
     let wsDbChanges = null;
 
+    // Latest row from users.account_balance_0001 (via /api/account/balance); drives portfolio/bankroll top line.
+    let accountBalanceSnapshot = null;
+
     // Load account mode from localStorage or default to prod
     document.addEventListener('DOMContentLoaded', async function() {
       const savedMode = localStorage.getItem('rec_account_mode');
@@ -1496,8 +1499,11 @@
       // STEP 1: Load dashboard preferences FIRST - this sets currentView and portfolioPanelActiveTab
       await loadDashboardPreferences();
 
-      // STEP 2: Preload all portfolio panel tabs so first switch has no visual glitch
-      await preloadPortfolioPanelTabs();
+      // STEP 2: Preload charts + latest account_balance row in parallel (top line uses snapshot, not chart series).
+      await Promise.all([
+        preloadPortfolioPanelTabs(),
+        fetchAccountBalanceSnapshot(),
+      ]);
 
       // STEP 3: Load monitors data
       await loadMonitors();
@@ -3009,56 +3015,11 @@
       changeElement.className = `change-element ${isPositive ? 'positive' : 'negative'}`;
     }
 
-    // Fast sync used during tab switching: update top line + delta from in-memory state.
-    // We intentionally avoid chart re-renders here to keep the canvas switch instant.
+    // Fast sync on tab switch: top line for portfolio/bankroll from latest account_balance row (snapshot);
+    // delta still from in-memory history + currentView. PnL tab unchanged (series-based).
     function syncPortfolioPanelTopLineAndDeltaFromState() {
       const portfolioElement = document.getElementById('portfolio-value');
       if (!portfolioElement) return;
-
-      if (portfolioPanelActiveTab === 'portfolio') {
-        const filteredData = filterDataByView(allHistoryData, currentView);
-        const lastVal = filteredData.length
-          ? (filteredData[filteredData.length - 1].portfolio || 0)
-          : 0;
-
-        const formatted = new Intl.NumberFormat('en-US', {
-          style: 'currency',
-          currency: 'USD',
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2
-        }).format(lastVal);
-
-        portfolioElement.textContent = formatted;
-        portfolioElement.style.color = '';
-        updatePortfolioChange();
-        return;
-      }
-
-      if (portfolioPanelActiveTab === 'bankroll') {
-        const history = allBankrollHistoryData || [];
-        const filteredData = filterDataByView(history, currentView);
-
-        if (!filteredData.length) {
-          portfolioElement.textContent = '—';
-          portfolioElement.style.color = '';
-          const changeEl = document.getElementById('portfolio-change');
-          if (changeEl) changeEl.textContent = '';
-          return;
-        }
-
-        const lastValue = filteredData[filteredData.length - 1].bankroll || 0;
-        const formatted = new Intl.NumberFormat('en-US', {
-          style: 'currency',
-          currency: 'USD',
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2
-        }).format(lastValue);
-
-        portfolioElement.textContent = formatted;
-        portfolioElement.style.color = '';
-        updateBankrollChange();
-        return;
-      }
 
       if (portfolioPanelActiveTab === 'pnl') {
         const history = allPnlHistoryData || [];
@@ -3090,13 +3051,81 @@
         portfolioElement.textContent = formattedValue;
         portfolioElement.style.color = '';
         updatePnlChange();
+        return;
+      }
+
+      if (portfolioPanelActiveTab === 'portfolio') {
+        if (accountBalanceSnapshot && accountBalanceSnapshot.portfolio != null) {
+          const dollars = Number(accountBalanceSnapshot.portfolio) / 100;
+          portfolioElement.textContent = new Intl.NumberFormat('en-US', {
+            style: 'currency',
+            currency: 'USD',
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+          }).format(dollars);
+          portfolioElement.style.color = '';
+          updatePortfolioChange();
+          return;
+        }
+        const filteredData = filterDataByView(allHistoryData, currentView);
+        const lastVal = filteredData.length
+          ? (filteredData[filteredData.length - 1].portfolio || 0)
+          : 0;
+        portfolioElement.textContent = new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: 'USD',
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
+        }).format(lastVal);
+        portfolioElement.style.color = '';
+        updatePortfolioChange();
+        return;
+      }
+
+      if (portfolioPanelActiveTab === 'bankroll') {
+        if (accountBalanceSnapshot) {
+          const mtb = accountBalanceSnapshot.mtb_base_value;
+          const centsRaw = (mtb != null && mtb !== '') ? Number(mtb) : Number(accountBalanceSnapshot.bankroll_current || 0);
+          const dollars = Number.isFinite(centsRaw) ? centsRaw / 100 : 0;
+          portfolioElement.textContent = new Intl.NumberFormat('en-US', {
+            style: 'currency',
+            currency: 'USD',
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+          }).format(dollars);
+          portfolioElement.style.color = '';
+          updateBankrollChange();
+          return;
+        }
+        const history = allBankrollHistoryData || [];
+        const filteredData = filterDataByView(history, currentView);
+        if (!filteredData.length) {
+          portfolioElement.textContent = '—';
+          portfolioElement.style.color = '';
+          const changeEl = document.getElementById('portfolio-change');
+          if (changeEl) changeEl.textContent = '';
+          return;
+        }
+        const lastValue = filteredData[filteredData.length - 1].bankroll || 0;
+        portfolioElement.textContent = new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: 'USD',
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
+        }).format(lastValue);
+        portfolioElement.style.color = '';
+        updateBankrollChange();
       }
     }
 
     let portfolioPanelTabsDataRefreshInFlight = false;
     let portfolioPanelTabsDataRefreshQueued = false;
 
-    async function refreshPortfolioPanelAllTabsData({ rerenderActive = true, rerenderAllCharts = false } = {}) {
+    async function refreshPortfolioPanelAllTabsData({
+      rerenderActive = true,
+      rerenderAllCharts = false,
+      skipBalanceSnapshotFetch = false,
+    } = {}) {
       // Avoid overlapping fetches from rapid `db_changes` bursts.
       if (portfolioPanelTabsDataRefreshInFlight) {
         portfolioPanelTabsDataRefreshQueued = true;
@@ -3104,6 +3133,9 @@
       }
 
       portfolioPanelTabsDataRefreshInFlight = true;
+      const queuedRerenderActive = rerenderActive;
+      const queuedRerenderAllCharts = rerenderAllCharts;
+      const queuedSkipBalance = skipBalanceSnapshotFetch;
       try {
         const origin = window.location.origin;
 
@@ -3142,7 +3174,6 @@
           renderPortfolioChart(allHistoryData);
           renderBankrollChartFromState();
           renderPnlChartFromState();
-          syncPortfolioPanelTopLineAndDeltaFromState();
         } else if (rerenderActive) {
           if (portfolioPanelActiveTab === 'portfolio') {
             applyPortfolioView();
@@ -3151,8 +3182,11 @@
           } else if (portfolioPanelActiveTab === 'pnl') {
             applyPnlView();
           }
-        } else {
+        }
+        if (skipBalanceSnapshotFetch) {
           syncPortfolioPanelTopLineAndDeltaFromState();
+        } else {
+          await fetchAccountBalanceSnapshot();
         }
       } catch (e) {
         console.error('Error refreshing all portfolio panel tabs data:', e);
@@ -3160,8 +3194,11 @@
         portfolioPanelTabsDataRefreshInFlight = false;
         if (portfolioPanelTabsDataRefreshQueued) {
           portfolioPanelTabsDataRefreshQueued = false;
-          // Run once more to catch up.
-          await refreshPortfolioPanelAllTabsData({ rerenderActive, rerenderAllCharts });
+          await refreshPortfolioPanelAllTabsData({
+            rerenderActive: queuedRerenderActive,
+            rerenderAllCharts: queuedRerenderAllCharts,
+            skipBalanceSnapshotFetch: queuedSkipBalance,
+          });
         }
       }
     }
@@ -3225,8 +3262,7 @@
         console.error('Error rendering pnl chart during preload:', e);
       }
 
-      // Finally, set the top line and delta for the currently active tab.
-      syncPortfolioPanelTopLineAndDeltaFromState();
+      // Top line comes from fetchAccountBalanceSnapshot (run in parallel with this preload).
 
       // Ensure canvases get their correct dimensions after charts are created.
       setTimeout(() => {
@@ -3234,6 +3270,19 @@
         if (bankrollChart) bankrollChart.resize();
         if (pnlChart) pnlChart.resize();
       }, 150);
+    }
+
+    async function fetchAccountBalanceSnapshot() {
+      try {
+        const response = await fetch(`${window.location.origin}/api/account/balance?mode=${GLOBAL_ACCOUNT_MODE}`);
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        accountBalanceSnapshot = await response.json();
+      } catch (e) {
+        console.error('Error loading account balance snapshot:', e);
+      }
+      syncPortfolioPanelTopLineAndDeltaFromState();
     }
 
     async function setChartView(view) {
@@ -3282,51 +3331,13 @@
     }
 
     async function loadPortfolioData() {
-      try {
-        const response = await fetch(`${window.location.origin}/api/account/balance?mode=${GLOBAL_ACCOUNT_MODE}`);
-        
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
-        const data = await response.json();
-        const portfolioValue = data.portfolio || 0;
-        
-        // Convert cents to dollars and format
-        const portfolioInDollars = portfolioValue / 100;
-        const formattedValue = new Intl.NumberFormat('en-US', {
-          style: 'currency',
-          currency: 'USD',
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2
-        }).format(portfolioInDollars);
-        
-        // Update the display
-        const portfolioElement = document.getElementById('portfolio-value');
-        if (portfolioElement) {
-          portfolioElement.textContent = formattedValue;
-          portfolioElement.style.color = '';
-        }
-        
-      } catch (error) {
-        console.error('Error loading portfolio data:', error);
-        const portfolioElement = document.getElementById('portfolio-value');
-        if (portfolioElement) {
-          portfolioElement.textContent = 'Error loading data';
-          portfolioElement.style.color = '#ff6b6b';
-        }
-      }
+      await fetchAccountBalanceSnapshot();
     }
 
-    /** Set top line, chart, and delta from allHistoryData + currentView (no fetch). */
+    /** Chart + delta from allHistoryData + currentView; top line uses account snapshot (sync after refresh). */
     function applyPortfolioView() {
-      const filteredData = filterDataByView(allHistoryData, currentView);
-      const lastVal = filteredData.length > 0 ? (filteredData[filteredData.length - 1].portfolio || 0) : 0;
-      const formatted = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(lastVal);
-      const el = document.getElementById('portfolio-value');
-      if (el) { el.textContent = formatted; el.style.color = ''; }
       renderPortfolioChart(allHistoryData);
-      updatePortfolioChange();
+      syncPortfolioPanelTopLineAndDeltaFromState();
     }
 
     async function loadPortfolioHistory() {
@@ -3345,28 +3356,7 @@
     }
 
     async function loadBankrollData() {
-      try {
-        const response = await fetch(`${window.location.origin}/api/account/balance?mode=${GLOBAL_ACCOUNT_MODE}`);
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        const data = await response.json();
-        const bankrollValue = data.bankroll_current != null ? data.bankroll_current : 0;
-        const bankrollInDollars = bankrollValue / 100;
-        const formattedValue = new Intl.NumberFormat('en-US', {
-          style: 'currency',
-          currency: 'USD',
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2
-        }).format(bankrollInDollars);
-        const portfolioElement = document.getElementById('portfolio-value');
-        if (portfolioElement) { portfolioElement.textContent = formattedValue; portfolioElement.style.color = ''; }
-      } catch (error) {
-        console.error('Error loading bankroll data:', error);
-        const portfolioElement = document.getElementById('portfolio-value');
-        if (portfolioElement) {
-          portfolioElement.textContent = 'Error loading data';
-          portfolioElement.style.color = '#ff6b6b';
-        }
-      }
+      await fetchAccountBalanceSnapshot();
     }
 
     async function loadBankrollHistory() {
@@ -3385,29 +3375,8 @@
     }
 
     function applyBankrollView() {
-      const el = document.getElementById('portfolio-value');
-      const filteredData = filterDataByView(allBankrollHistoryData || [], currentView);
-      if (!filteredData.length) {
-        if (el) {
-          el.textContent = '—';
-          el.style.color = '';
-        }
-        updateBankrollChange();
-        return;
-      }
-      const lastValue = filteredData[filteredData.length - 1].bankroll || 0;
-      const formatted = new Intl.NumberFormat('en-US', {
-        style: 'currency',
-        currency: 'USD',
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2
-      }).format(lastValue);
-      if (el) {
-        el.textContent = formatted;
-        el.style.color = '';
-      }
-      updateBankrollChange();
       renderBankrollChartFromState();
+      syncPortfolioPanelTopLineAndDeltaFromState();
     }
 
     function updateBankrollChange() {
@@ -6172,7 +6141,7 @@
       };
     }
 
-    function connectDbChangesWebSocket() {
+    async function connectDbChangesWebSocket() {
       // Close existing db_changes connection if any
       if (wsDbChanges) {
         try {
@@ -6183,7 +6152,20 @@
       }
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const switchboardPort = 3010; // SWITCHBOARD_PORT (see backend/redis_switchboard.py and supervisord.conf)
+      let switchboardPort = 3010;
+      try {
+        const portsRes = await fetch(`${window.location.origin}/api/ports`);
+        if (portsRes.ok) {
+          const portInfo = await portsRes.json();
+          const p = portInfo.ports && portInfo.ports.redis_switchboard;
+          if (typeof p === 'number' && p > 0) {
+            switchboardPort = p;
+          }
+        }
+      } catch (e) {
+        console.warn('Dashboard: could not read switchboard port from /api/ports, using default 3010', e);
+      }
+
       const wsUrl = `${protocol}//${window.location.hostname}:${switchboardPort}/ws/db_changes`;
       console.log('Connecting db_changes WebSocket to:', wsUrl);
 
@@ -6227,11 +6209,21 @@
 
           console.log('Dashboard db_changes: refreshing bankroll/portfolio/performance for stream:', stream);
 
-          // Let the existing tab-aware helper decide what to refresh for the portfolio panel.
+          const isAccountBalance = stream === 'account_balance';
+          if (isAccountBalance) {
+            try {
+              await fetchAccountBalanceSnapshot();
+            } catch (e) {
+              console.error('Error refreshing account balance snapshot after db_change:', e);
+            }
+          }
+
           try {
-            // Keep all three charts in sync so switching to a previously-hidden tab
-            // never shows stale/half-updated visuals.
-            await refreshPortfolioPanelAllTabsData({ rerenderActive: false, rerenderAllCharts: true });
+            await refreshPortfolioPanelAllTabsData({
+              rerenderActive: false,
+              rerenderAllCharts: true,
+              skipBalanceSnapshotFetch: isAccountBalance,
+            });
           } catch (e) {
             console.error('Error refreshing portfolio panel after db_change:', e);
           }

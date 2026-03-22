@@ -1872,7 +1872,7 @@ async def get_account_balance(mode: str = "prod"):
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             # Get the latest account balance
             cursor.execute("""
-                SELECT portfolio, positions, bankroll_current
+                SELECT portfolio, positions, bankroll_current, mtb_base_value
                 FROM users.account_balance_0001 
                 ORDER BY id DESC 
                 LIMIT 1
@@ -1886,17 +1886,24 @@ async def get_account_balance(mode: str = "prod"):
                 portfolio_value = balance_result['portfolio']
                 positions_value = balance_result['positions'] if balance_result else 0
                 bankroll_current = balance_result['bankroll_current'] if balance_result else 0
+                mtb_base_value = balance_result.get('mtb_base_value')
                 return {
                     "portfolio": portfolio_value,
                     "positions": positions_value,
-                    "bankroll_current": bankroll_current
+                    "bankroll_current": bankroll_current,
+                    "mtb_base_value": mtb_base_value,
                 }
             else:
-                return {"portfolio": 0, "positions": 0, "bankroll_current": 0}
+                return {
+                    "portfolio": 0,
+                    "positions": 0,
+                    "bankroll_current": 0,
+                    "mtb_base_value": None,
+                }
             
     except Exception as e:
         _main_logger.warning(f"Error getting account balance from PostgreSQL: {e}")
-        return {"portfolio": 0, "positions": 0}
+        return {"portfolio": 0, "positions": 0, "bankroll_current": 0, "mtb_base_value": None}
 
 @app.get("/api/subaccounts")
 async def get_subaccounts():

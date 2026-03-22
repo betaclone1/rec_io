@@ -1,5 +1,8 @@
 """Shared DB access for backtest scripts.
 
+**Python interpreter:** use the **project virtualenv** (e.g. ``.venv/bin/python3``) so ``psycopg2``
+is available. System ``python3`` often lacks project dependencies.
+
 **Local dev:** ``REC_IO_BACKTEST_DB=local`` — uses ``DB_*`` / ``REC_*`` from your environment
 (plus repo ``.env`` loaded without overriding the shell).
 
