@@ -6141,8 +6141,9 @@
       };
     }
 
-    async function connectDbChangesWebSocket() {
-      // Close existing db_changes connection if any
+    function connectDbChangesWebSocket() {
+      // Same origin as the page (main app). Main subscribes to Redis rec_io:db_changes and forwards here.
+      // Do not use switchboard :3010 — production TLS/reverse proxies rarely expose that port to browsers.
       if (wsDbChanges) {
         try {
           wsDbChanges.close();
@@ -6151,23 +6152,9 @@
         }
       }
 
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      let switchboardPort = 3010;
-      try {
-        const portsRes = await fetch(`${window.location.origin}/api/ports`);
-        if (portsRes.ok) {
-          const portInfo = await portsRes.json();
-          const p = portInfo.ports && portInfo.ports.redis_switchboard;
-          if (typeof p === 'number' && p > 0) {
-            switchboardPort = p;
-          }
-        }
-      } catch (e) {
-        console.warn('Dashboard: could not read switchboard port from /api/ports, using default 3010', e);
-      }
-
-      const wsUrl = `${protocol}//${window.location.hostname}:${switchboardPort}/ws/db_changes`;
-      console.log('Connecting db_changes WebSocket to:', wsUrl);
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = wsProtocol + '//' + window.location.host + '/ws/db_changes';
+      console.log('Connecting db_changes WebSocket (same origin):', wsUrl);
 
       wsDbChanges = new WebSocket(wsUrl);
 

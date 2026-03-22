@@ -61,11 +61,26 @@ PostgreSQL (writes to watched tables)
   → switchboard LISTEN thread
   → map (schema, table) → stream name via registry
   → Redis publish rec_io:db_changes (one JSON message)
-  → WebSocket /ws/db_changes (frontend) + Redis subscribers (backend)
+  → ├─ Redis subscribers (backend processes, scripts)
+  └─ main_app: subscribe rec_io:db_changes → forward same JSON to browsers on /ws/db_changes
+       (switchboard may still expose its own /ws/db_changes on its port for local tools only)
 ```
 
 - **Stream name** (logical name): e.g. `trades`, `fills`, `orderbook`, `redis_basic_test`. Consumers filter by this.
 - **Payload:** One stable JSON shape (see below). Same on Redis and WebSocket.
+
+### 2.1 Server-agnostic rule (dev = prod codebase)
+
+This stack is **one repo, any host**: you develop on a local dev machine and deploy the **same** code and config patterns to production. The real-time path must not assume “the browser can open port 3010” or any other internal service port.
+
+**Non-negotiables**
+
+1. **Browser WebSocket URL:** Product UIs (dashboard, trade monitor, account manager, etc.) connect to **`/ws/db_changes` on the same origin as the page** — i.e. the **main app** host (`window.location.host`), not `hostname:redis_switchboard_port`. HTTPS in prod and `http://localhost:3000` in dev both work without special-case frontend code.
+2. **Main forwards Redis:** `main_app` runs a **Redis subscriber** on `rec_io:db_changes` (same env as `redis_switchboard`: `REDIS_URL` or `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD`, and `REDIS_CHANNEL_DB_CHANGES` if overridden). It pushes each message to every connected `/ws/db_changes` client. **`POST /api/notify_db_change`** still builds compatible messages for the same clients.
+3. **Switchboard stays the NOTIFY → Redis writer:** One `redis_switchboard` process LISTENs PostgreSQL and publishes to Redis. It does **not** need to be reachable from end-user browsers in prod.
+4. **No prod-only WebSocket wiring in the frontend.** If something needs `db_change` events, it uses the contract on **same-origin** `/ws/db_changes` or subscribes to Redis in backend code — never a hardcoded alternate host/port for “real” pages.
+
+Violating (1) or (4) breaks the “build local, run anywhere” model.
 
 ---
 
@@ -117,7 +132,7 @@ To have the system (frontend and/or backend) watch a set of values backed by a t
    In `backend/core/stream_registry.py`, add `(schema, table) -> stream_name`. Stream name is the logical name consumers will filter on (e.g. `trades`, `orderbook`).
 
 3. **Consumers**  
-   - **Frontend:** Connect to `/ws/db_changes`, on message filter `data.database === stream_name`, then refetch or update UI (targeted refetch preferred for high-volume streams).
+   - **Frontend:** Connect to **`/ws/db_changes` on the main app (same origin as the UI)**. On message, filter `database === stream_name` (see payload contract), then refetch or update UI (targeted refetch preferred for high-volume streams). Do not point product pages at the switchboard port.
    - **Backend:** Subscribe to Redis `rec_io:db_changes`, filter `msg["database"] == stream_name`, run your logic.
 
 No other wiring. No "notify this service" — everyone subscribes to the same pipeline.
@@ -160,8 +175,8 @@ No other wiring. No "notify this service" — everyone subscribes to the same pi
 - **Front door:** `backend/main.py` exposes the same four routes but only as **thin HTTP proxies** into read_api; it no longer contains SQL or aggregation for this panel.
 - **Realtime triggers:** The panel’s refresh behavior is driven by the backbone:
   - PostgreSQL triggers (e.g. on `users.account_balance_0001`) emit NOTIFY.
-  - `redis_switchboard` maps those tables to logical streams (e.g. `account_balance`) via `stream_registry.py` and publishes `db_change` events.
-  - The dashboard listens on `/ws/db_changes` and refetches from read_api when relevant streams change.
+  - `redis_switchboard` maps those tables to logical streams (e.g. `account_balance`) via `stream_registry.py` and publishes `db_change` events to Redis.
+  - **`main_app`** subscribes to Redis and forwards the same payloads to browsers on **same-origin** `/ws/db_changes`; the dashboard (desktop and mobile) connects there and refetches from read_api (via main’s proxies) when relevant streams change.
 
 This pattern (read_api as canonical read surface, main as front door only, Redis/WS as the trigger) is the template for migrating other dashboard panels and assets.
 
@@ -169,8 +184,9 @@ This pattern (read_api as canonical read surface, main as front door only, Redis
 
 ## 7. Operational requirements
 
-- **Redis:** Must be running. Switchboard and all backend subscribers depend on it.
-- **Switchboard:** One process (e.g. under supervisor). LISTENs to PostgreSQL and publishes to Redis; serves `/ws/db_changes` and optionally `/ws/preferences`. Restart on failure; monitor via `/health`.
+- **Redis:** Must be running. Switchboard, **main_app’s db_changes forwarder**, and all backend Redis subscribers depend on it. Use the same `REDIS_*` (and channel) env on every environment so dev and prod behave the same.
+- **Switchboard:** One process (e.g. under supervisor). LISTENs to PostgreSQL and publishes to Redis. Its own `/ws/db_changes` on the switchboard port is optional and **not** required for product UIs (see §2.1).
+- **Main app:** Must run with Redis reachable as above so it can subscribe and forward to **same-origin** `/ws/db_changes` clients.
 - **Triggers:** Applied via migrations. New tables that should be watched get a migration that adds the trigger and, when applicable, a note in the stream registry (registry is in code, so "add stream" is a code change plus migration).
 
 ---
@@ -193,7 +209,7 @@ Planned next (Phase 1b): `trades` (users.trades_0001), `subaccounts` (users.suba
 
 - **Scope first:** Run through Section 0 (Scope and boundaries). If what you're adding isn't "carry a DB change signal" or "register a stream," put it elsewhere.
 - **New stream:** Add trigger (migration) + one registry entry + optional doc line in Stream list (Section 8). No new switchboard code.
-- **New consumer:** Subscribe to Redis or WebSocket; filter by `database`; use only the payload contract. Consumer logic lives in the frontend or the backend service, not in the switchboard.
+- **New consumer:** Backend: subscribe to Redis; filter by `database`. Frontend: **same-origin** `/ws/db_changes` on main only; filter by `database`; use only the payload contract. Consumer logic lives in the frontend or the backend service, not in the switchboard.
 - **High-volume table:** Use statement-level or batched NOTIFY; document in registry and here; consider coalescing in switchboard only if the pattern is documented in this doc.
 - **New endpoint on switchboard:** Unless it is health or the canonical WS path, do not add it without updating Section 0 and documenting the exception.
 - **PostgreSQL utilization (when hooking up connections):** When adding a stream, moving a read/aggregate endpoint to read_api, or wiring a new consumer, consider whether that point is a good place to better utilize PostgreSQL—e.g. views, materialized views, stored functions, or trigger-maintained summary tables—for the data that connection serves. No obligation to add them every time; evaluate and adopt where it improves efficiency or clarity.

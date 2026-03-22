@@ -5800,8 +5800,7 @@
       };
     }
 
-    async function connectDbChangesWebSocket() {
-      // Close existing db_changes connection if any
+    function connectDbChangesWebSocket() {
       if (wsDbChanges) {
         try {
           wsDbChanges.close();
@@ -5810,23 +5809,9 @@
         }
       }
 
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      let switchboardPort = 3010;
-      try {
-        const portsRes = await fetch(`${window.location.origin}/api/ports`);
-        if (portsRes.ok) {
-          const portInfo = await portsRes.json();
-          const p = portInfo.ports && portInfo.ports.redis_switchboard;
-          if (typeof p === 'number' && p > 0) {
-            switchboardPort = p;
-          }
-        }
-      } catch (e) {
-        console.warn('Dashboard mobile: could not read switchboard port from /api/ports, using 3010', e);
-      }
-
-      const wsUrl = `${protocol}//${window.location.hostname}:${switchboardPort}/ws/db_changes`;
-      console.log('Dashboard mobile: connecting db_changes WebSocket to:', wsUrl);
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = wsProtocol + '//' + window.location.host + '/ws/db_changes';
+      console.log('Dashboard mobile: db_changes WebSocket (same origin):', wsUrl);
 
       wsDbChanges = new WebSocket(wsUrl);
 

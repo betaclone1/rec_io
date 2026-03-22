@@ -12,6 +12,7 @@ import uvicorn
 import os
 import json
 import asyncio
+import threading
 from contextlib import asynccontextmanager
 import time
 from datetime import datetime, timedelta
@@ -580,6 +581,19 @@ async def broadcast_account_mode(mode: str):
     connected_clients.difference_update(to_remove)
 
 # Broadcast helper function for database changes
+async def _broadcast_db_change_message_text(message: str) -> None:
+    """Send a pre-built db_change JSON string to all /ws/db_changes subscribers."""
+    if not db_change_clients:
+        return
+    to_remove = set()
+    for client in list(db_change_clients):
+        try:
+            await client.send_text(message)
+        except Exception:
+            to_remove.add(client)
+    db_change_clients.difference_update(to_remove)
+
+
 async def broadcast_db_change(db_name: str, change_data: dict):
     message = json.dumps({
         "type": "db_change",
@@ -587,21 +601,102 @@ async def broadcast_db_change(db_name: str, change_data: dict):
         "data": change_data,
         "timestamp": datetime.now().isoformat()
     })
-    to_remove = set()
-    for client in db_change_clients:
+    await _broadcast_db_change_message_text(message)
+
+
+def _redis_client_for_db_changes_forwarder():
+    """Same env contract as redis_switchboard (REDIS_URL or REDIS_HOST/PORT/PASSWORD)."""
+    import redis as _redis_mod
+
+    redis_url = os.getenv("REDIS_URL")
+    if redis_url:
+        return _redis_mod.from_url(redis_url, decode_responses=True)
+    return _redis_mod.Redis(
+        host=os.getenv("REDIS_HOST", "localhost"),
+        port=int(os.getenv("REDIS_PORT", "6379")),
+        password=os.getenv("REDIS_PASSWORD") or None,
+        decode_responses=True,
+    )
+
+
+def _redis_db_changes_subscriber_thread(queue: asyncio.Queue, loop: asyncio.AbstractEventLoop) -> None:
+    """Blocking Redis pubsub; push messages onto asyncio queue for the main event loop."""
+    import redis.exceptions as redis_exc
+
+    channel = os.getenv("REDIS_CHANNEL_DB_CHANGES", "rec_io:db_changes")
+    backoff = 5.0
+    while True:
         try:
-            await client.send_text(message)
-        except Exception:
-            to_remove.add(client)
-    db_change_clients.difference_update(to_remove)
+            r = _redis_client_for_db_changes_forwarder()
+            pubsub = r.pubsub()
+            pubsub.subscribe(channel)
+            _main_logger.info(
+                "Main app: subscribed to Redis channel %s for /ws/db_changes forward (same-origin WS for prod)",
+                channel,
+            )
+            backoff = 5.0
+            for message in pubsub.listen():
+                if message.get("type") != "message":
+                    continue
+                data = message.get("data")
+                if data is None:
+                    continue
+                if isinstance(data, bytes):
+                    data = data.decode("utf-8")
+                asyncio.run_coroutine_threadsafe(queue.put(data), loop)
+        except (redis_exc.ConnectionError, redis_exc.TimeoutError, OSError) as e:
+            _main_logger.warning(
+                "Redis db_changes forwarder: connection issue (%s); retry in %ss",
+                e,
+                backoff,
+            )
+            time.sleep(backoff)
+            backoff = min(backoff * 1.5, 60.0)
+        except Exception as e:
+            _main_logger.warning(
+                "Redis db_changes forwarder: %s; retry in %ss",
+                e,
+                backoff,
+            )
+            time.sleep(backoff)
+            backoff = min(backoff * 1.5, 60.0)
+
+
+async def _redis_db_changes_consume_loop(queue: asyncio.Queue) -> None:
+    while True:
+        try:
+            text = await queue.get()
+            await _broadcast_db_change_message_text(text)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            _main_logger.warning("Redis db_changes consumer: %s", e)
+
 
 # Lifespan: startup/shutdown (replaces deprecated on_event)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown; use instead of on_event for FastAPI compatibility."""
     _main_logger.info("Main app started on port %s", MAIN_APP_PORT)
-    yield
-    _main_logger.info("Main app shutting down")
+    redis_queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    consumer = asyncio.create_task(_redis_db_changes_consume_loop(redis_queue))
+    forwarder_thread = threading.Thread(
+        target=_redis_db_changes_subscriber_thread,
+        args=(redis_queue, loop),
+        daemon=True,
+        name="redis_db_changes_forwarder",
+    )
+    forwarder_thread.start()
+    try:
+        yield
+    finally:
+        consumer.cancel()
+        try:
+            await consumer
+        except asyncio.CancelledError:
+            pass
+        _main_logger.info("Main app shutting down")
 
 # Create FastAPI app
 app = FastAPI(title="Trading System Main App", lifespan=lifespan)
@@ -816,7 +911,7 @@ async def websocket_db_changes(websocket: WebSocket):
         while True:
             await websocket.receive_text()  # Keep connection alive
     except WebSocketDisconnect:
-        db_change_clients.remove(websocket)
+        db_change_clients.discard(websocket)
 
 
 
