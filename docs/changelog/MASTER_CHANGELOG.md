@@ -26,17 +26,17 @@ Plans: `candlestick-charting-frontend` (partial / experimental tables), `paper-t
 5. `20260322_1420_testing_candlesticks_1m_kxbtc15m_26mar191745_45`
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations in order (from project root):  
+- [x] Apply migrations in order (from project root):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260321_2200_testing_candlesticks_1m_kxbtcd_26mar2116`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260321_2300_testing_candlesticks_1m_timestamp_est`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260322_1000_testing_candlesticks_1m_drop_payload_timestamp_first`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260322_1400_testing_candlesticks_1m_kxbtcd_26jan1320`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260322_1420_testing_candlesticks_1m_kxbtc15m_26mar191745_45`
-- [ ] Restart application services:  
+- [x] Restart application services:  
   `./scripts/MASTER_RESTART.sh`
-- [ ] Verify: health (`main_app` :3000, `trade_executor` :8001), supervisor `RUNNING`; optional — confirm `testing` candlestick tables exist if using backfill scripts.
+- [x] Verify: health (`main_app` :3000, `trade_executor` :8001), supervisor `RUNNING`; optional — confirm `testing` candlestick tables exist if using backfill scripts.
 
 ---
 
