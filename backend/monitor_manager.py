@@ -287,8 +287,8 @@ environment={env_vars}
             
             # Regenerate supervisor configuration
             result = subprocess.run([
-                sys.executable, 
-                os.path.join(self.project_root, 'scripts', 'generate_unified_supervisor_config.py')
+                sys.executable,
+                os.path.join(self.project_root, 'scripts', 'config', 'generate_unified_supervisor_config.py')
             ], capture_output=True, text=True, timeout=30)
             
             if result.returncode != 0:
@@ -332,8 +332,8 @@ environment={env_vars}
             
             # Regenerate supervisor configuration
             result = subprocess.run([
-                sys.executable, 
-                os.path.join(self.project_root, 'scripts', 'generate_unified_supervisor_config.py')
+                sys.executable,
+                os.path.join(self.project_root, 'scripts', 'config', 'generate_unified_supervisor_config.py')
             ], capture_output=True, text=True, timeout=30)
             
             if result.returncode != 0:
@@ -849,6 +849,20 @@ environment={env_vars}
             if conn:
                 conn.close()
 
+    @staticmethod
+    def _unpack_cycle_stats_row(cycle_stats) -> tuple:
+        """
+        Safe (total_cycles, winning_cycles) from COUNT/SUM aggregate row.
+        Avoids tuple index errors when a row is short and fixes truthiness bugs
+        (e.g. total_cycles==0 must not skip reading winning_cycles).
+        """
+        if not cycle_stats or len(cycle_stats) < 2:
+            return (0, 0)
+        raw_tc, raw_wc = cycle_stats[0], cycle_stats[1]
+        total_cycles = int(raw_tc) if raw_tc is not None else 0
+        winning_cycles = int(raw_wc) if raw_wc is not None else 0
+        return (total_cycles, winning_cycles)
+
     def update_monitor_statistics_from_trades(self) -> Dict[str, Any]:
         """
         Update monitor statistics by querying the trades database and calculating metrics
@@ -869,155 +883,181 @@ environment={env_vars}
                 
                 monitors = cursor.fetchall()
                 updated_count = 0
+                errors: List[str] = []
                 
-                for monitor_id, monitor_name, symbol in monitors:
-                    # Extract monitor identifier from name (e.g., "mon_0001_10001" -> "mon_0001_10001")
-                    monitor_identifier = monitor_name
-                    
-                    # Get the strategy for this monitor
-                    cursor.execute("""
-                        SELECT strategy FROM users.monitor_list_0001 WHERE id = %s
-                    """, (monitor_id,))
-                    strategy_row = cursor.fetchone()
-                    strategy = strategy_row[0] if strategy_row and strategy_row[0] else "Hourly HTC"
-                    
-                    # Check if this is Momentum Contain or Momentum Breakout
-                    is_momentum_contain = strategy and "Momentum Contain" in strategy
-                    is_momentum_breakout = strategy and "Momentum Breakout" in strategy
-                    is_cycle_based_win_loss = is_momentum_contain or is_momentum_breakout
-                    
-                    if is_cycle_based_win_loss:
-                        # Calculate win/loss rate based on cycles (not individual trades)
-                        # Group trades by cycle (using ticker pattern - everything before last hyphen)
+                for row in monitors:
+                    if not row or len(row) < 3:
+                        self.log_event(
+                            "ERROR",
+                            f"Skipping invalid monitor_list row (expected id, name, symbol): {row!r}",
+                        )
+                        continue
+                    monitor_id, monitor_name, symbol = row[0], row[1], row[2]
+                    try:
+                        # Extract monitor identifier from name (e.g., "mon_0001_10001")
+                        monitor_identifier = monitor_name
+                        
+                        # Get the strategy for this monitor
                         cursor.execute("""
-                            WITH cycle_grouped AS (
+                            SELECT strategy FROM users.monitor_list_0001 WHERE id = %s
+                        """, (monitor_id,))
+                        strategy_row = cursor.fetchone()
+                        strategy = (
+                            strategy_row[0]
+                            if strategy_row and len(strategy_row) > 0 and strategy_row[0]
+                            else "Hourly HTC"
+                        )
+                        
+                        # Check if this is Momentum Contain or Momentum Breakout
+                        is_momentum_contain = strategy and "Momentum Contain" in strategy
+                        is_momentum_breakout = strategy and "Momentum Breakout" in strategy
+                        is_cycle_based_win_loss = is_momentum_contain or is_momentum_breakout
+                        
+                        if is_cycle_based_win_loss:
+                            cursor.execute("""
+                                WITH cycle_grouped AS (
+                                    SELECT 
+                                        ticker,
+                                        CASE 
+                                            WHEN ticker LIKE '%-%' THEN 
+                                                regexp_replace(ticker, '-[^-]*$', '')
+                                            ELSE ticker
+                                        END as cycle_id
+                                    FROM users.trades_0001 
+                                    WHERE monitor = %s 
+                                    AND status IN ('closed', 'settled') 
+                                    AND (test_filter IS NULL OR test_filter = FALSE)
+                                    AND ticker IS NOT NULL
+                                ),
+                                cycle_results AS (
+                                    SELECT 
+                                        cg.cycle_id,
+                                        COUNT(CASE WHEN t.win_loss = 'W' THEN 1 END) as cycle_wins,
+                                        COUNT(CASE WHEN t.win_loss = 'L' THEN 1 END) as cycle_losses,
+                                        COUNT(*) as cycle_trade_count
+                                    FROM cycle_grouped cg
+                                    JOIN users.trades_0001 t ON t.ticker = cg.ticker
+                                    WHERE t.monitor = %s 
+                                    AND t.status IN ('closed', 'settled') 
+                                    AND (t.test_filter IS NULL OR t.test_filter = FALSE)
+                                    GROUP BY cg.cycle_id
+                                ),
+                                cycle_summary AS (
+                                    SELECT 
+                                        cycle_id,
+                                        CASE WHEN cycle_losses > 0 THEN 0 ELSE 1 END as is_winning_cycle
+                                    FROM cycle_results
+                                )
                                 SELECT 
-                                    ticker,
-                                    CASE 
-                                        WHEN ticker LIKE '%-%' THEN 
-                                            regexp_replace(ticker, '-[^-]*$', '')
-                                        ELSE ticker
-                                    END as cycle_id
+                                    COUNT(*) as total_cycles,
+                                    SUM(is_winning_cycle) as winning_cycles
+                                FROM cycle_summary
+                            """, (monitor_identifier, monitor_identifier))
+                            
+                            cycle_stats = cursor.fetchone()
+                            total_cycles, winning_cycles = self._unpack_cycle_stats_row(cycle_stats)
+                            
+                            win_loss_rate = 0.0
+                            if total_cycles > 0:
+                                win_loss_rate = round((winning_cycles / total_cycles) * 100, 1)
+                            
+                            cursor.execute("""
+                                SELECT 
+                                    COUNT(*) as total_trades,
+                                    COALESCE(SUM(ret_pct), 0) as total_ret_pct,
+                                    COALESCE(SUM(pnl), 0) as total_pnl
                                 FROM users.trades_0001 
-                                WHERE monitor = %s 
-                                AND status IN ('closed', 'settled') 
-                                AND (test_filter IS NULL OR test_filter = FALSE)
-                                AND ticker IS NOT NULL
-                            ),
-                            cycle_results AS (
-                                SELECT 
-                                    cg.cycle_id,
-                                    COUNT(CASE WHEN t.win_loss = 'W' THEN 1 END) as cycle_wins,
-                                    COUNT(CASE WHEN t.win_loss = 'L' THEN 1 END) as cycle_losses,
-                                    COUNT(*) as cycle_trade_count
-                                FROM cycle_grouped cg
-                                JOIN users.trades_0001 t ON t.ticker = cg.ticker
-                                WHERE t.monitor = %s 
-                                AND t.status IN ('closed', 'settled') 
-                                AND (t.test_filter IS NULL OR t.test_filter = FALSE)
-                                GROUP BY cg.cycle_id
-                            ),
-                            cycle_summary AS (
-                                SELECT 
-                                    cycle_id,
-                                    CASE WHEN cycle_losses > 0 THEN 0 ELSE 1 END as is_winning_cycle
-                                FROM cycle_results
-                            )
-                            SELECT 
-                                COUNT(*) as total_cycles,
-                                SUM(is_winning_cycle) as winning_cycles
-                            FROM cycle_summary
-                        """, (monitor_identifier, monitor_identifier))
-                        
-                        cycle_stats = cursor.fetchone()
-                        total_cycles = cycle_stats[0] if cycle_stats and cycle_stats[0] else 0
-                        winning_cycles = cycle_stats[1] if cycle_stats and cycle_stats[1] else 0
-                        
-                        # Calculate win/loss rate based on cycles
-                        win_loss_rate = 0.0
-                        if total_cycles > 0:
-                            win_loss_rate = round((winning_cycles / total_cycles) * 100, 1)
-                        
-                        # Still get trade-level stats for trades count and totals
-                        cursor.execute("""
+                                WHERE monitor = %s AND status IN ('closed', 'settled') AND (test_filter IS NULL OR test_filter = FALSE)
+                            """, (monitor_identifier,))
+                            
+                            trade_stats = cursor.fetchone()
+                            if trade_stats and len(trade_stats) >= 3:
+                                total_trades, total_ret_pct, total_pnl = (
+                                    trade_stats[0],
+                                    trade_stats[1],
+                                    trade_stats[2],
+                                )
+                                ret_pct_sum = total_ret_pct
+                                pnl_show = float(total_pnl) if total_pnl is not None else 0.0
+                                
+                                cursor.execute("""
+                                    UPDATE users.monitor_list_0001 
+                                    SET 
+                                        trades = %s,
+                                        win_loss = %s,
+                                        ret_pct = %s,
+                                        pnl = %s
+                                    WHERE id = %s
+                                """, (total_trades, win_loss_rate, ret_pct_sum, total_pnl, monitor_id))
+                                
+                                updated_count += 1
+                                
+                                self.log_event(
+                                    "STATS_UPDATE",
+                                    f"Updated monitor {monitor_name}: trades={total_trades}, cycles={total_cycles}, winning_cycles={winning_cycles}, W/L={win_loss_rate}% (cycle-based), ret_pct={ret_pct_sum}%, PNL=${pnl_show:.2f}",
+                                )
+                        else:
+                            cursor.execute("""
                             SELECT 
                                 COUNT(*) as total_trades,
+                                COUNT(CASE WHEN win_loss = 'W' THEN 1 END) as wins,
+                                COUNT(CASE WHEN win_loss = 'L' THEN 1 END) as losses,
                                 COALESCE(SUM(ret_pct), 0) as total_ret_pct,
                                 COALESCE(SUM(pnl), 0) as total_pnl
-                            FROM users.trades_0001 
-                            WHERE monitor = %s AND status IN ('closed', 'settled') AND (test_filter IS NULL OR test_filter = FALSE)
-                        """, (monitor_identifier,))
-                        
-                        trade_stats = cursor.fetchone()
-                        if trade_stats:
-                            total_trades, total_ret_pct, total_pnl = trade_stats
+                                FROM users.trades_0001 
+                                WHERE monitor = %s AND status IN ('closed', 'settled') AND (test_filter IS NULL OR test_filter = FALSE)
+                            """, (monitor_identifier,))
                             
-                            # For ret_pct: use the sum (like trade_history summary panel does)
-                            ret_pct_sum = total_ret_pct
-                            
-                            # Update monitor statistics in monitor_list table
-                            cursor.execute("""
-                                UPDATE users.monitor_list_0001 
-                                SET 
-                                    trades = %s,
-                                    win_loss = %s,
-                                    ret_pct = %s,
-                                    pnl = %s
-                                WHERE id = %s
-                            """, (total_trades, win_loss_rate, ret_pct_sum, total_pnl, monitor_id))
-                            
-                            updated_count += 1
-                            
-                            self.log_event("STATS_UPDATE", f"Updated monitor {monitor_name}: trades={total_trades}, cycles={total_cycles}, winning_cycles={winning_cycles}, W/L={win_loss_rate}% (cycle-based), ret_pct={ret_pct_sum}%, PNL=${total_pnl:.2f}")
-                    else:
-                        # Original trade-based calculation for other strategies
-                        cursor.execute("""
-                        SELECT 
-                            COUNT(*) as total_trades,
-                            COUNT(CASE WHEN win_loss = 'W' THEN 1 END) as wins,
-                            COUNT(CASE WHEN win_loss = 'L' THEN 1 END) as losses,
-                            COALESCE(SUM(ret_pct), 0) as total_ret_pct,
-                            COALESCE(SUM(pnl), 0) as total_pnl
-                            FROM users.trades_0001 
-                            WHERE monitor = %s AND status IN ('closed', 'settled') AND (test_filter IS NULL OR test_filter = FALSE)
-                        """, (monitor_identifier,))
-                        
-                        trade_stats = cursor.fetchone()
-                        if trade_stats:
-                            total_trades, wins, losses, total_ret_pct, total_pnl = trade_stats
-                            
-                            # Calculate win/loss rate
-                            win_loss_rate = 0.0
-                            if total_trades > 0:
-                                win_loss_rate = round((wins / total_trades) * 100, 1)
-                            
-                            # For ret_pct: use the sum (like trade_history summary panel does)
-                            # Don't divide by total_trades - just use the sum directly
-                            ret_pct_sum = total_ret_pct
-                            
-                            # Update monitor statistics in monitor_list table
-                            cursor.execute("""
-                                UPDATE users.monitor_list_0001 
-                                SET 
-                                    trades = %s,
-                                    win_loss = %s,
-                                    ret_pct = %s,
-                                    pnl = %s
-                                WHERE id = %s
-                            """, (total_trades, win_loss_rate, ret_pct_sum, total_pnl, monitor_id))
-                            
-                            updated_count += 1
-                            
-                            self.log_event("STATS_UPDATE", f"Updated monitor {monitor_name}: trades={total_trades}, W/L={win_loss_rate}%, ret_pct={ret_pct_sum}%, PNL=${total_pnl:.2f}")
+                            trade_stats = cursor.fetchone()
+                            if trade_stats and len(trade_stats) >= 5:
+                                total_trades, wins, losses, total_ret_pct, total_pnl = (
+                                    trade_stats[0],
+                                    trade_stats[1],
+                                    trade_stats[2],
+                                    trade_stats[3],
+                                    trade_stats[4],
+                                )
+                                
+                                win_loss_rate = 0.0
+                                if total_trades > 0:
+                                    win_loss_rate = round((wins / total_trades) * 100, 1)
+                                
+                                ret_pct_sum = total_ret_pct
+                                pnl_show = float(total_pnl) if total_pnl is not None else 0.0
+                                
+                                cursor.execute("""
+                                    UPDATE users.monitor_list_0001 
+                                    SET 
+                                        trades = %s,
+                                        win_loss = %s,
+                                        ret_pct = %s,
+                                        pnl = %s
+                                    WHERE id = %s
+                                """, (total_trades, win_loss_rate, ret_pct_sum, total_pnl, monitor_id))
+                                
+                                updated_count += 1
+                                
+                                self.log_event(
+                                    "STATS_UPDATE",
+                                    f"Updated monitor {monitor_name}: trades={total_trades}, W/L={win_loss_rate}%, ret_pct={ret_pct_sum}%, PNL=${pnl_show:.2f}",
+                                )
+                    except Exception as mon_err:
+                        msg = f"monitor id={monitor_id} name={monitor_name!r}: {mon_err}"
+                        errors.append(msg)
+                        self.log_event("ERROR", f"Monitor statistics partial failure — {msg}")
                 
                 conn.commit()
                 if updated_count > 0:
                     self._notify_frontend_monitor_list_updated("Monitor statistics updated")
-                return {
+                out: Dict[str, Any] = {
                     "status": "success",
                     "message": f"Updated statistics for {updated_count} monitors",
-                    "updated_count": updated_count
+                    "updated_count": updated_count,
                 }
+                if errors:
+                    out["partial_errors"] = errors
+                    out["message"] += f" ({len(errors)} monitor(s) skipped due to errors)"
+                return out
                 
         except Exception as e:
             self.log_event("ERROR", f"Error updating monitor statistics from trades: {e}")
@@ -1783,7 +1823,7 @@ def get_strategy_default_settings(strategy_name, user_number="0001"):
         
         with conn.cursor() as cursor:
             # Select all default settings columns (matching monitor_list structure)
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT 
                     win_streak_threshold, loss_prevention, loss_prevention_toggle,
                     performance_based_allocation, max_price_spread, paper_trade, prob_adj,
@@ -1802,6 +1842,26 @@ def get_strategy_default_settings(strategy_name, user_number="0001"):
             """, (strategy_name,))
             
             result = cursor.fetchone()
+            if not result:
+                # Fallback for case/casing differences from UI payloads.
+                cursor.execute(f"""
+                    SELECT 
+                        win_streak_threshold, loss_prevention, loss_prevention_toggle,
+                        performance_based_allocation, max_price_spread, paper_trade, prob_adj,
+                        position_size, position_type, multiplier,
+                        min_probability, max_probability, min_differential, max_differential,
+                        min_time, max_time, allow_re_entry,
+                        spike_alert_enabled, spike_alert_momentum_threshold,
+                        spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
+                        current_probability, min_ttc_seconds, momentum_spike_enabled,
+                        momentum_spike_threshold, verification_period_enabled, 
+                        verification_period_seconds, min_volume,
+                        momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount,
+                        momentum_scalp_profit_target, min_ask, max_ask, max_profit
+                    FROM users.strategy_list_{user_number}
+                    WHERE LOWER(name) = LOWER(%s)
+                """, (strategy_name,))
+                result = cursor.fetchone()
             conn.close()
             
             if result:
@@ -2034,8 +2094,9 @@ def create_monitor():
         symbol = data.get("symbol")
         strategy = data.get("strategy")
         bankroll_allotment_pct = data.get("bankroll_allotment_pct", 10)
-        position_size = data.get("position_size", 100)
-        multiplier = data.get("multiplier", 1.0)
+        # Prefer strategy defaults unless explicitly overridden by request.
+        position_size = data.get("position_size")
+        multiplier = data.get("multiplier")
         user_id = data.get("user_id", "user_0001")
         raw_market = data.get("market", "hourly")
         market = "15m" if (raw_market and str(raw_market).strip().lower() == "15m") else "hourly"
@@ -2169,7 +2230,7 @@ def create_monitor():
                 strategy_defaults.get('loss_prevention_toggle', True),
                 strategy_defaults.get('performance_based_allocation', False),
                 strategy_defaults.get('max_price_spread', 0.0300),
-                strategy_defaults.get('paper_trade', False),
+                True,  # New monitors always start in paper mode
                 strategy_defaults.get('prob_adj', 5.00),
                 # Strategy default auto trade settings (from strategy_list)
                 # Use values directly from strategy_defaults - they should all be present if strategy was found

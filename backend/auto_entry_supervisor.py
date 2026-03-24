@@ -21,11 +21,54 @@ import random
 import sys
 import signal
 import re
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional, Any
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+_HIGH_PRECISION_STRIKE_SYMBOLS = frozenset({"SOL", "XRP"})
+
+
+def _symbol_from_ticker_hint(ticker: Optional[str]) -> Optional[str]:
+    if not ticker:
+        return None
+    t = str(ticker).upper()
+    if "XRP" in t:
+        return "XRP"
+    if "SOL" in t:
+        return "SOL"
+    if "BTC" in t:
+        return "BTC"
+    if "ETH" in t:
+        return "ETH"
+    return None
+
+
+def format_trade_strike_label(strike_value, symbol: Optional[str] = None, ticker: Optional[str] = None) -> Optional[str]:
+    """
+    Preserve strike precision for low-priced symbols when sending payloads to trade_manager.
+    BTC/ETH stay as whole-dollar labels for backward compatibility.
+    """
+    if strike_value is None:
+        return None
+    sym = (symbol or _symbol_from_ticker_hint(ticker) or "").upper()
+    try:
+        d = Decimal(str(strike_value))
+    except (InvalidOperation, TypeError, ValueError):
+        s = str(strike_value).strip()
+        if s.startswith("$"):
+            return s
+        return f"${s}" if s else None
+
+    if sym in _HIGH_PRECISION_STRIKE_SYMBOLS:
+        q = d.quantize(Decimal("0.00001"), rounding=ROUND_HALF_UP)
+        text = format(q, "f").rstrip("0").rstrip(".")
+        return f"${text}"
+
+    # Legacy display for high-priced symbols.
+    return f"${int(q := d.quantize(Decimal('1'), rounding=ROUND_HALF_UP)):,}"
+
 
 # Add the project root to Python path for imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -937,7 +980,7 @@ def check_spike_alert_conditions():
             start_cooldown_period_in_db()
             _aes_logger.info("spike started monitor_id=%s", MONITOR_ID)
             log(f"[SPIKE ALERT] 🚨 SPIKE DETECTED! Momentum: {current_momentum:.2f} (threshold: ±{spike_threshold})")
-            log(f"[SPIKE ALERT] Auto entry PAUSED for {cooldown_minutes} minutes")
+            log(f"[SPIKE ALERT] Cooldown started ({cooldown_minutes} min); Hourly HTC uses raised min_probability (prob_adj), not a hard pause")
         
         elif spike_alert_active_from_db:
             if recovery_conditions_met:
@@ -2641,7 +2684,7 @@ def check_simulated_15m_entry_hourly_htc():
                 processed.add(strike_key)
                 if not can_trade_strike_simulated(strike_key):
                     continue
-                strike_formatted = f"${int(strike.get('strike')):,}" if strike.get('strike') is not None else None
+                strike_formatted = format_trade_strike_label(strike.get("strike"), symbol=current_symbol, ticker=strike.get("ticker"))
                 check_data = {"strike": strike_formatted, "side": active_side, "ticker": strike.get("ticker"), "date": date_str, "contract": contract_name}
                 if is_strike_already_simulated_traded(check_data):
                     continue
@@ -2651,7 +2694,7 @@ def check_simulated_15m_entry_hourly_htc():
                 side = "yes" if active_side == "yes" else "no"
                 buy_price = float(strike.get("yes_ask_dollars") or 0) if active_side == "yes" else float(strike.get("no_ask_dollars") or 0)
                 diff = strike.get("yes_diff") if active_side == "yes" else strike.get("no_diff")
-                sd = {"strike": f"${int(strike.get('strike')):,}", "side": side, "ticker": strike.get("ticker"),
+                sd = {"strike": format_trade_strike_label(strike.get("strike"), symbol=current_symbol, ticker=strike.get("ticker")), "side": side, "ticker": strike.get("ticker"),
                       "buy_price": buy_price, "probability": prob, "diff": diff}
                 if trigger_simulated_trade(sd):
                     pass
@@ -2830,7 +2873,9 @@ def check_auto_entry_conditions_hourly_htc():
             if not hasattr(check_auto_entry_conditions_hourly_htc, 'last_strike_table_log'):
                 check_auto_entry_conditions_hourly_htc.last_strike_table_log = 0
             if current_time - check_auto_entry_conditions_hourly_htc.last_strike_table_log >= 60:  # Log every 60 seconds
-                log(f"[AUTO ENTRY] ⚠️ No strike table data available")
+                _sym, _mkt = get_current_monitor_symbol_and_market()
+                _tn = get_strike_table_name(_sym, _mkt)
+                log(f"[AUTO ENTRY] ⚠️ No strike table data available (empty or missing header in live_data.{_tn})")
                 check_auto_entry_conditions_hourly_htc.last_strike_table_log = current_time
             return
         
@@ -2954,7 +2999,7 @@ def check_auto_entry_conditions_hourly_htc():
                 
                 # STEP 7: Prepare strike data for trade trigger
                 strike_data = {
-                    'strike': f"${int(strike.get('strike')):,}",
+                    'strike': format_trade_strike_label(strike.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike.get("ticker")),
                     'side': side,
                     'ticker': strike.get('ticker'),
                     'buy_price': buy_price,
@@ -3253,7 +3298,7 @@ def check_auto_entry_conditions_reverse_htc():
                 
                 # STEP 9: Prepare strike data for trade trigger (using OPPOSITE side - ONLY DIFFERENCE)
                 strike_data = {
-                    'strike': f"${int(strike.get('strike')):,}",
+                    'strike': format_trade_strike_label(strike.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike.get("ticker")),
                     'side': opposite_side,
                     'ticker': strike.get('ticker'),
                     'buy_price': opposite_buy_price,
@@ -3494,7 +3539,7 @@ def check_auto_entry_conditions_momentum_breakout():
             yes_ask_dollars = strike_above_data.get('yes_ask_dollars')
             if yes_ask_dollars:
                 strike_data = {
-                    'strike': f"${int(strike_above_data.get('strike')):,}",
+                    'strike': format_trade_strike_label(strike_above_data.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike_above_data.get("ticker")),
                     'side': 'yes',
                     'ticker': strike_above_data.get('ticker'),
                     'buy_price': float(yes_ask_dollars),
@@ -3517,7 +3562,7 @@ def check_auto_entry_conditions_momentum_breakout():
             no_ask_dollars = strike_below_data.get('no_ask_dollars')
             if no_ask_dollars:
                 strike_data = {
-                    'strike': f"${int(strike_below_data.get('strike')):,}",
+                    'strike': format_trade_strike_label(strike_below_data.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike_below_data.get("ticker")),
                     'side': 'no',
                     'ticker': strike_below_data.get('ticker'),
                     'buy_price': float(no_ask_dollars),
@@ -3933,7 +3978,7 @@ def check_auto_entry_conditions_momentum_contain():
             no_ask_dollars = strike_above_data.get('no_ask_dollars')
             if no_ask_dollars:
                 strike_data = {
-                    'strike': f"${int(strike_above_data.get('strike')):,}",
+                    'strike': format_trade_strike_label(strike_above_data.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike_above_data.get("ticker")),
                     'side': 'no',  # FLIPPED: Breakout uses 'yes' here
                     'ticker': strike_above_data.get('ticker'),
                     'buy_price': float(no_ask_dollars),
@@ -3956,7 +4001,7 @@ def check_auto_entry_conditions_momentum_contain():
             yes_ask_dollars = strike_below_data.get('yes_ask_dollars')
             if yes_ask_dollars:
                 strike_data = {
-                    'strike': f"${int(strike_below_data.get('strike')):,}",
+                    'strike': format_trade_strike_label(strike_below_data.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike_below_data.get("ticker")),
                     'side': 'yes',  # FLIPPED: Breakout uses 'no' here
                     'ticker': strike_below_data.get('ticker'),
                     'buy_price': float(yes_ask_dollars),
@@ -4207,7 +4252,7 @@ def check_auto_entry_conditions_momentum_scalp():
                     continue
                 
                 strike_data = {
-                    'strike': f"${int(strike.get('strike')):,}",
+                    'strike': format_trade_strike_label(strike.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike.get("ticker")),
                     'side': side,
                     'ticker': strike.get('ticker'),
                     'buy_price': buy_price,
@@ -4457,7 +4502,7 @@ def check_auto_entry_conditions_momentum_reversal():
                     continue
                 
                 strike_data = {
-                    'strike': f"${int(strike.get('strike')):,}",
+                    'strike': format_trade_strike_label(strike.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike.get("ticker")),
                     'side': side,
                     'ticker': strike.get('ticker'),
                     'buy_price': buy_price,

@@ -6,6 +6,39 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-24 — Trade manager ↔ ATS Redis enrollment, monitor_manager hardening, SOL/XRP DB precision and watchdogs
+
+**Summary**
+- **ATS open-trade handoff:** `trade_manager` publishes open events to Redis (`rec_io:ats_enroll_request`) and waits for an ACK key; `active_trade_supervisor` subscribes per monitor, runs the same enrollment core as HTTP, and stores the result for the waiter. HTTP notify remains fallback. New module `backend/core/ats_enrollment_redis.py`; `docs/REALTIME_BACKBONE.md` updated.
+- **monitor_manager:** Safer unpacking of cycle statistics rows when reconciling monitor stats from trades; avoids 500s on malformed/short result sets; optional partial error reporting in responses.
+- **SOL/XRP / precision / feeds:** Migrations extend live price log watchdog columns, tighten 15m strike table numeric precision, add `live_symbol_status` sync for SOL/XRP, and widen trades symbol/spot numeric precision; aligned `database.py` / schema reference. Watchdogs (`kalshi_market_watchdog`, `symbol_price_watchdog`), `strike_table_generator`, and `system_monitor` adjustments as staged.
+- **trade_manager / AES:** Resilience and logging around notifications and entry context; `auto_entry_supervisor` clearer strike-table-missing logs (table name) and spike cooldown wording.
+- **Frontend:** Trade monitor / trade history desktop + mobile small alignment with ongoing MTB work (`globals.js`, tab HTML).
+- **Tooling / docs:** `generate_unified_supervisor_config`, `port_config`; analytics probability lookup / daily update touches; backtest simulator/helper and `docs/BACKTESTING.md`.
+
+Plans: `redis-platform-initiative.md` (ATS enrollment slice), operational hardening adjacent to prior `monitor_manager` / feed plans.
+
+**DB migrations (required on production, in lexicographic order)**
+
+1. `20260320_2200_sol_xrp_live_price_log_watchdog_columns`
+2. `20260322_1200_strike_15m_sol_xrp_numeric_precision`
+3. `20260323_1400_live_symbol_status_sync_sol_xrp`
+4. `20260324_1000_trades_symbol_spot_numeric_precision`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations in order (from project root):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260320_2200_sol_xrp_live_price_log_watchdog_columns`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260322_1200_strike_15m_sol_xrp_numeric_precision`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260323_1400_live_symbol_status_sync_sol_xrp`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260324_1000_trades_symbol_spot_numeric_precision`
+- [ ] Restart application services:  
+  `./scripts/MASTER_RESTART.sh`
+- [ ] Verify: health (`main_app` :3000, `trade_executor` :8001), supervisor `RUNNING`; spot-check Redis ATS enrollment in logs on next open (trade_manager `ATS enrollment confirmed via Redis`, ATS `ATS ENROLL ACK ok`).
+
+---
+
 ## 2026-03-22 — Backtesting stack, auto-entry HTC gates, testing Kalshi 1m candle tables, migration hygiene rules
 
 **Summary**

@@ -997,8 +997,8 @@
                     ${!isPercentMode ? `<td>${trade.pnl !== null && trade.pnl !== undefined && trade.pnl !== '' ? Number(trade.pnl).toFixed(2) : ''}</td>` : ''}
                     <td>${trade.ret_pct !== null && trade.ret_pct !== undefined && trade.ret_pct !== '' ? Number(trade.ret_pct).toFixed(2) : ''}</td>
                     <td>${trade.closed_at !== null ? trade.closed_at : ''}</td>
-                    <td>${trade.symbol_open !== null ? '$' + Math.round(trade.symbol_open).toLocaleString() : ''}</td>
-                    <td>${trade.symbol_close !== null ? '$' + Math.round(trade.symbol_close).toLocaleString() : ''}</td>
+                    <td>${formatTradeSymbolSpot(trade.symbol, trade.symbol_open)}</td>
+                    <td>${formatTradeSymbolSpot(trade.symbol, trade.symbol_close)}</td>
                     <td>${trade.momentum_percentile !== null && trade.momentum_percentile !== undefined ? Math.round(Number(trade.momentum_percentile)) : ''}</td>
                     <td>${plusSign(trade.win_loss)}</td>
                 `;

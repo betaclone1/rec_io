@@ -33,18 +33,27 @@ DEFAULT_PORTS = {
     "redis_switchboard": 3010,
     "read_api": 3050,
 
+    "symbol_price_watchdog_btc": 8008,
+    "symbol_price_watchdog_eth": 8009,
+    "symbol_price_watchdog_sol": 8025,
+    "symbol_price_watchdog_xrp": 8026,
+
     "kalshi_account_sync": 8004,
     "kalshi_market_watchdog_hourly_btc": 8005,
     "kalshi_market_watchdog_hourly_eth": 8011,
     "kalshi_market_watchdog_15m_btc": 8021,
     "kalshi_market_watchdog_15m_eth": 8022,
+    "kalshi_market_watchdog_15m_sol": 8027,
+    "kalshi_market_watchdog_15m_xrp": 8028,
     "strike_table_generator_hourly_btc": 8014,
     "strike_table_generator_hourly_eth": 8015,
     # SPX/NDX not currently traded; uncomment to re-enable later.
     # "strike_table_generator_hourly_spx": 8016,
     # "strike_table_generator_hourly_ndx": 8017,
     "strike_table_generator_15m_btc": 8023,
-    "strike_table_generator_15m_eth": 8024
+    "strike_table_generator_15m_eth": 8024,
+    "strike_table_generator_15m_sol": 8029,
+    "strike_table_generator_15m_xrp": 8030
 }
 
 def ensure_port_config_exists():

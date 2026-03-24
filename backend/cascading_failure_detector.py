@@ -85,6 +85,8 @@ class CascadingFailureDetector:
             "trade_executor",      # Trade execution
             "symbol_price_watchdog_btc", # BTC price data
             "symbol_price_watchdog_eth", # ETH price data
+            "symbol_price_watchdog_sol", # SOL price data
+            "symbol_price_watchdog_xrp", # XRP price data
             # SPX/NDX not currently traded; uncomment to re-enable later.
             # "symbol_price_watchdog_spx", # SPX price data
             "strike_table_generator_hourly_btc", # BTC strike table data
@@ -100,8 +102,12 @@ class CascadingFailureDetector:
             # "kalshi_market_watchdog_hourly_nasdaq100", # NASDAQ100 - not in supervisor; uncomment when deployed
             "kalshi_market_watchdog_15m_btc", # BTC Kalshi 15m market data
             "kalshi_market_watchdog_15m_eth", # ETH Kalshi 15m market data
+            "kalshi_market_watchdog_15m_sol", # SOL Kalshi 15m market data
+            "kalshi_market_watchdog_15m_xrp", # XRP Kalshi 15m market data
             "strike_table_generator_15m_btc", # BTC 15m strike table
             "strike_table_generator_15m_eth", # ETH 15m strike table
+            "strike_table_generator_15m_sol", # SOL 15m strike table
+            "strike_table_generator_15m_xrp", # XRP 15m strike table
         ]
         
         # Monitor-specific services will be added dynamically

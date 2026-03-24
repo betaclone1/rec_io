@@ -16,9 +16,43 @@ Does not handle cooldown, DB duplicate checks, or TTC window (callers supply TTC
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Literal, Mapping, Optional, Tuple
 
 HourlyHtcGateProfile = Literal["full", "simulated_15m"]
+
+_HIGH_PRECISION_STRIKE_SYMBOLS = frozenset({"SOL", "XRP"})
+
+
+def _symbol_from_ticker_hint(ticker: Optional[str]) -> Optional[str]:
+    if not ticker:
+        return None
+    t = str(ticker).upper()
+    if "XRP" in t:
+        return "XRP"
+    if "SOL" in t:
+        return "SOL"
+    if "BTC" in t:
+        return "BTC"
+    if "ETH" in t:
+        return "ETH"
+    return None
+
+
+def format_strike_label(raw_strike: Any, ticker: Optional[str]) -> Optional[str]:
+    if raw_strike is None:
+        return None
+    sym = (_symbol_from_ticker_hint(ticker) or "").upper()
+    try:
+        d = Decimal(str(raw_strike))
+    except (InvalidOperation, TypeError, ValueError):
+        s = str(raw_strike).strip()
+        return f"${s}" if s else None
+    if sym in _HIGH_PRECISION_STRIKE_SYMBOLS:
+        q = d.quantize(Decimal("0.00001"), rounding=ROUND_HALF_UP)
+        text = format(q, "f").rstrip("0").rstrip(".")
+        return f"${text}"
+    return f"${int(d.quantize(Decimal('1'), rounding=ROUND_HALF_UP)):,}"
 
 
 def money_line_diffs_and_active_side(
@@ -163,9 +197,8 @@ def evaluate_hourly_htc_strike_entry(
     raw_strike = strike.get("strike")
     if raw_strike is None:
         return None, "strike_missing"
-    try:
-        strike_label = f"${int(raw_strike):,}"
-    except (TypeError, ValueError):
+    strike_label = format_strike_label(raw_strike, strike.get("ticker"))
+    if not strike_label:
         return None, "strike_label_error"
 
     return (

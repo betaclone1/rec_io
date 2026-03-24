@@ -236,41 +236,20 @@ def cleanup_old_profiles(logger, symbols):
             symbol_lower = symbol.lower()
             logger.info(f"Cleaning up old profiles for {symbol}...")
             
-            # Clean up momentum profiles
-            cursor.execute(f"""
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'analytics' 
-                AND table_name LIKE '{symbol_lower}_momentum_profile_%'
-                ORDER BY table_name ASC
-            """)
-            
-            momentum_tables = [row[0] for row in cursor.fetchall()]
-            
-            # Delete all but the 2 most recent momentum profile tables
-            if len(momentum_tables) > 2:
-                tables_to_delete = momentum_tables[:-2]  # Keep last 2, delete the rest
-                for table_name in tables_to_delete:
-                    logger.info(f"🗑️ Deleting old momentum profile: {table_name}")
-                    cursor.execute(f"DROP TABLE analytics.{table_name}")
-            
-            # Clean up price profiles
-            cursor.execute(f"""
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'analytics' 
-                AND table_name LIKE '{symbol_lower}_price_profile_%'
-                ORDER BY table_name ASC
-            """)
-            
-            price_tables = [row[0] for row in cursor.fetchall()]
-            
-            # Delete all but the 2 most recent price profile tables
-            if len(price_tables) > 2:
-                tables_to_delete = price_tables[:-2]  # Keep last 2, delete the rest
-                for table_name in tables_to_delete:
-                    logger.info(f"🗑️ Deleting old price profile: {table_name}")
-                    cursor.execute(f"DROP TABLE analytics.{table_name}")
+            for profile_type in ("momentum_profile", "price_profile", "volatility_profile", "movement_profile"):
+                cursor.execute(f"""
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = 'analytics'
+                    AND table_name LIKE '{symbol_lower}_{profile_type}_%'
+                    ORDER BY table_name ASC
+                """)
+                profile_tables = [row[0] for row in cursor.fetchall()]
+                if len(profile_tables) > 2:
+                    tables_to_delete = profile_tables[:-2]
+                    for table_name in tables_to_delete:
+                        logger.info(f"🗑️ Deleting old {profile_type}: {table_name}")
+                        cursor.execute(f"DROP TABLE analytics.{table_name}")
             
             logger.info(f"✅ Profile cleanup completed for {symbol}")
         

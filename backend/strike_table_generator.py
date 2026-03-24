@@ -10,6 +10,7 @@ Supports multiple symbols (BTC, ETH, etc.) via command line parameter.
 
 import os
 import sys
+import math
 import psycopg2
 import json
 import logging
@@ -61,11 +62,35 @@ def _configure_logging():
 logger = _configure_logging()
 HEARTBEAT_INTERVAL_SEC = 300
 
+# SOL/XRP: spot and strike spacing need sub-cent precision in strike tables and lookup interpolation.
+HIGH_PRECISION_PRICE_SYMBOLS = frozenset({"sol", "xrp"})
+PRICE_BUFFER_DECIMAL_PLACES = 5
+BUFFER_PCT_DECIMAL_PLACES_ALT = 6
+
+
+def uses_high_precision_price(symbol: str) -> bool:
+    return symbol.lower() in HIGH_PRECISION_PRICE_SYMBOLS
+
+
+def round_price_buffer(val: float) -> float:
+    return round(float(val), PRICE_BUFFER_DECIMAL_PLACES)
+
+
+def strikes_equivalent(symbol: str, a: float, b: float) -> bool:
+    """Match Kalshi floor strike to row strike; alt coins use 5dp equality."""
+    if uses_high_precision_price(symbol):
+        return math.isclose(
+            float(a), float(b), rel_tol=0, abs_tol=10 ** (-PRICE_BUFFER_DECIMAL_PLACES)
+        )
+    return int(round(float(a))) == int(round(float(b)))
+
+
 class LookupProbabilityCalculator:
     """Probability calculator using the lookup table instead of live interpolation."""
     
     def __init__(self, symbol: str):
         self.symbol = symbol.lower()
+        self.fine_price = uses_high_precision_price(symbol)
         self.lookup_table_name = self._find_latest_lookup_table()
         self.max_buffer = self._get_max_buffer_for_symbol()
     
@@ -126,7 +151,9 @@ class LookupProbabilityCalculator:
             if conn:
                 conn.close()
     
-    def get_probability(self, ttc_seconds: int, buffer_points: int, momentum_bucket: int, conn=None) -> tuple[float, float]:
+    def get_probability(
+        self, ttc_seconds: int, buffer_points: float, momentum_bucket: int, conn=None
+    ) -> tuple[float, float]:
         """
         Get probability values from lookup table with bilinear interpolation.
         
@@ -148,9 +175,14 @@ class LookupProbabilityCalculator:
         momentum_bucket = min(available_buckets, key=lambda x: abs(x - momentum_bucket))
         
         # Check if buffer is outside lookup table range for this symbol
-        if buffer_points > self.max_buffer:
-            logger.warning("Buffer %s outside lookup table range (0-%s), using max buffer as fallback", buffer_points, self.max_buffer)
-            buffer_points = self.max_buffer
+        if float(buffer_points) > float(self.max_buffer):
+            logger.warning(
+                "Buffer %s outside lookup table range (0-%s), using max buffer as fallback",
+                buffer_points,
+                self.max_buffer,
+            )
+            buffer_points = float(self.max_buffer)
+        buffer_points = float(buffer_points)
         
         use_external_conn = conn is not None
         if not use_external_conn:
@@ -160,9 +192,12 @@ class LookupProbabilityCalculator:
                 conn = get_postgresql_connection()
             cursor = conn.cursor()
             
-            # Calculate dynamic buffer range based on symbol's buffer spacing
-            # TTC spacing is always 5 seconds, buffer spacing varies by symbol
-            buffer_range = max(5, self.max_buffer * 0.01)  # 1% of max_buffer, minimum 5
+            # Search window around buffer_points for grid neighbors (BTC: large integer buffers; SOL/XRP: small USD buffers).
+            mb = float(self.max_buffer)
+            if self.fine_price:
+                buffer_range = max(1e-4, mb * 0.05)
+            else:
+                buffer_range = max(5.0, mb * 0.01)
             
             # Find the 4 nearest points for bilinear interpolation
             query = f"""
@@ -258,7 +293,9 @@ class LookupProbabilityCalculator:
                 conn.close()
     
     
-    def _bilinear_interpolate(self, results: List[Tuple], ttc_seconds: int, buffer_points: int) -> Tuple[float, float]:
+    def _bilinear_interpolate(
+        self, results: List[Tuple], ttc_seconds: int, buffer_points: float
+    ) -> Tuple[float, float]:
         """Perform bilinear interpolation with 4 points."""
         try:
             # Sort results by TTC and buffer to find corners
@@ -281,7 +318,12 @@ class LookupProbabilityCalculator:
             for ttc in [ttc_lower, ttc_upper]:
                 for buffer in [buffer_lower, buffer_upper]:
                     for result in sorted_results:
-                        if result[0] == ttc and result[1] == buffer:
+                        if abs(float(result[0]) - float(ttc)) < 1e-6 and math.isclose(
+                            float(result[1]),
+                            float(buffer),
+                            rel_tol=0,
+                            abs_tol=1e-5,
+                        ):
                             corners[(ttc, buffer)] = (float(result[2]), float(result[3]))
                             break
             
@@ -293,15 +335,15 @@ class LookupProbabilityCalculator:
             pos_interp = self._interpolate_2d(
                 float(corners[(ttc_lower, buffer_lower)][0]), float(corners[(ttc_upper, buffer_lower)][0]),
                 float(corners[(ttc_lower, buffer_upper)][0]), float(corners[(ttc_upper, buffer_upper)][0]),
-                int(ttc_lower), int(ttc_upper), int(buffer_lower), int(buffer_upper),
-                ttc_seconds, buffer_points
+                float(ttc_lower), float(ttc_upper), float(buffer_lower), float(buffer_upper),
+                float(ttc_seconds), float(buffer_points),
             )
             
             neg_interp = self._interpolate_2d(
                 float(corners[(ttc_lower, buffer_lower)][1]), float(corners[(ttc_upper, buffer_lower)][1]),
                 float(corners[(ttc_lower, buffer_upper)][1]), float(corners[(ttc_upper, buffer_upper)][1]),
-                int(ttc_lower), int(ttc_upper), int(buffer_lower), int(buffer_upper),
-                ttc_seconds, buffer_points
+                float(ttc_lower), float(ttc_upper), float(buffer_lower), float(buffer_upper),
+                float(ttc_seconds), float(buffer_points),
             )
             
             return pos_interp, neg_interp
@@ -310,10 +352,20 @@ class LookupProbabilityCalculator:
             logger.error("Error in bilinear interpolation: %s", e)
             return 50.0, 50.0
     
-    def _interpolate_2d(self, q11: float, q21: float, q12: float, q22: float,
-                       x1: int, x2: int, y1: int, y2: int,
-                       x: int, y: int) -> float:
-        """Perform 2D bilinear interpolation."""
+    def _interpolate_2d(
+        self,
+        q11: float,
+        q21: float,
+        q12: float,
+        q22: float,
+        x1: float,
+        x2: float,
+        y1: float,
+        y2: float,
+        x: float,
+        y: float,
+    ) -> float:
+        """Perform 2D bilinear interpolation (TTC and buffer may be fractional for alt-coin lookups)."""
         if x2 == x1 or y2 == y1:
             return q11
         
@@ -325,7 +377,9 @@ class LookupProbabilityCalculator:
         
         return f1 + f2 + f3 + f4
     
-    def _linear_interpolate(self, results: List[Tuple], ttc_seconds: int, buffer_points: int) -> Tuple[float, float]:
+    def _linear_interpolate(
+        self, results: List[Tuple], ttc_seconds: int, buffer_points: float
+    ) -> Tuple[float, float]:
         """Fallback to linear interpolation."""
         if len(results) < 2:
             return float(results[0][2]), float(results[0][3])
@@ -359,8 +413,8 @@ class StrikeTableGenerator:
     def __init__(self, symbol: str, interval: str = "hourly"):
         self.symbol = symbol.lower()
         self.interval = interval.lower()  # "hourly" or "15m"
-        if self.interval == "15m" and self.symbol not in ("btc", "eth"):
-            raise ValueError("15m interval only supported for BTC and ETH")
+        if self.interval == "15m" and self.symbol not in ("btc", "eth", "sol", "xrp"):
+            raise ValueError("15m interval only supported for BTC, ETH, SOL, XRP")
         logger.debug("Initializing strike table generator for %s (%s)", symbol.upper(), self.interval)
         self.calculator = LookupProbabilityCalculator(symbol)
         logger.debug("Strike table generator initialized for %s (%s)", symbol.upper(), self.interval)
@@ -369,6 +423,12 @@ class StrikeTableGenerator:
         """Table name: strike_table_hourly_{symbol} or strike_table_15m_{symbol}."""
         suffix = "15m" if self.interval == "15m" else "hourly"
         return f"strike_table_{suffix}_{self.symbol}"
+
+    def _normalize_floor_strike(self, floor_strike: float) -> float:
+        """Kalshi floor strike as stored key: integer dollars for BTC/ETH; 5dp for SOL/XRP."""
+        if uses_high_precision_price(self.symbol):
+            return round_price_buffer(floor_strike)
+        return float(int(round(float(floor_strike))))
     
     def generate_market_title(self, event_ticker: str) -> str:
         """
@@ -445,13 +505,27 @@ class StrikeTableGenerator:
             
             # Create strike table (hourly or 15m). Same column set: ttc_hourly, ttc_15m, probability_hourly, probability_15m.
             table_name = self._strike_table_name()
+            if uses_high_precision_price(self.symbol):
+                price_t, buffer_t, strike_t, buffer_pct_t = (
+                    "NUMERIC(18,5)",
+                    "NUMERIC(18,5)",
+                    "NUMERIC(18,5)",
+                    "NUMERIC(12,6)",
+                )
+            else:
+                price_t, buffer_t, strike_t, buffer_pct_t = (
+                    "DECIMAL(10,2)",
+                    "DECIMAL(10,2)",
+                    "INTEGER",
+                    "DECIMAL(5,2)",
+                )
             strike_table_sql = f"""
             CREATE TABLE IF NOT EXISTS live_data.{table_name} (
                 id SERIAL PRIMARY KEY,
                 timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                 symbol VARCHAR(10),
                 market TEXT,
-                current_price DECIMAL(10,2),
+                current_price {price_t},
                 ttc_hourly INTEGER,
                 ttc_15m INTEGER,
                 broker VARCHAR(20),
@@ -459,9 +533,9 @@ class StrikeTableGenerator:
                 market_title TEXT,
                 strike_tier INTEGER,
                 market_status VARCHAR(20),
-                strike INTEGER,
-                buffer DECIMAL(10,2),
-                buffer_pct DECIMAL(5,2),
+                strike {strike_t},
+                buffer {buffer_t},
+                buffer_pct {buffer_pct_t},
                 probability_hourly DECIMAL(5,2),
                 probability_15m DECIMAL(5,2),
                 yes_ask DECIMAL(5,2),
@@ -762,33 +836,49 @@ class StrikeTableGenerator:
             movement = market_info.get("movement")
             movement_percentile = market_info.get("movement_percentile")
             market_data = market_info["market_data"]
-            logger.debug("Got market data - Price: $%s, Momentum: %s", f"{current_price:,.2f}", momentum_percentile)
+            price_fmt = f"{current_price:,.5f}" if uses_high_precision_price(self.symbol) else f"{current_price:,.2f}"
+            logger.debug("Got market data - Price: $%s, Momentum: %s", price_fmt, momentum_percentile)
             
             # Calculate TTC (hourly or 15m depending on interval) and always 15m boundary for ttc_15m column
             ttc_seconds = self.calculate_ttc_seconds(market_data["strike_date"])
             ttc_15m_seconds = self._seconds_to_next_15m_boundary_est()
             
-            logger.debug("Current data - Price: $%s, TTC: %ss, TTC_15m: %ss, Momentum: %s", f"{current_price:,.2f}", ttc_seconds, ttc_15m_seconds, momentum_percentile)
+            price_fmt2 = f"{current_price:,.5f}" if uses_high_precision_price(self.symbol) else f"{current_price:,.2f}"
+            logger.debug(
+                "Current data - Price: $%s, TTC: %ss, TTC_15m: %ss, Momentum: %s",
+                price_fmt2,
+                ttc_seconds,
+                ttc_15m_seconds,
+                momentum_percentile,
+            )
             
             # Get available market strikes (use same integer as match logic so we find ask prices)
             markets = market_data.get("markets", [])
             available_strikes = []
             for market in markets:
                 floor_strike = market.get("floor_strike")
-                if floor_strike:
-                    market_strike = int(float(floor_strike))
-                    available_strikes.append(market_strike)
+                if floor_strike is not None:
+                    available_strikes.append(self._normalize_floor_strike(float(floor_strike)))
 
             if self.interval == "15m":
                 # Single strike only; strike_tier 0.
                 # For 15m we do NOT depend on Kalshi strikes existing; if none are usable,
                 # synthesize a strike from the current price.
                 if available_strikes:
-                    available_strikes.sort(key=lambda x: abs(x - current_price))
+                    available_strikes.sort(
+                        key=lambda x: abs(float(x) - float(current_price))
+                    )
                     single = available_strikes[0]
                 else:
-                    single = int(round(current_price))
-                    logger.warning("15m: no valid strikes from market data, using synthetic strike %s based on current_price %s", single, current_price)
+                    if uses_high_precision_price(self.symbol):
+                        single = round_price_buffer(current_price)
+                    else:
+                        single = int(round(current_price))
+                    logger.warning(
+                        "15m: no valid strikes from market data, using synthetic strike %s based on current_price %s",
+                        single,
+                        current_price,
+                    )
 
                 max_buffer = self.calculator.max_buffer
                 if abs(current_price - single) > max_buffer:
@@ -829,12 +919,22 @@ class StrikeTableGenerator:
             for strike in strikes:
                 try:
                     # Calculate buffer and probability
-                    buffer = abs(current_price - strike)
-                    buffer_pct = (buffer / current_price) * 100
+                    raw_buf = abs(float(current_price) - float(strike))
+                    buffer = (
+                        round_price_buffer(raw_buf)
+                        if uses_high_precision_price(self.symbol)
+                        else raw_buf
+                    )
+                    buffer_pct = (float(buffer) / float(current_price)) * 100 if current_price else None
+                    if (
+                        buffer_pct is not None
+                        and uses_high_precision_price(self.symbol)
+                    ):
+                        buffer_pct = round(float(buffer_pct), BUFFER_PCT_DECIMAL_PLACES_ALT)
                     
                     # Probability lookups: hourly uses both TTCs; 15m uses only ttc_15m (same as probability_15m).
                     pos_prob, neg_prob = self.calculator.get_probability(
-                        ttc_seconds, int(buffer), momentum_bucket, conn
+                        ttc_seconds, float(buffer), momentum_bucket, conn
                     )
                     if strike < current_price:
                         probability = pos_prob
@@ -845,7 +945,7 @@ class StrikeTableGenerator:
                         continue
                     
                     pos_prob_15m, neg_prob_15m = self.calculator.get_probability(
-                        ttc_15m_seconds, int(buffer), momentum_bucket, conn
+                        ttc_15m_seconds, float(buffer), momentum_bucket, conn
                     )
                     if strike < current_price:
                         probability_15m = pos_prob_15m if pos_prob_15m is not None else None
@@ -868,8 +968,7 @@ class StrikeTableGenerator:
                     for market in markets:
                         floor_strike = market.get("floor_strike")
                         if floor_strike is not None:
-                            # Direct integer comparison - no precision issues
-                            if int(float(floor_strike)) == strike:
+                            if strikes_equivalent(self.symbol, float(floor_strike), float(strike)):
                                 yes_ask = market.get("yes_ask")
                                 no_ask = market.get("no_ask")
                                 yes_ask_dollars = market.get("yes_ask_dollars")
@@ -1158,14 +1257,14 @@ def main():
     parser.add_argument('symbol', help='Symbol to generate strike table for (e.g., BTC, ETH)')
     parser.add_argument('mode', help='Mode: test for single generation, continuous for ongoing generation')
     parser.add_argument('interval_sec', type=int, nargs='?', default=30, help='Seconds between generations (for continuous mode)')
-    parser.add_argument('--interval', choices=['hourly', '15m'], default='hourly', help='Market interval: hourly (default) or 15m (BTC/ETH only)')
+    parser.add_argument('--interval', choices=['hourly', '15m'], default='hourly', help='Market interval: hourly (default) or 15m (BTC, ETH, SOL, XRP)')
     args = parser.parse_args()
     symbol = args.symbol.upper()
     mode = args.mode
     interval_sec = args.interval_sec
     interval = args.interval
-    if interval == "15m" and symbol.lower() not in ("btc", "eth"):
-        parser.error("--interval 15m only supported for BTC and ETH")
+    if interval == "15m" and symbol.lower() not in ("btc", "eth", "sol", "xrp"):
+        parser.error("--interval 15m only supported for BTC, ETH, SOL, XRP")
     if mode == "continuous":
         run_continuous_generation(interval_sec, symbol, interval=interval)
     else:

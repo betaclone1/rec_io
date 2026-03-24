@@ -27,10 +27,15 @@ multiple markets), **buffer** = ``int(abs(spot - strike))``,
 **Hourly HTC TTC window** when no ``--monitor-row-id``: **60–900s** (1m through 15m of time
 remaining; ``min_time``/``max_time`` from a monitor row override this).
 
-**Gate profile:** default ``--htc-gate-mode full`` matches ``check_auto_entry_conditions_hourly_htc``
-(diff, volume, max_ask). Use ``--htc-gate-mode simulated-15m`` to match
-``check_simulated_15m_entry_hourly_htc`` (hourly monitor + 15m tickers): **only** TTC window +
-probability band; no diff/volume/max_ask — use when reconciling trades from that path.
+**Contract interval (15m vs hourly):** default ``--market auto`` infers from the ticker: if it
+contains ``15M`` (e.g. ``KXBTC15M-...``) → **15m** (``ttc_15m`` + ``probability_15m``-style lookup);
+otherwise **hourly** (e.g. ``KXBTCD-...`` → ``ttc_hourly`` + hourly probability). Override with
+``--market 15m`` or ``--market hourly`` when needed.
+
+**Gate profile:** ``--htc-gate-mode full`` matches ``check_auto_entry_conditions_hourly_htc``.
+``--htc-gate-mode simulated-15m`` matches ``check_simulated_15m_entry_hourly_htc`` (uses ``ttc_15m``
+for the TTC window even on hourly contracts, and 15m-style probability — same as live reading the
+hourly strike table’s ``ttc_15m`` / ``probability_15m``).
 
 Then **two**
 ``get_probability`` calls and ``probability_15m or probability`` as in
@@ -64,6 +69,7 @@ Examples::
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import re
@@ -83,7 +89,9 @@ from backend.util.auto_entry_htc_gates import (  # noqa: E402
 from scripts.backtest.helpers.db import get_connection  # noqa: E402
 from scripts.backtest.helpers.hypothetical_trades import estimate_kalshi_taker_fee  # noqa: E402
 from scripts.backtest.helpers.htc_aes_replay import (  # noqa: E402
+    infer_contract_market_from_kalshi_ticker,
     seconds_to_next_15m_boundary_ny,
+    seconds_to_next_hour_boundary_ny,
     ttc_seconds_in_window,
 )
 from scripts.backtest.helpers.kalshi_candles_1m import (  # noqa: E402
@@ -317,6 +325,45 @@ def lookup_probability_strike_table_15m(
     return None
 
 
+def lookup_probability_strike_table_hourly(
+    calc: Any,
+    *,
+    strike_int: int,
+    current_price: float,
+    ttc_hourly: int,
+    momentum_bucket: int,
+    conn: Any,
+) -> Optional[float]:
+    """
+    Same ``probability_hourly`` selection as ``generate_strike_table`` for ``interval == 'hourly'``:
+    one ``get_probability(ttc_hourly, buffer_pts, momentum_bucket)`` by side.
+    """
+    bpts = int(abs(current_price - strike_int))
+    pos, neg = calc.get_probability(ttc_hourly, bpts, momentum_bucket, conn=conn)
+    if strike_int < current_price:
+        return float(pos) if pos is not None else None
+    return float(neg) if neg is not None else None
+
+
+def _aes_window_ttc(
+    *,
+    contract_market: str,
+    gate_profile: str,
+    ts_et: datetime,
+) -> tuple[int, str]:
+    """
+    Seconds compared to ``min_time``/``max_time`` (same shape as ``get_current_ttc()``).
+
+    Simulated 15m path always uses ``ttc_15m`` from the hourly strike table; mirror that with
+    the next :00/:15/:30/:45 boundary even when the contract is hourly.
+    """
+    if gate_profile == "simulated_15m":
+        return seconds_to_next_15m_boundary_ny(ts_et), "ttc_15m"
+    if contract_market == "15m":
+        return seconds_to_next_15m_boundary_ny(ts_et), "ttc_15m"
+    return seconds_to_next_hour_boundary_ny(ts_et), "ttc_hourly"
+
+
 def _build_strike_row(
     *,
     strike: float,
@@ -403,12 +450,18 @@ def main() -> int:
         help="Omit first failing Hourly HTC gate reason on each line",
     )
     p.add_argument(
+        "--market",
+        choices=("auto", "15m", "hourly"),
+        default="auto",
+        help="auto: 15m if ticker contains 15M (e.g. KXBTC15M-...), else hourly (e.g. KXBTCD-...)",
+    )
+    p.add_argument(
         "--htc-gate-mode",
         choices=("full", "simulated-15m"),
         default="full",
         help=(
             "full: same gates as check_auto_entry_conditions_hourly_htc. "
-            "simulated-15m: only prob (+spike) after TTC window, like check_simulated_15m_entry_hourly_htc"
+            "simulated-15m: only prob (+spike) after TTC window; TTC window uses ttc_15m (15m boundary)"
         ),
     )
     p.add_argument(
@@ -423,10 +476,21 @@ def main() -> int:
         default=25.0,
         help="Fraction of bankroll (0-100) allocated as premium budget for sizing contracts",
     )
+    p.add_argument(
+        "--emit-summary-json",
+        action="store_true",
+        help="Print one line SIM_SUMMARY_JSON {...} before exit (for batch / tooling)",
+    )
     args = p.parse_args()
 
     as_of = _parse_date(args.as_of) if args.as_of else datetime.now(timezone.utc).date()
     ticker = validate_kalshi_market_ticker(args.ticker)
+    if args.market == "auto":
+        contract_market = infer_contract_market_from_kalshi_ticker(ticker)
+        contract_market_source = "inferred"
+    else:
+        contract_market = args.market
+        contract_market_source = "explicit"
 
     if args.storage == "testing":
         if args.scratch_table:
@@ -451,6 +515,10 @@ def main() -> int:
         candle_from = qualified
         qualified_display = qualified
 
+    def _emit_summary(payload: dict[str, Any]) -> None:
+        if args.emit_summary_json:
+            print("SIM_SUMMARY_JSON " + json.dumps(payload, separators=(",", ":")), flush=True)
+
     conn = get_connection()
     try:
         if args.storage == "testing" and not _testing_candles_table_exists(conn, ticker):
@@ -464,6 +532,7 @@ def main() -> int:
                 "20260322_1420_testing_candlesticks_1m_kxbtc15m_26mar191745_45",
                 file=sys.stderr,
             )
+            _emit_summary({"ticker": ticker, "first_hit": False, "reason": "missing_testing_table"})
             return 1
 
         if args.fetch_candles:
@@ -508,6 +577,7 @@ def main() -> int:
         candles = _load_candles(conn, candle_from, ticker)
         if not candles:
             print(f"No rows in {qualified_display} for ticker {ticker}", file=sys.stderr)
+            _emit_summary({"ticker": ticker, "first_hit": False, "reason": "no_candle_rows"})
             return 1
 
         calc = None
@@ -519,7 +589,6 @@ def main() -> int:
         first_hit: Optional[dict[str, Any]] = None
         spike_active = bool(args.spike_alert)
         mom_null_warned = False
-        gate_profile = "simulated_15m" if args.htc_gate_mode == "simulated-15m" else "full"
 
         for i, cndl in enumerate(candles):
             ts_naive = cndl["timestamp"]
@@ -529,9 +598,10 @@ def main() -> int:
                 ts_naive = datetime.combine(ts_naive, datetime.min.time())
 
             ts_et = _naive_ts_to_aware_et(ts_naive)
-            ttc = seconds_to_next_15m_boundary_ny(ts_et)
-            ttc_seconds = ttc
-            ttc_15m_seconds = ttc
+            gate_profile = "simulated_15m" if args.htc_gate_mode == "simulated-15m" else "full"
+            ttc, ttc_role = _aes_window_ttc(
+                contract_market=contract_market, gate_profile=gate_profile, ts_et=ts_et
+            )
             in_win = ttc_seconds_in_window(ttc, settings["min_time"], settings["max_time"])
 
             btc_close, mom_pct = _load_btc_close_and_momentum(conn, ts_naive)
@@ -572,19 +642,31 @@ def main() -> int:
             else:
                 if calc is None:
                     raise RuntimeError("internal: probability calculator missing")
-                probability = lookup_probability_strike_table_15m(
-                    calc,
-                    strike_int=strike_int,
-                    current_price=btc_close,
-                    ttc_seconds=ttc_seconds,
-                    ttc_15m_seconds=ttc_15m_seconds,
-                    momentum_bucket=momentum_bucket,
-                    conn=conn,
-                )
+                if gate_profile == "simulated_15m" or contract_market == "15m":
+                    ttc_15m = seconds_to_next_15m_boundary_ny(ts_et)
+                    probability = lookup_probability_strike_table_15m(
+                        calc,
+                        strike_int=strike_int,
+                        current_price=btc_close,
+                        ttc_seconds=ttc_15m,
+                        ttc_15m_seconds=ttc_15m,
+                        momentum_bucket=momentum_bucket,
+                        conn=conn,
+                    )
+                else:
+                    ttc_h = seconds_to_next_hour_boundary_ny(ts_et)
+                    probability = lookup_probability_strike_table_hourly(
+                        calc,
+                        strike_int=strike_int,
+                        current_price=btc_close,
+                        ttc_hourly=ttc_h,
+                        momentum_bucket=momentum_bucket,
+                        conn=conn,
+                    )
                 if probability is None:
                     print(
                         f"  [{i+1}/{len(candles)}] {ts_naive} skip: lookup miss "
-                        f"(ttc={ttc}, buf={buffer_pts}, strike={strike_int}, mom={momentum_bucket})"
+                        f"(ttc={ttc} {ttc_role}, buf={buffer_pts}, strike={strike_int}, mom={momentum_bucket})"
                     )
                     continue
 
@@ -618,6 +700,7 @@ def main() -> int:
                         "ttc_seconds": ttc,
                         "payload": payload,
                         "strike_row": strike_row,
+                        "btc_close": float(btc_close),
                     }
                 if payload:
                     gate = "PASS"
@@ -626,22 +709,23 @@ def main() -> int:
                     if not args.no_gate_reasons and fail_reason:
                         gate_detail = f" | {fail_reason}"
                 print(
-                    f"  [{i+1}/{len(candles)}] {ts_naive} TTC={ttc}s {status} | "
+                    f"  [{i+1}/{len(candles)}] {ts_naive} TTC={ttc}s ({ttc_role}) {status} | "
                     f"spot={btc_close:.2f} strike={strike_int} buf={buffer_pts} mom={momentum_bucket} "
                     f"side={strike_row.get('active_side')} prob={probability:.2f} | {gate}{gate_detail}"
                 )
             else:
                 _as = strike_row.get("active_side") if strike_row else "?"
                 print(
-                    f"  [{i+1}/{len(candles)}] {ts_naive} TTC={ttc}s {status} | "
+                    f"  [{i+1}/{len(candles)}] {ts_naive} TTC={ttc}s ({ttc_role}) {status} | "
                     f"spot={btc_close:.2f} strike={strike_int} buf={buffer_pts} mom={momentum_bucket} "
                     f"side={_as} prob={probability:.2f} | (AES idle, gates not evaluated)"
                 )
 
         print()
         print(
-            f"Market: {ticker}  storage={args.storage}  table={qualified_display}  "
-            f"(strike_int re-evaluated per minute vs spot, same as strike table generator 15m)"
+            f"Market: {ticker}  contract={contract_market} ({contract_market_source})  "
+            f"storage={args.storage}  table={qualified_display}  "
+            f"(strike closest to spot per minute, strike table generator parity)"
         )
         print(
             f"Settings: min/max prob {settings['min_probability']}/{settings['max_probability']}, "
@@ -729,10 +813,36 @@ def main() -> int:
                                 print(f"  ROI on premium deployed: {roi_pct:.5f}%")
         else:
             print("\nNo minute passed Hourly HTC gates inside the TTC window (or missing data).")
+
+        _emit_summary(
+            {
+                "ticker": ticker,
+                "contract_market": contract_market,
+                "htc_gate_mode": args.htc_gate_mode,
+                "first_hit": first_hit is not None,
+                **(
+                    {
+                        "timestamp_et": (
+                            first_hit["timestamp_et"].isoformat(sep=" ")
+                            if isinstance(first_hit["timestamp_et"], datetime)
+                            else str(first_hit["timestamp_et"])
+                        ),
+                        "minute_index": first_hit["minute_index"],
+                        "buy_price": float(first_hit["payload"]["buy_price"]),
+                        "strike_int": int(float(first_hit["strike_row"]["strike"])),
+                        "btc_spot": float(first_hit["btc_close"]),
+                        "side": str(first_hit["payload"].get("side") or ""),
+                    }
+                    if first_hit
+                    else {}
+                ),
+            }
+        )
         return 0
     except Exception as e:
         conn.rollback()
         print(e, file=sys.stderr)
+        _emit_summary({"ticker": ticker, "first_hit": False, "error": str(e)})
         return 1
     finally:
         conn.close()

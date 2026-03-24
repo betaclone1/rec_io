@@ -515,6 +515,169 @@ def check_for_closed_trades():
 # HTTP endpoints for receiving notifications
 
 
+def process_trade_manager_notification_core(trade_id, ticket_id, status: str) -> bool:
+    """Apply trade_manager status to this monitor's active_trades (shared by HTTP and Redis enrollment)."""
+    success = False
+    if status == 'pending':
+        success = add_pending_trade(trade_id, ticket_id)
+        if success:
+            log(f"✅ Successfully added pending trade: {trade_id}")
+        else:
+            log(f"❌ Failed to add pending trade: {trade_id}")
+
+    elif status == 'open':
+        success = confirm_pending_trade(trade_id, ticket_id)
+        if success:
+            log(f"✅ Successfully confirmed pending trade as open: {trade_id}")
+        else:
+            success = add_new_active_trade(trade_id, ticket_id)
+            if success:
+                log(f"✅ Successfully added new active trade: {trade_id}")
+            else:
+                log(f"❌ Failed to add new active trade: {trade_id}")
+
+    elif status == 'error':
+        success = remove_failed_trade(trade_id, ticket_id)
+        if success:
+            log(f"✅ Successfully removed failed trade: {trade_id}")
+        else:
+            log(f"❌ Failed to remove failed trade: {trade_id}")
+
+    elif status == 'expired':
+        success = remove_closed_trade(trade_id)
+        if success:
+            log(f"✅ Successfully removed expired trade: {trade_id}")
+        else:
+            log(f"❌ Failed to remove expired trade: {trade_id}")
+
+    elif status == 'closing':
+        success = update_trade_status_to_closing(trade_id)
+        if success:
+            log(f"✅ Successfully updated trade to closing status: {trade_id}")
+        else:
+            log(f"❌ Failed to update trade to closing status: {trade_id}")
+
+    elif status == 'closed':
+        success = remove_closed_trade(trade_id)
+        if success:
+            log(f"✅ Successfully removed closed trade: {trade_id}")
+        else:
+            log(f"❌ Failed to remove closed trade: {trade_id}")
+
+    elif status == 'close_failed':
+        success = handle_close_failed_trade(trade_id, ticket_id)
+        if success:
+            log(f"✅ Successfully handled close_failed trade: {trade_id}")
+        else:
+            log(f"❌ Failed to handle close_failed trade: {trade_id}")
+
+    elif status == 'deleted':
+        success = remove_failed_trade(trade_id, ticket_id)
+        if success:
+            log(f"✅ Successfully removed deleted trade: {trade_id}")
+        else:
+            log(f"❌ Failed to remove deleted trade: {trade_id}")
+    else:
+        log(f"⚠️ Unknown status in trade_manager notification: {status}")
+        return False
+
+    return success
+
+
+def _open_enrollment_ack_payload(
+    correlation_id: str, trade_id: int, enroll_ok: bool, error: str | None = None
+) -> dict:
+    """Build Redis ACK JSON after open enrollment attempt."""
+    has_quote = False
+    ticker = None
+    side = None
+    degraded = False
+    if enroll_ok:
+        try:
+            conn = get_trades_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                SELECT ticker, side FROM users.trades_{USER_NUMBER}
+                WHERE id = %s AND status = 'open'
+                """,
+                (trade_id,),
+            )
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                ticker, side = row[0], row[1]
+                snapshot = get_kalshi_market_snapshot_cached()
+                if snapshot and ticker:
+                    mp = get_current_closing_price_for_trade(ticker, side, snapshot_data=snapshot)
+                    has_quote = mp is not None
+                if not has_quote:
+                    degraded = True
+        except Exception as e:
+            log(f"⚠️ open enrollment ack quote check: {e}")
+            degraded = True
+
+    phase = "tracking" if enroll_ok else "failed"
+    return {
+        "type": "ats_track_ack",
+        "correlation_id": correlation_id,
+        "trade_id": trade_id,
+        "monitor_identifier": MONITOR_IDENTIFIER,
+        "ok": enroll_ok and phase == "tracking",
+        "phase": phase,
+        "has_market_quote": has_quote,
+        "degraded": degraded,
+        "error": error,
+    }
+
+
+def _handle_ats_enroll_redis_message(data: dict) -> None:
+    """Subscribe callback: enroll open trades addressed to this monitor."""
+    try:
+        if data.get("type") != "ats_trade_open":
+            return
+        if data.get("monitor_suffix") != MONITOR_IDENTIFIER:
+            return
+        correlation_id = data.get("correlation_id")
+        trade_id = data.get("trade_id")
+        ticket_id = data.get("ticket_id") or ""
+        if not correlation_id or trade_id is None:
+            return
+        from backend.core.ats_enrollment_redis import redis_client_optional, store_enroll_ack
+
+        r = redis_client_optional()
+        if not r:
+            return
+        log(
+            f"📮 ATS ENROLL (Redis): trade_id={trade_id} ticket_id={ticket_id} cid={correlation_id}"
+        )
+        enroll_ok = process_trade_manager_notification_core(trade_id, ticket_id, "open")
+        payload = _open_enrollment_ack_payload(correlation_id, int(trade_id), enroll_ok)
+        store_enroll_ack(r, correlation_id, payload)
+        if payload.get("ok"):
+            q = "has quote" if payload.get("has_market_quote") else "no live quote (degraded)"
+            log(f"✅ ATS ENROLL ACK ok trade={trade_id} {q}")
+        else:
+            log(f"❌ ATS ENROLL ACK failed trade={trade_id}")
+    except Exception as e:
+        log(f"❌ ATS enroll redis handler: {e}")
+
+
+def start_ats_enroll_redis_subscriber():
+    """Daemon thread: consume rec_io:ats_enroll_request for this monitor."""
+    t = threading.Thread(target=_ats_enroll_subscriber_thread_main, daemon=True)
+    t.start()
+
+
+def _ats_enroll_subscriber_thread_main():
+    try:
+        from backend.core.ats_enrollment_redis import start_enroll_subscriber_loop
+
+        start_enroll_subscriber_loop(_handle_ats_enroll_redis_message)
+    except Exception as e:
+        log(f"❌ ATS enrollment subscriber exit: {e}")
+
+
 @app.route('/api/trade_manager_notification', methods=['POST'])
 def handle_trade_manager_notification():
     """Handle direct notifications from trade_manager about trade status changes"""
@@ -549,79 +712,18 @@ def handle_trade_manager_notification():
         log(f"📡 DIRECT NOTIFICATION: Received from trade_manager for monitor {MONITOR_IDENTIFIER}")
         log(f"📡 DIRECT NOTIFICATION: Trade ID: {trade_id}, Ticket ID: {ticket_id}, Status: {status}")
         
-        success = False
-        
-        if status == 'pending':
-            # Add new pending trade
-            success = add_pending_trade(trade_id, ticket_id)
-            if success:
-                log(f"✅ Successfully added pending trade: {trade_id}")
-            else:
-                log(f"❌ Failed to add pending trade: {trade_id}")
-                
-        elif status == 'open':
-            # Try to confirm pending trade first, if that fails, add as new active trade
-            success = confirm_pending_trade(trade_id, ticket_id)
-            if success:
-                log(f"✅ Successfully confirmed pending trade as open: {trade_id}")
-            else:
-                # Trade was created directly as 'open', add it as new active trade
-                success = add_new_active_trade(trade_id, ticket_id)
-                if success:
-                    log(f"✅ Successfully added new active trade: {trade_id}")
-                else:
-                    log(f"❌ Failed to add new active trade: {trade_id}")
-                
-        elif status == 'error':
-            # Remove failed trade (any status) from active_trades.db
-            success = remove_failed_trade(trade_id, ticket_id)
-            if success:
-                log(f"✅ Successfully removed failed trade: {trade_id}")
-            else:
-                log(f"❌ Failed to remove failed trade: {trade_id}")
-                
-        elif status == 'expired':
-            # Remove expired trade from active_trades.db
-            success = remove_closed_trade(trade_id)
-            if success:
-                log(f"✅ Successfully removed expired trade: {trade_id}")
-            else:
-                log(f"❌ Failed to remove expired trade: {trade_id}")
-                
-        elif status == 'closing':
-            # Update trade status to closing
-            success = update_trade_status_to_closing(trade_id)
-            if success:
-                log(f"✅ Successfully updated trade to closing status: {trade_id}")
-            else:
-                log(f"❌ Failed to update trade to closing status: {trade_id}")
-                
-        elif status == 'closed':
-            # Remove closed trade from active_trades.db
-            success = remove_closed_trade(trade_id)
-            if success:
-                log(f"✅ Successfully removed closed trade: {trade_id}")
-            else:
-                log(f"❌ Failed to remove closed trade: {trade_id}")
-                
-        elif status == 'close_failed':
-            # Close order failed - revert to active and immediately retry close
-            success = handle_close_failed_trade(trade_id, ticket_id)
-            if success:
-                log(f"✅ Successfully handled close_failed trade: {trade_id}")
-            else:
-                log(f"❌ Failed to handle close_failed trade: {trade_id}")
-                
-        elif status == 'deleted':
-            # Remove deleted trade from active_trades.db (same as failed trade)
-            success = remove_failed_trade(trade_id, ticket_id)
-            if success:
-                log(f"✅ Successfully removed deleted trade: {trade_id}")
-            else:
-                log(f"❌ Failed to remove deleted trade: {trade_id}")
-                
-        else:
-            log(f"⚠️ Unknown status in trade_manager notification: {status}")
+        success = process_trade_manager_notification_core(trade_id, ticket_id, status)
+
+        if status not in (
+            "pending",
+            "open",
+            "error",
+            "expired",
+            "closing",
+            "closed",
+            "close_failed",
+            "deleted",
+        ):
             return jsonify(
                 {"error": f"Unknown status: {status}", "success": False}
             ), 200
@@ -696,6 +798,20 @@ def add_new_active_trade(trade_id: int, ticket_id: str) -> bool:
         conn = get_db_connection()
         cursor = conn.cursor()
         active_trades_table = get_monitor_active_trades_table()
+        cursor.execute(
+            f"SELECT id, status FROM users.{active_trades_table} WHERE trade_id = %s",
+            (trade_id,),
+        )
+        existing = cursor.fetchone()
+        if existing:
+            if existing[1] == 'active':
+                conn.close()
+                log_debug(f"Trade {trade_id} already enrolled as active (idempotent)")
+                return True
+            if existing[1] == 'pending':
+                conn.close()
+                return confirm_pending_trade(trade_id, ticket_id)
+
         cursor.execute(f"""
             INSERT INTO users.{active_trades_table} (
                 trade_id, ticket_id, date, time, strike, side, buy_price, position,
@@ -1258,19 +1374,47 @@ def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Option
         log(f"Error reading Kalshi market snapshot from PostgreSQL: {e}")
         return None
 
-def get_current_closing_price_for_trade(trade_ticker: str, trade_side: str) -> Optional[float]:
+
+_kalshi_snapshot_cache: Dict[str, Any] = {"t": 0.0, "data": None}
+KALSHI_SNAPSHOT_STALE_MAX_SEC = 120.0
+
+
+def get_kalshi_market_snapshot_cached(
+    symbol: str = None, market: str = None,
+) -> Optional[Dict[str, Any]]:
+    """Like get_kalshi_market_snapshot but reuse the last good snapshot for up to KALSHI_SNAPSHOT_STALE_MAX_SEC."""
+    global _kalshi_snapshot_cache
+    fresh = get_kalshi_market_snapshot(symbol, market)
+    if fresh and fresh.get("markets"):
+        _kalshi_snapshot_cache = {"t": time.time(), "data": fresh}
+        return fresh
+    age = time.time() - float(_kalshi_snapshot_cache.get("t") or 0)
+    stale = _kalshi_snapshot_cache.get("data")
+    if stale and stale.get("markets") and age < KALSHI_SNAPSHOT_STALE_MAX_SEC:
+        log_debug(f"Using stale Kalshi snapshot (age {age:.1f}s)")
+        return stale
+    return fresh
+
+
+def get_current_closing_price_for_trade(
+    trade_ticker: str,
+    trade_side: str,
+    snapshot_data: Optional[Dict[str, Any]] = None,
+) -> Optional[float]:
     """
     Get the current closing price for a specific trade from Kalshi market snapshot.
     
     Args:
         trade_ticker: The ticker of the trade (e.g., "KXBTCD-25JUL1617-T119499.99" or "KXETHD-25JUL1617-T119499.99")
         trade_side: The side of the trade ("Y" for YES, "N" for NO)
+        snapshot_data: Optional pre-fetched snapshot (e.g. cached); default uses get_kalshi_market_snapshot_cached.
         
     Returns:
         The closing price as a decimal (e.g., 0.94 for 94 cents), or None if not found
     """
     try:
-        snapshot_data = get_kalshi_market_snapshot()
+        if snapshot_data is None:
+            snapshot_data = get_kalshi_market_snapshot_cached()
         if not snapshot_data or "markets" not in snapshot_data:
             return None
             
@@ -1379,18 +1523,21 @@ def update_active_trade_monitoring_data():
         # Get current symbol price for each trade
         # Note: We'll get the price per trade since each trade might have a different symbol
         
-        # Get Kalshi market snapshot
-        snapshot_data = get_kalshi_market_snapshot()
-        if not snapshot_data or "markets" not in snapshot_data:
-            log("⚠️ Could not get Kalshi market snapshot, skipping monitoring update")
-            return
+        # Get Kalshi market snapshot (fresh or recently cached — do not abort entire tick on a blip)
+        snapshot_data = get_kalshi_market_snapshot_cached()
+        if not snapshot_data:
+            snapshot_data = {"markets": [], "timestamp": None}
+        elif "markets" not in snapshot_data:
+            snapshot_data["markets"] = []
+        if not snapshot_data.get("markets"):
+            log_debug("⚠️ Kalshi snapshot empty; using per-trade DB fallbacks where possible")
         
         # Get all active trades
         conn = get_db_connection()
         cursor = conn.cursor()
         active_trades_table = get_monitor_active_trades_table()
         cursor.execute(f"""
-            SELECT id, trade_id, buy_price, prob, time, date, strike, side, momentum, ticker, symbol, high_price, low_price
+            SELECT id, trade_id, buy_price, prob, time, date, strike, side, momentum, ticker, symbol, high_price, low_price, current_close_price
             FROM users.{active_trades_table} 
             WHERE status = 'active'
         """)
@@ -1400,7 +1547,7 @@ def update_active_trade_monitoring_data():
         if not active_trades:
             return
         
-        for (active_id, trade_id, buy_price, prob, time_str, date_str, strike, side, momentum, ticker, symbol, current_high_price, current_low_price) in active_trades:
+        for (active_id, trade_id, buy_price, prob, time_str, date_str, strike, side, momentum, ticker, symbol, current_high_price, current_low_price, current_close_price_db) in active_trades:
             try:
                 # Parse strike price - handle currency formatting
                 strike_clean = str(strike).replace('$', '').replace(',', '')
@@ -1413,7 +1560,14 @@ def update_active_trade_monitoring_data():
                     continue
                 
                 # Get current market ask price for this specific contract
-                current_market_price = get_current_closing_price_for_trade(ticker, side)
+                current_market_price = get_current_closing_price_for_trade(
+                    ticker, side, snapshot_data=snapshot_data
+                )
+                if current_market_price is None and current_close_price_db is not None:
+                    current_market_price = float(current_close_price_db)
+                    log_debug(
+                        f"Trade {trade_id}: using last stored current_close_price (stale quote fallback)"
+                    )
                 if current_market_price is None:
                     log(f"⚠️ Could not get market price for trade {trade_id} ({ticker}), skipping")
                     continue
@@ -2120,9 +2274,8 @@ def start_event_driven_supervisor():
     """Start the event-driven active trade supervisor with HTTP server"""
     log("🚀 Starting event-driven active trade supervisor")
     log("📡 Waiting for trade notifications...")
-    
+    start_ats_enroll_redis_subscriber()
 
-    
     # Check if there are already active trades and start monitoring if needed
     conn = get_db_connection()
     if not conn:

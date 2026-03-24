@@ -5,8 +5,10 @@ import time
 import os
 import sys
 from datetime import datetime, timedelta, date
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from zoneinfo import ZoneInfo
 import re
+import uuid
 import requests
 import psycopg2
 from psycopg2 import sql
@@ -28,6 +30,60 @@ CONTRACT_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2})(am|pm)$", re.IGNORECASE)
 CONTRACT_15M_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2}):[0-9]{2}\s*(am|pm)", re.IGNORECASE)
 CONTRACT_15M_FULL_PATTERN = re.compile(r".*\s([0-9]{1,2}):([0-9]{2})\s*(am|pm)", re.IGNORECASE)
 MONITOR_KEY_PATTERN = re.compile(r"^mon_(\d+?)_(\d+)$", re.IGNORECASE)
+
+# Spot/strike precision: BTC/ETH stay at 2dp for backward compatibility; SOL/XRP align with
+# 15m strike tables (NUMERIC scale 5) so settlement compares and UI match Kalshi granularity.
+_HIGH_PRECISION_TRADE_SPOT_SYMBOLS = frozenset({"SOL", "XRP"})
+
+
+def _trade_symbol_norm(symbol: Optional[str]) -> str:
+    if not symbol:
+        return ""
+    return str(symbol).strip().upper()
+
+
+def trade_uses_high_precision_spot(symbol: Optional[str]) -> bool:
+    return _trade_symbol_norm(symbol) in _HIGH_PRECISION_TRADE_SPOT_SYMBOLS
+
+
+def normalize_trade_spot_price(symbol: Optional[str], value):
+    """
+    Quantize spot price for DB writes. Returns Decimal for clean NUMERIC persistence, or None.
+    """
+    if value is None:
+        return None
+    try:
+        d = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        try:
+            d = Decimal(str(float(value)))
+        except Exception:
+            return None
+    step = Decimal("0.00001") if trade_uses_high_precision_spot(symbol) else Decimal("0.01")
+    return d.quantize(step, rounding=ROUND_HALF_UP)
+
+
+def canonical_trade_strike_display(symbol: Optional[str], strike_raw):
+    """
+    Persist strike text without losing precision for low-priced underlyings.
+    BTC/ETH: unchanged. SOL/XRP: normalize to $ with up to 5 decimal places (trim trailing zeros).
+    """
+    if strike_raw is None:
+        return None
+    s = str(strike_raw).strip()
+    if not trade_uses_high_precision_spot(symbol):
+        return s
+    clean = s.replace("$", "").replace(",", "").strip()
+    if not clean:
+        return s
+    try:
+        d = Decimal(clean).quantize(Decimal("0.00001"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, TypeError, ValueError):
+        return s
+    plain = format(d, "f")
+    if "." in plain:
+        plain = plain.rstrip("0").rstrip(".")
+    return f"${plain}"
 
 
 def _tm_est_formatter():
@@ -507,7 +563,7 @@ def insert_trade(trade):
 
             if result:
                 if result[0] is not None:
-                    symbol_open = round(float(result[0]), 2)
+                    symbol_open = normalize_trade_spot_price(symbol, result[0])
                 momentum_val = result[1]
                 if momentum_val is not None:
                     momentum_for_db = round(float(momentum_val) * 100)
@@ -529,7 +585,7 @@ def insert_trade(trade):
                 symbol_data = response.json()
                 price = symbol_data.get("price")
                 if price is not None:
-                    symbol_open = round(float(price), 2)
+                    symbol_open = normalize_trade_spot_price(symbol, price)
         except Exception as e:
             log(f"⚠️ insert_trade: API fallback for symbol_open failed: {e}")
 
@@ -650,6 +706,8 @@ def insert_trade(trade):
                 else:
                     diff_formatted = None
                 
+                strike_for_db = canonical_trade_strike_display(symbol, trade.get("strike"))
+
                 cursor.execute("""
                     INSERT INTO users.trades_0001 (
                         status, date, time, symbol, market, trade_strategy,
@@ -665,7 +723,7 @@ def insert_trade(trade):
                 """, (
                     trade.get('status', 'pending'), trade['date'], trade['time'],
                     symbol, trade.get('market', 'Kalshi'), trade.get('trade_strategy', 'Hourly HTC'),
-                    contract_name, trade['strike'], trade['side'], trade.get('prob'),
+                    contract_name, strike_for_db, trade['side'], trade.get('prob'),
                     diff_formatted, trade['buy_price'], trade['position'], None, None,
                     None, None, symbol_open, None, momentum_for_db,
                     volatility_for_db, volatility_percentile_for_db, movement_for_db, movement_percentile_for_db,
@@ -753,7 +811,7 @@ def insert_simulated_trade(trade):
                 result = cursor.fetchone()
             pg_conn.close()
             if result and len(result) >= 8 and result[0] is not None:
-                symbol_open = round(float(result[0]), 2)
+                symbol_open = normalize_trade_spot_price(symbol, result[0])
                 if result[1] is not None:
                     momentum_for_db = round(float(result[1]) * 100)
                 momentum_percentile_for_db = float(result[2]) if result[2] is not None else None
@@ -774,7 +832,7 @@ def insert_simulated_trade(trade):
                 symbol_data = response.json()
                 price = symbol_data.get("price")
                 if price is not None:
-                    symbol_open = round(float(price), 2)
+                    symbol_open = normalize_trade_spot_price(symbol, price)
         except Exception as e:
             log(f"⚠️ insert_simulated_trade: API fallback for symbol_open failed: {e}")
 
@@ -818,17 +876,18 @@ def insert_simulated_trade(trade):
             # Simulated: do not record price_spread
             price_spread = None
             ticker, side = trade.get('ticker'), trade.get('side')
+            strike_for_db = canonical_trade_strike_display(symbol, trade.get("strike"))
 
             # Server-side duplicate guard: one row per (monitor, date, contract, strike, side)
-            if monitor_key and trade.get('date') and contract_name and trade.get('strike') and side:
+            if monitor_key and trade.get('date') and contract_name and strike_for_db and side:
                 cursor.execute("""
                     SELECT id FROM users.trades_simulated_0001
                     WHERE monitor = %s AND date = %s AND contract = %s AND strike = %s AND side = %s
                     LIMIT 1
-                """, (monitor_key, trade['date'], contract_name, trade['strike'], side))
+                """, (monitor_key, trade['date'], contract_name, strike_for_db, side))
                 existing = cursor.fetchone()
                 if existing:
-                    log(f"[SIMULATED] Duplicate skipped (monitor={monitor_key} date={trade['date']} contract={contract_name} strike={trade['strike']} side={side}); existing id={existing[0]}")
+                    log(f"[SIMULATED] Duplicate skipped (monitor={monitor_key} date={trade['date']} contract={contract_name} strike={strike_for_db} side={side}); existing id={existing[0]}")
                     pg_conn.close()
                     return existing[0]
 
@@ -846,7 +905,7 @@ def insert_simulated_trade(trade):
             """, (
                 trade.get('status', 'pending'), trade['date'], trade['time'],
                 symbol, trade.get('market', 'Kalshi'), trade.get('trade_strategy', 'Hourly HTC'),
-                contract_name, trade['strike'], trade['side'], trade.get('prob'),
+                contract_name, strike_for_db, trade['side'], trade.get('prob'),
                 diff_formatted, buy_price_for_db, position_for_db, None, None,
                 fees_for_db, None, symbol_open, None, momentum_for_db,
                 volatility_for_db, volatility_percentile_for_db, movement_for_db, movement_percentile_for_db,
@@ -1014,7 +1073,7 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                                 symbol_data = response.json()
                                 raw_price = symbol_data.get('price')
                                 if raw_price is not None:
-                                    symbol_open = round(float(raw_price), 2)
+                                    symbol_open = normalize_trade_spot_price(symbol, raw_price)
                                     log_event(ticket_id, f"MANAGER: Retrieved current symbol price for open: {symbol_open}")
                                 else:
                                     log_event(ticket_id, f"MANAGER: No price data in unified endpoint response")
@@ -1038,7 +1097,7 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                                         """)
                                         row = cur.fetchone()
                                         if row and row[0] is not None:
-                                            symbol_open = round(float(row[0]), 2)
+                                            symbol_open = normalize_trade_spot_price(symbol, row[0])
                                     pg_conn_price.close()
                             except Exception as e:
                                 log_event(ticket_id, f"MANAGER: live_price_log_1s fallback for symbol_open failed: {e}")
@@ -1052,7 +1111,7 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                                         cur.execute("SELECT symbol_open FROM users.trades_0001 WHERE id = %s", (id,))
                                         row = cur.fetchone()
                                         if row and row[0] is not None:
-                                            symbol_open = round(float(row[0]), 2)
+                                            symbol_open = normalize_trade_spot_price(symbol, row[0])
                                             log_event(ticket_id, f"MANAGER: Keeping existing symbol_open: {symbol_open}")
                                     pg_conn_exist.close()
                             except Exception as e:
@@ -1242,14 +1301,14 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                                 cursor.execute(f"SELECT one_minute_avg FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
                                 result = cursor.fetchone()
                                 if result and result[0] is not None:
-                                    symbol_close = float(result[0])
+                                    symbol_close = normalize_trade_spot_price(symbol, result[0])
                                     log_event(ticket_id, f"MANAGER: Retrieved one_minute_avg for close: {symbol_close}")
                                 else:
                                     # Fallback to current price if one_minute_avg not available
                                     cursor.execute(f"SELECT price FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
                                     fallback_result = cursor.fetchone()
                                     if fallback_result and fallback_result[0] is not None:
-                                        symbol_close = float(fallback_result[0])
+                                        symbol_close = normalize_trade_spot_price(symbol, fallback_result[0])
                                         log_event(ticket_id, f"MANAGER: Using current price as fallback for close: {symbol_close}")
                             pg_conn_symbol.close()
                     except Exception as e:
@@ -1824,7 +1883,7 @@ def log_event(ticket_id, message):
     except Exception as e:
         log(f"[LOG ERROR] Failed to write log: {message} — {e}")
 
-def notify_active_trade_supervisor_direct_with_monitor(trade_id: int, ticket_id: str, status: str, monitor_identifier: str) -> None:
+def notify_active_trade_supervisor_direct_with_monitor(trade_id: int, ticket_id: str, status: str, monitor_identifier: str) -> bool:
     """Send direct notification to active trade supervisor via HTTP API with pre-fetched monitor identifier"""
     try:
         import requests
@@ -1836,7 +1895,7 @@ def notify_active_trade_supervisor_direct_with_monitor(trade_id: int, ticket_id:
         else:
             # No fallback - monitor must be specified
             log(f"ERROR: No valid monitor identifier found for trade {trade_id}")
-            return
+            return False
         
         # Get the port for the specific monitor's active trade supervisor
         # Each monitor instance runs on its own dedicated port
@@ -1857,17 +1916,20 @@ def notify_active_trade_supervisor_direct_with_monitor(trade_id: int, ticket_id:
             result = response.json()
             if result.get("success", False):
                 log(f"NOTIFIED ACTIVE TRADE SUPERVISOR for monitor {monitor_suffix}")
-            else:
-                log(f"ACTIVE TRADE SUPERVISOR ERROR for monitor {monitor_suffix}")
-        else:
+                return True
             log(f"ACTIVE TRADE SUPERVISOR ERROR for monitor {monitor_suffix}")
+            return False
+        log(f"ACTIVE TRADE SUPERVISOR ERROR for monitor {monitor_suffix}")
+        return False
             
     except ImportError:
         log(f"REQUESTS NOT AVAILABLE")
+        return False
     except Exception as e:
         log(f"ERROR SENDING NOTIFICATION: {e}")
+        return False
 
-def notify_active_trade_supervisor_direct(trade_id: int, ticket_id: str, status: str) -> None:
+def notify_active_trade_supervisor_direct(trade_id: int, ticket_id: str, status: str) -> bool:
     """Send direct notification to active trade supervisor via HTTP API"""
     try:
         import requests
@@ -1890,7 +1952,7 @@ def notify_active_trade_supervisor_direct(trade_id: int, ticket_id: str, status:
         else:
             # No fallback - monitor must be specified
             log(f"ERROR: No valid monitor identifier found for trade {trade_id}")
-            return
+            return False
         
         # Get the port for the specific monitor's active trade supervisor
         # Each monitor instance runs on its own dedicated port
@@ -1911,15 +1973,87 @@ def notify_active_trade_supervisor_direct(trade_id: int, ticket_id: str, status:
             result = response.json()
             if result.get("success", False):
                 log(f"NOTIFIED ACTIVE TRADE SUPERVISOR for monitor {monitor_suffix}")
-            else:
-                log(f"ACTIVE TRADE SUPERVISOR ERROR for monitor {monitor_suffix}")
-        else:
+                return True
             log(f"ACTIVE TRADE SUPERVISOR ERROR for monitor {monitor_suffix}")
+            return False
+        log(f"ACTIVE TRADE SUPERVISOR ERROR for monitor {monitor_suffix}")
+        return False
             
     except ImportError:
         log(f"REQUESTS NOT AVAILABLE")
+        return False
     except Exception as e:
         log(f"ERROR SENDING NOTIFICATION: {e}")
+        return False
+
+
+def notify_ats_trade_open_with_ack(trade_id: int) -> None:
+    """
+    When a trade becomes open: publish to Redis (rec_io:ats_enroll_request) and wait for ATS ACK.
+    On failure: HTTP fallback to the monitor's ATS. Logs CRITICAL if both paths fail.
+    """
+    from backend.core.ats_enrollment_redis import (
+        publish_trade_open_enroll_request,
+        redis_client_optional,
+        wait_trade_open_enroll_ack,
+    )
+
+    pg_conn = get_postgresql_connection()
+    if not pg_conn:
+        log(f"❌ notify_ats_trade_open_with_ack: no DB for trade {trade_id}")
+        return
+    with pg_conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT ticket_id, monitor FROM users.trades_0001 WHERE id = %s",
+            (trade_id,),
+        )
+        row = cursor.fetchone()
+    pg_conn.close()
+    if not row:
+        log(f"❌ notify_ats_trade_open_with_ack: trade {trade_id} not found")
+        return
+    ticket_id, monitor = row[0], row[1]
+    if not monitor or not str(monitor).startswith("mon_"):
+        log(f"❌ notify_ats_trade_open_with_ack: invalid monitor for trade {trade_id}")
+        return
+    monitor_suffix = str(monitor)[4:]
+    tid = ticket_id if ticket_id else ""
+
+    r = redis_client_optional()
+    if r:
+        cid = str(uuid.uuid4())
+        if publish_trade_open_enroll_request(r, trade_id, tid, monitor_suffix, cid):
+            ack = wait_trade_open_enroll_ack(r, cid, 12.0)
+            if ack and ack.get("ok"):
+                if ack.get("degraded"):
+                    log(
+                        f"⚠️ ATS enrollment confirmed (degraded / no live Kalshi quote) trade_id={trade_id}"
+                    )
+                else:
+                    log(f"✅ ATS enrollment confirmed via Redis trade_id={trade_id}")
+                return
+        log(
+            f"🚨 CRITICAL: ATS Redis enrollment timeout or failure — trade_id={trade_id} monitor={monitor_suffix}"
+        )
+        log_event(
+            tid or str(trade_id),
+            f"CRITICAL: ATS Redis enrollment failed for OPEN trade_id={trade_id}",
+        )
+    else:
+        log(f"⚠️ Redis unavailable; ATS open notify via HTTP only trade_id={trade_id}")
+
+    ok_http = notify_active_trade_supervisor_direct_with_monitor(
+        trade_id, tid, "open", monitor
+    )
+    if not ok_http:
+        log(
+            f"🚨 CRITICAL: ATS HTTP fallback failed — OPEN trade_id={trade_id} may be UNTRACKED (no stop-loss path)"
+        )
+        log_event(
+            tid or str(trade_id),
+            f"CRITICAL: ATS HTTP notify failed; UNTRACKED open trade_id={trade_id}",
+        )
+
 
 def notify_frontend_trade_change() -> None:
     """Send notification to frontend when trades are updated"""
@@ -2014,8 +2148,8 @@ def init_trades_db():
                     closed_at TEXT,
                     fees REAL,
                     pnl REAL,
-                    symbol_open REAL,
-                    symbol_close REAL,
+                    symbol_open NUMERIC(18,5),
+                    symbol_close NUMERIC(18,5),
                     momentum REAL,
                     volatility_percentile REAL,
                     win_loss TEXT,
@@ -2298,34 +2432,9 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
     
     notify_frontend_trade_change()
     
-    # Notify Active Trade Supervisor when status changes to open
+    # Notify Active Trade Supervisor when status changes to open (Redis ACK + HTTP fallback)
     if status == 'open':
-        # Get ticket_id from PostgreSQL
-        pg_conn = get_postgresql_connection()
-        if pg_conn:
-            with pg_conn.cursor() as cursor:
-                cursor.execute("SELECT ticket_id FROM users.trades_0001 WHERE id = %s", (trade_id,))
-                ticket_row = cursor.fetchone()
-        else:
-            ticket_row = None
-        
-        ticket_id = ticket_row[0] if ticket_row else None
-        
-        # Get monitor identifier for this trade
-        pg_conn = get_postgresql_connection()
-        if pg_conn:
-            with pg_conn.cursor() as cursor:
-                cursor.execute("SELECT monitor FROM users.trades_0001 WHERE id = %s", (trade_id,))
-                monitor_row = cursor.fetchone()
-                monitor = monitor_row[0] if monitor_row else None
-            pg_conn.close()
-        else:
-            monitor = None
-        
-        if monitor:
-            notify_active_trade_supervisor_direct_with_monitor(trade_id, ticket_id, status, monitor)
-        else:
-            notify_active_trade_supervisor_direct(trade_id, ticket_id, status)
+        notify_ats_trade_open_with_ack(trade_id)
     
     # Notify monitor_manager when trade is closed
     if status == 'closed':
@@ -2442,20 +2551,9 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
     
     notify_frontend_trade_change()
     
-    # Notify Active Trade Supervisor when status changes to open
+    # Notify Active Trade Supervisor when status changes to open (Redis ACK + HTTP fallback)
     if status == 'open':
-        # Get ticket_id from PostgreSQL
-        pg_conn = get_postgresql_connection()
-        if pg_conn:
-            with pg_conn.cursor() as cursor:
-                cursor.execute("SELECT ticket_id FROM users.trades_0001 WHERE id = %s", (trade_id,))
-                ticket_row = cursor.fetchone()
-        else:
-            ticket_row = None
-        
-        if ticket_row and ticket_row[0]:
-            ticket_id = ticket_row[0]
-            notify_active_trade_supervisor_direct(trade_id, ticket_id, "open")
+        notify_ats_trade_open_with_ack(trade_id)
 
     # Notify monitor_manager when a trade is closed
     if status == 'closed':
@@ -2902,14 +3000,14 @@ async def add_trade(request: Request):
                                     cursor.execute(f"SELECT one_minute_avg FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
                                     result = cursor.fetchone()
                                     if result and result[0] is not None:
-                                        symbol_close = float(result[0])
+                                        symbol_close = normalize_trade_spot_price(symbol, result[0])
                                         log(f"📝 PAPER TRADE: Retrieved one_minute_avg for close: {symbol_close}")
                                     else:
                                         # Fallback to current price if one_minute_avg not available
                                         cursor.execute(f"SELECT price FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
                                         fallback_result = cursor.fetchone()
                                         if fallback_result and fallback_result[0] is not None:
-                                            symbol_close = float(fallback_result[0])
+                                            symbol_close = normalize_trade_spot_price(symbol, fallback_result[0])
                                             log(f"📝 PAPER TRADE: Using current price as fallback: {symbol_close}")
                                 pg_conn_symbol.close()
                         except Exception as e:
@@ -3156,7 +3254,7 @@ async def add_trade(request: Request):
         def _paper_notify_background():
             try:
                 notify_active_trade_supervisor_direct(trade_id, ticket_id_val, "pending")
-                notify_active_trade_supervisor_direct(trade_id, ticket_id_val, "open")
+                notify_ats_trade_open_with_ack(trade_id)
             except Exception as e:
                 log(f"ERROR in paper-trade background notify: {e}")
         t = threading.Thread(target=_paper_notify_background, daemon=True)
@@ -3500,13 +3598,15 @@ def check_expired_simulated_trades():
                             )
                             r = cur.fetchone()
                             if r and r[0] is not None:
-                                symbol_prices[symbol] = float(r[0])
+                                symbol_prices[symbol] = normalize_trade_spot_price(symbol, r[0])
                             else:
                                 cur.execute(
                                     f"SELECT price FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1"
                                 )
                                 fb = cur.fetchone()
-                                symbol_prices[symbol] = float(fb[0]) if fb and fb[0] is not None else None
+                                symbol_prices[symbol] = (
+                                    normalize_trade_spot_price(symbol, fb[0]) if fb and fb[0] is not None else None
+                                )
                         conn.close()
                     else:
                         symbol_prices[symbol] = None
@@ -3655,13 +3755,13 @@ def check_expired_trades():
                             cursor.execute(f"SELECT one_minute_avg FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
                             result = cursor.fetchone()
                             if result and result[0] is not None:
-                                symbol_prices[symbol] = float(result[0])
+                                symbol_prices[symbol] = normalize_trade_spot_price(symbol, result[0])
                             else:
                                 # Fallback to current price if one_minute_avg not available
                                 cursor.execute(f"SELECT price FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
                                 fallback_result = cursor.fetchone()
                                 if fallback_result and fallback_result[0] is not None:
-                                    symbol_prices[symbol] = float(fallback_result[0])
+                                    symbol_prices[symbol] = normalize_trade_spot_price(symbol, fallback_result[0])
                                 else:
                                     symbol_prices[symbol] = None
                         pg_conn.close()

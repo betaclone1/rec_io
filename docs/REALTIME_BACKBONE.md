@@ -188,6 +188,7 @@ This pattern (read_api as canonical read surface, main as front door only, Redis
 - **Switchboard:** One process (e.g. under supervisor). LISTENs to PostgreSQL and publishes to Redis. Its own `/ws/db_changes` on the switchboard port is optional and **not** required for product UIs (see §2.1).
 - **Main app:** Must run with Redis reachable as above so it can subscribe and forward to **same-origin** `/ws/db_changes` clients.
 - **Triggers:** Applied via migrations. New tables that should be watched get a migration that adds the trigger and, when applicable, a note in the stream registry (registry is in code, so "add stream" is a code change plus migration).
+- **ATS open enrollment:** Not a DB NOTIFY stream. `trade_manager` and each `active_trade_supervisor` process use Redis Pub/Sub channel `rec_io:ats_enroll_request` (override via `REDIS_CHANNEL_ATS_ENROLL_REQUEST`) plus short-lived keys `ats:enroll:result:{correlation_id}` for handoff ACK. Same Redis instance as the switchboard; implementation `backend/core/ats_enrollment_redis.py`. Messages do **not** flow through `redis_switchboard.py`.
 
 ---
 

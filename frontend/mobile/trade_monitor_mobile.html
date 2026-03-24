@@ -3905,9 +3905,9 @@ async function fetchAndRenderTradeHistory() {
       // Format momentum percentile
       const momentum = trade.momentum_percentile !== null && trade.momentum_percentile !== undefined ? Number(trade.momentum_percentile).toFixed(1) : '';
       
-      // Format symbol prices
-      const symbolOpen = trade.symbol_open !== null && trade.symbol_open !== undefined ? '$' + Math.round(trade.symbol_open).toLocaleString() : '';
-      const symbolClose = trade.symbol_close !== null && trade.symbol_close !== undefined ? '$' + Math.round(trade.symbol_close).toLocaleString() : '';
+      // Format symbol prices (SOL/XRP: full precision; BTC/ETH: rounded dollars)
+      const symbolOpen = formatTradeSymbolSpot(trade.symbol, trade.symbol_open);
+      const symbolClose = formatTradeSymbolSpot(trade.symbol, trade.symbol_close);
       
       // Format buy/sell prices
       const buyPrice = trade.buy_price !== null && trade.buy_price !== undefined ? Number(trade.buy_price).toFixed(2) : '';

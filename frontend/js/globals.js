@@ -62,3 +62,31 @@ function getActiveTradeSupervisorUrl(endpoint = '') {
     }
     return `${window.location.protocol}//${serviceConfig.activeTradeSupervisor.host}:${serviceConfig.activeTradeSupervisor.port}${endpoint}`;
 }
+
+/**
+ * Format symbol_open / symbol_close for trade tables.
+ * SOL/XRP: show full DB precision (string passthrough or up to 5 fraction digits, grouped integer part).
+ * Other symbols (e.g. BTC, ETH): whole dollars with grouping (legacy behavior).
+ */
+function formatTradeSymbolSpot(symbol, rawValue) {
+    if (rawValue === null || rawValue === undefined || rawValue === '') return '';
+    const sym = (symbol || '').toString().trim().toUpperCase();
+    const altCoin = sym === 'SOL' || sym === 'XRP';
+    if (altCoin) {
+        if (typeof rawValue === 'string') {
+            const t = rawValue.trim();
+            if (t === '') return '';
+            return t.startsWith('$') ? t : '$' + t;
+        }
+        const n = Number(rawValue);
+        if (Number.isNaN(n)) return '';
+        return '$' + n.toLocaleString('en-US', {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 5,
+            useGrouping: true
+        });
+    }
+    const n = Number(rawValue);
+    if (Number.isNaN(n)) return '';
+    return '$' + Math.round(n).toLocaleString('en-US');
+}

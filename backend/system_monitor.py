@@ -88,13 +88,19 @@ class SystemMonitor:
             "trade_executor": get_port("trade_executor"),
             "symbol_price_watchdog_btc": get_port("symbol_price_watchdog_btc"),
             "symbol_price_watchdog_eth": get_port("symbol_price_watchdog_eth"),
+            "symbol_price_watchdog_sol": get_port("symbol_price_watchdog_sol"),
+            "symbol_price_watchdog_xrp": get_port("symbol_price_watchdog_xrp"),
             "strike_table_generator_hourly_btc": get_port("strike_table_generator_hourly_btc"),
             "strike_table_generator_15m_btc": get_port("strike_table_generator_15m_btc"),
             "strike_table_generator_15m_eth": get_port("strike_table_generator_15m_eth"),
+            "strike_table_generator_15m_sol": get_port("strike_table_generator_15m_sol"),
+            "strike_table_generator_15m_xrp": get_port("strike_table_generator_15m_xrp"),
             "kalshi_account_sync": get_port("kalshi_account_sync"),
             "kalshi_market_watchdog_hourly_btc": get_port("kalshi_market_watchdog_hourly_btc"),
             "kalshi_market_watchdog_15m_btc": get_port("kalshi_market_watchdog_15m_btc"),
             "kalshi_market_watchdog_15m_eth": get_port("kalshi_market_watchdog_15m_eth"),
+            "kalshi_market_watchdog_15m_sol": get_port("kalshi_market_watchdog_15m_sol"),
+            "kalshi_market_watchdog_15m_xrp": get_port("kalshi_market_watchdog_15m_xrp"),
             "monitor_manager": get_port("monitor_manager"),
             "cascading_failure_detector": get_port("cascading_failure_detector"),
             "system_monitor": get_port("system_monitor")
@@ -136,9 +142,8 @@ class SystemMonitor:
                 {"name": "trade_executor", "script": "trade_executor.py"},
                 {"name": "symbol_price_watchdog_btc", "script": "symbol_price_watchdog.py BTC"},
                 {"name": "symbol_price_watchdog_eth", "script": "symbol_price_watchdog.py ETH"},
-                # SOL/XRP watchdogs are not yet deployed in supervisor; do not include in health checks.
-                # {"name": "symbol_price_watchdog_sol", "script": "symbol_price_watchdog.py SOL"},
-                # {"name": "symbol_price_watchdog_xrp", "script": "symbol_price_watchdog.py XRP"},
+                {"name": "symbol_price_watchdog_sol", "script": "symbol_price_watchdog.py SOL"},
+                {"name": "symbol_price_watchdog_xrp", "script": "symbol_price_watchdog.py XRP"},
                 # SPX/NDX not currently traded; uncomment to re-enable later.
                 # {"name": "symbol_price_watchdog_ndx", "script": "symbol_price_watchdog.py NDX"},
                 # {"name": "symbol_price_watchdog_spx", "script": "symbol_price_watchdog.py SPX"},
@@ -149,6 +154,8 @@ class SystemMonitor:
                 # {"name": "kalshi_market_watchdog_hourly_spx", "script": "kalshi_market_watchdog.py SPX"},
                 {"name": "kalshi_market_watchdog_15m_btc", "script": "kalshi_market_watchdog.py BTC --interval 15m"},
                 {"name": "kalshi_market_watchdog_15m_eth", "script": "kalshi_market_watchdog.py ETH --interval 15m"},
+                {"name": "kalshi_market_watchdog_15m_sol", "script": "kalshi_market_watchdog.py SOL --interval 15m"},
+                {"name": "kalshi_market_watchdog_15m_xrp", "script": "kalshi_market_watchdog.py XRP --interval 15m"},
                 {"name": "system_monitor", "script": "system_monitor.py"},
                 {"name": "monitor_manager", "script": "monitor_manager.py"},
                 {"name": "cascading_failure_detector", "script": "cascading_failure_detector.py"}
@@ -184,10 +191,11 @@ class SystemMonitor:
                 discovered_services[strike_table_name] = ports.get(
                     strike_table_name, strike_table_default_ports[symbol.lower()]
                 )
-            # 15m strike table generators (BTC, ETH)
-            for symbol in ['BTC', 'ETH']:
+            # 15m strike table generators (BTC, ETH, SOL, XRP)
+            _p15 = {"BTC": 8023, "ETH": 8024, "SOL": 8029, "XRP": 8030}
+            for symbol in ("BTC", "ETH", "SOL", "XRP"):
                 name = f"strike_table_generator_15m_{symbol.lower()}"
-                discovered_services[name] = ports.get(name, 8023 if symbol == 'BTC' else 8024)
+                discovered_services[name] = ports.get(name, _p15[symbol])
             
             # Update the service URLs with discovered services
             self.service_urls = discovered_services

@@ -157,6 +157,8 @@ class SupervisorConfigGenerator:
                 "auto_entry_supervisor": 8002,
                 "symbol_price_watchdog_btc": 8008,
                 "symbol_price_watchdog_eth": 8009,
+                "symbol_price_watchdog_sol": 8025,
+                "symbol_price_watchdog_xrp": 8026,
                 "symbol_price_watchdog_spx": 8017,
                 "symbol_price_watchdog_ndx": 8019,
                 "kalshi_account_sync": 8004,
@@ -166,12 +168,16 @@ class SupervisorConfigGenerator:
                 "kalshi_market_watchdog_hourly_ndx": 8020,
                 "kalshi_market_watchdog_15m_btc": 8021,
                 "kalshi_market_watchdog_15m_eth": 8022,
+                "kalshi_market_watchdog_15m_sol": 8027,
+                "kalshi_market_watchdog_15m_xrp": 8028,
                 "strike_table_generator_hourly_btc": 8014,
                 "strike_table_generator_hourly_eth": 8015,
                 "strike_table_generator_hourly_spx": 8016,
                 "strike_table_generator_hourly_ndx": 8017,
                 "strike_table_generator_15m_btc": 8023,
                 "strike_table_generator_15m_eth": 8024,
+                "strike_table_generator_15m_sol": 8029,
+                "strike_table_generator_15m_xrp": 8030,
                 "system_monitor": 8006,
                 "monitor_manager": 8012,
                 "cascading_failure_detector": 8007
@@ -238,6 +244,16 @@ class SupervisorConfigGenerator:
                 "script": "symbol_price_watchdog.py ETH",
                 "port": ports.get("symbol_price_watchdog_eth", 8009)
             },
+            {
+                "name": "symbol_price_watchdog_sol",
+                "script": "symbol_price_watchdog.py SOL",
+                "port": ports.get("symbol_price_watchdog_sol", 8025)
+            },
+            {
+                "name": "symbol_price_watchdog_xrp",
+                "script": "symbol_price_watchdog.py XRP",
+                "port": ports.get("symbol_price_watchdog_xrp", 8026)
+            },
             # SPX/NDX not currently traded; uncomment to re-enable later.
             # {
             #     "name": "symbol_price_watchdog_spx",
@@ -275,16 +291,17 @@ class SupervisorConfigGenerator:
             #     "script": "kalshi_market_watchdog.py NDX",
             #     "port": ports.get("kalshi_market_watchdog_hourly_ndx", 8020)
             # },
-            {
-                "name": "kalshi_market_watchdog_15m_btc",
-                "script": "kalshi_market_watchdog.py BTC --interval 15m",
-                "port": ports.get("kalshi_market_watchdog_15m_btc", 8021)
-            },
-            {
-                "name": "kalshi_market_watchdog_15m_eth",
-                "script": "kalshi_market_watchdog.py ETH --interval 15m",
-                "port": ports.get("kalshi_market_watchdog_15m_eth", 8022)
-            },
+            *[
+                {
+                    "name": f"kalshi_market_watchdog_15m_{s.lower()}",
+                    "script": f"kalshi_market_watchdog.py {s} --interval 15m",
+                    "port": ports.get(
+                        f"kalshi_market_watchdog_15m_{s.lower()}",
+                        {"BTC": 8021, "ETH": 8022, "SOL": 8027, "XRP": 8028}[s],
+                    ),
+                }
+                for s in ("BTC", "ETH", "SOL", "XRP")
+            ],
             {
                 "name": "system_monitor",
                 "script": "system_monitor.py",
@@ -338,13 +355,14 @@ class SupervisorConfigGenerator:
                 "script": f"strike_table_generator.py {symbol} continuous 1",
                 "port": ports.get(key, strike_table_default_ports[symbol.lower()])
             })
-        # 15m strike table generators (BTC, ETH only)
-        for symbol in ['BTC', 'ETH']:
+        # 15m strike table generators (BTC, ETH, SOL, XRP)
+        _strike_15m_default = {"BTC": 8023, "ETH": 8024, "SOL": 8029, "XRP": 8030}
+        for symbol in ("BTC", "ETH", "SOL", "XRP"):
             key = f"strike_table_generator_15m_{symbol.lower()}"
             services.append({
                 "name": key,
                 "script": f"strike_table_generator.py {symbol} continuous 1 --interval 15m",
-                "port": ports.get(key, 8023 if symbol == 'BTC' else 8024)
+                "port": ports.get(key, _strike_15m_default[symbol])
             })
         
         # Supervisord main log: durable path under logs/ with rotation (critical for incident review)

@@ -58,6 +58,8 @@ Trades on **KXBTC15M-…** tickers can still be recorded from the **simulated 15
 
 Other gaps (inherent, not bugs): **1m candle** close prices/volume vs **live** strike-table snapshots; scan cadence (continuous vs once per minute).
 
+**Ticker → contract interval (``backtest_market_simulator``):** tickers containing ``15M`` (e.g. ``KXBTC15M-...``) are treated as **15m** (``ttc_15m`` + 15m-style probability); otherwise **hourly** (``ttc_hourly`` + hourly probability), e.g. ``KXBTCD-...``. Override with ``--market 15m`` / ``--market hourly`` if needed.
+
 ---
 
 ## 3. Time-to-contract (TTC) — units (critical)

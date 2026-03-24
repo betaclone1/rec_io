@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 import pytz
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from decimal import Decimal
 
 # Config
 BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
@@ -30,6 +31,27 @@ API_HEADERS = {
 }
 
 EST = pytz.timezone("America/New_York")
+
+
+def format_15m_strike_from_api_floor_strike(floor_strike) -> str:
+    """
+    Build the `strike` column from Kalshi's market `floor_strike` for 15m events.
+    Subtitles are often empty for XRP/SOL; `floor_strike` is authoritative. Uses Decimal(str(...))
+    to avoid float noise while matching the JSON numeric the API returns.
+    """
+    if floor_strike is None:
+        return ""
+    try:
+        d = Decimal(str(floor_strike))
+    except Exception:
+        return ""
+    if d == d.to_integral_value():
+        v = int(d)
+        if abs(v) >= 1000:
+            return f"${v:,}"
+        return f"${v}"
+    s = format(d.normalize(), "f")
+    return f"${s}"
 
 
 def _est_formatter():
@@ -463,7 +485,9 @@ def get_current_symbol_price(symbol):
         # Map symbol to price table
         price_tables = {
             'BTC': 'live_price_log_1s_btc',
-            'ETH': 'live_price_log_1s_eth', 
+            'ETH': 'live_price_log_1s_eth',
+            'SOL': 'live_price_log_1s_sol',
+            'XRP': 'live_price_log_1s_xrp',
             'SPX': 'live_price_log_1s_spx',
             'NDX': 'live_price_log_1s_ndx'
         }
@@ -565,6 +589,9 @@ def save_market_data_to_postgresql(event_ticker, markets_data, symbol, interval=
                 # Extract strike from subtitle (e.g., "$104,250 or above" -> "$104,250")
                 subtitle = market.get("subtitle", "")
                 strike = subtitle.split(" or above")[0].strip() if "or above" in subtitle else ""
+                # 15m: Kalshi exposes authoritative `floor_strike`; subtitle is often empty (e.g. XRP).
+                if interval == "15m" and market.get("floor_strike") is not None:
+                    strike = format_15m_strike_from_api_floor_strike(market.get("floor_strike"))
                 
                 # Format strike consistently for financial symbols (SPX, NDX, INX)
                 if symbol.upper() in ['SPX', 'NDX', 'INX'] and strike:
@@ -611,6 +638,7 @@ def save_market_data_to_postgresql(event_ticker, markets_data, symbol, interval=
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                     ON CONFLICT (event_ticker, market_ticker) DO UPDATE SET
                         market = EXCLUDED.market,
+                        strike = EXCLUDED.strike,
                         yes_bid = EXCLUDED.yes_bid,
                         yes_ask = EXCLUDED.yes_ask,
                         no_bid = EXCLUDED.no_bid,
@@ -672,6 +700,26 @@ def backfill_15m_strike_from_price_log(symbol, event_ticker):
     if not connection:
         return False
     try:
+        table = f"live_data.market_kalshi_15m_{symbol.lower()}"
+        cursor = connection.cursor()
+        cursor.execute(
+            f"""
+            SELECT 1 FROM {table}
+            WHERE event_ticker = %s
+              AND strike IS NOT NULL
+              AND trim(strike) <> ''
+            LIMIT 1
+            """,
+            (event_ticker,),
+        )
+        if cursor.fetchone():
+            logger.debug(
+                "15m backfill skipped: strike already set from API/subtitle for event %s",
+                event_ticker,
+            )
+            connection.close()
+            return False
+
         close_time = next_15m_close_est()
         opening_time = close_time - timedelta(minutes=15)
         one_min_avg = get_one_minute_avg_at_time(connection, symbol, opening_time)
@@ -680,8 +728,6 @@ def backfill_15m_strike_from_price_log(symbol, event_ticker):
             connection.close()
             return False
         strike_str = f"${one_min_avg:,.2f}"
-        table = f"live_data.market_kalshi_15m_{symbol.lower()}"
-        cursor = connection.cursor()
         cursor.execute(f"""
             UPDATE {table} SET strike = %s, updated_at = NOW() WHERE event_ticker = %s
         """, (strike_str, event_ticker))
@@ -704,14 +750,14 @@ def main():
     parser = argparse.ArgumentParser(description='Kalshi Market Watchdog for Symbol')
     parser.add_argument('symbol', help='Symbol to monitor (e.g., BTC, ETH)')
     parser.add_argument('--interval', choices=['hourly', '15m'], default='hourly',
-                        help='Market interval: hourly (default) or 15m (BTC/ETH only)')
+                        help='Market interval: hourly (default) or 15m (BTC, ETH, SOL, XRP)')
     args = parser.parse_args()
     
     SYMBOL = args.symbol.upper()
     INTERVAL = args.interval
     
-    if INTERVAL == "15m" and SYMBOL not in ("BTC", "ETH"):
-        logger.error("15m interval only supports BTC and ETH, got %s", SYMBOL)
+    if INTERVAL == "15m" and SYMBOL not in ("BTC", "ETH", "SOL", "XRP"):
+        logger.error("15m interval only supports BTC, ETH, SOL, XRP, got %s", SYMBOL)
         sys.exit(1)
     logger.debug("Starting Kalshi API Market %s Watchdog (%s)", SYMBOL, INTERVAL)
     connection = connect_database()

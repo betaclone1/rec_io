@@ -8375,6 +8375,90 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 ---
 
+### Table: `live_data.live_price_log_1s_sol`
+
+Same shape as `live_data.live_price_log_1s_eth`; `price` and `one_minute_avg` use `numeric(10,6)` for sub-dollar precision.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `timestamp` | `text` | NO | - | |
+| `price` | `numeric(10,6)` | YES | - | |
+| `one_minute_avg` | `numeric(10,6)` | YES | - | |
+| `momentum` | `numeric(10,4)` | YES | - | |
+| `delta_1m` | `numeric(10,4)` | YES | - | |
+| `delta_2m` | `numeric(10,4)` | YES | - | |
+| `delta_3m` | `numeric(10,4)` | YES | - | |
+| `delta_4m` | `numeric(10,4)` | YES | - | |
+| `delta_15m` | `numeric(10,4)` | YES | - | |
+| `delta_30m` | `numeric(10,4)` | YES | - | |
+| `momentum_percentile` | `numeric(5,1)` | YES | - | |
+| `momentum_5s_avg` | `numeric(5,1)` | YES | - | |
+| `momentum_30s_avg` | `numeric(5,1)` | YES | - | |
+| `volatility` | `numeric(10,6)` | YES | - | |
+| `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `move_1m` | `numeric(10,4)` | YES | - | Raw movement (high-low)/open for last 1m window. |
+| `move_2m` | `numeric(10,4)` | YES | - | Raw movement for last 2m window. |
+| `move_3m` | `numeric(10,4)` | YES | - | Raw movement for last 3m window. |
+| `move_4m` | `numeric(10,4)` | YES | - | Raw movement for last 4m window. |
+| `move_15m` | `numeric(10,4)` | YES | - | Raw movement for last 15m window. |
+| `move_30m` | `numeric(10,4)` | YES | - | Raw movement for last 30m window. |
+| `movement` | `numeric(10,4)` | YES | - | Weighted composite of move_1m..move_30m (same weights as momentum). |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile from analytics movement profile (0.5–99.5). |
+
+#### Constraints
+
+- **Primary Key:** `live_price_log_1s_sol_pkey` on `timestamp`
+
+#### Indexes
+
+- `idx_live_price_log_1s_sol_timestamp` on `timestamp` (btree)
+
+---
+
+### Table: `live_data.live_price_log_1s_xrp`
+
+Same as `live_data.live_price_log_1s_sol` (including `numeric(10,6)` for spot price fields).
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `timestamp` | `text` | NO | - | |
+| `price` | `numeric(10,6)` | YES | - | |
+| `one_minute_avg` | `numeric(10,6)` | YES | - | |
+| `momentum` | `numeric(10,4)` | YES | - | |
+| `delta_1m` | `numeric(10,4)` | YES | - | |
+| `delta_2m` | `numeric(10,4)` | YES | - | |
+| `delta_3m` | `numeric(10,4)` | YES | - | |
+| `delta_4m` | `numeric(10,4)` | YES | - | |
+| `delta_15m` | `numeric(10,4)` | YES | - | |
+| `delta_30m` | `numeric(10,4)` | YES | - | |
+| `momentum_percentile` | `numeric(5,1)` | YES | - | |
+| `momentum_5s_avg` | `numeric(5,1)` | YES | - | |
+| `momentum_30s_avg` | `numeric(5,1)` | YES | - | |
+| `volatility` | `numeric(10,6)` | YES | - | |
+| `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `move_1m` | `numeric(10,4)` | YES | - | Raw movement (high-low)/open for last 1m window. |
+| `move_2m` | `numeric(10,4)` | YES | - | Raw movement for last 2m window. |
+| `move_3m` | `numeric(10,4)` | YES | - | Raw movement for last 3m window. |
+| `move_4m` | `numeric(10,4)` | YES | - | Raw movement for last 4m window. |
+| `move_15m` | `numeric(10,4)` | YES | - | Raw movement for last 15m window. |
+| `move_30m` | `numeric(10,4)` | YES | - | Raw movement for last 30m window. |
+| `movement` | `numeric(10,4)` | YES | - | Weighted composite of move_1m..move_30m (same weights as momentum). |
+| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile from analytics movement profile (0.5–99.5). |
+
+#### Constraints
+
+- **Primary Key:** `live_price_log_1s_xrp_pkey` on `timestamp`
+
+#### Indexes
+
+- `idx_live_price_log_1s_xrp_timestamp` on `timestamp` (btree)
+
+---
+
 ### Table: `live_data.live_price_log_1s_ndx`
 
 #### Columns
@@ -8470,6 +8554,8 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 ---
 
 ### Table: `live_data.live_symbol_status`
+
+**Population:** Trigger-driven from `live_data.live_price_log_1s_btc`, `live_price_log_1s_eth`, `live_price_log_1s_sol`, and `live_price_log_1s_xrp` (latest row per symbol via upsert on `symbol`). Non-triggered symbols (e.g., SPX/NDX) are updated by `backend/symbol_price_watchdog.py`.
 
 #### Columns
 
@@ -9170,6 +9256,18 @@ Same as `live_data.strike_table_hourly_btc` (including `ttc_hourly`, `ttc_15m`, 
 #### Columns
 
 Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m values in `ttc_15m` and `probability_15m`.
+
+---
+
+### Table: `live_data.strike_table_15m_sol`
+
+15-minute strike table for SOL. Same role as `strike_table_15m_btc` / `_eth`. **`current_price`**, **`buffer`**, and **`strike`** use **`NUMERIC(18,5)`**; **`buffer_pct`** uses **`NUMERIC(12,6)`** so sub-dollar spot and buffers are not rounded away (see migration `20260322_1200_strike_15m_sol_xrp_numeric_precision`).
+
+---
+
+### Table: `live_data.strike_table_15m_xrp`
+
+15-minute strike table for XRP. Same precision rules as `strike_table_15m_sol`: **`NUMERIC(18,5)`** for `current_price`, `buffer`, `strike`; **`NUMERIC(12,6)`** for `buffer_pct`.
 
 ---
 
@@ -10588,7 +10686,7 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `market` | `text` | YES | 'Kalshi'::text | |
 | `trade_strategy` | `text` | YES | 'Hourly HTC'::text | |
 | `contract` | `text` | NO | - | |
-| `strike` | `text` | NO | - | |
+| `strike` | `text` | NO | - | For **SOL/XRP**, `trade_manager` normalizes display to `$` + up to **5** decimal places (trim trailing zeros) so expiration settlement matches strike-table granularity. BTC/ETH unchanged. |
 | `side` | `text` | NO | - | |
 | `prob` | `real(24)` | YES | - | |
 | `diff` | `text` | YES | - | |
@@ -10598,8 +10696,8 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `closed_at` | `text` | YES | - | |
 | `fees` | `real(24)` | YES | - | |
 | `pnl` | `real(24)` | YES | - | |
-| `symbol_open` | `real(24)` | YES | - | |
-| `symbol_close` | `real(24)` | YES | - | |
+| `symbol_open` | `numeric(18,5)` | YES | - | Spot at open. **5dp** for SOL/XRP; 2dp for BTC/ETH (`trade_manager.normalize_trade_spot_price`). Migration `20260324_1000_trades_symbol_spot_numeric_precision`. |
+| `symbol_close` | `numeric(18,5)` | YES | - | Spot at close; same rules as `symbol_open`. |
 | `momentum` | `integer(32)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(10,4)` | YES | - | Raw volatility at trade time (same format as momentum in price history). |
@@ -10758,8 +10856,8 @@ Same column set as `users.trades_0001` (see that table for column descriptions).
 | `closed_at` | text |
 | `fees` | real |
 | `pnl` | real |
-| `symbol_open` | real |
-| `symbol_close` | real |
+| `symbol_open` | numeric(18,5) |
+| `symbol_close` | numeric(18,5) |
 | `momentum` | integer |
 | `win_loss` | text |
 | `ticker` | text |

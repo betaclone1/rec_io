@@ -778,8 +778,8 @@ def cleanup_analytics_tables(logger, symbols):
                     logger.info(f"🗑️ Deleting old master table: {table_name}")
                     cursor.execute(f"DROP TABLE analytics.{table_name}")
             
-            # 3. Delete oldest profile tables (momentum, price, and volatility) - keep only latest 2
-            for profile_type in ['momentum_profile', 'price_profile', 'volatility_profile']:
+            # 3. Delete oldest profile tables (momentum, price, volatility, movement) - keep only latest 2
+            for profile_type in ['momentum_profile', 'price_profile', 'volatility_profile', 'movement_profile']:
                 cursor.execute(f"""
                     SELECT table_name 
                     FROM information_schema.tables 
