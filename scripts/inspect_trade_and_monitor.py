@@ -30,7 +30,7 @@ def main():
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT id, status, date, time, symbol, market, trade_strategy, contract, strike, side,
+                SELECT id, status, date, time, symbol, exchange, trade_strategy, contract, strike, side,
                        entry_method, monitor, paper_trade, ticket_id
                 FROM users.trades_0001 WHERE id = %s
             """, (trade_id,))
@@ -39,7 +39,7 @@ def main():
             print(f"Trade {trade_id} not found in users.trades_0001")
             sys.exit(1)
 
-        cols = ["id", "status", "date", "time", "symbol", "market", "trade_strategy", "contract", "strike", "side",
+        cols = ["id", "status", "date", "time", "symbol", "exchange", "trade_strategy", "contract", "strike", "side",
                 "entry_method", "monitor", "paper_trade", "ticket_id"]
         print("--- Trade ---")
         for c, v in zip(cols, row):

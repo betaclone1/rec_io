@@ -46,6 +46,7 @@ from backend.core.port_config import get_port, get_port_info
 # Import unified configuration system for database connections
 from backend.core.unified_config import UnifiedConfigManager
 from backend.core.config.database import get_postgresql_connection, get_database_config
+from backend.core.exchange_ids import normalize_exchange
 unified_config = UnifiedConfigManager()
 
 # Get port from centralized system
@@ -3471,7 +3472,9 @@ async def trigger_open_trade(request: Request):
             "date": eastern_date,
             "time": eastern_time,
             "symbol": symbol or "BTC",
-            "market": "Kalshi",
+            "exchange": normalize_exchange(
+                data.get("exchange", data.get("market"))
+            ),
             "trade_strategy": trade_strategy or "Hourly HTC",
             "contract": contract or "BTC Market",
             "strike": strike,
@@ -3876,13 +3879,21 @@ async def get_active_trades_for_monitor(monitor_name: str):
     """Get active trades data for a specific monitor from PostgreSQL"""
     try:
         import psycopg2
-        import re
+
+        from backend.core.port_config import monitor_suffix_uses_unified_15m_pool
         
         # Extract the numeric part from monitor name (e.g., "mon_0001_10002" -> "0001_10002")
         # The table name format is active_trades_0001_10002, not active_trades_mon_0001_10002
         table_suffix = monitor_name
         if monitor_name.startswith('mon_'):
             table_suffix = monitor_name[4:]  # Remove "mon_" prefix
+
+        use_15m_pool = monitor_suffix_uses_unified_15m_pool(table_suffix)
+        pool_user, pool_mid = None, None
+        if use_15m_pool:
+            parts = table_suffix.split("_", 1)
+            if len(parts) == 2:
+                pool_user, pool_mid = parts[0], parts[1]
         
         # Connect to PostgreSQL using centralized config
         conn = get_postgresql_connection()
@@ -3890,17 +3901,31 @@ async def get_active_trades_for_monitor(monitor_name: str):
             return {"error": "Database unavailable"}
         with conn.cursor() as cursor:
             # Get all active trades for this monitor
-            cursor.execute(f"""
-                SELECT 
-                    trade_id, ticket_id, date, time, strike, side, buy_price, position,
-                    contract, ticker, symbol, market, trade_strategy, symbol_open,
-                    momentum, prob, fees, diff, status, current_symbol_price,
-                    current_probability, buffer_from_entry, time_since_entry,
-                    current_close_price, current_pnl, last_updated, created_at
-                FROM users.active_trades_{table_suffix}
-                WHERE status IN ('active', 'pending', 'closing')
-                ORDER BY created_at DESC
-            """)
+            if use_15m_pool and pool_user and pool_mid:
+                cursor.execute(f"""
+                    SELECT 
+                        trade_id, ticket_id, date, time, strike, side, buy_price, position,
+                        contract, ticker, symbol, exchange, trade_strategy, symbol_open,
+                        momentum, prob, fees, diff, status, current_symbol_price,
+                        current_probability, buffer_from_entry, time_since_entry,
+                        current_close_price, current_pnl, last_updated, created_at
+                    FROM users.active_trades_{pool_user}_15m
+                    WHERE monitor_id = %s
+                      AND status IN ('active', 'pending', 'closing')
+                    ORDER BY created_at DESC
+                """, (pool_mid,))
+            else:
+                cursor.execute(f"""
+                    SELECT 
+                        trade_id, ticket_id, date, time, strike, side, buy_price, position,
+                        contract, ticker, symbol, exchange, trade_strategy, symbol_open,
+                        momentum, prob, fees, diff, status, current_symbol_price,
+                        current_probability, buffer_from_entry, time_since_entry,
+                        current_close_price, current_pnl, last_updated, created_at
+                    FROM users.active_trades_{table_suffix}
+                    WHERE status IN ('active', 'pending', 'closing')
+                    ORDER BY created_at DESC
+                """)
             
             trades_data = cursor.fetchall()
             conn.close()
@@ -3920,7 +3945,7 @@ async def get_active_trades_for_monitor(monitor_name: str):
                     "contract": row[8],
                     "ticker": row[9],
                     "symbol": row[10],
-                    "market": row[11],
+                    "exchange": row[11],
                     "trade_strategy": row[12],
                     "symbol_open": float(row[13]) if row[13] else None,
                     "momentum": float(row[14]) if row[14] else None,
@@ -4004,14 +4029,33 @@ async def get_failure_detector_status():
         return {"error": str(e)}
 
 @app.get("/api/auto_entry_indicator")
-async def get_auto_entry_indicator():
-    """Proxy endpoint to get auto entry indicator state from auto_entry_supervisor"""
+async def get_auto_entry_indicator(
+    monitor_id: Optional[str] = None,
+    user_number: Optional[str] = None,
+):
+    """Proxy endpoint to get auto entry indicator state from auto_entry_supervisor.
+
+    For unified 15m AES pass monitor_id (and optionally user_number, default 0001).
+    """
     try:
-        from backend.core.port_config import get_port
-        port = get_port("auto_entry_supervisor")
+        from backend.core.port_config import (
+            get_auto_entry_supervisor_http_port_for_monitor_suffix,
+            get_port,
+        )
+
+        if monitor_id:
+            un = user_number or "0001"
+            suffix = f"{un}_{monitor_id}"
+            port = get_auto_entry_supervisor_http_port_for_monitor_suffix(suffix)
+        else:
+            port = get_port("auto_entry_supervisor")
+        q = {}
+        if monitor_id:
+            q["monitor_id"] = monitor_id
+            q["user_number"] = user_number or "0001"
         # Use localhost for internal service communication
         url = f"http://localhost:{port}/api/auto_entry_indicator"
-        response = requests.get(url, timeout=2)
+        response = requests.get(url, params=q or None, timeout=2)
         if response.ok:
             return response.json()
         else:

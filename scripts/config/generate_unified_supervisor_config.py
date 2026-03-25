@@ -82,7 +82,8 @@ class SupervisorConfigGenerator:
                 return []
             with conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT id, name, status 
+                    SELECT id, name, status,
+                           LOWER(TRIM(COALESCE(NULLIF(TRIM(market), ''), 'hourly'))) AS market_norm
                     FROM users.monitor_list_0001 
                     WHERE status = 'active' 
                     ORDER BY id
@@ -93,6 +94,10 @@ class SupervisorConfigGenerator:
                     monitor_id = row[0]
                     name = row[1]
                     status = row[2]
+                    market_raw = row[3] if len(row) > 3 else "hourly"
+                    market_norm = (market_raw or "hourly").strip().lower()
+                    if market_norm not in ("hourly", "15m"):
+                        market_norm = "hourly"
                     
                     # Extract user_number and monitor_id from name (e.g., "mon_0001_10001")
                     if name.startswith("mon_"):
@@ -112,7 +117,8 @@ class SupervisorConfigGenerator:
                         'name': name,
                         'status': status,
                         'user_number': user_number,
-                        'monitor_id': monitor_id
+                        'monitor_id': monitor_id,
+                        'market': market_norm,
                     })
                 
                 conn.close()
@@ -166,18 +172,14 @@ class SupervisorConfigGenerator:
                 "kalshi_market_watchdog_hourly_eth": 8010,
                 "kalshi_market_watchdog_hourly_spx": 8018,
                 "kalshi_market_watchdog_hourly_ndx": 8020,
-                "kalshi_market_watchdog_15m_btc": 8021,
-                "kalshi_market_watchdog_15m_eth": 8022,
-                "kalshi_market_watchdog_15m_sol": 8027,
-                "kalshi_market_watchdog_15m_xrp": 8028,
                 "strike_table_generator_hourly_btc": 8014,
                 "strike_table_generator_hourly_eth": 8015,
                 "strike_table_generator_hourly_spx": 8016,
                 "strike_table_generator_hourly_ndx": 8017,
-                "strike_table_generator_15m_btc": 8023,
-                "strike_table_generator_15m_eth": 8024,
-                "strike_table_generator_15m_sol": 8029,
-                "strike_table_generator_15m_xrp": 8030,
+                "market_watchdog_kalshi_15m": 8031,
+                "strike_table_generator_15m": 8032,
+                "auto_entry_supervisor_15m": 8033,
+                "active_trade_supervisor_15m": 8034,
                 "system_monitor": 8006,
                 "monitor_manager": 8012,
                 "cascading_failure_detector": 8007
@@ -291,17 +293,13 @@ class SupervisorConfigGenerator:
             #     "script": "kalshi_market_watchdog.py NDX",
             #     "port": ports.get("kalshi_market_watchdog_hourly_ndx", 8020)
             # },
-            *[
-                {
-                    "name": f"kalshi_market_watchdog_15m_{s.lower()}",
-                    "script": f"kalshi_market_watchdog.py {s} --interval 15m",
-                    "port": ports.get(
-                        f"kalshi_market_watchdog_15m_{s.lower()}",
-                        {"BTC": 8021, "ETH": 8022, "SOL": 8027, "XRP": 8028}[s],
-                    ),
-                }
-                for s in ("BTC", "ETH", "SOL", "XRP")
-            ],
+            # 15m Kalshi market data: unified process only (live_data.market_kalshi_15m).
+            # Per-symbol kalshi_market_watchdog_15m_* omitted for testing cutover.
+            {
+                "name": "market_watchdog_kalshi_15m",
+                "script": "market_watchdog.py --exchange kalshi --market 15m",
+                "port": ports.get("market_watchdog_kalshi_15m", 8031),
+            },
             {
                 "name": "system_monitor",
                 "script": "system_monitor.py",
@@ -319,9 +317,24 @@ class SupervisorConfigGenerator:
             }
         ]
         
-        # Add monitor-specific services for each active monitor
+        # Per-monitor AES/ATS: hourly monitors only. 15m monitors share one global pair.
         monitor_port_base = 8015  # Start monitor ports at 8015
-        for i, monitor in enumerate(active_monitors):
+        hourly_monitors = [m for m in active_monitors if m.get("market", "hourly") != "15m"]
+        has_15m = any(m.get("market", "hourly") == "15m" for m in active_monitors)
+
+        if has_15m:
+            services.append({
+                "name": "auto_entry_supervisor_15m",
+                "script": "auto_entry_supervisor.py unified_15m",
+                "port": ports.get("auto_entry_supervisor_15m", 8033),
+            })
+            services.append({
+                "name": "active_trade_supervisor_15m",
+                "script": "active_trade_supervisor.py unified_15m",
+                "port": ports.get("active_trade_supervisor_15m", 8034),
+            })
+
+        for i, monitor in enumerate(hourly_monitors):
             user_number = monitor['user_number']
             monitor_id = monitor['monitor_id']
             monitor_identifier = f"{user_number}_{monitor_id}"
@@ -355,16 +368,13 @@ class SupervisorConfigGenerator:
                 "script": f"strike_table_generator.py {symbol} continuous 1",
                 "port": ports.get(key, strike_table_default_ports[symbol.lower()])
             })
-        # 15m strike table generators (BTC, ETH, SOL, XRP)
-        _strike_15m_default = {"BTC": 8023, "ETH": 8024, "SOL": 8029, "XRP": 8030}
-        for symbol in ("BTC", "ETH", "SOL", "XRP"):
-            key = f"strike_table_generator_15m_{symbol.lower()}"
-            services.append({
-                "name": key,
-                "script": f"strike_table_generator.py {symbol} continuous 1 --interval 15m",
-                "port": ports.get(key, _strike_15m_default[symbol])
-            })
-        
+        # 15m strikes: master generator only → live_data.strike_table_15m (per-symbol strike_table_generator_15m_* omitted for testing).
+        services.append({
+            "name": "strike_table_generator_15m",
+            "script": "strike_table_generator.py --master-15m --interval 15m --master-interval-sec 1 --data-exchange kalshi",
+            "port": ports.get("strike_table_generator_15m", 8032),
+        })
+
         # Supervisord main log: durable path under logs/ with rotation (critical for incident review)
         supervisord_log = os.path.join(log_dir, "supervisord.log")
         

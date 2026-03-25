@@ -441,7 +441,7 @@ EOF
     
     # Kill core Python backend processes (exclude analytics tooling)
     print_warning "Killing all Python backend processes..."
-    ps aux 2>/dev/null | grep python | grep -E "(main\.py|trade_manager|trade_executor|active_trade_supervisor|auto_entry_supervisor|symbol_price_watchdog|strike_table_generator|kalshi_account_sync|kalshi_market_watchdog|cascading_failure_detector|system_monitor)" | grep -v grep | grep -v "MASTER_RESTART" | grep -Ev "(analytics_gui\.py|analytics_updater\.py|daily_update\.py|daily_update_lightweight\.py|symbol_data_fetch_pg\.py|momentum_generator_pg\.py|movement_generator_pg\.py|volatility_generator_pg\.py|fingerprint_generator_postgresql\.py|probability_lookup_generator\.py|symbol_profiler\.py)" | awk '{print $2}' | xargs -r kill 2>/dev/null || true
+    ps aux 2>/dev/null | grep python | grep -E "(main\.py|trade_manager|trade_executor|active_trade_supervisor|auto_entry_supervisor|symbol_price_watchdog|strike_table_generator|kalshi_account_sync|kalshi_market_watchdog|market_watchdog|cascading_failure_detector|system_monitor)" | grep -v grep | grep -v "MASTER_RESTART" | grep -Ev "(analytics_gui\.py|analytics_updater\.py|daily_update\.py|daily_update_lightweight\.py|symbol_data_fetch_pg\.py|momentum_generator_pg\.py|movement_generator_pg\.py|volatility_generator_pg\.py|fingerprint_generator_postgresql\.py|probability_lookup_generator\.py|symbol_profiler\.py)" | awk '{print $2}' | xargs -r kill 2>/dev/null || true
     
     # Kill any remaining project processes, but preserve analytics tooling
     print_warning "Killing processes with project path..."
@@ -579,6 +579,7 @@ emergency_restart() {
     pkill -f "python.*btc_price_watchdog.py" || true
     pkill -f "python.*kalshi_account_sync.py" || true
     pkill -f "python.*kalshi_market_watchdog.py" || true
+    pkill -f "python.*market_watchdog.py" || true
     
     # Kill any remaining project processes, excluding analytics tooling
     print_warning "Killing processes with project path..."

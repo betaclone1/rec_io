@@ -62,6 +62,58 @@ def _configure_logging():
 logger = _configure_logging()
 HEARTBEAT_INTERVAL_SEC = 300
 
+KALSHI_15M_SYMBOLS = frozenset({"BTC", "ETH", "SOL", "XRP"})
+DEFAULT_KALSHI_15M_SYMBOL_ORDER = ("BTC", "ETH", "SOL", "XRP")
+
+
+def fetch_kalshi_15m_symbols_ordered_from_db() -> tuple[str, ...]:
+    """Same order as live_data.symbols_list (by id); Kalshi 15m subset only."""
+    conn = None
+    try:
+        conn = get_postgresql_connection()
+        if not conn:
+            logger.warning(
+                "Could not load symbols_list (no DB); using default order %s",
+                DEFAULT_KALSHI_15M_SYMBOL_ORDER,
+            )
+            return DEFAULT_KALSHI_15M_SYMBOL_ORDER
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT symbol FROM live_data.symbols_list
+            WHERE symbol IS NOT NULL AND trim(symbol) <> ''
+            ORDER BY id
+            """
+        )
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for (raw,) in cursor.fetchall():
+            u = raw.strip().upper()
+            if u in KALSHI_15M_SYMBOLS and u not in seen:
+                seen.add(u)
+                ordered.append(u)
+        conn.close()
+        if not ordered:
+            logger.warning(
+                "symbols_list has no Kalshi 15m symbols; using default order %s",
+                DEFAULT_KALSHI_15M_SYMBOL_ORDER,
+            )
+            return DEFAULT_KALSHI_15M_SYMBOL_ORDER
+        return tuple(ordered)
+    except Exception as e:
+        logger.warning(
+            "symbols_list read failed (%s); using default order %s",
+            e,
+            DEFAULT_KALSHI_15M_SYMBOL_ORDER,
+        )
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return DEFAULT_KALSHI_15M_SYMBOL_ORDER
+
+
 # SOL/XRP: spot and strike spacing need sub-cent precision in strike tables and lookup interpolation.
 HIGH_PRECISION_PRICE_SYMBOLS = frozenset({"sol", "xrp"})
 PRICE_BUFFER_DECIMAL_PLACES = 5
@@ -410,9 +462,22 @@ class LookupProbabilityCalculator:
 class StrikeTableGenerator:
     """Generates strike table data and writes to PostgreSQL live_data schema."""
 
-    def __init__(self, symbol: str, interval: str = "hourly"):
+    def __init__(
+        self,
+        symbol: str,
+        interval: str = "hourly",
+        *,
+        unified_15m: bool = False,
+        data_exchange: str = "kalshi",
+        data_broker: str | None = None,
+    ):
+        self.unified_15m = unified_15m
+        _ex = data_broker if data_broker is not None else data_exchange
+        self.data_exchange = (_ex or "kalshi").strip().lower()
         self.symbol = symbol.lower()
         self.interval = interval.lower()  # "hourly" or "15m"
+        if self.unified_15m and self.interval != "15m":
+            raise ValueError("unified_15m requires interval 15m")
         if self.interval == "15m" and self.symbol not in ("btc", "eth", "sol", "xrp"):
             raise ValueError("15m interval only supported for BTC, ETH, SOL, XRP")
         logger.debug("Initializing strike table generator for %s (%s)", symbol.upper(), self.interval)
@@ -420,9 +485,77 @@ class StrikeTableGenerator:
         logger.debug("Strike table generator initialized for %s (%s)", symbol.upper(), self.interval)
 
     def _strike_table_name(self) -> str:
-        """Table name: strike_table_hourly_{symbol} or strike_table_15m_{symbol}."""
+        """Table name: unified strike_table_15m or strike_table_hourly_{symbol} / strike_table_15m_{symbol}."""
+        if self.unified_15m:
+            return "strike_table_15m"
         suffix = "15m" if self.interval == "15m" else "hourly"
         return f"strike_table_{suffix}_{self.symbol}"
+
+    def _setup_unified_15m_schema(self, cursor, conn) -> None:
+        """CREATE IF NOT EXISTS live_data.strike_table_15m (matches migration)."""
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS live_data.strike_table_15m (
+                id SERIAL PRIMARY KEY,
+                timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                symbol VARCHAR(10) NOT NULL,
+                exchange VARCHAR(20) NOT NULL,
+                market TEXT DEFAULT '15m',
+                current_price NUMERIC(18,5),
+                ttc_hourly INTEGER,
+                ttc_15m INTEGER,
+                event_ticker VARCHAR(50),
+                market_title TEXT,
+                strike_tier INTEGER,
+                market_status VARCHAR(20),
+                strike NUMERIC(18,5),
+                buffer NUMERIC(18,5),
+                buffer_pct NUMERIC(12,6),
+                probability_hourly DECIMAL(5,2),
+                probability_15m DECIMAL(5,2),
+                yes_ask DECIMAL(5,2),
+                no_ask DECIMAL(5,2),
+                yes_ask_dollars TEXT,
+                no_ask_dollars TEXT,
+                yes_bid_dollars TEXT,
+                no_bid_dollars TEXT,
+                yes_price_spread NUMERIC(6,4),
+                no_price_spread NUMERIC(6,4),
+                yes_diff DECIMAL(5,2),
+                no_diff DECIMAL(5,2),
+                volume INTEGER,
+                ticker VARCHAR(50),
+                active_side VARCHAR(10),
+                momentum_weighted_score DECIMAL(5,3),
+                momentum_percentile DECIMAL(5,1),
+                volatility NUMERIC(10,6),
+                volatility_percentile NUMERIC(5,1),
+                movement NUMERIC(10,4),
+                movement_percentile NUMERIC(5,1),
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS strike_table_15m_exchange_symbol_idx
+                ON live_data.strike_table_15m (exchange, symbol)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_strike_table_15m_lookup
+                ON live_data.strike_table_15m (timestamp, symbol, current_price)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS strike_table_15m_exchange_symbol_timestamp_idx
+                ON live_data.strike_table_15m (exchange, symbol, timestamp DESC)
+            """
+        )
+        conn.commit()
+        logger.debug("Unified strike_table_15m schema ready")
 
     def _normalize_floor_strike(self, floor_strike: float) -> float:
         """Kalshi floor strike as stored key: integer dollars for BTC/ETH; 5dp for SOL/XRP."""
@@ -496,12 +629,17 @@ class StrikeTableGenerator:
         
     def setup_live_data_schema(self):
         """Create live_data schema and tables if they don't exist."""
+        conn = None
         try:
             conn = get_postgresql_connection()
             cursor = conn.cursor()
             
             # Create live_data schema
             cursor.execute("CREATE SCHEMA IF NOT EXISTS live_data")
+
+            if self.unified_15m:
+                self._setup_unified_15m_schema(cursor, conn)
+                return
             
             # Create strike table (hourly or 15m). Same column set: ttc_hourly, ttc_15m, probability_hourly, probability_15m.
             table_name = self._strike_table_name()
@@ -649,37 +787,75 @@ class StrikeTableGenerator:
             raise
     
     def get_kalshi_market_snapshot(self) -> Dict[str, Any]:
-        """Get live Kalshi market snapshot from market_kalshi_hourly_{symbol} or market_kalshi_15m_{symbol}."""
+        """Get live Kalshi market snapshot from market_kalshi_hourly_{symbol}, market_kalshi_15m_{symbol}, or unified market_kalshi_15m."""
         try:
             conn = get_postgresql_connection()
             cursor = conn.cursor()
-            if self.interval == "15m":
-                market_table = f"market_kalshi_15m_{self.symbol}"
+            sym_u = self.symbol.upper()
+
+            if self.interval == "15m" and self.unified_15m:
+                cursor.execute(
+                    """
+                    SELECT event_ticker
+                    FROM live_data.market_kalshi_15m
+                    WHERE exchange = %s AND symbol = %s
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (self.data_exchange, sym_u),
+                )
+                result = cursor.fetchone()
+                if not result:
+                    raise ValueError(
+                        "No event_ticker in market_kalshi_15m for exchange=%s symbol=%s"
+                        % (self.data_exchange, sym_u)
+                    )
+                event_ticker = result[0]
+                cursor.execute(
+                    """
+                    SELECT market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask, last_price,
+                           yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
+                           volume_fp AS volume, volume_24h_fp AS volume_24h, open_interest, liquidity, updated_at
+                    FROM live_data.market_kalshi_15m
+                    WHERE event_ticker = %s AND exchange = %s AND symbol = %s
+                    ORDER BY updated_at DESC
+                    """,
+                    (event_ticker, self.data_exchange, sym_u),
+                )
+                market_rows = cursor.fetchall()
             else:
-                market_table = f"market_kalshi_hourly_{self.symbol}"
-            
-            cursor.execute(f"""
-                SELECT event_ticker 
-                FROM live_data.{market_table} 
-                ORDER BY updated_at DESC 
-                LIMIT 1
-            """)
-            result = cursor.fetchone()
-            if not result:
-                raise ValueError(f"No event_ticker found in {market_table} table")
-            event_ticker = result[0]
-            
-            cursor.execute(f"""
-                SELECT market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask, last_price,
-                       yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
-                       volume_fp AS volume, volume_24h_fp AS volume_24h, open_interest, liquidity, updated_at
-                FROM live_data.{market_table} 
-                WHERE event_ticker = %s
-                ORDER BY updated_at DESC
-            """, (event_ticker,))
-            market_rows = cursor.fetchall()
+                if self.interval == "15m":
+                    market_table = f"market_kalshi_15m_{self.symbol}"
+                else:
+                    market_table = f"market_kalshi_hourly_{self.symbol}"
+
+                cursor.execute(
+                    f"""
+                    SELECT event_ticker
+                    FROM live_data.{market_table}
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """
+                )
+                result = cursor.fetchone()
+                if not result:
+                    raise ValueError("No event_ticker found in %s table" % market_table)
+                event_ticker = result[0]
+
+                cursor.execute(
+                    f"""
+                    SELECT market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask, last_price,
+                           yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
+                           volume_fp AS volume, volume_24h_fp AS volume_24h, open_interest, liquidity, updated_at
+                    FROM live_data.{market_table}
+                    WHERE event_ticker = %s
+                    ORDER BY updated_at DESC
+                    """,
+                    (event_ticker,),
+                )
+                market_rows = cursor.fetchall()
             if not market_rows:
-                raise ValueError(f"No markets found for event_ticker: {event_ticker}")
+                raise ValueError("No markets found for event_ticker: %s" % event_ticker)
             
             markets = []
             for row in market_rows:
@@ -907,7 +1083,13 @@ class StrikeTableGenerator:
             # All strike tables use ttc_hourly, ttc_15m, probability_hourly, probability_15m (15m tables leave hourly cols NULL).
             # Clear ALL previous strike table data - only keep current iteration
             try:
-                cursor.execute(f"DELETE FROM live_data.{table_name}")
+                if self.unified_15m:
+                    cursor.execute(
+                        f"DELETE FROM live_data.{table_name} WHERE exchange = %s AND symbol = %s",
+                        (self.data_exchange, self.symbol.upper()),
+                    )
+                else:
+                    cursor.execute(f"DELETE FROM live_data.{table_name}")
                 logger.debug("Cleared previous strike table data for %s (%s)", self.symbol.upper(), self.interval)
             except Exception as e:
                 logger.error("Error clearing strike table: %s", e)
@@ -1025,27 +1207,109 @@ class StrikeTableGenerator:
                     market_val = "15m" if self.interval == "15m" else "hourly"
                     ttc_hourly_val = ttc_seconds if self.interval == "hourly" else None
                     prob_hourly_val = probability if self.interval == "hourly" else None
-                    # Insert: all tables use ttc_hourly, ttc_15m, probability_hourly, probability_15m (15m leaves hourly NULL)
-                    cursor.execute(f"""
-                    INSERT INTO live_data.{table_name}
-                    (symbol, market, current_price, ttc_hourly, ttc_15m, broker, event_ticker, market_title,
-                     strike_tier, market_status, strike, buffer, buffer_pct, probability_hourly, probability_15m,
-                     yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
-                     yes_price_spread, no_price_spread, yes_diff, no_diff, volume, ticker, active_side,
-                     momentum_weighted_score, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile,
-                     timestamp, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (
-                        self.symbol.upper(), market_val, current_price, ttc_hourly_val, ttc_15m_seconds, "Kalshi",
-                        market_data.get("event_ticker"), market_title,
-                        strike_tier_val, market_data.get("market_status"),
-                        strike, buffer, buffer_pct, prob_hourly_val, probability_15m,
-                        yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
-                        yes_price_spread, no_price_spread, yes_diff, no_diff,
-                        volume, ticker, active_side, momentum_score, momentum_percentile,
-                        volatility, volatility_percentile, movement, movement_percentile,
-                        datetime.now(), datetime.now()
-                    ))
+                    # Insert: unified 15m uses exchange as execution venue key (e.g. kalshi).
+                    if self.unified_15m:
+                        cursor.execute(
+                            f"""
+                            INSERT INTO live_data.{table_name}
+                            (symbol, exchange, market, current_price, ttc_hourly, ttc_15m, event_ticker, market_title,
+                             strike_tier, market_status, strike, buffer, buffer_pct, probability_hourly, probability_15m,
+                             yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
+                             yes_price_spread, no_price_spread, yes_diff, no_diff, volume, ticker, active_side,
+                             momentum_weighted_score, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile,
+                             timestamp, created_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                self.symbol.upper(),
+                                self.data_exchange,
+                                market_val,
+                                current_price,
+                                ttc_hourly_val,
+                                ttc_15m_seconds,
+                                market_data.get("event_ticker"),
+                                market_title,
+                                strike_tier_val,
+                                market_data.get("market_status"),
+                                strike,
+                                buffer,
+                                buffer_pct,
+                                prob_hourly_val,
+                                probability_15m,
+                                yes_ask,
+                                no_ask,
+                                yes_ask_dollars,
+                                no_ask_dollars,
+                                yes_bid_dollars,
+                                no_bid_dollars,
+                                yes_price_spread,
+                                no_price_spread,
+                                yes_diff,
+                                no_diff,
+                                volume,
+                                ticker,
+                                active_side,
+                                momentum_score,
+                                momentum_percentile,
+                                volatility,
+                                volatility_percentile,
+                                movement,
+                                movement_percentile,
+                                datetime.now(),
+                                datetime.now(),
+                            ),
+                        )
+                    else:
+                        cursor.execute(
+                            f"""
+                            INSERT INTO live_data.{table_name}
+                            (symbol, market, current_price, ttc_hourly, ttc_15m, broker, event_ticker, market_title,
+                             strike_tier, market_status, strike, buffer, buffer_pct, probability_hourly, probability_15m,
+                             yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
+                             yes_price_spread, no_price_spread, yes_diff, no_diff, volume, ticker, active_side,
+                             momentum_weighted_score, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile,
+                             timestamp, created_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                self.symbol.upper(),
+                                market_val,
+                                current_price,
+                                ttc_hourly_val,
+                                ttc_15m_seconds,
+                                "Kalshi",
+                                market_data.get("event_ticker"),
+                                market_title,
+                                strike_tier_val,
+                                market_data.get("market_status"),
+                                strike,
+                                buffer,
+                                buffer_pct,
+                                prob_hourly_val,
+                                probability_15m,
+                                yes_ask,
+                                no_ask,
+                                yes_ask_dollars,
+                                no_ask_dollars,
+                                yes_bid_dollars,
+                                no_bid_dollars,
+                                yes_price_spread,
+                                no_price_spread,
+                                yes_diff,
+                                no_diff,
+                                volume,
+                                ticker,
+                                active_side,
+                                momentum_score,
+                                momentum_percentile,
+                                volatility,
+                                volatility_percentile,
+                                movement,
+                                movement_percentile,
+                                datetime.now(),
+                                datetime.now(),
+                            ),
+                        )
                     
                     strike_data.append({
                         "strike": strike,
@@ -1075,16 +1339,30 @@ class StrikeTableGenerator:
     
     def get_latest_strike_table_json(self) -> Optional[Dict[str, Any]]:
         """Get the latest strike table data in JSON format compatible with frontend."""
+        conn = None
         try:
             conn = get_postgresql_connection()
             cursor = conn.cursor()
-            
+
             table_name = self._strike_table_name()
-            # Get the latest timestamp
-            cursor.execute(f"""
-            SELECT MAX(timestamp) FROM live_data.{table_name}
-            """)
-            
+            sym_u = self.symbol.upper()
+            venue_col = "exchange" if self.unified_15m else "broker"
+
+            if self.unified_15m:
+                cursor.execute(
+                    f"""
+                    SELECT MAX(timestamp) FROM live_data.{table_name}
+                    WHERE exchange = %s AND symbol = %s
+                    """,
+                    (self.data_exchange, sym_u),
+                )
+            else:
+                cursor.execute(
+                    f"""
+                    SELECT MAX(timestamp) FROM live_data.{table_name}
+                    """
+                )
+
             latest_timestamp = cursor.fetchone()[0]
             if not latest_timestamp:
                 return None
@@ -1093,15 +1371,32 @@ class StrikeTableGenerator:
             ttc_col = "ttc_15m" if self.interval == "15m" else "ttc_hourly"
             prob_col = "probability_15m" if self.interval == "15m" else "probability_hourly"
 
-            cursor.execute(f"""
-            SELECT symbol, current_price, {ttc_col}, broker, event_ticker, market_title,
-                   strike_tier, market_status, strike, buffer, buffer_pct, {prob_col},
-                   yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume, ticker, active_side,
-                   momentum_percentile, volatility, volatility_percentile, movement, movement_percentile
-            FROM live_data.{table_name}
-            WHERE timestamp = %s
-            ORDER BY strike
-            """, (latest_timestamp,))
+            if self.unified_15m:
+                cursor.execute(
+                    f"""
+                    SELECT symbol, current_price, {ttc_col}, {venue_col}, event_ticker, market_title,
+                           strike_tier, market_status, strike, buffer, buffer_pct, {prob_col},
+                           yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume, ticker, active_side,
+                           momentum_percentile, volatility, volatility_percentile, movement, movement_percentile
+                    FROM live_data.{table_name}
+                    WHERE exchange = %s AND symbol = %s AND timestamp = %s
+                    ORDER BY strike
+                    """,
+                    (self.data_exchange, sym_u, latest_timestamp),
+                )
+            else:
+                cursor.execute(
+                    f"""
+                    SELECT symbol, current_price, {ttc_col}, {venue_col}, event_ticker, market_title,
+                           strike_tier, market_status, strike, buffer, buffer_pct, {prob_col},
+                           yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume, ticker, active_side,
+                           momentum_percentile, volatility, volatility_percentile, movement, movement_percentile
+                    FROM live_data.{table_name}
+                    WHERE timestamp = %s
+                    ORDER BY strike
+                    """,
+                    (latest_timestamp,),
+                )
             
             rows = cursor.fetchall()
             
@@ -1110,11 +1405,16 @@ class StrikeTableGenerator:
 
             # Convert to JSON format matching the current UPC output
             # Column indices: 0-7 symbol..market_status, 8-20 strike..active_side, 21 momentum_percentile, 22-25 volatility, volatility_percentile, movement, movement_percentile
+            raw_venue = rows[0][3]
+            if self.unified_15m and raw_venue is not None and str(raw_venue).lower() == "kalshi":
+                json_exchange = "Kalshi"
+            else:
+                json_exchange = raw_venue
             result = {
                 "symbol": rows[0][0],
                 "current_price": float(rows[0][1]),
                 "ttc": rows[0][2],
-                "broker": rows[0][3],
+                "exchange": json_exchange,
                 "event_ticker": rows[0][4],
                 "market_title": rows[0][5],
                 "strike_tier": rows[0][6],
@@ -1124,8 +1424,14 @@ class StrikeTableGenerator:
             }
             
             for row in rows:
+                _sf = float(row[8]) if row[8] is not None else None
+                _strike_out = (
+                    int(_sf)
+                    if _sf is not None and _sf == int(_sf)
+                    else _sf
+                )
                 result["strikes"].append({
-                    "strike": int(row[8]),
+                    "strike": _strike_out,
                     "buffer": float(row[9]),
                     "buffer_pct": float(row[10]),
                     "probability": float(row[11]),
@@ -1168,15 +1474,32 @@ class StrikeTableGenerator:
             conn = get_postgresql_connection()
             cursor = conn.cursor()
             table_name = self._strike_table_name()
-            cursor.execute(f"""
-                SELECT 
-                    COUNT(*) as total_records,
-                    COUNT(DISTINCT timestamp) as unique_timestamps,
-                    MIN(timestamp) as earliest_timestamp,
-                    MAX(timestamp) as latest_timestamp,
-                    MAX(timestamp) - MIN(timestamp) as time_span
-                FROM live_data.{table_name}
-            """)
+            if self.unified_15m:
+                cursor.execute(
+                    f"""
+                    SELECT
+                        COUNT(*) as total_records,
+                        COUNT(DISTINCT timestamp) as unique_timestamps,
+                        MIN(timestamp) as earliest_timestamp,
+                        MAX(timestamp) as latest_timestamp,
+                        MAX(timestamp) - MIN(timestamp) as time_span
+                    FROM live_data.{table_name}
+                    WHERE exchange = %s AND symbol = %s
+                    """,
+                    (self.data_exchange, self.symbol.upper()),
+                )
+            else:
+                cursor.execute(
+                    f"""
+                    SELECT
+                        COUNT(*) as total_records,
+                        COUNT(DISTINCT timestamp) as unique_timestamps,
+                        MIN(timestamp) as earliest_timestamp,
+                        MAX(timestamp) as latest_timestamp,
+                        MAX(timestamp) - MIN(timestamp) as time_span
+                    FROM live_data.{table_name}
+                    """
+                )
             result = cursor.fetchone()
             if not result or result[0] == 0:
                 return None
@@ -1251,20 +1574,149 @@ def run_continuous_generation(interval_seconds: int = 30, symbol: str = "btc", i
             logger.debug("Waiting 60 seconds before retry")
             time.sleep(60)
 
+
+def run_master_15m_continuous(
+    interval_seconds: int = 1,
+    data_exchange: str = "kalshi",
+    symbols: Optional[Tuple[str, ...]] = None,
+) -> None:
+    """One process: refresh strike_table_15m for each symbol in order; targets ~interval_seconds per full pass (sleep remainder)."""
+    syms = tuple(s.upper() for s in (symbols or fetch_kalshi_15m_symbols_ordered_from_db()))
+    if not syms:
+        logger.error("run_master_15m_continuous: no symbols to process")
+        return
+    first = StrikeTableGenerator(
+        syms[0].lower(),
+        interval="15m",
+        unified_15m=True,
+        data_exchange=data_exchange,
+    )
+    first.setup_live_data_schema()
+    prev_event: Dict[str, Optional[str]] = {s: None for s in syms}
+    iteration = 0
+    last_heartbeat = time.time()
+    while True:
+        loop_started = time.time()
+        try:
+            iteration += 1
+            for sym in syms:
+                g = StrikeTableGenerator(
+                    sym.lower(),
+                    interval="15m",
+                    unified_15m=True,
+                    data_exchange=data_exchange,
+                )
+                success, event_ticker, n = g.generate_strike_table()
+                su = sym.upper()
+                if success and event_ticker:
+                    if prev_event[su] is not None and prev_event[su] != event_ticker:
+                        logger.info(
+                            "[%s] Strike table rotated: %s → %s (%s strikes)",
+                            su,
+                            prev_event[su],
+                            event_ticker,
+                            n,
+                        )
+                    prev_event[su] = event_ticker
+                elif not success:
+                    logger.error("[%s] Strike generation failed", su)
+            if time.time() - last_heartbeat >= HEARTBEAT_INTERVAL_SEC:
+                logger.info("heartbeat")
+                last_heartbeat = time.time()
+            slip = interval_seconds - (time.time() - loop_started)
+            if slip > 0:
+                time.sleep(slip)
+        except KeyboardInterrupt:
+            logger.debug("Master 15m continuous generation stopped by user")
+            break
+        except Exception as e:
+            logger.error("Error in master 15m continuous generation: %s", e, exc_info=True)
+            time.sleep(60)
+
+
 def main():
     """Main function - choose between test mode and continuous mode."""
     parser = argparse.ArgumentParser(description='Strike Table Generator (Multi-Symbol)')
-    parser.add_argument('symbol', help='Symbol to generate strike table for (e.g., BTC, ETH)')
-    parser.add_argument('mode', help='Mode: test for single generation, continuous for ongoing generation')
-    parser.add_argument('interval_sec', type=int, nargs='?', default=30, help='Seconds between generations (for continuous mode)')
-    parser.add_argument('--interval', choices=['hourly', '15m'], default='hourly', help='Market interval: hourly (default) or 15m (BTC, ETH, SOL, XRP)')
+    parser.add_argument(
+        '--master-15m',
+        action='store_true',
+        help='One process writes all 15m symbols to live_data.strike_table_15m (requires continuous mode and --interval 15m)',
+    )
+    parser.add_argument(
+        '--data-exchange',
+        default='kalshi',
+        dest='data_exchange',
+        help='Execution venue key for unified 15m rows (default: kalshi)',
+    )
+    parser.add_argument(
+        '--data-broker',
+        default=None,
+        dest='data_broker_legacy',
+        help='Deprecated: use --data-exchange',
+    )
+    parser.add_argument(
+        '--symbols',
+        nargs='*',
+        default=None,
+        help='With --master-15m, optional symbol list; default order from live_data.symbols_list',
+    )
+    parser.add_argument(
+        '--master-interval-sec',
+        type=int,
+        default=1,
+        help='Target seconds per full symbol pass (only with --master-15m; sleeps remainder after work; default 1, same as per-symbol continuous 1)',
+    )
+    parser.add_argument('symbol', nargs='?', help='Symbol (e.g., BTC); omit with --master-15m')
+    parser.add_argument(
+        'mode',
+        nargs='?',
+        help='Mode: test or continuous (omit with --master-15m; master is always continuous)',
+    )
+    parser.add_argument(
+        'interval_sec',
+        type=int,
+        nargs='?',
+        default=30,
+        help='Seconds between generations (continuous mode, non-master)',
+    )
+    parser.add_argument(
+        '--interval',
+        choices=['hourly', '15m'],
+        default='hourly',
+        help='Market interval: hourly (default) or 15m (BTC, ETH, SOL, XRP)',
+    )
     args = parser.parse_args()
-    symbol = args.symbol.upper()
+    interval = args.interval
+    _dex = args.data_broker_legacy if args.data_broker_legacy is not None else args.data_exchange
+    data_exchange = (_dex or 'kalshi').strip().lower()
+
+    if args.master_15m:
+        if args.symbol:
+            parser.error('Do not pass symbol when using --master-15m (use --symbols BTC ETH ... if needed)')
+        if args.mode is not None:
+            parser.error('Do not pass mode as a positional with --master-15m (master is always continuous)')
+        if interval != '15m':
+            parser.error('--master-15m requires --interval 15m')
+        syms: Tuple[str, ...]
+        if args.symbols:
+            syms = tuple(s.strip().upper() for s in args.symbols if s and str(s).strip())
+        else:
+            syms = fetch_kalshi_15m_symbols_ordered_from_db()
+        for s in syms:
+            if s not in KALSHI_15M_SYMBOLS:
+                parser.error('Invalid symbol %s for --master-15m (expected subset of BTC, ETH, SOL, XRP)' % s)
+        run_master_15m_continuous(args.master_interval_sec, data_exchange, syms)
+        return
+
     mode = args.mode
     interval_sec = args.interval_sec
-    interval = args.interval
-    if interval == "15m" and symbol.lower() not in ("btc", "eth", "sol", "xrp"):
-        parser.error("--interval 15m only supported for BTC, ETH, SOL, XRP")
+    if mode is None:
+        parser.error('mode is required: test or continuous')
+    if not args.symbol:
+        parser.error('symbol is required unless --master-15m')
+    symbol = args.symbol.upper()
+    if interval == '15m' and symbol.lower() not in ('btc', 'eth', 'sol', 'xrp'):
+        parser.error('--interval 15m only supported for BTC, ETH, SOL, XRP')
     if mode == "continuous":
         run_continuous_generation(interval_sec, symbol, interval=interval)
     else:

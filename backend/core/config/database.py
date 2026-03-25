@@ -100,7 +100,7 @@ def init_database():
                 date DATE,
                 time TIME,
                 symbol VARCHAR(50),
-                market VARCHAR(50),
+                exchange VARCHAR(50),
                 trade_strategy VARCHAR(100),
                 contract VARCHAR(255),
                 strike VARCHAR(50),
@@ -166,7 +166,7 @@ def init_database():
                 date TEXT NOT NULL,
                 time TEXT NOT NULL,
                 symbol TEXT,
-                market TEXT DEFAULT 'Kalshi',
+                exchange TEXT DEFAULT 'kalshi',
                 trade_strategy TEXT DEFAULT 'Hourly HTC',
                 contract TEXT NOT NULL,
                 strike TEXT NOT NULL,
@@ -849,6 +849,7 @@ def init_database():
             BEGIN
                 FOR r IN (
                     SELECT unnest(ARRAY['market_kalshi_hourly_btc','market_kalshi_hourly_eth','market_kalshi_hourly_ndx','market_kalshi_hourly_spx']) AS t, 'hourly' AS d
+                    UNION ALL SELECT 'market_kalshi_15m', '15m'
                     UNION ALL SELECT 'market_kalshi_15m_btc', '15m'
                     UNION ALL SELECT 'market_kalshi_15m_eth', '15m'
                     UNION ALL SELECT 'market_kalshi_15m_sol', '15m'
@@ -857,6 +858,7 @@ def init_database():
                     UNION ALL SELECT 'strike_table_hourly_eth', 'hourly'
                     UNION ALL SELECT 'strike_table_hourly_ndx', 'hourly'
                     UNION ALL SELECT 'strike_table_hourly_spx', 'hourly'
+                    UNION ALL SELECT 'strike_table_15m', '15m'
                     UNION ALL SELECT 'strike_table_15m_btc', '15m'
                     UNION ALL SELECT 'strike_table_15m_eth', '15m'
                     UNION ALL SELECT 'strike_table_15m_sol', '15m'

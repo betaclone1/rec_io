@@ -11,14 +11,18 @@ Supports multiple monitors with monitor-specific configuration.
 import logging
 import os
 import json
+import re
 import time
 import threading
 import signal
 import subprocess
 from datetime import datetime, timezone, time as datetime_time, timedelta
+from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 import requests
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional, Set, Tuple
+from contextvars import ContextVar
+from contextlib import contextmanager
 import psycopg2
 import sys
 # Add the project root to the Python path
@@ -26,21 +30,192 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from backend.core.port_config import get_port
+from backend.core.port_config import get_port, get_monitor_port, register_monitor_ports
 from backend.core.config.database import get_postgresql_connection
 from backend.util.paths import get_host
 
+# Cached per symbol; same master lookup tables as strike_table_generator (not fingerprint calc).
+_lookup_probability_calculator_cache: Dict[str, Any] = {}
+_lookup_probability_calculator_failed: Set[str] = set()
+
+# trade_ids logged once when we skip auto-close past Kalshi settlement (avoid log spam)
+_auto_close_suppress_past_settlement_logged: Set[int] = set()
+
+_KALSHI_MID_15M_SETTLE = re.compile(
+    r"^(\d{2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2})(\d{4})$",
+    re.I,
+)
+_KALSHI_MID_HOURLY_D_START = re.compile(
+    r"^(\d{2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2})(\d{2})$",
+    re.I,
+)
+_KALSHI_MONTH = {
+    "JAN": 1,
+    "FEB": 2,
+    "MAR": 3,
+    "APR": 4,
+    "MAY": 5,
+    "JUN": 6,
+    "JUL": 7,
+    "AUG": 8,
+    "SEP": 9,
+    "OCT": 10,
+    "NOV": 11,
+    "DEC": 12,
+}
+
+
+def kalshi_contract_settlement_end_est(market_ticker: Optional[str]) -> Optional[datetime]:
+    """
+    Best-effort settlement wall time (America/New_York) encoded in Kalshi crypto tickers.
+
+    - 15m (e.g. KXBTC15M-26MAR251015-45): middle token is YY MMM DD HHMM = period end.
+    - Daily hourly (e.g. KXBTCD-26MAR2510-T69999.99): middle token is YY MMM DD HH = hour start;
+      settlement is end of that hour (hour start + 1 hour), matching watchdog ticker construction.
+
+    Returns None if the ticker does not match a known pattern (caller should not suppress).
+    """
+    if not market_ticker or "-" not in market_ticker:
+        return None
+    parts = market_ticker.split("-")
+    if len(parts) < 2:
+        return None
+    series = parts[0].upper()
+    mid = parts[1].upper()
+    est = ZoneInfo("America/New_York")
+    if "15M" in series:
+        m = _KALSHI_MID_15M_SETTLE.match(mid)
+        if not m:
+            return None
+        yy = int(m.group(1))
+        mon = m.group(2).upper()
+        dd = int(m.group(3))
+        hhmm = m.group(4)
+        month = _KALSHI_MONTH.get(mon)
+        if not month:
+            return None
+        year = 2000 + yy
+        hour = int(hhmm[:2])
+        minute = int(hhmm[2:])
+        return datetime(year, month, dd, hour, minute, tzinfo=est)
+    if re.match(r"^KX[A-Z0-9]+D$", series) and len(mid) == 9:
+        m = _KALSHI_MID_HOURLY_D_START.match(mid)
+        if not m:
+            return None
+        yy = int(m.group(1))
+        mon = m.group(2).upper()
+        dd = int(m.group(3))
+        hh = int(m.group(4))
+        month = _KALSHI_MONTH.get(mon)
+        if not month:
+            return None
+        year = 2000 + yy
+        start = datetime(year, month, dd, hh, 0, tzinfo=est)
+        return start + timedelta(hours=1)
+    return None
+
+
+def should_suppress_auto_close_past_kalshi_settlement(
+    ticker: Optional[str], trade_id: Optional[int]
+) -> bool:
+    """
+    If the Kalshi contract's settlement instant has passed, do not POST market close orders.
+    trade_manager may still be catching up (open in main DB) after spot/scheduler issues.
+    """
+    end = kalshi_contract_settlement_end_est(ticker)
+    if end is None:
+        return False
+    grace = timedelta(seconds=10)
+    now_est = datetime.now(ZoneInfo("America/New_York"))
+    if now_est <= end + grace:
+        return False
+    tid = int(trade_id) if trade_id is not None else 0
+    if tid not in _auto_close_suppress_past_settlement_logged:
+        _auto_close_suppress_past_settlement_logged.add(tid)
+        if len(_auto_close_suppress_past_settlement_logged) > 8000:
+            _auto_close_suppress_past_settlement_logged.clear()
+        log(
+            f"[AUTO STOP] Skipping close for trade {tid}: Kalshi contract past settlement "
+            f"(ticker={ticker}, settlement_end_est={end.isoformat()}). "
+            f"Waiting for trade_manager expiry or manual handling."
+        )
+    return True
+
+
+# Remove pool/per-monitor rows if trade_manager never expired the main trade but Kalshi settlement is long gone.
+STALE_ACTIVE_TRADE_FLUSH_AFTER_SETTLEMENT = timedelta(hours=2)
+
 # Add these functions after the existing imports and before the get_monitor_identifier function
 
+def create_unified_15m_active_trades_pool_table():
+    """Single users.active_trades_<user>_15m table for all 15m monitors (monitor_id column)."""
+    try:
+        conn = get_postgresql_connection()
+        if not conn:
+            return
+        u = ctx_user()
+        tbl = f"active_trades_{u}_15m"
+        with conn.cursor() as cursor:
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS users.{tbl} (
+                    id SERIAL PRIMARY KEY,
+                    monitor_id VARCHAR(20) NOT NULL,
+                    trade_id INTEGER NOT NULL,
+                    ticket_id VARCHAR(50),
+                    date DATE,
+                    time TIME,
+                    strike VARCHAR(50),
+                    side VARCHAR(10),
+                    buy_price DECIMAL(10,4),
+                    position INTEGER,
+                    contract VARCHAR(50),
+                    ticker VARCHAR(50),
+                    symbol VARCHAR(10),
+                    exchange VARCHAR(50),
+                    trade_strategy VARCHAR(50),
+                    symbol_open DECIMAL(10,2),
+                    momentum DECIMAL(5,2),
+                    prob DECIMAL(5,2),
+                    fees DECIMAL(10,4),
+                    diff DECIMAL(10,4),
+                    status VARCHAR(20) DEFAULT 'active',
+                    current_symbol_price DECIMAL(20,8),
+                    current_probability DECIMAL(5,2),
+                    buffer_from_entry DECIMAL(20,8),
+                    time_since_entry INTEGER,
+                    current_close_price DECIMAL(10,4),
+                    current_pnl VARCHAR(20),
+                    high_price DECIMAL(10,4),
+                    low_price DECIMAL(10,4),
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT {tbl}_trade_id_key UNIQUE (trade_id)
+                )
+            """)
+            cursor.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS idx_{tbl}_monitor_status
+                ON users.{tbl} (monitor_id, status)
+                """
+            )
+            conn.commit()
+        conn.close()
+        log_debug(f"Ensured unified 15m active trades pool table: {tbl}")
+    except Exception as e:
+        log(f"[ACTIVE_TRADES] ❌ Error creating unified 15m pool table: {e}")
+
+
 def create_monitor_active_trades_table():
-    """Create monitor-specific active trades table when supervisor starts"""
+    """Create per-monitor table (hourly) or unified 15m pool table (one row set per monitor_id)."""
+    if ATS_UNIFIED_15M:
+        create_unified_15m_active_trades_pool_table()
+        return
     try:
         conn = get_postgresql_connection()
         if not conn:
             return
         with conn.cursor() as cursor:
-            # Create monitor-specific active trades table
-            active_trades_table = f"active_trades_{USER_NUMBER}_{MONITOR_ID}"
+            active_trades_table = f"active_trades_{ctx_user()}_{ctx_mid()}"
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS users.{active_trades_table} (
                     id SERIAL PRIMARY KEY,
@@ -55,7 +230,7 @@ def create_monitor_active_trades_table():
                     contract VARCHAR(50),
                     ticker VARCHAR(50),
                     symbol VARCHAR(10),
-                    market VARCHAR(50),
+                    exchange VARCHAR(50),
                     trade_strategy VARCHAR(50),
                     symbol_open DECIMAL(10,2),
                     momentum DECIMAL(5,2),
@@ -63,9 +238,9 @@ def create_monitor_active_trades_table():
                     fees DECIMAL(10,4),
                     diff DECIMAL(10,4),
                     status VARCHAR(20) DEFAULT 'active',
-                    current_symbol_price DECIMAL(10,2),
+                    current_symbol_price DECIMAL(20,8),
                     current_probability DECIMAL(5,2),
-                    buffer_from_entry DECIMAL(10,2),
+                    buffer_from_entry DECIMAL(20,8),
                     time_since_entry INTEGER,
                     current_close_price DECIMAL(10,4),
                     current_pnl VARCHAR(20),
@@ -83,12 +258,14 @@ def create_monitor_active_trades_table():
 
 def drop_monitor_active_trades_table():
     """Drop monitor-specific active trades table when supervisor stops"""
+    if ATS_UNIFIED_15M:
+        return
     try:
         import psycopg2
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             # Drop monitor-specific active trades table
-            active_trades_table = f"active_trades_{USER_NUMBER}_{MONITOR_ID}"
+            active_trades_table = f"active_trades_{ctx_user()}_{ctx_mid()}"
             cursor.execute(f"DROP TABLE IF EXISTS users.{active_trades_table}")
             conn.commit()
         conn.close()
@@ -97,8 +274,17 @@ def drop_monitor_active_trades_table():
         log(f"[ACTIVE_TRADES] ❌ Error dropping active trades table: {e}")
 
 def get_monitor_active_trades_table():
-    """Get the monitor-specific active trades table name"""
-    return f"active_trades_{USER_NUMBER}_{MONITOR_ID}"
+    """Per-monitor table (hourly) or unified pool active_trades_<user>_15m (15m pool)."""
+    if ATS_UNIFIED_15M:
+        return f"active_trades_{ctx_user()}_15m"
+    return f"active_trades_{ctx_user()}_{ctx_mid()}"
+
+
+def _active_trades_monitor_scope_sql():
+    """Extra WHERE fragment for unified pool (monitor_id scoping)."""
+    if ATS_UNIFIED_15M:
+        return " AND monitor_id = %s", (ctx_mid(),)
+    return "", ()
 
 # Monitor identification - extract from script name or command line args
 def get_monitor_identifier():
@@ -115,6 +301,8 @@ def get_monitor_identifier():
     
     # Check command line arguments
     if len(sys.argv) > 1:
+        if sys.argv[1] == "unified_15m":
+            return "unified_15m"
         return sys.argv[1]  # Use first argument as monitor identifier
     
     # Default to first active monitor if no identifier provided
@@ -122,8 +310,44 @@ def get_monitor_identifier():
 
 # Get monitor identifier
 MONITOR_IDENTIFIER = get_monitor_identifier()
-USER_NUMBER = MONITOR_IDENTIFIER.split('_')[0]
-MONITOR_ID = MONITOR_IDENTIFIER.split('_')[1]
+ATS_UNIFIED_15M = MONITOR_IDENTIFIER == "unified_15m"
+if ATS_UNIFIED_15M:
+    USER_NUMBER = "0001"
+    MONITOR_ID = "0"
+else:
+    USER_NUMBER = MONITOR_IDENTIFIER.split('_')[0]
+    MONITOR_ID = MONITOR_IDENTIFIER.split('_')[1]
+
+_ats_bind_u: ContextVar[Optional[str]] = ContextVar("_ats_bind_u", default=None)
+_ats_bind_m: ContextVar[Optional[str]] = ContextVar("_ats_bind_m", default=None)
+
+
+def ctx_user() -> str:
+    u = _ats_bind_u.get()
+    return u if u is not None else USER_NUMBER
+
+
+def ctx_mid() -> str:
+    m = _ats_bind_m.get()
+    return m if m is not None else MONITOR_ID
+
+
+def ctx_ident() -> str:
+    return f"{ctx_user()}_{ctx_mid()}"
+
+
+@contextmanager
+def ats_monitor_bind(user_num: str, monitor_id: str):
+    if not ATS_UNIFIED_15M:
+        yield
+        return
+    t1 = _ats_bind_u.set(user_num)
+    t2 = _ats_bind_m.set(monitor_id)
+    try:
+        yield
+    finally:
+        _ats_bind_u.reset(t1)
+        _ats_bind_m.reset(t2)
 
 
 def _ats_est_formatter():
@@ -168,13 +392,40 @@ _ats_hb_thread = threading.Thread(target=_ats_heartbeat_loop, daemon=True)
 _ats_hb_thread.start()
 
 
-_ats_logger.info("Monitor-aware supervisor starting user=%s monitor=%s", USER_NUMBER, MONITOR_ID)
+def log(message: str):
+    """Stdout log at INFO (use log_debug for plumbing)."""
+    _ats_logger.info("%s", message)
+
+
+def log_debug(message: str):
+    """Stdout log at DEBUG for plumbing/repetitive messages."""
+    _ats_logger.debug("%s", message)
+
+
+_ats_logger.info(
+    "Monitor-aware supervisor starting user=%s monitor=%s unified_15m=%s",
+    ctx_user(),
+    ctx_mid(),
+    ATS_UNIFIED_15M,
+)
 
 # Get symbol for this monitor (will be updated dynamically)
 def get_monitor_symbol():
     """Get the symbol for the current monitor from database"""
     try:
         import psycopg2
+
+        if ATS_UNIFIED_15M:
+            from backend.core.unified_15m_monitors import list_active_15m_monitor_rows
+
+            rows = list_active_15m_monitor_rows()
+            if not rows:
+                log("[ACTIVE_TRADE_SUPERVISOR] ❌ unified_15m: no active 15m monitors in DB; exiting")
+                os._exit(0)
+            uid0 = rows[0]["user_number"]
+            mid0 = rows[0]["monitor_id"]
+        else:
+            uid0, mid0 = ctx_user(), ctx_mid()
 
         conn = get_postgresql_connection()
         if not conn:
@@ -183,22 +434,22 @@ def get_monitor_symbol():
 
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{USER_NUMBER}
+            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{uid0}
             WHERE id = %s
-        """, (MONITOR_ID,))
+        """, (mid0,))
         result = cursor.fetchone()
         conn.close()
 
         if not result:
-            log(f"[ACTIVE_TRADE_SUPERVISOR] ❌ Monitor {MONITOR_IDENTIFIER} not found in monitor_list_{USER_NUMBER}; shutting down supervisor to avoid ghost activity")
+            log(f"[ACTIVE_TRADE_SUPERVISOR] ❌ Monitor {uid0}_{mid0} not found in monitor_list_{uid0}; shutting down supervisor to avoid ghost activity")
             os._exit(0)
 
         symbol_value, market_value = result
         if not symbol_value:
-            log(f"[ACTIVE_TRADE_SUPERVISOR] ❌ Monitor {MONITOR_IDENTIFIER} has no symbol configured; shutting down supervisor")
+            log(f"[ACTIVE_TRADE_SUPERVISOR] ❌ Monitor {uid0}_{mid0} has no symbol configured; shutting down supervisor")
             os._exit(0)
 
-        return symbol_value.upper(), (market_value or 'hourly').strip().lower()
+        return symbol_value.upper(), (market_value or "hourly").strip().lower()
     except Exception as e:
         log(f"[ACTIVE_TRADE_SUPERVISOR] ❌ Error getting monitor symbol: {e}, defaulting to BTC")
         return "BTC", "hourly"
@@ -219,14 +470,16 @@ def get_current_monitor_symbol_and_market():
     """Get (symbol, market) for this monitor from database. market is 'hourly' or '15m'."""
     global MONITOR_SYMBOL, MONITOR_MARKET
     try:
+        if ATS_UNIFIED_15M and _ats_bind_m.get() is None:
+            return MONITOR_SYMBOL, MONITOR_MARKET
         conn = get_postgresql_connection()
         if not conn:
             return "BTC", "hourly"
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{USER_NUMBER}
+            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{ctx_user()}
             WHERE id = %s
-        """, (MONITOR_ID,))
+        """, (ctx_mid(),))
         result = cursor.fetchone()
         conn.close()
         if result and result[0]:
@@ -254,14 +507,33 @@ def _get_symbol_and_market_for_strike(symbol: str = None):
     return s, mkt
 
 # Get port from monitor-specific system
-from backend.core.port_config import get_monitor_port, register_monitor_ports
+if ATS_UNIFIED_15M:
+    ACTIVE_TRADE_SUPERVISOR_PORT = get_port("active_trade_supervisor_15m")
+    _ats_logger.info("Using unified 15m ATS port: %s", ACTIVE_TRADE_SUPERVISOR_PORT)
+else:
+    register_monitor_ports(MONITOR_IDENTIFIER)
+    ACTIVE_TRADE_SUPERVISOR_PORT = get_monitor_port("active_trade_supervisor", MONITOR_IDENTIFIER)
+    _ats_logger.info("Using monitor-specific port: %s", ACTIVE_TRADE_SUPERVISOR_PORT)
 
-# Register this monitor's ports to ensure consistency
-register_monitor_ports(MONITOR_IDENTIFIER)
 
-# Get monitor-specific port
-ACTIVE_TRADE_SUPERVISOR_PORT = get_monitor_port("active_trade_supervisor", MONITOR_IDENTIFIER)
-_ats_logger.info("Using monitor-specific port: %s", ACTIVE_TRADE_SUPERVISOR_PORT)
+def _count_active_trades_across_unified_15m_monitors() -> int:
+    """Rows in unified pool that need the monitoring loop (active, pending, or closing)."""
+    conn = get_postgresql_connection()
+    if not conn:
+        return 0
+    try:
+        cur = conn.cursor()
+        tbl = f"active_trades_{ctx_user()}_15m"
+        cur.execute(
+            f"""
+            SELECT COUNT(*) FROM users.{tbl}
+            WHERE status IN ('active', 'pending', 'closing')
+            """
+        )
+        return int(cur.fetchone()[0])
+    finally:
+        conn.close()
+
 
 # Import centralized path utilities
 from backend.util.paths import get_project_root, get_data_dir, get_trade_history_dir, get_kalshi_data_dir, get_service_url, get_active_trades_dir
@@ -294,8 +566,8 @@ def health_check():
         "status": "healthy",
         "service": f"active_trade_supervisor_{MONITOR_IDENTIFIER}",
         "monitor_identifier": MONITOR_IDENTIFIER,
-        "user_number": USER_NUMBER,
-        "monitor_id": MONITOR_ID,
+        "user_number": ctx_user(),
+        "monitor_id": ctx_mid(),
         "port": ACTIVE_TRADE_SUPERVISOR_PORT,
         "timestamp": datetime.now().isoformat(),
         "port_system": "centralized"
@@ -365,12 +637,16 @@ def get_active_trades_for_monitor(monitor_identifier):
         # Validate monitor identifier format
         if not monitor_identifier or '_' not in monitor_identifier:
             return jsonify({"error": "Invalid monitor identifier format"}), 400
-        
-        # For now, we'll return the current monitor's data since each supervisor instance
-        # only manages its own monitor's data. In the future, this could be enhanced
-        # to support cross-monitor data access if needed.
-        active_trades = get_all_active_trades()
-        
+
+        u, mid = str(monitor_identifier).split("_", 1)
+        if ATS_UNIFIED_15M:
+            with ats_monitor_bind(u, mid):
+                active_trades = _get_all_active_trades_for_current_monitor()
+        else:
+            if monitor_identifier != MONITOR_IDENTIFIER:
+                return jsonify({"error": "Wrong supervisor instance for this monitor"}), 400
+            active_trades = _get_all_active_trades_for_current_monitor()
+
         return jsonify({
             "status": "success",
             "timestamp": datetime.now().isoformat(),
@@ -430,15 +706,6 @@ def sync_and_monitor():
     except Exception as e:
         log(f"❌ Error in manual sync and monitor: {e}")
         return {"status": "error", "message": str(e)}, 500
-
-def log(message: str):
-    """Stdout log at INFO (use log_debug for plumbing)."""
-    _ats_logger.info("%s", message)
-
-
-def log_debug(message: str):
-    """Stdout log at DEBUG for plumbing/repetitive messages."""
-    _ats_logger.debug("%s", message)
 
 def get_momentum_percentile_from_postgresql(symbol="BTC"):
     """Get current momentum_5s_avg from live price log for the specified symbol."""
@@ -598,7 +865,7 @@ def _open_enrollment_ack_payload(
             cursor = conn.cursor()
             cursor.execute(
                 f"""
-                SELECT ticker, side FROM users.trades_{USER_NUMBER}
+                SELECT ticker, side FROM users.trades_{ctx_user()}
                 WHERE id = %s AND status = 'open'
                 """,
                 (trade_id,),
@@ -622,7 +889,7 @@ def _open_enrollment_ack_payload(
         "type": "ats_track_ack",
         "correlation_id": correlation_id,
         "trade_id": trade_id,
-        "monitor_identifier": MONITOR_IDENTIFIER,
+        "monitor_identifier": ctx_ident(),
         "ok": enroll_ok and phase == "tracking",
         "phase": phase,
         "has_market_quote": has_quote,
@@ -636,7 +903,38 @@ def _handle_ats_enroll_redis_message(data: dict) -> None:
     try:
         if data.get("type") != "ats_trade_open":
             return
-        if data.get("monitor_suffix") != MONITOR_IDENTIFIER:
+        suffix = data.get("monitor_suffix") or ""
+        if ATS_UNIFIED_15M:
+            if "_" not in suffix:
+                return
+            u, mid = suffix.split("_", 1)
+            correlation_id = data.get("correlation_id")
+            trade_id = data.get("trade_id")
+            ticket_id = data.get("ticket_id") or ""
+            if not correlation_id or trade_id is None:
+                return
+            from backend.core.ats_enrollment_redis import redis_client_optional, store_enroll_ack
+
+            r = redis_client_optional()
+            if not r:
+                return
+            log(
+                f"📮 ATS ENROLL (Redis): trade_id={trade_id} ticket_id={ticket_id} cid={correlation_id} mon={suffix}"
+            )
+            with ats_monitor_bind(u, mid):
+                enroll_ok = process_trade_manager_notification_core(trade_id, ticket_id, "open")
+                payload = _open_enrollment_ack_payload(
+                    correlation_id, int(trade_id), enroll_ok
+                )
+                store_enroll_ack(r, correlation_id, payload)
+            if payload.get("ok"):
+                q = "has quote" if payload.get("has_market_quote") else "no live quote (degraded)"
+                log(f"✅ ATS ENROLL ACK ok trade={trade_id} {q}")
+            else:
+                log(f"❌ ATS ENROLL ACK failed trade={trade_id}")
+            return
+
+        if suffix != MONITOR_IDENTIFIER:
             return
         correlation_id = data.get("correlation_id")
         trade_id = data.get("trade_id")
@@ -697,22 +995,36 @@ def handle_trade_manager_notification():
                 "success": False
             }), 200
         
-        # Validate that this notification is for the correct monitor
-        if monitor_identifier and monitor_identifier != MONITOR_IDENTIFIER:
-            log(f"📡 DIRECT NOTIFICATION: Ignoring notification for different monitor")
-            log(f"📡 DIRECT NOTIFICATION: Expected: {MONITOR_IDENTIFIER}, Received: {monitor_identifier}")
-            return jsonify(
-                {
-                    "status": "ignored",
-                    "message": f"Notification for different monitor: {monitor_identifier}",
-                    "success": True,
-                }
-            ), 200
-        
-        log(f"📡 DIRECT NOTIFICATION: Received from trade_manager for monitor {MONITOR_IDENTIFIER}")
-        log(f"📡 DIRECT NOTIFICATION: Trade ID: {trade_id}, Ticket ID: {ticket_id}, Status: {status}")
-        
-        success = process_trade_manager_notification_core(trade_id, ticket_id, status)
+        if ATS_UNIFIED_15M:
+            if not monitor_identifier or "_" not in str(monitor_identifier):
+                return jsonify(
+                    {
+                        "error": "monitor_identifier required (e.g. 0001_10019)",
+                        "success": False,
+                    }
+                ), 200
+            u, mid = str(monitor_identifier).split("_", 1)
+            log(
+                f"📡 DIRECT NOTIFICATION (15m pool): mon={monitor_identifier} trade={trade_id} status={status}"
+            )
+            with ats_monitor_bind(u, mid):
+                success = process_trade_manager_notification_core(trade_id, ticket_id, status)
+        else:
+            if monitor_identifier and monitor_identifier != MONITOR_IDENTIFIER:
+                log(f"📡 DIRECT NOTIFICATION: Ignoring notification for different monitor")
+                log(f"📡 DIRECT NOTIFICATION: Expected: {MONITOR_IDENTIFIER}, Received: {monitor_identifier}")
+                return jsonify(
+                    {
+                        "status": "ignored",
+                        "message": f"Notification for different monitor: {monitor_identifier}",
+                        "success": True,
+                    }
+                ), 200
+
+            log(f"📡 DIRECT NOTIFICATION: Received from trade_manager for monitor {MONITOR_IDENTIFIER}")
+            log(f"📡 DIRECT NOTIFICATION: Trade ID: {trade_id}, Ticket ID: {ticket_id}, Status: {status}")
+
+            success = process_trade_manager_notification_core(trade_id, ticket_id, status)
 
         if status not in (
             "pending",
@@ -758,6 +1070,43 @@ def get_trades_db_connection():
     """Get connection to the main trades database"""
     return get_postgresql_connection()
 
+
+_trades_venue_column_cache: Dict[str, str] = {}
+
+
+def trades_venue_sql_column(user_num: str) -> str:
+    """
+    Column on users.trades_<user> that holds execution venue slug.
+    Post-migration name is exchange; older DBs still have market.
+    """
+    if user_num in _trades_venue_column_cache:
+        return _trades_venue_column_cache[user_num]
+    col = "exchange"
+    conn = get_postgresql_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_schema = 'users' AND table_name = %s
+                      AND column_name IN ('exchange', 'market')
+                    ORDER BY CASE column_name WHEN 'exchange' THEN 0 ELSE 1 END
+                    LIMIT 1
+                    """,
+                    (f"trades_{user_num}",),
+                )
+                row = cur.fetchone()
+                if row and row[0] in ("exchange", "market"):
+                    col = row[0]
+        except Exception:
+            pass
+        finally:
+            conn.close()
+    _trades_venue_column_cache[user_num] = col
+    return col
+
+
 def add_new_active_trade(trade_id: int, ticket_id: str) -> bool:
     """
     Add a new trade to the active trades database when trade_manager confirms it as open.
@@ -773,11 +1122,12 @@ def add_new_active_trade(trade_id: int, ticket_id: str) -> bool:
         # Get the trade data from PostgreSQL
         conn = get_trades_db_connection()
         cursor = conn.cursor()
+        vcol = trades_venue_sql_column(ctx_user())
         cursor.execute(f"""
             SELECT id, ticket_id, date, time, strike, side, buy_price, position,
-                   contract, ticker, symbol, market, trade_strategy, symbol_open,
+                   contract, ticker, symbol, {vcol}, trade_strategy, symbol_open,
                    momentum, prob, fees, diff
-            FROM users.trades_{USER_NUMBER} 
+            FROM users.trades_{ctx_user()} 
             WHERE id = %s AND status = 'open'
         """, (trade_id,))
         
@@ -790,7 +1140,7 @@ def add_new_active_trade(trade_id: int, ticket_id: str) -> bool:
             
         # Unpack the row data
         (db_id, ticket_id, date, time, strike, side, buy_price, position,
-         contract, ticker, symbol, market, trade_strategy, symbol_open,
+         contract, ticker, symbol, exchange, trade_strategy, symbol_open,
          momentum, prob, fees, diff) = row
         
         # Insert into active trades database
@@ -811,18 +1161,35 @@ def add_new_active_trade(trade_id: int, ticket_id: str) -> bool:
             if existing[1] == 'pending':
                 conn.close()
                 return confirm_pending_trade(trade_id, ticket_id)
+            if existing[1] == 'closing':
+                conn.close()
+                log_debug(f"Trade {trade_id} already in closing state in pool (skip insert)")
+                return True
 
-        cursor.execute(f"""
-            INSERT INTO users.{active_trades_table} (
+        if ATS_UNIFIED_15M:
+            cursor.execute(f"""
+                INSERT INTO users.{active_trades_table} (
+                    monitor_id, trade_id, ticket_id, date, time, strike, side, buy_price, position,
+                    contract, ticker, symbol, exchange, trade_strategy, symbol_open,
+                    momentum, prob, fees, diff, high_price, low_price
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                ctx_mid(), trade_id, ticket_id, date, time, strike, side, buy_price, position,
+                contract, ticker, symbol, exchange, trade_strategy, symbol_open,
+                momentum, prob, fees, diff, buy_price, buy_price
+            ))
+        else:
+            cursor.execute(f"""
+                INSERT INTO users.{active_trades_table} (
+                    trade_id, ticket_id, date, time, strike, side, buy_price, position,
+                    contract, ticker, symbol, exchange, trade_strategy, symbol_open,
+                    momentum, prob, fees, diff, high_price, low_price
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
                 trade_id, ticket_id, date, time, strike, side, buy_price, position,
-                contract, ticker, symbol, market, trade_strategy, symbol_open,
-                momentum, prob, fees, diff, high_price, low_price
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (
-            trade_id, ticket_id, date, time, strike, side, buy_price, position,
-            contract, ticker, symbol, market, trade_strategy, symbol_open,
-            momentum, prob, fees, diff, buy_price, buy_price
-        ))
+                contract, ticker, symbol, exchange, trade_strategy, symbol_open,
+                momentum, prob, fees, diff, buy_price, buy_price
+            ))
         
         conn.commit()
         conn.close()
@@ -845,7 +1212,7 @@ def add_new_active_trade(trade_id: int, ticket_id: str) -> bool:
         log(f"   Symbol Open: ${symbol_open}")
         log(f"   Momentum: {momentum}")
 
-        log(f"   Market: {market}")
+        log(f"   Exchange: {exchange}")
         log(f"   Symbol: {symbol}")
         log(f"   ========================================")
         
@@ -855,16 +1222,7 @@ def add_new_active_trade(trade_id: int, ticket_id: str) -> bool:
         # Broadcast active trades change
         broadcast_active_trades_change()
         
-        # Start monitoring loop if this is the first active trade
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        active_trades_table = get_monitor_active_trades_table()
-        cursor.execute(f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE status = 'active'")
-        active_count = cursor.fetchone()[0]
-        conn.close()
-        
-        if active_count == 1:  # This is the first active trade
-            start_monitoring_loop()
+        start_monitoring_loop()
         
         return True
         
@@ -887,11 +1245,12 @@ def add_pending_trade(trade_id: int, ticket_id: str) -> bool:
         # Get the trade data from trades.db
         conn = get_trades_db_connection()
         cursor = conn.cursor()
+        vcol = trades_venue_sql_column(ctx_user())
         cursor.execute(f"""
             SELECT id, ticket_id, date, time, strike, side, buy_price, position,
-                   contract, ticker, symbol, market, trade_strategy, symbol_open,
+                   contract, ticker, symbol, {vcol}, trade_strategy, symbol_open,
                    momentum, prob, fees, diff
-            FROM users.trades_{USER_NUMBER} 
+            FROM users.trades_{ctx_user()} 
             WHERE id = %s AND status = 'pending'
         """, (trade_id,))
         
@@ -904,24 +1263,37 @@ def add_pending_trade(trade_id: int, ticket_id: str) -> bool:
             
         # Unpack the row data
         (db_id, ticket_id, date, time, strike, side, buy_price, position,
-         contract, ticker, symbol, market, trade_strategy, symbol_open,
+         contract, ticker, symbol, exchange, trade_strategy, symbol_open,
          momentum, prob, fees, diff) = row
         
         # Insert into active trades database with 'pending' status
         conn = get_db_connection()
         cursor = conn.cursor()
         active_trades_table = get_monitor_active_trades_table()
-        cursor.execute(f"""
-            INSERT INTO users.{active_trades_table} (
+        if ATS_UNIFIED_15M:
+            cursor.execute(f"""
+                INSERT INTO users.{active_trades_table} (
+                    monitor_id, trade_id, ticket_id, date, time, strike, side, buy_price, position,
+                    contract, ticker, symbol, exchange, trade_strategy, symbol_open,
+                    momentum, prob, fees, diff, status
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+            """, (
+                ctx_mid(), trade_id, ticket_id, date, time, strike, side, buy_price, position,
+                contract, ticker, symbol, exchange, trade_strategy, symbol_open,
+                momentum, prob, fees, diff
+            ))
+        else:
+            cursor.execute(f"""
+                INSERT INTO users.{active_trades_table} (
+                    trade_id, ticket_id, date, time, strike, side, buy_price, position,
+                    contract, ticker, symbol, exchange, trade_strategy, symbol_open,
+                    momentum, prob, fees, diff, status
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+            """, (
                 trade_id, ticket_id, date, time, strike, side, buy_price, position,
-                contract, ticker, symbol, market, trade_strategy, symbol_open,
-                momentum, prob, fees, diff, status
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
-        """, (
-            trade_id, ticket_id, date, time, strike, side, buy_price, position,
-            contract, ticker, symbol, market, trade_strategy, symbol_open,
-            momentum, prob, fees, diff
-        ))
+                contract, ticker, symbol, exchange, trade_strategy, symbol_open,
+                momentum, prob, fees, diff
+            ))
         
         conn.commit()
         conn.close()
@@ -937,7 +1309,7 @@ def add_pending_trade(trade_id: int, ticket_id: str) -> bool:
         log(f"   Strategy: {trade_strategy}")
         log(f"   Entry Time: {date} {time}")
         log(f"   Prob: {prob}%")
-        log(f"   Market: {market}")
+        log(f"   Exchange: {exchange}")
         log(f"   Symbol: {symbol}")
         log(f"   ========================================")
         
@@ -947,16 +1319,7 @@ def add_pending_trade(trade_id: int, ticket_id: str) -> bool:
         # Broadcast active trades change
         broadcast_active_trades_change()
         
-        # Start monitoring loop if this is the first active trade
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        active_trades_table = get_monitor_active_trades_table()
-        cursor.execute(f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE status = 'active'")
-        active_count = cursor.fetchone()[0]
-        conn.close()
-        
-        if active_count == 1:  # This is the first active trade
-            start_monitoring_loop()
+        start_monitoring_loop()
         
         return True
         
@@ -979,11 +1342,12 @@ def confirm_pending_trade(trade_id: int, ticket_id: str) -> bool:
         # Get the updated trade data from PostgreSQL
         conn = get_trades_db_connection()
         cursor = conn.cursor()
+        vcol = trades_venue_sql_column(ctx_user())
         cursor.execute(f"""
             SELECT id, ticket_id, date, time, strike, side, buy_price, position,
-                   contract, ticker, symbol, market, trade_strategy, symbol_open,
+                   contract, ticker, symbol, {vcol}, trade_strategy, symbol_open,
                    momentum, prob, fees, diff
-            FROM users.trades_{USER_NUMBER} 
+            FROM users.trades_{ctx_user()} 
             WHERE id = %s AND status = 'open'
         """, (trade_id,))
         
@@ -996,25 +1360,64 @@ def confirm_pending_trade(trade_id: int, ticket_id: str) -> bool:
             
         # Unpack the row data
         (db_id, ticket_id, date, time, strike, side, buy_price, position,
-         contract, ticker, symbol, market, trade_strategy, symbol_open,
+         contract, ticker, symbol, exchange, trade_strategy, symbol_open,
          momentum, prob, fees, diff) = row
         
-        # Update the pending trade in active_trades.db to 'active' status
-        # Initialize high_price and low_price to buy_price when trade becomes active
+        # Update the pending row to active and refresh from trades (incl. exchange — trades.market → exchange).
         conn = get_db_connection()
         cursor = conn.cursor()
         active_trades_table = get_monitor_active_trades_table()
-        cursor.execute(f"""
+        scope_sql, scope_params = _active_trades_monitor_scope_sql()
+        q = f"""
             UPDATE users.{active_trades_table}
             SET status = 'active',
+                ticket_id = %s,
+                date = %s,
+                time = %s,
+                strike = %s,
+                side = %s,
                 buy_price = %s,
                 position = %s,
+                contract = %s,
+                ticker = %s,
+                symbol = %s,
+                exchange = %s,
+                trade_strategy = %s,
+                symbol_open = %s,
+                momentum = %s,
+                prob = %s,
                 fees = %s,
                 diff = %s,
                 high_price = %s,
                 low_price = %s
-            WHERE trade_id = %s AND status = 'pending'
-        """, (buy_price, position, fees, diff, buy_price, buy_price, trade_id))
+            WHERE trade_id = %s AND status = 'pending'{scope_sql}
+        """
+        cursor.execute(
+            q,
+            (
+                ticket_id,
+                date,
+                time,
+                strike,
+                side,
+                buy_price,
+                position,
+                contract,
+                ticker,
+                symbol,
+                exchange,
+                trade_strategy,
+                symbol_open,
+                momentum,
+                prob,
+                fees,
+                diff,
+                buy_price,
+                buy_price,
+                trade_id,
+            )
+            + scope_params,
+        )
         
         if cursor.rowcount == 0:
             log(f"No pending trade found in active_trades.db for trade_id {trade_id}")
@@ -1041,7 +1444,7 @@ def confirm_pending_trade(trade_id: int, ticket_id: str) -> bool:
         log(f"   Fees: ${fees}")
         log(f"   Symbol Open: ${symbol_open}")
         log(f"   Momentum: {momentum}")
-        log(f"   Market: {market}")
+        log(f"   Exchange: {exchange}")
         log(f"   Symbol: {symbol}")
         log(f"   ========================================")
         
@@ -1051,15 +1454,7 @@ def confirm_pending_trade(trade_id: int, ticket_id: str) -> bool:
         # Broadcast active trades change
         broadcast_active_trades_change()
         
-        # Start monitoring loop if this is the first active trade
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT COUNT(*) FROM users.active_trades_{USER_NUMBER}_{MONITOR_ID} WHERE status = 'active'")
-        active_count = cursor.fetchone()[0]
-        conn.close()
-        
-        if active_count == 1:  # This is the first active trade
-            start_monitoring_loop()
+        start_monitoring_loop()
         
         return True
         
@@ -1212,6 +1607,129 @@ def remove_closed_trade(trade_id: int) -> bool:
         log(f"❌ Error removing closed trade {trade_id}: {e}")
         return False
 
+
+def _users_trade_status_for_stale_flush(trade_id: int) -> Optional[str]:
+    """Best-effort status from users.trades_* for traceability."""
+    try:
+        conn = get_trades_db_connection()
+        if not conn:
+            return None
+        u = ctx_user()
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT status FROM users.trades_{u} WHERE id = %s",
+                (trade_id,),
+            )
+            row = cur.fetchone()
+        conn.close()
+        if row and row[0] is not None:
+            return str(row[0])
+        return None
+    except Exception as e:
+        log_debug(f"[STALE FLUSH] users.trades lookup failed trade_id={trade_id}: {e}")
+        return None
+
+
+def flush_stale_active_trades_past_contract_settlement() -> None:
+    """
+    DELETE active_trades rows that are still present but Kalshi settlement was more than
+    STALE_ACTIVE_TRADE_FLUSH_AFTER_SETTLEMENT ago. Covers lapses in trade_manager expiry or
+    price feeds without posting close orders (those are suppressed earlier).
+
+    Logs one INFO line per removed row with identifiers and users.trades status for postmortems.
+    """
+    est_now = datetime.now(ZoneInfo("America/New_York"))
+    min_past_settlement = STALE_ACTIVE_TRADE_FLUSH_AFTER_SETTLEMENT
+    tbl = get_monitor_active_trades_table()
+
+    conn = get_postgresql_connection()
+    if not conn:
+        log_debug("[STALE FLUSH] skipped — no PostgreSQL connection")
+        return
+    try:
+        if ATS_UNIFIED_15M:
+            q = f"""
+                SELECT id, trade_id, ticket_id, monitor_id, ticker, status, contract, symbol,
+                       trade_strategy, strike, side, created_at, last_updated
+                FROM users.{tbl}
+                WHERE status IN ('active', 'pending', 'closing')
+            """
+        else:
+            q = f"""
+                SELECT id, trade_id, ticket_id, ticker, status, contract, symbol,
+                       trade_strategy, strike, side, created_at, last_updated
+                FROM users.{tbl}
+                WHERE status IN ('active', 'pending', 'closing')
+            """
+        with conn.cursor() as cur:
+            cur.execute(q)
+            colnames = [d[0] for d in cur.description]
+            fetched = cur.fetchall()
+    except Exception as e:
+        log(f"[STALE FLUSH] failed to list rows from users.{tbl}: {e}")
+        conn.close()
+        return
+    conn.close()
+
+    to_delete: List[Any] = []
+    for row in fetched:
+        r = dict(zip(colnames, row))
+        ticker = r.get("ticker")
+        end = kalshi_contract_settlement_end_est(ticker if isinstance(ticker, str) else None)
+        if end is None:
+            continue
+        if est_now <= end + min_past_settlement:
+            continue
+        trade_id = r.get("trade_id")
+        main_st = _users_trade_status_for_stale_flush(int(trade_id)) if trade_id is not None else None
+        mon_disp = r.get("monitor_id") if ATS_UNIFIED_15M else ctx_mid()
+        age_sec = (est_now - end).total_seconds()
+        log(
+            "[STALE FLUSH] scheduled DELETE — "
+            f"active_trades_table={tbl} row_id={r.get('id')} trade_id={trade_id} "
+            f"monitor_id={mon_disp!r} ticket_id={r.get('ticket_id')!r} "
+            f"active_row_status={r.get('status')!r} ticker={ticker!r} "
+            f"contract={r.get('contract')!r} symbol={r.get('symbol')!r} "
+            f"trade_strategy={r.get('trade_strategy')!r} strike={r.get('strike')!r} side={r.get('side')!r} "
+            f"settlement_end_est={end.isoformat()} "
+            f"seconds_past_settlement={age_sec:.0f} "
+            f"required_past_settlement_sec={min_past_settlement.total_seconds():.0f} "
+            f"users_trades_status={main_st!r} "
+            f"created_at={r.get('created_at')} last_updated={r.get('last_updated')}"
+        )
+        row_pk = r.get("id")
+        if row_pk is not None:
+            to_delete.append(row_pk)
+
+    if not to_delete:
+        return
+
+    conn = get_postgresql_connection()
+    if not conn:
+        return
+    try:
+        removed = 0
+        with conn.cursor() as cur:
+            for row_pk in to_delete:
+                cur.execute(f"DELETE FROM users.{tbl} WHERE id = %s", (row_pk,))
+                removed += cur.rowcount
+        conn.commit()
+        log(
+            f"[STALE FLUSH] completed — table={tbl} deleted_rows={removed} "
+            f"(cutoff = settlement_end + {min_past_settlement!r} America/New_York)"
+        )
+    except Exception as e:
+        log(f"[STALE FLUSH] DELETE batch failed for users.{tbl}: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        conn.close()
+
+    invalidate_active_trades_cache()
+    broadcast_active_trades_change()
+
 def update_trade_status_to_closing(trade_id: int) -> bool:
     """
     Update a trade's status to 'closing' in active_trades.db.
@@ -1263,8 +1781,8 @@ def update_trade_status_to_closing(trade_id: int) -> bool:
         log(f"❌ Error updating trade status to closing {trade_id}: {e}")
         return False
 
-def get_current_symbol_price(symbol: str = None) -> Optional[float]:
-    """Get the current price for the specified symbol from the PostgreSQL live_data schema"""
+def get_current_symbol_price(symbol: str = None) -> Optional[Decimal]:
+    """Latest spot from live_data.live_price_log_1s_<symbol> as Decimal (full DB precision)."""
     try:
         # Use current monitor symbol if no symbol specified
         if symbol is None:
@@ -1286,7 +1804,8 @@ def get_current_symbol_price(symbol: str = None) -> Optional[float]:
         conn.close()
         
         if result and result[0] is not None:
-            price = float(result[0])
+            raw = result[0]
+            price = raw if isinstance(raw, Decimal) else Decimal(str(raw))
             # Only log price every 30 seconds to reduce noise
             current_time = time.time()
             if not hasattr(get_current_symbol_price, 'last_log_time') or current_time - get_current_symbol_price.last_log_time > 30:
@@ -1303,8 +1822,9 @@ def get_current_symbol_price(symbol: str = None) -> Optional[float]:
 
 def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Optional[Dict[str, Any]]:
     """Get the latest Kalshi market snapshot data from PostgreSQL.
-    Uses monitor's symbol and market so 15m monitors read from market_kalshi_15m_* (required for
-    closing price lookup and auto-stop); hourly monitors read from market_kalshi_hourly_*."""
+    15m: reads ``live_data.market_kalshi_15m`` (unified table filled by ``market_watchdog.py --market 15m``).
+    Legacy per-symbol ``market_kalshi_15m_btc`` tables are not updated by that pipeline and are ignored.
+    Hourly: ``live_data.market_kalshi_hourly_{symbol}``."""
     try:
         # Use current monitor symbol and market if not specified
         if symbol is None or market is None:
@@ -1316,53 +1836,73 @@ def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Option
         market = (market or "hourly").strip().lower()
         if market not in ("hourly", "15m"):
             market = "hourly"
-        table_suffix = f"15m_{symbol.lower()}" if market == "15m" else f"hourly_{symbol.lower()}"
-        table_name = f"market_kalshi_{table_suffix}"
-            
+        sym_u = (symbol or "BTC").strip().upper()
+
         conn = get_postgresql_connection()
         if not conn:
             log("⚠️ Failed to connect to PostgreSQL")
             return None
-            
+
         cursor = conn.cursor()
-        
-        # Get market data from PostgreSQL (hourly or 15m table per monitor).
-        # Use volume_fp / volume_24h_fp (fixed-point migration); legacy "volume" was removed.
-        cursor.execute(f"""
-            SELECT 
-                market_ticker,
-                yes_ask,
-                no_ask,
-                yes_ask_dollars,
-                no_ask_dollars,
-                volume_fp,
-                event_ticker,
-                strike
-            FROM live_data.{table_name}
-            ORDER BY updated_at DESC
-        """)
-        
+
+        if market == "15m":
+            cursor.execute(
+                """
+                SELECT
+                    market_ticker,
+                    yes_ask,
+                    no_ask,
+                    yes_ask_dollars,
+                    no_ask_dollars,
+                    volume_fp,
+                    event_ticker,
+                    strike
+                FROM live_data.market_kalshi_15m
+                WHERE LOWER(TRIM(exchange::text)) = 'kalshi'
+                  AND UPPER(TRIM(symbol::text)) = %s
+                ORDER BY updated_at DESC
+                """,
+                (sym_u,),
+            )
+        else:
+            table_name = f"market_kalshi_hourly_{(symbol or 'BTC').lower()}"
+            cursor.execute(
+                f"""
+                SELECT
+                    market_ticker,
+                    yes_ask,
+                    no_ask,
+                    yes_ask_dollars,
+                    no_ask_dollars,
+                    volume_fp,
+                    event_ticker,
+                    strike
+                FROM live_data.{table_name}
+                ORDER BY updated_at DESC
+                """
+            )
+
         markets_data = cursor.fetchall()
         conn.close()
-        
+
         if not markets_data:
             log("⚠️ No Kalshi market data found in PostgreSQL")
             return None
-        
+
         # Convert to the same format as the JSON file (volume_fp -> "volume" for compatibility)
         markets = []
         for row in markets_data:
-            market = {
-                "ticker": row[0],  # market_ticker
+            mk = {
+                "ticker": row[0],
                 "yes_ask": row[1],
                 "no_ask": row[2],
                 "yes_ask_dollars": row[3],
                 "no_ask_dollars": row[4],
-                "volume": row[5],  # volume_fp
+                "volume": row[5],
                 "event_ticker": row[6],
-                "strike": row[7]
+                "strike": row[7],
             }
-            markets.append(market)
+            markets.append(mk)
         
         # Return in the same format as the JSON file
         return {
@@ -1375,8 +1915,17 @@ def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Option
         return None
 
 
-_kalshi_snapshot_cache: Dict[str, Any] = {"t": 0.0, "data": None}
+# Per (symbol, market) so unified 15m does not reuse hourly/BTC stale rows for ETH 15m, etc.
+_kalshi_snapshot_cache: Dict[str, Dict[str, Any]] = {}
 KALSHI_SNAPSHOT_STALE_MAX_SEC = 120.0
+
+
+def _kalshi_snapshot_cache_key(symbol: str, market: str) -> str:
+    s = (symbol or "BTC").strip().lower()
+    m = (market or "hourly").strip().lower()
+    if m not in ("hourly", "15m"):
+        m = "hourly"
+    return f"{s}:{m}"
 
 
 def get_kalshi_market_snapshot_cached(
@@ -1384,14 +1933,27 @@ def get_kalshi_market_snapshot_cached(
 ) -> Optional[Dict[str, Any]]:
     """Like get_kalshi_market_snapshot but reuse the last good snapshot for up to KALSHI_SNAPSHOT_STALE_MAX_SEC."""
     global _kalshi_snapshot_cache
+    if symbol is None or market is None:
+        sym, mkt = get_current_monitor_symbol_and_market()
+        if symbol is None:
+            symbol = sym
+        if market is None:
+            market = mkt or "hourly"
+    market = (market or "hourly").strip().lower()
+    if market not in ("hourly", "15m"):
+        market = "hourly"
+    symbol = (symbol or "BTC").strip().upper()
+    key = _kalshi_snapshot_cache_key(symbol, market)
+
     fresh = get_kalshi_market_snapshot(symbol, market)
     if fresh and fresh.get("markets"):
-        _kalshi_snapshot_cache = {"t": time.time(), "data": fresh}
+        _kalshi_snapshot_cache[key] = {"t": time.time(), "data": fresh}
         return fresh
-    age = time.time() - float(_kalshi_snapshot_cache.get("t") or 0)
-    stale = _kalshi_snapshot_cache.get("data")
+    entry = _kalshi_snapshot_cache.get(key) or {}
+    age = time.time() - float(entry.get("t") or 0)
+    stale = entry.get("data")
     if stale and stale.get("markets") and age < KALSHI_SNAPSHOT_STALE_MAX_SEC:
-        log_debug(f"Using stale Kalshi snapshot (age {age:.1f}s)")
+        log_debug(f"Using stale Kalshi snapshot ({key}, age {age:.1f}s)")
         return stale
     return fresh
 
@@ -1452,63 +2014,150 @@ def get_current_closing_price_for_trade(
         log(f"Error getting closing price for trade {trade_ticker}: {e}")
         return None
 
+
+def _get_lookup_probability_calculator(symbol_upper: str):
+    """Strike-table generator's LookupProbabilityCalculator (analytics.probability_lookup_*_master_*)."""
+    key = (symbol_upper or "BTC").strip().lower()
+    if key in _lookup_probability_calculator_failed:
+        return None
+    cached = _lookup_probability_calculator_cache.get(key)
+    if cached is not None:
+        return cached
+    try:
+        from backend.strike_table_generator import LookupProbabilityCalculator
+
+        calc = LookupProbabilityCalculator(symbol_upper or "BTC")
+        _lookup_probability_calculator_cache[key] = calc
+        return calc
+    except Exception as e:
+        log_debug(f"LookupProbabilityCalculator init failed for {symbol_upper}: {e}")
+        _lookup_probability_calculator_failed.add(key)
+        return None
+
+
 def get_current_probability(strike: float, current_price: float, ttc_seconds: float, momentum_score: Optional[float] = None, symbol: str = None) -> Optional[float]:
     """
-    Get the probability for a strike from the PostgreSQL strike table.
-    Fallback to the old API if PostgreSQL data is not available.
+    Model probability for auto-stop: same path as strike_table_generator — analytics master
+    probability lookup tables (TTC, buffer from live spot vs strike, momentum bucket).
+
+    Fallback: read probability_* from live_data.strike_table_* if lookup init/query fails.
     """
+    sym, mkt = _get_symbol_and_market_for_strike(symbol)
+    sym_u = sym or "BTC"
+    cp = float(current_price)
+    st = float(strike)
+    ttc_i = int(round(float(ttc_seconds)))
+
+    calc = _get_lookup_probability_calculator(sym_u)
+    if calc is not None:
+        try:
+            from backend.strike_table_generator import round_price_buffer, uses_high_precision_price
+
+            raw_buf = abs(cp - st)
+            buffer = round_price_buffer(raw_buf) if uses_high_precision_price(sym_u) else float(raw_buf)
+            mb = int(round(float(momentum_score))) if momentum_score is not None else 0
+            pos_prob, neg_prob = calc.get_probability(ttc_i, float(buffer), mb)
+            if pos_prob is not None and neg_prob is not None:
+                return float(pos_prob) if st < cp else float(neg_prob)
+        except Exception as e:
+            log_debug(f"Master lookup probability failed ({sym_u}): {e}")
+
     try:
-        sym, mkt = _get_symbol_and_market_for_strike(symbol)
         table_name = get_strike_table_name(sym, mkt)
         conn = get_postgresql_connection()
         if not conn:
-            log("⚠️ Failed to connect to PostgreSQL for probability lookup")
+            log("⚠️ Failed to connect to PostgreSQL for strike-table probability fallback")
             return None
-            
+
         cursor = conn.cursor()
-        
-        # Get probability from PostgreSQL strike table (hourly: probability_hourly; 15m: probability_15m)
+
         prob_col = "probability_15m" if mkt == "15m" else "probability_hourly"
-        cursor.execute(f"""
+        if prob_col not in ("probability_15m", "probability_hourly"):
+            prob_col = "probability_hourly"
+
+        strike_key = int(round(float(strike)))
+
+        cursor.execute(
+            f"""
             SELECT {prob_col}
             FROM live_data.{table_name}
-            WHERE strike = %s
+            WHERE strike = %s AND {prob_col} IS NOT NULL
             ORDER BY timestamp DESC
             LIMIT 1
-        """, (strike,))
-        
+            """,
+            (strike_key,),
+        )
         result = cursor.fetchone()
+
+        if not result or result[0] is None:
+            cursor.execute(
+                f"""
+                SELECT t.{prob_col}
+                FROM live_data.{table_name} t
+                INNER JOIN (
+                    SELECT MAX(timestamp) AS ts FROM live_data.{table_name}
+                ) u ON t.timestamp = u.ts
+                WHERE t.{prob_col} IS NOT NULL
+                ORDER BY ABS(t.strike - %s)
+                LIMIT 1
+                """,
+                (strike_key,),
+            )
+            result = cursor.fetchone()
+            if result and result[0] is not None:
+                log_debug(
+                    f"Probability fallback: nearest strike in latest batch for {sym}/{mkt} (wanted {strike_key})"
+                )
+
         conn.close()
-        
+
         if result and result[0] is not None:
             return float(result[0])
-        else:
-            log(f"⚠️ No probability found in PostgreSQL for strike {strike}")
-            
+        log_debug(f"No strike-table probability for strike {strike_key} ({table_name})")
+
     except Exception as e:
-        log(f"⚠️ Probability PostgreSQL exception: {e}")
-    
-    # Fallback to old API if PostgreSQL fails
-    try:
-        host = get_host()
-        port = get_port("main_app")
-        url = f"http://{host}:{port}/api/strike_probabilities"
-        payload = {
-            "current_price": current_price,
-            "ttc_seconds": ttc_seconds,
-            "strikes": [strike],
-        }
-        if momentum_score is not None:
-            payload["momentum_score"] = momentum_score
-        resp = requests.post(url, json=payload, timeout=1.5)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("status") == "ok" and data.get("probabilities"):
-                return data["probabilities"][0]["prob_within"]
-        log(f"⚠️ Probability API error: {resp.status_code} {resp.text}")
-    except Exception as e:
-        log(f"⚠️ Probability API exception: {e}")
+        log(f"⚠️ Strike-table probability fallback exception: {e}")
     return None
+
+def _iter_unified_15m_monitor_bindings_for_monitoring():
+    """
+    Monitors to tick in unified ATS: active 15m rows in monitor_list, plus any monitor_id
+    that still has an active row in the pool (reconcile may enroll paused monitors).
+    """
+    from backend.core.unified_15m_monitors import iter_active_15m_monitor_bindings
+
+    seen = set()
+    out: List[Tuple[str, str]] = []
+    for u, m in iter_active_15m_monitor_bindings():
+        t = (u, m)
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    u = USER_NUMBER
+    conn = get_postgresql_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT DISTINCT monitor_id FROM users.active_trades_{u}_15m
+                    WHERE status = 'active'
+                    """
+                )
+                for (mid,) in cur.fetchall():
+                    if mid is None:
+                        continue
+                    m = str(mid).strip()
+                    t = (u, m)
+                    if t not in seen:
+                        seen.add(t)
+                        out.append(t)
+        except Exception as e:
+            log_debug(f"monitor bindings from pool: {e}")
+        finally:
+            conn.close()
+    return out
+
 
 def update_active_trade_monitoring_data():
     """
@@ -1517,14 +2166,15 @@ def update_active_trade_monitoring_data():
     - Current market ask prices from Kalshi snapshot
     - Buffer from strike (absolute value, negative when crossed)
     - Time since entry
-    - Current probability (from probability API)
+    - Current probability from master prob lookup tables (same as strike_table_generator), then strike_table_* fallback, with buffer-based flip
     """
     try:
         # Get current symbol price for each trade
         # Note: We'll get the price per trade since each trade might have a different symbol
         
-        # Get Kalshi market snapshot (fresh or recently cached — do not abort entire tick on a blip)
-        snapshot_data = get_kalshi_market_snapshot_cached()
+        # Snapshot for *this* monitor binding (unified 15m rotates ctx per monitor).
+        sym, mkt = get_current_monitor_symbol_and_market()
+        snapshot_data = get_kalshi_market_snapshot_cached(symbol=sym, market=mkt)
         if not snapshot_data:
             snapshot_data = {"markets": [], "timestamp": None}
         elif "markets" not in snapshot_data:
@@ -1536,11 +2186,12 @@ def update_active_trade_monitoring_data():
         conn = get_db_connection()
         cursor = conn.cursor()
         active_trades_table = get_monitor_active_trades_table()
+        scope_sql, scope_params = _active_trades_monitor_scope_sql()
         cursor.execute(f"""
             SELECT id, trade_id, buy_price, prob, time, date, strike, side, momentum, ticker, symbol, high_price, low_price, current_close_price
             FROM users.{active_trades_table} 
-            WHERE status = 'active'
-        """)
+            WHERE status = 'active'{scope_sql}
+        """, scope_params)
         active_trades = cursor.fetchall()
         conn.close()
         
@@ -1549,9 +2200,13 @@ def update_active_trade_monitoring_data():
         
         for (active_id, trade_id, buy_price, prob, time_str, date_str, strike, side, momentum, ticker, symbol, current_high_price, current_low_price, current_close_price_db) in active_trades:
             try:
-                # Parse strike price - handle currency formatting
+                # Parse strike price - handle currency formatting (Decimal: match spot precision)
                 strike_clean = str(strike).replace('$', '').replace(',', '')
-                strike_price = float(strike_clean)
+                try:
+                    strike_price = Decimal(strike_clean)
+                except InvalidOperation:
+                    log(f"⚠️ Invalid strike for trade {trade_id}: {strike!r}")
+                    continue
                 
                 # Get current symbol price for this specific trade
                 current_symbol_price = get_current_symbol_price(symbol)
@@ -1607,32 +2262,30 @@ def update_active_trade_monitoring_data():
                 
                 # Get momentum score if available
                 momentum_score = float(momentum) if momentum is not None else None
-                
-                # Get current probability from API using the current symbol price
-                current_probability = get_current_probability(strike_price, current_symbol_price, ttc_seconds, momentum_score, symbol)
-                
-                # Apply probability logic based on buffer
-                # When buffer is positive: use probability as-is (direct passthrough)
-                # When buffer is negative: subtract probability from 100
+
+                buy_price_float = float(buy_price) if hasattr(buy_price, '__float__') else buy_price
+
+                # Model probability: master prob lookup tables (same as strike_table_generator); strike_table_* fallback only
+                current_probability = get_current_probability(
+                    float(strike_price),
+                    float(current_symbol_price),
+                    ttc_seconds,
+                    momentum_score,
+                    symbol,
+                )
                 if current_probability is not None:
                     if buffer_from_strike < 0:
-                        # Negative buffer: subtract probability from 100
                         current_probability = 100 - current_probability
-                
+
                 # Calculate PnL: 1 - current_close_price - buy_price
                 # For YES trades: PnL = 1 - current_close_price - buy_price
                 # For NO trades: PnL = 1 - current_close_price - buy_price (same formula)
-                # Convert buy_price to float if it's a Decimal
-                buy_price_float = float(buy_price) if hasattr(buy_price, '__float__') else buy_price
                 pnl = 1 - current_market_price - buy_price_float
                 pnl_formatted = f"{pnl:.2f}"  # Format as "0.15" or "-0.08"
-                
-                # Convert current_market_price (sell price) to position value for high/low tracking
-                # current_market_price is the opposite side's ask (what you can sell for)
-                # Position value = 1 - sell_price (the value of the position you own)
-                # Example: If you bought YES at $0.90 and sell price is $0.10, position value = $1.00 - $0.10 = $0.90
-                position_value = 1 - current_market_price
-                
+
+                # Position value from exit ask (high/low tracking)
+                position_value = 1.0 - float(current_market_price)
+
                 # Compare and determine new high_price and low_price
                 # If high_price or low_price is NULL (shouldn't happen for active trades, but handle gracefully),
                 # initialize to buy_price. Otherwise compare with position_value
@@ -1702,9 +2355,14 @@ def check_monitoring_failsafe():
             log("❌ FAILSAFE: No DB connection; skipping failsafe check (restart would not help)")
             return
         cursor = conn.cursor()
-        active_trades_table = get_monitor_active_trades_table()
-        cursor.execute(f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE status = 'active'")
-        active_count = cursor.fetchone()[0]
+        if ATS_UNIFIED_15M:
+            active_count = _count_active_trades_across_unified_15m_monitors()
+        else:
+            active_trades_table = get_monitor_active_trades_table()
+            cursor.execute(
+                f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE status = 'active'"
+            )
+            active_count = cursor.fetchone()[0]
         conn.close()
         
         # If there are active trades but no monitoring thread, restart it
@@ -1780,7 +2438,11 @@ def restart_active_trade_supervisor_process():
     try:
         from backend.util.paths import get_supervisorctl_path, get_supervisor_config_path
         
-        service_name = f"active_trade_supervisor_{MONITOR_IDENTIFIER}"
+        service_name = (
+            "active_trade_supervisor_15m"
+            if ATS_UNIFIED_15M
+            else f"active_trade_supervisor_{MONITOR_IDENTIFIER}"
+        )
         
         log(f"🔄 PROCESS RESTART: Restarting {service_name} via supervisorctl...")
         log(f"🚨 CRITICAL: Process restart initiated due to monitoring failure")
@@ -1869,268 +2531,296 @@ def start_monitoring_loop():
         
         try:
             while True:
-                # Check if there are still active trades
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                active_trades_table = get_monitor_active_trades_table()
-                cursor.execute(f"SELECT * FROM users.{active_trades_table} WHERE status = 'active'")
-                columns = [desc[0] for desc in cursor.description]
-                active_trades = [dict(zip(columns, row)) for row in cursor.fetchall()]
-                conn.close()
+                if ATS_UNIFIED_15M:
+                    _ats_monitors = _iter_unified_15m_monitor_bindings_for_monitoring()
+                else:
+                    _ats_monitors = [(USER_NUMBER, MONITOR_ID)]
+
+                _ats_round = False
+                for _ats_u, _ats_mid in _ats_monitors:
+                    with ats_monitor_bind(_ats_u, _ats_mid):
+                        # Check if there are still active trades
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        active_trades_table = get_monitor_active_trades_table()
+                        scope_sql, scope_params = _active_trades_monitor_scope_sql()
+                        cursor.execute(
+                            f"SELECT * FROM users.{active_trades_table} WHERE status = 'active'{scope_sql}",
+                            scope_params,
+                        )
+                        columns = [desc[0] for desc in cursor.description]
+                        active_trades = [dict(zip(columns, row)) for row in cursor.fetchall()]
+                        conn.close()
+
+                        if not active_trades:
+                            continue
+                        _ats_round = True
+
+                        # Update monitoring data
+                        update_active_trade_monitoring_data()
+
+                        # Refetch active_trades after update to get fresh current_probability values for auto-stop
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        active_trades_table = get_monitor_active_trades_table()
+                        scope_sql, scope_params = _active_trades_monitor_scope_sql()
+                        cursor.execute(
+                            f"SELECT * FROM users.{active_trades_table} WHERE status = 'active'{scope_sql}",
+                            scope_params,
+                        )
+                        columns = [desc[0] for desc in cursor.description]
+                        active_trades = [dict(zip(columns, row)) for row in cursor.fetchall()]
+                        conn.close()
+
+                        # Log monitoring status every 60 seconds
+                        current_time = time.time()
+                        if not hasattr(monitoring_worker, 'last_status_log') or current_time - monitoring_worker.last_status_log > 60:
+                            log_debug(f"MONITORING: Checking {len(active_trades)} active trades")
+                            monitoring_worker.last_status_log = current_time
                 
-                if not active_trades:
+                        # Add heartbeat log every 30 seconds to track monitoring health
+                        if not hasattr(monitoring_worker, 'last_heartbeat') or current_time - monitoring_worker.last_heartbeat > 30:
+                            log_debug(f"MONITORING HEARTBEAT: Monitoring loop healthy, {len(active_trades)} active trades")
+                            monitoring_worker.last_heartbeat = current_time
+                
+                        # Run failsafe check every 60 seconds
+                        if not hasattr(monitoring_worker, 'last_failsafe_check') or current_time - monitoring_worker.last_failsafe_check > 60:
+                            check_monitoring_failsafe()
+                            monitoring_worker.last_failsafe_check = current_time
+                
+                        # === AUTO STOP LOGIC ===
+                        auto_stop_enabled = is_auto_stop_enabled()
+                        if auto_stop_enabled:
+                            check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verification_pending_trades)
+                
+                        # === MOMENTUM SPIKE AUTO-STOPOUT LOGIC ===
+                        # Skip momentum spike logic for Momentum Scalp and Momentum Reversal monitors
+                        strategy = get_trade_strategy()
+                        if strategy != "Momentum Scalp" and strategy != "Momentum Reversal":
+                            # Get momentum spike settings from monitor's assigned strategy
+                            try:
+                                import psycopg2
+                                conn = get_postgresql_connection()
+                                with conn.cursor() as cursor:
+                                    # First get the strategy name for this monitor
+                                    cursor.execute(f"""
+                                        SELECT strategy FROM users.monitor_list_{ctx_user()} WHERE id = %s
+                                    """, (ctx_mid(),))
+                                    monitor_result = cursor.fetchone()
+                            
+                                    if monitor_result and monitor_result[0]:
+                                        strategy_name = monitor_result[0]
+                                
+                                        # Get momentum spike settings from the monitor
+                                        cursor.execute("""
+                                            SELECT momentum_spike_enabled, momentum_spike_threshold
+                                            FROM users.monitor_list_0001 WHERE id = %s
+                                        """, (ctx_mid(),))
+                                        result = cursor.fetchone()
+                                
+                                        if result:
+                                            momentum_spike_enabled = result[0]
+                                            momentum_spike_threshold = result[1]  # Use percentage directly
+                                        else:
+                                            momentum_spike_enabled = True
+                                            momentum_spike_threshold = 35  # Use percentage directly
+                                            log_debug(f"No strategy found: {strategy_name}, using defaults")
+                                    else:
+                                        momentum_spike_enabled = True
+                                        momentum_spike_threshold = 35  # Use percentage directly
+                                        log_debug(f"No strategy assigned to monitor {ctx_mid()}, using defaults")
+                        
+                                conn.close()
+                        
+                                # Only proceed if momentum spike is enabled
+                                if momentum_spike_enabled:
+                                    # Get verification settings (same as probability-based auto stop)
+                                    verification_enabled = get_verification_period_enabled()
+                                    verification_seconds = get_verification_period_seconds()
+                                    current_time = time.time()
+                            
+                                    # Get current momentum (use 5s average from live price log to smooth noise)
+                                    current_momentum = get_momentum_5s_avg_from_postgresql(get_current_monitor_symbol())
+                            
+                                    if current_momentum is not None:
+                                        # Refresh active trades
+                                        conn = get_db_connection()
+                                        cursor = conn.cursor()
+                                        active_trades_table = get_monitor_active_trades_table()
+                                        scope_sql, scope_params = _active_trades_monitor_scope_sql()
+                                        cursor.execute(
+                                            f"SELECT * FROM users.{active_trades_table} WHERE status = 'active'{scope_sql}",
+                                            scope_params,
+                                        )
+                                        columns = [desc[0] for desc in cursor.description]
+                                        refreshed_active_trades = [dict(zip(columns, row)) for row in cursor.fetchall()]
+                                        conn.close()
+                                
+                                        # Determine which trades are affected by current momentum
+                                        positive_spike = current_momentum >= momentum_spike_threshold
+                                        negative_spike = current_momentum <= -momentum_spike_threshold
+                                
+                                        if positive_spike:  # Positive spike - close all NO trades
+                                            # Filter eligible NO trades
+                                            eligible_trades = [t for t in refreshed_active_trades 
+                                                               if t.get('status') == 'active' 
+                                                               and t.get('side', '').upper() in ['N', 'NO']
+                                                               and t.get('trade_id') not in auto_stop_triggered_trades]
+                                    
+                                            successful_closes = 0
+                                            for trade in eligible_trades:
+                                                trade_id = trade.get('trade_id')
+                                        
+                                                # Check if trade is in verification period
+                                                if trade_id in verification_pending_trades:
+                                                    trigger_time, verification_end_time = verification_pending_trades[trade_id]
+                                            
+                                                    # Check if verification period has ended
+                                                    if current_time >= verification_end_time:
+                                                        # Verification period ended - re-check current momentum to verify spike conditions still met
+                                                        current_momentum_after_verification = get_momentum_5s_avg_from_postgresql(get_current_monitor_symbol())
+                                                        if current_momentum_after_verification is not None:
+                                                            spike_still_active = current_momentum_after_verification >= momentum_spike_threshold
+                                                            if spike_still_active:
+                                                                # Conditions still met after verification - trigger auto-stop
+                                                                log_debug(f"[MOMENTUM SPIKE] Verification period ended - triggering auto stop for NO trade {trade_id} (momentum: {current_momentum_after_verification:.2f}, threshold: +{momentum_spike_threshold}, verification_duration={verification_seconds}s)")
+                                                                if trigger_auto_stop_close(trade):
+                                                                    auto_stop_triggered_trades.add(trade_id)
+                                                                    del verification_pending_trades[trade_id]
+                                                                    successful_closes += 1
+                                                                else:
+                                                                    log(f"[MOMENTUM SPIKE] ❌ Auto stop failed for trade {trade_id} after verification, will retry on next check")
+                                                                    del verification_pending_trades[trade_id]
+                                                            else:
+                                                                # Conditions no longer met - cancel verification
+                                                                log(f"[MOMENTUM SPIKE] ❌ Verification period ended - conditions no longer met for NO trade {trade_id} (momentum: {current_momentum_after_verification:.2f}, threshold: +{momentum_spike_threshold})")
+                                                                del verification_pending_trades[trade_id]
+                                                        else:
+                                                            # Could not get momentum - cancel verification to retry
+                                                            log(f"[MOMENTUM SPIKE] ⚠️ Verification period ended but could not get current momentum for NO trade {trade_id}, cancelling verification")
+                                                            del verification_pending_trades[trade_id]
+                                                    else:
+                                                        # Still in verification period - just wait, don't check conditions during wait
+                                                        remaining_time = verification_end_time - current_time
+                                                        if not hasattr(monitoring_worker, 'last_momentum_verification_log') or current_time - monitoring_worker.last_momentum_verification_log > 10:
+                                                            log_debug(f"NO trade {trade_id} in verification period - {remaining_time:.1f}s remaining (momentum: {current_momentum:.2f})")
+                                                            monitoring_worker.last_momentum_verification_log = current_time
+                                                        continue
+                                                else:
+                                                    # Not in verification period - check if spike conditions are met
+                                                    if positive_spike:
+                                                        if verification_enabled:
+                                                            # Start verification period
+                                                            verification_end_time = current_time + verification_seconds
+                                                            verification_pending_trades[trade_id] = (current_time, verification_end_time)
+                                                            log_debug(f"Starting verification period for NO trade {trade_id} (momentum: {current_momentum:.2f}, threshold: +{momentum_spike_threshold}, verification_duration={verification_seconds}s)")
+                                                        else:
+                                                            # No verification - trigger immediately
+                                                            log(f"[MOMENTUM SPIKE] 🚨 POSITIVE SPIKE - Triggering close for NO trade {trade_id} (momentum: {current_momentum:.2f})")
+                                                            if trigger_auto_stop_close(trade):
+                                                                auto_stop_triggered_trades.add(trade_id)
+                                                                successful_closes += 1
+                                                            else:
+                                                                log(f"[MOMENTUM SPIKE] ❌ Auto stop failed for trade {trade_id}, will retry on next check")
+                                    
+                                            if successful_closes > 0:
+                                                log(f"[MOMENTUM SPIKE] ✅ Closed {successful_closes} NO trades due to positive momentum spike")
+                                        
+                                        elif negative_spike:  # Negative spike - close all YES trades
+                                            # Filter eligible YES trades
+                                            eligible_trades = [t for t in refreshed_active_trades 
+                                                               if t.get('status') == 'active' 
+                                                               and t.get('side', '').upper() in ['Y', 'YES']
+                                                               and t.get('trade_id') not in auto_stop_triggered_trades]
+                                    
+                                            successful_closes = 0
+                                            for trade in eligible_trades:
+                                                trade_id = trade.get('trade_id')
+                                        
+                                                # Check if trade is in verification period
+                                                if trade_id in verification_pending_trades:
+                                                    trigger_time, verification_end_time = verification_pending_trades[trade_id]
+                                            
+                                                    # Check if verification period has ended
+                                                    if current_time >= verification_end_time:
+                                                        # Verification period ended - re-check current momentum to verify spike conditions still met
+                                                        current_momentum_after_verification = get_momentum_5s_avg_from_postgresql(get_current_monitor_symbol())
+                                                        if current_momentum_after_verification is not None:
+                                                            spike_still_active = current_momentum_after_verification <= -momentum_spike_threshold
+                                                            if spike_still_active:
+                                                                # Conditions still met after verification - trigger auto-stop
+                                                                log_debug(f"[MOMENTUM SPIKE] Verification period ended - triggering auto stop for YES trade {trade_id} (momentum: {current_momentum_after_verification:.2f}, threshold: -{momentum_spike_threshold}, verification_duration={verification_seconds}s)")
+                                                                if trigger_auto_stop_close(trade):
+                                                                    auto_stop_triggered_trades.add(trade_id)
+                                                                    del verification_pending_trades[trade_id]
+                                                                    successful_closes += 1
+                                                                else:
+                                                                    log(f"[MOMENTUM SPIKE] ❌ Auto stop failed for trade {trade_id} after verification, will retry on next check")
+                                                                    del verification_pending_trades[trade_id]
+                                                            else:
+                                                                # Conditions no longer met - cancel verification
+                                                                log(f"[MOMENTUM SPIKE] ❌ Verification period ended - conditions no longer met for YES trade {trade_id} (momentum: {current_momentum_after_verification:.2f}, threshold: -{momentum_spike_threshold})")
+                                                                del verification_pending_trades[trade_id]
+                                                        else:
+                                                            # Could not get momentum - cancel verification to retry
+                                                            log(f"[MOMENTUM SPIKE] ⚠️ Verification period ended but could not get current momentum for YES trade {trade_id}, cancelling verification")
+                                                            del verification_pending_trades[trade_id]
+                                                    else:
+                                                        # Still in verification period - just wait, don't check conditions during wait
+                                                        remaining_time = verification_end_time - current_time
+                                                        if not hasattr(monitoring_worker, 'last_momentum_verification_log') or current_time - monitoring_worker.last_momentum_verification_log > 10:
+                                                            log_debug(f"YES trade {trade_id} in verification period - {remaining_time:.1f}s remaining (momentum: {current_momentum:.2f})")
+                                                            monitoring_worker.last_momentum_verification_log = current_time
+                                                        continue
+                                                else:
+                                                    # Not in verification period - check if spike conditions are met
+                                                    if negative_spike:
+                                                        if verification_enabled:
+                                                            # Start verification period
+                                                            verification_end_time = current_time + verification_seconds
+                                                            verification_pending_trades[trade_id] = (current_time, verification_end_time)
+                                                            log_debug(f"Starting verification period for YES trade {trade_id} (momentum: {current_momentum:.2f}, threshold: -{momentum_spike_threshold}, verification_duration={verification_seconds}s)")
+                                                        else:
+                                                            # No verification - trigger immediately
+                                                            log(f"[MOMENTUM SPIKE] 🚨 NEGATIVE SPIKE - Triggering close for YES trade {trade_id} (momentum: {current_momentum:.2f})")
+                                                            if trigger_auto_stop_close(trade):
+                                                                auto_stop_triggered_trades.add(trade_id)
+                                                                successful_closes += 1
+                                                            else:
+                                                                log(f"[MOMENTUM SPIKE] ❌ Auto stop failed for trade {trade_id}, will retry on next check")
+                                    
+                                            if successful_closes > 0:
+                                                log(f"[MOMENTUM SPIKE] ✅ Closed {successful_closes} YES trades due to negative momentum spike")
+                                
+                                        # Log momentum monitoring (every 30 seconds to reduce noise)
+                                        if not hasattr(monitoring_worker, 'last_momentum_log') or current_time - monitoring_worker.last_momentum_log > 30:
+                                            log_debug(f"[MOMENTUM SPIKE] Monitoring momentum: {current_momentum:.2f} (threshold: ±{momentum_spike_threshold})")
+                                            monitoring_worker.last_momentum_log = current_time
+                            except Exception as e:
+                                log(f"[MOMENTUM SPIKE] Error in momentum spike logic: {e}")
+
+                if not _ats_round:
                     log("📊 MONITORING: No more active trades, stopping monitoring loop")
                     break
-                
-                # Update monitoring data
-                update_active_trade_monitoring_data()
-                
-                # Refetch active_trades after update to get fresh current_probability values for auto-stop
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                active_trades_table = get_monitor_active_trades_table()
-                cursor.execute(f"SELECT * FROM users.{active_trades_table} WHERE status = 'active'")
-                columns = [desc[0] for desc in cursor.description]
-                active_trades = [dict(zip(columns, row)) for row in cursor.fetchall()]
-                conn.close()
-                
-                # Log monitoring status every 60 seconds
-                current_time = time.time()
-                if not hasattr(monitoring_worker, 'last_status_log') or current_time - monitoring_worker.last_status_log > 60:
-                    log_debug(f"MONITORING: Checking {len(active_trades)} active trades")
-                    monitoring_worker.last_status_log = current_time
-                
-                # Add heartbeat log every 30 seconds to track monitoring health
-                if not hasattr(monitoring_worker, 'last_heartbeat') or current_time - monitoring_worker.last_heartbeat > 30:
-                    log_debug(f"MONITORING HEARTBEAT: Monitoring loop healthy, {len(active_trades)} active trades")
-                    monitoring_worker.last_heartbeat = current_time
-                
-                # Run failsafe check every 60 seconds
-                if not hasattr(monitoring_worker, 'last_failsafe_check') or current_time - monitoring_worker.last_failsafe_check > 60:
-                    check_monitoring_failsafe()
-                    monitoring_worker.last_failsafe_check = current_time
-                
-                # === AUTO STOP LOGIC ===
-                auto_stop_enabled = is_auto_stop_enabled()
-                if auto_stop_enabled:
-                    check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verification_pending_trades)
-                
-                # === MOMENTUM SPIKE AUTO-STOPOUT LOGIC ===
-                # Skip momentum spike logic for Momentum Scalp and Momentum Reversal monitors
-                strategy = get_trade_strategy()
-                if strategy != "Momentum Scalp" and strategy != "Momentum Reversal":
-                    # Get momentum spike settings from monitor's assigned strategy
-                    try:
-                        import psycopg2
-                        conn = get_postgresql_connection()
-                        with conn.cursor() as cursor:
-                            # First get the strategy name for this monitor
-                            cursor.execute(f"""
-                                SELECT strategy FROM users.monitor_list_{USER_NUMBER} WHERE id = %s
-                            """, (MONITOR_ID,))
-                            monitor_result = cursor.fetchone()
-                            
-                            if monitor_result and monitor_result[0]:
-                                strategy_name = monitor_result[0]
-                                
-                                # Get momentum spike settings from the monitor
-                                cursor.execute("""
-                                    SELECT momentum_spike_enabled, momentum_spike_threshold
-                                    FROM users.monitor_list_0001 WHERE id = %s
-                                """, (MONITOR_ID,))
-                                result = cursor.fetchone()
-                                
-                                if result:
-                                    momentum_spike_enabled = result[0]
-                                    momentum_spike_threshold = result[1]  # Use percentage directly
-                                else:
-                                    momentum_spike_enabled = True
-                                    momentum_spike_threshold = 35  # Use percentage directly
-                                    log_debug(f"No strategy found: {strategy_name}, using defaults")
-                            else:
-                                momentum_spike_enabled = True
-                                momentum_spike_threshold = 35  # Use percentage directly
-                                log_debug(f"No strategy assigned to monitor {MONITOR_ID}, using defaults")
-                        
-                        conn.close()
-                        
-                        # Only proceed if momentum spike is enabled
-                        if momentum_spike_enabled:
-                            # Get verification settings (same as probability-based auto stop)
-                            verification_enabled = get_verification_period_enabled()
-                            verification_seconds = get_verification_period_seconds()
-                            current_time = time.time()
-                            
-                            # Get current momentum (use 5s average from live price log to smooth noise)
-                            current_momentum = get_momentum_5s_avg_from_postgresql(get_current_monitor_symbol())
-                            
-                            if current_momentum is not None:
-                                # Refresh active trades
-                                conn = get_db_connection()
-                                cursor = conn.cursor()
-                                active_trades_table = get_monitor_active_trades_table()
-                                cursor.execute(f"SELECT * FROM users.{active_trades_table} WHERE status = 'active'")
-                                columns = [desc[0] for desc in cursor.description]
-                                refreshed_active_trades = [dict(zip(columns, row)) for row in cursor.fetchall()]
-                                conn.close()
-                                
-                                # Determine which trades are affected by current momentum
-                                positive_spike = current_momentum >= momentum_spike_threshold
-                                negative_spike = current_momentum <= -momentum_spike_threshold
-                                
-                                if positive_spike:  # Positive spike - close all NO trades
-                                    # Filter eligible NO trades
-                                    eligible_trades = [t for t in refreshed_active_trades 
-                                                       if t.get('status') == 'active' 
-                                                       and t.get('side', '').upper() in ['N', 'NO']
-                                                       and t.get('trade_id') not in auto_stop_triggered_trades]
-                                    
-                                    successful_closes = 0
-                                    for trade in eligible_trades:
-                                        trade_id = trade.get('trade_id')
-                                        
-                                        # Check if trade is in verification period
-                                        if trade_id in verification_pending_trades:
-                                            trigger_time, verification_end_time = verification_pending_trades[trade_id]
-                                            
-                                            # Check if verification period has ended
-                                            if current_time >= verification_end_time:
-                                                # Verification period ended - re-check current momentum to verify spike conditions still met
-                                                current_momentum_after_verification = get_momentum_5s_avg_from_postgresql(get_current_monitor_symbol())
-                                                if current_momentum_after_verification is not None:
-                                                    spike_still_active = current_momentum_after_verification >= momentum_spike_threshold
-                                                    if spike_still_active:
-                                                        # Conditions still met after verification - trigger auto-stop
-                                                        log_debug(f"[MOMENTUM SPIKE] Verification period ended - triggering auto stop for NO trade {trade_id} (momentum: {current_momentum_after_verification:.2f}, threshold: +{momentum_spike_threshold}, verification_duration={verification_seconds}s)")
-                                                        if trigger_auto_stop_close(trade):
-                                                            auto_stop_triggered_trades.add(trade_id)
-                                                            del verification_pending_trades[trade_id]
-                                                            successful_closes += 1
-                                                        else:
-                                                            log(f"[MOMENTUM SPIKE] ❌ Auto stop failed for trade {trade_id} after verification, will retry on next check")
-                                                            del verification_pending_trades[trade_id]
-                                                    else:
-                                                        # Conditions no longer met - cancel verification
-                                                        log(f"[MOMENTUM SPIKE] ❌ Verification period ended - conditions no longer met for NO trade {trade_id} (momentum: {current_momentum_after_verification:.2f}, threshold: +{momentum_spike_threshold})")
-                                                        del verification_pending_trades[trade_id]
-                                                else:
-                                                    # Could not get momentum - cancel verification to retry
-                                                    log(f"[MOMENTUM SPIKE] ⚠️ Verification period ended but could not get current momentum for NO trade {trade_id}, cancelling verification")
-                                                    del verification_pending_trades[trade_id]
-                                            else:
-                                                # Still in verification period - just wait, don't check conditions during wait
-                                                remaining_time = verification_end_time - current_time
-                                                if not hasattr(monitoring_worker, 'last_momentum_verification_log') or current_time - monitoring_worker.last_momentum_verification_log > 10:
-                                                    log_debug(f"NO trade {trade_id} in verification period - {remaining_time:.1f}s remaining (momentum: {current_momentum:.2f})")
-                                                    monitoring_worker.last_momentum_verification_log = current_time
-                                                continue
-                                        else:
-                                            # Not in verification period - check if spike conditions are met
-                                            if positive_spike:
-                                                if verification_enabled:
-                                                    # Start verification period
-                                                    verification_end_time = current_time + verification_seconds
-                                                    verification_pending_trades[trade_id] = (current_time, verification_end_time)
-                                                    log_debug(f"Starting verification period for NO trade {trade_id} (momentum: {current_momentum:.2f}, threshold: +{momentum_spike_threshold}, verification_duration={verification_seconds}s)")
-                                                else:
-                                                    # No verification - trigger immediately
-                                                    log(f"[MOMENTUM SPIKE] 🚨 POSITIVE SPIKE - Triggering close for NO trade {trade_id} (momentum: {current_momentum:.2f})")
-                                                    if trigger_auto_stop_close(trade):
-                                                        auto_stop_triggered_trades.add(trade_id)
-                                                        successful_closes += 1
-                                                    else:
-                                                        log(f"[MOMENTUM SPIKE] ❌ Auto stop failed for trade {trade_id}, will retry on next check")
-                                    
-                                    if successful_closes > 0:
-                                        log(f"[MOMENTUM SPIKE] ✅ Closed {successful_closes} NO trades due to positive momentum spike")
-                                        
-                                elif negative_spike:  # Negative spike - close all YES trades
-                                    # Filter eligible YES trades
-                                    eligible_trades = [t for t in refreshed_active_trades 
-                                                       if t.get('status') == 'active' 
-                                                       and t.get('side', '').upper() in ['Y', 'YES']
-                                                       and t.get('trade_id') not in auto_stop_triggered_trades]
-                                    
-                                    successful_closes = 0
-                                    for trade in eligible_trades:
-                                        trade_id = trade.get('trade_id')
-                                        
-                                        # Check if trade is in verification period
-                                        if trade_id in verification_pending_trades:
-                                            trigger_time, verification_end_time = verification_pending_trades[trade_id]
-                                            
-                                            # Check if verification period has ended
-                                            if current_time >= verification_end_time:
-                                                # Verification period ended - re-check current momentum to verify spike conditions still met
-                                                current_momentum_after_verification = get_momentum_5s_avg_from_postgresql(get_current_monitor_symbol())
-                                                if current_momentum_after_verification is not None:
-                                                    spike_still_active = current_momentum_after_verification <= -momentum_spike_threshold
-                                                    if spike_still_active:
-                                                        # Conditions still met after verification - trigger auto-stop
-                                                        log_debug(f"[MOMENTUM SPIKE] Verification period ended - triggering auto stop for YES trade {trade_id} (momentum: {current_momentum_after_verification:.2f}, threshold: -{momentum_spike_threshold}, verification_duration={verification_seconds}s)")
-                                                        if trigger_auto_stop_close(trade):
-                                                            auto_stop_triggered_trades.add(trade_id)
-                                                            del verification_pending_trades[trade_id]
-                                                            successful_closes += 1
-                                                        else:
-                                                            log(f"[MOMENTUM SPIKE] ❌ Auto stop failed for trade {trade_id} after verification, will retry on next check")
-                                                            del verification_pending_trades[trade_id]
-                                                    else:
-                                                        # Conditions no longer met - cancel verification
-                                                        log(f"[MOMENTUM SPIKE] ❌ Verification period ended - conditions no longer met for YES trade {trade_id} (momentum: {current_momentum_after_verification:.2f}, threshold: -{momentum_spike_threshold})")
-                                                        del verification_pending_trades[trade_id]
-                                                else:
-                                                    # Could not get momentum - cancel verification to retry
-                                                    log(f"[MOMENTUM SPIKE] ⚠️ Verification period ended but could not get current momentum for YES trade {trade_id}, cancelling verification")
-                                                    del verification_pending_trades[trade_id]
-                                            else:
-                                                # Still in verification period - just wait, don't check conditions during wait
-                                                remaining_time = verification_end_time - current_time
-                                                if not hasattr(monitoring_worker, 'last_momentum_verification_log') or current_time - monitoring_worker.last_momentum_verification_log > 10:
-                                                    log_debug(f"YES trade {trade_id} in verification period - {remaining_time:.1f}s remaining (momentum: {current_momentum:.2f})")
-                                                    monitoring_worker.last_momentum_verification_log = current_time
-                                                continue
-                                        else:
-                                            # Not in verification period - check if spike conditions are met
-                                            if negative_spike:
-                                                if verification_enabled:
-                                                    # Start verification period
-                                                    verification_end_time = current_time + verification_seconds
-                                                    verification_pending_trades[trade_id] = (current_time, verification_end_time)
-                                                    log_debug(f"Starting verification period for YES trade {trade_id} (momentum: {current_momentum:.2f}, threshold: -{momentum_spike_threshold}, verification_duration={verification_seconds}s)")
-                                                else:
-                                                    # No verification - trigger immediately
-                                                    log(f"[MOMENTUM SPIKE] 🚨 NEGATIVE SPIKE - Triggering close for YES trade {trade_id} (momentum: {current_momentum:.2f})")
-                                                    if trigger_auto_stop_close(trade):
-                                                        auto_stop_triggered_trades.add(trade_id)
-                                                        successful_closes += 1
-                                                    else:
-                                                        log(f"[MOMENTUM SPIKE] ❌ Auto stop failed for trade {trade_id}, will retry on next check")
-                                    
-                                    if successful_closes > 0:
-                                        log(f"[MOMENTUM SPIKE] ✅ Closed {successful_closes} YES trades due to negative momentum spike")
-                                
-                                # Log momentum monitoring (every 30 seconds to reduce noise)
-                                if not hasattr(monitoring_worker, 'last_momentum_log') or current_time - monitoring_worker.last_momentum_log > 30:
-                                    log_debug(f"[MOMENTUM SPIKE] Monitoring momentum: {current_momentum:.2f} (threshold: ±{momentum_spike_threshold})")
-                                    monitoring_worker.last_momentum_log = current_time
-                    except Exception as e:
-                        log(f"[MOMENTUM SPIKE] Error in momentum spike logic: {e}")
-                
                 # Sleep for 1 second
                 time.sleep(1)
-        
+
         except Exception as e:
             log(f"🚨 CRITICAL: Monitoring loop crashed with error: {e}")
             log(f"🚨 CRITICAL: Stack trace: {e.__class__.__name__}: {str(e)}")
             
             # Check if there are still active trades that need monitoring
             try:
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute(f"SELECT COUNT(*) FROM users.active_trades_{USER_NUMBER}_{MONITOR_ID} WHERE status = 'active'")
-                active_count = cursor.fetchone()[0]
-                conn.close()
+                if ATS_UNIFIED_15M:
+                    active_count = _count_active_trades_across_unified_15m_monitors()
+                else:
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        f"SELECT COUNT(*) FROM users.active_trades_{ctx_user()}_{ctx_mid()} WHERE status = 'active'"
+                    )
+                    active_count = cursor.fetchone()[0]
+                    conn.close()
                 
                 if active_count > 0:
                     log(f"🚨 CRITICAL: Monitoring loop crashed but {active_count} active trades still need monitoring!")
@@ -2192,36 +2882,181 @@ def invalidate_active_trades_cache():
 
 
 
-def get_all_active_trades() -> List[Dict[str, Any]]:
-    """Get all currently active, pending, and closing trades"""
+def _active_trades_result_dicts(columns: List[str], rows) -> List[Dict[str, Any]]:
+    result: List[Dict[str, Any]] = []
+    for row in rows:
+        trade_dict = dict(zip(columns, row))
+        for key, value in trade_dict.items():
+            if hasattr(value, "isoformat"):
+                trade_dict[key] = value.isoformat()
+            elif hasattr(value, "__float__"):
+                trade_dict[key] = float(value)
+        result.append(trade_dict)
+    return result
+
+
+def _get_all_active_trades_for_current_monitor() -> List[Dict[str, Any]]:
+    """Rows from this monitor's active_trades table (requires correct ctx bind for unified pool)."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         active_trades_table = get_monitor_active_trades_table()
-        cursor.execute(f"""
-            SELECT * FROM users.{active_trades_table} WHERE status IN ('active', 'pending', 'closing')
-        """)
-        
+        scope_sql, scope_params = _active_trades_monitor_scope_sql()
+        cursor.execute(
+            f"""
+            SELECT * FROM users.{active_trades_table}
+            WHERE status IN ('active', 'pending', 'closing'){scope_sql}
+            ORDER BY created_at DESC
+            """,
+            scope_params,
+        )
+
         columns = [desc[0] for desc in cursor.description]
         rows = cursor.fetchall()
         conn.close()
-        
-        result = []
-        for row in rows:
-            trade_dict = dict(zip(columns, row))
-            # Convert any datetime objects to ISO strings and Decimal objects to float
-            for key, value in trade_dict.items():
-                if hasattr(value, 'isoformat'):
-                    trade_dict[key] = value.isoformat()
-                elif hasattr(value, '__float__'):  # Handle Decimal objects
-                    trade_dict[key] = float(value)
-            result.append(trade_dict)
-        
-        return result
-        
+
+        return _active_trades_result_dicts(columns, rows)
+
     except Exception as e:
         log(f"Error getting active trades: {e}")
         return []
+
+
+def _get_all_active_trades_unified_pool_unbound() -> List[Dict[str, Any]]:
+    """All monitors' rows from users.active_trades_<user>_15m (no ContextVar bind)."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        tbl = f"active_trades_{ctx_user()}_15m"
+        cursor.execute(
+            f"""
+            SELECT * FROM users.{tbl}
+            WHERE status IN ('active', 'pending', 'closing')
+            ORDER BY created_at DESC
+            """
+        )
+        columns = [desc[0] for desc in cursor.description]
+        rows = cursor.fetchall()
+        conn.close()
+        return _active_trades_result_dicts(columns, rows)
+    except Exception as e:
+        log(f"Error getting unified pool active trades: {e}")
+        return []
+
+
+def get_all_active_trades() -> List[Dict[str, Any]]:
+    """Get all currently active, pending, and closing trades (unified pool = one table)."""
+    if ATS_UNIFIED_15M and _ats_bind_m.get() is None:
+        return _get_all_active_trades_unified_pool_unbound()
+    return _get_all_active_trades_for_current_monitor()
+
+def _sync_with_trades_db_for_current_monitor():
+    """Sync active_trades for the monitor bound in context (single monitor)."""
+    # Get all open trades from PostgreSQL
+    conn = get_trades_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT id FROM users.trades_{ctx_user()} WHERE status = 'open' AND monitor = %s",
+        (f"mon_{ctx_user()}_{ctx_mid()}",),
+    )
+    open_trade_ids = [row[0] for row in cursor.fetchall()]
+    conn.close()
+
+    # Get all active trade IDs
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    active_trades_table = get_monitor_active_trades_table()
+    cursor.execute(
+        f"""
+        SELECT trade_id FROM users.{active_trades_table}
+        WHERE status IN ('active', 'pending', 'closing')
+        """
+    )
+    active_trade_ids = [row[0] for row in cursor.fetchall()]
+    conn.close()
+
+    # Find trades that should be active but aren't
+    missing_trades = set(open_trade_ids) - set(active_trade_ids)
+    for trade_id in missing_trades:
+        log(f"🔄 SYNC: Found missing active trade: {trade_id}, adding...")
+        add_new_active_trade(trade_id, "SYNC")  # Use "SYNC" as ticket_id for auto-added trades
+
+    # Find trades that are active but should be closed
+    closed_trades = set(active_trade_ids) - set(open_trade_ids)
+    for trade_id in closed_trades:
+        log(f"🔄 SYNC: Found closed trade still in active: {trade_id}, removing...")
+        remove_closed_trade(trade_id)
+
+    if missing_trades or closed_trades:
+        log(
+            f"Sync complete ({ctx_ident()}): added {len(missing_trades)}, removed {len(closed_trades)}"
+        )
+    else:
+        log(f"Sync complete ({ctx_ident()}): no changes needed")
+
+
+def _reconcile_unified_15m_open_trades_full_scan() -> None:
+    """
+    Failsafe: enroll any open trade whose monitor is 15m (by monitor_list market),
+    even if that monitor is not in iter_active_15m_monitor_bindings (e.g. paused list row).
+    """
+    from backend.core.port_config import monitor_suffix_uses_unified_15m_pool
+
+    user = USER_NUMBER
+    tbl = f"active_trades_{user}_15m"
+    conn = get_postgresql_connection()
+    if not conn:
+        log("🔄 RECONCILE: no DB connection; skipping unified 15m open-trade scan")
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT trade_id FROM users.{tbl}
+                WHERE status IN ('active', 'pending', 'closing')
+                """
+            )
+            tracked = {int(r[0]) for r in cur.fetchall()}
+    finally:
+        conn.close()
+
+    conn_tr = get_trades_db_connection()
+    if not conn_tr:
+        return
+    try:
+        c2 = conn_tr.cursor()
+        c2.execute(
+            f"""
+            SELECT id, monitor FROM users.trades_{user}
+            WHERE status = 'open' AND monitor IS NOT NULL AND monitor LIKE 'mon_%%'
+            """
+        )
+        candidates = c2.fetchall()
+    finally:
+        conn_tr.close()
+
+    added = 0
+    for trade_id, monitor in candidates:
+        tid = int(trade_id)
+        if tid in tracked:
+            continue
+        mon = str(monitor).strip()
+        if not mon.startswith("mon_"):
+            continue
+        suffix = mon[4:]
+        if not monitor_suffix_uses_unified_15m_pool(suffix):
+            continue
+        parts = suffix.split("_", 1)
+        if len(parts) != 2:
+            continue
+        nu, mid = parts[0], parts[1]
+        with ats_monitor_bind(nu, mid):
+            if add_new_active_trade(tid, "RECONCILE"):
+                added += 1
+                tracked.add(tid)
+    if added:
+        log(f"🔄 RECONCILE (full scan): added {added} open 15m trade(s) to pool")
+
 
 def sync_with_trades_db():
     """
@@ -2229,40 +3064,20 @@ def sync_with_trades_db():
     This should be called on demand to catch any missed updates.
     """
     try:
-        # Get all open trades from PostgreSQL
-        conn = get_trades_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT id FROM users.trades_{USER_NUMBER} WHERE status = 'open' AND monitor = %s", (f"mon_{USER_NUMBER}_{MONITOR_ID}",))
-        open_trade_ids = [row[0] for row in cursor.fetchall()]
-        conn.close()
-        
-        # Get all active trade IDs
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        active_trades_table = get_monitor_active_trades_table()
-        cursor.execute(f"SELECT trade_id FROM users.{active_trades_table} WHERE status = 'active'")
-        active_trade_ids = [row[0] for row in cursor.fetchall()]
-        conn.close()
-        
-        # Find trades that should be active but aren't
-        missing_trades = set(open_trade_ids) - set(active_trade_ids)
-        for trade_id in missing_trades:
-            log(f"🔄 SYNC: Found missing active trade: {trade_id}, adding...")
-            add_new_active_trade(trade_id, "SYNC")  # Use "SYNC" as ticket_id for auto-added trades
-        
-        # Find trades that are active but should be closed
-        closed_trades = set(active_trade_ids) - set(open_trade_ids)
-        for trade_id in closed_trades:
-            log(f"🔄 SYNC: Found closed trade still in active: {trade_id}, removing...")
-            remove_closed_trade(trade_id)
-            
-        if missing_trades or closed_trades:
-            log(f"Sync complete: added {len(missing_trades)}, removed {len(closed_trades)}")
-        else:
-            log("Sync complete: no changes needed")
-            
+        if ATS_UNIFIED_15M:
+            from backend.core.unified_15m_monitors import iter_active_15m_monitor_bindings
+
+            for u, m in iter_active_15m_monitor_bindings():
+                with ats_monitor_bind(u, m):
+                    _sync_with_trades_db_for_current_monitor()
+            _reconcile_unified_15m_open_trades_full_scan()
+            return
+        _sync_with_trades_db_for_current_monitor()
     except Exception as e:
+        import traceback
+
         log(f"Error in sync_with_trades_db: {e}")
+        log(traceback.format_exc())
 
 def sync_on_demand():
     """
@@ -2277,19 +3092,27 @@ def start_event_driven_supervisor():
     start_ats_enroll_redis_subscriber()
 
     # Check if there are already active trades and start monitoring if needed
-    conn = get_db_connection()
-    if not conn:
-        log("❌ Failed to connect to PostgreSQL; cannot start event-driven supervisor")
-        sys.exit(1)
-    cursor = conn.cursor()
-    active_trades_table = get_monitor_active_trades_table()
-    cursor.execute(f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE status = 'active'")
-    active_count = cursor.fetchone()[0]
-    conn.close()
-    
-    if active_count > 0:
-        log(f"📊 MONITORING: Found {active_count} existing active trades, starting monitoring")
-        start_monitoring_loop()
+    if ATS_UNIFIED_15M:
+        active_count = _count_active_trades_across_unified_15m_monitors()
+        if active_count > 0:
+            log(
+                f"📊 MONITORING: Found {active_count} existing active trade(s) in 15m pool, starting monitoring"
+            )
+            start_monitoring_loop()
+    else:
+        conn = get_db_connection()
+        if not conn:
+            log("❌ Failed to connect to PostgreSQL; cannot start event-driven supervisor")
+            sys.exit(1)
+        cursor = conn.cursor()
+        active_trades_table = get_monitor_active_trades_table()
+        cursor.execute(f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE status = 'active'")
+        active_count = cursor.fetchone()[0]
+        conn.close()
+
+        if active_count > 0:
+            log(f"📊 MONITORING: Found {active_count} existing active trades, starting monitoring")
+            start_monitoring_loop()
     
     # Start HTTP server in a separate thread
     def start_http_server():
@@ -2309,12 +3132,17 @@ def start_event_driven_supervisor():
         while True:
             # BRUTE FORCE FAILSAFE: Check database every 10 seconds for active trades
             # If there are active trades but no monitoring thread, restart it
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            active_trades_table = get_monitor_active_trades_table()
-            cursor.execute(f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE status = 'active'")
-            active_count = cursor.fetchone()[0]
-            conn.close()
+            if ATS_UNIFIED_15M:
+                active_count = _count_active_trades_across_unified_15m_monitors()
+            else:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                active_trades_table = get_monitor_active_trades_table()
+                cursor.execute(
+                    f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE status = 'active'"
+                )
+                active_count = cursor.fetchone()[0]
+                conn.close()
             
             # Check if monitoring thread is alive
             monitoring_thread_alive = False
@@ -2363,6 +3191,7 @@ def start_event_driven_supervisor():
             
             if start_event_driven_supervisor.failsafe_log_counter >= 30:  # Every 5 minutes
                 log(f"🛡️ BRUTE FORCE FAILSAFE: Health check - {active_count} active trades, monitoring thread alive: {monitoring_thread_alive}")
+                flush_stale_active_trades_past_contract_settlement()
                 start_event_driven_supervisor.failsafe_log_counter = 0
             
             # Sleep for 10 seconds (much more frequent than the old 60 seconds)
@@ -2388,13 +3217,13 @@ def is_auto_stop_enabled():
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             # Check auto_trade boolean from the specific monitor's row in monitor_list
-            cursor.execute(f"SELECT auto_trade FROM users.monitor_list_{USER_NUMBER} WHERE id = %s", (MONITOR_ID,))
+            cursor.execute(f"SELECT auto_trade FROM users.monitor_list_{ctx_user()} WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             if result:
                 auto_trade_enabled = result[0]
                 return auto_trade_enabled
             else:
-                log_debug(f"No monitor found with ID {MONITOR_ID} in monitor_list")
+                log_debug(f"No monitor found with ID {ctx_mid()} in monitor_list")
                 return False
     except Exception as e:
         log(f"[AUTO STOP] Error reading auto_trade from monitor_list: {e}")
@@ -2405,6 +3234,12 @@ def trigger_auto_stop_close(trade):
     """Returns True if close was successful, False otherwise."""
     import requests
     import random
+
+    if should_suppress_auto_close_past_kalshi_settlement(
+        trade.get("ticker"), trade.get("trade_id")
+    ):
+        return False
+
     # Generate unique ticket ID
     ticket_id = f"TICKET-{{random.getrandbits(32):x}}-{{int(time.time() * 1000)}}"
     # Invert side
@@ -2591,16 +3426,16 @@ def get_trade_strategy():
         import psycopg2
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT strategy FROM users.monitor_list_{USER_NUMBER} WHERE id = %s", (MONITOR_ID,))
+            cursor.execute(f"SELECT strategy FROM users.monitor_list_{ctx_user()} WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             if result:
                 trade_strategy = result[0]
                 return trade_strategy
             else:
-                log(f"[AUTO STOP] No monitor configuration found for monitor {MONITOR_ID}")
+                log(f"[AUTO STOP] No monitor configuration found for monitor {ctx_mid()}")
                 return "Hourly HTC"  # Default fallback
     except Exception as e:
-        log(f"[AUTO STOP] Error loading trade strategy from monitor {MONITOR_ID}: {e}")
+        log(f"[AUTO STOP] Error loading trade strategy from monitor {ctx_mid()}: {e}")
         return "Hourly HTC"  # Default fallback
     finally:
         if conn:
@@ -2612,13 +3447,13 @@ def get_momentum_scalp_trailing_stop_amount():
         import psycopg2
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT momentum_scalp_trailing_stop_amount FROM users.monitor_list_{USER_NUMBER} WHERE id = %s", (MONITOR_ID,))
+            cursor.execute(f"SELECT momentum_scalp_trailing_stop_amount FROM users.monitor_list_{ctx_user()} WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             conn.close()
             if result and result[0] is not None:
                 return float(result[0])
             else:
-                log_debug(f"No trailing stop amount found for monitor {MONITOR_ID}, using default 0.10")
+                log_debug(f"No trailing stop amount found for monitor {ctx_mid()}, using default 0.10")
                 return 0.10  # Default 10% trailing stop
     except Exception as e:
         log(f"[AUTO STOP MS] Error reading trailing stop amount: {e}")
@@ -2630,13 +3465,13 @@ def get_momentum_scalp_profit_target():
         import psycopg2
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT momentum_scalp_profit_target FROM users.monitor_list_{USER_NUMBER} WHERE id = %s", (MONITOR_ID,))
+            cursor.execute(f"SELECT momentum_scalp_profit_target FROM users.monitor_list_{ctx_user()} WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             conn.close()
             if result and result[0] is not None:
                 return float(result[0])
             else:
-                log_debug(f"No profit target found for monitor {MONITOR_ID}, using default 0.50")
+                log_debug(f"No profit target found for monitor {ctx_mid()}, using default 0.50")
                 return 0.50  # Default 50% profit target
     except Exception as e:
         log(f"[AUTO STOP MS] Error reading profit target: {e}")
@@ -2648,13 +3483,13 @@ def get_max_profit():
         import psycopg2
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT max_profit FROM users.monitor_list_{USER_NUMBER} WHERE id = %s", (MONITOR_ID,))
+            cursor.execute(f"SELECT max_profit FROM users.monitor_list_{ctx_user()} WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             conn.close()
             if result and result[0] is not None:
                 return float(result[0])
             else:
-                log_debug(f"No max_profit found for monitor {MONITOR_ID}, using default 0.9900")
+                log_debug(f"No max_profit found for monitor {ctx_mid()}, using default 0.9900")
                 return 0.9900  # Default 99% max profit
     except Exception as e:
         log(f"[AUTO STOP MS] Error reading max_profit: {e}")
@@ -2666,13 +3501,13 @@ def get_momentum_scalp_entry_threshold():
         import psycopg2
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT momentum_scalp_entry_threshold FROM users.monitor_list_{USER_NUMBER} WHERE id = %s", (MONITOR_ID,))
+            cursor.execute(f"SELECT momentum_scalp_entry_threshold FROM users.monitor_list_{ctx_user()} WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             conn.close()
             if result and result[0] is not None:
                 return float(result[0])
             else:
-                log_debug(f"No momentum_scalp_entry_threshold found for monitor {MONITOR_ID}, using default 35.0")
+                log_debug(f"No momentum_scalp_entry_threshold found for monitor {ctx_mid()}, using default 35.0")
                 return 35.0  # Default threshold
     except Exception as e:
         log(f"[AUTO STOP MS] Error reading momentum_scalp_entry_threshold: {e}")
@@ -2685,23 +3520,23 @@ def get_auto_stop_threshold():
         with conn.cursor() as cursor:
             # First get the strategy name for this monitor
             cursor.execute(f"""
-                SELECT strategy FROM users.monitor_list_{USER_NUMBER} WHERE id = %s
-            """, (MONITOR_ID,))
+                SELECT strategy FROM users.monitor_list_{ctx_user()} WHERE id = %s
+            """, (ctx_mid(),))
             monitor_result = cursor.fetchone()
             
             if not monitor_result:
-                log_debug(f"No monitor found with ID {MONITOR_ID}")
+                log_debug(f"No monitor found with ID {ctx_mid()}")
                 return 40
             
             strategy_name = monitor_result[0]
             if not strategy_name:
-                log_debug(f"No strategy assigned to monitor {MONITOR_ID}")
+                log_debug(f"No strategy assigned to monitor {ctx_mid()}")
                 return 40
             
             # Get the threshold from the monitor
             cursor.execute("""
                 SELECT current_probability FROM users.monitor_list_0001 WHERE id = %s
-            """, (MONITOR_ID,))
+            """, (ctx_mid(),))
             result = cursor.fetchone()
             
             conn.close()
@@ -2753,23 +3588,23 @@ def get_min_ttc_seconds():
         with conn.cursor() as cursor:
             # First get the strategy name for this monitor
             cursor.execute(f"""
-                SELECT strategy FROM users.monitor_list_{USER_NUMBER} WHERE id = %s
-            """, (MONITOR_ID,))
+                SELECT strategy FROM users.monitor_list_{ctx_user()} WHERE id = %s
+            """, (ctx_mid(),))
             monitor_result = cursor.fetchone()
             
             if not monitor_result:
-                log_debug(f"No monitor found with ID {MONITOR_ID}")
+                log_debug(f"No monitor found with ID {ctx_mid()}")
                 return 60
             
             strategy_name = monitor_result[0]
             if not strategy_name:
-                log_debug(f"No strategy assigned to monitor {MONITOR_ID}")
+                log_debug(f"No strategy assigned to monitor {ctx_mid()}")
                 return 60
             
             # Get the min_ttc_seconds from the monitor
             cursor.execute("""
                 SELECT min_ttc_seconds FROM users.monitor_list_0001 WHERE id = %s
-            """, (MONITOR_ID,))
+            """, (ctx_mid(),))
             result = cursor.fetchone()
             
             conn.close()
@@ -2792,23 +3627,23 @@ def get_verification_period_enabled():
         with conn.cursor() as cursor:
             # First get the strategy name for this monitor
             cursor.execute(f"""
-                SELECT strategy FROM users.monitor_list_{USER_NUMBER} WHERE id = %s
-            """, (MONITOR_ID,))
+                SELECT strategy FROM users.monitor_list_{ctx_user()} WHERE id = %s
+            """, (ctx_mid(),))
             monitor_result = cursor.fetchone()
             
             if not monitor_result:
-                log_debug(f"No monitor found with ID {MONITOR_ID}")
+                log_debug(f"No monitor found with ID {ctx_mid()}")
                 return False
             
             strategy_name = monitor_result[0]
             if not strategy_name:
-                log_debug(f"No strategy assigned to monitor {MONITOR_ID}")
+                log_debug(f"No strategy assigned to monitor {ctx_mid()}")
                 return False
             
             # Get the verification_period_enabled from the monitor
             cursor.execute("""
                 SELECT verification_period_enabled FROM users.monitor_list_0001 WHERE id = %s
-            """, (MONITOR_ID,))
+            """, (ctx_mid(),))
             result = cursor.fetchone()
             
             conn.close()
@@ -2831,23 +3666,23 @@ def get_verification_period_seconds():
         with conn.cursor() as cursor:
             # First get the strategy name for this monitor
             cursor.execute(f"""
-                SELECT strategy FROM users.monitor_list_{USER_NUMBER} WHERE id = %s
-            """, (MONITOR_ID,))
+                SELECT strategy FROM users.monitor_list_{ctx_user()} WHERE id = %s
+            """, (ctx_mid(),))
             monitor_result = cursor.fetchone()
             
             if not monitor_result:
-                log_debug(f"No monitor found with ID {MONITOR_ID}")
+                log_debug(f"No monitor found with ID {ctx_mid()}")
                 return 15
             
             strategy_name = monitor_result[0]
             if not strategy_name:
-                log_debug(f"No strategy assigned to monitor {MONITOR_ID}")
+                log_debug(f"No strategy assigned to monitor {ctx_mid()}")
                 return 15
             
             # Get the verification_period_seconds from the monitor
             cursor.execute("""
                 SELECT verification_period_seconds FROM users.monitor_list_0001 WHERE id = %s
-            """, (MONITOR_ID,))
+            """, (ctx_mid(),))
             result = cursor.fetchone()
             
             conn.close()
@@ -3238,9 +4073,8 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 if __name__ == "__main__":
-    # Create monitor-specific active trades table on startup
     create_monitor_active_trades_table()
-    
+
     # Sync with existing trades on startup
     sync_on_demand()
     

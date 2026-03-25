@@ -18,6 +18,8 @@ import os
 import time
 from typing import Any, Dict, Optional
 
+from backend.core.exchange_ids import normalize_exchange
+
 logger = logging.getLogger(__name__)
 
 REDIS_CHANNEL_ATS_ENROLL_REQUEST = os.getenv(
@@ -63,6 +65,7 @@ def publish_trade_open_enroll_request(
     ticket_id: str,
     monitor_suffix: str,
     correlation_id: str,
+    exchange: Optional[str] = None,
 ) -> bool:
     """Fire-and-forget publish. Returns False only on hard errors."""
     try:
@@ -72,6 +75,7 @@ def publish_trade_open_enroll_request(
             "trade_id": int(trade_id),
             "ticket_id": str(ticket_id) if ticket_id else "",
             "monitor_suffix": monitor_suffix,
+            "exchange": normalize_exchange(exchange),
         }
         r.publish(REDIS_CHANNEL_ATS_ENROLL_REQUEST, json.dumps(payload))
         return True

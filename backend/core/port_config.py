@@ -41,19 +41,15 @@ DEFAULT_PORTS = {
     "kalshi_account_sync": 8004,
     "kalshi_market_watchdog_hourly_btc": 8005,
     "kalshi_market_watchdog_hourly_eth": 8011,
-    "kalshi_market_watchdog_15m_btc": 8021,
-    "kalshi_market_watchdog_15m_eth": 8022,
-    "kalshi_market_watchdog_15m_sol": 8027,
-    "kalshi_market_watchdog_15m_xrp": 8028,
     "strike_table_generator_hourly_btc": 8014,
     "strike_table_generator_hourly_eth": 8015,
     # SPX/NDX not currently traded; uncomment to re-enable later.
     # "strike_table_generator_hourly_spx": 8016,
     # "strike_table_generator_hourly_ndx": 8017,
-    "strike_table_generator_15m_btc": 8023,
-    "strike_table_generator_15m_eth": 8024,
-    "strike_table_generator_15m_sol": 8029,
-    "strike_table_generator_15m_xrp": 8030
+    "market_watchdog_kalshi_15m": 8031,
+    "strike_table_generator_15m": 8032,
+    "auto_entry_supervisor_15m": 8033,
+    "active_trade_supervisor_15m": 8034,
 }
 
 def ensure_port_config_exists():
@@ -102,16 +98,6 @@ def ensure_port_config_exists():
                     "description": "Kalshi ETH hourly market data monitoring",
                     "status": "RUNNING"
                 },
-                "kalshi_market_watchdog_15m_btc": {
-                    "port": 8021,
-                    "description": "Kalshi BTC 15m market data monitoring",
-                    "status": "RUNNING"
-                },
-                "kalshi_market_watchdog_15m_eth": {
-                    "port": 8022,
-                    "description": "Kalshi ETH 15m market data monitoring",
-                    "status": "RUNNING"
-                },
                 "strike_table_generator_hourly_btc": {
                     "port": 8014,
                     "description": "Strike table generator hourly BTC",
@@ -133,14 +119,24 @@ def ensure_port_config_exists():
                 #     "description": "Strike table generator hourly NDX",
                 #     "status": "RUNNING"
                 # },
-                "strike_table_generator_15m_btc": {
-                    "port": 8023,
-                    "description": "Strike table generator 15m BTC",
+                "strike_table_generator_15m": {
+                    "port": 8032,
+                    "description": "Unified 15m strike table generator (all symbols)",
                     "status": "RUNNING"
                 },
-                "strike_table_generator_15m_eth": {
-                    "port": 8024,
-                    "description": "Strike table generator 15m ETH",
+                "market_watchdog_kalshi_15m": {
+                    "port": 8031,
+                    "description": "Consolidated Kalshi 15m market watchdog (all symbols)",
+                    "status": "RUNNING"
+                },
+                "auto_entry_supervisor_15m": {
+                    "port": 8033,
+                    "description": "Unified auto entry supervisor for all active 15m monitors",
+                    "status": "RUNNING"
+                },
+                "active_trade_supervisor_15m": {
+                    "port": 8034,
+                    "description": "Unified active trade supervisor for all active 15m monitors",
                     "status": "RUNNING"
                 },
                 "monitor_manager": {
@@ -426,6 +422,54 @@ def register_monitor_ports(monitor_identifier: str) -> Dict[str, int]:
         print(f"[PORT_CONFIG] Error registering monitor ports: {e}")
     
     return ports
+
+
+def monitor_suffix_uses_unified_15m_pool(monitor_suffix: str) -> bool:
+    """True when this monitor should use the unified 15m AES/ATS ports (market = 15m)."""
+    if "_" not in monitor_suffix:
+        return False
+    user_number, monitor_id = monitor_suffix.split("_", 1)
+    conn = None
+    try:
+        from backend.core.config.database import get_postgresql_connection
+
+        conn = get_postgresql_connection()
+        if not conn:
+            return False
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT LOWER(TRIM(COALESCE(NULLIF(TRIM(market), ''), 'hourly')))
+                FROM users.monitor_list_{user_number}
+                WHERE id = %s
+                """,
+                (monitor_id,),
+            )
+            row = cursor.fetchone()
+            if not row or row[0] is None:
+                return False
+            return str(row[0]).strip() == "15m"
+    except Exception:
+        return False
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def get_active_trade_supervisor_http_port_for_monitor_suffix(monitor_suffix: str) -> int:
+    if monitor_suffix_uses_unified_15m_pool(monitor_suffix):
+        return get_port("active_trade_supervisor_15m")
+    return get_monitor_port("active_trade_supervisor", monitor_suffix)
+
+
+def get_auto_entry_supervisor_http_port_for_monitor_suffix(monitor_suffix: str) -> int:
+    if monitor_suffix_uses_unified_15m_pool(monitor_suffix):
+        return get_port("auto_entry_supervisor_15m")
+    return get_monitor_port("auto_entry_supervisor", monitor_suffix)
+
 
 def get_port_info() -> Dict:
     """Get comprehensive port information for API endpoints using universal host system."""

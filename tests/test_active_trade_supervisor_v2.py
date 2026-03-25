@@ -89,7 +89,7 @@ class TestActiveTradeSupervisorV2(unittest.TestCase):
             'contract': 'BTC 2pm',
             'ticker': 'BTC-50000-2pm',
             'symbol': 'BTC',
-            'market': 'Kalshi',
+            'exchange': 'kalshi',
             'trade_strategy': 'Hourly HTC',
             'symbol_open': 50000,
             'momentum': '+15',
@@ -103,7 +103,7 @@ class TestActiveTradeSupervisorV2(unittest.TestCase):
         insert_query = """
             INSERT INTO trades (
                 date, time, strike, side, buy_price, position, status,
-                contract, ticker, symbol, market, trade_strategy, symbol_open,
+                contract, ticker, symbol, exchange, trade_strategy, symbol_open,
                 momentum, prob, volatility, ticket_id, entry_method
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
@@ -112,7 +112,7 @@ class TestActiveTradeSupervisorV2(unittest.TestCase):
             test_trade['date'], test_trade['time'], test_trade['strike'], 
             test_trade['side'], test_trade['buy_price'], test_trade['position'], 
             test_trade['status'], test_trade['contract'], test_trade['ticker'],
-            test_trade['symbol'], test_trade['market'], test_trade['trade_strategy'],
+            test_trade['symbol'], test_trade['exchange'], test_trade['trade_strategy'],
             test_trade['symbol_open'], test_trade['momentum'], test_trade['prob'],
             test_trade['volatility'], test_trade['ticket_id'], test_trade['entry_method']
         )
@@ -167,7 +167,7 @@ class TestActiveTradeSupervisorV2(unittest.TestCase):
             'contract': 'BTC 2pm',
             'ticker': 'BTC-50000-2pm',
             'symbol': 'BTC',
-            'market': 'Kalshi',
+            'exchange': 'kalshi',
             'trade_strategy': 'Hourly HTC',
             'symbol_open': 50000.0,
             'momentum': '+15',
@@ -181,7 +181,7 @@ class TestActiveTradeSupervisorV2(unittest.TestCase):
         insert_query = """
             INSERT INTO active_trades (
                 trade_id, ticket_id, date, time, strike, side, buy_price, position,
-                contract, ticker, symbol, market, trade_strategy, symbol_open,
+                contract, ticker, symbol, exchange, trade_strategy, symbol_open,
                 momentum, prob, fees, diff, status
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
@@ -191,7 +191,7 @@ class TestActiveTradeSupervisorV2(unittest.TestCase):
             test_trade['date'], test_trade['time'], test_trade['strike'],
             test_trade['side'], test_trade['buy_price'], test_trade['position'],
             test_trade['contract'], test_trade['ticker'], test_trade['symbol'],
-            test_trade['market'], test_trade['trade_strategy'], test_trade['symbol_open'],
+            test_trade['exchange'], test_trade['trade_strategy'], test_trade['symbol_open'],
             test_trade['momentum'], test_trade['prob'], test_trade['fees'],
             test_trade['diff'], test_trade['status']
         )
@@ -233,7 +233,7 @@ class TestActiveTradeSupervisorV2(unittest.TestCase):
             'contract': 'BTC 2pm',
             'ticker': 'BTC-50000-2pm',
             'symbol': 'BTC',
-            'market': 'Kalshi',
+            'exchange': 'kalshi',
             'trade_strategy': 'Hourly HTC',
             'symbol_open': 50000.0,
             'momentum': '+15',
@@ -247,7 +247,7 @@ class TestActiveTradeSupervisorV2(unittest.TestCase):
         insert_query = """
             INSERT INTO active_trades (
                 trade_id, ticket_id, date, time, strike, side, buy_price, position,
-                contract, ticker, symbol, market, trade_strategy, symbol_open,
+                contract, ticker, symbol, exchange, trade_strategy, symbol_open,
                 momentum, prob, fees, diff, status
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
@@ -257,7 +257,7 @@ class TestActiveTradeSupervisorV2(unittest.TestCase):
             test_trade['date'], test_trade['time'], test_trade['strike'],
             test_trade['side'], test_trade['buy_price'], test_trade['position'],
             test_trade['contract'], test_trade['ticker'], test_trade['symbol'],
-            test_trade['market'], test_trade['trade_strategy'], test_trade['symbol_open'],
+            test_trade['exchange'], test_trade['trade_strategy'], test_trade['symbol_open'],
             test_trade['momentum'], test_trade['prob'], test_trade['fees'],
             test_trade['diff'], test_trade['status']
         )
@@ -307,7 +307,7 @@ class TestActiveTradeSupervisorV2(unittest.TestCase):
             'contract': 'BTC 2pm',
             'ticker': 'BTC-50000-2pm',
             'symbol': 'BTC',
-            'market': 'Kalshi',
+            'exchange': 'kalshi',
             'trade_strategy': 'Hourly HTC',
             'symbol_open': 50000.0,
             'momentum': '+15',
@@ -321,7 +321,7 @@ class TestActiveTradeSupervisorV2(unittest.TestCase):
         insert_query = """
             INSERT INTO active_trades (
                 trade_id, ticket_id, date, time, strike, side, buy_price, position,
-                contract, ticker, symbol, market, trade_strategy, symbol_open,
+                contract, ticker, symbol, exchange, trade_strategy, symbol_open,
                 momentum, prob, fees, diff, status
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
@@ -331,7 +331,7 @@ class TestActiveTradeSupervisorV2(unittest.TestCase):
             test_trade['date'], test_trade['time'], test_trade['strike'],
             test_trade['side'], test_trade['buy_price'], test_trade['position'],
             test_trade['contract'], test_trade['ticker'], test_trade['symbol'],
-            test_trade['market'], test_trade['trade_strategy'], test_trade['symbol_open'],
+            test_trade['exchange'], test_trade['trade_strategy'], test_trade['symbol_open'],
             test_trade['momentum'], test_trade['prob'], test_trade['fees'],
             test_trade['diff'], test_trade['status']
         )

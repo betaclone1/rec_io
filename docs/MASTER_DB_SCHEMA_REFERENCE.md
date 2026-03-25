@@ -8908,6 +8908,64 @@ Kalshi 15-minute market data for ETH. One row per current 15m window; truncated 
 
 ---
 
+### Table: `live_data.market_kalshi_15m`
+
+Unified 15-minute market snapshots for tracked crypto symbols (BTC, ETH, SOL, XRP). Multiple rows per symbol (one per venue market in the active event). **`exchange`** identifies the exchange/API source (e.g. `kalshi` from `market_watchdog.py`). `symbol` plus `exchange` replace the role of separate per-symbol tables (`market_kalshi_15m_btc`, …) for this feed. On event rotation for a given symbol and exchange, those rows are deleted and repopulated; open-trade tickers may be preserved and re-inserted. `strike` is backfilled from the corresponding `live_data.live_price_log_1s_{sym}`.`one_minute_avg` at the window opening when API/subtitle strike is empty. Migration `20260326_1000_venue_exchange_column_names` renames **`broker` → `exchange`** and the unique index to `market_kalshi_15m_exchange_symbol_event_market_unique`.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_15m_id_seq'::regclass) | |
+| `symbol` | `character varying(10)` | NO | - | e.g. BTC, ETH, SOL, XRP |
+| `exchange` | `character varying(20)` | NO | - | e.g. `kalshi` |
+| `event_ticker` | `character varying(50)` | NO | - | |
+| `market_ticker` | `character varying(100)` | NO | - | |
+| `market` | `text` | YES | '15m' | Interval label |
+| `strike` | `character varying(20)` | YES | - | From API `floor_strike` / subtitle or price-log backfill |
+| `yes_bid` | `integer(32)` | YES | - | |
+| `yes_ask` | `integer(32)` | YES | - | |
+| `no_bid` | `integer(32)` | YES | - | |
+| `no_ask` | `integer(32)` | YES | - | |
+| `last_price` | `integer(32)` | YES | - | |
+| `volume_fp` | `integer(32)` | YES | - | Fixed-point volume count (Kalshi `volume_fp`) |
+| `volume_24h_fp` | `integer(32)` | YES | - | Fixed-point 24h volume count (Kalshi `volume_24h_fp`) |
+| `open_interest` | `integer(32)` | YES | - | |
+| `liquidity` | `integer(32)` | YES | - | |
+| `created_at` | `timestamp with time zone` | YES | now() | |
+| `updated_at` | `timestamp with time zone` | YES | now() | |
+| `yes_bid_dollars` | `text` | YES | - | |
+| `yes_ask_dollars` | `text` | YES | - | |
+| `no_bid_dollars` | `text` | YES | - | |
+| `no_ask_dollars` | `text` | YES | - | |
+| `last_price_dollars` | `text` | YES | - | |
+
+#### Constraints
+
+- **Primary Key:** `market_kalshi_15m_pkey` on `id`
+- **Unique:** `market_kalshi_15m_exchange_symbol_event_market_unique` on `(exchange, symbol, event_ticker, market_ticker)`
+
+#### Indexes
+
+- `market_kalshi_15m_exchange_symbol_event_market_unique`
+  ```sql
+  CREATE UNIQUE INDEX market_kalshi_15m_exchange_symbol_event_market_unique ON live_data.market_kalshi_15m USING btree (exchange, symbol, event_ticker, market_ticker)
+  ```
+- `market_kalshi_15m_broker_symbol_idx`
+  ```sql
+  CREATE INDEX market_kalshi_15m_broker_symbol_idx ON live_data.market_kalshi_15m USING btree (exchange, symbol)
+  ```
+- `market_kalshi_15m_broker_symbol_event_idx`
+  ```sql
+  CREATE INDEX market_kalshi_15m_broker_symbol_event_idx ON live_data.market_kalshi_15m USING btree (exchange, symbol, event_ticker)
+  ```
+- `market_kalshi_15m_pkey`
+  ```sql
+  CREATE UNIQUE INDEX market_kalshi_15m_pkey ON live_data.market_kalshi_15m USING btree (id)
+  ```
+
+---
+
 ### Table: `live_data.price_change_btc`
 
 #### Columns
@@ -9236,6 +9294,57 @@ Kalshi 15-minute market data for ETH. One row per current 15m window; truncated 
   ```sql
   CREATE INDEX strike_table_spx_timestamp_symbol_current_price_idx ON live_data.strike_table_hourly_spx USING btree ("timestamp", symbol, current_price)
   ```
+
+---
+
+### Table: `live_data.strike_table_15m`
+
+Unified 15-minute strike table for all Kalshi 15m symbols (**BTC**, **ETH**, **SOL**, **XRP**). Rows are scoped by **`exchange`** (same role as per-symbol strike tables: in the unified feed the value is the data-source key **e.g. `kalshi`**, aligned with `live_data.market_kalshi_15m.exchange`; legacy per-symbol 15m tables may still use a `broker` column until cutover). Populated by `backend/strike_table_generator.py --master-15m`; per-symbol tables `strike_table_15m_*` remain until application cutover.
+
+Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_table_15m_drop_exchange_display`, `20260326_1000_venue_exchange_column_names` (renames **`broker` → `exchange`** on this table).
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer` | NO | nextval | Primary key |
+| `timestamp` | `timestamptz` | YES | now() | Row snapshot time |
+| `symbol` | `varchar(10)` | NO | - | `BTC`, `ETH`, etc. |
+| `exchange` | `varchar(20)` | NO | - | Source key (e.g. `kalshi`) |
+| `market` | `text` | YES | `15m` | Interval label |
+| `current_price` | `numeric(18,5)` | YES | - | Spot |
+| `ttc_hourly` | `integer` | YES | - | Unused for 15m (NULL) |
+| `ttc_15m` | `integer` | YES | - | Seconds to next 15m boundary |
+| `event_ticker` | `varchar(50)` | YES | - | Kalshi event |
+| `market_title` | `text` | YES | - | Derived title |
+| `strike_tier` | `integer` | YES | - | 0 for 15m |
+| `market_status` | `varchar(20)` | YES | - | |
+| `strike` | `numeric(18,5)` | YES | - | Strike level |
+| `buffer` | `numeric(18,5)` | YES | - | |
+| `buffer_pct` | `numeric(12,6)` | YES | - | |
+| `probability_hourly` | `decimal(5,2)` | YES | - | NULL for 15m |
+| `probability_15m` | `decimal(5,2)` | YES | - | Model probability |
+| `yes_ask` / `no_ask` | `decimal(5,2)` | YES | - | Cents |
+| `yes_ask_dollars` / `no_ask_dollars` | `text` | YES | - | |
+| `yes_bid_dollars` / `no_bid_dollars` | `text` | YES | - | |
+| `yes_price_spread` / `no_price_spread` | `numeric(6,4)` | YES | - | |
+| `yes_diff` / `no_diff` | `decimal(5,2)` | YES | - | |
+| `volume` | `integer` | YES | - | |
+| `ticker` | `varchar(50)` | YES | - | Market ticker |
+| `active_side` | `varchar(10)` | YES | - | |
+| `momentum_weighted_score` | `decimal(5,3)` | YES | - | |
+| `momentum_percentile` | `decimal(5,1)` | YES | - | |
+| `volatility` | `numeric(10,6)` | YES | - | |
+| `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `movement` | `numeric(10,4)` | YES | - | |
+| `movement_percentile` | `numeric(5,1)` | YES | - | |
+| `created_at` | `timestamptz` | YES | now() | |
+
+#### Indexes
+
+- `strike_table_15m_broker_symbol_idx` on `(broker, symbol)`
+- `idx_strike_table_15m_lookup` on `(timestamp, symbol, current_price)`
+- `strike_table_15m_broker_symbol_timestamp_idx` on `(broker, symbol, timestamp DESC)`
 
 ---
 
@@ -9894,6 +10003,55 @@ Same as `testing.candlesticks_1m_KXBTCD-26JAN1320-T95499.99` except `market_tick
 
 ---
 
+### Table: `users.active_trades_0001_15m`
+
+Unified Kalshi 15m active-trade tracking: **one table per user** (`active_trades_<user>_15m`), with **`monitor_id`** scoping (numeric monitor id, e.g. `10034`). Populated by `active_trade_supervisor` when run as `unified_15m`. At most one open/pending/closing row per monitor in normal operation; **`trade_id`** is globally unique in the table.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | serial | |
+| `monitor_id` | `character varying(20)` | NO | - | Monitor id (e.g. `10034`), not `mon_` prefix |
+| `trade_id` | `integer(32)` | NO | - | FK-like reference to `users.trades_0001.id` |
+| `ticket_id` | `character varying(50)` | YES | - | |
+| `date` | `date` | YES | - | |
+| `time` | `time without time zone` | YES | - | |
+| `strike` | `character varying(50)` | YES | - | |
+| `side` | `character varying(10)` | YES | - | |
+| `buy_price` | `numeric(10,4)` | YES | - | |
+| `position` | `integer(32)` | YES | - | |
+| `contract` | `character varying(50)` | YES | - | |
+| `ticker` | `character varying(50)` | YES | - | |
+| `symbol` | `character varying(10)` | YES | - | |
+| `exchange` | `character varying(50)` | YES | - | Execution venue slug (same convention as `users.trades_0001.exchange`) |
+| `trade_strategy` | `character varying(50)` | YES | - | |
+| `symbol_open` | `numeric(10,2)` | YES | - | |
+| `momentum` | `numeric(5,2)` | YES | - | |
+| `prob` | `numeric(5,2)` | YES | - | |
+| `fees` | `numeric(10,4)` | YES | - | |
+| `diff` | `numeric(10,4)` | YES | - | |
+| `status` | `character varying(20)` | YES | `'active'` | |
+| `current_symbol_price` | `numeric(20,8)` | YES | - | Spot from `live_price_log_1s_*` at full precision |
+| `current_probability` | `numeric(5,2)` | YES | - | |
+| `buffer_from_entry` | `numeric(20,8)` | YES | - | `current_symbol_price − strike` (signed per side rules) |
+| `time_since_entry` | `integer(32)` | YES | - | |
+| `current_close_price` | `numeric(10,4)` | YES | - | |
+| `current_pnl` | `character varying(20)` | YES | - | |
+| `high_price` | `numeric(10,4)` | YES | - | |
+| `low_price` | `numeric(10,4)` | YES | - | |
+| `last_updated` | `timestamp without time zone` | YES | `CURRENT_TIMESTAMP` | |
+| `created_at` | `timestamp without time zone` | YES | `CURRENT_TIMESTAMP` | |
+
+#### Constraints / indexes
+
+- **Unique:** `trade_id` (one row per trade).
+- **Index:** `(monitor_id, status)` for lookups by monitor.
+
+**Migrations:** `20260326_1800_active_trades_0001_15m_pool` (create pool). `20260327_1015_active_trades_ensure_exchange` (idempotent: rename `market` → `exchange` or add `exchange` on any `users.active_trades_*` still missing it). `20260327_1020_active_trades_monitoring_price_precision` (`current_symbol_price`, `buffer_from_entry` → `numeric(20,8)` on all `users.active_trades_*`).
+
+---
+
 ### Table: `users.active_trades_0001_10002`
 
 #### Columns
@@ -9912,7 +10070,7 @@ Same as `testing.candlesticks_1m_KXBTCD-26JAN1320-T95499.99` except `market_tick
 | `contract` | `character varying(50)` | YES | - | |
 | `ticker` | `character varying(50)` | YES | - | |
 | `symbol` | `character varying(10)` | YES | - | |
-| `market` | `character varying(50)` | YES | - | |
+| `exchange` | `character varying(50)` | YES | - | Execution venue slug. Migration `20260326_1000_venue_exchange_column_names` renames **`market` → `exchange`**. |
 | `trade_strategy` | `character varying(50)` | YES | - | |
 | `symbol_open` | `numeric(10,2)` | YES | - | |
 | `momentum` | `numeric(5,2)` | YES | - | |
@@ -9920,9 +10078,9 @@ Same as `testing.candlesticks_1m_KXBTCD-26JAN1320-T95499.99` except `market_tick
 | `fees` | `numeric(10,4)` | YES | - | |
 | `diff` | `numeric(10,4)` | YES | - | |
 | `status` | `character varying(20)` | YES | 'active'::character varying | |
-| `current_symbol_price` | `numeric(10,2)` | YES | - | |
+| `current_symbol_price` | `numeric(20,8)` | YES | - | |
 | `current_probability` | `numeric(5,2)` | YES | - | |
-| `buffer_from_entry` | `numeric(10,2)` | YES | - | |
+| `buffer_from_entry` | `numeric(20,8)` | YES | - | |
 | `time_since_entry` | `integer(32)` | YES | - | |
 | `current_close_price` | `numeric(10,4)` | YES | - | |
 | `current_pnl` | `character varying(20)` | YES | - | |
@@ -9962,7 +10120,7 @@ Same as `testing.candlesticks_1m_KXBTCD-26JAN1320-T95499.99` except `market_tick
 | `contract` | `character varying(50)` | YES | - | |
 | `ticker` | `character varying(50)` | YES | - | |
 | `symbol` | `character varying(10)` | YES | - | |
-| `market` | `character varying(50)` | YES | - | |
+| `exchange` | `character varying(50)` | YES | - | Execution venue slug. Migration `20260326_1000_venue_exchange_column_names` renames **`market` → `exchange`**. |
 | `trade_strategy` | `character varying(50)` | YES | - | |
 | `symbol_open` | `numeric(10,2)` | YES | - | |
 | `momentum` | `numeric(5,2)` | YES | - | |
@@ -9970,9 +10128,9 @@ Same as `testing.candlesticks_1m_KXBTCD-26JAN1320-T95499.99` except `market_tick
 | `fees` | `numeric(10,4)` | YES | - | |
 | `diff` | `numeric(10,4)` | YES | - | |
 | `status` | `character varying(20)` | YES | 'active'::character varying | |
-| `current_symbol_price` | `numeric(10,2)` | YES | - | |
+| `current_symbol_price` | `numeric(20,8)` | YES | - | |
 | `current_probability` | `numeric(5,2)` | YES | - | |
-| `buffer_from_entry` | `numeric(10,2)` | YES | - | |
+| `buffer_from_entry` | `numeric(20,8)` | YES | - | |
 | `time_since_entry` | `integer(32)` | YES | - | |
 | `current_close_price` | `numeric(10,4)` | YES | - | |
 | `current_pnl` | `character varying(20)` | YES | - | |
@@ -10683,7 +10841,7 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `date` | `text` | NO | - | |
 | `time` | `text` | NO | - | |
 | `symbol` | `text` | YES | - | |
-| `market` | `text` | YES | 'Kalshi'::text | |
+| `exchange` | `text` | YES | - | Execution venue slug (e.g. `kalshi`). Migration `20260326_1000_venue_exchange_column_names` renames **`market` → `exchange`**. |
 | `trade_strategy` | `text` | YES | 'Hourly HTC'::text | |
 | `contract` | `text` | NO | - | |
 | `strike` | `text` | NO | - | For **SOL/XRP**, `trade_manager` normalizes display to `$` + up to **5** decimal places (trim trailing zeros) so expiration settlement matches strike-table granularity. BTC/ETH unchanged. |
@@ -10843,7 +11001,7 @@ Same column set as `users.trades_0001` (see that table for column descriptions).
 | `date` | text |
 | `time` | text |
 | `symbol` | text |
-| `market` | text |
+| `exchange` | text |
 | `trade_strategy` | text |
 | `contract` | text |
 | `strike` | text |

@@ -96,6 +96,18 @@ Inventory of what each script logs and where. Used for the logging audit (see `d
 
 ---
 
+### market_watchdog_kalshi_15m — `backend/market_watchdog.py`
+
+| Aspect | Details |
+|--------|---------|
+| **Mechanism** | `logging` only (logger name `market_watchdog`). EST formatter, single handler to stdout with flush after each emit. |
+| **Destination** | stdout → supervisor. |
+| **Volume** | INFO = startup + heartbeat every 5 min + per-symbol **market rotation** (`[SYMBOL] Market rotated: …`) + preserved-row reinsert counts; WARNING = outage tracker; DEBUG = routine flow. |
+| **Notable** | One process polls all configured 15m symbols; writes `live_data.market_kalshi_15m` with `broker` = `kalshi` for Kalshi API rows. Status/outage JSON under `logs/market_watchdog_status_kalshi_15m_<symbol>.json` (and matching `.jsonl`). |
+| **Extra files** | Per-symbol status/outage JSON beside `logs/`. |
+
+---
+
 ### system_monitor — `backend/system_monitor.py`
 
 | Aspect | Details |

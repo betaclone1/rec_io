@@ -14,6 +14,7 @@ supervisor via the auto_trade toggle switch.
 import logging
 import os
 import json
+import copy
 import time
 import threading
 import requests
@@ -25,6 +26,8 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional, Any
+from contextvars import ContextVar
+from contextlib import contextmanager
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 _HIGH_PRECISION_STRIKE_SYMBOLS = frozenset({"SOL", "XRP"})
@@ -91,7 +94,7 @@ def create_monitor_watchlist_table_DELETED():
             return
         with conn.cursor() as cursor:
             # Create monitor-specific watchlist table
-            watchlist_table = f"watchlist_{USER_NUMBER}_{MONITOR_ID}"
+            watchlist_table = f"watchlist_{ctx_user()}_{ctx_mid()}"
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS live_data.{watchlist_table} (
                     id SERIAL PRIMARY KEY,
@@ -130,7 +133,7 @@ def drop_monitor_watchlist_table_DELETED():
         conn = get_db_connection()
         with conn.cursor() as cursor:
             # Drop monitor-specific watchlist table
-            watchlist_table = f"watchlist_{USER_NUMBER}_{MONITOR_ID}"
+            watchlist_table = f"watchlist_{ctx_user()}_{ctx_mid()}"
             cursor.execute(f"DROP TABLE IF EXISTS live_data.{watchlist_table}")
             conn.commit()
         conn.close()
@@ -153,6 +156,8 @@ def get_monitor_identifier():
     
     # Check command line arguments
     if len(sys.argv) > 1:
+        if sys.argv[1] == "unified_15m":
+            return "unified_15m"
         return sys.argv[1]  # Use first argument as monitor identifier
     
     # Default to first active monitor if no identifier provided
@@ -160,8 +165,44 @@ def get_monitor_identifier():
 
 # Get monitor identifier
 MONITOR_IDENTIFIER = get_monitor_identifier()
-USER_NUMBER = MONITOR_IDENTIFIER.split('_')[0]
-MONITOR_ID = MONITOR_IDENTIFIER.split('_')[1]
+AES_UNIFIED_15M = MONITOR_IDENTIFIER == "unified_15m"
+if AES_UNIFIED_15M:
+    USER_NUMBER = "0001"
+    MONITOR_ID = "0"
+else:
+    USER_NUMBER = MONITOR_IDENTIFIER.split('_')[0]
+    MONITOR_ID = MONITOR_IDENTIFIER.split('_')[1]
+
+_aes_bind_u: ContextVar[Optional[str]] = ContextVar("_aes_bind_u", default=None)
+_aes_bind_m: ContextVar[Optional[str]] = ContextVar("_aes_bind_m", default=None)
+
+
+def ctx_user() -> str:
+    u = _aes_bind_u.get()
+    return u if u is not None else USER_NUMBER
+
+
+def ctx_mid() -> str:
+    m = _aes_bind_m.get()
+    return m if m is not None else MONITOR_ID
+
+
+def ctx_ident() -> str:
+    return f"{ctx_user()}_{ctx_mid()}"
+
+
+@contextmanager
+def aes_monitor_bind(user_num: str, monitor_id: str):
+    if not AES_UNIFIED_15M:
+        yield
+        return
+    t1 = _aes_bind_u.set(user_num)
+    t2 = _aes_bind_m.set(monitor_id)
+    try:
+        yield
+    finally:
+        _aes_bind_u.reset(t1)
+        _aes_bind_m.reset(t2)
 
 
 def _aes_est_formatter():
@@ -206,7 +247,17 @@ _aes_hb_thread = threading.Thread(target=_aes_heartbeat_loop, daemon=True)
 _aes_hb_thread.start()
 
 
-_aes_logger.info("Monitor-aware supervisor starting user=%s monitor=%s", USER_NUMBER, MONITOR_ID)
+def log(message: str):
+    """Stdout log at INFO (use log_debug for plumbing)."""
+    _aes_logger.info("%s", message)
+
+
+def log_debug(message: str):
+    """Stdout log at DEBUG for plumbing/repetitive messages."""
+    _aes_logger.debug("%s", message)
+
+
+_aes_logger.info("Monitor-aware supervisor starting user=%s monitor=%s", ctx_user(), ctx_mid())
 
 _LAST_MONITOR_STATE = {
     "contract": None,
@@ -344,7 +395,7 @@ def _fetch_performance_modifier(weekly_cycle: int) -> float:
         conn = get_db_connection()
         table_identifier = sql.SQL("{}.{}").format(
             sql.Identifier("users"),
-            sql.Identifier(f"monitor_cycle_performance_{USER_NUMBER}_{MONITOR_ID}")
+            sql.Identifier(f"monitor_cycle_performance_{ctx_user()}_{ctx_mid()}")
         )
         with conn.cursor() as cursor:
             cursor.execute(
@@ -368,7 +419,7 @@ def _fetch_max_pct_exposure(weekly_cycle: int) -> float:
         conn = get_db_connection()
         table_identifier = sql.SQL("{}.{}").format(
             sql.Identifier("users"),
-            sql.Identifier(f"monitor_cycle_performance_{USER_NUMBER}_{MONITOR_ID}")
+            sql.Identifier(f"monitor_cycle_performance_{ctx_user()}_{ctx_mid()}")
         )
         with conn.cursor() as cursor:
             cursor.execute(
@@ -394,7 +445,7 @@ def _apply_performance_based_multiplier(multiplier_value: float, position_size: 
         position_type_val = (position_type or "contracts").lower()
         port = get_port("main_app")
         url = f"http://localhost:{port}/api/update_monitor_position"
-        monitor_id_value = int(MONITOR_ID)
+        monitor_id_value = int(ctx_mid())
         payload = {
             "monitor_id": monitor_id_value,
             "position_size": position_size_val,
@@ -439,10 +490,10 @@ def update_monitor_current_state(strike_table_data: Dict[str, Any]) -> None:
             cursor.execute(
                 f"""
                 SELECT performance_based_allocation, position_size, position_type, multiplier
-                FROM users.monitor_list_{USER_NUMBER}
+                FROM users.monitor_list_{ctx_user()}
                 WHERE id = %s
                 """,
-                (MONITOR_ID,)
+                (ctx_mid(),)
             )
             settings_row = cursor.fetchone()
             if settings_row:
@@ -458,7 +509,7 @@ def update_monitor_current_state(strike_table_data: Dict[str, Any]) -> None:
 
             cursor.execute(
                 f"""
-                UPDATE users.monitor_list_{USER_NUMBER}
+                UPDATE users.monitor_list_{ctx_user()}
                 SET current_contract = %s,
                     current_weekly_cycle = %s,
                     current_performance_modifier = %s,
@@ -467,7 +518,7 @@ def update_monitor_current_state(strike_table_data: Dict[str, Any]) -> None:
                 WHERE id = %s
                 """,
                 (contract_label, weekly_cycle, performance_modifier,
-                 max_pct_exposure, MONITOR_ID)
+                 max_pct_exposure, ctx_mid())
             )
         conn.commit()
         conn.close()
@@ -509,7 +560,19 @@ def get_monitor_symbol():
     """Get the symbol for the current monitor from database"""
     try:
         import psycopg2
-        
+
+        if AES_UNIFIED_15M:
+            from backend.core.unified_15m_monitors import list_active_15m_monitor_rows
+
+            rows = list_active_15m_monitor_rows()
+            if not rows:
+                log("[AUTO_ENTRY_SUPERVISOR] ❌ unified_15m: no active 15m monitors in DB; exiting")
+                os._exit(0)
+            uid0 = rows[0]["user_number"]
+            mid0 = rows[0]["monitor_id"]
+        else:
+            uid0, mid0 = ctx_user(), ctx_mid()
+
         conn = get_db_connection()
         if not conn:
             log(f"[AUTO_ENTRY_SUPERVISOR] ❌ No database connection available when resolving symbol for monitor {MONITOR_IDENTIFIER}")
@@ -517,22 +580,22 @@ def get_monitor_symbol():
 
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{USER_NUMBER} 
+            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{uid0}
             WHERE id = %s
-        """, (MONITOR_ID,))
+        """, (mid0,))
         result = cursor.fetchone()
         conn.close()
 
         if not result:
-            log(f"[AUTO_ENTRY_SUPERVISOR] ❌ Monitor {MONITOR_IDENTIFIER} not found in monitor_list_{USER_NUMBER}; shutting down supervisor to avoid ghost activity")
+            log(f"[AUTO_ENTRY_SUPERVISOR] ❌ Monitor {uid0}_{mid0} not found in monitor_list_{uid0}; shutting down supervisor to avoid ghost activity")
             os._exit(0)
 
         symbol_value, market_value = result
         if not symbol_value:
-            log(f"[AUTO_ENTRY_SUPERVISOR] ❌ Monitor {MONITOR_IDENTIFIER} has no symbol configured; shutting down supervisor")
+            log(f"[AUTO_ENTRY_SUPERVISOR] ❌ Monitor {uid0}_{mid0} has no symbol configured; shutting down supervisor")
             os._exit(0)
 
-        return symbol_value.upper(), (market_value or 'hourly').strip().lower()  # (symbol, market)
+        return symbol_value.upper(), (market_value or "hourly").strip().lower()  # (symbol, market)
     except Exception as e:
         log(f"[AUTO_ENTRY_SUPERVISOR] ❌ Error getting monitor symbol: {e}, defaulting to BTC")
         return "BTC", "hourly"
@@ -543,6 +606,12 @@ def get_strike_table_name(symbol: str, market: str) -> str:
     if m not in ('hourly', '15m'):
         m = 'hourly'
     return f"strike_table_{m}_{symbol.lower()}"
+
+
+def _strike_data_exchange_key() -> str:
+    from backend.core.exchange_ids import DEFAULT_EXCHANGE
+
+    return DEFAULT_EXCHANGE
 
 # Get the symbol and market for this monitor (will be updated dynamically)
 _monitor_symbol_market = get_monitor_symbol()
@@ -555,14 +624,16 @@ def get_current_monitor_symbol_and_market():
     global MONITOR_SYMBOL, MONITOR_MARKET
     try:
         import psycopg2
+        if AES_UNIFIED_15M and _aes_bind_m.get() is None:
+            return MONITOR_SYMBOL, MONITOR_MARKET
         conn = get_db_connection()
         if not conn:
             return "BTC", "hourly"
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{USER_NUMBER}
+            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{ctx_user()}
             WHERE id = %s
-        """, (MONITOR_ID,))
+        """, (ctx_mid(),))
         result = cursor.fetchone()
         conn.close()
         if result and result[0]:
@@ -584,12 +655,13 @@ def get_current_monitor_symbol():
     return sym
 
 # Get port from monitor-specific system
-# Register this monitor's ports to ensure consistency
-register_monitor_ports(MONITOR_IDENTIFIER)
-
-# Get monitor-specific port
-AUTO_ENTRY_SUPERVISOR_PORT = get_monitor_port("auto_entry_supervisor", MONITOR_IDENTIFIER)
-_aes_logger.info("Using monitor-specific port: %s", AUTO_ENTRY_SUPERVISOR_PORT)
+if AES_UNIFIED_15M:
+    AUTO_ENTRY_SUPERVISOR_PORT = get_port("auto_entry_supervisor_15m")
+    _aes_logger.info("Using unified 15m AES port: %s", AUTO_ENTRY_SUPERVISOR_PORT)
+else:
+    register_monitor_ports(MONITOR_IDENTIFIER)
+    AUTO_ENTRY_SUPERVISOR_PORT = get_monitor_port("auto_entry_supervisor", MONITOR_IDENTIFIER)
+    _aes_logger.info("Using monitor-specific port: %s", AUTO_ENTRY_SUPERVISOR_PORT)
 
 # Create Flask app
 app = Flask(__name__)
@@ -610,28 +682,42 @@ _simulated_15m_lock = threading.Lock()  # prevent overlapping runs (duplicate in
 TRADE_COOLDOWN = 10
 
 # Global state for auto entry indicator (for frontend display)
-auto_entry_indicator_state = {
+AES_INDICATOR_DEFAULTS = {
     "enabled": False,
     "ttc_within_window": False,
-    "scanning_active": False,  # NEW: True system-wide scanning status
-    "service_healthy": False,  # NEW: Service health status
-    "spike_alert_active": False,  # NEW: SPIKE ALERT state
-    "spike_alert_start_time": None,  # NEW: When spike was detected
-    "spike_alert_momentum_value": None,  # NEW: Momentum value when spike detected
-    "spike_alert_recovery_countdown": None,  # NEW: Minutes until recovery
-    "current_momentum": None,  # NEW: Current momentum value
+    "scanning_active": False,
+    "service_healthy": False,
+    "spike_alert_active": False,
+    "spike_alert_start_time": None,
+    "spike_alert_momentum_value": None,
+    "spike_alert_recovery_countdown": None,
+    "current_momentum": None,
     "current_ttc": 0,
     "min_time": 0,
     "max_time": 3600,
-    "last_updated": None
+    "last_updated": None,
 }
+
+auto_entry_indicator_state = copy.deepcopy(AES_INDICATOR_DEFAULTS)
+_aes_indicator_states: Dict[str, dict] = {}
+
+
+def _aes_indicator_bucket() -> dict:
+    """Per-monitor indicator dict in unified 15m pool; singleton for hourly."""
+    if not AES_UNIFIED_15M:
+        return auto_entry_indicator_state
+    key = ctx_ident()
+    if key not in _aes_indicator_states:
+        _aes_indicator_states[key] = copy.deepcopy(AES_INDICATOR_DEFAULTS)
+    return _aes_indicator_states[key]
 
 # Track previous settings for change detection
 previous_settings = None
 previous_auto_trade_status = None
 
-# Track previous state to detect changes
+# Track previous state to detect changes (per-monitor key in unified pool)
 previous_indicator_state = None
+_previous_indicator_by_monitor: Dict[str, Any] = {}
 
 # Track if Momentum Breakout has entered trades for current cycle
 momentum_breakout_trades_entered = False
@@ -669,7 +755,7 @@ def load_auto_entry_state_from_db():
             cursor.execute("""
                 SELECT strategy, cooldown_start_time, cooldown_timer, updated_at 
                 FROM users.monitor_list_0001 WHERE id = %s
-            """, (MONITOR_ID,))
+            """, (ctx_mid(),))
             monitor_result = cursor.fetchone()
             
             if monitor_result:
@@ -679,7 +765,7 @@ def load_auto_entry_state_from_db():
                 cursor.execute("""
                     SELECT spike_alert_cooldown_minutes, min_time, max_time
                     FROM users.monitor_list_0001 WHERE id = %s
-                """, (MONITOR_IDENTIFIER.split('_')[1],))
+                """, (ctx_mid(),))
                 strategy_result = cursor.fetchone()
                 
                 if strategy_result:
@@ -706,7 +792,7 @@ def load_auto_entry_state_from_db():
                     # Always update cooldown_timer (even when negative) to show time since last spike
                     cursor.execute(
                         "UPDATE users.monitor_list_0001 SET cooldown_timer = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
-                        (int(remaining_seconds), MONITOR_ID)
+                        (int(remaining_seconds), ctx_mid())
                     )
                     
                     conn.commit()
@@ -716,7 +802,7 @@ def load_auto_entry_state_from_db():
                         port = get_port("main_app")
                         url = f"http://localhost:{port}/api/notify_cooldown_timer_change"
                         # Send full monitor ID format that dashboard expects (mon_0001_10002) - lowercase
-                        full_monitor_id = f"mon_{USER_NUMBER}_{MONITOR_ID}"
+                        full_monitor_id = f"mon_{ctx_user()}_{ctx_mid()}"
                         response = requests.post(url, json={
                             "monitor_id": full_monitor_id,
                             "cooldown_timer": int(remaining_seconds)
@@ -757,16 +843,6 @@ def load_auto_entry_state_from_db():
 # SPIKE ALERT constants - NO DEFAULTS, must get from settings
 # These will be loaded from auto_entry_settings.json
 
-def log(message: str):
-    """Stdout log at INFO (use log_debug for plumbing)."""
-    _aes_logger.info("%s", message)
-
-
-def log_debug(message: str):
-    """Stdout log at DEBUG for plumbing/repetitive messages."""
-    _aes_logger.debug("%s", message)
-
-
 def log_heartbeat():
     """Detailed status at DEBUG; simple heartbeat at INFO is handled by _aes_heartbeat_loop."""
     try:
@@ -779,7 +855,7 @@ def log_heartbeat():
             import psycopg2
             conn = get_db_connection()
             with conn.cursor() as cursor:
-                cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+                cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
                 result = cursor.fetchone()
                 cooldown_timer = result[0] if result and result[0] is not None else 0
             conn.close()
@@ -878,8 +954,6 @@ def get_momentum_percentile(symbol="BTC"):
 
 def check_spike_alert_conditions():
     """Check if spike alert conditions are met and update state accordingly"""
-    global auto_entry_indicator_state
-    
     try:
         # Get current momentum for this monitor's symbol
         current_symbol = get_current_monitor_symbol()
@@ -888,7 +962,7 @@ def check_spike_alert_conditions():
             return
         
         # Update current momentum in state
-        auto_entry_indicator_state["current_momentum"] = current_momentum
+        _aes_indicator_bucket()["current_momentum"] = current_momentum
         
         # Load current state from database (PHASE 2: Replaced JSON with DB)
         state = load_auto_entry_state_from_db()
@@ -943,7 +1017,7 @@ def check_spike_alert_conditions():
                 log_debug(f"[SPIKE ALERT] Disabled - clearing any active spike alert")
             
             # Update global state for frontend
-            auto_entry_indicator_state.update({
+            _aes_indicator_bucket().update({
                 "spike_alert_active": False,
                 "spike_alert_start_time": None,
                 "spike_alert_momentum_value": None,
@@ -978,7 +1052,7 @@ def check_spike_alert_conditions():
             
             # Start cooldown period in database (timestamp-based)
             start_cooldown_period_in_db()
-            _aes_logger.info("spike started monitor_id=%s", MONITOR_ID)
+            _aes_logger.info("spike started monitor_id=%s", ctx_mid())
             log(f"[SPIKE ALERT] 🚨 SPIKE DETECTED! Momentum: {current_momentum:.2f} (threshold: ±{spike_threshold})")
             log(f"[SPIKE ALERT] Cooldown started ({cooldown_minutes} min); Hourly HTC uses raised min_probability (prob_adj), not a hard pause")
         
@@ -995,7 +1069,7 @@ def check_spike_alert_conditions():
                         state["spike_alert_momentum_value"] = None
                         state["spike_alert_recovery_countdown"] = None
                         # Note: spike_alert_start_time remains set in DB (cooldown_start_time) for tracking elapsed time
-                        _aes_logger.info("spike ended monitor_id=%s", MONITOR_ID)
+                        _aes_logger.info("spike ended monitor_id=%s", ctx_mid())
                         log(f"[SPIKE ALERT] ✅ RECOVERY COMPLETE! Auto entry RESUMED")
                         log(f"[SPIKE ALERT] Recovery time: {time_in_recovery:.1f} minutes")
                     else:
@@ -1021,7 +1095,7 @@ def check_spike_alert_conditions():
         state["current_momentum"] = current_momentum
         
         # Update global state for frontend
-        auto_entry_indicator_state.update({
+        _aes_indicator_bucket().update({
             "spike_alert_active": state["spike_alert_active"],
             "spike_alert_start_time": state["spike_alert_start_time"],
             "spike_alert_momentum_value": state["spike_alert_momentum_value"],
@@ -1043,8 +1117,8 @@ def start_cooldown_period_in_db():
         with conn.cursor() as cursor:
             # Update the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
-                f"UPDATE users.monitor_list_{USER_NUMBER} SET cooldown_start_time = NOW(), updated_at = CURRENT_TIMESTAMP WHERE id = %s",
-                (MONITOR_ID,)
+                f"UPDATE users.monitor_list_{ctx_user()} SET cooldown_start_time = NOW(), updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                (ctx_mid(),)
             )
             
             conn.commit()
@@ -1061,8 +1135,8 @@ def reset_cooldown_period_in_db():
         with conn.cursor() as cursor:
             # Reset the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
-                f"UPDATE users.monitor_list_{USER_NUMBER} SET cooldown_start_time = NULL, cooldown_timer = 0, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
-                (MONITOR_ID,)
+                f"UPDATE users.monitor_list_{ctx_user()} SET cooldown_start_time = NULL, cooldown_timer = 0, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                (ctx_mid(),)
             )
             
             conn.commit()
@@ -1081,7 +1155,7 @@ def update_cooldown_timer_in_db(seconds):
             # Update the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
                 "UPDATE users.monitor_list_0001 SET cooldown_timer = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
-                (seconds, MONITOR_ID)
+                (seconds, ctx_mid())
             )
             
             conn.commit()
@@ -1093,7 +1167,7 @@ def update_cooldown_timer_in_db(seconds):
             port = get_port("main_app")
             url = f"http://localhost:{port}/api/notify_cooldown_timer_change"
             # Send full monitor ID format that dashboard expects (mon_0001_10002) - lowercase
-            full_monitor_id = f"mon_{USER_NUMBER}_{MONITOR_ID}"
+            full_monitor_id = f"mon_{ctx_user()}_{ctx_mid()}"
             response = requests.post(url, json={
                 "monitor_id": full_monitor_id,
                 "cooldown_timer": seconds
@@ -1113,7 +1187,7 @@ def update_auto_entry_status_in_db(status):
     try:
         # Only log if status actually changed
         if previous_auto_trade_status != status:
-            log(f"[AUTO ENTRY] 🔄 STATUS CHANGE | Monitor {MONITOR_ID} | {previous_auto_trade_status} → {status}")
+            log(f"[AUTO ENTRY] 🔄 STATUS CHANGE | Monitor {ctx_mid()} | {previous_auto_trade_status} → {status}")
             previous_auto_trade_status = status
         
         import psycopg2
@@ -1122,7 +1196,7 @@ def update_auto_entry_status_in_db(status):
             # Update the monitor's auto_trade_status field (this is what the frontend reads)
             cursor.execute(
                 "UPDATE users.monitor_list_0001 SET auto_trade_status = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
-                (status, MONITOR_ID)
+                (status, ctx_mid())
             )
             conn.commit()
         conn.close()
@@ -1134,7 +1208,7 @@ def update_auto_entry_status_in_db(status):
             port = get_port("main_app")
             url = f"http://localhost:{port}/api/notify_auto_trade_status_change"
             # Send full monitor ID format that dashboard expects (mon_0001_10002) - lowercase
-            full_monitor_id = f"mon_{USER_NUMBER}_{MONITOR_ID}"
+            full_monitor_id = f"mon_{ctx_user()}_{ctx_mid()}"
             response = requests.post(url, json={
                 "monitor_id": full_monitor_id,
                 "auto_trade_status": status
@@ -1185,7 +1259,7 @@ def determine_auto_entry_status_hourly_htc():
             return "DISABLED"  # Service not running
         
         # Check if spike alert is active (no longer pauses - uses prob_adj instead)
-        spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
+        spike_alert_active = _aes_indicator_bucket().get("spike_alert_active", False)
         
         # Note: spike_alert_active no longer causes PAUSED status - monitor continues with adjusted probability
         
@@ -1344,7 +1418,7 @@ def determine_auto_entry_status_reverse_htc():
             return "DISABLED"  # Service not running
         
         # Check if spike alert is active (REQUIRED for Reverse HTC to activate)
-        spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
+        spike_alert_active = _aes_indicator_bucket().get("spike_alert_active", False)
         
         if not spike_alert_active:
             return "INACTIVE"  # Reverse HTC only activates during momentum spikes
@@ -1392,7 +1466,7 @@ def determine_auto_entry_status_momentum_breakout():
             return "DISABLED"  # Service not running
         
         # Check if spike alert is active (REQUIRED for Momentum Breakout to activate)
-        spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
+        spike_alert_active = _aes_indicator_bucket().get("spike_alert_active", False)
         
         if not spike_alert_active:
             return "INACTIVE"  # Momentum Breakout only activates during momentum spikes
@@ -1440,7 +1514,7 @@ def determine_auto_entry_status_momentum_contain():
             return "DISABLED"  # Service not running
         
         # Check if spike alert is active (REQUIRED for Momentum Contain to activate)
-        spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
+        spike_alert_active = _aes_indicator_bucket().get("spike_alert_active", False)
         
         if not spike_alert_active:
             return "INACTIVE"  # Momentum Contain only activates during momentum spikes
@@ -1476,7 +1550,7 @@ def determine_auto_entry_status_momentum_contain():
             import psycopg2
             conn = get_db_connection()
             with conn.cursor() as cursor:
-                cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+                cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
                 result = cursor.fetchone()
                 cooldown_timer = result[0] if result and result[0] is not None else None
             conn.close()
@@ -1510,8 +1584,6 @@ def determine_auto_entry_status_momentum_contain():
 
 def broadcast_auto_entry_indicator_change():
     """Broadcast auto entry indicator state change via WebSocket to main app"""
-    global auto_entry_indicator_state, previous_indicator_state
-    
     try:
         # Determine and update database status first
         new_status = determine_auto_entry_status()
@@ -1525,7 +1597,7 @@ def broadcast_auto_entry_indicator_change():
             import psycopg2
             conn = get_db_connection()
             with conn.cursor() as cursor:
-                cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+                cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
                 result = cursor.fetchone()
                 cooldown_timer = result[0] if result and result[0] is not None else 0
             conn.close()
@@ -1536,24 +1608,24 @@ def broadcast_auto_entry_indicator_change():
         broadcast_data = {
             "status": new_status,
             "cooldown_timer": cooldown_timer,
-            "enabled": auto_entry_indicator_state["enabled"],
-            "ttc_within_window": auto_entry_indicator_state["ttc_within_window"],
-            "scanning_active": auto_entry_indicator_state["scanning_active"],
-            "service_healthy": auto_entry_indicator_state["service_healthy"],
-            "spike_alert_active": auto_entry_indicator_state["spike_alert_active"],
-            "spike_alert_start_time": auto_entry_indicator_state["spike_alert_start_time"],
-            "spike_alert_momentum_value": auto_entry_indicator_state["spike_alert_momentum_value"],
-            "spike_alert_recovery_countdown": auto_entry_indicator_state["spike_alert_recovery_countdown"],
-            "current_momentum": auto_entry_indicator_state["current_momentum"]
+            "enabled": _aes_indicator_bucket()["enabled"],
+            "ttc_within_window": _aes_indicator_bucket()["ttc_within_window"],
+            "scanning_active": _aes_indicator_bucket()["scanning_active"],
+            "service_healthy": _aes_indicator_bucket()["service_healthy"],
+            "spike_alert_active": _aes_indicator_bucket()["spike_alert_active"],
+            "spike_alert_start_time": _aes_indicator_bucket()["spike_alert_start_time"],
+            "spike_alert_momentum_value": _aes_indicator_bucket()["spike_alert_momentum_value"],
+            "spike_alert_recovery_countdown": _aes_indicator_bucket()["spike_alert_recovery_countdown"],
+            "current_momentum": _aes_indicator_bucket()["current_momentum"]
         }
         
         # Check if state has actually changed (compare with previous)
         current_state_key = (new_status, cooldown_timer)
-        if previous_indicator_state == current_state_key:
+        _prev_key = ctx_ident()
+        if _previous_indicator_by_monitor.get(_prev_key) == current_state_key:
             return  # No change, don't broadcast
         
-        # Update previous state
-        previous_indicator_state = current_state_key
+        _previous_indicator_by_monitor[_prev_key] = current_state_key
         log_debug("State changed, broadcasting...")
         
         # COMMENTED OUT: Legacy auto_entry_indicator_change WebSocket notification - now using auto_trade_status_change only
@@ -1573,7 +1645,7 @@ def broadcast_auto_entry_indicator_change():
             port = get_port("main_app")
             url = f"http://localhost:{port}/api/notify_auto_trade_status_change"
             # Send full monitor ID format that dashboard expects (mon_0001_10002) - lowercase
-            full_monitor_id = f"mon_{USER_NUMBER}_{MONITOR_ID}"
+            full_monitor_id = f"mon_{ctx_user()}_{ctx_mid()}"
             response = requests.post(url, json={
                 "monitor_id": full_monitor_id,
                 "auto_trade_status": new_status
@@ -1598,6 +1670,16 @@ def periodic_status_sync():
     delegates to determine_auto_entry_status + update_auto_entry_status_in_db.
     """
     try:
+        if AES_UNIFIED_15M:
+            from backend.core.unified_15m_monitors import iter_active_15m_monitor_bindings
+
+            for u, m in iter_active_15m_monitor_bindings():
+                with aes_monitor_bind(u, m):
+                    if is_auto_trade_enabled():
+                        status = determine_auto_entry_status()
+                        update_auto_entry_status_in_db(status)
+            return
+
         auto_trade_enabled = is_auto_trade_enabled()
         if not auto_trade_enabled:
             return
@@ -1609,26 +1691,28 @@ def periodic_status_sync():
 
 def is_auto_trade_enabled():
     """Check if AUTO ENTRY is enabled by checking auto_trade boolean in monitor_list"""
+    if AES_UNIFIED_15M and _aes_bind_m.get() is None:
+        return False
     try:
         import psycopg2
         conn = get_db_connection()
         if not conn:
-            log(f"[AUTO ENTRY] ❌ No database connection available when reading auto_trade for monitor {MONITOR_ID}; shutting down supervisor")
+            log(f"[AUTO ENTRY] ❌ No database connection available when reading auto_trade for monitor {ctx_mid()}; shutting down supervisor")
             os._exit(0)
 
         with conn.cursor() as cursor:
             # Check auto_trade boolean from the specific monitor's row in monitor_list
-            cursor.execute("SELECT auto_trade FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+            cursor.execute("SELECT auto_trade FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
 
             if not result:
-                log(f"[AUTO ENTRY] ❌ Monitor {MONITOR_ID} missing from monitor_list_0001; shutting down supervisor to avoid ghost auto-entry")
+                log(f"[AUTO ENTRY] ❌ Monitor {ctx_mid()} missing from monitor_list_0001; shutting down supervisor to avoid ghost auto-entry")
                 os._exit(0)
 
             auto_trade_enabled = bool(result[0])
             return auto_trade_enabled
     except Exception as e:
-        log(f"[AUTO ENTRY] ❌ Error reading auto_trade from monitor_list for monitor {MONITOR_ID}: {e}")
+        log(f"[AUTO ENTRY] ❌ Error reading auto_trade from monitor_list for monitor {ctx_mid()}: {e}")
         os._exit(0)
 
 def get_auto_entry_settings():
@@ -1641,7 +1725,7 @@ def get_auto_entry_settings():
             # Get monitor's strategy
             cursor.execute("""
                 SELECT strategy FROM users.monitor_list_0001 WHERE id = %s
-            """, (MONITOR_ID,))
+            """, (ctx_mid(),))
             monitor_result = cursor.fetchone()
             
             if monitor_result:
@@ -1655,7 +1739,7 @@ def get_auto_entry_settings():
                            min_volume, momentum_scalp_entry_threshold, min_ask, max_ask, max_price_spread, prob_adj,
                            min_cooldown_timer, max_cooldown_timer
                     FROM users.monitor_list_0001 WHERE id = %s
-                """, (MONITOR_IDENTIFIER.split('_')[1],))
+                """, (ctx_mid(),))
                 strategy_result = cursor.fetchone()
                 
                 if strategy_result:
@@ -1697,10 +1781,10 @@ def get_auto_entry_settings():
                         log_debug(f"Loaded settings from monitor: {MONITOR_IDENTIFIER}")
                     return settings
                 else:
-                    log_debug(f"No monitor found with ID: {MONITOR_IDENTIFIER.split('_')[1]}")
+                    log_debug(f"No monitor found with ID: {ctx_mid()}")
                     return {}
             else:
-                log_debug(f"No monitor found with ID: {MONITOR_ID}")
+                log_debug(f"No monitor found with ID: {ctx_mid()}")
                 return {}
     except Exception as e:
         log(f"[AUTO ENTRY] Error reading settings from strategy: {e}")
@@ -1715,9 +1799,20 @@ def get_current_ttc():
         import psycopg2
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            table_name = get_strike_table_name(current_symbol, current_market)
             ttc_column = "ttc_15m" if current_market == "15m" else "ttc_hourly"
-            cursor.execute(f"SELECT {ttc_column} FROM live_data.{table_name} LIMIT 1")
+            if current_market == "15m":
+                cursor.execute(
+                    f"""
+                    SELECT {ttc_column} FROM live_data.strike_table_15m
+                    WHERE exchange = %s AND symbol = %s
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                    """,
+                    (_strike_data_exchange_key(), current_symbol.upper()),
+                )
+            else:
+                table_name = get_strike_table_name(current_symbol, current_market)
+                cursor.execute(f"SELECT {ttc_column} FROM live_data.{table_name} LIMIT 1")
             result = cursor.fetchone()
         conn.close()
         if result and result[0] is not None:
@@ -1753,42 +1848,101 @@ def get_master_strike_table_data():
             # Hourly: ttc_hourly/probability_hourly; 15m: ttc_15m/probability_15m (same column set).
             ttc_column = "ttc_15m" if current_market == "15m" else "ttc_hourly"
             prob_column = "probability_15m" if current_market == "15m" else "probability_hourly"
-            cursor.execute(f"""
-                SELECT
-                    symbol,
-                    current_price,
-                    {ttc_column},
-                    event_ticker,
-                    market_title,
-                    strike_tier,
-                    market_status
-                FROM live_data.{table_name}
-                LIMIT 1
-            """)
+            sym_u = current_symbol.upper()
+            latest_ts = None
+            if current_market == "15m":
+                ex = _strike_data_exchange_key()
+                cursor.execute(
+                    """
+                    SELECT MAX(timestamp) FROM live_data.strike_table_15m
+                    WHERE exchange = %s AND symbol = %s
+                    """,
+                    (ex, sym_u),
+                )
+                rts = cursor.fetchone()
+                latest_ts = rts[0] if rts else None
+                if not latest_ts:
+                    log_debug("[WATCHLIST] No unified 15m strike table timestamp for symbol %s", sym_u)
+                    conn.close()
+                    return None
+                cursor.execute(f"""
+                    SELECT
+                        symbol,
+                        current_price,
+                        {ttc_column},
+                        event_ticker,
+                        market_title,
+                        strike_tier,
+                        market_status
+                    FROM live_data.strike_table_15m
+                    WHERE exchange = %s AND symbol = %s AND timestamp = %s
+                    ORDER BY strike
+                    LIMIT 1
+                """, (ex, sym_u, latest_ts))
+            else:
+                cursor.execute(f"""
+                    SELECT
+                        symbol,
+                        current_price,
+                        {ttc_column},
+                        event_ticker,
+                        market_title,
+                        strike_tier,
+                        market_status
+                    FROM live_data.{table_name}
+                    LIMIT 1
+                """)
             header_data = cursor.fetchone()
             if not header_data:
                 log_debug(f"[WATCHLIST] No strike table data found in PostgreSQL")
                 return None
-            cursor.execute(f"""
-                SELECT
-                    strike,
-                    buffer,
-                    buffer_pct,
-                    {prob_column},
-                    yes_ask,
-                    no_ask,
-                    yes_ask_dollars,
-                    no_ask_dollars,
-                    volume,
-                    ticker,
-                    yes_diff,
-                    no_diff,
-                    active_side,
-                    yes_price_spread,
-                    no_price_spread
-                FROM live_data.{table_name}
-                ORDER BY strike
-            """)
+            if current_market == "15m" and str(header_data[0] or "").upper() != sym_u:
+                log(f"[AUTO ENTRY] strike header symbol mismatch: expected {sym_u} got {header_data[0]}")
+                conn.close()
+                return None
+            if current_market == "15m":
+                cursor.execute(f"""
+                    SELECT
+                        strike,
+                        buffer,
+                        buffer_pct,
+                        {prob_column},
+                        yes_ask,
+                        no_ask,
+                        yes_ask_dollars,
+                        no_ask_dollars,
+                        volume,
+                        ticker,
+                        yes_diff,
+                        no_diff,
+                        active_side,
+                        yes_price_spread,
+                        no_price_spread
+                    FROM live_data.strike_table_15m
+                    WHERE exchange = %s AND symbol = %s AND timestamp = %s
+                    ORDER BY strike
+                """, (ex, sym_u, latest_ts))
+            else:
+                cursor.execute(f"""
+                    SELECT
+                        strike,
+                        buffer,
+                        buffer_pct,
+                        {prob_column},
+                        yes_ask,
+                        no_ask,
+                        yes_ask_dollars,
+                        no_ask_dollars,
+                        volume,
+                        ticker,
+                        yes_diff,
+                        no_diff,
+                        active_side,
+                        yes_price_spread,
+                        no_price_spread
+                    FROM live_data.{table_name}
+                    ORDER BY strike
+                """)
             strikes_data = cursor.fetchall()
             response = {
                 "symbol": header_data[0],
@@ -1986,7 +2140,7 @@ def generate_watchlist_from_strike_table_DELETED():
             conn = get_db_connection()
             with conn.cursor() as cursor:
                 # Use monitor-specific watchlist table
-                watchlist_table = f"watchlist_{USER_NUMBER}_{MONITOR_ID}"
+                watchlist_table = f"watchlist_{ctx_user()}_{ctx_mid()}"
                 
                 # Clear existing watchlist data for this monitor
                 cursor.execute(f"DELETE FROM live_data.{watchlist_table}")
@@ -2026,7 +2180,7 @@ def get_watchlist_data_DELETED():
         conn = get_db_connection()
         with conn.cursor() as cursor:
             # Use monitor-specific watchlist table
-            watchlist_table = f"watchlist_{USER_NUMBER}_{MONITOR_ID}"
+            watchlist_table = f"watchlist_{ctx_user()}_{ctx_mid()}"
             cursor.execute(f"""
                 SELECT
                     symbol,
@@ -2100,17 +2254,17 @@ def get_position_size():
         import psycopg2
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            cursor.execute("SELECT total_position FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+            cursor.execute("SELECT total_position FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             if result:
                 total_position = result[0]
-                log_debug(f"Total position loaded from monitor {MONITOR_ID}: {total_position}")
+                log_debug(f"Total position loaded from monitor {ctx_mid()}: {total_position}")
                 return total_position
             else:
-                log_debug(f"No monitor configuration found for monitor {MONITOR_ID}")
+                log_debug(f"No monitor configuration found for monitor {ctx_mid()}")
                 return None
     except Exception as e:
-        log(f"[AUTO ENTRY] Error loading total position from monitor {MONITOR_ID}: {e}")
+        log(f"[AUTO ENTRY] Error loading total position from monitor {ctx_mid()}: {e}")
         return None
     finally:
         if conn:
@@ -2123,17 +2277,17 @@ def get_current_multiplier():
         import psycopg2
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            cursor.execute("SELECT multiplier FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+            cursor.execute("SELECT multiplier FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             if result and result[0] is not None:
                 multiplier_value = float(result[0])
-                log(f"[AUTO ENTRY] Multiplier loaded from monitor {MONITOR_ID}: {multiplier_value}")
+                log(f"[AUTO ENTRY] Multiplier loaded from monitor {ctx_mid()}: {multiplier_value}")
                 return multiplier_value
             else:
-                log(f"[AUTO ENTRY] No multiplier found for monitor {MONITOR_ID} - defaulting to 1.0")
+                log(f"[AUTO ENTRY] No multiplier found for monitor {ctx_mid()} - defaulting to 1.0")
                 return 1.0
     except Exception as e:
-        log(f"[AUTO ENTRY] Error loading multiplier from monitor {MONITOR_ID}: {e}")
+        log(f"[AUTO ENTRY] Error loading multiplier from monitor {ctx_mid()}: {e}")
         return 1.0
     finally:
         if conn:
@@ -2146,17 +2300,17 @@ def get_loss_prevention_state():
         import psycopg2
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            cursor.execute("SELECT loss_prevention FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+            cursor.execute("SELECT loss_prevention FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             if result:
                 loss_prevention = result[0]
-                log(f"[AUTO ENTRY] Loss prevention state loaded from monitor {MONITOR_ID}: {loss_prevention}")
+                log(f"[AUTO ENTRY] Loss prevention state loaded from monitor {ctx_mid()}: {loss_prevention}")
                 return loss_prevention
             else:
-                log_debug(f"No monitor configuration found for monitor {MONITOR_ID}")
+                log_debug(f"No monitor configuration found for monitor {ctx_mid()}")
                 return "off"  # Default to off if not found
     except Exception as e:
-        log(f"[AUTO ENTRY] Error loading loss_prevention from monitor {MONITOR_ID}: {e}")
+        log(f"[AUTO ENTRY] Error loading loss_prevention from monitor {ctx_mid()}: {e}")
         return "off"  # Default to off on error
     finally:
         if conn:
@@ -2164,12 +2318,14 @@ def get_loss_prevention_state():
 
 def get_trade_strategy():
     """Get trade strategy from monitor-specific configuration"""
+    if AES_UNIFIED_15M and _aes_bind_m.get() is None:
+        return "Hourly HTC"
     conn = None
     try:
         import psycopg2
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            cursor.execute("SELECT strategy FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+            cursor.execute("SELECT strategy FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             if result:
                 trade_strategy = result[0]
@@ -2177,7 +2333,7 @@ def get_trade_strategy():
             else:
                 return "Hourly HTC"  # Default fallback
     except Exception as e:
-        log(f"[AUTO ENTRY] Error loading trade strategy from monitor {MONITOR_ID}: {e}")
+        log(f"[AUTO ENTRY] Error loading trade strategy from monitor {ctx_mid()}: {e}")
         return "Hourly HTC"  # Default fallback
     finally:
         if conn:
@@ -2190,17 +2346,17 @@ def get_bankroll_allotment():
         import psycopg2
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            cursor.execute("SELECT bankroll_allotment_total FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+            cursor.execute("SELECT bankroll_allotment_total FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             if result:
                 bankroll_allotment = result[0]
-                log(f"[AUTO ENTRY] Bankroll allotment loaded from monitor {MONITOR_ID}: {bankroll_allotment}")
+                log(f"[AUTO ENTRY] Bankroll allotment loaded from monitor {ctx_mid()}: {bankroll_allotment}")
                 return bankroll_allotment
             else:
-                log_debug(f"No monitor configuration found for monitor {MONITOR_ID}")
+                log_debug(f"No monitor configuration found for monitor {ctx_mid()}")
                 return None
     except Exception as e:
-        log(f"[AUTO ENTRY] Error loading bankroll allotment from monitor {MONITOR_ID}: {e}")
+        log(f"[AUTO ENTRY] Error loading bankroll allotment from monitor {ctx_mid()}: {e}")
         return None
     finally:
         if conn:
@@ -2289,7 +2445,7 @@ def trigger_auto_entry_trade(strike_data):
             import psycopg2
             conn = get_db_connection()
             with conn.cursor() as cursor:
-                cursor.execute(f"SELECT paper_trade FROM users.monitor_list_{USER_NUMBER} WHERE id = %s", (MONITOR_ID,))
+                cursor.execute(f"SELECT paper_trade FROM users.monitor_list_{ctx_user()} WHERE id = %s", (ctx_mid(),))
                 result = cursor.fetchone()
                 if result and result[0] is not None:
                     paper_trade = bool(result[0])
@@ -2304,7 +2460,7 @@ def trigger_auto_entry_trade(strike_data):
             "date": eastern_date,
             "time": eastern_time,
             "symbol": current_symbol,
-            "market": "Kalshi",
+            "exchange": "kalshi",
             "trade_strategy": trade_strategy,
             "contract": contract_name,
             "strike": strike_data.get("strike"),
@@ -2315,7 +2471,7 @@ def trigger_auto_entry_trade(strike_data):
             "buy_price": strike_data.get("buy_price"),
             "position": position_size,
             "count_fp": f"{float(position_size):.2f}",
-            "monitor": f"mon_0001_{MONITOR_ID}",
+            "monitor": f"mon_0001_{ctx_mid()}",
             "bankroll_allotment_total": bankroll_allotment,
             "entry_method": "auto_entry",
             "loss_prevention": loss_prevention == "one_contract",
@@ -2430,7 +2586,7 @@ def has_bracket_for_cycle(contract: Optional[str] = None, strike_tier: Optional[
         cursor = conn.cursor()
         
         # Get current monitor identifier
-        current_monitor = f"mon_0001_{MONITOR_ID}"
+        current_monitor = f"mon_0001_{ctx_mid()}"
         
         # Query trades_0001 table for open/pending trades from this monitor with the same contract
         cursor.execute("""
@@ -2505,7 +2661,7 @@ def is_strike_already_traded(strike_data):
         cursor = conn.cursor()
         
         # Get current monitor identifier
-        current_monitor = f"mon_0001_{MONITOR_ID}"
+        current_monitor = f"mon_0001_{ctx_mid()}"
         
         # Query trades_0001 table directly for open/pending trades with ticker AND same monitor
         cursor.execute("""
@@ -2572,7 +2728,7 @@ def is_strike_already_simulated_traded(strike_data):
                 cursor.execute("""
                     SELECT 1 FROM users.trades_simulated_0001
                     WHERE monitor = %s AND date = %s AND contract = %s AND strike = %s AND side = %s
-                """, (f"mon_0001_{MONITOR_ID}", date_str, contract_str, strike_str, db_side))
+                """, (f"mon_0001_{ctx_mid()}", date_str, contract_str, strike_str, db_side))
                 return cursor.fetchone() is not None
         finally:
             conn.close()
@@ -2611,11 +2767,11 @@ def trigger_simulated_trade(strike_data):
             "ticket_id": f"SIM-{uuid.uuid4().hex[:8]}-{int(datetime.now().timestamp() * 1000)}",
             "status": "pending", "date": datetime.now(ZoneInfo("America/New_York")).strftime('%Y-%m-%d'),
             "time": datetime.now(ZoneInfo("America/New_York")).strftime('%H:%M:%S'),
-            "symbol": current_symbol, "market": "Kalshi", "trade_strategy": get_trade_strategy(),
+            "symbol": current_symbol, "exchange": "kalshi", "trade_strategy": get_trade_strategy(),
             "contract": contract_name, "strike": strike_data.get("strike"), "side": conv_side,
             "ticker": strike_data.get("ticker"), "prob": strike_data.get("probability"),
             "position": 1,
-            "monitor": f"mon_0001_{MONITOR_ID}", "bankroll_allotment_total": bankroll_allotment,
+            "monitor": f"mon_0001_{ctx_mid()}", "bankroll_allotment_total": bankroll_allotment,
             "entry_method": "simulated_15m", "loss_prevention": False, "multiplier": get_current_multiplier(),
             "paper_trade": True, "simulated_trade": True,
         }
@@ -2708,6 +2864,24 @@ def check_simulated_15m_entry_hourly_htc():
 
 def check_auto_entry_conditions():
     """Check if auto entry conditions are met and trigger trades - routes to strategy-specific logic"""
+    if AES_UNIFIED_15M:
+        try:
+            from backend.core.unified_15m_monitors import iter_active_15m_monitor_bindings
+
+            for u, m in iter_active_15m_monitor_bindings():
+                with aes_monitor_bind(u, m):
+                    _check_auto_entry_conditions_impl()
+        except Exception as e:
+            import traceback
+
+            log(f"[AUTO ENTRY] ❌ Error checking entry conditions (15m pool): {e}")
+            log(f"[AUTO ENTRY] ❌ Traceback: {traceback.format_exc()}")
+        return
+    _check_auto_entry_conditions_impl()
+
+
+def _check_auto_entry_conditions_impl():
+    """Single-monitor check (or one bound monitor inside the 15m pool)."""
     try:
         strategy = get_trade_strategy()
         # Simulated 15m path: all hourly monitors with auto_trade=TRUE (Breakout/Contain excluded for testing; may re-include)
@@ -2764,8 +2938,6 @@ def check_auto_entry_conditions():
 
 def check_auto_entry_conditions_hourly_htc():
     """Check if auto entry conditions are met and trigger trades for Hourly HTC strategy"""
-    global auto_entry_indicator_state
-    
     try:
         # Get strike table data directly (no watchlist needed)
         
@@ -2783,10 +2955,10 @@ def check_auto_entry_conditions_hourly_htc():
         service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
         
         # Check if spike alert is active (no longer blocks - uses prob_adj to adjust probability instead)
-        spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
+        spike_alert_active = _aes_indicator_bucket().get("spike_alert_active", False)
         
         if not auto_trade_enabled:
-            auto_entry_indicator_state.update({
+            _aes_indicator_bucket().update({
                 "enabled": False,
                 "ttc_within_window": False,
                 "scanning_active": False,
@@ -2838,7 +3010,7 @@ def check_auto_entry_conditions_hourly_htc():
                           ttc_within_window)
         
         # Update indicator state for frontend
-        auto_entry_indicator_state.update({
+        _aes_indicator_bucket().update({
             "enabled": True,
             "ttc_within_window": ttc_within_window,
             "scanning_active": scanning_active,
@@ -3034,8 +3206,6 @@ def check_auto_entry_conditions_reverse_htc():
     Reverse HTC activates when momentum spike is detected (opposite of Hourly HTC).
     It uses the same entry logic as Hourly HTC but enters with the OPPOSITE side.
     """
-    global auto_entry_indicator_state
-    
     try:
         # Get strike table data directly (no watchlist needed)
         
@@ -3053,10 +3223,10 @@ def check_auto_entry_conditions_reverse_htc():
         service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
         
         # Check if spike alert is active (REQUIRED for Reverse HTC to activate)
-        spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
+        spike_alert_active = _aes_indicator_bucket().get("spike_alert_active", False)
         
         if not auto_trade_enabled:
-            auto_entry_indicator_state.update({
+            _aes_indicator_bucket().update({
                 "enabled": False,
                 "ttc_within_window": False,
                 "scanning_active": False,
@@ -3100,7 +3270,7 @@ def check_auto_entry_conditions_reverse_htc():
                           spike_alert_active)  # SPIKE ALERT REQUIRED for Reverse HTC
         
         # Update indicator state for frontend
-        auto_entry_indicator_state.update({
+        _aes_indicator_bucket().update({
             "enabled": True,
             "ttc_within_window": ttc_within_window,
             "scanning_active": scanning_active,
@@ -3333,8 +3503,6 @@ def check_auto_entry_conditions_momentum_breakout():
     After entering these two trades, it opens no more trades and holds until expiration.
     """
     global momentum_breakout_trades_entered, momentum_breakout_last_contract
-    global auto_entry_indicator_state
-    
     try:
         # Get strike table data
         check_spike_alert_conditions()
@@ -3380,10 +3548,10 @@ def check_auto_entry_conditions_momentum_breakout():
         service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
         
         # Check if spike alert is active (REQUIRED for Momentum Breakout to activate)
-        spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
+        spike_alert_active = _aes_indicator_bucket().get("spike_alert_active", False)
         
         if not auto_trade_enabled:
-            auto_entry_indicator_state.update({
+            _aes_indicator_bucket().update({
                 "enabled": False,
                 "ttc_within_window": False,
                 "scanning_active": False,
@@ -3420,7 +3588,7 @@ def check_auto_entry_conditions_momentum_breakout():
                           spike_alert_active)
         
         # Update indicator state for frontend
-        auto_entry_indicator_state.update({
+        _aes_indicator_bucket().update({
             "enabled": True,
             "ttc_within_window": ttc_within_window,
             "scanning_active": scanning_active,
@@ -3604,8 +3772,6 @@ def check_auto_entry_conditions_momentum_contain():
     After entering these two trades, it opens no more trades and holds until expiration.
     """
     global momentum_contain_trades_entered, momentum_contain_last_contract
-    global auto_entry_indicator_state
-    
     try:
         # Get strike table data
         check_spike_alert_conditions()
@@ -3651,10 +3817,10 @@ def check_auto_entry_conditions_momentum_contain():
         service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
         
         # Check if spike alert is active (REQUIRED for Momentum Contain to activate)
-        spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
+        spike_alert_active = _aes_indicator_bucket().get("spike_alert_active", False)
         
         if not auto_trade_enabled:
-            auto_entry_indicator_state.update({
+            _aes_indicator_bucket().update({
                 "enabled": False,
                 "ttc_within_window": False,
                 "scanning_active": False,
@@ -3691,7 +3857,7 @@ def check_auto_entry_conditions_momentum_contain():
                           spike_alert_active)
         
         # Update indicator state for frontend
-        auto_entry_indicator_state.update({
+        _aes_indicator_bucket().update({
             "enabled": True,
             "ttc_within_window": ttc_within_window,
             "scanning_active": scanning_active,
@@ -3726,7 +3892,7 @@ def check_auto_entry_conditions_momentum_contain():
                 import psycopg2
                 conn = get_db_connection()
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+                    cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
                     result = cursor.fetchone()
                     cooldown_timer = result[0] if result and result[0] is not None else None
                 conn.close()
@@ -4034,8 +4200,6 @@ def check_auto_entry_conditions_momentum_contain():
 
 def check_auto_entry_conditions_momentum_scalp():
     """Check if auto entry conditions are met and trigger trades for Momentum Scalp strategy"""
-    global auto_entry_indicator_state
-    
     try:
         # Get strike table data
         strike_table_data = get_master_strike_table_data()
@@ -4049,7 +4213,7 @@ def check_auto_entry_conditions_momentum_scalp():
         service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
         
         if not auto_trade_enabled:
-            auto_entry_indicator_state.update({
+            _aes_indicator_bucket().update({
                 "enabled": False,
                 "ttc_within_window": False,
                 "scanning_active": False,
@@ -4095,7 +4259,7 @@ def check_auto_entry_conditions_momentum_scalp():
         
         if current_momentum is None:
             # Update indicator state
-            auto_entry_indicator_state.update({
+            _aes_indicator_bucket().update({
                 "enabled": True,
                 "ttc_within_window": ttc_within_window,
                 "scanning_active": False,
@@ -4124,7 +4288,7 @@ def check_auto_entry_conditions_momentum_scalp():
                           momentum_direction is not None)
         
         # Update indicator state for frontend
-        auto_entry_indicator_state.update({
+        _aes_indicator_bucket().update({
             "enabled": True,
             "ttc_within_window": ttc_within_window,
             "scanning_active": scanning_active,
@@ -4282,8 +4446,6 @@ def check_auto_entry_conditions_momentum_scalp():
 
 def check_auto_entry_conditions_momentum_reversal():
     """Check if auto entry conditions are met and trigger trades for Momentum Reversal strategy"""
-    global auto_entry_indicator_state
-    
     try:
         # Get strike table data
         strike_table_data = get_master_strike_table_data()
@@ -4297,7 +4459,7 @@ def check_auto_entry_conditions_momentum_reversal():
         service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
         
         if not auto_trade_enabled:
-            auto_entry_indicator_state.update({
+            _aes_indicator_bucket().update({
                 "enabled": False,
                 "ttc_within_window": False,
                 "scanning_active": False,
@@ -4343,7 +4505,7 @@ def check_auto_entry_conditions_momentum_reversal():
         
         if current_momentum is None:
             # Update indicator state
-            auto_entry_indicator_state.update({
+            _aes_indicator_bucket().update({
                 "enabled": True,
                 "ttc_within_window": ttc_within_window,
                 "scanning_active": False,
@@ -4372,7 +4534,7 @@ def check_auto_entry_conditions_momentum_reversal():
                           momentum_direction is not None)
         
         # Update indicator state for frontend
-        auto_entry_indicator_state.update({
+        _aes_indicator_bucket().update({
             "enabled": True,
             "ttc_within_window": ttc_within_window,
             "scanning_active": scanning_active,
@@ -4612,16 +4774,16 @@ def health_check():
             "status": "healthy" if service_healthy else "unhealthy",
             "service": f"auto_entry_supervisor_{MONITOR_IDENTIFIER}",
             "monitor_identifier": MONITOR_IDENTIFIER,
-            "user_number": USER_NUMBER,
-            "monitor_id": MONITOR_ID,
+            "user_number": ctx_user(),
+            "monitor_id": ctx_mid(),
             "port": AUTO_ENTRY_SUPERVISOR_PORT,
             "timestamp": datetime.now().isoformat(),
             "port_system": "centralized",
             "monitoring_thread_alive": service_healthy,
             "auto_entry_enabled": enabled,
-            "scanning_active": auto_entry_indicator_state.get("scanning_active", False),
-            "spike_alert_active": auto_entry_indicator_state.get("spike_alert_active", False),
-            "current_momentum": auto_entry_indicator_state.get("current_momentum", None)
+            "scanning_active": _aes_indicator_bucket().get("scanning_active", False),
+            "spike_alert_active": _aes_indicator_bucket().get("spike_alert_active", False),
+            "current_momentum": _aes_indicator_bucket().get("current_momentum", None)
         }
     except Exception as e:
         return {
@@ -4637,44 +4799,60 @@ def health_check():
 # Auto entry indicator endpoint (for frontend display)
 @app.route("/api/auto_entry_indicator")
 def get_auto_entry_indicator():
-    """Get current auto entry indicator state"""
-    return jsonify(auto_entry_indicator_state)
+    """Get current auto entry indicator state (unified 15m: pass ?monitor_id=10019&user_number=0001)"""
+    if AES_UNIFIED_15M:
+        mid = request.args.get("monitor_id")
+        user = request.args.get("user_number", "0001")
+        if not mid:
+            return jsonify({"error": "monitor_id query parameter required for unified 15m AES"}), 400
+        with aes_monitor_bind(user, str(mid)):
+            return jsonify(_aes_indicator_bucket())
+    return jsonify(_aes_indicator_bucket())
 
 # Detailed scanning status endpoint (for debugging/monitoring)
 @app.route("/api/auto_entry_scanning_status")
 def get_auto_entry_scanning_status():
     """Get detailed scanning status information"""
     try:
-        enabled = is_auto_trade_enabled()
-        settings = get_auto_entry_settings()
-        current_ttc = get_current_ttc()
-        service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
-        
-        # Calculate scanning status
-        ttc_within_window = settings["min_time"] <= current_ttc <= settings["max_time"]
-        spike_alert_active = auto_entry_indicator_state.get("spike_alert_active", False)
-        scanning_active = enabled and service_healthy and ttc_within_window and not spike_alert_active
-        
-        return jsonify({
-            "enabled": enabled,
-            "service_healthy": service_healthy,
-            "ttc_within_window": ttc_within_window,
-            "scanning_active": scanning_active,
-            "spike_alert_active": spike_alert_active,
-            "current_momentum": auto_entry_indicator_state.get("current_momentum", None),
-            "spike_alert_recovery_countdown": auto_entry_indicator_state.get("spike_alert_recovery_countdown", None),
-            "current_ttc": current_ttc,
-            "settings": settings,
-            "spike_alert_settings": {
-                "enabled": settings.get("spike_alert_enabled"),
-                "momentum_threshold": settings.get("spike_alert_momentum_threshold"),
-                "cooldown_threshold": settings.get("spike_alert_cooldown_threshold"),
-                "cooldown_minutes": settings.get("spike_alert_cooldown_minutes")
-            },
-            "cooldown_entries_count": len(last_trade_times),
-            "monitoring_thread_alive": service_healthy,
-            "timestamp": datetime.now().isoformat()
-        })
+        def _payload():
+            enabled = is_auto_trade_enabled()
+            settings = get_auto_entry_settings()
+            current_ttc = get_current_ttc()
+            service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
+            
+            ttc_within_window = settings["min_time"] <= current_ttc <= settings["max_time"]
+            spike_alert_active = _aes_indicator_bucket().get("spike_alert_active", False)
+            scanning_active = enabled and service_healthy and ttc_within_window and not spike_alert_active
+            
+            return {
+                "enabled": enabled,
+                "service_healthy": service_healthy,
+                "ttc_within_window": ttc_within_window,
+                "scanning_active": scanning_active,
+                "spike_alert_active": spike_alert_active,
+                "current_momentum": _aes_indicator_bucket().get("current_momentum", None),
+                "spike_alert_recovery_countdown": _aes_indicator_bucket().get("spike_alert_recovery_countdown", None),
+                "current_ttc": current_ttc,
+                "settings": settings,
+                "spike_alert_settings": {
+                    "enabled": settings.get("spike_alert_enabled"),
+                    "momentum_threshold": settings.get("spike_alert_momentum_threshold"),
+                    "cooldown_threshold": settings.get("spike_alert_cooldown_threshold"),
+                    "cooldown_minutes": settings.get("spike_alert_cooldown_minutes")
+                },
+                "cooldown_entries_count": len(last_trade_times),
+                "monitoring_thread_alive": service_healthy,
+                "timestamp": datetime.now().isoformat()
+            }
+
+        if AES_UNIFIED_15M:
+            mid = request.args.get("monitor_id")
+            user = request.args.get("user_number", "0001")
+            if not mid:
+                return jsonify({"error": "monitor_id query parameter required for unified 15m AES"}), 400
+            with aes_monitor_bind(user, str(mid)):
+                return jsonify(_payload())
+        return jsonify(_payload())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

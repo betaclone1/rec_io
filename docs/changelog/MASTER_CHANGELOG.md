@@ -6,6 +6,54 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-25 — Unified 15m stack (AES/ATS/generator/watchdog), venue `exchange` schema, trade_manager expiry and Kalshi settlement hardening
+
+**Summary**
+- **Unified 15m data plane:** Single global 15m `auto_entry_supervisor` and `active_trade_supervisor` with explicit `monitor_id` routing; fixed ports via `port_config`; reads from unified `live_data.market_kalshi_15m` and `live_data.strike_table_15m` filtered by symbol and venue. New helpers (`unified_15m_monitors.py`, `exchange_ids.py`), dedicated `market_watchdog_kalshi_15m` and `strike_table_generator_15m`, `generate_unified_supervisor_config` and `MASTER_RESTART.sh` wiring.
+- **Schema / naming:** Migrations add and evolve unified 15m Kalshi/strike tables; broker→exchange (venue) renames where applicable; per-monitor `active_trades` pool columns for 15m and monitoring price precision; `database.py` and `MASTER_DB_SCHEMA_REFERENCE.md` aligned.
+- **trade_manager:** Settlement polling dedupes tickers so duplicate `expired` rows cannot stall the job to timeout; clearer `[15-MIN CHECK]` / expiry sweep logging.
+- **active_trade_supervisor (15m):** Kalshi ticker settlement time parsing (15m end vs hourly hour bucket); suppresses auto-close POST after settlement plus grace; periodic flush of stale active-trade pool rows past settlement (bounded logging).
+- **Ops / UI:** `system_monitor`, `cascading_failure_detector`, `system.html` live-data labels; `main.py` URL glue; `ats_enrollment_redis` dispatch-compatible with unified 15m ATS; tests updated.
+
+Plans: `.cursor/plans/unified-15m-aes-ats-reads.md` (in progress; this deploy is the unified 15m cut). Prior related context: 2026-03-24 entry below (checklist superseded here).
+
+**DB migrations (required on production, lexicographic order — includes any not yet applied from 2026-03-24)**
+
+1. `20260320_2200_sol_xrp_live_price_log_watchdog_columns`
+2. `20260322_1200_strike_15m_sol_xrp_numeric_precision`
+3. `20260323_1400_live_symbol_status_sync_sol_xrp`
+4. `20260324_1000_trades_symbol_spot_numeric_precision`
+5. `20260324_1210_market_kalshi_15m_unified`
+6. `20260325_1000_market_kalshi_15m_broker_column`
+7. `20260325_1500_strike_table_15m_unified`
+8. `20260325_1600_strike_table_15m_drop_exchange_display`
+9. `20260326_1000_venue_exchange_column_names`
+10. `20260326_1800_active_trades_0001_15m_pool`
+11. `20260327_1015_active_trades_ensure_exchange`
+12. `20260327_1020_active_trades_monitoring_price_precision`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations in order (from project root — skip any id already in `system.schema_migrations` if `run_migration.py` reports it applied):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260320_2200_sol_xrp_live_price_log_watchdog_columns`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260322_1200_strike_15m_sol_xrp_numeric_precision`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260323_1400_live_symbol_status_sync_sol_xrp`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260324_1000_trades_symbol_spot_numeric_precision`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260324_1210_market_kalshi_15m_unified`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260325_1000_market_kalshi_15m_broker_column`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260325_1500_strike_table_15m_unified`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260325_1600_strike_table_15m_drop_exchange_display`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260326_1000_venue_exchange_column_names`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260326_1800_active_trades_0001_15m_pool`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260327_1015_active_trades_ensure_exchange`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260327_1020_active_trades_monitoring_price_precision`
+- [ ] Restart application services:  
+  `./scripts/MASTER_RESTART.sh`
+- [ ] Verify: health (`main_app` :3000, `trade_executor` :8001), supervisor `RUNNING` including `auto_entry_supervisor_15m`, `active_trade_supervisor_15m`, `market_watchdog_kalshi_15m`, `strike_table_generator_15m`; spot-check `trade_manager` for `[15-MIN CHECK]` and ATS for enrollment; optional log grep `[STALE FLUSH]` after settlement windows.
+
+---
+
 ## 2026-03-24 — Trade manager ↔ ATS Redis enrollment, monitor_manager hardening, SOL/XRP DB precision and watchdogs
 
 **Summary**
@@ -26,16 +74,7 @@ Plans: `redis-platform-initiative.md` (ATS enrollment slice), operational harden
 4. `20260324_1000_trades_symbol_spot_numeric_precision`
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
-  `git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations in order (from project root):  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260320_2200_sol_xrp_live_price_log_watchdog_columns`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260322_1200_strike_15m_sol_xrp_numeric_precision`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260323_1400_live_symbol_status_sync_sol_xrp`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260324_1000_trades_symbol_spot_numeric_precision`
-- [ ] Restart application services:  
-  `./scripts/MASTER_RESTART.sh`
-- [ ] Verify: health (`main_app` :3000, `trade_executor` :8001), supervisor `RUNNING`; spot-check Redis ATS enrollment in logs on next open (trade_manager `ATS enrollment confirmed via Redis`, ATS `ATS ENROLL ACK ok`).
+- [x] Superseded — use **2026-03-25** entry for pull, migrations (full ordered list), restart, and verify. Do not run this shorter checklist in isolation if production is tracking `main` at this batch.
 
 ---
 

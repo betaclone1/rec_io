@@ -100,14 +100,8 @@ class CascadingFailureDetector:
             # "kalshi_market_watchdog_hourly_ndx", # NDX Kalshi hourly market data
             # "kalshi_market_watchdog_hourly_inx", # INX - not in supervisor; uncomment when deployed
             # "kalshi_market_watchdog_hourly_nasdaq100", # NASDAQ100 - not in supervisor; uncomment when deployed
-            "kalshi_market_watchdog_15m_btc", # BTC Kalshi 15m market data
-            "kalshi_market_watchdog_15m_eth", # ETH Kalshi 15m market data
-            "kalshi_market_watchdog_15m_sol", # SOL Kalshi 15m market data
-            "kalshi_market_watchdog_15m_xrp", # XRP Kalshi 15m market data
-            "strike_table_generator_15m_btc", # BTC 15m strike table
-            "strike_table_generator_15m_eth", # ETH 15m strike table
-            "strike_table_generator_15m_sol", # SOL 15m strike table
-            "strike_table_generator_15m_xrp", # XRP 15m strike table
+            "market_watchdog_kalshi_15m", # Unified Kalshi 15m → live_data.market_kalshi_15m
+            "strike_table_generator_15m", # Unified 15m strikes → live_data.strike_table_15m
         ]
         
         # Monitor-specific services will be added dynamically
@@ -163,13 +157,21 @@ class CascadingFailureDetector:
             # Add core services (already defined in self.core_critical_services)
             discovered_services.extend(self.core_critical_services)
             
-            # Add monitor-specific services
-            for monitor in active_monitors:
+            hourly_monitors = [m for m in active_monitors if m.get("market", "hourly") != "15m"]
+            has_15m = any(m.get("market", "hourly") == "15m" for m in active_monitors)
+            if has_15m:
+                discovered_services.extend(
+                    [
+                        "auto_entry_supervisor_15m",
+                        "active_trade_supervisor_15m",
+                    ]
+                )
+
+            for monitor in hourly_monitors:
                 user_number = monitor['user_number']
                 monitor_id = monitor['monitor_id']
                 monitor_identifier = f"{user_number}_{monitor_id}"
                 
-                # Add monitor-specific services to critical list
                 discovered_services.extend([
                     f"auto_entry_supervisor_{monitor_identifier}",
                     f"active_trade_supervisor_{monitor_identifier}"

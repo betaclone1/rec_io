@@ -18,6 +18,7 @@ from typing import Optional
 # Import the universal centralized port system
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from backend.core.port_config import get_port, get_port_info
+from backend.core.exchange_ids import normalize_exchange
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from backend.util.paths import get_project_root, get_trade_history_dir, get_logs_dir, get_host, get_data_dir
@@ -708,9 +709,12 @@ def insert_trade(trade):
                 
                 strike_for_db = canonical_trade_strike_display(symbol, trade.get("strike"))
 
+                venue_exchange = normalize_exchange(
+                    trade.get("exchange", trade.get("market"))
+                )
                 cursor.execute("""
                     INSERT INTO users.trades_0001 (
-                        status, date, time, symbol, market, trade_strategy,
+                        status, date, time, symbol, exchange, trade_strategy,
                         contract, strike, side, prob, diff, buy_price, position,
                         sell_price, closed_at, fees, pnl, symbol_open, symbol_close,
                         momentum, volatility, volatility_percentile, movement, movement_percentile,
@@ -722,7 +726,7 @@ def insert_trade(trade):
                     RETURNING id
                 """, (
                     trade.get('status', 'pending'), trade['date'], trade['time'],
-                    symbol, trade.get('market', 'Kalshi'), trade.get('trade_strategy', 'Hourly HTC'),
+                    symbol, venue_exchange, trade.get('trade_strategy', 'Hourly HTC'),
                     contract_name, strike_for_db, trade['side'], trade.get('prob'),
                     diff_formatted, trade['buy_price'], trade['position'], None, None,
                     None, None, symbol_open, None, momentum_for_db,
@@ -877,6 +881,9 @@ def insert_simulated_trade(trade):
             price_spread = None
             ticker, side = trade.get('ticker'), trade.get('side')
             strike_for_db = canonical_trade_strike_display(symbol, trade.get("strike"))
+            venue_exchange = normalize_exchange(
+                trade.get("exchange", trade.get("market"))
+            )
 
             # Server-side duplicate guard: one row per (monitor, date, contract, strike, side)
             if monitor_key and trade.get('date') and contract_name and strike_for_db and side:
@@ -893,7 +900,7 @@ def insert_simulated_trade(trade):
 
             cursor.execute("""
                 INSERT INTO users.trades_simulated_0001 (
-                    status, date, time, symbol, market, trade_strategy,
+                    status, date, time, symbol, exchange, trade_strategy,
                     contract, strike, side, prob, diff, buy_price, position,
                     sell_price, closed_at, fees, pnl, symbol_open, symbol_close,
                     momentum, volatility, volatility_percentile, movement, movement_percentile,
@@ -904,7 +911,7 @@ def insert_simulated_trade(trade):
                 RETURNING id
             """, (
                 trade.get('status', 'pending'), trade['date'], trade['time'],
-                symbol, trade.get('market', 'Kalshi'), trade.get('trade_strategy', 'Hourly HTC'),
+                symbol, venue_exchange, trade.get('trade_strategy', 'Hourly HTC'),
                 contract_name, strike_for_db, trade['side'], trade.get('prob'),
                 diff_formatted, buy_price_for_db, position_for_db, None, None,
                 fees_for_db, None, symbol_open, None, momentum_for_db,
@@ -1471,14 +1478,19 @@ def get_high_low_prices_from_active_trades(trade_id: int) -> tuple:
             log(f"⚠️ Monitor identifier doesn't start with 'mon_': {monitor_identifier}")
             return (None, None)
         
-        # Construct active_trades table name
-        active_trades_table = f"active_trades_{user_number}_{monitor_id}"
-        
+        from backend.core.port_config import monitor_suffix_uses_unified_15m_pool
+
+        suffix = f"{user_number}_{monitor_id}"
+        if monitor_suffix_uses_unified_15m_pool(suffix):
+            active_trades_table = f"active_trades_{user_number}_15m"
+        else:
+            active_trades_table = f"active_trades_{user_number}_{monitor_id}"
+
         # Query active_trades table for high_price and low_price
         pg_conn = get_postgresql_connection()
         if not pg_conn:
             return (None, None)
-        
+
         with pg_conn.cursor() as cursor:
             cursor.execute(f"""
                 SELECT high_price, low_price
@@ -1887,7 +1899,7 @@ def notify_active_trade_supervisor_direct_with_monitor(trade_id: int, ticket_id:
     """Send direct notification to active trade supervisor via HTTP API with pre-fetched monitor identifier"""
     try:
         import requests
-        from backend.core.port_config import get_monitor_port
+        from backend.core.port_config import get_active_trade_supervisor_http_port_for_monitor_suffix
         
         # Extract monitor identifier (e.g., "0001_10002" from "mon_0001_10002")
         if monitor_identifier and monitor_identifier.startswith('mon_'):
@@ -1897,9 +1909,7 @@ def notify_active_trade_supervisor_direct_with_monitor(trade_id: int, ticket_id:
             log(f"ERROR: No valid monitor identifier found for trade {trade_id}")
             return False
         
-        # Get the port for the specific monitor's active trade supervisor
-        # Each monitor instance runs on its own dedicated port
-        active_trade_supervisor_port = get_monitor_port("active_trade_supervisor", monitor_suffix)
+        active_trade_supervisor_port = get_active_trade_supervisor_http_port_for_monitor_suffix(monitor_suffix)
         
         # Use monitor-specific port for notifications
         notification_url = f"http://localhost:{active_trade_supervisor_port}/api/trade_manager_notification"
@@ -1933,7 +1943,7 @@ def notify_active_trade_supervisor_direct(trade_id: int, ticket_id: str, status:
     """Send direct notification to active trade supervisor via HTTP API"""
     try:
         import requests
-        from backend.core.port_config import get_monitor_port
+        from backend.core.port_config import get_active_trade_supervisor_http_port_for_monitor_suffix
         
         # Get the monitor field from the trade record
         monitor_identifier = None
@@ -1954,9 +1964,7 @@ def notify_active_trade_supervisor_direct(trade_id: int, ticket_id: str, status:
             log(f"ERROR: No valid monitor identifier found for trade {trade_id}")
             return False
         
-        # Get the port for the specific monitor's active trade supervisor
-        # Each monitor instance runs on its own dedicated port
-        active_trade_supervisor_port = get_monitor_port("active_trade_supervisor", monitor_suffix)
+        active_trade_supervisor_port = get_active_trade_supervisor_http_port_for_monitor_suffix(monitor_suffix)
         
         # Use monitor-specific port for notifications
         notification_url = f"http://localhost:{active_trade_supervisor_port}/api/trade_manager_notification"
@@ -2004,7 +2012,7 @@ def notify_ats_trade_open_with_ack(trade_id: int) -> None:
         return
     with pg_conn.cursor() as cursor:
         cursor.execute(
-            "SELECT ticket_id, monitor FROM users.trades_0001 WHERE id = %s",
+            "SELECT ticket_id, monitor, exchange FROM users.trades_0001 WHERE id = %s",
             (trade_id,),
         )
         row = cursor.fetchone()
@@ -2013,6 +2021,7 @@ def notify_ats_trade_open_with_ack(trade_id: int) -> None:
         log(f"❌ notify_ats_trade_open_with_ack: trade {trade_id} not found")
         return
     ticket_id, monitor = row[0], row[1]
+    venue_exchange = normalize_exchange(row[2] if len(row) > 2 else None)
     if not monitor or not str(monitor).startswith("mon_"):
         log(f"❌ notify_ats_trade_open_with_ack: invalid monitor for trade {trade_id}")
         return
@@ -2022,7 +2031,9 @@ def notify_ats_trade_open_with_ack(trade_id: int) -> None:
     r = redis_client_optional()
     if r:
         cid = str(uuid.uuid4())
-        if publish_trade_open_enroll_request(r, trade_id, tid, monitor_suffix, cid):
+        if publish_trade_open_enroll_request(
+            r, trade_id, tid, monitor_suffix, cid, venue_exchange
+        ):
             ack = wait_trade_open_enroll_ack(r, cid, 12.0)
             if ack and ack.get("ok"):
                 if ack.get("degraded"):
@@ -2135,7 +2146,7 @@ def init_trades_db():
                     date TEXT NOT NULL,
                     time TEXT NOT NULL,
                     symbol TEXT NOT NULL,
-                    market TEXT DEFAULT 'Kalshi',
+                    exchange TEXT DEFAULT 'kalshi',
                     trade_strategy TEXT DEFAULT 'Hourly HTC',
                     contract TEXT,
                     strike TEXT NOT NULL,
@@ -3693,15 +3704,18 @@ def check_expired_trades():
     expired on their own cadence without affecting hourly contracts.
     """
     try:
+        now_est = datetime.now(ZoneInfo("America/New_York"))
+        log(f"[15-MIN CHECK] Starting expiry sweep at {now_est.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+
         # Step 1: Delete trades with status ERROR
         delete_error_trades()
 
-        now_est = datetime.now(ZoneInfo("America/New_York"))
         closed_at = now_est.strftime("%H:%M:%S")
         current_minute = now_est.minute
 
         if current_minute % 15 != 0:
             # Safety guard: scheduler should only call us at multiples of 15.
+            log(f"[15-MIN CHECK] Skipping run at minute={current_minute} (not on 15-minute boundary)")
             return
 
         # Simulated trades: run every 15m regardless of live trade count; close and set W/L from symbol_close
@@ -3740,7 +3754,13 @@ def check_expired_trades():
                 if _is_15m_strategy(row[3])  # trade_strategy column
             ]
 
+        log(
+            f"[15-MIN CHECK] Active trades={len(active_trades)}, "
+            f"eligible_for_this_run={len(trades_to_process)}, minute={current_minute}"
+        )
+
         if not trades_to_process:
+            log("[15-MIN CHECK] No eligible trades found for expiration")
             return
         
         # Get symbol-specific closing prices for each trade we plan to process
@@ -3992,9 +4012,14 @@ def check_expired_trades():
         # Process live trades with normal settlement polling
         if live_trade_tickers:
             poll_settlements_for_matches(live_trade_tickers)
+
+        log(
+            f"[15-MIN CHECK] Completed expiry sweep; "
+            f"processed={len(trades_to_process)}, paper={len(paper_trade_ids)}, live={len(live_trade_tickers)}"
+        )
         
     except Exception as e:
-        pass
+        log(f"[15-MIN CHECK] Error during expiry sweep: {e}")
 
 def delete_error_trades():
     """Delete trades with status ERROR from PostgreSQL database"""
@@ -4031,19 +4056,24 @@ def delete_error_trades():
 def poll_settlements_for_matches(expired_tickers):
     """Poll settlements for matches to expired trades"""
     mode = get_account_mode()
-    
 
-    
+    # Deduplicate input tickers so completion checks and iteration cardinality align.
+    # Without this, repeated tickers can keep the loop alive until timeout.
+    unique_expired_tickers = list(dict.fromkeys(expired_tickers))
+    target_tickers = set(unique_expired_tickers)
     found_tickers = set()
     start_time = time.time()
     timeout_seconds = 30 * 60
-    
-    while len(found_tickers) < len(expired_tickers):
+
+    while found_tickers != target_tickers:
         if time.time() - start_time > timeout_seconds:
+            unresolved = sorted(list(target_tickers - found_tickers))
+            if unresolved:
+                log(f"[5-MIN CHECK] Settlement polling timed out; unresolved tickers={unresolved[:10]}")
             break
             
         try:
-            for ticker in expired_tickers:
+            for ticker in unique_expired_tickers:
                 if ticker in found_tickers:
                     continue
                     
@@ -4133,12 +4163,13 @@ def poll_settlements_for_matches(expired_tickers):
                     
                     found_tickers.add(ticker)
                     
-            if len(found_tickers) < len(expired_tickers):
+            if found_tickers != target_tickers:
                 time.sleep(2)
             else:
                 break
             
         except Exception as e:
+            log(f"[5-MIN CHECK] Settlement polling loop error: {e}")
             time.sleep(2)
 
 def check_expired_trades_for_settlements():
@@ -4158,11 +4189,15 @@ def check_expired_trades_for_settlements():
         if not expired_trades:
             return
         
-        expired_tickers = [trade[0] for trade in expired_trades]
-        log(f"[5-MIN CHECK] Found {len(expired_tickers)} expired trades, checking for settlements")
+        expired_tickers = [trade[0] for trade in expired_trades if trade and trade[0]]
+        unique_expired_tickers = list(dict.fromkeys(expired_tickers))
+        log(
+            f"[5-MIN CHECK] Found {len(expired_tickers)} expired trade rows "
+            f"across {len(unique_expired_tickers)} unique tickers, checking for settlements"
+        )
         
         # Run settlement polling for expired trades
-        poll_settlements_for_matches(expired_tickers)
+        poll_settlements_for_matches(unique_expired_tickers)
         
     except Exception as e:
         log(f"[5-MIN CHECK] Error: {e}")

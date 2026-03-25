@@ -91,16 +91,10 @@ class SystemMonitor:
             "symbol_price_watchdog_sol": get_port("symbol_price_watchdog_sol"),
             "symbol_price_watchdog_xrp": get_port("symbol_price_watchdog_xrp"),
             "strike_table_generator_hourly_btc": get_port("strike_table_generator_hourly_btc"),
-            "strike_table_generator_15m_btc": get_port("strike_table_generator_15m_btc"),
-            "strike_table_generator_15m_eth": get_port("strike_table_generator_15m_eth"),
-            "strike_table_generator_15m_sol": get_port("strike_table_generator_15m_sol"),
-            "strike_table_generator_15m_xrp": get_port("strike_table_generator_15m_xrp"),
+            "strike_table_generator_15m": get_port("strike_table_generator_15m"),
             "kalshi_account_sync": get_port("kalshi_account_sync"),
             "kalshi_market_watchdog_hourly_btc": get_port("kalshi_market_watchdog_hourly_btc"),
-            "kalshi_market_watchdog_15m_btc": get_port("kalshi_market_watchdog_15m_btc"),
-            "kalshi_market_watchdog_15m_eth": get_port("kalshi_market_watchdog_15m_eth"),
-            "kalshi_market_watchdog_15m_sol": get_port("kalshi_market_watchdog_15m_sol"),
-            "kalshi_market_watchdog_15m_xrp": get_port("kalshi_market_watchdog_15m_xrp"),
+            "market_watchdog_kalshi_15m": get_port("market_watchdog_kalshi_15m"),
             "monitor_manager": get_port("monitor_manager"),
             "cascading_failure_detector": get_port("cascading_failure_detector"),
             "system_monitor": get_port("system_monitor")
@@ -152,10 +146,10 @@ class SystemMonitor:
                 {"name": "kalshi_market_watchdog_hourly_eth", "script": "kalshi_market_watchdog.py ETH"},
                 # {"name": "kalshi_market_watchdog_hourly_ndx", "script": "kalshi_market_watchdog.py NDX"},
                 # {"name": "kalshi_market_watchdog_hourly_spx", "script": "kalshi_market_watchdog.py SPX"},
-                {"name": "kalshi_market_watchdog_15m_btc", "script": "kalshi_market_watchdog.py BTC --interval 15m"},
-                {"name": "kalshi_market_watchdog_15m_eth", "script": "kalshi_market_watchdog.py ETH --interval 15m"},
-                {"name": "kalshi_market_watchdog_15m_sol", "script": "kalshi_market_watchdog.py SOL --interval 15m"},
-                {"name": "kalshi_market_watchdog_15m_xrp", "script": "kalshi_market_watchdog.py XRP --interval 15m"},
+                {
+                    "name": "market_watchdog_kalshi_15m",
+                    "script": "market_watchdog.py --exchange kalshi --market 15m",
+                },
                 {"name": "system_monitor", "script": "system_monitor.py"},
                 {"name": "monitor_manager", "script": "monitor_manager.py"},
                 {"name": "cascading_failure_detector", "script": "cascading_failure_detector.py"}
@@ -166,19 +160,26 @@ class SystemMonitor:
                 service_name = service["name"]
                 discovered_services[service_name] = ports.get(service_name, 8000)
             
-            # Add monitor-specific services
+            hourly_monitors = [m for m in active_monitors if m.get("market", "hourly") != "15m"]
+            has_15m = any(m.get("market", "hourly") == "15m" for m in active_monitors)
+            if has_15m:
+                discovered_services["auto_entry_supervisor_15m"] = ports.get(
+                    "auto_entry_supervisor_15m", 8033
+                )
+                discovered_services["active_trade_supervisor_15m"] = ports.get(
+                    "active_trade_supervisor_15m", 8034
+                )
+
             monitor_port_base = 8015
-            for i, monitor in enumerate(active_monitors):
+            for i, monitor in enumerate(hourly_monitors):
                 user_number = monitor['user_number']
                 monitor_id = monitor['monitor_id']
                 monitor_identifier = f"{user_number}_{monitor_id}"
                 
-                # Auto entry supervisor
                 auto_entry_port = monitor_port_base + (i * 2)
                 auto_entry_name = f"auto_entry_supervisor_{monitor_identifier}"
                 discovered_services[auto_entry_name] = auto_entry_port
                 
-                # Active trade supervisor
                 active_trade_port = monitor_port_base + (i * 2) + 1
                 active_trade_name = f"active_trade_supervisor_{monitor_identifier}"
                 discovered_services[active_trade_name] = active_trade_port
@@ -191,12 +192,8 @@ class SystemMonitor:
                 discovered_services[strike_table_name] = ports.get(
                     strike_table_name, strike_table_default_ports[symbol.lower()]
                 )
-            # 15m strike table generators (BTC, ETH, SOL, XRP)
-            _p15 = {"BTC": 8023, "ETH": 8024, "SOL": 8029, "XRP": 8030}
-            for symbol in ("BTC", "ETH", "SOL", "XRP"):
-                name = f"strike_table_generator_15m_{symbol.lower()}"
-                discovered_services[name] = ports.get(name, _p15[symbol])
-            
+            discovered_services["strike_table_generator_15m"] = ports.get("strike_table_generator_15m", 8032)
+
             # Update the service URLs with discovered services
             self.service_urls = discovered_services
             
