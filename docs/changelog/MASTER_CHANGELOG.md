@@ -33,9 +33,9 @@ Plans: `.cursor/plans/unified-15m-aes-ats-reads.md` (in progress; this deploy is
 12. `20260327_1020_active_trades_monitoring_price_precision`
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations in order (from project root — skip any id already in `system.schema_migrations` if `run_migration.py` reports it applied):  
+- [x] Apply migrations in order (from project root — skip any id already in `system.schema_migrations` if `run_migration.py` reports it applied):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260320_2200_sol_xrp_live_price_log_watchdog_columns`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260322_1200_strike_15m_sol_xrp_numeric_precision`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260323_1400_live_symbol_status_sync_sol_xrp`  
@@ -47,10 +47,11 @@ Plans: `.cursor/plans/unified-15m-aes-ats-reads.md` (in progress; this deploy is
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260326_1000_venue_exchange_column_names`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260326_1800_active_trades_0001_15m_pool`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260327_1015_active_trades_ensure_exchange`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260327_1020_active_trades_monitoring_price_precision`
-- [ ] Restart application services:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260327_1020_active_trades_monitoring_price_precision`  
+  *(Production also applied prior pending `20260312_1500_kalshi_market_volume_fp` via `run_migration.py up` sweep.)*
+- [x] Restart application services:  
   `./scripts/MASTER_RESTART.sh`
-- [ ] Verify: health (`main_app` :3000, `trade_executor` :8001), supervisor `RUNNING` including `auto_entry_supervisor_15m`, `active_trade_supervisor_15m`, `market_watchdog_kalshi_15m`, `strike_table_generator_15m`; spot-check `trade_manager` for `[15-MIN CHECK]` and ATS for enrollment; optional log grep `[STALE FLUSH]` after settlement windows.
+- [x] Verify: health (`main_app` :3000, `trade_executor` :8001), supervisor `RUNNING` including `auto_entry_supervisor_15m`, `active_trade_supervisor_15m`, `market_watchdog_kalshi_15m`, `strike_table_generator_15m`; spot-check `trade_manager` for `[15-MIN CHECK]` and ATS for enrollment; optional log grep `[STALE FLUSH]` after settlement windows.
 
 ---
 
