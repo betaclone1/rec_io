@@ -903,6 +903,10 @@ class StrikeTableGenerator:
                     month_str = date_part[2:5]
                     day = date_part[5:7]
                     hour = date_part[7:9] if len(date_part) >= 9 else "00"
+                    try:
+                        month = datetime.strptime(month_str.upper(), "%b").strftime("%m")
+                    except ValueError:
+                        month = "01"
                     strike_date = f"{year}-{month}-{day}T{hour}:00:00Z"
                 else:
                     strike_date = "2025-08-15T15:00:00Z"

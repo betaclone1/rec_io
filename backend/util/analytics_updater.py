@@ -67,7 +67,7 @@ def get_symbols_from_db():
         symbols = get_symbols_from_db()
         return [symbol.upper() for symbol in symbols] if symbols else []
     except Exception as e:
-        logger.error(f"Error getting symbols from database: {e}")
+        logging.getLogger(__name__).error("Error getting symbols from database: %s", e)
         return []
 
 def update_symbol_datasets(logger):

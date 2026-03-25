@@ -1,4 +1,5 @@
 import sys
+import sqlite3
 import requests
 import json
 import time
@@ -594,6 +595,21 @@ def write_orders_to_db():
         print(f"✅ Orders written to PostgreSQL database")
     except Exception as e:
         print(f"❌ Failed to connect to PostgreSQL: {e}")
+
+
+def get_settlements_data():
+    """Fetch settlements from Kalshi API. Stub until wired to API (was undefined)."""
+    return {"settlements": []}
+
+
+def get_fills_data():
+    """Fetch fills from Kalshi API. Stub until wired to API (was undefined)."""
+    return {"fills": []}
+
+
+def get_positions_data():
+    """Fetch positions from Kalshi API. Stub until wired to API (was undefined)."""
+    return {"positions": []}
 
 
 def ingest_settlements():

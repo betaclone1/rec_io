@@ -45,6 +45,7 @@ Minimal index for current system. Historical and one-off docs were moved to `arc
 |-----|-----|
 | [MONITORS_LIST_INFRASTRUCTURE.md](MONITORS_LIST_INFRASTRUCTURE.md) | Monitor list behavior |
 | [PROJECT_HOUSEKEEPING_AUDIT_PLAN.md](PROJECT_HOUSEKEEPING_AUDIT_PLAN.md) | Housekeeping and archive plan |
+| [LONG_TERM_INITIATIVES.md](LONG_TERM_INITIATIVES.md) | Cross-cutting backlog (e.g. multi-user / hardcoded `0001` sweep) |
 
 ## Standards and changelog
 
