@@ -8910,7 +8910,7 @@ Kalshi 15-minute market data for ETH. One row per current 15m window; truncated 
 
 ### Table: `live_data.market_kalshi_15m`
 
-Unified 15-minute market snapshots for tracked crypto symbols (BTC, ETH, SOL, XRP). Multiple rows per symbol (one per venue market in the active event). **`exchange`** identifies the exchange/API source (e.g. `kalshi` from `market_watchdog.py`). `symbol` plus `exchange` replace the role of separate per-symbol tables (`market_kalshi_15m_btc`, …) for this feed. On event rotation for a given symbol and exchange, those rows are deleted and repopulated; open-trade tickers may be preserved and re-inserted. `strike` is backfilled from the corresponding `live_data.live_price_log_1s_{sym}`.`one_minute_avg` at the window opening when API/subtitle strike is empty. Migration `20260326_1000_venue_exchange_column_names` renames **`broker` → `exchange`** and the unique index to `market_kalshi_15m_exchange_symbol_event_market_unique`.
+Unified 15-minute market snapshots for tracked crypto symbols (BTC, ETH, SOL, XRP). Multiple rows per symbol (one per venue market in the active event). **`exchange`** identifies the exchange/API source (e.g. `kalshi`). `symbol` plus `exchange` replace the role of separate per-symbol tables (`market_kalshi_15m_btc`, …) for this feed. On event rotation for a given symbol and exchange, those rows are deleted and repopulated; open-trade tickers may be preserved and re-inserted. `strike` is seeded from Kalshi `floor_strike`/subtitle at rollover. Migration `20260326_1000_venue_exchange_column_names` renames **`broker` → `exchange`** and migration `20260326_1600_market_kalshi_15m_drop_unused_legacy_columns` drops unused integer quote columns that remained NULL in WS-driven operation.
 
 #### Columns
 
@@ -8923,15 +8923,8 @@ Unified 15-minute market snapshots for tracked crypto symbols (BTC, ETH, SOL, XR
 | `market_ticker` | `character varying(100)` | NO | - | |
 | `market` | `text` | YES | '15m' | Interval label |
 | `strike` | `character varying(20)` | YES | - | From API `floor_strike` / subtitle or price-log backfill |
-| `yes_bid` | `integer(32)` | YES | - | |
-| `yes_ask` | `integer(32)` | YES | - | |
-| `no_bid` | `integer(32)` | YES | - | |
-| `no_ask` | `integer(32)` | YES | - | |
-| `last_price` | `integer(32)` | YES | - | |
 | `volume_fp` | `integer(32)` | YES | - | Fixed-point volume count (Kalshi `volume_fp`) |
-| `volume_24h_fp` | `integer(32)` | YES | - | Fixed-point 24h volume count (Kalshi `volume_24h_fp`) |
 | `open_interest` | `integer(32)` | YES | - | |
-| `liquidity` | `integer(32)` | YES | - | |
 | `created_at` | `timestamp with time zone` | YES | now() | |
 | `updated_at` | `timestamp with time zone` | YES | now() | |
 | `yes_bid_dollars` | `text` | YES | - | |
@@ -8962,6 +8955,57 @@ Unified 15-minute market snapshots for tracked crypto symbols (BTC, ETH, SOL, XR
 - `market_kalshi_15m_pkey`
   ```sql
   CREATE UNIQUE INDEX market_kalshi_15m_pkey ON live_data.market_kalshi_15m USING btree (id)
+  ```
+
+---
+
+### Table: `live_data.market_kalshi_ws_15m`
+
+Parallel 15-minute Kalshi market rows fed only by **`backend/market_watchdog_ws.py`** (WebSocket **Market Ticker**, channel `ticker`). **`yes_*` / `last_price_dollars`** are normalized to **4** decimal places (handles JSON float decoding). **`no_*_dollars`** use the same width (derived complements). **`volume_fp`** and **`open_interest_fp`** are **TEXT** with **2** fractional digits (Kalshi fixed-point semantics). `strike` is seeded from REST event `markets[]` at rollover (via `floor_strike`) and preserved on WS upserts (`COALESCE`). Ticker **`dollar_volume`** / **`dollar_open_interest`** are not persisted. On event rotation per symbol, rows for that symbol and exchange are cleared before new tickers are subscribed. Migrations: `20260328_1000_market_kalshi_ws_15m`, `20260328_1200_market_kalshi_ws_15m_slim_columns`, `20260328_1300_market_kalshi_ws_15m_volume_fp_text`.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_ws_15m_id_seq'::regclass) | |
+| `symbol` | `character varying(10)` | NO | - | e.g. BTC, ETH, SOL, XRP |
+| `exchange` | `character varying(20)` | NO | - | e.g. `kalshi` |
+| `event_ticker` | `character varying(50)` | NO | - | From REST discovery (same as REST watchdog) |
+| `market_ticker` | `character varying(100)` | NO | - | |
+| `market` | `text` | YES | '15m' | Interval label |
+| `strike` | `character varying(20)` | YES | - | Usually NULL on WS path |
+| `yes_bid_dollars` | `text` | YES | - | Normalized 4 dp (`kalshi_market_normalize.normalize_kalshi_dollar_text`) |
+| `yes_ask_dollars` | `text` | YES | - | Same |
+| `no_bid_dollars` | `text` | YES | - | Complement of yes ask, 4 dp |
+| `no_ask_dollars` | `text` | YES | - | Complement of yes bid, 4 dp |
+| `last_price_dollars` | `text` | YES | - | From ticker `price_dollars`, 4 dp |
+| `volume_fp` | `text` | YES | - | Ticker `volume_fp`, 2 dp string (e.g. `142468.00`) |
+| `open_interest_fp` | `text` | YES | - | Ticker `open_interest_fp`, 2 dp string |
+| `created_at` | `timestamp with time zone` | YES | now() | |
+| `updated_at` | `timestamp with time zone` | YES | now() | |
+
+#### Constraints
+
+- **Primary Key:** `market_kalshi_ws_15m_pkey` on `id`
+- **Unique:** `market_kalshi_ws_15m_exchange_symbol_event_market_unique` on `(exchange, symbol, event_ticker, market_ticker)`
+
+#### Indexes
+
+- `market_kalshi_ws_15m_exchange_symbol_event_market_unique`
+  ```sql
+  CREATE UNIQUE INDEX market_kalshi_ws_15m_exchange_symbol_event_market_unique ON live_data.market_kalshi_ws_15m USING btree (exchange, symbol, event_ticker, market_ticker)
+  ```
+- `market_kalshi_ws_15m_exchange_symbol_idx`
+  ```sql
+  CREATE INDEX market_kalshi_ws_15m_exchange_symbol_idx ON live_data.market_kalshi_ws_15m USING btree (exchange, symbol)
+  ```
+- `market_kalshi_ws_15m_exchange_symbol_event_idx`
+  ```sql
+  CREATE INDEX market_kalshi_ws_15m_exchange_symbol_event_idx ON live_data.market_kalshi_ws_15m USING btree (exchange, symbol, event_ticker)
+  ```
+- `market_kalshi_ws_15m_pkey`
+  ```sql
+  CREATE UNIQUE INDEX market_kalshi_ws_15m_pkey ON live_data.market_kalshi_ws_15m USING btree (id)
   ```
 
 ---
@@ -9345,6 +9389,62 @@ Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_tabl
 - `strike_table_15m_broker_symbol_idx` on `(broker, symbol)`
 - `idx_strike_table_15m_lookup` on `(timestamp, symbol, current_price)`
 - `strike_table_15m_broker_symbol_timestamp_idx` on `(broker, symbol, timestamp DESC)`
+
+---
+
+### Table: `live_data.strike_table_ws_15m`
+
+WS-backed 15-minute strike table for Kalshi symbols (**BTC**, **ETH**, **SOL**, **XRP**), generated by `backend/strike_table_generator_ws.py` from:
+- `live_data.market_kalshi_ws_15m` (event/strike ladder + quote columns)
+- `live_data.live_symbol_status` (spot + momentum/volatility/movement snapshot)
+
+Rows are scoped by `exchange` + `symbol`, matching unified 15m conventions. Column shape intentionally mirrors `live_data.strike_table_15m` to preserve downstream compatibility while allowing WS-specific orchestration.
+
+Migrations:
+- `20260326_1215_strike_table_ws_15m_and_ws_notify`
+- `20260326_1245_strike_table_ws_15m_pipeline_health_columns`
+
+#### Columns
+
+Same as `live_data.strike_table_15m` plus pipeline gate health metadata:
+- `pipeline_healthy` BOOLEAN NOT NULL DEFAULT FALSE
+- `pipeline_health_reason` TEXT
+- `pipeline_health_checked_at` TIMESTAMPTZ
+- `pipeline_health_max_age_sec` INTEGER NOT NULL DEFAULT 30
+
+#### Indexes
+
+- `strike_table_ws_15m_exchange_symbol_idx` on `(exchange, symbol)`
+- `idx_strike_table_ws_15m_lookup` on `(timestamp, symbol, current_price)`
+- `strike_table_ws_15m_exchange_symbol_timestamp_idx` on `(exchange, symbol, timestamp DESC)`
+- `strike_table_ws_15m_exchange_symbol_health_checked_idx` on `(exchange, symbol, pipeline_health_checked_at DESC)`
+
+---
+
+### Table: `live_data.strike_pipeline_health_15m`
+
+Per-symbol WS pipeline health state for 15m trading gates and dashboard power-light display. This table is intentionally decoupled from strike row write volume so transient `strike_table_ws_15m` row-count gaps do not erase health visibility.
+
+Migrations:
+- `20260326_1335_strike_pipeline_health_15m`
+
+#### Columns
+
+- `exchange` VARCHAR(20) NOT NULL
+- `symbol` VARCHAR(10) NOT NULL
+- `pipeline_healthy` BOOLEAN NOT NULL DEFAULT FALSE
+- `pipeline_health_reason` TEXT
+- `pipeline_health_checked_at` TIMESTAMPTZ NOT NULL DEFAULT NOW()
+- `pipeline_health_max_age_sec` INTEGER NOT NULL DEFAULT 30
+- `updated_at` TIMESTAMPTZ NOT NULL DEFAULT NOW()
+
+#### Constraints
+
+- Primary key on `(exchange, symbol)`
+
+#### Indexes
+
+- `strike_pipeline_health_15m_checked_idx` on `(pipeline_health_checked_at DESC)`
 
 ---
 

@@ -580,6 +580,7 @@ emergency_restart() {
     pkill -f "python.*kalshi_account_sync.py" || true
     pkill -f "python.*kalshi_market_watchdog.py" || true
     pkill -f "python.*market_watchdog.py" || true
+    pkill -f "python.*market_watchdog_ws.py" || true
     
     # Kill any remaining project processes, excluding analytics tooling
     print_warning "Killing processes with project path..."

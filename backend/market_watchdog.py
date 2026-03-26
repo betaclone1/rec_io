@@ -304,20 +304,13 @@ def ensure_unified_15m_table(connection):
         market_ticker VARCHAR(100) NOT NULL,
         market TEXT DEFAULT '15m',
         strike VARCHAR(20),
-        yes_bid INTEGER,
-        yes_ask INTEGER,
-        no_bid INTEGER,
-        no_ask INTEGER,
-        last_price INTEGER,
         yes_bid_dollars TEXT,
         yes_ask_dollars TEXT,
         no_bid_dollars TEXT,
         no_ask_dollars TEXT,
         last_price_dollars TEXT,
         volume_fp INTEGER,
-        volume_24h_fp INTEGER,
         open_interest INTEGER,
-        liquidity INTEGER,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         CONSTRAINT market_kalshi_15m_exchange_symbol_event_market_unique
@@ -494,46 +487,29 @@ def save_kalshi_15m_unified(
                 no_bid_dollars = market.get("no_bid_dollars")
                 no_ask_dollars = market.get("no_ask_dollars")
                 last_price_dollars = market.get("last_price_dollars")
-                yes_bid = _market_cents_from_dollars(yes_bid_dollars, market.get("yes_bid"))
-                yes_ask = _market_cents_from_dollars(yes_ask_dollars, market.get("yes_ask"))
-                no_bid = _market_cents_from_dollars(no_bid_dollars, market.get("no_bid"))
-                no_ask = _market_cents_from_dollars(no_ask_dollars, market.get("no_ask"))
-                last_price = _market_cents_from_dollars(last_price_dollars, market.get("last_price"))
                 volume_fp = _int_from_fixed_point(
                     market.get("volume_fp"),
                     default=_int_from_fixed_point(market.get("volume", 0)),
                 )
-                volume_24h_fp = _int_from_fixed_point(
-                    market.get("volume_24h_fp"),
-                    default=_int_from_fixed_point(market.get("volume_24h", 0)),
-                )
                 open_interest = market.get("open_interest", 0)
-                liquidity = market.get("liquidity", 0)
 
                 cursor.execute(
                     f"""
                     INSERT INTO {UNIFIED_TABLE}
-                    (symbol, exchange, event_ticker, market_ticker, market, strike, yes_bid, yes_ask, no_bid, no_ask,
-                     last_price, yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
-                     volume_fp, volume_24h_fp, open_interest, liquidity, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    (symbol, exchange, event_ticker, market_ticker, market, strike,
+                     yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
+                     volume_fp, open_interest, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                     ON CONFLICT (exchange, symbol, event_ticker, market_ticker) DO UPDATE SET
                         market = EXCLUDED.market,
                         strike = EXCLUDED.strike,
-                        yes_bid = EXCLUDED.yes_bid,
-                        yes_ask = EXCLUDED.yes_ask,
-                        no_bid = EXCLUDED.no_bid,
-                        no_ask = EXCLUDED.no_ask,
-                        last_price = EXCLUDED.last_price,
                         yes_bid_dollars = EXCLUDED.yes_bid_dollars,
                         yes_ask_dollars = EXCLUDED.yes_ask_dollars,
                         no_bid_dollars = EXCLUDED.no_bid_dollars,
                         no_ask_dollars = EXCLUDED.no_ask_dollars,
                         last_price_dollars = EXCLUDED.last_price_dollars,
                         volume_fp = EXCLUDED.volume_fp,
-                        volume_24h_fp = EXCLUDED.volume_24h_fp,
                         open_interest = EXCLUDED.open_interest,
-                        liquidity = EXCLUDED.liquidity,
                         updated_at = NOW()
                     """,
                     (
@@ -543,20 +519,13 @@ def save_kalshi_15m_unified(
                         market_ticker,
                         market_val,
                         strike,
-                        yes_bid,
-                        yes_ask,
-                        no_bid,
-                        no_ask,
-                        last_price,
                         yes_bid_dollars,
                         yes_ask_dollars,
                         no_bid_dollars,
                         no_ask_dollars,
                         last_price_dollars,
                         volume_fp,
-                        volume_24h_fp,
                         open_interest,
-                        liquidity,
                     ),
                 )
             except Exception as e:

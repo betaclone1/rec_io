@@ -609,24 +609,36 @@ def _redis_client_for_db_changes_forwarder():
     """Same env contract as redis_switchboard (REDIS_URL or REDIS_HOST/PORT/PASSWORD)."""
     import redis as _redis_mod
 
+    # health_check_interval + periodic get_message timeouts avoid silent pubsub stalls.
+    _kwargs = dict(
+        decode_responses=True,
+        health_check_interval=25,
+        socket_keepalive=True,
+    )
     redis_url = os.getenv("REDIS_URL")
     if redis_url:
-        return _redis_mod.from_url(redis_url, decode_responses=True)
+        return _redis_mod.from_url(redis_url, **_kwargs)
     return _redis_mod.Redis(
         host=os.getenv("REDIS_HOST", "localhost"),
         port=int(os.getenv("REDIS_PORT", "6379")),
         password=os.getenv("REDIS_PASSWORD") or None,
-        decode_responses=True,
+        **_kwargs,
     )
 
 
 def _redis_db_changes_subscriber_thread(queue: asyncio.Queue, loop: asyncio.AbstractEventLoop) -> None:
-    """Blocking Redis pubsub; push messages onto asyncio queue for the main event loop."""
+    """
+    Blocking Redis pubsub → asyncio queue. Uses timed get_message + ping instead of listen()
+    so dead connections recover; matches long-lived UI sessions behind proxies.
+    """
     import redis.exceptions as redis_exc
 
     channel = os.getenv("REDIS_CHANNEL_DB_CHANGES", "rec_io:db_changes")
+    get_timeout_s = float(os.getenv("REDIS_DB_FORWARDER_GET_TIMEOUT", "30"))
     backoff = 5.0
     while True:
+        r = None
+        pubsub = None
         try:
             r = _redis_client_for_db_changes_forwarder()
             pubsub = r.pubsub()
@@ -636,7 +648,21 @@ def _redis_db_changes_subscriber_thread(queue: asyncio.Queue, loop: asyncio.Abst
                 channel,
             )
             backoff = 5.0
-            for message in pubsub.listen():
+            while True:
+                message = pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=get_timeout_s,
+                )
+                if message is None:
+                    try:
+                        r.ping()
+                    except (redis_exc.ConnectionError, redis_exc.TimeoutError, OSError) as ping_e:
+                        _main_logger.warning(
+                            "Redis db_changes forwarder: ping failed (%s); reconnecting pubsub",
+                            ping_e,
+                        )
+                        break
+                    continue
                 if message.get("type") != "message":
                     continue
                 data = message.get("data")
@@ -661,6 +687,17 @@ def _redis_db_changes_subscriber_thread(queue: asyncio.Queue, loop: asyncio.Abst
             )
             time.sleep(backoff)
             backoff = min(backoff * 1.5, 60.0)
+        finally:
+            try:
+                if pubsub is not None:
+                    pubsub.close()
+            except Exception:
+                pass
+            try:
+                if r is not None:
+                    r.close()
+            except Exception:
+                pass
 
 
 async def _redis_db_changes_consume_loop(queue: asyncio.Queue) -> None:
@@ -5233,8 +5270,34 @@ async def get_monitors(user_id: str = "user_0001"):
             """)
             
             results = cursor.fetchall()
+
+            # WS strike pipeline health snapshot from dedicated health table.
+            cursor.execute(
+                """
+                SELECT
+                    symbol,
+                    pipeline_healthy,
+                    pipeline_health_reason,
+                    EXTRACT(EPOCH FROM (NOW() - pipeline_health_checked_at))
+                FROM live_data.strike_pipeline_health_15m
+                WHERE exchange = 'kalshi'
+                """
+            )
+            health_rows = cursor.fetchall()
             
         conn.close()
+
+        max_stale_sec = int(os.getenv("STRIKE_PIPELINE_MAX_STALENESS_SEC", "30"))
+        symbol_health = {}
+        for sym, pipeline_healthy, reason, age_sec in health_rows:
+            age = float(age_sec) if age_sec is not None else float("inf")
+            healthy_now = bool(pipeline_healthy) and age <= float(max_stale_sec)
+            symbol_health[str(sym).upper()] = {
+                "healthy": healthy_now,
+                "state": "healthy" if healthy_now else "degraded",
+                "reason": "ok" if healthy_now else str(reason or "pipeline_unhealthy_or_stale"),
+                "age_sec": age,
+            }
         
         # Transform database results to frontend format
         monitors = []
@@ -5317,6 +5380,28 @@ async def get_monitors(user_id: str = "user_0001"):
                 "regime_window": regime_window or "30d",
                 "market": (market or "").strip().lower() if market else None,
             }
+
+            # Monitor health is sourced from WS strike pipeline for 15m monitors.
+            # Non-15m monitors are treated as healthy for this indicator.
+            monitor_market = formatted_monitor.get("market")
+            monitor_symbol = str(symbol or "").upper()
+            if monitor_market == "15m":
+                h = symbol_health.get(monitor_symbol)
+                if h:
+                    formatted_monitor["monitor_healthy"] = bool(h["healthy"])
+                    formatted_monitor["monitor_health_state"] = h["state"]
+                    formatted_monitor["monitor_health_reason"] = h["reason"]
+                    formatted_monitor["monitor_health_age_sec"] = h["age_sec"]
+                else:
+                    formatted_monitor["monitor_healthy"] = False
+                    formatted_monitor["monitor_health_state"] = "degraded"
+                    formatted_monitor["monitor_health_reason"] = "pipeline_health_missing"
+                    formatted_monitor["monitor_health_age_sec"] = None
+            else:
+                formatted_monitor["monitor_healthy"] = True
+                formatted_monitor["monitor_health_state"] = "healthy"
+                formatted_monitor["monitor_health_reason"] = "not_15m"
+                formatted_monitor["monitor_health_age_sec"] = 0.0
             monitors.append(formatted_monitor)
         
         # Add the NEW_MONITOR entry
@@ -5347,6 +5432,86 @@ async def get_monitors(user_id: str = "user_0001"):
             "status": "error",
             "message": str(e)
         }
+
+
+@app.get("/api/monitors/health")
+async def get_monitors_health(user_id: str = "user_0001"):
+    """Get monitor health only (power-light payload), without full monitor tile data."""
+    try:
+        from backend.core.config.database import get_postgresql_connection
+        conn = get_postgresql_connection()
+        user_number = user_id.replace("user_", "")
+        max_stale_sec = int(os.getenv("STRIKE_PIPELINE_MAX_STALENESS_SEC", "30"))
+
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT id, symbol, status, market
+                FROM users.monitor_list_{user_number}
+                WHERE status != 'ARCHIVED'
+                ORDER BY dashboard_order, id
+                """
+            )
+            monitor_rows = cursor.fetchall()
+            cursor.execute(
+                """
+                SELECT
+                    symbol,
+                    pipeline_healthy,
+                    pipeline_health_reason,
+                    EXTRACT(EPOCH FROM (NOW() - pipeline_health_checked_at))
+                FROM live_data.strike_pipeline_health_15m
+                WHERE exchange = 'kalshi'
+                """
+            )
+            health_rows = cursor.fetchall()
+        conn.close()
+
+        symbol_health = {}
+        for sym, pipeline_healthy, reason, age_sec in health_rows:
+            age = float(age_sec) if age_sec is not None else float("inf")
+            healthy_now = bool(pipeline_healthy) and age <= float(max_stale_sec)
+            symbol_health[str(sym).upper()] = {
+                "monitor_healthy": healthy_now,
+                "monitor_health_state": "healthy" if healthy_now else "degraded",
+                "monitor_health_reason": "ok" if healthy_now else str(reason or "pipeline_unhealthy_or_stale"),
+                "monitor_health_age_sec": age,
+            }
+
+        out = {}
+        for monitor_id, symbol, status, market in monitor_rows:
+            monitor_key = f"mon_{user_number}_{monitor_id}"
+            monitor_market = (market or "").strip().lower() if market else None
+            monitor_symbol = str(symbol or "").upper()
+            if monitor_market == "15m":
+                h = symbol_health.get(monitor_symbol)
+                if h:
+                    out[monitor_key] = h
+                else:
+                    out[monitor_key] = {
+                        "monitor_healthy": False,
+                        "monitor_health_state": "degraded",
+                        "monitor_health_reason": "pipeline_health_missing",
+                        "monitor_health_age_sec": None,
+                    }
+            else:
+                out[monitor_key] = {
+                    "monitor_healthy": True,
+                    "monitor_health_state": "healthy",
+                    "monitor_health_reason": "not_15m",
+                    "monitor_health_age_sec": 0.0,
+                }
+            out[monitor_key]["status"] = status
+
+        return {
+            "status": "ok",
+            "user_id": user_id,
+            "count": len(out),
+            "monitors": out,
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 
 @app.get("/api/symbols")
 async def get_symbols():

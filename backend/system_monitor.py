@@ -91,10 +91,10 @@ class SystemMonitor:
             "symbol_price_watchdog_sol": get_port("symbol_price_watchdog_sol"),
             "symbol_price_watchdog_xrp": get_port("symbol_price_watchdog_xrp"),
             "strike_table_generator_hourly_btc": get_port("strike_table_generator_hourly_btc"),
-            "strike_table_generator_15m": get_port("strike_table_generator_15m"),
+            "strike_table_generator_ws_15m": get_port("strike_table_generator_ws_15m"),
             "kalshi_account_sync": get_port("kalshi_account_sync"),
             "kalshi_market_watchdog_hourly_btc": get_port("kalshi_market_watchdog_hourly_btc"),
-            "market_watchdog_kalshi_15m": get_port("market_watchdog_kalshi_15m"),
+            "market_watchdog_ws_kalshi_15m": get_port("market_watchdog_ws_kalshi_15m"),
             "monitor_manager": get_port("monitor_manager"),
             "cascading_failure_detector": get_port("cascading_failure_detector"),
             "system_monitor": get_port("system_monitor")
@@ -147,8 +147,8 @@ class SystemMonitor:
                 # {"name": "kalshi_market_watchdog_hourly_ndx", "script": "kalshi_market_watchdog.py NDX"},
                 # {"name": "kalshi_market_watchdog_hourly_spx", "script": "kalshi_market_watchdog.py SPX"},
                 {
-                    "name": "market_watchdog_kalshi_15m",
-                    "script": "market_watchdog.py --exchange kalshi --market 15m",
+                    "name": "market_watchdog_ws_kalshi_15m",
+                    "script": "market_watchdog_ws.py --exchange kalshi --market 15m",
                 },
                 {"name": "system_monitor", "script": "system_monitor.py"},
                 {"name": "monitor_manager", "script": "monitor_manager.py"},
@@ -192,7 +192,7 @@ class SystemMonitor:
                 discovered_services[strike_table_name] = ports.get(
                     strike_table_name, strike_table_default_ports[symbol.lower()]
                 )
-            discovered_services["strike_table_generator_15m"] = ports.get("strike_table_generator_15m", 8032)
+            discovered_services["strike_table_generator_ws_15m"] = ports.get("strike_table_generator_ws_15m", 8036)
 
             # Update the service URLs with discovered services
             self.service_urls = discovered_services

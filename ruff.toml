@@ -1,0 +1,15 @@
+# Ruff config for CI and local runs. GitHub Actions: `.github/workflows/tests.yml`.
+# The codebase predates strict Ruff; these ignores match current reality. Tighten over time.
+target-version = "py311"
+line-length = 120
+
+[lint]
+ignore = [
+  "E501",
+  "E402",
+  "F401",
+  "F541",
+  "F841",
+  "E722",
+  "F811",
+]

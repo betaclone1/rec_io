@@ -6402,8 +6402,8 @@ document.addEventListener('DOMContentLoaded', () => {
         row.classList.add(riskClass);
         
         // Update buy button - use _dollars values when available
-        const yesAsk = strikeData.yes_ask_dollars ? Math.round(parseFloat(strikeData.yes_ask_dollars) * 100) : strikeData.yes_ask;
-        const noAsk = strikeData.no_ask_dollars ? Math.round(parseFloat(strikeData.no_ask_dollars) * 100) : strikeData.no_ask;
+        const yesAsk = strikeData.yes_ask_dollars ? Math.round(parseFloat(strikeData.yes_ask_dollars) * 100) : null;
+        const noAsk = strikeData.no_ask_dollars ? Math.round(parseFloat(strikeData.no_ask_dollars) * 100) : null;
         const yesDiff = strikeData.yes_diff;
         const noDiff = strikeData.no_diff;
         const volume = strikeData.volume;

@@ -459,6 +459,11 @@ def get_strike_table_name(symbol: str, market: str) -> str:
     m = (market or 'hourly').strip().lower()
     if m not in ('hourly', '15m'):
         m = 'hourly'
+    if m == "15m":
+        src = os.getenv("STRIKE_TABLE_15M_SOURCE", "legacy").strip().lower()
+        if src == "ws":
+            return "strike_table_ws_15m"
+        return "strike_table_15m"
     return f"strike_table_{m}_{symbol.lower()}"
 
 _sym_mkt = get_monitor_symbol()
@@ -1822,7 +1827,7 @@ def get_current_symbol_price(symbol: str = None) -> Optional[Decimal]:
 
 def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Optional[Dict[str, Any]]:
     """Get the latest Kalshi market snapshot data from PostgreSQL.
-    15m: reads ``live_data.market_kalshi_15m`` (unified table filled by ``market_watchdog.py --market 15m``).
+    15m: reads configured unified source (`market_kalshi_ws_15m` default, legacy fallback `market_kalshi_15m`).
     Legacy per-symbol ``market_kalshi_15m_btc`` tables are not updated by that pipeline and are ignored.
     Hourly: ``live_data.market_kalshi_hourly_{symbol}``."""
     try:
@@ -1846,18 +1851,18 @@ def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Option
         cursor = conn.cursor()
 
         if market == "15m":
+            source = os.getenv("KALSHI_15M_MARKET_SOURCE", "legacy").strip().lower()
+            market_table = "market_kalshi_ws_15m" if source == "ws" else "market_kalshi_15m"
             cursor.execute(
-                """
+                f"""
                 SELECT
                     market_ticker,
-                    yes_ask,
-                    no_ask,
                     yes_ask_dollars,
                     no_ask_dollars,
                     volume_fp,
                     event_ticker,
                     strike
-                FROM live_data.market_kalshi_15m
+                FROM live_data.{market_table}
                 WHERE LOWER(TRIM(exchange::text)) = 'kalshi'
                   AND UPPER(TRIM(symbol::text)) = %s
                 ORDER BY updated_at DESC
@@ -1870,8 +1875,6 @@ def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Option
                 f"""
                 SELECT
                     market_ticker,
-                    yes_ask,
-                    no_ask,
                     yes_ask_dollars,
                     no_ask_dollars,
                     volume_fp,
@@ -1894,13 +1897,11 @@ def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Option
         for row in markets_data:
             mk = {
                 "ticker": row[0],
-                "yes_ask": row[1],
-                "no_ask": row[2],
-                "yes_ask_dollars": row[3],
-                "no_ask_dollars": row[4],
-                "volume": row[5],
-                "event_ticker": row[6],
-                "strike": row[7],
+                "yes_ask_dollars": row[1],
+                "no_ask_dollars": row[2],
+                "volume": row[3],
+                "event_ticker": row[4],
+                "strike": row[5],
             }
             markets.append(mk)
         
@@ -3238,6 +3239,48 @@ def trigger_auto_stop_close(trade):
     if should_suppress_auto_close_past_kalshi_settlement(
         trade.get("ticker"), trade.get("trade_id")
     ):
+        return False
+
+    conn = None
+    try:
+        symbol, market = get_current_monitor_symbol_and_market()
+        if market == "15m":
+            max_staleness_sec = int(os.getenv("STRIKE_PIPELINE_MAX_STALENESS_SEC", "30"))
+            conn = get_db_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        pipeline_healthy,
+                        pipeline_health_reason,
+                        EXTRACT(EPOCH FROM (NOW() - pipeline_health_checked_at))
+                    FROM live_data.strike_pipeline_health_15m
+                    WHERE exchange = 'kalshi' AND symbol = %s
+                    LIMIT 1
+                    """,
+                    (str(symbol or "").upper(),),
+                )
+                hr = cursor.fetchone()
+            conn.close()
+            if not hr:
+                log(f"[AUTO STOP] 🚫 BLOCKED by pipeline gate: missing health row symbol={symbol}")
+                return False
+            is_healthy = bool(hr[0])
+            reason = str(hr[1] or "")
+            age_sec = float(hr[2]) if hr[2] is not None else float("inf")
+            if (not is_healthy) or (age_sec > float(max_staleness_sec)):
+                log(
+                    f"[AUTO STOP] 🚫 BLOCKED by pipeline gate symbol={symbol} "
+                    f"healthy={is_healthy} reason={reason} age={age_sec:.1f}s max={max_staleness_sec}s"
+                )
+                return False
+    except Exception as gate_err:
+        log(f"[AUTO STOP] 🚫 BLOCKED by pipeline gate check error: {gate_err}")
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
         return False
 
     # Generate unique ticket ID

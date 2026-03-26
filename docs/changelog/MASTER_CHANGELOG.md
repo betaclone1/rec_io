@@ -6,6 +6,44 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-26 — 15m WS cutover + canonical tables cleanup (Kalshi)
+
+**Summary**
+- **15m WS ingestion:** `market_watchdog_ws.py` and `strike_table_generator_ws.py` now write to canonical `live_data.market_kalshi_15m` and `live_data.strike_table_15m` (no `_ws_15m` writes).
+- **Fail-closed trading gates:** `auto_entry_supervisor.py` and `active_trade_supervisor.py` block auto entry / auto stop-close when `live_data.strike_pipeline_health_15m` is unhealthy or stale.
+- **DB schema cleanup:** drop unused legacy integer quote/volume columns from `live_data.market_kalshi_15m` while preserving `ttc_hourly` and `probability_hourly` in `live_data.strike_table_15m`.
+- **Frontend strictness:** `trade_monitor` computes ask prices only from `*_dollars` fields (no fallbacks to removed integer columns).
+- **Ops hygiene:** monitoring health expectations cleaned up so canonical WS services are reflected correctly.
+
+Plans: `.cursor/plans/unified-15m-aes-ats-reads.md`, `.cursor/plans/kalshi-websocket-orderbook-market-watchdog.md`
+
+**DB migrations (required on production, in lexicographic order)**
+1. `20260326_1215_strike_table_ws_15m_and_ws_notify`
+2. `20260326_1245_strike_table_ws_15m_pipeline_health_columns`
+3. `20260326_1335_strike_pipeline_health_15m`
+4. `20260326_1600_market_kalshi_15m_drop_unused_legacy_columns`
+5. `20260328_1000_market_kalshi_ws_15m`
+6. `20260328_1200_market_kalshi_ws_15m_slim_columns`
+7. `20260328_1300_market_kalshi_ws_15m_volume_fp_text`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations in order (from project root):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260326_1215_strike_table_ws_15m_and_ws_notify`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260326_1245_strike_table_ws_15m_pipeline_health_columns`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260326_1335_strike_pipeline_health_15m`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260326_1600_market_kalshi_15m_drop_unused_legacy_columns`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260328_1000_market_kalshi_ws_15m`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260328_1200_market_kalshi_ws_15m_slim_columns`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260328_1300_market_kalshi_ws_15m_volume_fp_text`
+- [ ] Restart application services:  
+  `./scripts/MASTER_RESTART.sh`
+- [ ] Verify: health endpoints (`main_app` :3000, `trade_executor` :8001), supervisor `RUNNING` including `market_watchdog_ws_kalshi_15m` and `strike_table_generator_ws_15m`; spot-check a symbol row shows fresh updates in `live_data.market_kalshi_15m` and `live_data.strike_table_15m`; confirm dashboard is not degraded.
+- [ ] Fidelity check: compare local vs prod `git rev-parse HEAD` and confirm the expected migration is present in `run_migration.py list`.
+
+---
+
 ## 2026-03-25 — Unified 15m stack (AES/ATS/generator/watchdog), venue `exchange` schema, trade_manager expiry and Kalshi settlement hardening
 
 **Summary**

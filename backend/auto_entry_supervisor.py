@@ -605,6 +605,11 @@ def get_strike_table_name(symbol: str, market: str) -> str:
     m = (market or 'hourly').strip().lower()
     if m not in ('hourly', '15m'):
         m = 'hourly'
+    if m == "15m":
+        src = os.getenv("STRIKE_TABLE_15M_SOURCE", "legacy").strip().lower()
+        if src == "ws":
+            return "strike_table_ws_15m"
+        return "strike_table_15m"
     return f"strike_table_{m}_{symbol.lower()}"
 
 
@@ -1801,9 +1806,10 @@ def get_current_ttc():
         with conn.cursor() as cursor:
             ttc_column = "ttc_15m" if current_market == "15m" else "ttc_hourly"
             if current_market == "15m":
+                table_15m = get_strike_table_name(current_symbol, "15m")
                 cursor.execute(
                     f"""
-                    SELECT {ttc_column} FROM live_data.strike_table_15m
+                    SELECT {ttc_column} FROM live_data.{table_15m}
                     WHERE exchange = %s AND symbol = %s
                     ORDER BY timestamp DESC
                     LIMIT 1
@@ -1851,12 +1857,13 @@ def get_master_strike_table_data():
             sym_u = current_symbol.upper()
             latest_ts = None
             if current_market == "15m":
+                table_15m = get_strike_table_name(current_symbol, "15m")
                 ex = _strike_data_exchange_key()
                 cursor.execute(
                     """
-                    SELECT MAX(timestamp) FROM live_data.strike_table_15m
+                    SELECT MAX(timestamp) FROM live_data.{table_15m}
                     WHERE exchange = %s AND symbol = %s
-                    """,
+                    """.format(table_15m=table_15m),
                     (ex, sym_u),
                 )
                 rts = cursor.fetchone()
@@ -1874,7 +1881,7 @@ def get_master_strike_table_data():
                         market_title,
                         strike_tier,
                         market_status
-                    FROM live_data.strike_table_15m
+                    FROM live_data.{table_15m}
                     WHERE exchange = %s AND symbol = %s AND timestamp = %s
                     ORDER BY strike
                     LIMIT 1
@@ -1918,7 +1925,7 @@ def get_master_strike_table_data():
                         active_side,
                         yes_price_spread,
                         no_price_spread
-                    FROM live_data.strike_table_15m
+                    FROM live_data.{table_15m}
                     WHERE exchange = %s AND symbol = %s AND timestamp = %s
                     ORDER BY strike
                 """, (ex, sym_u, latest_ts))
@@ -2372,6 +2379,48 @@ def trigger_auto_entry_trade(strike_data):
     log(f"[AUTO ENTRY] 🟢 Triggered AUTO ENTRY for strike: {strike_data.get('strike')} {strike_data.get('side')}")
     
     try:
+        current_symbol, current_market = get_current_monitor_symbol_and_market()
+        if current_market == "15m":
+            max_staleness_sec = int(os.getenv("STRIKE_PIPELINE_MAX_STALENESS_SEC", "30"))
+            conn = None
+            try:
+                conn = get_db_connection()
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT
+                            pipeline_healthy,
+                            pipeline_health_reason,
+                            EXTRACT(EPOCH FROM (NOW() - pipeline_health_checked_at))
+                        FROM live_data.strike_pipeline_health_15m
+                        WHERE exchange = 'kalshi' AND symbol = %s
+                        LIMIT 1
+                        """,
+                        (current_symbol.upper(),),
+                    )
+                    hr = cursor.fetchone()
+                conn.close()
+                if not hr:
+                    log(f"[AUTO ENTRY] 🚫 BLOCKED by pipeline gate: missing health row symbol={current_symbol}")
+                    return False
+                is_healthy = bool(hr[0])
+                reason = str(hr[1] or "")
+                age_sec = float(hr[2]) if hr[2] is not None else float("inf")
+                if (not is_healthy) or (age_sec > float(max_staleness_sec)):
+                    log(
+                        f"[AUTO ENTRY] 🚫 BLOCKED by pipeline gate symbol={current_symbol} "
+                        f"healthy={is_healthy} reason={reason} age={age_sec:.1f}s max={max_staleness_sec}s"
+                    )
+                    return False
+            except Exception as gate_err:
+                log(f"[AUTO ENTRY] 🚫 BLOCKED by pipeline gate check error: {gate_err}")
+                try:
+                    if conn:
+                        conn.close()
+                except Exception:
+                    pass
+                return False
+
         port = get_port("trade_manager")
         url = f"http://localhost:{port}/trades"
         

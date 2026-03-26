@@ -64,6 +64,12 @@ def _configure_logging():
 
 
 logger = _configure_logging()
+SIMULATE_ETH_COINBASE_WS_OUTAGE = os.getenv("SIMULATE_ETH_COINBASE_WS_OUTAGE", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 # Symbol configuration
 SYMBOL_CONFIG = {
@@ -1166,11 +1172,16 @@ async def log_symbol_price(symbol: str):
     while True:
         try:
             async with websockets.connect(symbol_config['api_endpoint']) as websocket:
+                product_id = symbol_config['product_id']
+                if symbol == "ETH" and SIMULATE_ETH_COINBASE_WS_OUTAGE:
+                    # Intentional ETH-only sabotage for outage simulation.
+                    product_id = "ETH-USD-BROKEN"
+                    logger.warning("[ETH] SIMULATE_ETH_COINBASE_WS_OUTAGE active: subscribing with invalid product_id")
                 subscribe_message = {
                     "type": "subscribe",
                     "channels": [
-                        {"name": "ticker", "product_ids": [symbol_config['product_id']]},
-                        {"name": "heartbeat", "product_ids": [symbol_config['product_id']]}
+                        {"name": "ticker", "product_ids": [product_id]},
+                        {"name": "heartbeat", "product_ids": [product_id]}
                     ]
                 }
                 await websocket.send(json.dumps(subscribe_message))

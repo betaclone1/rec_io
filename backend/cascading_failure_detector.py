@@ -100,8 +100,8 @@ class CascadingFailureDetector:
             # "kalshi_market_watchdog_hourly_ndx", # NDX Kalshi hourly market data
             # "kalshi_market_watchdog_hourly_inx", # INX - not in supervisor; uncomment when deployed
             # "kalshi_market_watchdog_hourly_nasdaq100", # NASDAQ100 - not in supervisor; uncomment when deployed
-            "market_watchdog_kalshi_15m", # Unified Kalshi 15m → live_data.market_kalshi_15m
-            "strike_table_generator_15m", # Unified 15m strikes → live_data.strike_table_15m
+            "market_watchdog_ws_kalshi_15m", # Kalshi 15m WS ticker → live_data.market_kalshi_ws_15m
+            "strike_table_generator_ws_15m", # WS 15m strikes → live_data.strike_table_15m
         ]
         
         # Monitor-specific services will be added dynamically

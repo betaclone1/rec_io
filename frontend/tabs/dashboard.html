@@ -785,6 +785,11 @@
       box-shadow: 0 0 6px rgba(72, 187, 120, 0.6);
     }
 
+    .status-light.degraded {
+      background-color: #e53e3e;
+      box-shadow: 0 0 6px rgba(229, 62, 62, 0.6);
+    }
+
     /* List View Status Light - positioned for horizontal layout */
     .list-status-light {
       width: 12px;
@@ -1483,8 +1488,13 @@
     let currentSortBy = 'name'; // Current sort criteria
     let currentChartType = 'pie'; // Current chart type (pie/bar)
 
-    // Second WebSocket: db_changes (Redis-backed backbone, via switchboard)
+    // Second WebSocket: db_changes (main forwards Redis). Must reconnect — proxies idle-timeout WS.
     let wsDbChanges = null;
+    let dbChangesWsReconnectTimer = null;
+    let dbChangesWsBackoffMs = 1000;
+    const DB_CHANGES_WS_BACKOFF_CAP_MS = 30000;
+    let monitorHealthRefreshTimer = null;
+    let monitorListRefreshDebounceTimer = null;
 
     // Latest row from users.account_balance_0001 (via /api/account/balance); drives portfolio/bankroll top line.
     let accountBalanceSnapshot = null;
@@ -1541,7 +1551,7 @@
       // Connect to WebSockets after everything is loaded
       console.log('Dashboard: All monitors loaded, now connecting to WebSockets (preferences + db_changes)...');
       connectWebSocket();          // Preferences (existing behavior, stays on main for now)
-      connectDbChangesWebSocket(); // New: db_changes from Redis backbone via switchboard
+      connectDbChangesWebSocket(); // One multiplexed WS for all db_change streams; reconnect only restores the pipe.
     });
 
     // Monitors data - will be loaded from API
@@ -1830,6 +1840,23 @@
       return 'Regime Monitoring ON — ' + formatRegimeWindowLabel(monitor.regime_window);
     }
 
+    function getMonitorPowerLightClass(monitor) {
+      const isActive = monitor && monitor.status === 'active';
+      if (!isActive) return 'inactive';
+      const isDegraded = String(monitor?.monitor_health_state || '').toLowerCase() === 'degraded' || monitor?.monitor_healthy === false;
+      return isDegraded ? 'degraded' : 'active';
+    }
+
+    function getMonitorPowerLightTitle(monitor) {
+      const isActive = monitor && monitor.status === 'active';
+      if (!isActive) return 'Click to activate monitor';
+      if (getMonitorPowerLightClass(monitor) === 'degraded') {
+        const reason = monitor?.monitor_health_reason ? ` (${monitor.monitor_health_reason})` : '';
+        return `Monitor enabled but degraded${reason}. Click to deactivate monitor`;
+      }
+      return 'Monitor enabled and healthy. Click to deactivate monitor';
+    }
+
     // Create monitor tile HTML
     function createMonitorTile(monitor, index) {
       const isListView = currentViewMode === 'list';
@@ -1849,7 +1876,7 @@
         return `
           <div class="monitor-tile list-view ${monitor.status === 'inactive' ? 'inactive' : ''} ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
             <!-- Column 1: Status Light -->
-            <div class="status-light list-status-light ${monitor.status === 'active' ? 'active' : 'inactive'}" onclick="toggleMonitorStatus('${monitor.id}', '${monitor.name}', '${monitor.status}')" style="cursor: pointer;" title="${monitor.status === 'active' ? 'Click to deactivate monitor' : 'Click to activate monitor'}"></div>
+            <div class="status-light list-status-light ${getMonitorPowerLightClass(monitor)}" onclick="toggleMonitorStatus('${monitor.id}', '${monitor.name}', '${monitor.status}')" style="cursor: pointer;" title="${getMonitorPowerLightTitle(monitor)}"></div>
             
             <!-- Column 2: Symbol/Icons and Strategy -->
             <div style="display: flex; flex-direction: column; min-width: 100px; margin-right: 16px; margin-left: 12px;">
@@ -1908,7 +1935,7 @@
           <div class="monitor-tile tile-view ${monitor.status === 'inactive' ? 'inactive' : ''} ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
             <div style="display: flex; align-items: flex-start; margin-bottom: 10px;">
               <!-- Column 1: Status Light -->
-              <div class="status-light ${monitor.status === 'active' ? 'active' : 'inactive'}" onclick="toggleMonitorStatus('${monitor.id}', '${monitor.name}', '${monitor.status}')" style="cursor: pointer;" title="${monitor.status === 'active' ? 'Click to deactivate monitor' : 'Click to activate monitor'}"></div>
+              <div class="status-light ${getMonitorPowerLightClass(monitor)}" onclick="toggleMonitorStatus('${monitor.id}', '${monitor.name}', '${monitor.status}')" style="cursor: pointer;" title="${getMonitorPowerLightTitle(monitor)}"></div>
               
               <!-- Column 2: Symbol/Icons and Strategy -->
               <div style="display: flex; flex-direction: column; align-items: flex-start; margin-left: 12px; margin-right: auto;">
@@ -5122,8 +5149,7 @@
     // TODO: Re-enable allocation data refresh when ready
     // setInterval(loadAllocationData, 30000);
     
-    // Refresh monitor data every 30 seconds (reload from database)
-    setInterval(async () => {
+    async function refreshMonitorsSoft() {
       try {
         console.log('Dashboard: Refreshing monitor data from database...');
         const oldMonitors = [...monitors]; // Keep reference to old data
@@ -5159,6 +5185,21 @@
       } catch (e) {
         console.error('Error refreshing monitor data:', e);
       }
+    }
+
+    function scheduleMonitorsSoftRefresh(delayMs = 600) {
+      if (monitorListRefreshDebounceTimer) {
+        clearTimeout(monitorListRefreshDebounceTimer);
+      }
+      monitorListRefreshDebounceTimer = setTimeout(() => {
+        monitorListRefreshDebounceTimer = null;
+        refreshMonitorsSoft();
+      }, delayMs);
+    }
+
+    // Refresh monitor data every 30 seconds (reload from database)
+    setInterval(() => {
+      refreshMonitorsSoft();
     }, 30000);
 
     // Market data functions - commented out with symbol price panel (may move elsewhere later)
@@ -5650,7 +5691,7 @@
           else tile.classList.remove('inactive');
           const light = tile.querySelector('.status-light');
           if (light) {
-            light.classList.remove('active', 'inactive');
+            light.classList.remove('active', 'inactive', 'degraded');
             light.classList.add(status === 'active' ? 'active' : 'inactive');
             light.title = status === 'active' ? 'Click to deactivate monitor' : 'Click to activate monitor';
           }
@@ -5699,6 +5740,58 @@
       } finally {
         setLightPointerEvents(true);
       }
+    }
+
+    function applyMonitorHealthLights(healthByMonitorId) {
+      if (!healthByMonitorId || typeof healthByMonitorId !== 'object') return;
+      Object.entries(healthByMonitorId).forEach(([monitorId, health]) => {
+        const mon = monitors.find(m => m.id === monitorId);
+        if (mon) {
+          mon.monitor_healthy = health.monitor_healthy;
+          mon.monitor_health_state = health.monitor_health_state;
+          mon.monitor_health_reason = health.monitor_health_reason;
+        }
+        const tiles = document.querySelectorAll(`.monitor-tile[data-monitor-id="${monitorId}"]`);
+        tiles.forEach(tile => {
+          const light = tile.querySelector('.status-light');
+          if (!light) return;
+          const status = mon?.status || health.status || 'inactive';
+          light.classList.remove('active', 'inactive', 'degraded');
+          if (status !== 'active') {
+            light.classList.add('inactive');
+            light.title = 'Click to activate monitor';
+          } else {
+            const degraded = String(health.monitor_health_state || '').toLowerCase() === 'degraded' || health.monitor_healthy === false;
+            light.classList.add(degraded ? 'degraded' : 'active');
+            if (degraded) {
+              const reason = health.monitor_health_reason ? ` (${health.monitor_health_reason})` : '';
+              light.title = `Monitor enabled but degraded${reason}. Click to deactivate monitor`;
+            } else {
+              light.title = 'Monitor enabled and healthy. Click to deactivate monitor';
+            }
+          }
+        });
+      });
+    }
+
+    async function refreshMonitorHealthLightsOnly() {
+      const response = await fetch('/api/monitors/health?user_id=user_0001&t=' + Date.now());
+      const payload = await response.json();
+      if (payload && payload.status === 'ok' && payload.monitors) {
+        applyMonitorHealthLights(payload.monitors);
+      }
+    }
+
+    function scheduleMonitorHealthRefresh() {
+      if (monitorHealthRefreshTimer) return;
+      monitorHealthRefreshTimer = setTimeout(async function() {
+        monitorHealthRefreshTimer = null;
+        try {
+          await refreshMonitorHealthLightsOnly();
+        } catch (e) {
+          console.error('Error refreshing monitor health lights:', e);
+        }
+      }, 350);
     }
 
     // Paper Trading Functions
@@ -6051,10 +6144,8 @@
           
           // Handle monitor list updates
           if (data.type === 'monitor_list_updated') {
-            // Refresh monitors data to update the display
-            loadMonitors().then(() => {
-              initializeMonitors();
-            });
+            // Debounced soft refresh to avoid full tile redraw flicker.
+            scheduleMonitorsSoftRefresh(700);
           }
           
           // Handle cooldown timer changes
@@ -6142,36 +6233,48 @@
     }
 
     function connectDbChangesWebSocket() {
-      // Same origin as the page (main app). Main subscribes to Redis rec_io:db_changes and forwards here.
-      // Do not use switchboard :3010 — production TLS/reverse proxies rarely expose that port to browsers.
+      if (dbChangesWsReconnectTimer) {
+        clearTimeout(dbChangesWsReconnectTimer);
+        dbChangesWsReconnectTimer = null;
+      }
       if (wsDbChanges) {
         try {
+          wsDbChanges.onclose = null;
           wsDbChanges.close();
         } catch (e) {
           console.error('Error closing existing db_changes WebSocket:', e);
         }
+        wsDbChanges = null;
       }
 
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = wsProtocol + '//' + window.location.host + '/ws/db_changes';
       console.log('Connecting db_changes WebSocket (same origin):', wsUrl);
 
-      wsDbChanges = new WebSocket(wsUrl);
+      const sock = new WebSocket(wsUrl);
+      wsDbChanges = sock;
 
-      wsDbChanges.onopen = function() {
+      sock.onopen = function() {
+        dbChangesWsBackoffMs = 1000;
         console.log('Dashboard db_changes WebSocket connected');
       };
 
-      wsDbChanges.onclose = function(ev) {
-        console.log('Dashboard db_changes WebSocket closed', ev.code, ev.reason);
-        // Basic reconnect with backoff could be added later if needed
+      sock.onclose = function(ev) {
+        console.log('Dashboard db_changes WebSocket closed', ev.code, ev.reason, 'reconnect in', dbChangesWsBackoffMs, 'ms');
+        wsDbChanges = null;
+        if (dbChangesWsReconnectTimer) return;
+        dbChangesWsReconnectTimer = setTimeout(function() {
+          dbChangesWsReconnectTimer = null;
+          connectDbChangesWebSocket();
+        }, dbChangesWsBackoffMs);
+        dbChangesWsBackoffMs = Math.min(dbChangesWsBackoffMs * 2, DB_CHANGES_WS_BACKOFF_CAP_MS);
       };
 
-      wsDbChanges.onerror = function(err) {
+      sock.onerror = function(err) {
         console.error('Dashboard db_changes WebSocket error:', err);
       };
 
-      wsDbChanges.onmessage = async function(event) {
+      sock.onmessage = async function(event) {
         try {
           const msg = JSON.parse(event.data);
           if (msg.type !== 'db_change') {
@@ -6189,6 +6292,14 @@
             'account_balance',
             'subaccounts',
           ]);
+          const monitorHealthStreams = new Set([
+            'market_kalshi_15m',
+            'live_symbol_status',
+          ]);
+
+          if (monitorHealthStreams.has(stream)) {
+            scheduleMonitorHealthRefresh();
+          }
 
           if (!bankrollRelatedStreams.has(stream)) {
             return;

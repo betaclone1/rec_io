@@ -176,8 +176,8 @@ class SupervisorConfigGenerator:
                 "strike_table_generator_hourly_eth": 8015,
                 "strike_table_generator_hourly_spx": 8016,
                 "strike_table_generator_hourly_ndx": 8017,
-                "market_watchdog_kalshi_15m": 8031,
-                "strike_table_generator_15m": 8032,
+                "market_watchdog_ws_kalshi_15m": 8035,
+                "strike_table_generator_ws_15m": 8036,
                 "auto_entry_supervisor_15m": 8033,
                 "active_trade_supervisor_15m": 8034,
                 "system_monitor": 8006,
@@ -293,12 +293,11 @@ class SupervisorConfigGenerator:
             #     "script": "kalshi_market_watchdog.py NDX",
             #     "port": ports.get("kalshi_market_watchdog_hourly_ndx", 8020)
             # },
-            # 15m Kalshi market data: unified process only (live_data.market_kalshi_15m).
-            # Per-symbol kalshi_market_watchdog_15m_* omitted for testing cutover.
+            # 15m Kalshi market data cutover: WS watchdog is primary.
             {
-                "name": "market_watchdog_kalshi_15m",
-                "script": "market_watchdog.py --exchange kalshi --market 15m",
-                "port": ports.get("market_watchdog_kalshi_15m", 8031),
+                "name": "market_watchdog_ws_kalshi_15m",
+                "script": "market_watchdog_ws.py --exchange kalshi --market 15m",
+                "port": ports.get("market_watchdog_ws_kalshi_15m", 8035),
             },
             {
                 "name": "system_monitor",
@@ -368,13 +367,12 @@ class SupervisorConfigGenerator:
                 "script": f"strike_table_generator.py {symbol} continuous 1",
                 "port": ports.get(key, strike_table_default_ports[symbol.lower()])
             })
-        # 15m strikes: master generator only → live_data.strike_table_15m (per-symbol strike_table_generator_15m_* omitted for testing).
+        # 15m strikes cutover: WS generator is primary.
         services.append({
-            "name": "strike_table_generator_15m",
-            "script": "strike_table_generator.py --master-15m --interval 15m --master-interval-sec 1 --data-exchange kalshi",
-            "port": ports.get("strike_table_generator_15m", 8032),
+            "name": "strike_table_generator_ws_15m",
+            "script": "strike_table_generator_ws.py --exchange kalshi --debounce-ms 1200 --min-refresh-sec 1.2 --pipeline-max-age-sec 30",
+            "port": ports.get("strike_table_generator_ws_15m", 8036),
         })
-
         # Supervisord main log: durable path under logs/ with rotation (critical for incident review)
         supervisord_log = os.path.join(log_dir, "supervisord.log")
         

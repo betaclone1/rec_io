@@ -80,6 +80,8 @@ This stack is **one repo, any host**: you develop on a local dev machine and dep
 3. **Switchboard stays the NOTIFY → Redis writer:** One `redis_switchboard` process LISTENs PostgreSQL and publishes to Redis. It does **not** need to be reachable from end-user browsers in prod.
 4. **No prod-only WebSocket wiring in the frontend.** If something needs `db_change` events, it uses the contract on **same-origin** `/ws/db_changes` or subscribes to Redis in backend code — never a hardcoded alternate host/port for “real” pages.
 
+5. **Resilience (required for long-lived tabs):** Proxies and idle timers close WebSockets; Redis pubsub can stall without timeouts. You still use **one** same-origin `/ws/db_changes` per page (or per app shell), carrying **all** logical streams; handlers filter by `database`. **One reconnect sequence** restores that pipe for every stream — not a timer per metric. **Main’s Redis forwarder** uses timed `get_message` + `PING` instead of an unbounded `listen()` loop. **Do not** default to interval polling per widget; that defeats event-driven refetch. If a feature truly needs a poll, document it as an explicit exception.
+
 Violating (1) or (4) breaks the “build local, run anywhere” model.
 
 ---
@@ -186,7 +188,7 @@ This pattern (read_api as canonical read surface, main as front door only, Redis
 
 - **Redis:** Must be running. Switchboard, **main_app’s db_changes forwarder**, and all backend Redis subscribers depend on it. Use the same `REDIS_*` (and channel) env on every environment so dev and prod behave the same.
 - **Switchboard:** One process (e.g. under supervisor). LISTENs to PostgreSQL and publishes to Redis. Its own `/ws/db_changes` on the switchboard port is optional and **not** required for product UIs (see §2.1).
-- **Main app:** Must run with Redis reachable as above so it can subscribe and forward to **same-origin** `/ws/db_changes` clients.
+- **Main app:** Must run with Redis reachable as above so it can subscribe and forward to **same-origin** `/ws/db_changes` clients. Optional env: `REDIS_DB_FORWARDER_GET_TIMEOUT` (seconds, default `30`) for pubsub read/poll cadence.
 - **Triggers:** Applied via migrations. New tables that should be watched get a migration that adds the trigger and, when applicable, a note in the stream registry (registry is in code, so "add stream" is a code change plus migration).
 - **ATS open enrollment:** Not a DB NOTIFY stream. `trade_manager` and each `active_trade_supervisor` process use Redis Pub/Sub channel `rec_io:ats_enroll_request` (override via `REDIS_CHANNEL_ATS_ENROLL_REQUEST`) plus short-lived keys `ats:enroll:result:{correlation_id}` for handoff ACK. Same Redis instance as the switchboard; implementation `backend/core/ats_enrollment_redis.py`. Messages do **not** flow through `redis_switchboard.py`.
 
@@ -199,6 +201,7 @@ This pattern (read_api as canonical read surface, main as front door only, Redis
 | `redis_basic_test` | testing.redis_basic_test   | Pilot / test stream       |
 | `account_balance` | users.account_balance_0001 | Dashboard bankroll/portfolio panel |
 | `live_symbol_status` | live_data.live_symbol_status | Canonical snapshot of latest symbol conditions (BTC/ETH): refetch on `db_change` |
+| `market_kalshi_ws_15m` | live_data.market_kalshi_ws_15m | WS 15m market ladder/quotes (used by `strike_table_generator_ws`) |
 
 **Canonical current-state rule (symbols):** treat `live_data.live_symbol_status` as the source of truth for "current" symbol price + condition percentiles (momentum/volatility/movement). The `live_price_log_1s_*` tables are the higher-resolution per-tick log used to derive/validate the snapshot and for debugging/analysis; consumers should prefer `live_symbol_status` for real-time decisions.
 

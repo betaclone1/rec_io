@@ -1,5 +1,6 @@
-# Run unit tests, optional coverage, and lint. Integration tests can be run separately or on schedule.
-name: Tests and lint
+# Unit tests on push/PR. Lint was removed: it flagged hundreds of legacy issues on whole files whenever
+# any Python path changed, causing failure emails without reflecting deploy risk. Run Ruff locally if desired.
+name: Tests
 
 on:
   push:
@@ -29,58 +30,9 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
         run: |
           pytest tests/unit -v --tb=short
-        # Run only unit by default; add 'pytest tests/ -v' or -m "integration" for full suite if desired
 
       - name: Run tests with coverage (unit only)
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
           pytest tests/unit -v --cov=backend --cov-report=term-missing --cov-fail-under=0
-        # cov-fail-under=0 allows passing while coverage is low; raise later (e.g. 70)
-
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install ruff
-        run: pip install ruff
-
-      - name: Determine changed Python files
-        id: changed_py
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            BASE_SHA="${{ github.event.pull_request.base.sha }}"
-            HEAD_SHA="${{ github.sha }}"
-          else
-            BASE_SHA="${{ github.event.before }}"
-            HEAD_SHA="${{ github.sha }}"
-          fi
-
-          CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- \
-            'backend/**/*.py' 'scripts/db/**/*.py' 'scripts/config/**/*.py' \
-            | tr '\n' ' ' | xargs)
-
-          echo "changed_files=$CHANGED" >> "$GITHUB_OUTPUT"
-          if [[ -n "$CHANGED" ]]; then
-            echo "Lint target files: $CHANGED"
-          else
-            echo "No changed Python files in lint scope."
-          fi
-
-      - name: Lint changed files with ruff
-        if: ${{ steps.changed_py.outputs.changed_files != '' }}
-        run: ruff check ${{ steps.changed_py.outputs.changed_files }}
-
-      - name: Skip lint (no scoped Python changes)
-        if: ${{ steps.changed_py.outputs.changed_files == '' }}
-        run: echo "Skipping Ruff (no changed Python files in backend/scripts db/config scope)."

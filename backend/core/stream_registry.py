@@ -20,6 +20,8 @@ TABLE_TO_STREAM: Dict[Tuple[str, str], str] = {
     ("users", "account_balance_0001"): "account_balance",
     # Live price feed snapshot table (used by the standalone live UI)
     ("live_data", "live_symbol_status"): "live_symbol_status",
+    # 15m market ladder/quotes consumed by strike_table_generator_ws
+    ("live_data", "market_kalshi_15m"): "market_kalshi_15m",
 }
 
 

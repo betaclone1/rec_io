@@ -47,7 +47,9 @@ DEFAULT_PORTS = {
     # "strike_table_generator_hourly_spx": 8016,
     # "strike_table_generator_hourly_ndx": 8017,
     "market_watchdog_kalshi_15m": 8031,
+    "market_watchdog_ws_kalshi_15m": 8035,
     "strike_table_generator_15m": 8032,
+    "strike_table_generator_ws_15m": 8036,
     "auto_entry_supervisor_15m": 8033,
     "active_trade_supervisor_15m": 8034,
 }
@@ -124,9 +126,19 @@ def ensure_port_config_exists():
                     "description": "Unified 15m strike table generator (all symbols)",
                     "status": "RUNNING"
                 },
+                "strike_table_generator_ws_15m": {
+                    "port": 8036,
+                    "description": "WS/Redis-driven 15m strike table generator (phase 1)",
+                    "status": "RUNNING"
+                },
                 "market_watchdog_kalshi_15m": {
                     "port": 8031,
                     "description": "Consolidated Kalshi 15m market watchdog (all symbols)",
+                    "status": "RUNNING"
+                },
+                "market_watchdog_ws_kalshi_15m": {
+                    "port": 8035,
+                    "description": "Kalshi 15m market ticker WebSocket watchdog → live_data.market_kalshi_ws_15m",
                     "status": "RUNNING"
                 },
                 "auto_entry_supervisor_15m": {
