@@ -4,6 +4,11 @@ Kalshi 15m: REST only at each quarter-hour rollover (wipe → event JSON → see
 All other time: WebSocket ``ticker`` updates only (same table columns as REST snapshot on seed).
 
 Rollover sets ``rolling`` so the WS thread skips DB writes until seed + new subscribe are done.
+
+HTTP 429 on Kalshi is **REST quota**, not WebSocket. If we see it while only running this pipeline,
+treat it as our bug: parallel REST during rollover, tight refetch loops, or another client sharing
+the same public API route. Public GETs from this repo process are serialized in
+``backend.market_watchdog._kalshi_public_get``.
 """
 
 from __future__ import annotations
@@ -51,6 +56,13 @@ DEFAULT_DB_CONNECT_RETRY_SEC = 90.0
 DEFAULT_WS_FLOW_VERIFY_SEC = 120.0
 DEFAULT_CYCLE_RETRY_SEC = 10.0
 DEFAULT_DB_POOL_MAX_CONN = 16
+DEFAULT_DISCOVERY_SLEEP_SEC = 2.0
+# Upper bound for how long we will keep polling REST during a single 15m rollover discovery
+# (prevents runaway 429s / infinite loops).
+DEFAULT_DISCOVERY_MAX_WAIT_SEC = 120.0
+# Default 1: resolve symbols one-at-a-time over REST so rollover never bursts parallel GETs.
+# Override with MARKET_WATCHDOG_WS_ROLLOVER_REST_WORKERS=2..8 only if you accept 429 risk.
+DEFAULT_ROLLOVER_REST_MAX_WORKERS = 1
 
 _POOL_LOCK = threading.Lock()
 _DB_POOL: psycopg2.pool.ThreadedConnectionPool | None = None
@@ -59,7 +71,7 @@ TICKER_UPSERT_SQL = f"""
 INSERT INTO {WS_TABLE} AS ws
     (symbol, exchange, event_ticker, market_ticker, market, strike,
      yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
-     volume_fp, open_interest, updated_at)
+     volume_fp, open_interest_fp, updated_at)
 VALUES
     (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
 ON CONFLICT (exchange, symbol, event_ticker, market_ticker) DO UPDATE SET
@@ -71,7 +83,7 @@ ON CONFLICT (exchange, symbol, event_ticker, market_ticker) DO UPDATE SET
     no_ask_dollars = EXCLUDED.no_ask_dollars,
     last_price_dollars = EXCLUDED.last_price_dollars,
     volume_fp = EXCLUDED.volume_fp,
-    open_interest = EXCLUDED.open_interest,
+    open_interest_fp = EXCLUDED.open_interest_fp,
     updated_at = NOW()
 """
 
@@ -183,21 +195,9 @@ def _return_conn(conn) -> None:
             pass
 
 
-def _fixed_point_text_to_int(v):
-    if v is None:
-        return None
-    s = str(v).strip()
-    if not s:
-        return None
-    try:
-        return int(float(s))
-    except Exception:
-        return None
-
-
 def _normalize_row_for_canonical_15m(row: tuple) -> tuple:
     sym, br, ev, mt, mv, strike, yb, ya, nb, na, lp, vf, oif = row
-    return (sym, br, ev, mt, mv, strike, yb, ya, nb, na, lp, _fixed_point_text_to_int(vf), _fixed_point_text_to_int(oif))
+    return (sym, br, ev, mt, mv, strike, yb, ya, nb, na, lp, vf, oif)
 
 
 def ensure_ws_15m_table(conn) -> None:
@@ -222,9 +222,9 @@ def ensure_ws_15m_table(conn) -> None:
             no_bid_dollars TEXT,
             no_ask_dollars TEXT,
             last_price_dollars TEXT,
-            volume_fp INTEGER,
+            volume_fp TEXT,
             volume_24h_fp INTEGER,
-            open_interest INTEGER,
+            open_interest_fp TEXT,
             liquidity INTEGER,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
             updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -239,73 +239,141 @@ def ensure_ws_15m_table(conn) -> None:
 # --- REST (rollover only) ---
 
 
-def _floor_strike_raw(market: dict):
-    fs = market.get("floor_strike")
-    if fs is None:
-        fs = market.get("floorStrike")
-    return fs
+def _nonempty_str(v: object) -> bool:
+    if v is None:
+        return False
+    s = str(v).strip()
+    return bool(s)
 
 
-def _markets_all_have_valid_floor_strike(event_data: dict) -> bool:
+def _markets_all_have_usable_strike_inputs(event_data: dict) -> bool:
+    """
+    Rollover readiness gate.
+
+    Hard requirement for a usable strike table:
+      - explicit `floor_strike` for every market row
+      - `yes_ask_dollars`
+      - `yes_bid_dollars`
+
+    If strike metadata is temporarily missing for a symbol on the new event, that symbol
+    stays pending until it has full data.
+    """
     markets = event_data.get("markets") or []
     if not markets:
         return False
     for m in markets:
         if not isinstance(m, dict):
             return False
-        fs = _floor_strike_raw(m)
-        if fs is None:
+        if m.get("floor_strike") is None:
             return False
-        if isinstance(fs, str) and not str(fs).strip():
+        if not _nonempty_str(m.get("yes_ask_dollars")):
+            return False
+        if not _nonempty_str(m.get("yes_bid_dollars")):
             return False
     return True
 
 
-def _refetch_event_until_floor_strikes(event_ticker: str) -> dict:
+def _refetch_event_until_markets_usable(
+    event_ticker: str,
+    *,
+    max_wait_sec: float,
+    sleep_sec: float,
+) -> dict:
+    deadline = time.monotonic() + max_wait_sec
     attempt = 0
     last_log = 0.0
-    while True:
+    while time.monotonic() < deadline:
         ed = fetch_event_json(event_ticker)
-        if ed and ed.get("markets") and len(ed["markets"]) > 0 and _markets_all_have_valid_floor_strike(
-            ed
-        ):
+        if ed and ed.get("markets") and len(ed["markets"]) > 0 and _markets_all_have_usable_strike_inputs(ed):
             return ed
         attempt += 1
         now = time.monotonic()
         if now - last_log >= 30.0:
             logger.info(
-                "waiting for floor_strike on all markets event=%s REST attempts=%s",
+                "waiting for usable strike inputs on all markets event=%s REST attempts=%s",
                 event_ticker,
                 attempt,
             )
             last_log = now
-        time.sleep(2.0)
+        time.sleep(sleep_sec)
+    # Return last attempt result if present; otherwise an empty dict to signal failure.
+    return fetch_event_json(event_ticker) or {}
 
 
-def _resolve_one_symbol_until_ready(sym: str, last_failed: dict) -> tuple[str, tuple[str, dict]]:
+def _resolve_one_symbol_until_ready(
+    sym: str,
+    last_failed: dict,
+    *,
+    max_wait_sec: float,
+    sleep_sec: float,
+) -> tuple[str, tuple[str | None, dict]]:
     sym_u = sym.upper()
-    pause = 2.0
-    while True:
+    deadline = time.monotonic() + max_wait_sec
+    attempt = 0
+    while time.monotonic() < deadline:
         et, ed = get_current_event_ticker_15m(sym_u, last_failed)
+        attempt += 1
         if et and ed and ed.get("markets") and len(ed["markets"]) > 0:
-            if not _markets_all_have_valid_floor_strike(ed):
-                ed = _refetch_event_until_floor_strikes(et)
-            logger.info(
-                "[%s] resolved event=%s markets=%s (floor_strike complete)",
-                sym_u,
-                et,
-                len(ed["markets"]),
-            )
-            return sym_u, (et, ed)
-        time.sleep(pause)
+            if not _markets_all_have_usable_strike_inputs(ed):
+                remaining = max(0.0, deadline - time.monotonic())
+                ed = _refetch_event_until_markets_usable(
+                    et, max_wait_sec=remaining, sleep_sec=sleep_sec
+                )
+            if _markets_all_have_usable_strike_inputs(ed):
+                logger.info(
+                    "[%s] resolved event=%s markets=%s (usable strike inputs complete)",
+                    sym_u,
+                    et,
+                    len(ed.get("markets") or []),
+                )
+                return sym_u, (et, ed)
+        time.sleep(sleep_sec)
+
+    logger.warning(
+        "[%s] rollover discovery timed out after %.0fs; returning incomplete event/markets",
+        sym_u,
+        max_wait_sec,
+    )
+    return sym_u, (None, {})
 
 
-def _discover_all(symbols: tuple[str, ...], last_failed: dict) -> dict[str, tuple[str, dict]]:
+def _rollover_rest_max_workers(symbol_count: int) -> int:
+    raw = os.environ.get("MARKET_WATCHDOG_WS_ROLLOVER_REST_WORKERS", "").strip()
+    if not raw:
+        cap = DEFAULT_ROLLOVER_REST_MAX_WORKERS
+    else:
+        try:
+            cap = int(raw)
+        except ValueError:
+            cap = DEFAULT_ROLLOVER_REST_MAX_WORKERS
+    n = max(1, symbol_count)
+    return max(1, min(cap, 8, n))
+
+
+def _discover_all(
+    symbols: tuple[str, ...],
+    last_failed: dict,
+    *,
+    max_wait_sec: float,
+    sleep_sec: float,
+) -> dict[str, tuple[str | None, dict]]:
     resolved: dict[str, tuple[str, dict]] = {}
-    workers = max(1, min(len(symbols), 8))
+    workers = _rollover_rest_max_workers(len(symbols))
+    if len(symbols) > 1 and workers > 1:
+        logger.warning(
+            "rollover REST discovery using %s parallel workers (set MARKET_WATCHDOG_WS_ROLLOVER_REST_WORKERS=1 to avoid Kalshi REST bursts)",
+            workers,
+        )
     with ThreadPoolExecutor(max_workers=workers) as pool:
         fmap = {
-            pool.submit(_resolve_one_symbol_until_ready, s, last_failed): s.upper() for s in symbols
+            pool.submit(
+                _resolve_one_symbol_until_ready,
+                s,
+                last_failed,
+                max_wait_sec=max_wait_sec,
+                sleep_sec=sleep_sec,
+            ): s.upper()
+            for s in symbols
         }
         for fut in as_completed(fmap):
             sym_u, pair = fut.result()
@@ -328,6 +396,8 @@ def _seed_from_event_json(conn, exchange_key: str, resolved: dict[str, tuple[str
     cur = conn.cursor()
     try:
         for sym, (event_ticker, ed) in resolved.items():
+            if not event_ticker or not ed:
+                continue
             sup = sym.upper()
             for market in ed.get("markets") or []:
                 mt = market.get("ticker") or market.get("market_ticker") or ""
@@ -354,7 +424,7 @@ def _seed_from_event_json(conn, exchange_key: str, resolved: dict[str, tuple[str
                     INSERT INTO {WS_TABLE} AS ws
                     (symbol, exchange, event_ticker, market_ticker, market, strike,
                      yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars,
-                     last_price_dollars, volume_fp, open_interest, updated_at)
+                     last_price_dollars, volume_fp, open_interest_fp, updated_at)
                     VALUES (%s, %s, %s, %s, '15m', %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                     ON CONFLICT (exchange, symbol, event_ticker, market_ticker) DO UPDATE SET
                         market = EXCLUDED.market,
@@ -365,7 +435,7 @@ def _seed_from_event_json(conn, exchange_key: str, resolved: dict[str, tuple[str
                         no_ask_dollars = COALESCE(EXCLUDED.no_ask_dollars, ws.no_ask_dollars),
                         last_price_dollars = COALESCE(EXCLUDED.last_price_dollars, ws.last_price_dollars),
                         volume_fp = COALESCE(EXCLUDED.volume_fp, ws.volume_fp),
-                        open_interest = COALESCE(EXCLUDED.open_interest, ws.open_interest),
+                        open_interest_fp = COALESCE(EXCLUDED.open_interest_fp, ws.open_interest_fp),
                         updated_at = NOW()
                     """,
                     (sup, br, event_ticker, mt, strike, yb, ya, nb, na, lp, vf, oif),
@@ -507,57 +577,85 @@ def _run_rollover(
     db_retry_sec: float,
 ) -> bool:
     """
-    Wipe DB → parallel REST until floor_strike complete → seed from event JSON → subscribe WS.
+    Wipe DB → REST discovery (serial by default) until markets have usable strike inputs →
+    seed from event JSON → subscribe WS.
     """
     table_ref = WS_TABLE
     sub.rolling.set()
-    wiped = False
     try:
         conn = _borrow_conn_retry("rollover_delete", db_retry_sec)
         if not conn:
             return False
         try:
             cleared = _delete_all_rows(conn, table_ref)
-            wiped = True
             logger.info("DELETE FROM %s rows=%s", table_ref, cleared)
         finally:
             _return_conn(conn)
 
+        # Quarter-boundary contract reset: clear subscriptions immediately.
         sub.replace({}, [])
 
-        resolved = _discover_all(symbols, last_failed)
-        expected = _expected_row_count(resolved)
+        resolved = _discover_all(
+            symbols,
+            last_failed,
+            max_wait_sec=DEFAULT_DISCOVERY_MAX_WAIT_SEC,
+            sleep_sec=DEFAULT_DISCOVERY_SLEEP_SEC,
+        )
+        ready: dict[str, tuple[str | None, dict]] = {
+            sym: pair
+            for sym, pair in resolved.items()
+            if pair and pair[0] and pair[1] and (pair[1].get("markets") or [])
+        }
+        expected = _expected_row_count(ready)
+        if expected <= 0:
+            logger.warning(
+                "rollover discovery returned zero seed rows; table remains empty until symbols become ready"
+            )
+            return False
 
         conn2 = _borrow_conn_retry("rollover_seed", db_retry_sec)
         if not conn2:
             sub.replace({}, [])
             return False
         try:
-            if not _seed_from_event_json(conn2, exchange_key, resolved):
+            if not _seed_from_event_json(conn2, exchange_key, ready):
                 sub.replace({}, [])
                 return False
-            if not _verify_count(conn2, table_ref, exchange_key, symbols, expected):
+            if not _verify_count(
+                conn2, table_ref, exchange_key, tuple(sorted(ready.keys())), expected
+            ):
                 sub.replace({}, [])
                 return False
         finally:
             _return_conn(conn2)
 
-        for sym in symbols:
-            et, ed = resolved[sym]
-            previous_event[sym] = et
-            last_markets[sym] = ed["markets"]
+        for sym in sorted(ready.keys()):
+            et, ed = ready.get(sym, (None, {}))
+            if et and ed and ed.get("markets"):
+                previous_event[sym] = et
+                last_markets[sym] = ed["markets"]
 
         meta, tickers = _build_meta(symbols, previous_event, last_markets)
         sub.replace(meta, tickers)
-        logger.info("rollover OK symbols=%s rows=%s ws_tickers=%s", len(symbols), expected, len(tickers))
-        return True
+        ok = len(tickers) > 0
+        if len(ready) < len(symbols):
+            pending = sorted(set(symbols) - set(ready.keys()))
+            logger.warning(
+                "rollover partial: ready=%s pending=%s; retrying pending symbols",
+                ",".join(sorted(ready.keys())),
+                ",".join(pending),
+            )
+            return False
+        logger.info(
+            "rollover %s symbols=%s rows=%s ws_tickers=%s",
+            "OK" if ok else "INCOMPLETE",
+            len(symbols),
+            expected,
+            len(tickers),
+        )
+        return ok
     except Exception:
         logger.exception("rollover crashed")
-        if wiped:
-            try:
-                sub.replace({}, [])
-            except Exception:
-                pass
         return False
     finally:
         sub.rolling.clear()
@@ -596,6 +694,10 @@ def _main_loop(
     last_hb = time.time()
 
     while not stop.is_set():
+        # Capture the upcoming ET quarter **before** rollover work: if discovery + first WS tick
+        # straddles that instant (common after MASTER_RESTART near :00/:15/:30/:45), the seeded
+        # event can lag Kalshi until the *following* quarter unless we roll again immediately.
+        quarter_close_target = next_15m_close_est()
         ok = _run_rollover(
             symbols, exchange_key, sub, last_failed, prev_ev, last_m, db_retry_sec
         )
@@ -604,6 +706,18 @@ def _main_loop(
         if ok:
             if not _wait_first_tick(sub, tickers_now, ws_verify_sec):
                 ok = False
+            elif datetime.now(EST) >= quarter_close_target:
+                logger.info(
+                    "crossed ET quarter-hour during first-tick wait (>= %s); re-running rollover",
+                    quarter_close_target.strftime("%H:%M:%S"),
+                )
+                ok = _run_rollover(
+                    symbols, exchange_key, sub, last_failed, prev_ev, last_m, db_retry_sec
+                )
+                if ok:
+                    _, _, tickers_now = sub.snapshot()
+                    if not _wait_first_tick(sub, tickers_now, ws_verify_sec):
+                        ok = False
 
         if time.time() - last_hb >= HEARTBEAT_INTERVAL_SEC:
             logger.info(
@@ -646,6 +760,14 @@ async def _ws_loop(exchange_key: str, sub: SubState, stop: threading.Event) -> N
                 max_size=2**22,
             ) as ws:
                 cmd_id += 1
+                logger.info(
+                    "ws subscribe gen=%s exchange=%s n_tickers=%s sample_start=%s sample_end=%s",
+                    gen,
+                    exchange_key,
+                    len(tickers),
+                    ",".join(tickers[:3]),
+                    ",".join(tickers[-3:]),
+                )
                 await ws.send(
                     json.dumps(
                         {

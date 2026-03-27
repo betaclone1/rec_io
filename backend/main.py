@@ -3648,47 +3648,93 @@ async def get_strike_table(symbol: str, request: Request):
         market = (request.query_params.get("market") or "").strip().lower()
         if market not in ("hourly", "15m"):
             return {"error": "market required (hourly or 15m)"}
-        table_name = _strike_table_name(symbol, market)
-        ttc_col = "ttc_15m" if market == "15m" else "ttc_hourly"
-        prob_col = "probability_15m" if market == "15m" else "probability_hourly"
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            cursor.execute(f"""
-                SELECT 
-                    symbol,
-                    current_price,
-                    {ttc_col},
-                    event_ticker,
-                    market_title,
-                    strike_tier,
-                    market_status,
-                    momentum_percentile
+            sym_u = symbol.upper()
+            if market == "15m":
+                # Unified 15m source of truth.
+                cursor.execute(
+                    """
+                    SELECT
+                        symbol,
+                        current_price,
+                        ttc_15m,
+                        event_ticker,
+                        market_title,
+                        strike_tier,
+                        market_status,
+                        momentum_percentile
+                    FROM live_data.strike_table_15m
+                    WHERE exchange = %s AND symbol = %s
+                    ORDER BY "timestamp" DESC
+                    LIMIT 1
+                    """,
+                    ("kalshi", sym_u),
+                )
+                header_data = cursor.fetchone()
+                if not header_data:
+                    return {"error": f"No strike table data found for {symbol}"}
+                cursor.execute(
+                    """
+                    SELECT
+                        strike,
+                        buffer,
+                        buffer_pct,
+                        probability_15m,
+                        ROUND((yes_ask_dollars::numeric * 100)::numeric, 2) AS yes_ask,
+                        ROUND((no_ask_dollars::numeric * 100)::numeric, 2) AS no_ask,
+                        yes_ask_dollars,
+                        no_ask_dollars,
+                        volume,
+                        ticker,
+                        yes_diff,
+                        no_diff,
+                        active_side
+                    FROM live_data.strike_table_15m
+                    WHERE exchange = %s AND symbol = %s
+                    ORDER BY strike
+                    """,
+                    ("kalshi", sym_u),
+                )
+                strikes_data = cursor.fetchall()
+            else:
+                table_name = _strike_table_name(symbol, market)
+                cursor.execute(f"""
+                    SELECT
+                        symbol,
+                        current_price,
+                        ttc_hourly,
+                        event_ticker,
+                        market_title,
+                        strike_tier,
+                        market_status,
+                        momentum_percentile
                     FROM live_data.{table_name}
-                LIMIT 1
-            """)
-            header_data = cursor.fetchone()
-            if not header_data:
-                return {"error": f"No strike table data found for {symbol}"}
-            cursor.execute(f"""
-                SELECT 
-                    strike,
-                    buffer,
-                    buffer_pct,
-                    {prob_col},
-                    yes_ask,
-                    no_ask,
-                    yes_ask_dollars,
-                    no_ask_dollars,
-                    volume,
-                    ticker,
-                    yes_diff,
-                    no_diff,
-                    active_side
+                    ORDER BY "timestamp" DESC
+                    LIMIT 1
+                """)
+                header_data = cursor.fetchone()
+                if not header_data:
+                    return {"error": f"No strike table data found for {symbol}"}
+                cursor.execute(f"""
+                    SELECT
+                        strike,
+                        buffer,
+                        buffer_pct,
+                        probability_hourly,
+                        yes_ask,
+                        no_ask,
+                        yes_ask_dollars,
+                        no_ask_dollars,
+                        volume,
+                        ticker,
+                        yes_diff,
+                        no_diff,
+                        active_side
                     FROM live_data.{table_name}
-                ORDER BY strike
-            """)
-            
-            strikes_data = cursor.fetchall()
+                    ORDER BY strike
+                """)
+                strikes_data = cursor.fetchall()
             conn.close()
             
             # Build response in the same format as JSON
@@ -3712,13 +3758,15 @@ async def get_strike_table(symbol: str, request: Request):
                     "buffer": float(row[1]) if row[1] else None,
                     "buffer_pct": float(row[2]) if row[2] else None,
                     "probability": float(row[3]) if row[3] else None,
-                    "yes_ask": int(row[4]) if row[4] else None,
-                    "no_ask": int(row[5]) if row[5] else None,
-                    "volume": int(row[6]) if row[6] else None,
-                    "ticker": row[7],
-                    "yes_diff": float(row[8]) if row[8] else None,
-                    "no_diff": float(row[9]) if row[9] else None,
-                    "active_side": row[10]
+                    "yes_ask": float(row[4]) if row[4] is not None else None,
+                    "no_ask": float(row[5]) if row[5] is not None else None,
+                    "yes_ask_dollars": row[6],
+                    "no_ask_dollars": row[7],
+                    "volume": float(row[8]) if row[8] is not None else None,
+                    "ticker": row[9],
+                    "yes_diff": float(row[10]) if row[10] is not None else None,
+                    "no_diff": float(row[11]) if row[11] is not None else None,
+                    "active_side": row[12]
                 }
                 response["strikes"].append(strike)
             
@@ -3733,82 +3781,158 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
     try:
         import psycopg2
         market = (request.query_params.get("market") or "").strip().lower()
+        raw = (request.query_params.get("raw") or "").strip().lower() in ("1", "true", "yes")
         if market not in ("hourly", "15m"):
             return {"error": "market required (hourly or 15m)"}
-        table_name = _strike_table_name(symbol, market)
-        ttc_column = "ttc_15m" if market == "15m" else "ttc_hourly"
-        prob_column = "probability_15m" if market == "15m" else "probability_hourly"
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            # Get the latest strike table data from PostgreSQL
-            cursor.execute(f"""
-                SELECT 
-                    symbol,
-                    current_price,
-                    {ttc_column},
-                    momentum_percentile,
-                    market_title,
-                    timestamp
-                FROM live_data.{table_name}
-                LIMIT 1
-            """)
-            header_data = cursor.fetchone()
-            if not header_data:
-                return {"error": f"No strike table data found for {symbol}"}
-            cursor.execute(f"""
-                SELECT 
-                    strike,
-                    buffer,
-                    buffer_pct,
-                    {prob_column},
-                    yes_ask,
-                    no_ask,
-                    yes_ask_dollars,
-                    no_ask_dollars,
-                    volume,
-                    ticker,
-                    yes_diff,
-                    no_diff,
-                    active_side
-                    FROM live_data.{table_name}
-                ORDER BY strike
-            """)
-            
-            strikes_data = cursor.fetchall()
-            
-            # Calculate momentum bucket from momentum_percentile
-            momentum_percentile = float(header_data[3]) if header_data[3] else 0
-            momentum_bucket = round(momentum_percentile)
-            
-            # Format the response
-            response = {
-                "symbol": header_data[0],
-                "current_price": float(header_data[1]) if header_data[1] else None,
-                "ttc_seconds": int(header_data[2]) if header_data[2] else None,
-                "momentum_percentile": momentum_percentile,
-                "momentum_bucket": momentum_bucket,
-                "market_title": header_data[4],
-                "timestamp": header_data[5].isoformat() if header_data[5] else None,
-                "strikes": []
-            }
-            
-            # Add strike data
-            for strike_row in strikes_data:
-                strike_data = {
-                    "strike": float(strike_row[0]) if strike_row[0] else None,
-                    "buffer": float(strike_row[1]) if strike_row[1] else None,
-                    "buffer_pct": float(strike_row[2]) if strike_row[2] else None,
-                    "probability": float(strike_row[3]) if strike_row[3] else None,
-                    "yes_ask": int(strike_row[4]) if strike_row[4] else None,
-                    "no_ask": int(strike_row[5]) if strike_row[5] else None,
-                    "yes_ask_dollars": strike_row[6],
-                    "no_ask_dollars": strike_row[7],
-                    "volume": int(strike_row[8]) if strike_row[8] else None,
-                    "ticker": strike_row[9],
-                    "yes_diff": float(strike_row[10]) if strike_row[10] else None,
-                    "no_diff": float(strike_row[11]) if strike_row[11] else None,
-                    "active_side": strike_row[12]
+            sym_u = (symbol or "").upper()
+            if market == "15m":
+                cursor.execute(
+                    """
+                    SELECT
+                        symbol,
+                        current_price,
+                        ttc_15m,
+                        momentum_percentile,
+                        market_title,
+                        "timestamp",
+                        event_ticker
+                    FROM live_data.strike_table_15m
+                    WHERE exchange = %s AND symbol = %s
+                    ORDER BY "timestamp" DESC
+                    LIMIT 1
+                    """,
+                    ("kalshi", sym_u),
+                )
+                header_data = cursor.fetchone()
+                if not header_data:
+                    return {"error": f"No strike table data found for {symbol}"}
+                cursor.execute(
+                    """
+                    SELECT
+                        strike,
+                        buffer,
+                        buffer_pct,
+                        probability_15m,
+                        ROUND((yes_ask_dollars::numeric * 100)::numeric, 2) AS yes_ask,
+                        ROUND((no_ask_dollars::numeric * 100)::numeric, 2) AS no_ask,
+                        yes_ask_dollars,
+                        no_ask_dollars,
+                        volume,
+                        open_interest,
+                        ticker,
+                        yes_diff,
+                        no_diff,
+                        active_side
+                    FROM live_data.strike_table_15m
+                    WHERE exchange = %s AND symbol = %s
+                    ORDER BY strike
+                    """,
+                    ("kalshi", sym_u),
+                )
+                strikes_data = cursor.fetchall()
+                momentum_percentile = float(header_data[3]) if header_data[3] else 0.0
+                momentum_bucket = round(momentum_percentile)
+                response = {
+                    "symbol": header_data[0],
+                    "current_price": (str(header_data[1]) if raw else float(header_data[1])) if header_data[1] is not None else None,
+                    "ttc_seconds": int(header_data[2]) if header_data[2] else None,
+                    "momentum_percentile": momentum_percentile,
+                    "momentum_bucket": momentum_bucket,
+                    "market_title": header_data[4],
+                    "timestamp": header_data[5].isoformat() if header_data[5] else None,
+                    "event_ticker": header_data[6],
+                    "strikes": [],
                 }
+            else:
+                table_name = _strike_table_name(symbol, market)
+                ttc_column = "ttc_hourly"
+                prob_column = "probability_hourly"
+                cursor.execute(f"""
+                    SELECT 
+                        symbol,
+                        current_price,
+                        {ttc_column},
+                        momentum_percentile,
+                        market_title,
+                        timestamp
+                    FROM live_data.{table_name}
+                    ORDER BY "timestamp" DESC
+                    LIMIT 1
+                """)
+                header_data = cursor.fetchone()
+                if not header_data:
+                    return {"error": f"No strike table data found for {symbol}"}
+                cursor.execute(f"""
+                    SELECT 
+                        strike,
+                        buffer,
+                        buffer_pct,
+                        {prob_column},
+                        yes_ask,
+                        no_ask,
+                        yes_ask_dollars,
+                        no_ask_dollars,
+                        volume,
+                        ticker,
+                        yes_diff,
+                        no_diff,
+                        active_side
+                    FROM live_data.{table_name}
+                    ORDER BY strike
+                """)
+                strikes_data = cursor.fetchall()
+                momentum_percentile = float(header_data[3]) if header_data[3] else 0.0
+                momentum_bucket = round(momentum_percentile)
+                response = {
+                    "symbol": header_data[0],
+                    "current_price": (str(header_data[1]) if raw else float(header_data[1])) if header_data[1] is not None else None,
+                    "ttc_seconds": int(header_data[2]) if header_data[2] else None,
+                    "momentum_percentile": momentum_percentile,
+                    "momentum_bucket": momentum_bucket,
+                    "market_title": header_data[4],
+                    "timestamp": header_data[5].isoformat() if header_data[5] else None,
+                    "strikes": [],
+                }
+
+            for strike_row in strikes_data:
+                if market == "15m":
+                    # 15m row shape includes open_interest at index 9.
+                    strike_data = {
+                        "strike": (str(strike_row[0]) if raw else float(strike_row[0])) if strike_row[0] is not None else None,
+                        "buffer": (str(strike_row[1]) if raw else float(strike_row[1])) if strike_row[1] is not None else None,
+                        "buffer_pct": (str(strike_row[2]) if raw else float(strike_row[2])) if strike_row[2] is not None else None,
+                        "probability": (str(strike_row[3]) if raw else float(strike_row[3])) if strike_row[3] is not None else None,
+                        "yes_ask": (str(strike_row[4]) if raw else float(strike_row[4])) if strike_row[4] is not None else None,
+                        "no_ask": (str(strike_row[5]) if raw else float(strike_row[5])) if strike_row[5] is not None else None,
+                        "yes_ask_dollars": strike_row[6],
+                        "no_ask_dollars": strike_row[7],
+                        "volume": (str(strike_row[8]) if raw else float(strike_row[8])) if strike_row[8] is not None else None,
+                        "open_interest": (str(strike_row[9]) if raw else float(strike_row[9])) if strike_row[9] is not None else None,
+                        "ticker": strike_row[10],
+                        "yes_diff": (str(strike_row[11]) if raw else float(strike_row[11])) if strike_row[11] is not None else None,
+                        "no_diff": (str(strike_row[12]) if raw else float(strike_row[12])) if strike_row[12] is not None else None,
+                        "active_side": strike_row[13]
+                    }
+                else:
+                    # Hourly row shape has no open_interest field.
+                    strike_data = {
+                        "strike": (str(strike_row[0]) if raw else float(strike_row[0])) if strike_row[0] is not None else None,
+                        "buffer": (str(strike_row[1]) if raw else float(strike_row[1])) if strike_row[1] is not None else None,
+                        "buffer_pct": (str(strike_row[2]) if raw else float(strike_row[2])) if strike_row[2] is not None else None,
+                        "probability": (str(strike_row[3]) if raw else float(strike_row[3])) if strike_row[3] is not None else None,
+                        "yes_ask": (str(strike_row[4]) if raw else float(strike_row[4])) if strike_row[4] is not None else None,
+                        "no_ask": (str(strike_row[5]) if raw else float(strike_row[5])) if strike_row[5] is not None else None,
+                        "yes_ask_dollars": strike_row[6],
+                        "no_ask_dollars": strike_row[7],
+                        "volume": (str(strike_row[8]) if raw else float(strike_row[8])) if strike_row[8] is not None else None,
+                        "open_interest": None,
+                        "ticker": strike_row[9],
+                        "yes_diff": (str(strike_row[10]) if raw else float(strike_row[10])) if strike_row[10] is not None else None,
+                        "no_diff": (str(strike_row[11]) if raw else float(strike_row[11])) if strike_row[11] is not None else None,
+                        "active_side": strike_row[12]
+                    }
                 response["strikes"].append(strike_data)
             
             conn.close()

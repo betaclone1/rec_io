@@ -22,6 +22,8 @@ TABLE_TO_STREAM: Dict[Tuple[str, str], str] = {
     ("live_data", "live_symbol_status"): "live_symbol_status",
     # 15m market ladder/quotes consumed by strike_table_generator_ws
     ("live_data", "market_kalshi_15m"): "market_kalshi_15m",
+    # Unified 15m strike row(s) per symbol (strike_table_generator / strike_table_generator_ws)
+    ("live_data", "strike_table_15m"): "strike_table_15m",
 }
 
 

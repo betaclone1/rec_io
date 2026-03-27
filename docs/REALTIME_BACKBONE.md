@@ -201,7 +201,8 @@ This pattern (read_api as canonical read surface, main as front door only, Redis
 | `redis_basic_test` | testing.redis_basic_test   | Pilot / test stream       |
 | `account_balance` | users.account_balance_0001 | Dashboard bankroll/portfolio panel |
 | `live_symbol_status` | live_data.live_symbol_status | Canonical snapshot of latest symbol conditions (BTC/ETH): refetch on `db_change` |
-| `market_kalshi_ws_15m` | live_data.market_kalshi_ws_15m | WS 15m market ladder/quotes (used by `strike_table_generator_ws`) |
+| `market_kalshi_15m` | live_data.market_kalshi_15m | 15m Kalshi market ladder/quotes (used by strike table pipelines) |
+| `strike_table_15m` | live_data.strike_table_15m | Unified 15m strike row(s) per symbol; pilot NOTIFY for dev/test UIs |
 
 **Canonical current-state rule (symbols):** treat `live_data.live_symbol_status` as the source of truth for "current" symbol price + condition percentiles (momentum/volatility/movement). The `live_price_log_1s_*` tables are the higher-resolution per-tick log used to derive/validate the snapshot and for debugging/analysis; consumers should prefer `live_symbol_status` for real-time decisions.
 

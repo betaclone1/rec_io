@@ -513,8 +513,6 @@ class StrikeTableGenerator:
                 buffer_pct NUMERIC(12,6),
                 probability_hourly DECIMAL(5,2),
                 probability_15m DECIMAL(5,2),
-                yes_ask DECIMAL(5,2),
-                no_ask DECIMAL(5,2),
                 yes_ask_dollars TEXT,
                 no_ask_dollars TEXT,
                 yes_bid_dollars TEXT,
@@ -523,7 +521,8 @@ class StrikeTableGenerator:
                 no_price_spread NUMERIC(6,4),
                 yes_diff DECIMAL(5,2),
                 no_diff DECIMAL(5,2),
-                volume INTEGER,
+                volume NUMERIC(20,2),
+                open_interest NUMERIC(20,2),
                 ticker VARCHAR(50),
                 active_side VARCHAR(10),
                 momentum_weighted_score DECIMAL(5,3),
@@ -815,7 +814,7 @@ class StrikeTableGenerator:
                     """
                     SELECT market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask, last_price,
                            yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
-                           volume_fp AS volume, volume_24h_fp AS volume_24h, open_interest, liquidity, updated_at
+                           volume_fp AS volume, volume_24h_fp AS volume_24h, open_interest_fp AS open_interest, liquidity, updated_at
                     FROM live_data.market_kalshi_15m
                     WHERE event_ticker = %s AND exchange = %s AND symbol = %s
                     ORDER BY updated_at DESC
@@ -1148,6 +1147,7 @@ class StrikeTableGenerator:
                     yes_bid_dollars = None
                     no_bid_dollars = None
                     volume = None
+                    open_interest = None
                     ticker = None
                     
                     # Find the matching market
@@ -1162,6 +1162,7 @@ class StrikeTableGenerator:
                                 yes_bid_dollars = market.get("yes_bid_dollars")
                                 no_bid_dollars = market.get("no_bid_dollars")
                                 volume = market.get("volume")
+                                open_interest = market.get("open_interest")
                                 ticker = market.get("ticker")
                                 break
                     
@@ -1218,11 +1219,11 @@ class StrikeTableGenerator:
                             INSERT INTO live_data.{table_name}
                             (symbol, exchange, market, current_price, ttc_hourly, ttc_15m, event_ticker, market_title,
                              strike_tier, market_status, strike, buffer, buffer_pct, probability_hourly, probability_15m,
-                             yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
-                             yes_price_spread, no_price_spread, yes_diff, no_diff, volume, ticker, active_side,
+                             yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
+                             yes_price_spread, no_price_spread, yes_diff, no_diff, volume, open_interest, ticker, active_side,
                              momentum_weighted_score, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile,
                              timestamp, created_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             (
                                 self.symbol.upper(),
@@ -1240,8 +1241,6 @@ class StrikeTableGenerator:
                                 buffer_pct,
                                 prob_hourly_val,
                                 probability_15m,
-                                yes_ask,
-                                no_ask,
                                 yes_ask_dollars,
                                 no_ask_dollars,
                                 yes_bid_dollars,
@@ -1251,6 +1250,7 @@ class StrikeTableGenerator:
                                 yes_diff,
                                 no_diff,
                                 volume,
+                                open_interest,
                                 ticker,
                                 active_side,
                                 momentum_score,
@@ -1333,7 +1333,21 @@ class StrikeTableGenerator:
             logger.debug("Generated %s strike table records for %s", len(strike_data), self.symbol.upper())
             return (True, event_ticker, len(strike_data))
         except Exception as e:
-            logger.error("Error generating strike table: %s", e)
+            msg = str(e or "")
+            # During quarter-hour rollover, market_kalshi_15m is intentionally empty
+            # for a short window. Keep this visible for deep troubleshooting, but avoid
+            # error-level log spam during normal operation.
+            if (
+                self.unified_15m
+                and self.interval == "15m"
+                and (
+                    "No event_ticker in market_kalshi_15m" in msg
+                    or "No rows in market_kalshi_15m for event" in msg
+                )
+            ):
+                logger.debug("Transient rollover gap while generating strike table: %s", msg)
+            else:
+                logger.error("Error generating strike table: %s", e)
             if conn:
                 conn.rollback()
             return (False, None, 0)
@@ -1380,7 +1394,9 @@ class StrikeTableGenerator:
                     f"""
                     SELECT symbol, current_price, {ttc_col}, {venue_col}, event_ticker, market_title,
                            strike_tier, market_status, strike, buffer, buffer_pct, {prob_col},
-                           yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume, ticker, active_side,
+                           ROUND((yes_ask_dollars::numeric * 100)::numeric, 2) AS yes_ask,
+                           ROUND((no_ask_dollars::numeric * 100)::numeric, 2) AS no_ask,
+                           yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume, open_interest, ticker, active_side,
                            momentum_percentile, volatility, volatility_percentile, movement, movement_percentile
                     FROM live_data.{table_name}
                     WHERE exchange = %s AND symbol = %s AND timestamp = %s
@@ -1445,19 +1461,20 @@ class StrikeTableGenerator:
                     "no_ask_dollars": row[15],
                     "yes_diff": float(row[16]) if row[16] is not None else None,
                     "no_diff": float(row[17]) if row[17] is not None else None,
-                    "volume": int(row[18]) if row[18] is not None else None,
-                    "ticker": row[19],
-                    "active_side": row[20]
+                    "volume": float(row[18]) if row[18] is not None else None,
+                    "open_interest": float(row[19]) if row[19] is not None else None,
+                    "ticker": row[20],
+                    "active_side": row[21]
                 })
             
             # Add momentum and market context (from first row; same for all strikes at this timestamp)
             result["momentum"] = {
-                "percentile": float(rows[0][21]) if rows[0][21] is not None else None
+                "percentile": float(rows[0][22]) if rows[0][22] is not None else None
             }
-            result["volatility"] = float(rows[0][22]) if rows[0][22] is not None else None
-            result["volatility_percentile"] = float(rows[0][23]) if rows[0][23] is not None else None
-            result["movement"] = float(rows[0][24]) if rows[0][24] is not None else None
-            result["movement_percentile"] = float(rows[0][25]) if rows[0][25] is not None else None
+            result["volatility"] = float(rows[0][23]) if rows[0][23] is not None else None
+            result["volatility_percentile"] = float(rows[0][24]) if rows[0][24] is not None else None
+            result["movement"] = float(rows[0][25]) if rows[0][25] is not None else None
+            result["movement_percentile"] = float(rows[0][26]) if rows[0][26] is not None else None
             
             return result
             

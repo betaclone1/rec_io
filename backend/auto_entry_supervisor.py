@@ -1914,11 +1914,12 @@ def get_master_strike_table_data():
                         buffer,
                         buffer_pct,
                         {prob_column},
-                        yes_ask,
-                        no_ask,
+                        ROUND((yes_ask_dollars::numeric * 100)::numeric, 2) AS yes_ask,
+                        ROUND((no_ask_dollars::numeric * 100)::numeric, 2) AS no_ask,
                         yes_ask_dollars,
                         no_ask_dollars,
                         volume,
+                        open_interest,
                         ticker,
                         yes_diff,
                         no_diff,
@@ -1962,23 +1963,45 @@ def get_master_strike_table_data():
                 "strikes": []
             }
             for strike_row in strikes_data:
-                strike_data = {
-                    "strike": float(strike_row[0]) if strike_row[0] else None,
-                    "buffer": float(strike_row[1]) if strike_row[1] else None,
-                    "buffer_pct": float(strike_row[2]) if strike_row[2] else None,
-                    "probability": float(strike_row[3]) if strike_row[3] else None,
-                    "yes_ask": int(strike_row[4]) if strike_row[4] else None,
-                    "no_ask": int(strike_row[5]) if strike_row[5] else None,
-                    "yes_ask_dollars": strike_row[6],
-                    "no_ask_dollars": strike_row[7],
-                    "volume": int(strike_row[8]) if strike_row[8] else None,
-                    "ticker": strike_row[9],
-                    "yes_diff": float(strike_row[10]) if strike_row[10] else None,
-                    "no_diff": float(strike_row[11]) if strike_row[11] else None,
-                    "active_side": strike_row[12],
-                    "yes_price_spread": float(strike_row[13]) if strike_row[13] is not None else None,
-                    "no_price_spread": float(strike_row[14]) if strike_row[14] is not None else None
-                }
+                if current_market == "15m":
+                    strike_data = {
+                        "strike": float(strike_row[0]) if strike_row[0] else None,
+                        "buffer": float(strike_row[1]) if strike_row[1] else None,
+                        "buffer_pct": float(strike_row[2]) if strike_row[2] else None,
+                        "probability": float(strike_row[3]) if strike_row[3] else None,
+                        "yes_ask": int(strike_row[4]) if strike_row[4] else None,
+                        "no_ask": int(strike_row[5]) if strike_row[5] else None,
+                        "yes_ask_dollars": strike_row[6],
+                        "no_ask_dollars": strike_row[7],
+                        "volume": float(strike_row[8]) if strike_row[8] is not None else None,
+                        "open_interest": float(strike_row[9]) if strike_row[9] is not None else None,
+                        "ticker": strike_row[10],
+                        "yes_diff": float(strike_row[11]) if strike_row[11] else None,
+                        "no_diff": float(strike_row[12]) if strike_row[12] else None,
+                        "active_side": strike_row[13],
+                        "yes_price_spread": float(strike_row[14]) if strike_row[14] is not None else None,
+                        "no_price_spread": float(strike_row[15]) if strike_row[15] is not None else None,
+                    }
+                else:
+                    # Hourly SELECT has no open_interest; ticker follows volume (not at 15m index).
+                    strike_data = {
+                        "strike": float(strike_row[0]) if strike_row[0] else None,
+                        "buffer": float(strike_row[1]) if strike_row[1] else None,
+                        "buffer_pct": float(strike_row[2]) if strike_row[2] else None,
+                        "probability": float(strike_row[3]) if strike_row[3] else None,
+                        "yes_ask": int(strike_row[4]) if strike_row[4] else None,
+                        "no_ask": int(strike_row[5]) if strike_row[5] else None,
+                        "yes_ask_dollars": strike_row[6],
+                        "no_ask_dollars": strike_row[7],
+                        "volume": float(strike_row[8]) if strike_row[8] is not None else None,
+                        "open_interest": None,
+                        "ticker": strike_row[9],
+                        "yes_diff": float(strike_row[10]) if strike_row[10] else None,
+                        "no_diff": float(strike_row[11]) if strike_row[11] else None,
+                        "active_side": strike_row[12],
+                        "yes_price_spread": float(strike_row[13]) if strike_row[13] is not None else None,
+                        "no_price_spread": float(strike_row[14]) if strike_row[14] is not None else None,
+                    }
                 response["strikes"].append(strike_data)
             conn.close()
             return response

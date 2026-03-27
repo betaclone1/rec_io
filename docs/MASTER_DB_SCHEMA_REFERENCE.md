@@ -8910,7 +8910,7 @@ Kalshi 15-minute market data for ETH. One row per current 15m window; truncated 
 
 ### Table: `live_data.market_kalshi_15m`
 
-Unified 15-minute market snapshots for tracked crypto symbols (BTC, ETH, SOL, XRP). Multiple rows per symbol (one per venue market in the active event). **`exchange`** identifies the exchange/API source (e.g. `kalshi`). `symbol` plus `exchange` replace the role of separate per-symbol tables (`market_kalshi_15m_btc`, …) for this feed. On event rotation for a given symbol and exchange, those rows are deleted and repopulated; open-trade tickers may be preserved and re-inserted. `strike` is seeded from Kalshi `floor_strike`/subtitle at rollover. Migration `20260326_1000_venue_exchange_column_names` renames **`broker` → `exchange`** and migration `20260326_1600_market_kalshi_15m_drop_unused_legacy_columns` drops unused integer quote columns that remained NULL in WS-driven operation.
+Unified 15-minute market snapshots for tracked crypto symbols (BTC, ETH, SOL, XRP). Multiple rows per symbol (one per venue market in the active event). **`exchange`** identifies the exchange/API source (e.g. `kalshi`). `symbol` plus `exchange` replace the role of separate per-symbol tables (`market_kalshi_15m_btc`, …) for this feed. On event rotation for a given symbol and exchange, those rows are deleted and repopulated; open-trade tickers may be preserved and re-inserted. `strike` is seeded from Kalshi `floor_strike`/subtitle at rollover. Migration `20260326_1000_venue_exchange_column_names` renames **`broker` → `exchange`**, migration `20260326_1600_market_kalshi_15m_drop_unused_legacy_columns` drops unused integer quote columns, and migration `20260327_2005_market_kalshi_15m_fp_text_columns` aligns fixed-point API fields (`volume_fp`, `open_interest_fp`) as text columns.
 
 #### Columns
 
@@ -8923,8 +8923,8 @@ Unified 15-minute market snapshots for tracked crypto symbols (BTC, ETH, SOL, XR
 | `market_ticker` | `character varying(100)` | NO | - | |
 | `market` | `text` | YES | '15m' | Interval label |
 | `strike` | `character varying(20)` | YES | - | From API `floor_strike` / subtitle or price-log backfill |
-| `volume_fp` | `integer(32)` | YES | - | Fixed-point volume count (Kalshi `volume_fp`) |
-| `open_interest` | `integer(32)` | YES | - | |
+| `volume_fp` | `text` | YES | - | Kalshi fixed-point volume string (2dp), e.g. `123.00` |
+| `open_interest_fp` | `text` | YES | - | Kalshi fixed-point open-interest string (2dp), e.g. `456.00` |
 | `created_at` | `timestamp with time zone` | YES | now() | |
 | `updated_at` | `timestamp with time zone` | YES | now() | |
 | `yes_bid_dollars` | `text` | YES | - | |
@@ -9345,7 +9345,7 @@ Parallel 15-minute Kalshi market rows fed only by **`backend/market_watchdog_ws.
 
 Unified 15-minute strike table for all Kalshi 15m symbols (**BTC**, **ETH**, **SOL**, **XRP**). Rows are scoped by **`exchange`** (same role as per-symbol strike tables: in the unified feed the value is the data-source key **e.g. `kalshi`**, aligned with `live_data.market_kalshi_15m.exchange`; legacy per-symbol 15m tables may still use a `broker` column until cutover). Populated by `backend/strike_table_generator.py --master-15m`; per-symbol tables `strike_table_15m_*` remain until application cutover.
 
-Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_table_15m_drop_exchange_display`, `20260326_1000_venue_exchange_column_names` (renames **`broker` → `exchange`** on this table).
+Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_table_15m_drop_exchange_display`, `20260326_1000_venue_exchange_column_names` (renames **`broker` → `exchange`** on this table), `20260326_2000_strike_table_15m_db_notify` (trigger `strike_table_15m_rec_io_db_notify` → `public.rec_io_db_notify()` for real-time backbone / pilot UIs), `20260327_2030_strike_table_15m_open_interest_and_dollars_only` (drop legacy cents asks, widen volume precision, add open_interest).
 
 #### Columns
 
@@ -9368,12 +9368,12 @@ Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_tabl
 | `buffer_pct` | `numeric(12,6)` | YES | - | |
 | `probability_hourly` | `decimal(5,2)` | YES | - | NULL for 15m |
 | `probability_15m` | `decimal(5,2)` | YES | - | Model probability |
-| `yes_ask` / `no_ask` | `decimal(5,2)` | YES | - | Cents |
 | `yes_ask_dollars` / `no_ask_dollars` | `text` | YES | - | |
 | `yes_bid_dollars` / `no_bid_dollars` | `text` | YES | - | |
 | `yes_price_spread` / `no_price_spread` | `numeric(6,4)` | YES | - | |
 | `yes_diff` / `no_diff` | `decimal(5,2)` | YES | - | |
-| `volume` | `integer` | YES | - | |
+| `volume` | `numeric(20,2)` | YES | - | Kalshi fixed-point depth copied from `volume_fp` |
+| `open_interest` | `numeric(20,2)` | YES | - | Kalshi fixed-point depth copied from `open_interest_fp` |
 | `ticker` | `varchar(50)` | YES | - | Market ticker |
 | `active_side` | `varchar(10)` | YES | - | |
 | `momentum_weighted_score` | `decimal(5,3)` | YES | - | |

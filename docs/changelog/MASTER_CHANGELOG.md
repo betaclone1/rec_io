@@ -6,6 +6,52 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-27 — 15m rollover contract, fixed-point market columns, strike_table dollars-only, trade monitor hygiene
+
+**Summary**
+- **15m quarter-hour rollover (`market_watchdog_ws`):** At each quarter boundary, delete **all** rows in `live_data.market_kalshi_15m`, reset WebSocket subscriptions, poll REST for the new event per symbol, then seed and subscribe only when a symbol has ticker metadata, **explicit `floor_strike`**, and non-empty `yes_ask_dollars` / `yes_bid_dollars`. Symbols still missing metadata stay pending with warning logs until a later attempt succeeds. Reconnect path can trigger an immediate rollover if the process crosses a quarter hour while connecting.
+- **Kalshi fixed-point fidelity:** `live_data.market_kalshi_15m` — `volume_fp` and `open_interest_fp` stored as **TEXT** (API-aligned fixed-point strings); legacy integer `open_interest` removed after backfill. REST and WS normalization paths updated (`market_watchdog.py`, `market_watchdog_ws.py`).
+- **Strike table (`live_data.strike_table_15m`):** Add `open_interest` **NUMERIC(20,2)**; widen `volume` to **NUMERIC(20,2)**; drop legacy `yes_ask` / `no_ask` — consumers use `*_dollars` only. Generator, WS generator, `auto_entry_supervisor`, and `redis_switchboard` queries adjusted; transient “no market rows” during rollover logged at DEBUG for unified 15m.
+- **Real-time UI hook:** `NOTIFY` trigger on `live_data.strike_table_15m` via `public.rec_io_db_notify()` (same pattern as other `rec_io_db_notify` triggers).
+- **Trade integrity:** `trade_manager` refuses to insert a trade when the `monitor` string cannot be resolved against `users.monitor_list_0001` (prevents trades tagged to non-existent monitors).
+- **15m monitor IDs:** `unified_15m_monitors` always emits `monitor_id` from the DB primary key; logs a warning if `name` implies a different numeric suffix.
+- **High monitor IDs / ports:** `port_config` maps monitor numbers through `_monitor_id_port_offset` so off-range IDs (e.g. local 99xxx hygiene) do not break port assignment.
+- **HTTP API / dashboards:** `main.py` — 15m `/api/postgresql/strike_table/{symbol}` reads unified `strike_table_15m` (`exchange='kalshi'`); optional `raw=1` returns numeric fields as strings for full DB precision; `/api/strike_tables/{symbol}` hourly vs 15m column layout fixed so `trade_monitor.html` regains hourly strike rows and live price. New tab `frontend/tabs/database_monitor.html` (generalized live DB observer via `/ws/db_changes`; configure `SYMBOLS` / `WATCH_DATABASES` in-page).
+- **Dev-only (optional):** `scripts/db/dev_only_monitor_list_seq_start_99000.sql` advances `monitor_list_0001` sequence for local ID bands — **do not run on production.**
+
+**Hard rollback note (droplet snapshot / VM restore):** Disk restore does not automatically reconcile `system.schema_migrations` with the restored data files. After any restore, run `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py list` (or query `system.schema_migrations`) and apply **only** migration IDs that are missing before restarting services, so code and DDL stay matched.
+
+**DB migrations (required on production, in this order — skip any id already applied)**
+
+1. `20260326_2000_strike_table_15m_db_notify`
+2. `20260327_2005_market_kalshi_15m_fp_text_columns`
+3. `20260327_2030_strike_table_15m_open_interest_and_dollars_only`
+
+**Production checklist**
+- [ ] Confirm codebase:  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations in order (from project root; safe to re-run `up` — runner skips applied ids):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260326_2000_strike_table_15m_db_notify`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260327_2005_market_kalshi_15m_fp_text_columns`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260327_2030_strike_table_15m_open_interest_and_dollars_only`
+- [ ] Schema drift (local or prod DB matching this checkout):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services:  
+  `./scripts/MASTER_RESTART.sh`
+- [ ] Verify: `main_app` :3000 and `trade_executor` :8001 health; supervisor `RUNNING` for `market_watchdog_ws_kalshi_15m`, `strike_table_generator_ws_15m`, and hourly watchdogs as needed; `live_data.market_kalshi_15m` and `live_data.strike_table_15m` show fresh timestamps and current `event_ticker` after a quarter hour; `trade_monitor.html` hourly and 15m strike + spot price; optional `/tabs/database_monitor.html` confirms live WS-driven refresh.
+- [ ] Fidelity: `git rev-parse HEAD` on prod matches expected deploy commit; migration ids above present in `system.schema_migrations`.
+
+**Follow-ups (future; trigger from logs if needed — not required for this deploy)**
+
+- **Subscribe instrumentation:** In `market_watchdog_ws.py`, debug log immediately before WebSocket subscribe `send`: ticker count, sample tickers, subscription generation.
+- **REST 429 handling:** In `market_watchdog.py`, detect HTTP 429 on Kalshi REST (including `fetch_event_json` and 15m event-ticker list calls), honor `Retry-After`, backoff.
+- **Discovery loop caps:** In `market_watchdog_ws.py`, max attempts / max wait on `_resolve_one_symbol_until_ready` and `_refetch_event_until_floor_strikes` so 429 or slow API cannot spam indefinitely.
+- **Tests:** Unit tests mocking `requests.get` for 429 backoff and `Retry-After` behavior.
+- **Soak verification:** On dev, run WS 15m pipeline across several rollovers; confirm stable updates to `market_kalshi_15m` / `strike_table_15m` and review logs for 429 patterns.
+- **Pipeline health vs thin markets:** `strike_pipeline_health_15m` sometimes flags stale market data when quoting is simply quiet (SOL/XRP). Decouple “data unhealthy” from “no price prints”: track WebSocket connectivity / last successful frame or heartbeat (and optionally symbol-specific staleness thresholds), so thin liquidity does not produce false reds.
+
+---
+
 ## 2026-03-26 — 15m WS cutover + canonical tables cleanup (Kalshi)
 
 **Summary**

@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -44,6 +45,12 @@ UNIFIED_TABLE = "live_data.market_kalshi_15m"
 HEARTBEAT_INTERVAL_SEC = 300
 # Target wall-clock period for one full pass over all symbols (remainder sleep after work; matches per-process ~1s cadence).
 POLL_INTERVAL_SECONDS = 1
+DEFAULT_HTTP_429_FALLBACK_SLEEP_SEC = 5.0
+MAX_HTTP_429_SLEEP_SEC = 60.0
+
+# Public trade-api v2 REST is a separate quota from WebSocket. Rollover + polling in one process
+# must not stampede; 429 almost always means our REST concurrency or shared-IP traffic is wrong.
+_KALSHI_TRADE_API_REST_LOCK = threading.Lock()
 
 DB_CONFIG = {
     "host": os.getenv("POSTGRES_HOST", "localhost"),
@@ -68,6 +75,24 @@ def format_15m_strike_from_api_floor_strike(floor_strike) -> str:
         return f"${v}"
     s = format(d.normalize(), "f")
     return f"${s}"
+
+
+def _http_429_sleep_seconds(resp: requests.Response) -> float:
+    """
+    Sleep duration for HTTP 429 based on `Retry-After`, with safe fallback caps.
+    """
+    try:
+        ra = resp.headers.get("Retry-After")
+        if not ra:
+            return DEFAULT_HTTP_429_FALLBACK_SLEEP_SEC
+        # Most common: Retry-After is a number of seconds.
+        if str(ra).strip().isdigit():
+            sec = float(ra)
+            return min(MAX_HTTP_429_SLEEP_SEC, max(0.0, sec))
+        # Otherwise: HTTP date. We won't parse it robustly; just fallback.
+        return DEFAULT_HTTP_429_FALLBACK_SLEEP_SEC
+    except Exception:
+        return DEFAULT_HTTP_429_FALLBACK_SLEEP_SEC
 
 
 def _est_formatter():
@@ -102,6 +127,36 @@ def _configure_logging():
 
 
 logger = _configure_logging()
+
+
+def _kalshi_public_get(url: str, params=None):
+    """
+    Single-flight GET to Kalshi public trade API (v2).
+
+    HTTP 429 is logged at ERROR: it is never "expected" for our usage pattern — it means we are
+    misusing REST (parallel bursts, tight loops, or another client on the same IP/route).
+    Sleep while holding the lock so other threads cannot immediately amplify the limiter.
+    """
+    with _KALSHI_TRADE_API_REST_LOCK:
+        try:
+            resp = requests.get(url, params=params, headers=API_HEADERS, timeout=10)
+        except Exception:
+            logger.exception("Kalshi GET exception url=%s", url)
+            raise
+        if resp.status_code == 429:
+            wait = _http_429_sleep_seconds(resp)
+            ra = resp.headers.get("Retry-After")
+            logger.error(
+                "Kalshi HTTP 429 rate limited (serious / execution issue). url=%s retry_after=%r "
+                "sleep=%.1fs — WebSocket subscriptions do not use this quota; check parallel REST, "
+                "rollover worker count, or other processes sharing this route.",
+                url,
+                ra,
+                wait,
+            )
+            time.sleep(wait)
+            return None
+        return resp
 
 
 def _iso_now_est():
@@ -224,11 +279,11 @@ def _market_cents_from_dollars(dollars_val, legacy_cents):
     return 0
 
 
-def _int_from_fixed_point(value, default=0):
+def _fixed_point_text(value, default="0.00"):
     if value is None or value == "":
         return default
     try:
-        return int(round(float(value)))
+        return f"{float(value):.2f}"
     except (TypeError, ValueError):
         return default
 
@@ -309,8 +364,8 @@ def ensure_unified_15m_table(connection):
         no_bid_dollars TEXT,
         no_ask_dollars TEXT,
         last_price_dollars TEXT,
-        volume_fp INTEGER,
-        open_interest INTEGER,
+        volume_fp TEXT,
+        open_interest_fp TEXT,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         CONSTRAINT market_kalshi_15m_exchange_symbol_event_market_unique
@@ -407,7 +462,9 @@ def next_15m_close_est():
 def fetch_event_json(event_ticker: str):
     url = f"{BASE_URL}/events/{event_ticker}"
     try:
-        response = requests.get(url, headers=API_HEADERS, timeout=10)
+        response = _kalshi_public_get(url)
+        if response is None:
+            return None
         response.raise_for_status()
         data = response.json()
         if "error" in data:
@@ -428,12 +485,11 @@ def get_current_event_ticker_15m(symbol: str, last_failed_by_symbol: dict):
 
     try:
         list_url = f"{BASE_URL}/events"
-        resp = requests.get(
-            list_url,
-            params={"series_ticker": f"KX{sym_u}15M"},
-            headers=API_HEADERS,
-            timeout=10,
-        )
+        resp = _kalshi_public_get(list_url, params={"series_ticker": f"KX{sym_u}15M"})
+        if resp is None:
+            if last_failed_by_symbol.get(sym_u) != target_ts:
+                last_failed_by_symbol[sym_u] = target_ts
+            return None, None
         if not resp.ok:
             if last_failed_by_symbol.get(sym_u) != target_ts:
                 logger.warning("15m list failed [%s]: %s", sym_u, resp.status_code)
@@ -487,18 +543,20 @@ def save_kalshi_15m_unified(
                 no_bid_dollars = market.get("no_bid_dollars")
                 no_ask_dollars = market.get("no_ask_dollars")
                 last_price_dollars = market.get("last_price_dollars")
-                volume_fp = _int_from_fixed_point(
+                volume_fp = _fixed_point_text(
                     market.get("volume_fp"),
-                    default=_int_from_fixed_point(market.get("volume", 0)),
+                    default=_fixed_point_text(market.get("volume", "0.00")),
                 )
-                open_interest = market.get("open_interest", 0)
+                open_interest_fp = _fixed_point_text(
+                    market.get("open_interest_fp", market.get("open_interest", "0.00"))
+                )
 
                 cursor.execute(
                     f"""
                     INSERT INTO {UNIFIED_TABLE}
                     (symbol, exchange, event_ticker, market_ticker, market, strike,
                      yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
-                     volume_fp, open_interest, updated_at)
+                     volume_fp, open_interest_fp, updated_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                     ON CONFLICT (exchange, symbol, event_ticker, market_ticker) DO UPDATE SET
                         market = EXCLUDED.market,
@@ -509,7 +567,7 @@ def save_kalshi_15m_unified(
                         no_ask_dollars = EXCLUDED.no_ask_dollars,
                         last_price_dollars = EXCLUDED.last_price_dollars,
                         volume_fp = EXCLUDED.volume_fp,
-                        open_interest = EXCLUDED.open_interest,
+                        open_interest_fp = EXCLUDED.open_interest_fp,
                         updated_at = NOW()
                     """,
                     (
@@ -525,7 +583,7 @@ def save_kalshi_15m_unified(
                         no_ask_dollars,
                         last_price_dollars,
                         volume_fp,
-                        open_interest,
+                        open_interest_fp,
                     ),
                 )
             except Exception as e:

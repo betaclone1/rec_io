@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Database Monitor - Live WS</title>
+  <style>
+    body { font-family: sans-serif; max-width: 980px; margin: 2rem auto; padding: 0 1rem; background: #0b0f17; color: #e8eefc; }
+    h1 { font-size: 1.25rem; margin: 0 0 1rem 0; }
+    .meta { color: #94a3b8; font-size: 0.9rem; margin: 0.5rem 0; }
+    .statusline { margin: 0.75rem 0; }
+    button { padding: 0.45rem 0.8rem; cursor: pointer; background: transparent; border: 1px solid rgba(148,163,184,0.35); color: #e8eefc; border-radius: 8px; }
+    button:active { transform: translateY(1px); }
+    table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+    th, td { border-bottom: 1px solid rgba(148,163,184,0.25); padding: 0.55rem 0.4rem; text-align: left; vertical-align: top; }
+    th { color: #94a3b8; font-size: 0.85rem; font-weight: 600; }
+    td { font-size: 0.95rem; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .diag { margin-top: 1rem; background: rgba(148,163,184,0.08); border: 1px solid rgba(148,163,184,0.2); border-radius: 10px; padding: 0.8rem; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Database Monitor (live via WebSocket DB changes)</h1>
+
+  <div class="statusline">
+    <button type="button" onclick="fetchAll()">Refresh now</button>
+    <span class="meta">WebSocket: <span id="ws">connecting…</span></span>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>event_ticker</th>
+        <th>symbol</th>
+        <th>yes_ask_dollars</th>
+        <th>no_ask_dollars</th>
+        <th>current_price</th>
+        <th>volume</th>
+        <th>open_interest</th>
+        <th>timestamp</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <div class="diag mono" id="diag">—</div>
+
+  <script>
+    /*
+      Database Monitor template notes:
+      - This page is WS-triggered (no interval polling).
+      - To monitor other tables, update `WATCH_DATABASES`.
+      - To monitor a different dataset shape, replace `fetchRecord()` and `renderRow()`.
+      - Keep `fetchAll()` + WS reconnect/keepalive as shared plumbing.
+    */
+    const SYMBOLS = ["BTC", "ETH", "SOL", "XRP"];
+    const WATCH_DATABASES = new Set(["market_kalshi_15m", "strike_table_15m"]);
+    const state = { fetchInFlight: false, pending: false, lastFetchAtMs: 0, throttleMs: 800 };
+
+    function setDiag(lines) {
+      const el = document.getElementById("diag");
+      el.textContent = lines.join("\n");
+    }
+
+    function toIsoOrDash(v) {
+      if (!v) return "—";
+      try {
+        const d = new Date(v);
+        if (Number.isNaN(d.getTime())) return String(v);
+        return d.toISOString();
+      } catch {
+        return String(v);
+      }
+    }
+
+    function pickNearestStrike(strikes, currentPrice) {
+      if (!Array.isArray(strikes) || strikes.length === 0) return null;
+      if (currentPrice == null) return null;
+
+      let best = null;
+      let bestDiff = Infinity;
+      for (const row of strikes) {
+        if (row == null || row.strike == null) continue;
+        const diff = Math.abs(Number(row.strike) - Number(currentPrice));
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          best = row;
+        }
+      }
+      return best;
+    }
+
+    async function fetchRecord(symbol) {
+      // Current profile: unified 15m strike table through main_app API.
+      const url = `/api/postgresql/strike_table/${symbol.toLowerCase()}?market=15m&raw=1`;
+      const resp = await fetch(url, { cache: "no-store" });
+      const d = await resp.json();
+      if (d && d.error) throw new Error(d.error);
+
+      const currentPrice = d.current_price ?? null;
+      const nearest = pickNearestStrike(d.strikes, currentPrice);
+      return {
+        symbol: d.symbol || symbol,
+        current_price: currentPrice,
+        timestamp: d.timestamp,
+        event_ticker: d.event_ticker,
+        nearest,
+      };
+    }
+
+    function renderRow(res) {
+      const row = document.getElementById(`row_${res.symbol}`);
+      if (!row) return;
+
+      const nearest = res.nearest;
+      const yesAskD = nearest ? nearest.yes_ask_dollars : null;
+      const noAskD = nearest ? nearest.no_ask_dollars : null;
+      const volume = nearest ? nearest.volume : null;
+      const openInterest = nearest ? nearest.open_interest : null;
+
+      row.innerHTML = `
+        <td class="mono">${res.event_ticker || "—"}</td>
+        <td class="mono">${res.symbol}</td>
+        <td class="mono">${yesAskD == null ? "—" : yesAskD}</td>
+        <td class="mono">${noAskD == null ? "—" : noAskD}</td>
+        <td class="mono">${res.current_price == null ? "—" : String(res.current_price)}</td>
+        <td class="mono">${volume == null ? "—" : String(volume)}</td>
+        <td class="mono">${openInterest == null ? "—" : String(openInterest)}</td>
+        <td class="mono">${toIsoOrDash(res.timestamp)}</td>
+      `;
+    }
+
+    function initRows() {
+      const tbody = document.getElementById("rows");
+      tbody.innerHTML = "";
+      for (const sym of SYMBOLS) {
+        const tr = document.createElement("tr");
+        tr.id = `row_${sym}`;
+        tr.innerHTML = `
+          <td class="mono">—</td>
+          <td class="mono">${sym}</td>
+          <td class="mono">—</td>
+          <td class="mono">—</td>
+          <td class="mono">—</td>
+          <td class="mono">—</td>
+          <td class="mono">—</td>
+          <td class="mono">—</td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    async function fetchAll() {
+      const now = Date.now();
+      if (state.fetchInFlight) {
+        state.pending = true;
+        return;
+      }
+      if (now - state.lastFetchAtMs < state.throttleMs) {
+        state.pending = true;
+        return;
+      }
+
+      state.fetchInFlight = true;
+      state.lastFetchAtMs = now;
+
+      try {
+        const results = await Promise.all(SYMBOLS.map(fetchRecord));
+        for (const r of results) renderRow(r);
+        setDiag([
+          `watch_tables: ${Array.from(WATCH_DATABASES).join(", ")}`,
+          "trigger_mode: websocket db_change -> fetchAll",
+        ]);
+      } catch (e) {
+        setDiag([`fetchAll error: ${String(e)}`]);
+      } finally {
+        state.fetchInFlight = false;
+        if (state.pending) {
+          state.pending = false;
+          fetchAll();
+        }
+      }
+    }
+
+    let ws = null;
+    let wsPingTimer = null;
+    let wsReconnectTimer = null;
+
+    function connectWs() {
+      if (wsReconnectTimer) {
+        clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = null;
+      }
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = `${protocol}//${window.location.host}/ws/db_changes`;
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        document.getElementById("ws").textContent = "connected";
+        if (wsPingTimer) clearInterval(wsPingTimer);
+        wsPingTimer = setInterval(() => {
+          try {
+            if (ws && ws.readyState === WebSocket.OPEN) ws.send("ping");
+          } catch {
+            // reconnect path handled by onclose
+          }
+        }, 15000);
+      };
+      ws.onclose = () => {
+        document.getElementById("ws").textContent = "closed";
+        if (wsPingTimer) {
+          clearInterval(wsPingTimer);
+          wsPingTimer = null;
+        }
+        wsReconnectTimer = setTimeout(connectWs, 1500);
+      };
+      ws.onerror = () => {
+        document.getElementById("ws").textContent = "error";
+      };
+      ws.onmessage = (ev) => {
+        let d = null;
+        try { d = JSON.parse(ev.data); } catch { return; }
+        if (!d || d.type !== "db_change") return;
+        if (!WATCH_DATABASES.has(d.database)) return;
+        fetchAll();
+      };
+    }
+
+    window.addEventListener("DOMContentLoaded", () => {
+      initRows();
+      connectWs();
+      fetchAll();
+    });
+  </script>
+</body>
+</html>

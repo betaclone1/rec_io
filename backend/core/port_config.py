@@ -24,6 +24,19 @@ except ImportError as e:
 # Central port configuration file - now using MASTER_PORT_MANIFEST.json
 PORT_CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config", "MASTER_PORT_MANIFEST.json")
 
+
+def _monitor_id_port_offset(monitor_num: int) -> int:
+    """
+    Map monitor_list numeric id to the small integer used for per-monitor port spacing.
+
+    Default (prod-style): 10012 -> 12 via (monitor_num - 10_000).
+    Dev 99xxx range: 99012 -> 12 via (monitor_num - 99_000) so offsets stay small and
+    ports do not overflow (unlike subtracting 10_000 from 99012).
+    """
+    if monitor_num >= 99_000:
+        return monitor_num - 99_000
+    return monitor_num - 10_000
+
 # Default port assignments (fallback only)
 DEFAULT_PORTS = {
     "main_app": 3000,
@@ -167,7 +180,7 @@ def ensure_port_config_exists():
                 "description": "Dynamic port range for monitor-specific processes",
                 "auto_entry_supervisor_offset": 0,
                 "active_trade_supervisor_offset": 1,
-                "note": "Port calculation: start_port + ((monitor_id - 10000) * 2) + service_offset. Each monitor uses 2 consecutive ports."
+                "note": "Port calculation: start_port + (port_offset * 2) + service_offset; port_offset is (monitor_id - 10000) for 1xxxx ids, (monitor_id - 99000) for 99xxx ids."
             },
             "notes": {
                 "avoid_ports": [5000, 7000, 9000, 10000],
@@ -273,11 +286,10 @@ def get_monitor_port(service_name: str, monitor_identifier: str) -> int:
             if service_name in assigned_ports:
                 return assigned_ports[service_name]
         
-        # Calculate port offset based on monitor ID
-        # Convert monitor ID to offset (10009 -> 9, 10002 -> 2)
+        # Calculate port offset based on monitor ID (supports dev 99xxx ids; see _monitor_id_port_offset)
         try:
             monitor_num = int(monitor_id)
-            port_offset = monitor_num - 10000  # Convert 10009 -> 9, 10002 -> 2
+            port_offset = _monitor_id_port_offset(monitor_num)
         except ValueError:
             raise ValueError(f"Invalid monitor ID format: {monitor_id}")
         
@@ -354,7 +366,7 @@ def get_monitor_port(service_name: str, monitor_identifier: str) -> int:
             user_number, monitor_id = monitor_identifier.split('_')
             try:
                 monitor_num = int(monitor_id)
-                port_offset = monitor_num - 10000
+                port_offset = _monitor_id_port_offset(monitor_num)
             except ValueError:
                 raise ValueError(f"Invalid monitor ID format: {monitor_id}")
             
@@ -383,7 +395,7 @@ def get_monitor_port(service_name: str, monitor_identifier: str) -> int:
             user_number, monitor_id = monitor_identifier.split('_')
             try:
                 monitor_num = int(monitor_id)
-                port_offset = monitor_num - 10000
+                port_offset = _monitor_id_port_offset(monitor_num)
             except ValueError:
                 raise ValueError(f"Invalid monitor ID format: {monitor_id}")
             

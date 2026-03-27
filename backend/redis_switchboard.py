@@ -7,7 +7,8 @@ to Redis rec_io:db_changes, (4) fan out to /ws/db_changes clients. Plus /health.
 Do NOT add application HTTP APIs, auth, or per-stream logic here. New capabilities
 = new streams (registry + trigger) or new services. See docs/REALTIME_BACKBONE.md
 Section 0. The only allowed HTTP surface is /health and /ws/db_changes; pilot
-endpoints (/api/redis_basic_test, /redis-basic-test) are temporary for testing.
+endpoints (/api/redis_basic_test, /redis-basic-test, /api/strike_table_15m_latest,
+/strike-table-15m-test) are temporary for testing.
 
 Run: python -m backend.redis_switchboard
 Config (env): REDIS_URL or REDIS_HOST+REDIS_PORT; SWITCHBOARD_*; PG_NOTIFY_CHANNEL;
@@ -22,7 +23,10 @@ import select
 import threading
 import queue
 import asyncio
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal
+
+from psycopg2.extras import RealDictCursor
 
 # Project root (only for DB and Redis; no main.py or frontend dependency)
 _script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -149,6 +153,22 @@ def get_pg():
     return get_postgresql_connection()
 
 
+def _jsonable_value(v):
+    if v is None:
+        return None
+    if isinstance(v, Decimal):
+        return float(v)
+    if isinstance(v, datetime):
+        return v.isoformat()
+    if isinstance(v, date):
+        return v.isoformat()
+    return v
+
+
+def _jsonable_row(row: dict):
+    return {k: _jsonable_value(v) for k, v in row.items()}
+
+
 @app.get("/health")
 async def health():
     return JSONResponse({
@@ -210,6 +230,123 @@ async def api_post_redis_basic_test(request: Request):
     except Exception as e:
         logger.warning("POST redis_basic_test: %s", e)
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+
+_STRIKE_TABLE_15M_LATEST_SQL = """
+SELECT DISTINCT ON (exchange, symbol)
+    id, "timestamp", symbol, exchange, market, current_price,
+    ttc_hourly, ttc_15m, event_ticker, market_title, strike_tier, market_status,
+    strike, buffer, buffer_pct, probability_hourly, probability_15m,
+    ROUND((yes_ask_dollars::numeric * 100)::numeric, 2) AS yes_ask,
+    ROUND((no_ask_dollars::numeric * 100)::numeric, 2) AS no_ask,
+    yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
+    ticker, active_side, volume, open_interest,
+    momentum_weighted_score, momentum_percentile, volatility, volatility_percentile,
+    movement, movement_percentile, created_at
+FROM live_data.strike_table_15m
+ORDER BY exchange, symbol, "timestamp" DESC NULLS LAST
+"""
+
+
+@app.get("/api/strike_table_15m_latest")
+async def api_get_strike_table_15m_latest():
+    """Latest row per (exchange, symbol) on live_data.strike_table_15m (test UI only)."""
+    conn = get_pg()
+    if not conn:
+        return JSONResponse({"status": "error", "message": "No DB connection"}, status_code=503)
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(_STRIKE_TABLE_15M_LATEST_SQL)
+        rows = cur.fetchall()
+        conn.close()
+        out = [_jsonable_row(dict(r)) for r in rows]
+        return JSONResponse({"status": "ok", "rows": out, "count": len(out)})
+    except Exception as e:
+        logger.warning("GET strike_table_15m_latest: %s", e)
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+
+STRIKE_TABLE_15M_TEST_HTML = """<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>strike_table_15m (live)</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 1.5rem; max-width: 1400px; }
+    h1 { font-size: 1.2rem; }
+    .meta { color: #555; font-size: 0.85rem; margin: 0.5rem 0 1rem; }
+    button { padding: 0.35rem 0.75rem; margin-right: 0.5rem; cursor: pointer; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.8rem; }
+    th, td { border: 1px solid #ccc; padding: 0.35rem 0.5rem; text-align: left; vertical-align: top; }
+    th { background: #f0f0f0; position: sticky; top: 0; }
+    .wrap { overflow-x: auto; max-height: 80vh; overflow-y: auto; }
+    .err { color: #a00; }
+  </style>
+</head>
+<body>
+  <h1>live_data.strike_table_15m — latest row per symbol</h1>
+  <p class="meta">Updates via WebSocket when NOTIFY fires on the table (same path as redis_basic_test pilot).
+    Requires migration <code>20260326_2000_strike_table_15m_db_notify</code> and stream registry entry.</p>
+  <div>
+    <button type="button" onclick="fetchRows()">Refresh now</button>
+    <span class="meta">WebSocket: <span id="ws">connecting…</span> · Last push: <span id="ts">—</span></span>
+  </div>
+  <p id="msg" class="err"></p>
+  <div class="wrap" id="holder"></div>
+  <script>
+    const port = window.location.port || (window.location.protocol === 'https:' ? 443 : 80);
+    const wsUrl = (window.location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + window.location.hostname + ':' + port + '/ws/db_changes';
+    function render(rows) {
+      const holder = document.getElementById('holder');
+      document.getElementById('msg').textContent = '';
+      if (!rows || !rows.length) {
+        holder.textContent = '(no rows in live_data.strike_table_15m)';
+        return;
+      }
+      const keys = Object.keys(rows[0]);
+      let html = '<table><thead><tr>';
+      keys.forEach(function(k) { html += '<th>' + k + '</th>'; });
+      html += '</tr></thead><tbody>';
+      rows.forEach(function(r) {
+        html += '<tr>';
+        keys.forEach(function(k) {
+          const v = r[k];
+          html += '<td>' + (v !== null && v !== undefined ? String(v) : '—') + '</td>';
+        });
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      holder.innerHTML = html;
+    }
+    function fetchRows() {
+      fetch('/api/strike_table_15m_latest').then(function(r) { return r.json(); }).then(function(d) {
+        if (d.status === 'ok') render(d.rows);
+        else document.getElementById('msg').textContent = d.message || JSON.stringify(d);
+      }).catch(function(e) { document.getElementById('msg').textContent = 'fetch error: ' + e.message; });
+    }
+    const ws = new WebSocket(wsUrl);
+    ws.onopen = function() { document.getElementById('ws').textContent = 'connected'; };
+    ws.onclose = function() { document.getElementById('ws').textContent = 'closed'; };
+    ws.onmessage = function(ev) {
+      try {
+        const d = JSON.parse(ev.data);
+        if (d.type === 'db_change' && d.database === 'strike_table_15m') {
+          document.getElementById('ts').textContent = new Date().toLocaleTimeString();
+          fetchRows();
+        }
+      } catch (e) {}
+    };
+    fetchRows();
+  </script>
+</body>
+</html>
+"""
+
+
+@app.get("/strike-table-15m-test", response_class=HTMLResponse)
+async def strike_table_15m_test_page():
+    """Pilot UI: live_data.strike_table_15m via REST + /ws/db_changes."""
+    return HTMLResponse(STRIKE_TABLE_15M_TEST_HTML)
 
 
 REDIS_BASIC_TEST_HTML = """<!DOCTYPE html>

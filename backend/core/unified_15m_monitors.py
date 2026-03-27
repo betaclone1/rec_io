@@ -3,9 +3,12 @@ Active 15m monitors for the unified AES/ATS supervisor pool (users.monitor_list_
 """
 from __future__ import annotations
 
+import logging
 from typing import Iterator, List, Tuple
 
 from backend.core.config.database import get_postgresql_connection
+
+_log = logging.getLogger(__name__)
 
 
 def iter_active_15m_monitor_bindings() -> Iterator[Tuple[str, str]]:

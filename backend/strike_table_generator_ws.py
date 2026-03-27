@@ -434,7 +434,7 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
                     market_ticker, strike,
                     yes_ask_dollars, no_ask_dollars,
                     yes_bid_dollars, no_bid_dollars,
-                    last_price_dollars, volume_fp, open_interest
+                    last_price_dollars, volume_fp, open_interest_fp
                 FROM live_data.{self.market_table_name}
                 WHERE exchange = %s AND symbol = %s AND event_ticker = %s
                 ORDER BY market_ticker

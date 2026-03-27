@@ -160,6 +160,30 @@ def _fetch_monitor_state(pg_conn, monitor_key):
         return None
 
 
+def _resolve_monitor_for_trade_insert(cursor, raw_monitor):
+    """
+    When monitor is set, require mon_<user>_<id> format and a row in users.monitor_list_<user>.
+    Rejects orphan labels so deleted or fictitious monitors cannot open trades.
+    Returns (value_for_db, error_detail). error_detail is None if OK.
+    """
+    if raw_monitor is None:
+        return (None, None)
+    mk = str(raw_monitor).strip()
+    if not mk:
+        return (None, None)
+    match = MONITOR_KEY_PATTERN.match(mk)
+    if not match:
+        return (None, f"invalid_monitor_format:{mk!r}")
+    user_number, monitor_id = match.group(1), match.group(2)
+    cursor.execute(
+        f"SELECT 1 FROM users.monitor_list_{user_number} WHERE id = %s",
+        (monitor_id,),
+    )
+    if not cursor.fetchone():
+        return (None, f"monitor_not_found:{mk}")
+    return (mk, None)
+
+
 def _get_market_for_monitor_key(pg_conn, monitor_key):
     """Return market ('hourly' or '15m') for the given monitor_key from monitor_list. Default 'hourly'."""
     if not monitor_key or not pg_conn:
