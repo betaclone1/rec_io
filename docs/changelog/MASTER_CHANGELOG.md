@@ -28,18 +28,19 @@ This changelog is used when pushing updates to production. Each entry is timesta
 3. `20260327_2030_strike_table_15m_open_interest_and_dollars_only`
 
 **Production checklist**
-- [ ] Confirm codebase:  
+- [x] Confirm codebase:  
   `git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations in order (from project root; safe to re-run `up` — runner skips applied ids):  
+- [x] Apply migrations in order (from project root; safe to re-run `up` — runner skips applied ids):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260326_2000_strike_table_15m_db_notify`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260327_2005_market_kalshi_15m_fp_text_columns`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260327_2030_strike_table_15m_open_interest_and_dollars_only`
-- [ ] Schema drift (local or prod DB matching this checkout):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260327_2030_strike_table_15m_open_interest_and_dollars_only`  
+  **Note (2026-03-27 deploy):** If the server had never applied the **2026-03-26 WS prerequisite** batch, bare `run_migration.py up` can fail (lexicographic order runs `20260326_1215` before `20260328_1000`). Apply **dependency order** first: `20260328_1000` → `20260328_1200` → `20260328_1300` → `20260326_1215` → `20260326_1245` → `20260326_1335` → `20260326_1600`, then the three ids above (see **2026-03-26** entry).
+- [x] Schema drift (local or prod DB matching this checkout):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services:  
+- [x] Restart services:  
   `./scripts/MASTER_RESTART.sh`
-- [ ] Verify: `main_app` :3000 and `trade_executor` :8001 health; supervisor `RUNNING` for `market_watchdog_ws_kalshi_15m`, `strike_table_generator_ws_15m`, and hourly watchdogs as needed; `live_data.market_kalshi_15m` and `live_data.strike_table_15m` show fresh timestamps and current `event_ticker` after a quarter hour; `trade_monitor.html` hourly and 15m strike + spot price; optional `/tabs/database_monitor.html` confirms live WS-driven refresh.
-- [ ] Fidelity: `git rev-parse HEAD` on prod matches expected deploy commit; migration ids above present in `system.schema_migrations`.
+- [x] Verify: `main_app` :3000 and `trade_executor` :8001 health; supervisor `RUNNING` for `market_watchdog_ws_kalshi_15m`, `strike_table_generator_ws_15m`, and hourly watchdogs as needed; `live_data.market_kalshi_15m` and `live_data.strike_table_15m` show fresh timestamps and current `event_ticker` after a quarter hour; `trade_monitor.html` hourly and 15m strike + spot price; optional `/tabs/database_monitor.html` confirms live WS-driven refresh.
+- [x] Fidelity: `git rev-parse HEAD` on prod matches expected deploy commit; migration ids above present in `system.schema_migrations`.
 
 **Follow-ups (future; trigger from logs if needed — not required for this deploy)**
 
