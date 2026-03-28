@@ -9119,6 +9119,7 @@ Parallel 15-minute Kalshi market rows fed only by **`backend/market_watchdog_ws.
 | `volatility_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics volatility profile. |
 | `movement` | `numeric(10,4)` | YES | - | From live price log; weighted composite (H-L)/O. |
 | `movement_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics movement profile. |
+| `yes_ask_min_15m` / `yes_ask_max_15m` / `no_ask_min_15m` / `no_ask_max_15m` / `yes_ask_range_15m` / `no_ask_range_15m` | `numeric(18,4)` | YES | - | Final **15 minutes of the hourly** window (`ttc_hourly` ≤ 900): min/max/range of ask **dollars** per market ticker (4 dp). Migrations `20260328_2115`, `20260330_2130`. |
 
 #### Constraints
 
@@ -9345,7 +9346,7 @@ Parallel 15-minute Kalshi market rows fed only by **`backend/market_watchdog_ws.
 
 Unified 15-minute strike table for all Kalshi 15m symbols (**BTC**, **ETH**, **SOL**, **XRP**). Rows are scoped by **`exchange`** (same role as per-symbol strike tables: in the unified feed the value is the data-source key **e.g. `kalshi`**, aligned with `live_data.market_kalshi_15m.exchange`; legacy per-symbol 15m tables may still use a `broker` column until cutover). Populated by `backend/strike_table_generator.py --master-15m`; per-symbol tables `strike_table_15m_*` remain until application cutover.
 
-Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_table_15m_drop_exchange_display`, `20260326_1000_venue_exchange_column_names` (renames **`broker` → `exchange`** on this table), `20260326_2000_strike_table_15m_db_notify` (trigger `strike_table_15m_rec_io_db_notify` → `public.rec_io_db_notify()` for real-time backbone / pilot UIs), `20260327_2030_strike_table_15m_open_interest_and_dollars_only` (drop legacy cents asks, widen volume precision, add open_interest).
+Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_table_15m_drop_exchange_display`, `20260326_1000_venue_exchange_column_names` (renames **`broker` → `exchange`** on this table), `20260326_2000_strike_table_15m_db_notify` (trigger `strike_table_15m_rec_io_db_notify` → `public.rec_io_db_notify()` for real-time backbone / pilot UIs), `20260327_2030_strike_table_15m_open_interest_and_dollars_only` (drop legacy cents asks, widen volume precision, add open_interest), `20260328_2115_strike_table_final_quarter_ask_tracking` (final-window YES/NO ask min/max/range in dollars for full 15m cycles), `20260330_2130_strike_final_quarter_asks_numeric_4dp` (store those six columns as `NUMERIC(18,4)`).
 
 #### Columns
 
@@ -9382,6 +9383,9 @@ Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_tabl
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
 | `movement` | `numeric(10,4)` | YES | - | |
 | `movement_percentile` | `numeric(5,1)` | YES | - | |
+| `yes_ask_min_15m` / `yes_ask_max_15m` | `numeric(18,4)` | YES | - | Min/max `yes_ask_dollars` over the active **15m contract window** (full period for `market = 15m`). |
+| `no_ask_min_15m` / `no_ask_max_15m` | `numeric(18,4)` | YES | - | Same for NO asks. |
+| `yes_ask_range_15m` / `no_ask_range_15m` | `numeric(18,4)` | YES | - | `max - min` in dollars. |
 | `created_at` | `timestamptz` | YES | now() | |
 
 #### Indexes
@@ -9403,6 +9407,8 @@ Rows are scoped by `exchange` + `symbol`, matching unified 15m conventions. Colu
 Migrations:
 - `20260326_1215_strike_table_ws_15m_and_ws_notify`
 - `20260326_1245_strike_table_ws_15m_pipeline_health_columns`
+- `20260328_2115_strike_table_final_quarter_ask_tracking` (final-window ask min/max/range columns)
+- `20260330_2130_strike_final_quarter_asks_numeric_4dp` (`NUMERIC(18,4)` for those six columns)
 
 #### Columns
 
@@ -10554,6 +10560,7 @@ Unified Kalshi 15m active-trade tracking: **one table per user** (`active_trades
 | `spike_alert_cooldown_threshold` | `integer(32)` | YES | 30 | |
 | `spike_alert_cooldown_minutes` | `integer(32)` | YES | 15 | |
 | `current_probability` | `integer(32)` | YES | 40 | |
+| `stop_loss_price` | `numeric(6,4)` | YES | 0.0000 | Ask-gate stop: **0 disables**. When opposite-side ask exceeds `(1 − stop_loss_price)`, ATS triggers immediate `trigger_auto_stop_close` (no verification). Migration `20260329_1100_monitor_strategy_stop_loss_price`. |
 | `min_ttc_seconds` | `integer(32)` | YES | 60 | |
 | `momentum_spike_enabled` | `boolean` | YES | true | |
 | `momentum_spike_threshold` | `integer(32)` | YES | 36 | |
@@ -10762,6 +10769,7 @@ Unified Kalshi 15m active-trade tracking: **one table per user** (`active_trades
 | `spike_alert_cooldown_threshold` | `integer(32)` | YES | 30 | |
 | `spike_alert_cooldown_minutes` | `integer(32)` | YES | 15 | |
 | `current_probability` | `integer(32)` | YES | 40 | |
+| `stop_loss_price` | `numeric(6,4)` | YES | 0.0000 | Default for new monitors (from strategy). Same semantics as `users.monitor_list_0001.stop_loss_price`. Migration `20260329_1100_monitor_strategy_stop_loss_price`. |
 | `min_ttc_seconds` | `integer(32)` | YES | 60 | |
 | `momentum_spike_enabled` | `boolean` | YES | true | |
 | `momentum_spike_threshold` | `integer(32)` | YES | 36 | |
@@ -10930,7 +10938,7 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 
 ### Table: `users.trades_0001`
 
-**Schema sync:** When changing this table (columns, types, indexes), apply the same changes to `users.trades_simulated_0001` so both stay in sync.
+**Schema sync:** When changing this table (columns, types, indexes), apply the same changes to `users.trades_simulated_0001` so both stay in sync. **Exception:** `symbol_expiration` and `win_loss_confirmed` exist on **`trades_0001` only** (not on `trades_simulated_0001`; see migration `20260328_1500_trades_symbol_expiration_win_loss_confirmed`). They are written for **both paper and live** rows on `trades_0001` when data allows. **`market` (cadence)** exists on both live and simulated tables (migration `20260330_1015_trades_market_cadence`). **Strike final-window ask snapshot** columns (`yes_ask_min_15m`, …, `no_ask_range_15m`) exist on both tables (migration `20260330_2200_trades_strike_final_quarter_asks`); `trade_manager` fills them at insert from the latest matching strike row when available.
 
 #### Columns
 
@@ -10943,6 +10951,7 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `symbol` | `text` | YES | - | |
 | `exchange` | `text` | YES | - | Execution venue slug (e.g. `kalshi`). Migration `20260326_1000_venue_exchange_column_names` renames **`market` → `exchange`**. |
 | `trade_strategy` | `text` | YES | 'Hourly HTC'::text | |
+| `market` | `varchar(10)` | YES | `'hourly'` | Kalshi **cadence**: `hourly` or `15m`. Distinct from `exchange`. Set on insert from `monitor_list.market` when present, else from `trade_strategy`/`ticker` (`%15m%` / `15M`). Migration `20260330_1015_trades_market_cadence`. |
 | `contract` | `text` | NO | - | |
 | `strike` | `text` | NO | - | For **SOL/XRP**, `trade_manager` normalizes display to `$` + up to **5** decimal places (trim trailing zeros) so expiration settlement matches strike-table granularity. BTC/ETH unchanged. |
 | `side` | `text` | NO | - | |
@@ -10956,6 +10965,8 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `pnl` | `real(24)` | YES | - | |
 | `symbol_open` | `numeric(18,5)` | YES | - | Spot at open. **5dp** for SOL/XRP; 2dp for BTC/ETH (`trade_manager.normalize_trade_spot_price`). Migration `20260324_1000_trades_symbol_spot_numeric_precision`. |
 | `symbol_close` | `numeric(18,5)` | YES | - | Spot at close; same rules as `symbol_open`. |
+| `symbol_expiration` | `numeric(18,5)` | YES | - | Spot at **contract cycle end** (`one_minute_avg` at expiration sweep). Same normalization as `symbol_close`. Written for **paper and live** rows when the ticker’s cycle is processed; for early closes, may be backfilled from `symbol_close` or historical price logs. Migration `20260328_1500_trades_symbol_expiration_win_loss_confirmed`. **Not** on `trades_simulated_0001`. |
+| `win_loss_confirmed` | `boolean` | YES | - | If nullable: not yet computable. When set: `TRUE` if recorded `win_loss` (W/L) matches hypothetical W/L from `strike`+`side` vs `symbol_expiration` (hold-to-expiration); `FALSE` if they differ. **Paper and live** on `trades_0001`. Draws (`D`) and missing `win_loss` stay null. Migration `20260328_1500_trades_symbol_expiration_win_loss_confirmed`. |
 | `momentum` | `integer(32)` | YES | - | |
 | `volatility_percentile` | `numeric(5,1)` | YES | - | |
 | `volatility` | `numeric(10,4)` | YES | - | Raw volatility at trade time (same format as momentum in price history). |
@@ -10990,6 +11001,12 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `loss_prevention` | `boolean` | YES | false | |
 | `multiplier` | `numeric(10,2)` | YES | - | |
 | `price_spread` | `numeric(6,4)` | YES | - | |
+| `yes_ask_min_15m` | `numeric(18,4)` | YES | - | Snapshot from latest matching strike row at insert: final-window YES ask min (dollars). Migration `20260330_2200_trades_strike_final_quarter_asks`. |
+| `yes_ask_max_15m` | `numeric(18,4)` | YES | - | Same snapshot: YES ask max. |
+| `no_ask_min_15m` | `numeric(18,4)` | YES | - | Same snapshot: NO ask min. |
+| `no_ask_max_15m` | `numeric(18,4)` | YES | - | Same snapshot: NO ask max. |
+| `yes_ask_range_15m` | `numeric(18,4)` | YES | - | Same snapshot: YES ask range. |
+| `no_ask_range_15m` | `numeric(18,4)` | YES | - | Same snapshot: NO ask range. |
 | `paper_trade` | `boolean` | YES | false | |
 | `cooldown_timer` | `integer(32)` | YES | - | |
 | `monitor_confirmed` | `boolean` | YES | false | |
@@ -11142,6 +11159,12 @@ Same column set as `users.trades_0001` (see that table for column descriptions).
 | `loss_prevention` | boolean |
 | `multiplier` | numeric(10,2) |
 | `price_spread` | numeric(6,4) |
+| `yes_ask_min_15m` | numeric(18,4) |
+| `yes_ask_max_15m` | numeric(18,4) |
+| `no_ask_min_15m` | numeric(18,4) |
+| `no_ask_max_15m` | numeric(18,4) |
+| `yes_ask_range_15m` | numeric(18,4) |
+| `no_ask_range_15m` | numeric(18,4) |
 | `volatility_percentile` | numeric(5,1) |
 | `paper_trade` | boolean |
 | `cooldown_timer` | integer |

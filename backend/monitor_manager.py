@@ -1836,7 +1836,8 @@ def get_strategy_default_settings(strategy_name, user_number="0001"):
                     momentum_spike_threshold, verification_period_enabled, 
                     verification_period_seconds, min_volume,
                     momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount,
-                    momentum_scalp_profit_target, min_ask, max_ask, max_profit
+                    momentum_scalp_profit_target, min_ask, max_ask, max_profit,
+                    stop_loss_price
                 FROM users.strategy_list_{user_number} 
                 WHERE name = %s
             """, (strategy_name,))
@@ -1857,7 +1858,8 @@ def get_strategy_default_settings(strategy_name, user_number="0001"):
                         momentum_spike_threshold, verification_period_enabled, 
                         verification_period_seconds, min_volume,
                         momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount,
-                        momentum_scalp_profit_target, min_ask, max_ask, max_profit
+                        momentum_scalp_profit_target, min_ask, max_ask, max_profit,
+                        stop_loss_price
                     FROM users.strategy_list_{user_number}
                     WHERE LOWER(name) = LOWER(%s)
                 """, (strategy_name,))
@@ -1902,7 +1904,8 @@ def get_strategy_default_settings(strategy_name, user_number="0001"):
                     'momentum_scalp_profit_target': float(result[30]) if result[30] is not None else 0.99,
                     'min_ask': float(result[31]) if result[31] is not None else 0.0000,
                     'max_ask': float(result[32]) if result[32] is not None else 0.9800,
-                    'max_profit': float(result[33]) if result[33] is not None else 0.9900
+                    'max_profit': float(result[33]) if result[33] is not None else 0.9900,
+                    'stop_loss_price': float(result[34]) if result[34] is not None else 0.0,
                 }
                 _logger.debug("Loaded defaults for strategy '%s'", strategy_name)
                 return defaults
@@ -1943,7 +1946,8 @@ def get_strategy_default_settings(strategy_name, user_number="0001"):
                     'momentum_scalp_profit_target': 0.99,
                     'min_ask': 0.0000,
                     'max_ask': 0.9800,
-                    'max_profit': 0.9900
+                    'max_profit': 0.9900,
+                    'stop_loss_price': 0.0,
                 }
                 
     except Exception as e:
@@ -2199,11 +2203,11 @@ def create_monitor():
                 (name, symbol, market, strategy, auto_trade, auto_trade_status, status, bankroll_allotment_pct, bankroll_allotment_total, position_size, position_type, multiplier, total_position, trades, win_loss, ret_pct, pnl, dashboard_order, created,
                  win_streak_threshold, loss_prevention, loss_prevention_toggle, performance_based_allocation, max_price_spread, paper_trade, prob_adj,
                  min_probability, max_probability, min_differential, max_differential, min_time, max_time, allow_re_entry, spike_alert_enabled, spike_alert_momentum_threshold, spike_alert_cooldown_threshold, spike_alert_cooldown_minutes, current_probability, min_ttc_seconds, momentum_spike_enabled, momentum_spike_threshold, verification_period_enabled, verification_period_seconds, min_volume,
-                 momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target, min_ask, max_ask, max_profit)
+                 momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target, min_ask, max_ask, max_profit, stop_loss_price)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(),
                         %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s)
+                        %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
                 f"mon_{user_number}_temp",  # Temporary name
@@ -2259,7 +2263,8 @@ def create_monitor():
                 strategy_defaults.get('momentum_scalp_profit_target', 0.99),
                 strategy_defaults.get('min_ask', 0.0000),
                 strategy_defaults.get('max_ask', 0.9800),
-                strategy_defaults.get('max_profit', 0.9900)
+                strategy_defaults.get('max_profit', 0.9900),
+                float(strategy_defaults.get('stop_loss_price', 0.0) or 0.0),
             ))
             
             # Get the generated ID

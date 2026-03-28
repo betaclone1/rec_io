@@ -102,6 +102,7 @@ def init_database():
                 symbol VARCHAR(50),
                 exchange VARCHAR(50),
                 trade_strategy VARCHAR(100),
+                market VARCHAR(10) DEFAULT 'hourly',
                 contract VARCHAR(255),
                 strike VARCHAR(50),
                 side VARCHAR(10),
@@ -115,6 +116,8 @@ def init_database():
                 pnl DECIMAL(10,4),
                 symbol_open NUMERIC(18,5),
                 symbol_close NUMERIC(18,5),
+                symbol_expiration NUMERIC(18,5),
+                win_loss_confirmed BOOLEAN,
                 momentum INTEGER,
                 volatility_percentile NUMERIC(5,1),
                 win_loss VARCHAR(10),
@@ -138,6 +141,12 @@ def init_database():
                 loss_prevention BOOLEAN DEFAULT FALSE,
                 multiplier DECIMAL(10,2),
                 price_spread DECIMAL(6,4),
+                yes_ask_min_15m NUMERIC(18,4),
+                yes_ask_max_15m NUMERIC(18,4),
+                no_ask_min_15m NUMERIC(18,4),
+                no_ask_max_15m NUMERIC(18,4),
+                yes_ask_range_15m NUMERIC(18,4),
+                no_ask_range_15m NUMERIC(18,4),
                 paper_trade BOOLEAN DEFAULT FALSE,
                 cooldown_timer INTEGER,
                 monitor_confirmed BOOLEAN DEFAULT FALSE,
@@ -168,6 +177,7 @@ def init_database():
                 symbol TEXT,
                 exchange TEXT DEFAULT 'kalshi',
                 trade_strategy TEXT DEFAULT 'Hourly HTC',
+                market VARCHAR(10) DEFAULT 'hourly',
                 contract TEXT NOT NULL,
                 strike TEXT NOT NULL,
                 side TEXT NOT NULL,
@@ -215,6 +225,12 @@ def init_database():
                 loss_prevention BOOLEAN DEFAULT FALSE,
                 multiplier NUMERIC(10,2),
                 price_spread NUMERIC(6,4),
+                yes_ask_min_15m NUMERIC(18,4),
+                yes_ask_max_15m NUMERIC(18,4),
+                no_ask_min_15m NUMERIC(18,4),
+                no_ask_max_15m NUMERIC(18,4),
+                yes_ask_range_15m NUMERIC(18,4),
+                no_ask_range_15m NUMERIC(18,4),
                 paper_trade BOOLEAN DEFAULT FALSE,
                 cooldown_timer INTEGER,
                 monitor_confirmed BOOLEAN DEFAULT FALSE,
@@ -300,6 +316,76 @@ def init_database():
                     ALTER TABLE users.trades_simulated_0001
                       ALTER COLUMN symbol_open TYPE NUMERIC(18,5) USING symbol_open::numeric,
                       ALTER COLUMN symbol_close TYPE NUMERIC(18,5) USING symbol_close::numeric;
+                END IF;
+
+                -- Live record-keeping: end-of-cycle spot and counterfactual W/L confirmation (not on trades_simulated_0001)
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'symbol_expiration'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN symbol_expiration NUMERIC(18,5);
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'win_loss_confirmed'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN win_loss_confirmed BOOLEAN;
+                END IF;
+
+                -- Kalshi cadence: hourly vs 15m (not venue; see `exchange`)
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'market'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN market VARCHAR(10) DEFAULT 'hourly';
+                END IF;
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.tables WHERE table_schema = 'users' AND table_name = 'trades_simulated_0001'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_simulated_0001'
+                      AND column_name = 'market'
+                ) THEN
+                    ALTER TABLE users.trades_simulated_0001 ADD COLUMN market VARCHAR(10) DEFAULT 'hourly';
+                END IF;
+
+                -- Strike-table final-window ask snapshot at trade insert (migration 20260330_2200_trades_strike_final_quarter_asks)
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'yes_ask_min_15m'
+                ) THEN
+                    ALTER TABLE users.trades_0001
+                      ADD COLUMN yes_ask_min_15m NUMERIC(18,4),
+                      ADD COLUMN yes_ask_max_15m NUMERIC(18,4),
+                      ADD COLUMN no_ask_min_15m NUMERIC(18,4),
+                      ADD COLUMN no_ask_max_15m NUMERIC(18,4),
+                      ADD COLUMN yes_ask_range_15m NUMERIC(18,4),
+                      ADD COLUMN no_ask_range_15m NUMERIC(18,4);
+                END IF;
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.tables WHERE table_schema = 'users' AND table_name = 'trades_simulated_0001'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_simulated_0001'
+                      AND column_name = 'yes_ask_min_15m'
+                ) THEN
+                    ALTER TABLE users.trades_simulated_0001
+                      ADD COLUMN yes_ask_min_15m NUMERIC(18,4),
+                      ADD COLUMN yes_ask_max_15m NUMERIC(18,4),
+                      ADD COLUMN no_ask_min_15m NUMERIC(18,4),
+                      ADD COLUMN no_ask_max_15m NUMERIC(18,4),
+                      ADD COLUMN yes_ask_range_15m NUMERIC(18,4),
+                      ADD COLUMN no_ask_range_15m NUMERIC(18,4);
                 END IF;
 
                 -- Ensure trades_simulated_0001.id has a sequence default so INSERT ... RETURNING id returns a value
@@ -628,6 +714,12 @@ def init_database():
                 volatility_percentile NUMERIC(5,1),
                 movement NUMERIC(10,4),
                 movement_percentile NUMERIC(5,1),
+                yes_ask_min_15m NUMERIC(18,4),
+                yes_ask_max_15m NUMERIC(18,4),
+                no_ask_min_15m NUMERIC(18,4),
+                no_ask_max_15m NUMERIC(18,4),
+                yes_ask_range_15m NUMERIC(18,4),
+                no_ask_range_15m NUMERIC(18,4),
                 pipeline_healthy BOOLEAN NOT NULL DEFAULT FALSE,
                 pipeline_health_reason TEXT,
                 pipeline_health_checked_at TIMESTAMP WITH TIME ZONE,
@@ -1207,6 +1299,12 @@ def init_database():
                 ticker VARCHAR(50),
                 active_side VARCHAR(10),
                 momentum_weighted_score DECIMAL(5,3),
+                yes_ask_min_15m NUMERIC(18,4),
+                yes_ask_max_15m NUMERIC(18,4),
+                no_ask_min_15m NUMERIC(18,4),
+                no_ask_max_15m NUMERIC(18,4),
+                yes_ask_range_15m NUMERIC(18,4),
+                no_ask_range_15m NUMERIC(18,4),
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
             );
         """)
@@ -1310,6 +1408,12 @@ def init_database():
                     volatility_percentile NUMERIC(5,1),
                     movement NUMERIC(10,4),
                     movement_percentile NUMERIC(5,1),
+                    yes_ask_min_15m NUMERIC(18,4),
+                    yes_ask_max_15m NUMERIC(18,4),
+                    no_ask_min_15m NUMERIC(18,4),
+                    no_ask_max_15m NUMERIC(18,4),
+                    yes_ask_range_15m NUMERIC(18,4),
+                    no_ask_range_15m NUMERIC(18,4),
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
                 );
             """)
@@ -1320,7 +1424,13 @@ def init_database():
                 ADD COLUMN IF NOT EXISTS ttc_hourly INTEGER,
                 ADD COLUMN IF NOT EXISTS probability_hourly DECIMAL(5,2),
                 ADD COLUMN IF NOT EXISTS ttc_15m INTEGER,
-                ADD COLUMN IF NOT EXISTS probability_15m DECIMAL(5,2);
+                ADD COLUMN IF NOT EXISTS probability_15m DECIMAL(5,2),
+                ADD COLUMN IF NOT EXISTS yes_ask_min_15m NUMERIC(18,4),
+                ADD COLUMN IF NOT EXISTS yes_ask_max_15m NUMERIC(18,4),
+                ADD COLUMN IF NOT EXISTS no_ask_min_15m NUMERIC(18,4),
+                ADD COLUMN IF NOT EXISTS no_ask_max_15m NUMERIC(18,4),
+                ADD COLUMN IF NOT EXISTS yes_ask_range_15m NUMERIC(18,4),
+                ADD COLUMN IF NOT EXISTS no_ask_range_15m NUMERIC(18,4);
             """)
         
         # Remove legacy columns from 15m strike tables (use ttc_15m / probability_15m only)
@@ -1353,6 +1463,46 @@ def init_database():
                   ALTER COLUMN strike TYPE NUMERIC(18,5) USING round(strike::numeric, 5);
               END IF;
             END $$;
+        """)
+
+        # Final-quarter (15m window) YES/NO ask extrema in dollars — matches migration
+        # 20260328_2115_strike_table_final_quarter_ask_tracking.
+        cursor.execute("""
+            DO $$
+            DECLARE
+              t TEXT;
+              tables TEXT[] := ARRAY[
+                'strike_table_15m',
+                'strike_table_ws_15m',
+                'strike_table_hourly_btc',
+                'strike_table_hourly_eth',
+                'strike_table_hourly_ndx',
+                'strike_table_hourly_spx',
+                'strike_table_15m_btc',
+                'strike_table_15m_eth',
+                'strike_table_15m_sol',
+                'strike_table_15m_xrp'
+              ];
+            BEGIN
+              FOREACH t IN ARRAY tables LOOP
+                IF EXISTS (
+                  SELECT 1 FROM information_schema.tables
+                  WHERE table_schema = 'live_data' AND table_name = t
+                ) THEN
+                  EXECUTE format(
+                    'ALTER TABLE live_data.%I
+                       ADD COLUMN IF NOT EXISTS yes_ask_min_15m NUMERIC(18,4),
+                       ADD COLUMN IF NOT EXISTS yes_ask_max_15m NUMERIC(18,4),
+                       ADD COLUMN IF NOT EXISTS no_ask_min_15m NUMERIC(18,4),
+                       ADD COLUMN IF NOT EXISTS no_ask_max_15m NUMERIC(18,4),
+                       ADD COLUMN IF NOT EXISTS yes_ask_range_15m NUMERIC(18,4),
+                       ADD COLUMN IF NOT EXISTS no_ask_range_15m NUMERIC(18,4);',
+                    t
+                  );
+                END IF;
+              END LOOP;
+            END
+            $$;
         """)
         
         cursor.execute("""
@@ -1579,6 +1729,7 @@ def init_database():
                 min_ask NUMERIC(6,4) DEFAULT 0.0000,
                 max_ask NUMERIC(6,4) DEFAULT 0.9800,
                 max_profit NUMERIC(6,4) DEFAULT 0.9900,
+                stop_loss_price NUMERIC(6,4) DEFAULT 0.0000,
                 min_cooldown_timer INTEGER DEFAULT 300,
                 max_cooldown_timer INTEGER DEFAULT 3300
             );
@@ -1910,6 +2061,15 @@ def init_database():
                     SELECT 1 FROM information_schema.columns
                     WHERE table_schema = 'users'
                       AND table_name = 'strategy_list_0001'
+                      AND column_name = 'stop_loss_price'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN stop_loss_price NUMERIC(6,4) DEFAULT 0.0000;
+                END IF;
+
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
                       AND column_name = 'min_cooldown_timer'
                 ) THEN
                     ALTER TABLE users.strategy_list_0001 ADD COLUMN min_cooldown_timer INTEGER DEFAULT 300;
@@ -1980,6 +2140,16 @@ def init_database():
                     ) THEN
                         EXECUTE format('ALTER TABLE users.%I ADD COLUMN prob_adj NUMERIC(5,2) DEFAULT 5.00', '{table_name}');
                         EXECUTE format('UPDATE users.%I SET prob_adj = 5.00 WHERE prob_adj IS NULL', '{table_name}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'users'
+                          AND table_name = '{table_name}'
+                          AND column_name = 'stop_loss_price'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN stop_loss_price NUMERIC(6,4) DEFAULT 0.0000', '{table_name}');
+                        EXECUTE format('UPDATE users.%I SET stop_loss_price = 0.0000 WHERE stop_loss_price IS NULL', '{table_name}');
                     END IF;
                 END
                 $$;

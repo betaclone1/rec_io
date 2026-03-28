@@ -9,6 +9,7 @@ Schema, migrations, drift check, backfills, and audit. Migration SQL files live 
 - **generate_schema_doc.py** — Regenerate docs/MASTER_DB_SCHEMA_REFERENCE.md from DB.
 - **backfill_account_history_vendor_rail.py** — One-off backfill for account_history (kalshi_id, vendor, rail).
 - **backfill_trades_volatility_movement.py** — Backfill trades from historical price logs. See PRODUCTION_DB_SCHEMA_AND_BACKFILL_MASTER.md.
+- **backfill_trades_symbol_expiration_from_history.py** — One-time: `symbol_expiration` from `historical_data.*_price_history` at contract cycle end (from `date` + `contract` + `market`), then `win_loss_confirmed` for live rows. `--dry-run`, `--force`, `--limit`. Run with venv: `PYTHONPATH=$(pwd) .venv/bin/python scripts/db/...`.
 - **compare_simulated_table_schema.py** — Compare trades_simulated schema (e.g. local vs prod).
 
 Run from project root with PYTHONPATH set when needed, e.g. `python3 scripts/db/run_migration.py list`.

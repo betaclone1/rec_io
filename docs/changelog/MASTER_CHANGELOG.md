@@ -6,6 +6,62 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-28 — Combined deploy: trade cadence, symbol expiration W/L, strike final-quarter asks, trades snapshot columns, monitor stop-loss, ATS 15m, dashboards
+
+**Summary**
+- **Trades:** `market` (hourly vs 15m); `symbol_expiration` / `win_loss_confirmed`; six strike final-window ask snapshot columns at insert (`yes_ask_min_15m` … `no_ask_range_15m`). `trade_manager` resolves cadence from `monitor_list.market` or strategy/ticker, reads `price_spread` and ask extrema from unified or per-symbol strike tables.
+- **Strike tables:** Final-quarter YES/NO ask min/max/range in dollars (4 dp) on unified and legacy `live_data` strike tables; generator carry-forward; WS hourly hook where applicable.
+- **Monitors / strategies:** Stop-loss price column migration where applicable.
+- **Supervisors / API:** `active_trade_supervisor` 15m iteration and related logic; `strike_table_generator` / WS; `main.py` strike/API; `monitor_manager` adjustments.
+- **Frontend:** Dashboard and trade monitor (desktop + mobile) for new metrics and layout.
+- **One-time data:** Backfill `symbol_expiration` from price history; backfill `market` and `win_loss_confirmed` on existing rows (scripts below).
+- **Planning doc:** `unified-kalshi-ws-master-aes-ats.md` updated (north-star / scalability notes).
+
+**Plans:** `.cursor/plans/unified-15m-aes-ats-reads.md`, `.cursor/plans/unified-kalshi-ws-master-aes-ats.md`, `.cursor/plans/db-prod-schema-alignment.md`
+
+**DB migrations (required on production, in this order — runner skips already-applied ids)**
+
+1. `20260328_1500_trades_symbol_expiration_win_loss_confirmed`
+2. `20260328_2115_strike_table_final_quarter_ask_tracking`
+3. `20260329_1100_monitor_strategy_stop_loss_price`
+4. `20260330_1015_trades_market_cadence`
+5. `20260330_2130_strike_final_quarter_asks_numeric_4dp`
+6. `20260330_2200_trades_strike_final_quarter_asks`
+
+**Production checklist**
+- [ ] Confirm codebase:  
+  `git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations in order:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260328_1500_trades_symbol_expiration_win_loss_confirmed`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260328_2115_strike_table_final_quarter_ask_tracking`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260329_1100_monitor_strategy_stop_loss_price`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260330_1015_trades_market_cadence`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260330_2130_strike_final_quarter_asks_numeric_4dp`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260330_2200_trades_strike_final_quarter_asks`  
+  (Use **`venv/bin/python`** or **`.venv/bin/python`** per server.)
+- [ ] Schema drift:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] **One-time backfills (run once per environment):**  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/backfill_trades_symbol_expiration_from_history.py --dry-run` then without `--dry-run` when ready (`--force` only if overwriting `symbol_expiration` is intended).  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/backfill_trades_market_and_win_loss_confirmed.py --dry-run` then without `--dry-run`.
+- [ ] Restart: `./scripts/MASTER_RESTART.sh`
+- [ ] Verify: `main_app` :3000 and `trade_executor` :8001 health; supervisor `RUNNING` for strike generators and 15m WS stack; spot-check `users.trades_0001` for `market`, ask snapshot columns on new inserts, and strike tables for final-quarter columns; dashboard / trade monitor UI.
+
+---
+
+## 2026-03-30 — Trades `market` cadence column + historical backfill for `symbol_expiration` / `win_loss_confirmed`
+
+**Summary**
+- **Schema:** `users.trades_0001` and `users.trades_simulated_0001` gain **`market`** (`hourly` | `15m`) — Kalshi cadence, distinct from venue **`exchange`**. Migration `20260330_1015_trades_market_cadence` adds the column and backfills from `trade_strategy` / `ticker` where needed.
+- **Inserts:** `trade_manager.insert_trade` / `insert_simulated_trade` set **`market`** from `monitor_list.market` when present, else from strategy/ticker heuristics.
+- **One-time data fix:** Script **`scripts/db/backfill_trades_symbol_expiration_from_history.py`** fills **`symbol_expiration`** from **`historical_data.{symbol}_price_history`** at the contract cycle end derived from **`date`**, **`contract`**, and **`market`** (hourly = end of named hour; 15m = clock time in contract). Then sets **`win_loss_confirmed`** for **paper and live** rows when W/L is computable (same rules as `trade_manager`). Rows without a history bar (very recent dates, or symbols without a `*_price_history` table) are skipped. Use **`--dry-run`** first; **`--force`** overwrites existing **`symbol_expiration`**.
+
+**Production checklist**
+
+*Superseded — run the **2026-03-28 — Combined deploy** entry above once on production (same release batch; includes `20260330_1015` and related steps).*
+
+---
+
 ## 2026-03-27 — 15m rollover contract, fixed-point market columns, strike_table dollars-only, trade monitor hygiene
 
 **Summary**

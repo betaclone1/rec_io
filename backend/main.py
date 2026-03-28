@@ -2551,6 +2551,7 @@ def get_trades_from_postgresql():
                     'time': trade_dict.get('time', ''),
                     'symbol': trade_dict.get('symbol', 'BTC'),
                     'trade_strategy': trade_dict.get('trade_strategy', ''),
+                    'market': trade_dict.get('market', 'hourly'),
                     'contract': trade_dict.get('contract', ''),
                     'strike': trade_dict.get('strike', ''),
                     'side': trade_dict.get('side', ''),
@@ -3151,7 +3152,7 @@ async def get_auto_entry_settings(monitor_id: str = None):
                        momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target,
                        min_ask, max_ask, loss_prevention_toggle, max_price_spread, prob_adj,
                        min_cooldown_timer, max_cooldown_timer,
-                       regime_monitor_enabled, regime_window
+                       regime_monitor_enabled, regime_window, stop_loss_price
                 FROM users.monitor_list_0001 WHERE id = %s
             """, (monitor_id,))
             result = cursor.fetchone()
@@ -3191,7 +3192,8 @@ async def get_auto_entry_settings(monitor_id: str = None):
                     "min_cooldown_timer": result[28] if result[28] is not None else None,
                     "max_cooldown_timer": result[29] if result[29] is not None else None,
                     "regime_monitor_enabled": bool(result[30]) if result[30] is not None else False,
-                    "regime_window": str(result[31]) if result[31] is not None else "30d"
+                    "regime_window": str(result[31]) if result[31] is not None else "30d",
+                    "stop_loss_price": float(result[32]) if result[32] is not None else 0.0
                 }
             else:
                 return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
@@ -3339,6 +3341,16 @@ async def set_auto_entry_settings(request: Request):
             if "max_cooldown_timer" in data:
                 update_fields.append("max_cooldown_timer = %s")
                 update_values.append(int(data["max_cooldown_timer"]) if data["max_cooldown_timer"] is not None else None)
+            if "stop_loss_price" in data:
+                slp = float(data["stop_loss_price"])
+                if slp < 0 or round(slp, 4) > 0.99:
+                    conn.close()
+                    return {
+                        "status": "error",
+                        "message": "stop_loss_price must be between 0.0000 and 0.9900 (0 disables)",
+                    }
+                update_fields.append("stop_loss_price = %s")
+                update_values.append(round(slp, 4))
             
             if update_fields:
                 # Update the monitor in monitor_list table
@@ -3356,8 +3368,8 @@ async def set_auto_entry_settings(request: Request):
                            current_probability, min_ttc_seconds, momentum_spike_enabled, 
                            momentum_spike_threshold, verification_period_enabled, verification_period_seconds,
                            min_volume, win_streak_threshold, performance_based_allocation,
-                           momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target
-                           ,regime_monitor_enabled, regime_window
+                           momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target,
+                           regime_monitor_enabled, regime_window, stop_loss_price
                     FROM users.monitor_list_0001 WHERE id = %s
                 """, (monitor_id,))
                 updated_result = cursor.fetchone()
@@ -3386,7 +3398,8 @@ async def set_auto_entry_settings(request: Request):
                         "momentum_scalp_trailing_stop_amount": float(updated_result[19]) if updated_result[19] is not None else None,
                         "momentum_scalp_profit_target": float(updated_result[20]) if updated_result[20] is not None else None,
                         "regime_monitor_enabled": bool(updated_result[21]) if updated_result[21] is not None else False,
-                        "regime_window": str(updated_result[22]) if updated_result[22] is not None else "30d"
+                        "regime_window": str(updated_result[22]) if updated_result[22] is not None else "30d",
+                        "stop_loss_price": float(updated_result[23]) if updated_result[23] is not None else 0.0,
                     }
                     conn.commit()
                     conn.close()
@@ -3689,7 +3702,13 @@ async def get_strike_table(symbol: str, request: Request):
                         ticker,
                         yes_diff,
                         no_diff,
-                        active_side
+                        active_side,
+                        yes_ask_min_15m,
+                        yes_ask_max_15m,
+                        no_ask_min_15m,
+                        no_ask_max_15m,
+                        yes_ask_range_15m,
+                        no_ask_range_15m
                     FROM live_data.strike_table_15m
                     WHERE exchange = %s AND symbol = %s
                     ORDER BY strike
@@ -3730,7 +3749,13 @@ async def get_strike_table(symbol: str, request: Request):
                         ticker,
                         yes_diff,
                         no_diff,
-                        active_side
+                        active_side,
+                        yes_ask_min_15m,
+                        yes_ask_max_15m,
+                        no_ask_min_15m,
+                        no_ask_max_15m,
+                        yes_ask_range_15m,
+                        no_ask_range_15m
                     FROM live_data.{table_name}
                     ORDER BY strike
                 """)
@@ -3766,7 +3791,13 @@ async def get_strike_table(symbol: str, request: Request):
                     "ticker": row[9],
                     "yes_diff": float(row[10]) if row[10] is not None else None,
                     "no_diff": float(row[11]) if row[11] is not None else None,
-                    "active_side": row[12]
+                    "active_side": row[12],
+                    "yes_ask_min_15m": float(row[13]) if row[13] is not None else None,
+                    "yes_ask_max_15m": float(row[14]) if row[14] is not None else None,
+                    "no_ask_min_15m": float(row[15]) if row[15] is not None else None,
+                    "no_ask_max_15m": float(row[16]) if row[16] is not None else None,
+                    "yes_ask_range_15m": float(row[17]) if row[17] is not None else None,
+                    "no_ask_range_15m": float(row[18]) if row[18] is not None else None,
                 }
                 response["strikes"].append(strike)
             
@@ -3824,7 +3855,13 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
                         ticker,
                         yes_diff,
                         no_diff,
-                        active_side
+                        active_side,
+                        yes_ask_min_15m,
+                        yes_ask_max_15m,
+                        no_ask_min_15m,
+                        no_ask_max_15m,
+                        yes_ask_range_15m,
+                        no_ask_range_15m
                     FROM live_data.strike_table_15m
                     WHERE exchange = %s AND symbol = %s
                     ORDER BY strike
@@ -3878,7 +3915,13 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
                         ticker,
                         yes_diff,
                         no_diff,
-                        active_side
+                        active_side,
+                        yes_ask_min_15m,
+                        yes_ask_max_15m,
+                        no_ask_min_15m,
+                        no_ask_max_15m,
+                        yes_ask_range_15m,
+                        no_ask_range_15m
                     FROM live_data.{table_name}
                     ORDER BY strike
                 """)
@@ -3898,7 +3941,7 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
 
             for strike_row in strikes_data:
                 if market == "15m":
-                    # 15m row shape includes open_interest at index 9.
+                    # 15m row shape includes open_interest at index 9; final-quarter asks at 14–19.
                     strike_data = {
                         "strike": (str(strike_row[0]) if raw else float(strike_row[0])) if strike_row[0] is not None else None,
                         "buffer": (str(strike_row[1]) if raw else float(strike_row[1])) if strike_row[1] is not None else None,
@@ -3913,10 +3956,16 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
                         "ticker": strike_row[10],
                         "yes_diff": (str(strike_row[11]) if raw else float(strike_row[11])) if strike_row[11] is not None else None,
                         "no_diff": (str(strike_row[12]) if raw else float(strike_row[12])) if strike_row[12] is not None else None,
-                        "active_side": strike_row[13]
+                        "active_side": strike_row[13],
+                        "yes_ask_min_15m": (str(strike_row[14]) if raw else float(strike_row[14])) if strike_row[14] is not None else None,
+                        "yes_ask_max_15m": (str(strike_row[15]) if raw else float(strike_row[15])) if strike_row[15] is not None else None,
+                        "no_ask_min_15m": (str(strike_row[16]) if raw else float(strike_row[16])) if strike_row[16] is not None else None,
+                        "no_ask_max_15m": (str(strike_row[17]) if raw else float(strike_row[17])) if strike_row[17] is not None else None,
+                        "yes_ask_range_15m": (str(strike_row[18]) if raw else float(strike_row[18])) if strike_row[18] is not None else None,
+                        "no_ask_range_15m": (str(strike_row[19]) if raw else float(strike_row[19])) if strike_row[19] is not None else None,
                     }
                 else:
-                    # Hourly row shape has no open_interest field.
+                    # Hourly row shape has no open_interest field; final-quarter asks at 13–18.
                     strike_data = {
                         "strike": (str(strike_row[0]) if raw else float(strike_row[0])) if strike_row[0] is not None else None,
                         "buffer": (str(strike_row[1]) if raw else float(strike_row[1])) if strike_row[1] is not None else None,
@@ -3931,7 +3980,13 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
                         "ticker": strike_row[9],
                         "yes_diff": (str(strike_row[10]) if raw else float(strike_row[10])) if strike_row[10] is not None else None,
                         "no_diff": (str(strike_row[11]) if raw else float(strike_row[11])) if strike_row[11] is not None else None,
-                        "active_side": strike_row[12]
+                        "active_side": strike_row[12],
+                        "yes_ask_min_15m": (str(strike_row[13]) if raw else float(strike_row[13])) if strike_row[13] is not None else None,
+                        "yes_ask_max_15m": (str(strike_row[14]) if raw else float(strike_row[14])) if strike_row[14] is not None else None,
+                        "no_ask_min_15m": (str(strike_row[15]) if raw else float(strike_row[15])) if strike_row[15] is not None else None,
+                        "no_ask_max_15m": (str(strike_row[16]) if raw else float(strike_row[16])) if strike_row[16] is not None else None,
+                        "yes_ask_range_15m": (str(strike_row[17]) if raw else float(strike_row[17])) if strike_row[17] is not None else None,
+                        "no_ask_range_15m": (str(strike_row[18]) if raw else float(strike_row[18])) if strike_row[18] is not None else None,
                     }
                 response["strikes"].append(strike_data)
             

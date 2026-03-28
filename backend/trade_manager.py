@@ -208,6 +208,20 @@ def _get_market_for_monitor_key(pg_conn, monitor_key):
         return 'hourly'
 
 
+def _resolve_trade_market_for_insert(pg_conn, monitor_key, trade_strategy, ticker):
+    """
+    Trade cadence stored on each row: 'hourly' or '15m' (Kalshi cycle), not the venue slug.
+    Prefer users.monitor_list.market when monitor_key resolves; else infer from strategy/ticker.
+    """
+    if monitor_key and pg_conn:
+        return _get_market_for_monitor_key(pg_conn, monitor_key)
+    ts = (trade_strategy or "").lower()
+    tk = (ticker or "").upper()
+    if "15m" in ts or "15M" in tk:
+        return "15m"
+    return "hourly"
+
+
 def _normalize_trade_date(value):
     """Best-effort conversion of stored trade date into an aware datetime in EST."""
     if value is None:
@@ -388,6 +402,102 @@ def _get_price_spread_from_strike_table(symbol, ticker, side, market=None):
         if pg_conn:
             pg_conn.close()
         return None
+
+
+def _row_to_float6(row):
+    if not row:
+        return (None,) * 6
+    out = []
+    for x in row:
+        if x is None:
+            out.append(None)
+        else:
+            try:
+                out.append(float(x))
+            except (TypeError, ValueError):
+                out.append(None)
+    return tuple(out)
+
+
+def _get_final_quarter_ask_snapshot_from_strike_table(symbol, ticker, market=None, exchange=None):
+    """
+    Latest strike row for this Kalshi market_ticker: final-window YES/NO ask min, max, range (dollars, 4 dp).
+    Tries live_data.strike_table_15m (unified) for 15m, then legacy strike_table_15m_{symbol}; hourly uses
+    strike_table_hourly_{symbol}. Mirrors cadence used for price_spread.
+    """
+    if not symbol or not ticker:
+        return (None,) * 6
+    mkt = (market or "hourly").strip().lower()
+    if mkt not in ("hourly", "15m"):
+        mkt = "hourly"
+    ex = normalize_exchange(exchange or "kalshi")
+    sym_lower = str(symbol).strip().lower()
+    sym_upper = str(symbol).strip().upper()
+    pg_conn = None
+    try:
+        pg_conn = get_postgresql_connection()
+        if not pg_conn:
+            return (None,) * 6
+        with pg_conn.cursor() as cursor:
+            if mkt == "15m":
+                cursor.execute(
+                    """
+                    SELECT yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
+                           yes_ask_range_15m, no_ask_range_15m
+                    FROM live_data.strike_table_15m
+                    WHERE LOWER(TRIM(exchange)) = %s
+                      AND UPPER(TRIM(symbol)) = %s
+                      AND ticker = %s
+                    ORDER BY timestamp DESC NULLS LAST
+                    LIMIT 1
+                    """,
+                    (ex, sym_upper, ticker),
+                )
+                row = cursor.fetchone()
+                if row and any(v is not None for v in row):
+                    return _row_to_float6(row)
+                leg = f"strike_table_15m_{sym_lower}"
+                q = sql.SQL(
+                    """
+                    SELECT yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
+                           yes_ask_range_15m, no_ask_range_15m
+                    FROM live_data.{tbl}
+                    WHERE ticker = %s
+                    ORDER BY timestamp DESC NULLS LAST
+                    LIMIT 1
+                    """
+                ).format(tbl=sql.Identifier(leg))
+                cursor.execute(q, (ticker,))
+                row = cursor.fetchone()
+                if row and any(v is not None for v in row):
+                    return _row_to_float6(row)
+            else:
+                ht = f"strike_table_hourly_{sym_lower}"
+                q = sql.SQL(
+                    """
+                    SELECT yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
+                           yes_ask_range_15m, no_ask_range_15m
+                    FROM live_data.{tbl}
+                    WHERE ticker = %s
+                    ORDER BY created_at DESC NULLS LAST
+                    LIMIT 1
+                    """
+                ).format(tbl=sql.Identifier(ht))
+                cursor.execute(q, (ticker,))
+                row = cursor.fetchone()
+                if row and any(v is not None for v in row):
+                    return _row_to_float6(row)
+        return (None,) * 6
+    except Exception:
+        return (None,) * 6
+    finally:
+        if pg_conn:
+            try:
+                pg_conn.close()
+            except Exception:
+                pass
+
+
 # Function to get momentum data from PostgreSQL (replacement for archived unified_production_coordinator)
 def get_momentum_data_from_postgresql(symbol):
     """Get current momentum data directly from PostgreSQL for the specified symbol."""
@@ -689,13 +799,17 @@ def insert_trade(trade):
                 if multiplier_for_db is None:
                     multiplier_for_db = 1.0
                 
-                # Get price spread from strike table (use monitor's market when available)
+                # Get price spread from strike table (same cadence as trades.market)
                 ticker = trade.get('ticker')
                 side = trade.get('side')
+                trade_market_for_db = _resolve_trade_market_for_insert(
+                    pg_conn, monitor_key, trade.get("trade_strategy"), ticker
+                )
                 price_spread = None
                 if ticker and side:
-                    market = _get_market_for_monitor_key(pg_conn, trade.get('monitor'))
-                    price_spread = _get_price_spread_from_strike_table(symbol, ticker, side, market)
+                    price_spread = _get_price_spread_from_strike_table(
+                        symbol, ticker, side, trade_market_for_db
+                    )
 
                 # Get paper_trade value from trade payload, default to False
                 paper_trade = trade.get('paper_trade', False)
@@ -736,21 +850,34 @@ def insert_trade(trade):
                 venue_exchange = normalize_exchange(
                     trade.get("exchange", trade.get("market"))
                 )
+                (
+                    yes_ask_min_15m_for_db,
+                    yes_ask_max_15m_for_db,
+                    no_ask_min_15m_for_db,
+                    no_ask_max_15m_for_db,
+                    yes_ask_range_15m_for_db,
+                    no_ask_range_15m_for_db,
+                ) = _get_final_quarter_ask_snapshot_from_strike_table(
+                    symbol, ticker, trade_market_for_db, venue_exchange
+                )
                 cursor.execute("""
                     INSERT INTO users.trades_0001 (
-                        status, date, time, symbol, exchange, trade_strategy,
+                        status, date, time, symbol, exchange, trade_strategy, market,
                         contract, strike, side, prob, diff, buy_price, position,
                         sell_price, closed_at, fees, pnl, symbol_open, symbol_close,
                         momentum, volatility, volatility_percentile, movement, movement_percentile,
                         win_loss, ticker, ticket_id, market_id,
                         momentum_percentile, momentum_5s_avg, entry_method, close_method, monitor, bankroll,
                         master_trading_bankroll, mtb_base_value,
-                        hour_idx, weekly_cycle, loss_prevention, multiplier, price_spread, paper_trade, cooldown_timer
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        hour_idx, weekly_cycle, loss_prevention, multiplier, price_spread,
+                        yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
+                        yes_ask_range_15m, no_ask_range_15m,
+                        paper_trade, cooldown_timer
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """, (
                     trade.get('status', 'pending'), trade['date'], trade['time'],
-                    symbol, venue_exchange, trade.get('trade_strategy', 'Hourly HTC'),
+                    symbol, venue_exchange, trade.get('trade_strategy', 'Hourly HTC'), trade_market_for_db,
                     contract_name, strike_for_db, trade['side'], trade.get('prob'),
                     diff_formatted, trade['buy_price'], trade['position'], None, None,
                     None, None, symbol_open, None, momentum_for_db,
@@ -764,6 +891,12 @@ def insert_trade(trade):
                     loss_prevention_flag,
                     multiplier_for_db,
                     price_spread,
+                    yes_ask_min_15m_for_db,
+                    yes_ask_max_15m_for_db,
+                    no_ask_min_15m_for_db,
+                    no_ask_max_15m_for_db,
+                    yes_ask_range_15m_for_db,
+                    no_ask_range_15m_for_db,
                     paper_trade,
                     cooldown_timer
                 ))
@@ -904,9 +1037,22 @@ def insert_simulated_trade(trade):
             # Simulated: do not record price_spread
             price_spread = None
             ticker, side = trade.get('ticker'), trade.get('side')
+            trade_market_for_db = _resolve_trade_market_for_insert(
+                pg_conn, monitor_key, trade.get("trade_strategy"), ticker
+            )
             strike_for_db = canonical_trade_strike_display(symbol, trade.get("strike"))
             venue_exchange = normalize_exchange(
                 trade.get("exchange", trade.get("market"))
+            )
+            (
+                yes_ask_min_15m_for_db,
+                yes_ask_max_15m_for_db,
+                no_ask_min_15m_for_db,
+                no_ask_max_15m_for_db,
+                yes_ask_range_15m_for_db,
+                no_ask_range_15m_for_db,
+            ) = _get_final_quarter_ask_snapshot_from_strike_table(
+                symbol, ticker, trade_market_for_db, venue_exchange
             )
 
             # Server-side duplicate guard: one row per (monitor, date, contract, strike, side)
@@ -924,18 +1070,21 @@ def insert_simulated_trade(trade):
 
             cursor.execute("""
                 INSERT INTO users.trades_simulated_0001 (
-                    status, date, time, symbol, exchange, trade_strategy,
+                    status, date, time, symbol, exchange, trade_strategy, market,
                     contract, strike, side, prob, diff, buy_price, position,
                     sell_price, closed_at, fees, pnl, symbol_open, symbol_close,
                     momentum, volatility, volatility_percentile, movement, movement_percentile,
                     win_loss, ticker, ticket_id, market_id,
                     momentum_percentile, momentum_5s_avg, entry_method, close_method, monitor, bankroll,
-                    hour_idx, weekly_cycle, loss_prevention, multiplier, price_spread, paper_trade, cooldown_timer, test_filter
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    hour_idx, weekly_cycle, loss_prevention, multiplier, price_spread,
+                    yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
+                    yes_ask_range_15m, no_ask_range_15m,
+                    paper_trade, cooldown_timer, test_filter
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
                 trade.get('status', 'pending'), trade['date'], trade['time'],
-                symbol, venue_exchange, trade.get('trade_strategy', 'Hourly HTC'),
+                symbol, venue_exchange, trade.get('trade_strategy', 'Hourly HTC'), trade_market_for_db,
                 contract_name, strike_for_db, trade['side'], trade.get('prob'),
                 diff_formatted, buy_price_for_db, position_for_db, None, None,
                 fees_for_db, None, symbol_open, None, momentum_for_db,
@@ -945,6 +1094,12 @@ def insert_simulated_trade(trade):
                 monitor_key, bankroll_for_db,
                 hour_idx_for_db, weekly_cycle_for_db,
                 loss_prevention_flag, multiplier_for_db, price_spread,
+                yes_ask_min_15m_for_db,
+                yes_ask_max_15m_for_db,
+                no_ask_min_15m_for_db,
+                no_ask_max_15m_for_db,
+                yes_ask_range_15m_for_db,
+                no_ask_range_15m_for_db,
                 True, cooldown_timer, False
             ))
             row = cursor.fetchone()
@@ -2393,24 +2548,48 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
+                wrote_trade_row = False
                 # First try to update by ID
                 if status == 'closed':
                     # IMMUTABILITY RULE: Preserve existing high_price/low_price if trade is already closed
                     # Check if trade is already closed and has existing values
-                    cursor.execute("SELECT status, high_price, low_price FROM users.trades_0001 WHERE id = %s", (trade_id,))
+                    cursor.execute(
+                        """
+                        SELECT status, high_price, low_price, symbol_expiration, strike, side
+                        FROM users.trades_0001 WHERE id = %s
+                        """,
+                        (trade_id,),
+                    )
                     existing_row = cursor.fetchone()
                     
                     # Preserve existing values if trade is already closed and provided values are None
                     final_high_price = high_price
                     final_low_price = low_price
+                    sym_exp_fill = None
+                    try:
+                        if symbol_close is not None:
+                            sym_exp_fill = float(symbol_close)
+                    except (TypeError, ValueError):
+                        sym_exp_fill = None
                     if existing_row:
-                        existing_status, existing_high_price, existing_low_price = existing_row
+                        (
+                            existing_status,
+                            existing_high_price,
+                            existing_low_price,
+                            sym_expiration,
+                            _strike_c,
+                            _side_c,
+                        ) = existing_row
                         if existing_status == 'closed':
                             # Trade is already closed - preserve existing values
                             if high_price is None and existing_high_price is not None:
                                 final_high_price = existing_high_price
                             if low_price is None and existing_low_price is not None:
                                 final_low_price = existing_low_price
+                        if sym_exp_fill is not None and sym_expiration is None:
+                            log_debug(
+                                f"Trade {trade_id}: symbol_expiration will be filled from symbol_close={sym_exp_fill} on close"
+                            )
                     
                     # Set monitor_confirmed = TRUE if high_price != low_price (meaning ATS was monitoring correctly)
                     monitor_confirmed = False
@@ -2423,17 +2602,22 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                     
                     cursor.execute("""
                         UPDATE users.trades_0001 
-                        SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, roi_pct = %s, ret_pct = %s, ret_pct_base = %s, high_price = %s, low_price = %s, monitor_confirmed = %s
+                        SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, roi_pct = %s, ret_pct = %s, ret_pct_base = %s, high_price = %s, low_price = %s, monitor_confirmed = %s,
+                            symbol_expiration = COALESCE(symbol_expiration, %s)
                         WHERE id = %s
-                    """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, roi_value, ret_pct, ret_pct_base, final_high_price, final_low_price, monitor_confirmed, trade_id))
+                    """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, roi_value, ret_pct, ret_pct_base, final_high_price, final_low_price, monitor_confirmed, sym_exp_fill, trade_id))
+                    if cursor.rowcount > 0:
+                        wrote_trade_row = True
+                        _finalize_closed_trade_win_loss_confirmed(cursor, trade_id)
                 else:
                     cursor.execute("""
                         UPDATE users.trades_0001 
                         SET status = %s 
                         WHERE id = %s
                     """, (status, trade_id))
+                    wrote_trade_row = cursor.rowcount > 0
                 
-                if cursor.rowcount > 0:
+                if wrote_trade_row:
                     log_debug(f"💾 Trade status update written to PostgreSQL users.trades_0001")
                 else:
                     log(f"⚠️ No matching trade found in PostgreSQL for ID {trade_id}")
@@ -2521,6 +2705,7 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
+                wrote_trade_row = False
                 # First try to update by ID
                 if status == 'closed':
                     # Calculate ret_pct and ret_pct_base if we have pnl and bankroll/mtb_base_value
@@ -2545,14 +2730,18 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
                         SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, ret_pct = %s, ret_pct_base = %s
                         WHERE id = %s
                     """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, ret_pct, ret_pct_base, trade_id))
+                    if cursor.rowcount > 0:
+                        wrote_trade_row = True
+                        _finalize_closed_trade_win_loss_confirmed(cursor, trade_id)
                 else:
                     cursor.execute("""
                         UPDATE users.trades_0001 
                         SET status = %s 
                         WHERE id = %s
                     """, (status, trade_id))
+                    wrote_trade_row = cursor.rowcount > 0
                 
-                if cursor.rowcount > 0:
+                if wrote_trade_row:
                     log_debug(f"💾 Trade status update written to PostgreSQL users.trades_0001")
                 else:
                     log(f"⚠️ No matching trade found in PostgreSQL for ID {trade_id}")
@@ -3599,6 +3788,141 @@ async def manual_settlement_poll():
 
 # ---------- EXPIRATION FUNCTIONS ----------------------------------------------------
 
+def _hypothetical_win_loss_at_expiration(strike, side, symbol_expiration) -> Optional[str]:
+    """W/L if the trade were held to expiration given spot at cycle end (same rules as paper settlement)."""
+    if symbol_expiration is None or strike is None or side is None:
+        return None
+    try:
+        strike_clean = str(strike).replace("$", "").replace(",", "")
+        strike_float = float(strike_clean)
+        sym_exp = float(symbol_expiration)
+    except (ValueError, TypeError):
+        return None
+    side_u = str(side).strip().upper()
+    if side_u in ("Y", "YES"):
+        return "W" if sym_exp >= strike_float else "L"
+    if side_u in ("N", "NO"):
+        return "W" if sym_exp <= strike_float else "L"
+    return None
+
+
+def _normalize_win_loss_for_confirm(actual) -> Optional[str]:
+    if actual is None:
+        return None
+    a = str(actual).strip().upper()
+    if not a:
+        return None
+    if a in ("D", "DRAW", "TIE", "PUSH"):
+        return None
+    if a[0] == "W":
+        return "W"
+    if a[0] == "L":
+        return "L"
+    if a in ("1", "TRUE", "YES"):
+        return "W"
+    if a in ("0", "FALSE", "NO"):
+        return "L"
+    return None
+
+
+def _compute_win_loss_confirmed(strike, side, symbol_expiration, win_loss_actual) -> Optional[bool]:
+    hypo = _hypothetical_win_loss_at_expiration(strike, side, symbol_expiration)
+    act = _normalize_win_loss_for_confirm(win_loss_actual)
+    if hypo is None or act is None:
+        return None
+    return hypo == act
+
+
+def _finalize_closed_trade_win_loss_confirmed(cursor, trade_id: int) -> None:
+    """Last persistence step for a closed live/paper trade: set win_loss_confirmed from the row as stored."""
+    cursor.execute(
+        """
+        SELECT strike, side, symbol_expiration, symbol_close, win_loss, status
+        FROM users.trades_0001 WHERE id = %s
+        """,
+        (trade_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return
+    strike, side, sym_exp, sym_close, win_loss, row_status = row
+    if row_status != "closed":
+        return
+    eff_sym_exp = sym_exp
+    if eff_sym_exp is None and sym_close is not None:
+        try:
+            eff_sym_exp = float(sym_close)
+        except (TypeError, ValueError):
+            eff_sym_exp = None
+    if eff_sym_exp is not None:
+        try:
+            eff_sym_exp = float(eff_sym_exp)
+        except (TypeError, ValueError):
+            eff_sym_exp = None
+    wlc = _compute_win_loss_confirmed(strike, side, eff_sym_exp, win_loss)
+    if wlc is None:
+        return
+    cursor.execute(
+        """
+        UPDATE users.trades_0001
+        SET win_loss_confirmed = %s
+        WHERE id = %s AND status = 'closed'
+        """,
+        (wlc, trade_id),
+    )
+
+
+def _apply_symbol_expiration_and_confirmation_backfill(cursor, trades_to_process, symbol_prices) -> None:
+    """After trades expire on this sweep, set symbol_expiration for all rows on those tickers (paper and live); then win_loss_confirmed where W/L is known and computable."""
+    if not trades_to_process:
+        return
+    ticker_to_symbol: dict = {}
+    for _trade_id, ticker, symbol, _strategy, _contract in trades_to_process:
+        if ticker and symbol:
+            ticker_to_symbol[str(ticker)] = symbol
+    distinct_tickers = list(dict.fromkeys(ticker_to_symbol.keys()))
+    for ticker in distinct_tickers:
+        symbol = ticker_to_symbol[ticker]
+        price = symbol_prices.get(symbol)
+        if price is None:
+            log(
+                f"[15-MIN CHECK] No symbol price for {symbol} (ticker={ticker}); "
+                "skipping symbol_expiration backfill for this ticker"
+            )
+            continue
+        cursor.execute(
+            """
+            UPDATE users.trades_0001
+            SET symbol_expiration = %s
+            WHERE ticker = %s
+              AND symbol_expiration IS NULL
+            """,
+            (price, ticker),
+        )
+    for ticker in distinct_tickers:
+        cursor.execute(
+            """
+            SELECT id, strike, side, symbol_expiration, win_loss
+            FROM users.trades_0001
+            WHERE ticker = %s
+              AND symbol_expiration IS NOT NULL
+              AND win_loss IS NOT NULL
+              AND win_loss_confirmed IS NULL
+            """,
+            (ticker,),
+        )
+        rows = cursor.fetchall()
+        for row in rows:
+            tid, strike, side, sym_exp, win_loss = row
+            wlc = _compute_win_loss_confirmed(strike, side, sym_exp, win_loss)
+            if wlc is None:
+                continue
+            cursor.execute(
+                "UPDATE users.trades_0001 SET win_loss_confirmed = %s WHERE id = %s",
+                (wlc, tid),
+            )
+
+
 def check_expired_simulated_trades():
     """Expire and settle open simulated trades on the 15m schedule. All simulated trades are treated as 15m.
     Records sell_price as NULL; sets cycle_win_loss per 15m window (L if any loss in that monitor/cycle, else W)."""
@@ -3875,6 +4199,11 @@ def check_expired_trades():
                             WHERE id = %s AND status IN ('open', 'closing', 'close_failed')
                         """, (closed_at, symbol_close, high_price, low_price, monitor_confirmed, trade_id))
                     pg_conn.commit()
+                    with pg_conn.cursor() as bf_cursor:
+                        _apply_symbol_expiration_and_confirmation_backfill(
+                            bf_cursor, trades_to_process, symbol_prices
+                        )
+                    pg_conn.commit()
                     log_debug(f"💾 Expired trades update written to PostgreSQL users.trades_0001 for {len(trades_to_process)} trades (open, closing, and close_failed)")
                 pg_conn.close()
             else:
@@ -4118,14 +4447,32 @@ def poll_settlements_for_matches(expired_tickers):
                     if pg_conn_trades:
                         with pg_conn_trades.cursor() as cursor_trades:
                             # Get ALL trades for this ticker, not just the first one
-                            cursor_trades.execute("SELECT id, buy_price, position, fees, bankroll, mtb_base_value FROM users.trades_0001 WHERE ticker = %s AND status = 'expired'", (ticker,))
+                            cursor_trades.execute(
+                                """
+                                SELECT id, buy_price, position, fees, bankroll, mtb_base_value,
+                                       strike, side, symbol_expiration
+                                FROM users.trades_0001
+                                WHERE ticker = %s AND status = 'expired'
+                                """,
+                                (ticker,),
+                            )
                             trade_rows = cursor_trades.fetchall()
                     else:
                         trade_rows = []
                     
                     # Process each trade individually
                     for trade_row in trade_rows:
-                        trade_id, buy_price, position, existing_fees, bankroll, mtb_base = trade_row
+                        (
+                            trade_id,
+                            buy_price,
+                            position,
+                            existing_fees,
+                            bankroll,
+                            mtb_base,
+                            strike,
+                            side,
+                            symbol_expiration,
+                        ) = trade_row
                         pnl = None
                         ret_pct = None
                         ret_pct_base = None
@@ -4146,6 +4493,8 @@ def poll_settlements_for_matches(expired_tickers):
                             if mtb_base is not None and mtb_base > 0:
                                 ret_pct_base = round((pnl / (mtb_base / 100.0)) * 100, 5)
                         
+                        win_loss_val = "W" if sell_price > 0 else "L"
+                        
                         # Update this specific trade
                         # Note: high_price and low_price are already set during expiration, preserve them
                         try:
@@ -4161,7 +4510,16 @@ def poll_settlements_for_matches(expired_tickers):
                                             ret_pct = %s,
                                             ret_pct_base = %s
                                         WHERE id = %s AND status = 'expired'
-                                    """, (sell_price, 'W' if sell_price > 0 else 'L', pnl, ret_pct, ret_pct_base, trade_id))
+                                    """, (
+                                        sell_price,
+                                        win_loss_val,
+                                        pnl,
+                                        ret_pct,
+                                        ret_pct_base,
+                                        trade_id,
+                                    ))
+                                    if cursor_update.rowcount > 0:
+                                        _finalize_closed_trade_win_loss_confirmed(cursor_update, trade_id)
                                     pg_conn_update.commit()
                                     log_debug(f"💾 Settlement update for trade {trade_id}: PnL={pnl}, ret_pct={ret_pct}, ret_pct_base={ret_pct_base}")
                                     

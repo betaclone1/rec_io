@@ -2685,7 +2685,14 @@ def start_monitoring_loop():
                                                             if spike_still_active:
                                                                 # Conditions still met after verification - trigger auto-stop
                                                                 log_debug(f"[MOMENTUM SPIKE] Verification period ended - triggering auto stop for NO trade {trade_id} (momentum: {current_momentum_after_verification:.2f}, threshold: +{momentum_spike_threshold}, verification_duration={verification_seconds}s)")
-                                                                if trigger_auto_stop_close(trade):
+                                                                if trigger_auto_stop_close(
+                                                                    trade,
+                                                                    trigger_reason="momentum_spike",
+                                                                    trigger_detail=(
+                                                                        f"positive close_NO momentum={current_momentum_after_verification:.2f} "
+                                                                        f"threshold=+{momentum_spike_threshold} after_verification"
+                                                                    ),
+                                                                ):
                                                                     auto_stop_triggered_trades.add(trade_id)
                                                                     del verification_pending_trades[trade_id]
                                                                     successful_closes += 1
@@ -2718,7 +2725,14 @@ def start_monitoring_loop():
                                                         else:
                                                             # No verification - trigger immediately
                                                             log(f"[MOMENTUM SPIKE] 🚨 POSITIVE SPIKE - Triggering close for NO trade {trade_id} (momentum: {current_momentum:.2f})")
-                                                            if trigger_auto_stop_close(trade):
+                                                            if trigger_auto_stop_close(
+                                                                trade,
+                                                                trigger_reason="momentum_spike",
+                                                                trigger_detail=(
+                                                                    f"positive close_NO momentum={current_momentum:.2f} "
+                                                                    f"threshold=+{momentum_spike_threshold} immediate"
+                                                                ),
+                                                            ):
                                                                 auto_stop_triggered_trades.add(trade_id)
                                                                 successful_closes += 1
                                                             else:
@@ -2751,7 +2765,14 @@ def start_monitoring_loop():
                                                             if spike_still_active:
                                                                 # Conditions still met after verification - trigger auto-stop
                                                                 log_debug(f"[MOMENTUM SPIKE] Verification period ended - triggering auto stop for YES trade {trade_id} (momentum: {current_momentum_after_verification:.2f}, threshold: -{momentum_spike_threshold}, verification_duration={verification_seconds}s)")
-                                                                if trigger_auto_stop_close(trade):
+                                                                if trigger_auto_stop_close(
+                                                                    trade,
+                                                                    trigger_reason="momentum_spike",
+                                                                    trigger_detail=(
+                                                                        f"negative close_YES momentum={current_momentum_after_verification:.2f} "
+                                                                        f"threshold=-{momentum_spike_threshold} after_verification"
+                                                                    ),
+                                                                ):
                                                                     auto_stop_triggered_trades.add(trade_id)
                                                                     del verification_pending_trades[trade_id]
                                                                     successful_closes += 1
@@ -2784,7 +2805,14 @@ def start_monitoring_loop():
                                                         else:
                                                             # No verification - trigger immediately
                                                             log(f"[MOMENTUM SPIKE] 🚨 NEGATIVE SPIKE - Triggering close for YES trade {trade_id} (momentum: {current_momentum:.2f})")
-                                                            if trigger_auto_stop_close(trade):
+                                                            if trigger_auto_stop_close(
+                                                                trade,
+                                                                trigger_reason="momentum_spike",
+                                                                trigger_detail=(
+                                                                    f"negative close_YES momentum={current_momentum:.2f} "
+                                                                    f"threshold=-{momentum_spike_threshold} immediate"
+                                                                ),
+                                                            ):
                                                                 auto_stop_triggered_trades.add(trade_id)
                                                                 successful_closes += 1
                                                             else:
@@ -3230,15 +3258,51 @@ def is_auto_stop_enabled():
         log(f"[AUTO STOP] Error reading auto_trade from monitor_list: {e}")
         return False
 
-def trigger_auto_stop_close(trade):
-    """Trigger a close for the given trade using the same payload as manual close."""
-    """Returns True if close was successful, False otherwise."""
+
+def _close_method_for_auto_trigger(trigger_reason: str) -> str:
+    """users.trades_0001.close_method for ATS-triggered closes (distinct from manual / expired)."""
+    key = (trigger_reason or "").strip().lower()
+    if not key or key == "unknown":
+        return "auto"
+    mapped = {
+        "stop_loss_floor": "auto_stop_loss_floor",
+        "probability_auto_stop": "auto_probability",
+        "momentum_spike": "auto_momentum_spike",
+        "scalp_max_profit": "auto_scalp_max_profit",
+        "scalp_trailing_stop": "auto_scalp_trailing_stop",
+        "scalp_profit_target": "auto_scalp_profit_target",
+        "reversal_max_profit": "auto_reversal_max_profit",
+        "reversal_trailing_stop": "auto_reversal_trailing_stop",
+        "reversal_profit_target": "auto_reversal_profit_target",
+        "close_failed_retry": "auto_close_retry",
+    }
+    return mapped.get(key, f"auto_{key}")
+
+
+def trigger_auto_stop_close(
+    trade,
+    *,
+    trigger_reason: str = "unknown",
+    trigger_detail: Optional[str] = None,
+):
+    """Trigger a close for the given trade using the same payload as manual close.
+
+    trigger_reason (stable codes for grep / analytics):
+      stop_loss_floor, probability_auto_stop, momentum_spike,
+      scalp_max_profit, scalp_trailing_stop, scalp_profit_target,
+      reversal_max_profit, reversal_trailing_stop, reversal_profit_target,
+      close_failed_retry, unknown
+
+    trigger_detail: short human-readable context (thresholds, prob, momentum, etc.).
+
+    close_method on users.trades_0001 is set via _close_method_for_auto_trigger(trigger_reason).
+    Returns True if close was successful, False otherwise.
+    """
     import requests
     import random
 
-    if should_suppress_auto_close_past_kalshi_settlement(
-        trade.get("ticker"), trade.get("trade_id")
-    ):
+    tid = trade.get("trade_id")
+    if should_suppress_auto_close_past_kalshi_settlement(trade.get("ticker"), tid):
         return False
 
     conn = None
@@ -3263,7 +3327,10 @@ def trigger_auto_stop_close(trade):
                 hr = cursor.fetchone()
             conn.close()
             if not hr:
-                log(f"[AUTO STOP] 🚫 BLOCKED by pipeline gate: missing health row symbol={symbol}")
+                log(
+                    f"[AUTO STOP] 🚫 BLOCKED by pipeline gate: missing health row symbol={symbol} "
+                    f"trigger={trigger_reason} trade_id={tid}"
+                )
                 return False
             is_healthy = bool(hr[0])
             reason = str(hr[1] or "")
@@ -3271,11 +3338,15 @@ def trigger_auto_stop_close(trade):
             if (not is_healthy) or (age_sec > float(max_staleness_sec)):
                 log(
                     f"[AUTO STOP] 🚫 BLOCKED by pipeline gate symbol={symbol} "
-                    f"healthy={is_healthy} reason={reason} age={age_sec:.1f}s max={max_staleness_sec}s"
+                    f"healthy={is_healthy} reason={reason} age={age_sec:.1f}s max={max_staleness_sec}s "
+                    f"trigger={trigger_reason} trade_id={tid}"
                 )
                 return False
     except Exception as gate_err:
-        log(f"[AUTO STOP] 🚫 BLOCKED by pipeline gate check error: {gate_err}")
+        log(
+            f"[AUTO STOP] 🚫 BLOCKED by pipeline gate check error: {gate_err} "
+            f"trigger={trigger_reason} trade_id={tid}"
+        )
         try:
             if conn:
                 conn.close()
@@ -3293,7 +3364,10 @@ def trigger_auto_stop_close(trade):
     current_close_price = trade.get('current_close_price')
     symbol_close = trade.get('current_symbol_price')
     if current_close_price is None or symbol_close is None:
-        log(f"[AUTO STOP] Skipping close for trade {trade['trade_id']} due to missing price data.")
+        log(
+            f"[AUTO STOP] Skipping close trigger={trigger_reason} trade_id={tid} "
+            f"— missing price data (current_close_price or current_symbol_price)"
+        )
         return False
     
     # Convert current_close_price (opposite side's ask) to actual sell_price
@@ -3305,6 +3379,7 @@ def trigger_auto_stop_close(trade):
     symbol_close_float = float(symbol_close) if hasattr(symbol_close, '__float__') else symbol_close
     
     position_val = trade.get('position', 1)
+    close_method_val = _close_method_for_auto_trigger(trigger_reason)
     payload = {
         'id': trade['trade_id'],  # Include the specific trade_id from active_trades table
         'ticket_id': ticket_id,
@@ -3318,19 +3393,28 @@ def trigger_auto_stop_close(trade):
         'time_in_force': 'IOC',
         'buy_price': sell_price_float,
         'symbol_close': symbol_close_float,
-        'close_method': 'auto'
+        'close_method': close_method_val,
     }
     try:
         port = get_port('main_app')
         url = get_service_url(port) + "/trades"
         resp = requests.post(url, json=payload, timeout=3)
         if resp.status_code == 201 or resp.status_code == 200:
-            log(f"[AUTO STOP] Triggered AUTO STOP close for trade {trade['trade_id']} (prob={trade.get('current_probability')})")
-            
+            detail_part = f" | {trigger_detail}" if trigger_detail else ""
+            log(
+                f"[AUTO STOP] CLOSE trigger={trigger_reason}{detail_part} "
+                f"close_method={close_method_val} trade_id={tid} ticker={trade.get('ticker')} "
+                f"prob={trade.get('current_probability')} sell_price={sell_price_float:.4f}"
+            )
+
             from backend.util.trade_logger import log_trade_event
-            
-            # Log to PostgreSQL instead of text file
-            log_message = f"CLOSE | {trade.get('ticker', 'Unknown')} | {trade.get('strike')} | {trade.get('side')} | {trade.get('position')} | {sell_price} | {trade.get('current_probability')} | {trade.get('current_pnl', 'Unknown')}"
+
+            log_message = (
+                f"CLOSE | close_method={close_method_val} | trigger={trigger_reason} | {trigger_detail or '-'} | "
+                f"{trade.get('ticker', 'Unknown')} | {trade.get('strike')} | {trade.get('side')} | "
+                f"{trade.get('position')} | {sell_price} | {trade.get('current_probability')} | "
+                f"{trade.get('current_pnl', 'Unknown')}"
+            )
             log_trade_event(ticket_id, log_message, service="active_trade_supervisor")
             
             # Notify frontend of automated trade close for audio/visual alerts
@@ -3350,7 +3434,10 @@ def trigger_auto_stop_close(trade):
                     "position": trade['position'],
                     "probability": probability_float,
                     "pnl": trade.get('current_pnl'),
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": datetime.now().isoformat(),
+                    "close_method": close_method_val,
+                    "auto_stop_trigger": trigger_reason,
+                    "auto_stop_trigger_detail": trigger_detail,
                 }
                 
                 # Call our own notification endpoint
@@ -3365,7 +3452,10 @@ def trigger_auto_stop_close(trade):
             
             return True
         else:
-            log(f"[AUTO STOP] Failed to trigger close for trade {trade['trade_id']}: {resp.status_code} {resp.text}")
+            log(
+                f"[AUTO STOP] Failed to trigger close trigger={trigger_reason} trade_id={tid}: "
+                f"{resp.status_code} {resp.text}"
+            )
             return False
     except Exception as e:
         # Check if this is a timeout exception
@@ -3384,12 +3474,15 @@ def trigger_auto_stop_close(trade):
                 
                 if result and result[0] in ['closing', 'closed']:
                     # Trade status changed, so the close request was processed successfully
-                    log(f"[AUTO STOP] ⚠️ Request timeout for trade {trade['trade_id']}, but trade status is '{result[0]}' - treating as success")
+                    log(
+                        f"[AUTO STOP] ⚠️ Request timeout trigger={trigger_reason} trade_id={tid}, "
+                        f"but trade status is '{result[0]}' - treating as success"
+                    )
                     return True
             except Exception as db_check_error:
                 log(f"[AUTO STOP] ⚠️ Timeout for trade {trade['trade_id']}, but could not verify status: {db_check_error}")
         
-        log(f"[AUTO STOP] Exception posting close for trade {trade['trade_id']}: {e}")
+        log(f"[AUTO STOP] Exception posting close trigger={trigger_reason} trade_id={tid}: {e}")
         return False
 
 def handle_close_failed_trade(trade_id: int, ticket_id: str) -> bool:
@@ -3454,7 +3547,11 @@ def handle_close_failed_trade(trade_id: int, ticket_id: str) -> bool:
 
         # Immediately retry the close order
         log(f"🚀 IMMEDIATELY RETRYING CLOSE ORDER FOR TRADE {trade_id}")
-        trigger_auto_stop_close(trade_dict)
+        trigger_auto_stop_close(
+            trade_dict,
+            trigger_reason="close_failed_retry",
+            trigger_detail="retry_after_close_failed",
+        )
         return True
 
     except Exception as e:
@@ -3741,6 +3838,85 @@ def get_verification_period_seconds():
         log(f"[AUTO STOP] Error reading verification_period_seconds from strategy: {e}")
         return 15
 
+def get_stop_loss_price():
+    """Opposite-side ask stop floor in contract dollars; 0.0000 means disabled (never triggers)."""
+    try:
+        conn = get_postgresql_connection()
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT stop_loss_price FROM users.monitor_list_0001 WHERE id = %s",
+                (ctx_mid(),),
+            )
+            row = cursor.fetchone()
+            conn.close()
+            if row and row[0] is not None:
+                v = float(row[0])
+                return max(0.0, min(v, 0.99))
+            return 0.0
+    except Exception as e:
+        log(f"[AUTO STOP] Error reading stop_loss_price: {e}")
+        return 0.0
+
+
+def _try_stop_loss_ask_floor(
+    trade,
+    stop_floor: float,
+    auto_stop_triggered_trades,
+    verification_pending_trades,
+    min_ttc_seconds,
+    ttc_seconds,
+) -> bool:
+    """
+    Instant rip-cord: if opposite-side ask (current_close_price) > (1 - stop_loss_price), close now.
+    Ignores probability verification. Respects min_ttc_seconds like probability auto-stop.
+    Returns True if this trade was handled (caller should continue to next trade).
+    """
+    try:
+        sf = float(stop_floor)
+    except (TypeError, ValueError):
+        return False
+    if sf <= 0:
+        return False
+    trade_id = trade.get("trade_id")
+    if trade.get("status") != "active" or trade_id in auto_stop_triggered_trades:
+        return False
+    try:
+        mttc = int(min_ttc_seconds) if min_ttc_seconds is not None else 0
+    except (TypeError, ValueError):
+        mttc = 0
+    if ttc_seconds is None:
+        return False
+    try:
+        if int(ttc_seconds) < mttc:
+            return False
+    except (TypeError, ValueError):
+        return False
+    ccp = trade.get("current_close_price")
+    if ccp is None:
+        return False
+    try:
+        opp_ask = float(ccp)
+        threshold_ask = 1.0 - sf
+        if opp_ask > threshold_ask:
+            if trade_id in verification_pending_trades:
+                del verification_pending_trades[trade_id]
+            detail = (
+                f"opposite_ask={opp_ask:.4f} threshold_ask={threshold_ask:.4f} stop_loss_price={sf:.4f}"
+            )
+            if trigger_auto_stop_close(
+                trade,
+                trigger_reason="stop_loss_floor",
+                trigger_detail=detail,
+            ):
+                auto_stop_triggered_trades.add(trade_id)
+            else:
+                log(f"[AUTO STOP FLOOR] close failed for trade {trade_id}, will retry")
+            return True
+    except (TypeError, ValueError) as ex:
+        log_debug(f"[AUTO STOP FLOOR] skip trade {trade_id}: {ex}")
+    return False
+
+
 def check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verification_pending_trades):
     """
     Router function to check auto-stop conditions based on monitor's strategy.
@@ -3769,11 +3945,18 @@ def check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_tra
     verification_enabled = get_verification_period_enabled()
     verification_seconds = get_verification_period_seconds()
     current_time = time.time()
+    stop_floor = get_stop_loss_price()
     
     for trade in active_trades:
         prob = trade.get('current_probability')
         trade_id = trade.get('trade_id')
         ttc_seconds = get_unified_ttc_seconds()
+        
+        if _try_stop_loss_ask_floor(
+            trade, stop_floor, auto_stop_triggered_trades,
+            verification_pending_trades, min_ttc_seconds, ttc_seconds,
+        ):
+            continue
         
         # Check if trade is in verification period
         if trade_id in verification_pending_trades:
@@ -3790,7 +3973,13 @@ def check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_tra
                 ):
                     # Conditions still met after verification - trigger auto-stop
                     log(f"[AUTO STOP HTC] ✅ Verification period ended - triggering auto stop for trade {trade_id} (prob={prob}, verification_duration={verification_seconds}s)")
-                    if trigger_auto_stop_close(trade):
+                    if trigger_auto_stop_close(
+                        trade,
+                        trigger_reason="probability_auto_stop",
+                        trigger_detail=(
+                            f"after_verification prob={prob} threshold={threshold} duration_s={verification_seconds}"
+                        ),
+                    ):
                         auto_stop_triggered_trades.add(trade_id)
                         del verification_pending_trades[trade_id]
                     else:
@@ -3844,7 +4033,13 @@ def check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_tra
             else:
                 # No verification - trigger immediately
                 log(f"[AUTO STOP HTC] Triggering auto stop for trade {trade_id} (prob={prob}, ttc={ttc_seconds}s, min_ttc={min_ttc_seconds}s)")
-                if trigger_auto_stop_close(trade):
+                if trigger_auto_stop_close(
+                    trade,
+                    trigger_reason="probability_auto_stop",
+                    trigger_detail=(
+                        f"immediate prob={prob} threshold={threshold} ttc={ttc_seconds}s min_ttc={min_ttc_seconds}s"
+                    ),
+                ):
                     auto_stop_triggered_trades.add(trade_id)
                 else:
                     log(f"[AUTO STOP HTC] ❌ Auto stop failed for trade {trade_id}, will retry on next check")
@@ -3868,6 +4063,8 @@ def check_auto_stop_conditions_momentum_scalp(active_trades, auto_stop_triggered
     max_profit = get_max_profit()
     momentum_threshold = get_momentum_scalp_entry_threshold()
     current_time = time.time()
+    stop_floor = get_stop_loss_price()
+    min_ttc_seconds = get_min_ttc_seconds()
     
     # Get current momentum percentile for the monitor's symbol
     symbol = get_current_monitor_symbol()
@@ -3892,6 +4089,13 @@ def check_auto_stop_conditions_momentum_scalp(active_trades, auto_stop_triggered
             log(f"[AUTO STOP MS] ⚠️ Invalid price data for trade {trade_id}, skipping")
             continue
         
+        ttc_s = get_unified_ttc_seconds(trade.get("symbol"))
+        if _try_stop_loss_ask_floor(
+            trade, stop_floor, auto_stop_triggered_trades,
+            verification_pending_trades, min_ttc_seconds, ttc_s,
+        ):
+            continue
+        
         # Calculate current position value: 1 - current_close_price
         current_position_value = 1.0 - current_close_price
         
@@ -3903,7 +4107,11 @@ def check_auto_stop_conditions_momentum_scalp(active_trades, auto_stop_triggered
             if current_position_value >= max_profit:
                 log(f"[AUTO STOP MS] 🚨 MAX PROFIT REACHED - Immediate close for trade {trade_id}")
                 log(f"[AUTO STOP MS]   Position value: {current_position_value:.4f}, Max profit: {max_profit:.4f}")
-                if trigger_auto_stop_close(trade):
+                if trigger_auto_stop_close(
+                    trade,
+                    trigger_reason="scalp_max_profit",
+                    trigger_detail=f"position_value={current_position_value:.4f} max_profit={max_profit:.4f}",
+                ):
                     auto_stop_triggered_trades.add(trade_id)
                     # Remove from verification if it was pending
                     if trade_id in verification_pending_trades:
@@ -3935,11 +4143,16 @@ def check_auto_stop_conditions_momentum_scalp(active_trades, auto_stop_triggered
                 if trailing_stop_triggered or profit_target_triggered:
                     # Conditions still met after verification - trigger auto-stop
                     reason = "trailing stop" if trailing_stop_triggered else "profit target"
+                    scalp_trig = "scalp_trailing_stop" if trailing_stop_triggered else "scalp_profit_target"
                     log(f"[AUTO STOP MS] ✅ Verification period ended - triggering auto stop for trade {trade_id} ({reason})")
                     log(f"[AUTO STOP MS]   Position value: {current_position_value:.4f}, Buy price: {buy_price:.4f}, High: {high_price:.4f}, Trailing stop threshold: {high_price - trailing_stop_amount:.4f}, Profit target threshold: {profit_target_threshold:.4f} (buy_price {buy_price:.4f} + offset {profit_target:.4f})")
                     if current_momentum_percentile is not None:
                         log(f"[AUTO STOP MS]   Current momentum: {current_momentum_percentile:.2f}, Threshold: {momentum_threshold:.2f}")
-                    if trigger_auto_stop_close(trade):
+                    if trigger_auto_stop_close(
+                        trade,
+                        trigger_reason=scalp_trig,
+                        trigger_detail=f"after_verification {reason}",
+                    ):
                         auto_stop_triggered_trades.add(trade_id)
                         del verification_pending_trades[trade_id]
                     else:
@@ -3984,12 +4197,17 @@ def check_auto_stop_conditions_momentum_scalp(active_trades, auto_stop_triggered
         
         if auto_stop_conditions_met:
             reason = "trailing stop" if trailing_stop_triggered else "profit target"
+            scalp_trig = "scalp_trailing_stop" if trailing_stop_triggered else "scalp_profit_target"
             log(f"[AUTO STOP MS] 🎯 Triggering auto stop for trade {trade_id} ({reason})")
             log(f"[AUTO STOP MS]   Position value: {current_position_value:.4f}, Buy price: {buy_price:.4f}, High: {high_price:.4f}, Trailing stop threshold: {high_price - trailing_stop_amount:.4f}, Profit target threshold: {profit_target_threshold:.4f} (buy_price {buy_price:.4f} + offset {profit_target:.4f})")
             if current_momentum_percentile is not None:
                 log(f"[AUTO STOP MS]   Current momentum: {current_momentum_percentile:.2f}, Threshold: {momentum_threshold:.2f}")
             
-            if trigger_auto_stop_close(trade):
+            if trigger_auto_stop_close(
+                trade,
+                trigger_reason=scalp_trig,
+                trigger_detail=f"immediate {reason}",
+            ):
                 auto_stop_triggered_trades.add(trade_id)
             else:
                 log(f"[AUTO STOP MS] ❌ Auto stop failed for trade {trade_id}, will retry on next check")
@@ -4004,6 +4222,8 @@ def check_auto_stop_conditions_momentum_reversal(active_trades, auto_stop_trigge
     profit_target = get_momentum_scalp_profit_target()
     max_profit = get_max_profit()
     current_time = time.time()
+    stop_floor = get_stop_loss_price()
+    min_ttc_seconds = get_min_ttc_seconds()
     
     for trade in active_trades:
         trade_id = trade.get('trade_id')
@@ -4024,6 +4244,13 @@ def check_auto_stop_conditions_momentum_reversal(active_trades, auto_stop_trigge
             log(f"[AUTO STOP MR] ⚠️ Invalid price data for trade {trade_id}, skipping")
             continue
         
+        ttc_s = get_unified_ttc_seconds(trade.get("symbol"))
+        if _try_stop_loss_ask_floor(
+            trade, stop_floor, auto_stop_triggered_trades,
+            verification_pending_trades, min_ttc_seconds, ttc_s,
+        ):
+            continue
+        
         # Calculate current position value: 1 - current_close_price
         current_position_value = 1.0 - current_close_price
         
@@ -4035,7 +4262,11 @@ def check_auto_stop_conditions_momentum_reversal(active_trades, auto_stop_trigge
             if current_position_value >= max_profit:
                 log(f"[AUTO STOP MR] 🚨 MAX PROFIT REACHED - Immediate close for trade {trade_id}")
                 log(f"[AUTO STOP MR]   Position value: {current_position_value:.4f}, Max profit: {max_profit:.4f}")
-                if trigger_auto_stop_close(trade):
+                if trigger_auto_stop_close(
+                    trade,
+                    trigger_reason="reversal_max_profit",
+                    trigger_detail=f"position_value={current_position_value:.4f} max_profit={max_profit:.4f}",
+                ):
                     auto_stop_triggered_trades.add(trade_id)
                     # Remove from verification if it was pending
                     if trade_id in verification_pending_trades:
@@ -4059,9 +4290,14 @@ def check_auto_stop_conditions_momentum_reversal(active_trades, auto_stop_trigge
                 if trailing_stop_triggered or profit_target_triggered:
                     # Conditions still met after verification - trigger auto-stop
                     reason = "trailing stop" if trailing_stop_triggered else "profit target"
+                    rev_trig = "reversal_trailing_stop" if trailing_stop_triggered else "reversal_profit_target"
                     log(f"[AUTO STOP MR] ✅ Verification period ended - triggering auto stop for trade {trade_id} ({reason})")
                     log(f"[AUTO STOP MR]   Position value: {current_position_value:.4f}, Buy price: {buy_price:.4f}, High: {high_price:.4f}, Trailing stop threshold: {high_price - trailing_stop_amount:.4f}, Profit target threshold: {profit_target_threshold:.4f} (buy_price {buy_price:.4f} + offset {profit_target:.4f})")
-                    if trigger_auto_stop_close(trade):
+                    if trigger_auto_stop_close(
+                        trade,
+                        trigger_reason=rev_trig,
+                        trigger_detail=f"after_verification {reason}",
+                    ):
                         auto_stop_triggered_trades.add(trade_id)
                         del verification_pending_trades[trade_id]
                     else:
@@ -4096,10 +4332,15 @@ def check_auto_stop_conditions_momentum_reversal(active_trades, auto_stop_trigge
         
         if auto_stop_conditions_met:
             reason = "trailing stop" if trailing_stop_triggered else "profit target"
+            rev_trig = "reversal_trailing_stop" if trailing_stop_triggered else "reversal_profit_target"
             log(f"[AUTO STOP MR] 🎯 Triggering auto stop for trade {trade_id} ({reason})")
             log(f"[AUTO STOP MR]   Position value: {current_position_value:.4f}, Buy price: {buy_price:.4f}, High: {high_price:.4f}, Trailing stop threshold: {high_price - trailing_stop_amount:.4f}, Profit target threshold: {profit_target_threshold:.4f} (buy_price {buy_price:.4f} + offset {profit_target:.4f})")
             
-            if trigger_auto_stop_close(trade):
+            if trigger_auto_stop_close(
+                trade,
+                trigger_reason=rev_trig,
+                trigger_detail=f"immediate {reason}",
+            ):
                 auto_stop_triggered_trades.add(trade_id)
             else:
                 log(f"[AUTO STOP MR] ❌ Auto stop failed for trade {trade_id}, will retry on next check")

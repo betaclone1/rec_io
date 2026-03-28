@@ -6508,6 +6508,13 @@
           <div id="sliderValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
         </div>
 
+        <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 8px 0 16px 0;">
+        <label for="stopLossPriceSlider" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Stop Loss Price:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="stopLossPriceSlider" min="0" max="99" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="stopLossPriceValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.00</div>
+        </div>
+
         <label for="autoStopMinTTCInput" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Minimum Time to Close:</label>
         <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 24px;">
           <div style="display: flex; align-items: center; border: 1px solid #ddd; border-radius: 4px; background: white;">
@@ -6608,6 +6615,13 @@
         <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Auto Stop</div>
         
         <!-- Auto Stop -->
+        <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 8px 0 16px 0;">
+        <label for="stopLossPriceSliderMs" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Stop Loss Price:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="stopLossPriceSliderMs" min="0" max="99" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="stopLossPriceValueDisplayMs" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.00</div>
+        </div>
+
         <label for="msAutoStopMinTTCInput" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Minimum Time to Close:</label>
         <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 24px;">
           <div style="display: flex; align-items: center; border: 1px solid #ddd; border-radius: 4px; background: white;">
@@ -6631,6 +6645,7 @@
         </div>
         </div>
         <!-- End MOMENTUM SCALP Strategy Section -->
+
       </div>
       <div style="display:flex; gap:12px; justify-content:flex-end; align-items:center; margin-top:16px;">
         <button id="unifiedAutoTradeCancel" style="padding:8px 16px; border-radius:4px; border:1px solid #ddd; background:#f8f9fa; color:#333; font-size:13px; cursor:pointer; font-weight:500;" onmouseover="this.style.background='#e9ecef'" onmouseout="this.style.background='#f8f9fa'">Cancel</button>
@@ -7312,6 +7327,26 @@
       const percent = (value - min) / (max - min);
       display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
     }
+    function updateDashboardStopLossBubblesFromInt(rawValue) {
+      const n = Math.min(99, Math.max(0, parseInt(rawValue, 10) || 0));
+      const text = (n / 100).toFixed(2);
+      [['stopLossPriceSlider', 'stopLossPriceValueDisplay'], ['stopLossPriceSliderMs', 'stopLossPriceValueDisplayMs']].forEach(([sid, did]) => {
+        const slider = document.getElementById(sid);
+        const display = document.getElementById(did);
+        if (!slider || !display) return;
+        display.textContent = text;
+        const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+        const percent = (n - min) / (max - min);
+        display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
+      });
+    }
+    function syncDashboardStopLossPair(changedSlider) {
+      const v = changedSlider.value;
+      const otherId = changedSlider.id === 'stopLossPriceSliderMs' ? 'stopLossPriceSlider' : 'stopLossPriceSliderMs';
+      const other = document.getElementById(otherId);
+      if (other && other.value !== v) other.value = v;
+      updateDashboardStopLossBubblesFromInt(v);
+    }
     
     // MOMENTUM SCALP value bubble update functions
     function updateMSAutoEntryMinVolumeDisplay(value){
@@ -7834,6 +7869,13 @@
         setVal('verificationPeriodSlider', data.verification_period_seconds ?? 15);
         setChk('performanceBasedAllocation', data.performance_based_allocation ?? false);
         }
+        const slpRaw = data.stop_loss_price !== undefined && data.stop_loss_price !== null
+          ? parseFloat(data.stop_loss_price) : 0;
+        const slpCents = Math.min(99, Math.max(0, Math.round(slpRaw * 100)));
+        const slp1 = document.getElementById('stopLossPriceSlider');
+        const slp2 = document.getElementById('stopLossPriceSliderMs');
+        if (slp1) slp1.value = String(slpCents);
+        if (slp2) slp2.value = String(slpCents);
         
         // Initialize time window slider
         setTimeout(() => {
@@ -7967,6 +8009,16 @@
           }
         });
           }
+          ['stopLossPriceSlider', 'stopLossPriceSliderMs'].forEach(function(sid) {
+            const sl = document.getElementById(sid);
+            if (sl) {
+              updateDashboardStopLossBubblesFromInt(sl.value);
+              if (!sl._dashUnifiedWired) {
+                sl._dashUnifiedWired = true;
+                sl.addEventListener('input', function(){ syncDashboardStopLossPair(this); });
+              }
+            }
+          });
         }, 150);
       };
 
@@ -8102,6 +8154,11 @@
             payload.prob_adj = parseFloat(document.getElementById('probAdjSlider').value);
           }
           payload.performance_based_allocation = document.getElementById('performanceBasedAllocation').checked;
+        }
+        const stopLossPriceSliderEl = document.getElementById(isMomentumScalp ? 'stopLossPriceSliderMs' : 'stopLossPriceSlider')
+          || document.getElementById('stopLossPriceSlider');
+        if (stopLossPriceSliderEl) {
+          payload.stop_loss_price = parseInt(stopLossPriceSliderEl.value, 10) / 100;
         }
         try{
           const resp = await fetch('/api/set_auto_entry_settings', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});

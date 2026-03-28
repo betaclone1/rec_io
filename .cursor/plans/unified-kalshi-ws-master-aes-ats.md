@@ -32,6 +32,21 @@ isProject: true
 
 **Related:** [unified-15m-aes-ats-reads.md](unified-15m-aes-ats-reads.md) (15m data plane / supervisors today; this plan extends to hourly and a single watchdog).
 
+## North star and scalability assumptions
+
+**Kalshi surface as a global constant.** Treat exchange market data as a **small shared surface** (symbols, events, tickers the watchdog subscribes to). Many users and many `monitor_list` rows can **read the same canonical rows**; monitor cardinality does **not** imply one poll or one WS subscription per monitor for market data.
+
+**What still scales with monitor count** is **per-monitor evaluation**: settings, eligibility, strategy logic, ATS state, logging, and optional external calls. Ingestion stays roughly **O(unique tickers / events)**; AES/ATS work stays **O(monitors × work per monitor)** unless you shard, parallelize with strict binding, or tier monitors (e.g. live vs slow paper sweeps) later.
+
+**Build habits** (cheap now, compatible with “many monitors” later):
+
+1. **Ingestion keyed by market identity** (symbol, event, ticker), not by `monitor_id`. Monitors **reference** shared tables; avoid redundant per-monitor polling unless there is a concrete need.
+2. **Evaluation explicitly per monitor** (binding, settings, state) so routers can be **partitioned or tiered** later without reshaping how market data is stored.
+3. **Shared reads are first-class:** one writer (watchdog) into canonical tables; many readers with tight queries and a deterministic **latest row** contract.
+4. **No hidden globals** for “current monitor” or **symbol-only** caches on anything that can affect trade decisions (same story as the invariants table below).
+
+**Order of operations:** unify the pipe and binding discipline first; add **shards or lower-priority sweep tiers** only if per-monitor work becomes the bottleneck.
+
 ## Design principle (your “perfect world”)
 
 **Prefer one market watchdog, not `*_hourly` vs `*_15m` scripts**, unless profiling or Kalshi limits force a split later. A sound design:

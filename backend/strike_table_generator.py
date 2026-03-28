@@ -137,6 +137,106 @@ def strikes_equivalent(symbol: str, a: float, b: float) -> bool:
     return int(round(float(a))) == int(round(float(b)))
 
 
+# Hourly: track only when this many seconds or less remain until the hour.
+# 15m contracts: track for the full active window (entire ~15m cycle).
+FINAL_QUARTER_HOURLY_TTC_SEC = 15 * 60
+
+
+def parse_ask_dollars_float(val: Any) -> Optional[float]:
+    if val is None:
+        return None
+    s = str(val).strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def round_dollar_4dp(val: Optional[float]) -> Optional[float]:
+    if val is None:
+        return None
+    return round(float(val), 4)
+
+
+def merge_ask_extrema(
+    prev_lo: Optional[float],
+    prev_hi: Optional[float],
+    cur: Optional[float],
+) -> Tuple[Optional[float], Optional[float]]:
+    if cur is None:
+        return prev_lo, prev_hi
+    if prev_lo is None or prev_hi is None:
+        return cur, cur
+    return min(prev_lo, cur), max(prev_hi, cur)
+
+
+def final_quarter_ask_tracking_fields(
+    *,
+    interval: str,
+    ttc_hourly: Optional[int],
+    event_ticker: Optional[str],
+    ticker: Optional[str],
+    yes_ask_dollars: Any,
+    no_ask_dollars: Any,
+    prev: Optional[Tuple[Any, Any, Any, Any, Any, Any]],
+) -> Tuple[
+    Optional[float],
+    Optional[float],
+    Optional[float],
+    Optional[float],
+    Optional[float],
+    Optional[float],
+]:
+    """
+    prev: (event_ticker, ticker, yes_min, yes_max, no_min, no_max) from the prior strike row.
+    Returns dollar-unit (yes_min, yes_max, no_min, no_max, yes_range, no_range).
+    """
+    if interval == "hourly":
+        if ttc_hourly is None or ttc_hourly > FINAL_QUARTER_HOURLY_TTC_SEC:
+            return (None, None, None, None, None, None)
+
+    yes_c = parse_ask_dollars_float(yes_ask_dollars)
+    no_c = parse_ask_dollars_float(no_ask_dollars)
+
+    pe = str(prev[0]) if prev and prev[0] is not None else None
+    pt = str(prev[1]) if prev and prev[1] is not None else None
+    ne = str(event_ticker) if event_ticker is not None else None
+    nt = str(ticker) if ticker is not None else None
+
+    same_contract = (
+        prev is not None
+        and pe == ne
+        and pt == nt
+        and ne is not None
+        and nt is not None
+    )
+
+    if same_contract:
+        pymin = float(prev[2]) if prev[2] is not None else None
+        pymax = float(prev[3]) if prev[3] is not None else None
+        pnmin = float(prev[4]) if prev[4] is not None else None
+        pnmax = float(prev[5]) if prev[5] is not None else None
+    else:
+        pymin = pymax = pnmin = pnmax = None
+
+    ny_lo, ny_hi = merge_ask_extrema(pymin, pymax, yes_c)
+    nn_lo, nn_hi = merge_ask_extrema(pnmin, pnmax, no_c)
+
+    y_rng = (ny_hi - ny_lo) if ny_lo is not None and ny_hi is not None else None
+    n_rng = (nn_hi - nn_lo) if nn_lo is not None and nn_hi is not None else None
+
+    return (
+        round_dollar_4dp(ny_lo),
+        round_dollar_4dp(ny_hi),
+        round_dollar_4dp(nn_lo),
+        round_dollar_4dp(nn_hi),
+        round_dollar_4dp(y_rng),
+        round_dollar_4dp(n_rng),
+    )
+
+
 class LookupProbabilityCalculator:
     """Probability calculator using the lookup table instead of live interpolation."""
     
@@ -531,6 +631,12 @@ class StrikeTableGenerator:
                 volatility_percentile NUMERIC(5,1),
                 movement NUMERIC(10,4),
                 movement_percentile NUMERIC(5,1),
+                yes_ask_min_15m NUMERIC(18,4),
+                yes_ask_max_15m NUMERIC(18,4),
+                no_ask_min_15m NUMERIC(18,4),
+                no_ask_max_15m NUMERIC(18,4),
+                yes_ask_range_15m NUMERIC(18,4),
+                no_ask_range_15m NUMERIC(18,4),
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             )
             """
@@ -694,6 +800,12 @@ class StrikeTableGenerator:
                 volatility_percentile NUMERIC(5,1),
                 movement NUMERIC(10,4),
                 movement_percentile NUMERIC(5,1),
+                yes_ask_min_15m NUMERIC(18,4),
+                yes_ask_max_15m NUMERIC(18,4),
+                no_ask_min_15m NUMERIC(18,4),
+                no_ask_max_15m NUMERIC(18,4),
+                yes_ask_range_15m NUMERIC(18,4),
+                no_ask_range_15m NUMERIC(18,4),
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             )
             """
@@ -712,6 +824,12 @@ class StrikeTableGenerator:
                 ("volatility_percentile", "NUMERIC(5,1)"),
                 ("movement", "NUMERIC(10,4)"),
                 ("movement_percentile", "NUMERIC(5,1)"),
+                ("yes_ask_min_15m", "NUMERIC(18,4)"),
+                ("yes_ask_max_15m", "NUMERIC(18,4)"),
+                ("no_ask_min_15m", "NUMERIC(18,4)"),
+                ("no_ask_max_15m", "NUMERIC(18,4)"),
+                ("yes_ask_range_15m", "NUMERIC(18,4)"),
+                ("no_ask_range_15m", "NUMERIC(18,4)"),
             ]
             for column_name, column_type in missing_columns:
                 try:
@@ -1083,6 +1201,30 @@ class StrikeTableGenerator:
             cursor = conn.cursor()
             
             table_name = self._strike_table_name()
+            # Carry forward min/max asks across DELETE/INSERT (same Kalshi event_ticker + market ticker).
+            prev_final_ask_map: Dict[Tuple[str, str], Tuple[Any, ...]] = {}
+            try:
+                sel = (
+                    f"SELECT event_ticker, ticker, yes_ask_min_15m, yes_ask_max_15m, "
+                    f"no_ask_min_15m, no_ask_max_15m FROM live_data.{table_name}"
+                )
+                if self.unified_15m:
+                    sel += " WHERE exchange = %s AND symbol = %s"
+                    cursor.execute(sel, (self.data_exchange, self.symbol.upper()))
+                else:
+                    cursor.execute(sel)
+                for row in cursor.fetchall():
+                    if row[0] is None or row[1] is None:
+                        continue
+                    prev_final_ask_map[(str(row[0]), str(row[1]))] = row
+            except Exception as ex:
+                logger.warning(
+                    "Could not load prior final-quarter ask columns for %s (run migrations?): %s",
+                    table_name,
+                    ex,
+                )
+                prev_final_ask_map = {}
+
             # All strike tables use ttc_hourly, ttc_15m, probability_hourly, probability_15m (15m tables leave hourly cols NULL).
             # Clear ALL previous strike table data - only keep current iteration
             try:
@@ -1212,6 +1354,33 @@ class StrikeTableGenerator:
                     market_val = "15m" if self.interval == "15m" else "hourly"
                     ttc_hourly_val = ttc_seconds if self.interval == "hourly" else None
                     prob_hourly_val = probability if self.interval == "hourly" else None
+
+                    ev_tk = market_data.get("event_ticker")
+                    prev_track = None
+                    if ev_tk is not None and ticker is not None:
+                        prev_track = prev_final_ask_map.get((str(ev_tk), str(ticker)))
+                    prev_6 = (
+                        (
+                            prev_track[0],
+                            prev_track[1],
+                            prev_track[2],
+                            prev_track[3],
+                            prev_track[4],
+                            prev_track[5],
+                        )
+                        if prev_track
+                        else None
+                    )
+                    ymn, ymx, nmn, nmx, yrg, nrg = final_quarter_ask_tracking_fields(
+                        interval=self.interval,
+                        ttc_hourly=ttc_hourly_val,
+                        event_ticker=ev_tk,
+                        ticker=ticker,
+                        yes_ask_dollars=yes_ask_dollars,
+                        no_ask_dollars=no_ask_dollars,
+                        prev=prev_6,
+                    )
+
                     # Insert: unified 15m uses exchange as execution venue key (e.g. kalshi).
                     if self.unified_15m:
                         cursor.execute(
@@ -1222,8 +1391,9 @@ class StrikeTableGenerator:
                              yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
                              yes_price_spread, no_price_spread, yes_diff, no_diff, volume, open_interest, ticker, active_side,
                              momentum_weighted_score, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile,
+                             yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m, yes_ask_range_15m, no_ask_range_15m,
                              timestamp, created_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             (
                                 self.symbol.upper(),
@@ -1259,6 +1429,12 @@ class StrikeTableGenerator:
                                 volatility_percentile,
                                 movement,
                                 movement_percentile,
+                                ymn,
+                                ymx,
+                                nmn,
+                                nmx,
+                                yrg,
+                                nrg,
                                 datetime.now(),
                                 datetime.now(),
                             ),
@@ -1272,8 +1448,9 @@ class StrikeTableGenerator:
                              yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
                              yes_price_spread, no_price_spread, yes_diff, no_diff, volume, ticker, active_side,
                              momentum_weighted_score, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile,
+                             yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m, yes_ask_range_15m, no_ask_range_15m,
                              timestamp, created_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             (
                                 self.symbol.upper(),
@@ -1310,6 +1487,12 @@ class StrikeTableGenerator:
                                 volatility_percentile,
                                 movement,
                                 movement_percentile,
+                                ymn,
+                                ymx,
+                                nmn,
+                                nmx,
+                                yrg,
+                                nrg,
                                 datetime.now(),
                                 datetime.now(),
                             ),
@@ -1397,6 +1580,8 @@ class StrikeTableGenerator:
                            ROUND((yes_ask_dollars::numeric * 100)::numeric, 2) AS yes_ask,
                            ROUND((no_ask_dollars::numeric * 100)::numeric, 2) AS no_ask,
                            yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume, open_interest, ticker, active_side,
+                           yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
+                           yes_ask_range_15m, no_ask_range_15m,
                            momentum_percentile, volatility, volatility_percentile, movement, movement_percentile
                     FROM live_data.{table_name}
                     WHERE exchange = %s AND symbol = %s AND timestamp = %s
@@ -1410,6 +1595,8 @@ class StrikeTableGenerator:
                     SELECT symbol, current_price, {ttc_col}, {venue_col}, event_ticker, market_title,
                            strike_tier, market_status, strike, buffer, buffer_pct, {prob_col},
                            yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume, ticker, active_side,
+                           yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
+                           yes_ask_range_15m, no_ask_range_15m,
                            momentum_percentile, volatility, volatility_percentile, movement, movement_percentile
                     FROM live_data.{table_name}
                     WHERE timestamp = %s
@@ -1423,8 +1610,6 @@ class StrikeTableGenerator:
             if not rows:
                 return None
 
-            # Convert to JSON format matching the current UPC output
-            # Column indices: 0-7 symbol..market_status, 8-20 strike..active_side, 21 momentum_percentile, 22-25 volatility, volatility_percentile, movement, movement_percentile
             raw_venue = rows[0][3]
             if self.unified_15m and raw_venue is not None and str(raw_venue).lower() == "kalshi":
                 json_exchange = "Kalshi"
@@ -1450,31 +1635,64 @@ class StrikeTableGenerator:
                     if _sf is not None and _sf == int(_sf)
                     else _sf
                 )
-                result["strikes"].append({
-                    "strike": _strike_out,
-                    "buffer": float(row[9]),
-                    "buffer_pct": float(row[10]),
-                    "probability": float(row[11]),
-                    "yes_ask": float(row[12]) if row[12] is not None else None,
-                    "no_ask": float(row[13]) if row[13] is not None else None,
-                    "yes_ask_dollars": row[14],
-                    "no_ask_dollars": row[15],
-                    "yes_diff": float(row[16]) if row[16] is not None else None,
-                    "no_diff": float(row[17]) if row[17] is not None else None,
-                    "volume": float(row[18]) if row[18] is not None else None,
-                    "open_interest": float(row[19]) if row[19] is not None else None,
-                    "ticker": row[20],
-                    "active_side": row[21]
-                })
-            
-            # Add momentum and market context (from first row; same for all strikes at this timestamp)
+                if self.unified_15m:
+                    strike_entry = {
+                        "strike": _strike_out,
+                        "buffer": float(row[9]),
+                        "buffer_pct": float(row[10]),
+                        "probability": float(row[11]),
+                        "yes_ask": float(row[12]) if row[12] is not None else None,
+                        "no_ask": float(row[13]) if row[13] is not None else None,
+                        "yes_ask_dollars": row[14],
+                        "no_ask_dollars": row[15],
+                        "yes_diff": float(row[16]) if row[16] is not None else None,
+                        "no_diff": float(row[17]) if row[17] is not None else None,
+                        "volume": float(row[18]) if row[18] is not None else None,
+                        "open_interest": float(row[19]) if row[19] is not None else None,
+                        "ticker": row[20],
+                        "active_side": row[21],
+                        "yes_ask_min_15m": float(row[22]) if row[22] is not None else None,
+                        "yes_ask_max_15m": float(row[23]) if row[23] is not None else None,
+                        "no_ask_min_15m": float(row[24]) if row[24] is not None else None,
+                        "no_ask_max_15m": float(row[25]) if row[25] is not None else None,
+                        "yes_ask_range_15m": float(row[26]) if row[26] is not None else None,
+                        "no_ask_range_15m": float(row[27]) if row[27] is not None else None,
+                    }
+                    mo = 28
+                else:
+                    strike_entry = {
+                        "strike": _strike_out,
+                        "buffer": float(row[9]),
+                        "buffer_pct": float(row[10]),
+                        "probability": float(row[11]),
+                        "yes_ask": float(row[12]) if row[12] is not None else None,
+                        "no_ask": float(row[13]) if row[13] is not None else None,
+                        "yes_ask_dollars": row[14],
+                        "no_ask_dollars": row[15],
+                        "yes_diff": float(row[16]) if row[16] is not None else None,
+                        "no_diff": float(row[17]) if row[17] is not None else None,
+                        "volume": float(row[18]) if row[18] is not None else None,
+                        "open_interest": None,
+                        "ticker": row[19],
+                        "active_side": row[20],
+                        "yes_ask_min_15m": float(row[21]) if row[21] is not None else None,
+                        "yes_ask_max_15m": float(row[22]) if row[22] is not None else None,
+                        "no_ask_min_15m": float(row[23]) if row[23] is not None else None,
+                        "no_ask_max_15m": float(row[24]) if row[24] is not None else None,
+                        "yes_ask_range_15m": float(row[25]) if row[25] is not None else None,
+                        "no_ask_range_15m": float(row[26]) if row[26] is not None else None,
+                    }
+                    mo = 27
+                result["strikes"].append(strike_entry)
+
+            # Momentum / IV context from first row (same for all strikes at this timestamp)
             result["momentum"] = {
-                "percentile": float(rows[0][22]) if rows[0][22] is not None else None
+                "percentile": float(rows[0][mo]) if rows[0][mo] is not None else None
             }
-            result["volatility"] = float(rows[0][23]) if rows[0][23] is not None else None
-            result["volatility_percentile"] = float(rows[0][24]) if rows[0][24] is not None else None
-            result["movement"] = float(rows[0][25]) if rows[0][25] is not None else None
-            result["movement_percentile"] = float(rows[0][26]) if rows[0][26] is not None else None
+            result["volatility"] = float(rows[0][mo + 1]) if rows[0][mo + 1] is not None else None
+            result["volatility_percentile"] = float(rows[0][mo + 2]) if rows[0][mo + 2] is not None else None
+            result["movement"] = float(rows[0][mo + 3]) if rows[0][mo + 3] is not None else None
+            result["movement_percentile"] = float(rows[0][mo + 4]) if rows[0][mo + 4] is not None else None
             
             return result
             
