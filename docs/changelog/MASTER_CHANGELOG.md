@@ -29,9 +29,9 @@ This changelog is used when pushing updates to production. Each entry is timesta
 6. `20260330_2200_trades_strike_final_quarter_asks`
 
 **Production checklist**
-- [ ] Confirm codebase:  
+- [x] Confirm codebase:  
   `git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations in order:  
+- [x] Apply migrations in order:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260328_1500_trades_symbol_expiration_win_loss_confirmed`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260328_2115_strike_table_final_quarter_ask_tracking`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260329_1100_monitor_strategy_stop_loss_price`  
@@ -39,13 +39,13 @@ This changelog is used when pushing updates to production. Each entry is timesta
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260330_2130_strike_final_quarter_asks_numeric_4dp`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260330_2200_trades_strike_final_quarter_asks`  
   (Use **`venv/bin/python`** or **`.venv/bin/python`** per server.)
-- [ ] Schema drift:  
+- [x] Schema drift:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] **One-time backfills (run once per environment):**  
+- [x] **One-time backfills (run once per environment):**  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/backfill_trades_symbol_expiration_from_history.py --dry-run` then without `--dry-run` when ready (`--force` only if overwriting `symbol_expiration` is intended).  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/backfill_trades_market_and_win_loss_confirmed.py --dry-run` then without `--dry-run`.
-- [ ] Restart: `./scripts/MASTER_RESTART.sh`
-- [ ] Verify: `main_app` :3000 and `trade_executor` :8001 health; supervisor `RUNNING` for strike generators and 15m WS stack; spot-check `users.trades_0001` for `market`, ask snapshot columns on new inserts, and strike tables for final-quarter columns; dashboard / trade monitor UI.
+- [x] Restart: `./scripts/MASTER_RESTART.sh`
+- [x] Verify: `main_app` :3000 and `trade_executor` :8001 health; supervisor `RUNNING` for strike generators and 15m WS stack; spot-check `users.trades_0001` for `market`, ask snapshot columns on new inserts, and strike tables for final-quarter columns; dashboard / trade monitor UI.
 
 ---
 
