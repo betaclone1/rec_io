@@ -1,6 +1,6 @@
 # One workflow per push/PR: drift check, Kalshi dollars guard, unit tests + coverage.
 # Every commit to main/master is validated (no path skips — avoids silent broken merges).
-# Use python -m pytest so PATH does not need a pytest executable (avoids exit 127 on runners).
+# Use `python -m pip` / `python -m pytest` only — bare `pip`/`pytest` are not always on PATH (exit 127).
 #
 # Strong guarantee: GitHub → Settings → Branches → add rule for main → require status check
 # "CI / test" (or the exact name shown after this workflow runs once) before merge.
@@ -30,8 +30,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
 
       - name: DB schema drift check
         env:
