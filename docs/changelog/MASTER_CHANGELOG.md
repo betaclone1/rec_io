@@ -31,9 +31,9 @@ This changelog is used when pushing updates to production. Each entry is timesta
 10. `20260331_1530_hourly_market_strike_align_15m`
 
 **Production checklist**
-- [ ] Confirm codebase:  
+- [x] Confirm codebase:  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations **in order** (from project root; use `venv/bin/python` or `.venv/bin/python` as on server):  
+- [x] Apply migrations **in order** (from project root; use `venv/bin/python` or `.venv/bin/python` as on server):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260327_2230_restore_accidental_housekeeping_table_drops`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260329_1500_hourly_kalshi_strike_dollars_fp`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260329_1800_strike_tables_volume_open_interest_fp_text`  
@@ -44,11 +44,11 @@ This changelog is used when pushing updates to production. Each entry is timesta
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260331_1400_strike_hourly_yes_no_ask_dollars`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260331_1410_strike_hourly_momentum_percentile`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260331_1530_hourly_market_strike_align_15m`  
-  (Runner skips ids already in `system.schema_migrations`.)
-- [ ] Schema drift:  
+  (Runner skips ids already in `system.schema_migrations`. Also fine: `run_migration.py up` with no id applies pending in file order.)
+- [x] Schema drift:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart: `./scripts/MASTER_RESTART.sh` (from repo root on the server)
-- [ ] Verify: `main_app` :3000 and `trade_executor` :8001 health; supervisor RUNNING for hourly/15m WS and strike generators; spot-check `live_data.market_kalshi_hourly` / `strike_table_hourly`.
+- [x] Restart: `./scripts/MASTER_RESTART.sh` (from repo root on the server)
+- [x] Verify: `main_app` :3000 and `trade_executor` :8001 health; supervisor RUNNING for hourly/15m WS and strike generators; spot-check `live_data.market_kalshi_hourly` / `strike_table_hourly`.
 
 ---
 
