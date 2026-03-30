@@ -3,6 +3,10 @@
 Kalshi 15m: REST only at each quarter-hour rollover (wipe → event JSON → seed DB).
 All other time: WebSocket ``ticker`` updates only (same table columns as REST snapshot on seed).
 
+Hourly: after REST event discovery, markets are capped to an ATM-centered window
+(``MARKET_WATCHDOG_WS_HOURLY_ATM_STRIKES_EACH_SIDE`` per side, default 20) before
+seed + WS subscribe so DB/CPU track ~41 strikes per symbol instead of the full Kalshi ladder.
+
 Rollover sets ``rolling`` so the WS thread skips DB writes until seed + new subscribe are done.
 
 HTTP 429 on Kalshi is **REST quota**, not WebSocket. If we see it while only running this pipeline,
@@ -36,6 +40,7 @@ from backend.core.kalshi_market_normalize import (
     ticker_msg_to_row_values,
 )
 from backend.core.kalshi_ws_auth import kalshi_ws_connect_headers
+from backend.core.config.database import get_postgresql_connection
 from backend.market_watchdog import (
     DB_CONFIG,
     EST,
@@ -74,6 +79,9 @@ DEFAULT_DISCOVERY_MAX_WAIT_SEC = 120.0
 # Default 1: resolve symbols one-at-a-time over REST so rollover never bursts parallel GETs.
 # Override with MARKET_WATCHDOG_WS_ROLLOVER_REST_WORKERS=2..8 only if you accept 429 risk.
 DEFAULT_ROLLOVER_REST_MAX_WORKERS = 1
+# Hourly: keep only strikes within N steps of spot on the sorted ladder (seed + WS subscribe + DB rows).
+# Set MARKET_WATCHDOG_WS_HOURLY_ATM_STRIKES_EACH_SIDE=0 to disable (full Kalshi event list).
+DEFAULT_HOURLY_ATM_STRIKES_EACH_SIDE = 20
 
 _POOL_LOCK = threading.Lock()
 _DB_POOL: psycopg2.pool.ThreadedConnectionPool | None = None
@@ -433,6 +441,138 @@ def _expected_row_count(resolved: dict[str, tuple[str, dict]]) -> int:
     return n
 
 
+def _numeric_strike_from_rest_market(market: dict) -> float | None:
+    s = strike_from_kalshi_15m_rest_market(market)
+    if not s:
+        return None
+    try:
+        return float(str(s).replace("$", "").replace(",", "").strip())
+    except ValueError:
+        return None
+
+
+def _hourly_spot_price(sym_u: str) -> float | None:
+    """Align with strike pipeline: live_symbol_status, then 1s price log."""
+    sym_u = sym_u.upper().strip()
+    conn = get_postgresql_connection()
+    if not conn:
+        return None
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT COALESCE(one_minute_avg, price)
+            FROM live_data.live_symbol_status
+            WHERE symbol = %s
+            LIMIT 1
+            """,
+            (sym_u,),
+        )
+        row = cur.fetchone()
+        if row and row[0] is not None:
+            return float(row[0])
+        pt = {"BTC": "live_price_log_1s_btc", "ETH": "live_price_log_1s_eth"}.get(sym_u)
+        if pt:
+            cur.execute(
+                f"SELECT price FROM live_data.{pt} ORDER BY timestamp DESC LIMIT 1"
+            )
+            row2 = cur.fetchone()
+            if row2 and row2[0] is not None:
+                return float(row2[0])
+    except Exception:
+        logger.debug("hourly spot price lookup failed for %s", sym_u, exc_info=True)
+    finally:
+        conn.close()
+    return None
+
+
+def _filter_hourly_markets_atm_window(
+    markets: list,
+    symbol: str,
+    *,
+    strikes_each_side: int,
+) -> list:
+    """
+    Keep at most (2 * strikes_each_side + 1) markets: ``strikes_each_side`` ladder steps
+    below and above the strike closest to spot (sorted by Kalshi strike).
+    """
+    if not markets or strikes_each_side <= 0:
+        return list(markets)
+    sym_u = str(symbol).upper().strip()
+    pairs: list[tuple[float, dict]] = []
+    for m in markets:
+        fs = _numeric_strike_from_rest_market(m)
+        if fs is not None:
+            pairs.append((fs, m))
+    if not pairs:
+        logger.warning(
+            "hourly ATM cap: no parseable strikes for %s; keeping all %s markets",
+            sym_u,
+            len(markets),
+        )
+        return list(markets)
+    pairs.sort(key=lambda x: x[0])
+    strikes = [p[0] for p in pairs]
+    spot = _hourly_spot_price(sym_u)
+    if spot is None:
+        spot = strikes[len(strikes) // 2]
+        logger.warning(
+            "hourly ATM cap: no spot for %s; using median strike %.2f for window",
+            sym_u,
+            spot,
+        )
+    best_i = min(range(len(strikes)), key=lambda i: abs(strikes[i] - spot))
+    lo = max(0, best_i - strikes_each_side)
+    hi = min(len(pairs) - 1, best_i + strikes_each_side)
+    kept = pairs[lo : hi + 1]
+    out = [m for _, m in kept]
+    logger.info(
+        "hourly ATM cap %s: markets %s -> %s (spot=%.2f idx=%s slice [%s,%s] side=%s)",
+        sym_u,
+        len(markets),
+        len(out),
+        spot,
+        best_i,
+        lo,
+        hi,
+        strikes_each_side,
+    )
+    return out
+
+
+def _apply_hourly_atm_market_cap(
+    ready: dict[str, tuple[str | None, dict]],
+) -> dict[str, tuple[str | None, dict]]:
+    raw = os.getenv(
+        "MARKET_WATCHDOG_WS_HOURLY_ATM_STRIKES_EACH_SIDE",
+        str(DEFAULT_HOURLY_ATM_STRIKES_EACH_SIDE),
+    ).strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        n = DEFAULT_HOURLY_ATM_STRIKES_EACH_SIDE
+    if n <= 0:
+        return ready
+    out: dict[str, tuple[str | None, dict]] = {}
+    for sym, pair in ready.items():
+        et, ed = pair
+        mk = list(ed.get("markets") or [])
+        if not mk:
+            out[sym] = pair
+            continue
+        filtered = _filter_hourly_markets_atm_window(mk, sym, strikes_each_side=n)
+        if not filtered:
+            logger.warning(
+                "hourly ATM filter empty for %s; using full %s markets", sym, len(mk)
+            )
+            out[sym] = pair
+            continue
+        new_ed = dict(ed)
+        new_ed["markets"] = filtered
+        out[sym] = (et, new_ed)
+    return out
+
+
 def _seed_from_event_json(
     conn,
     exchange_key: str,
@@ -760,6 +900,8 @@ def _run_rollover(
             for sym, pair in resolved.items()
             if pair and pair[0] and pair[1] and (pair[1].get("markets") or [])
         }
+        if market_label.strip().lower() == "hourly":
+            ready = _apply_hourly_atm_market_cap(ready)
         expected = _expected_row_count(ready)
         if expected <= 0:
             logger.warning(
