@@ -1,5 +1,6 @@
 import logging
 import math
+import random
 import threading
 import time
 import os
@@ -13,7 +14,7 @@ import requests
 import psycopg2
 from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
-from typing import Optional
+from typing import Optional, Tuple
 
 # Import the universal centralized port system
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -31,6 +32,64 @@ CONTRACT_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2})(am|pm)$", re.IGNORECASE)
 CONTRACT_15M_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2}):[0-9]{2}\s*(am|pm)", re.IGNORECASE)
 CONTRACT_15M_FULL_PATTERN = re.compile(r".*\s([0-9]{1,2}):([0-9]{2})\s*(am|pm)", re.IGNORECASE)
 MONITOR_KEY_PATTERN = re.compile(r"^mon_(\d+?)_(\d+)$", re.IGNORECASE)
+
+# trade_manager ↔ ATS: resilient delivery (Redis enroll + HTTP notify). Tune in prod under load.
+_ATS_ENROLL_ACK_WAIT_SEC = float(os.getenv("ATS_ENROLL_ACK_WAIT_SEC", "18"))
+_ATS_ENROLL_REDIS_ATTEMPTS = max(1, int(os.getenv("ATS_ENROLL_REDIS_ATTEMPTS", "3")))
+_ATS_HTTP_NOTIFY_ATTEMPTS = max(1, int(os.getenv("ATS_HTTP_NOTIFY_ATTEMPTS", "6")))
+_ATS_HTTP_CONNECT_TIMEOUT = float(os.getenv("ATS_HTTP_CONNECT_TIMEOUT", "4"))
+_ATS_HTTP_READ_TIMEOUT = float(os.getenv("ATS_HTTP_READ_TIMEOUT", "25"))
+
+
+def _monitor_suffix_from_identifier(monitor_identifier: Optional[str]) -> Optional[str]:
+    if not monitor_identifier:
+        return None
+    s = str(monitor_identifier).strip()
+    if s.startswith("mon_"):
+        return s[4:]
+    return s if "_" in s else None
+
+
+def _post_ats_trade_notification_http(
+    monitor_suffix: str,
+    payload: dict,
+    *,
+    attempts: Optional[int] = None,
+) -> Tuple[bool, Optional[str]]:
+    """
+    POST /api/trade_manager_notification with retries and split timeouts.
+    Returns (ok, last_error_message).
+    """
+    from backend.core.port_config import get_active_trade_supervisor_http_port_for_monitor_suffix
+
+    attempts = attempts if attempts is not None else _ATS_HTTP_NOTIFY_ATTEMPTS
+    port = get_active_trade_supervisor_http_port_for_monitor_suffix(monitor_suffix)
+    url = f"http://localhost:{port}/api/trade_manager_notification"
+    last_err: Optional[str] = None
+    connect_t = _ATS_HTTP_CONNECT_TIMEOUT
+    read_t = _ATS_HTTP_READ_TIMEOUT
+    for i in range(attempts):
+        try:
+            response = requests.post(url, json=payload, timeout=(connect_t, read_t))
+            if response.status_code == 200:
+                try:
+                    body = response.json()
+                except Exception:
+                    body = {}
+                if body.get("success", False):
+                    return True, None
+                last_err = f"ATS success=false json={body!r}"
+            else:
+                last_err = f"HTTP {response.status_code}"
+        except Exception as e:
+            last_err = str(e)
+        if i + 1 < attempts:
+            delay = min(12.0, 0.35 * (2**i)) + random.uniform(0, 0.25)
+            log(
+                f"⚠️ ATS HTTP notify retry {i + 1}/{attempts} mon={monitor_suffix} trade_id={payload.get('trade_id')}: {last_err} (sleep {delay:.2f}s)"
+            )
+            time.sleep(delay)
+    return False, last_err
 
 
 def _derive_kalshi_event_ticker(market_ticker: str) -> str:
@@ -2157,109 +2216,50 @@ def log_event(ticket_id, message):
         log(f"[LOG ERROR] Failed to write log: {message} — {e}")
 
 def notify_active_trade_supervisor_direct_with_monitor(trade_id: int, ticket_id: str, status: str, monitor_identifier: str) -> bool:
-    """Send direct notification to active trade supervisor via HTTP API with pre-fetched monitor identifier"""
-    try:
-        import requests
-        from backend.core.port_config import get_active_trade_supervisor_http_port_for_monitor_suffix
-        
-        # Extract monitor identifier (e.g., "0001_10002" from "mon_0001_10002")
-        if monitor_identifier and monitor_identifier.startswith('mon_'):
-            monitor_suffix = monitor_identifier[4:]  # Remove "mon_" prefix
-        else:
-            # No fallback - monitor must be specified
-            log(f"ERROR: No valid monitor identifier found for trade {trade_id}")
-            return False
-        
-        active_trade_supervisor_port = get_active_trade_supervisor_http_port_for_monitor_suffix(monitor_suffix)
-        
-        # Use monitor-specific port for notifications
-        notification_url = f"http://localhost:{active_trade_supervisor_port}/api/trade_manager_notification"
-        payload = {
-            "trade_id": trade_id,
-            "ticket_id": ticket_id,
-            "status": status,
-            "monitor_identifier": monitor_suffix  # Add monitor identifier to payload
-        }
-        
-        response = requests.post(notification_url, json=payload, timeout=5)
-        
-        if response.status_code == 200:
-            result = response.json()
-            if result.get("success", False):
-                log(f"NOTIFIED ACTIVE TRADE SUPERVISOR for monitor {monitor_suffix}")
-                return True
-            log(f"ACTIVE TRADE SUPERVISOR ERROR for monitor {monitor_suffix}")
-            return False
-        log(f"ACTIVE TRADE SUPERVISOR ERROR for monitor {monitor_suffix}")
+    """Send direct notification to ATS via HTTP with retries (system-critical path)."""
+    monitor_suffix = _monitor_suffix_from_identifier(monitor_identifier)
+    if not monitor_suffix:
+        log(f"ERROR: No valid monitor identifier found for trade {trade_id}")
         return False
-            
-    except ImportError:
-        log(f"REQUESTS NOT AVAILABLE")
-        return False
-    except Exception as e:
-        log(f"ERROR SENDING NOTIFICATION: {e}")
-        return False
+    payload = {
+        "trade_id": trade_id,
+        "ticket_id": ticket_id,
+        "status": status,
+        "monitor_identifier": monitor_suffix,
+    }
+    ok, err = _post_ats_trade_notification_http(monitor_suffix, payload)
+    if ok:
+        log(f"NOTIFIED ACTIVE TRADE SUPERVISOR for monitor {monitor_suffix} trade_id={trade_id} status={status}")
+        return True
+    log(f"ACTIVE TRADE SUPERVISOR ERROR for monitor {monitor_suffix} trade_id={trade_id}: {err}")
+    return False
 
 def notify_active_trade_supervisor_direct(trade_id: int, ticket_id: str, status: str) -> bool:
-    """Send direct notification to active trade supervisor via HTTP API"""
-    try:
-        import requests
-        from backend.core.port_config import get_active_trade_supervisor_http_port_for_monitor_suffix
-        
-        # Get the monitor field from the trade record
-        monitor_identifier = None
-        pg_conn = get_postgresql_connection()
-        if pg_conn:
+    """Send direct notification to ATS via HTTP (loads monitor from DB, then resilient POST)."""
+    monitor_identifier = None
+    pg_conn = get_postgresql_connection()
+    if pg_conn:
+        try:
             with pg_conn.cursor() as cursor:
                 cursor.execute("SELECT monitor FROM users.trades_0001 WHERE id = %s", (trade_id,))
                 row = cursor.fetchone()
                 if row and row[0]:
                     monitor_identifier = row[0]
+        finally:
             pg_conn.close()
-        
-        # Extract monitor identifier (e.g., "0001_10002" from "mon_0001_10002")
-        if monitor_identifier and monitor_identifier.startswith('mon_'):
-            monitor_suffix = monitor_identifier[4:]  # Remove "mon_" prefix
-        else:
-            # No fallback - monitor must be specified
-            log(f"ERROR: No valid monitor identifier found for trade {trade_id}")
-            return False
-        
-        active_trade_supervisor_port = get_active_trade_supervisor_http_port_for_monitor_suffix(monitor_suffix)
-        
-        # Use monitor-specific port for notifications
-        notification_url = f"http://localhost:{active_trade_supervisor_port}/api/trade_manager_notification"
-        payload = {
-            "trade_id": trade_id,
-            "ticket_id": ticket_id,
-            "status": status,
-            "monitor_identifier": monitor_suffix  # Add monitor identifier to payload
-        }
-        
-        response = requests.post(notification_url, json=payload, timeout=5)
-        
-        if response.status_code == 200:
-            result = response.json()
-            if result.get("success", False):
-                log(f"NOTIFIED ACTIVE TRADE SUPERVISOR for monitor {monitor_suffix}")
-                return True
-            log(f"ACTIVE TRADE SUPERVISOR ERROR for monitor {monitor_suffix}")
-            return False
-        log(f"ACTIVE TRADE SUPERVISOR ERROR for monitor {monitor_suffix}")
+    if not monitor_identifier:
+        log(f"ERROR: No monitor on trade row for trade {trade_id}")
         return False
-            
-    except ImportError:
-        log(f"REQUESTS NOT AVAILABLE")
-        return False
-    except Exception as e:
-        log(f"ERROR SENDING NOTIFICATION: {e}")
-        return False
+    return notify_active_trade_supervisor_direct_with_monitor(
+        trade_id, ticket_id, status, str(monitor_identifier)
+    )
 
 
 def notify_ats_trade_open_with_ack(trade_id: int) -> None:
     """
     When a trade becomes open: publish to Redis (rec_io:ats_enroll_request) and wait for ATS ACK.
-    On failure: HTTP fallback to the monitor's ATS. Logs CRITICAL if both paths fail.
+    Retries Redis publish/wait (slow subscriber / load). On failure: HTTP fallback with retries.
+    Logs CRITICAL only if all attempts fail.
     """
     from backend.core.ats_enrollment_redis import (
         publish_trade_open_enroll_request,
@@ -2288,14 +2288,23 @@ def notify_ats_trade_open_with_ack(trade_id: int) -> None:
         return
     monitor_suffix = str(monitor)[4:]
     tid = ticket_id if ticket_id else ""
+    wait_sec = _ATS_ENROLL_ACK_WAIT_SEC
+    redis_rounds = _ATS_ENROLL_REDIS_ATTEMPTS
 
     r = redis_client_optional()
     if r:
-        cid = str(uuid.uuid4())
-        if publish_trade_open_enroll_request(
-            r, trade_id, tid, monitor_suffix, cid, venue_exchange
-        ):
-            ack = wait_trade_open_enroll_ack(r, cid, 12.0)
+        explicit_fail = False
+        for round_i in range(redis_rounds):
+            cid = str(uuid.uuid4())
+            if not publish_trade_open_enroll_request(
+                r, trade_id, tid, monitor_suffix, cid, venue_exchange
+            ):
+                log(
+                    f"⚠️ ATS Redis publish failed trade_id={trade_id} round={round_i + 1}/{redis_rounds}"
+                )
+                time.sleep(min(2.0, 0.4 * (2**round_i)))
+                continue
+            ack = wait_trade_open_enroll_ack(r, cid, wait_sec)
             if ack and ack.get("ok"):
                 if ack.get("degraded"):
                     log(
@@ -2304,13 +2313,25 @@ def notify_ats_trade_open_with_ack(trade_id: int) -> None:
                 else:
                     log(f"✅ ATS enrollment confirmed via Redis trade_id={trade_id}")
                 return
-        log(
-            f"🚨 CRITICAL: ATS Redis enrollment timeout or failure — trade_id={trade_id} monitor={monitor_suffix}"
-        )
-        log_event(
-            tid or str(trade_id),
-            f"CRITICAL: ATS Redis enrollment failed for OPEN trade_id={trade_id}",
-        )
+            if ack and ack.get("ok") is False:
+                explicit_fail = True
+                log(
+                    f"⚠️ ATS Redis ACK ok=false trade_id={trade_id} round={round_i + 1}; falling back to HTTP"
+                )
+                break
+            log(
+                f"⚠️ ATS Redis enroll no ACK in {wait_sec}s trade_id={trade_id} round={round_i + 1}/{redis_rounds}"
+            )
+            if round_i + 1 < redis_rounds:
+                time.sleep(min(3.0, 0.5 * (2**round_i)) + random.uniform(0, 0.2))
+        if not explicit_fail:
+            log(
+                f"🚨 CRITICAL: ATS Redis enrollment exhausted after {redis_rounds} round(s) — trade_id={trade_id} monitor={monitor_suffix}"
+            )
+            log_event(
+                tid or str(trade_id),
+                f"CRITICAL: ATS Redis enrollment failed for OPEN trade_id={trade_id}",
+            )
     else:
         log(f"⚠️ Redis unavailable; ATS open notify via HTTP only trade_id={trade_id}")
 

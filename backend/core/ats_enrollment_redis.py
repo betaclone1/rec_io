@@ -8,6 +8,10 @@ event and wait for ATS to SET a short-lived result key (correlation id).
 Env:
   REDIS_CHANNEL_ATS_ENROLL_REQUEST — default rec_io:ats_enroll_request
   REDIS_KEY_PREFIX_ATS_ENROLL_RESULT — default ats:enroll:result:
+
+trade_manager additionally reads (open-trade enrollment only):
+  ATS_ENROLL_REDIS_ATTEMPTS — publish+wait rounds when waiting for ACK (default 3)
+  ATS_ENROLL_ACK_WAIT_SEC — seconds to wait per round for the result key (default 18)
 """
 
 from __future__ import annotations

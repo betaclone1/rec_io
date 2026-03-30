@@ -6,6 +6,8 @@
 
 **Migration hygiene (non-negotiable for agents):** One logical schema change → **one** migration id (pair of files), batched DDL when it belongs together. Search existing migrations before adding a new id. If a draft was never applied, delete superseded pairs in the same change. Do not delete pairs that are already applied on prod without explicit owner decision (breaks `down` / history). See `.cursor/rules/05-db-migration-hygiene.mdc`.
 
+**Git command boundary (non-negotiable):** Agents must **never** run `git push`, `git pull`, or create git commits unless the user gives an explicit instruction for that specific action in the current chat. If not explicit, stop and ask first. Do not infer permission from deployment workflows or prior tasks.
+
 ---
 
 ## Workflow agents (PM, Explorer, Builder, Reviewer)
