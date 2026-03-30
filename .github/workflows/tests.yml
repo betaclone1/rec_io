@@ -1,21 +1,25 @@
-# Unit tests on push/PR. Lint was removed: it flagged hundreds of legacy issues on whole files whenever
-# any Python path changed, causing failure emails without reflecting deploy risk. Run Ruff locally if desired.
-name: Tests
+# Single workflow = one email per outcome (was: tests.yml + db-schema-drift.yml per push).
+# Changelog-only pushes to main skip CI (paths-ignore) — those edits don't affect runtime.
+# Use python -m pytest so the runner does not rely on a scripts/ PATH entry (avoids exit 127).
+name: CI
 
 on:
   push:
     branches: [main, master]
+    paths-ignore:
+      - "docs/changelog/**"
   pull_request:
     branches: [main, master]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Legacy Kalshi quote guard (dollars-only contract)
-        run: bash scripts/dev/check_no_legacy_kalshi_quotes.sh
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -28,14 +32,16 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
 
-      - name: Run unit tests
+      - name: DB schema drift check
         env:
           PYTHONPATH: ${{ github.workspace }}
-        run: |
-          pytest tests/unit -v --tb=short
+        run: python scripts/db/check_db_schema_drift.py
 
-      - name: Run tests with coverage (unit only)
+      - name: Legacy Kalshi quote guard (dollars-only contract)
+        run: bash scripts/dev/check_no_legacy_kalshi_quotes.sh
+
+      - name: Unit tests with coverage
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
-          pytest tests/unit -v --cov=backend --cov-report=term-missing --cov-fail-under=0
+          python -m pytest tests/unit -v --tb=short --cov=backend --cov-report=term-missing --cov-fail-under=0
