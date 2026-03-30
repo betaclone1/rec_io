@@ -405,12 +405,21 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
                 }
             )
 
+        # strike_tier is internal and must be computed from ladder spacing.
+        # 15m remains 0 by design (single-contract cadence).
+        if self.interval == "hourly":
+            strike_tier = int(self.detect_strike_tier_spacing(markets))
+            if strike_tier <= 0:
+                raise ValueError(f"invalid computed strike_tier={strike_tier} for {self.symbol.upper()}")
+        else:
+            strike_tier = 0
+
         return {
             "event_ticker": event_ticker,
             "market_status": "active",
             "event_title": self.generate_market_title(event_ticker),
             "strike_date": datetime.now(ZoneInfo("America/New_York")).isoformat(),
-            "strike_tier": 0,
+            "strike_tier": strike_tier,
             "markets": markets,
         }
 

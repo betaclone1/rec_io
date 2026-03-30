@@ -1128,40 +1128,36 @@ class StrikeTableGenerator:
             raise
     
     def detect_strike_tier_spacing(self, markets: List[Dict[str, Any]]) -> int:
-        """Detect strike tier spacing from market snapshot"""
-        try:
-            if len(markets) < 2:
-                raise ValueError("Insufficient markets to detect strike tier spacing")
-                
-            # Extract floor_strike values and sort them
-            strikes = []
-            for market in markets:
-                floor_strike = market.get("floor_strike")
-                if floor_strike is not None:
-                    strikes.append(float(floor_strike))
-            
-            if len(strikes) < 2:
-                raise ValueError("Insufficient valid strikes to detect spacing")
-                
-            strikes.sort()
-            
-            # Calculate differences between consecutive strikes
-            differences = []
-            for i in range(1, len(strikes)):
-                diff = strikes[i] - strikes[i-1]
-                differences.append(diff)
-            
-            # Find the most common difference (strike tier spacing)
-            if differences:
-                # Use the first difference as the tier spacing
-                # (assuming consistent spacing across all strikes)
-                tier_spacing = int(differences[0])
-                return tier_spacing
-            else:
-                raise ValueError("No valid strike differences found")
-                
-        except Exception as e:
-            raise
+        """Detect internal strike-tier spacing from market snapshot."""
+        if len(markets) < 2:
+            raise ValueError("Insufficient markets to detect strike tier spacing")
+
+        # Use unique strike levels only; duplicate tickers/rows can create zero diffs.
+        strikes = []
+        for market in markets:
+            floor_strike = market.get("floor_strike")
+            if floor_strike is not None:
+                strikes.append(float(floor_strike))
+        unique_strikes = sorted(set(strikes))
+        if len(unique_strikes) < 2:
+            raise ValueError("Insufficient unique strikes to detect spacing")
+
+        # Keep only positive diffs and quantize for stable counting.
+        diffs = []
+        for i in range(1, len(unique_strikes)):
+            d = unique_strikes[i] - unique_strikes[i - 1]
+            if d > 0:
+                diffs.append(int(round(d)))
+        if not diffs:
+            raise ValueError("No positive strike differences found")
+
+        # Most common spacing across the ladder is the tier.
+        from collections import Counter
+
+        tier_spacing = Counter(diffs).most_common(1)[0][0]
+        if tier_spacing <= 0:
+            raise ValueError(f"Invalid strike tier spacing: {tier_spacing}")
+        return int(tier_spacing)
     
     def calculate_ttc_seconds(self, strike_date: str) -> int:
         """Calculate time to close: top of next hour (hourly) or next 15m boundary (15m)."""

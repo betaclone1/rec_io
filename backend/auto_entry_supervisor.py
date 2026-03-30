@@ -1941,19 +1941,6 @@ def get_master_strike_table_data():
             if current_market == "15m":
                 table_15m = get_strike_table_name(current_symbol, "15m")
                 ex = _strike_data_exchange_key()
-                cursor.execute(
-                    """
-                    SELECT MAX(timestamp) FROM live_data.{table_15m}
-                    WHERE exchange = %s AND symbol = %s
-                    """.format(table_15m=table_15m),
-                    (ex, sym_u),
-                )
-                rts = cursor.fetchone()
-                latest_ts = rts[0] if rts else None
-                if not latest_ts:
-                    log_debug("[WATCHLIST] No unified 15m strike table timestamp for symbol %s", sym_u)
-                    conn.close()
-                    return None
                 cursor.execute(f"""
                     SELECT
                         symbol,
@@ -1962,31 +1949,21 @@ def get_master_strike_table_data():
                         event_ticker,
                         market_title,
                         strike_tier,
-                        market_status
+                        market_status,
+                        timestamp
                     FROM live_data.{table_15m}
-                    WHERE exchange = %s AND symbol = %s AND timestamp = %s
-                    ORDER BY strike
-                    LIMIT 1
-                """, (ex, sym_u, latest_ts))
-            else:
-                ex = _strike_data_exchange_key()
-                cursor.execute(
-                    """
-                    SELECT MAX(timestamp) FROM live_data.{tbl}
                     WHERE exchange = %s AND symbol = %s
-                    """.format(tbl=table_name),
-                    (ex, sym_u),
-                )
-                rts = cursor.fetchone()
-                latest_ts = rts[0] if rts else None
-                if not latest_ts:
-                    log_debug(
-                        "[WATCHLIST] No hourly strike table timestamp for symbol %s (%s)",
-                        sym_u,
-                        table_name,
-                    )
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                """, (ex, sym_u))
+                header_data = cursor.fetchone()
+                if not header_data:
+                    log_debug("[WATCHLIST] No unified 15m strike table timestamp for symbol %s", sym_u)
                     conn.close()
                     return None
+                latest_ts = header_data[7]
+            else:
+                ex = _strike_data_exchange_key()
                 cursor.execute(
                     f"""
                     SELECT
@@ -1996,18 +1973,25 @@ def get_master_strike_table_data():
                         event_ticker,
                         market_title,
                         strike_tier,
-                        market_status
+                        market_status,
+                        timestamp
                     FROM live_data.{table_name}
-                    WHERE exchange = %s AND symbol = %s AND timestamp = %s
-                    ORDER BY strike
+                    WHERE exchange = %s AND symbol = %s
+                    ORDER BY timestamp DESC
                     LIMIT 1
                     """,
-                    (ex, sym_u, latest_ts),
+                    (ex, sym_u),
                 )
-            header_data = cursor.fetchone()
-            if not header_data:
-                log_debug(f"[WATCHLIST] No strike table data found in PostgreSQL")
-                return None
+                header_data = cursor.fetchone()
+                if not header_data:
+                    log_debug(
+                        "[WATCHLIST] No hourly strike table timestamp for symbol %s (%s)",
+                        sym_u,
+                        table_name,
+                    )
+                    conn.close()
+                    return None
+                latest_ts = header_data[7]
             if current_market == "15m" and str(header_data[0] or "").upper() != sym_u:
                 log(f"[AUTO ENTRY] strike header symbol mismatch: expected {sym_u} got {header_data[0]}")
                 conn.close()
@@ -2029,10 +2013,29 @@ def get_master_strike_table_data():
                         active_side,
                         yes_price_spread,
                         no_price_spread
-                    FROM live_data.{table_15m}
-                    WHERE exchange = %s AND symbol = %s AND timestamp = %s
+                    FROM (
+                        SELECT DISTINCT ON (ticker)
+                            strike,
+                            buffer,
+                            buffer_pct,
+                            {prob_column},
+                            yes_ask_dollars,
+                            no_ask_dollars,
+                            volume_fp,
+                            open_interest_fp,
+                            ticker,
+                            yes_diff,
+                            no_diff,
+                            active_side,
+                            yes_price_spread,
+                            no_price_spread,
+                            timestamp
+                        FROM live_data.{table_15m}
+                        WHERE exchange = %s AND symbol = %s
+                        ORDER BY ticker, timestamp DESC
+                    ) latest_per_ticker
                     ORDER BY strike
-                """, (ex, sym_u, latest_ts))
+                """, (ex, sym_u))
             else:
                 cursor.execute(
                     f"""
@@ -2051,11 +2054,30 @@ def get_master_strike_table_data():
                         active_side,
                         yes_price_spread,
                         no_price_spread
-                    FROM live_data.{table_name}
-                    WHERE exchange = %s AND symbol = %s AND timestamp = %s
+                    FROM (
+                        SELECT DISTINCT ON (ticker)
+                            strike,
+                            buffer,
+                            buffer_pct,
+                            {prob_column},
+                            yes_ask_dollars,
+                            no_ask_dollars,
+                            volume_fp,
+                            open_interest_fp,
+                            ticker,
+                            yes_diff,
+                            no_diff,
+                            active_side,
+                            yes_price_spread,
+                            no_price_spread,
+                            timestamp
+                        FROM live_data.{table_name}
+                        WHERE exchange = %s AND symbol = %s
+                        ORDER BY ticker, timestamp DESC
+                    ) latest_per_ticker
                     ORDER BY strike
                     """,
-                    (ex, sym_u, latest_ts),
+                    (ex, sym_u),
                 )
             strikes_data = cursor.fetchall()
             response = {
@@ -3793,7 +3815,7 @@ def check_auto_entry_conditions_momentum_breakout():
         current_price = strike_table_data.get("current_price")
         strike_tier = strike_table_data.get("strike_tier")
         
-        if not current_price or not strike_tier:
+        if current_price is None or strike_tier is None:
             log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Missing current_price or strike_tier")
             return
         
@@ -3801,6 +3823,9 @@ def check_auto_entry_conditions_momentum_breakout():
             strike_tier = int(strike_tier)
         except (ValueError, TypeError):
             log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Invalid strike_tier: {strike_tier}")
+            return
+        if strike_tier <= 0:
+            log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Invalid strike_tier (<=0): {strike_tier}")
             return
         
         # Find the actual available strikes from the strike table
@@ -4100,7 +4125,7 @@ def check_auto_entry_conditions_momentum_contain():
         current_price = strike_table_data.get("current_price")
         strike_tier = strike_table_data.get("strike_tier")
         
-        if not current_price or not strike_tier:
+        if current_price is None or strike_tier is None:
             log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Missing current_price or strike_tier")
             return
         
@@ -4108,6 +4133,9 @@ def check_auto_entry_conditions_momentum_contain():
             strike_tier = int(strike_tier)
         except (ValueError, TypeError):
             log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Invalid strike_tier: {strike_tier}")
+            return
+        if strike_tier <= 0:
+            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Invalid strike_tier (<=0): {strike_tier}")
             return
         
         # Select strikes using the unified minimum-width + centering methodology:
