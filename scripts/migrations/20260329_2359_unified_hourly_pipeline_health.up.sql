@@ -28,13 +28,16 @@ CREATE INDEX IF NOT EXISTS market_kalshi_hourly_exchange_symbol_idx
 CREATE INDEX IF NOT EXISTS market_kalshi_hourly_exchange_symbol_event_idx
     ON live_data.market_kalshi_hourly (exchange, symbol, event_ticker);
 
+-- Legacy `market_kalshi_hourly_{btc,eth}` rows often have no symbol/exchange columns (implicit BTC/ETH + kalshi).
 INSERT INTO live_data.market_kalshi_hourly (
     symbol, exchange, event_ticker, market_ticker, market, strike,
     volume_fp, open_interest_fp, created_at, updated_at,
     yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars
 )
 SELECT
-    symbol, exchange, event_ticker, market_ticker, COALESCE(market, 'hourly'), strike,
+    'BTC'::varchar(10),
+    'kalshi'::varchar(20),
+    event_ticker, market_ticker, COALESCE(market, 'hourly'), strike,
     volume_fp, open_interest_fp, created_at, updated_at,
     yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars
 FROM live_data.market_kalshi_hourly_btc
@@ -46,7 +49,9 @@ INSERT INTO live_data.market_kalshi_hourly (
     yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars
 )
 SELECT
-    symbol, exchange, event_ticker, market_ticker, COALESCE(market, 'hourly'), strike,
+    'ETH'::varchar(10),
+    'kalshi'::varchar(20),
+    event_ticker, market_ticker, COALESCE(market, 'hourly'), strike,
     volume_fp, open_interest_fp, created_at, updated_at,
     yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars
 FROM live_data.market_kalshi_hourly_eth
@@ -71,6 +76,54 @@ CREATE TABLE live_data.strike_table_hourly (
     INCLUDING IDENTITY
 );
 
+-- Prod legacy used `broker`; unified code expects `exchange` (same as 15m).
+DO $st_rename$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'live_data' AND table_name = 'strike_table_hourly'
+          AND column_name = 'broker'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'live_data' AND table_name = 'strike_table_hourly'
+          AND column_name = 'exchange'
+    ) THEN
+        ALTER TABLE live_data.strike_table_hourly RENAME COLUMN broker TO exchange;
+    END IF;
+END $st_rename$;
+
+-- Same for rename sources before copying rows.
+DO $btc_old_norm$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'live_data' AND table_name = 'strike_table_hourly_btc_old'
+          AND column_name = 'broker'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'live_data' AND table_name = 'strike_table_hourly_btc_old'
+          AND column_name = 'exchange'
+    ) THEN
+        ALTER TABLE live_data.strike_table_hourly_btc_old RENAME COLUMN broker TO exchange;
+    ELSIF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'live_data' AND table_name = 'strike_table_hourly_btc_old'
+          AND column_name = 'broker'
+    ) AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'live_data' AND table_name = 'strike_table_hourly_btc_old'
+          AND column_name = 'exchange'
+    ) THEN
+        UPDATE live_data.strike_table_hourly_btc_old
+        SET exchange = COALESCE(
+            NULLIF(TRIM(exchange::text), ''),
+            NULLIF(TRIM(broker::text), ''),
+            'kalshi'
+        )
+        WHERE exchange IS NULL OR TRIM(COALESCE(exchange::text, '')) = '';
+    END IF;
+END $btc_old_norm$;
+
 -- Named columns: legacy BTC/ETH tables may differ in physical column order; avoid SELECT *.
 INSERT INTO live_data.strike_table_hourly (
     id, "timestamp", symbol, exchange, market, current_price, ttc_hourly, ttc_15m,
@@ -90,6 +143,37 @@ SELECT
     movement, movement_percentile, yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
     yes_ask_range_15m, no_ask_range_15m, created_at
 FROM live_data.strike_table_hourly_btc_old;
+
+DO $eth_norm$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'live_data' AND table_name = 'strike_table_hourly_eth'
+          AND column_name = 'broker'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'live_data' AND table_name = 'strike_table_hourly_eth'
+          AND column_name = 'exchange'
+    ) THEN
+        ALTER TABLE live_data.strike_table_hourly_eth RENAME COLUMN broker TO exchange;
+    ELSIF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'live_data' AND table_name = 'strike_table_hourly_eth'
+          AND column_name = 'broker'
+    ) AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'live_data' AND table_name = 'strike_table_hourly_eth'
+          AND column_name = 'exchange'
+    ) THEN
+        UPDATE live_data.strike_table_hourly_eth
+        SET exchange = COALESCE(
+            NULLIF(TRIM(exchange::text), ''),
+            NULLIF(TRIM(broker::text), ''),
+            'kalshi'
+        )
+        WHERE exchange IS NULL OR TRIM(COALESCE(exchange::text, '')) = '';
+    END IF;
+END $eth_norm$;
 
 INSERT INTO live_data.strike_table_hourly (
     id, "timestamp", symbol, exchange, market, current_price, ttc_hourly, ttc_15m,
