@@ -1,13 +1,14 @@
-# Single workflow = one email per outcome (was: tests.yml + db-schema-drift.yml per push).
-# Changelog-only pushes to main skip CI (paths-ignore) — those edits don't affect runtime.
-# Use python -m pytest so the runner does not rely on a scripts/ PATH entry (avoids exit 127).
+# One workflow per push/PR: drift check, Kalshi dollars guard, unit tests + coverage.
+# Every commit to main/master is validated (no path skips — avoids silent broken merges).
+# Use python -m pytest so PATH does not need a pytest executable (avoids exit 127 on runners).
+#
+# Strong guarantee: GitHub → Settings → Branches → add rule for main → require status check
+# "CI / test" (or the exact name shown after this workflow runs once) before merge.
 name: CI
 
 on:
   push:
     branches: [main, master]
-    paths-ignore:
-      - "docs/changelog/**"
   pull_request:
     branches: [main, master]
 
