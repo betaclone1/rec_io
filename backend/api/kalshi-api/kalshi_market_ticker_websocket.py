@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Simplified Kalshi Market Ticker WebSocket - Replace REST API Polling
-Focus: Update yes_ask, no_ask, and volume in market_kalshi_btc table
+Kalshi Market Ticker WebSocket (testing): orderbook → `testing.market_kalshi_btc_websocket`
+with dollar-quote TEXT columns and `volume_fp` / `open_interest_fp` only (no cent integer fields).
 """
 
 import asyncio
@@ -28,6 +28,30 @@ from dotenv import dotenv_values
 
 # Timezone
 EST = timezone(timedelta(hours=-5))
+
+
+def _cents_to_dollar_text(cents):
+    if cents is None:
+        return None
+    try:
+        x = float(cents) / 100.0
+    except (TypeError, ValueError):
+        return None
+    s = f"{x:.6f}".rstrip("0").rstrip(".")
+    return s if s else "0"
+
+
+def _contracts_fp_text(n):
+    if n is None:
+        return None
+    try:
+        return str(int(n))
+    except (TypeError, ValueError):
+        try:
+            return str(int(float(n)))
+        except (TypeError, ValueError):
+            return None
+
 
 def load_kalshi_credentials():
     """Load Kalshi API credentials"""
@@ -283,88 +307,69 @@ class KalshiMarketTickerWebSocket:
             return False
     
     def calculate_market_data_from_orderbook(self, orderbook_data):
-        """Calculate all market data from orderbook data to match production table structure"""
+        """Best quotes and depth from internal orderbook (prices in cents); output dollars + fp text only."""
         try:
             yes_orders = orderbook_data.get("yes", [])
             no_orders = orderbook_data.get("no", [])
-            
-            # Calculate best bid prices (highest price on each side)
+
             best_yes_bid = max(yes_orders, key=lambda x: x[0])[0] if yes_orders else None
             best_no_bid = max(no_orders, key=lambda x: x[0])[0] if no_orders else None
-            
-            # Calculate ask prices - use actual best ask prices from orderbook
-            yes_ask = None
-            no_ask = None
-            
-            # Get best YES ask (lowest YES price with contracts)
+
+            yes_ask_cents = None
+            no_ask_cents = None
             if yes_orders:
-                yes_ask = min([price for price, size in yes_orders if size > 0])
-            
-            # Get best NO ask (lowest NO price with contracts)  
+                yc = [price for price, size in yes_orders if size > 0]
+                yes_ask_cents = min(yc) if yc else None
             if no_orders:
-                no_ask = min([price for price, size in no_orders if size > 0])
-            
-            # Calculate yes_volume and no_volume (total contracts in ALL asks)
-            # Filter out "dead" markets with asks at 99/100
-            yes_volume_total = 0
-            no_volume_total = 0
-            
-            # Sum all YES ask contracts (exclude prices 99+ which are "dead" markets)
-            if yes_orders:
-                yes_volume_total = sum(size for price, size in yes_orders if price < 99 and size > 0)
-            
-            # Sum all NO ask contracts (exclude prices 99+ which are "dead" markets)  
-            if no_orders:
-                no_volume_total = sum(size for price, size in no_orders if price < 99 and size > 0)
-            
-            # Calculate total liquidity (all orderbook size)
+                nc = [price for price, size in no_orders if size > 0]
+                no_ask_cents = min(nc) if nc else None
+
+            yes_volume_total = (
+                sum(size for price, size in yes_orders if price < 99 and size > 0) if yes_orders else 0
+            )
+            no_volume_total = (
+                sum(size for price, size in no_orders if price < 99 and size > 0) if no_orders else 0
+            )
+
             total_yes_volume = sum(order[1] for order in yes_orders)
             total_no_volume = sum(order[1] for order in no_orders)
             total_volume = total_yes_volume + total_no_volume
-            
-            # Use total orderbook size as liquidity
-            liquidity = total_volume
-            open_interest = total_volume
-            
-            # Use activity score as volume (for backward compatibility)
-            volume = 0
-            
-            # Volume 24h: not available from WebSocket, leave as None
-            volume_24h_fp = None
-            
-            # Last Price: calculate from best bid/ask spread
-            last_price = None
+
+            last_price_dollars = None
             if best_yes_bid is not None and best_no_bid is not None:
-                # Use midpoint of the spread
-                yes_mid = (best_yes_bid + yes_ask) / 2 if yes_ask is not None else best_yes_bid
-                no_mid = (best_no_bid + no_ask) / 2 if no_ask is not None else best_no_bid
-                last_price = int((yes_mid + (100 - no_mid)) / 2)
+                yes_mid = (best_yes_bid + yes_ask_cents) / 2 if yes_ask_cents is not None else best_yes_bid
+                no_mid = (best_no_bid + no_ask_cents) / 2 if no_ask_cents is not None else best_no_bid
+                lp_cents = int((yes_mid + (100 - no_mid)) / 2)
+                last_price_dollars = _cents_to_dollar_text(lp_cents)
             elif best_yes_bid is not None:
-                last_price = best_yes_bid
+                last_price_dollars = _cents_to_dollar_text(best_yes_bid)
             elif best_no_bid is not None:
-                last_price = 100 - best_no_bid
-            
+                last_price_dollars = _cents_to_dollar_text(100 - best_no_bid)
+
             return {
-                'yes_bid': best_yes_bid,
-                'yes_ask': yes_ask,
-                'no_bid': best_no_bid,
-                'no_ask': no_ask,
-                'last_price': last_price,
-                'volume': volume,
-                'volume_24h_fp': volume_24h_fp,
-                'open_interest': open_interest,
-                'liquidity': liquidity,
-                'yes_volume': yes_volume_total,
-                'no_volume': no_volume_total
+                "yes_bid_dollars": _cents_to_dollar_text(best_yes_bid),
+                "yes_ask_dollars": _cents_to_dollar_text(yes_ask_cents),
+                "no_bid_dollars": _cents_to_dollar_text(best_no_bid),
+                "no_ask_dollars": _cents_to_dollar_text(no_ask_cents),
+                "last_price_dollars": last_price_dollars,
+                "volume_fp": _contracts_fp_text(total_volume),
+                "open_interest_fp": _contracts_fp_text(total_volume),
+                "yes_volume": yes_volume_total,
+                "no_volume": no_volume_total,
             }
-            
+
         except Exception as e:
             print(f"[{datetime.now(EST)}] ❌ Error calculating market data: {e}")
             return {
-                'yes_bid': None, 'yes_ask': None, 'no_bid': None, 'no_ask': None,
-                'last_price': None, 'volume_fp': 0, 'volume_24h_fp': None,
-                'open_interest': None, 'liquidity': None,
-                'yes_volume': None, 'no_volume': None
+                "yes_bid_dollars": None,
+                "yes_ask_dollars": None,
+                "no_bid_dollars": None,
+                "no_ask_dollars": None,
+                "last_price_dollars": None,
+                "volume_fp": None,
+                "open_interest_fp": None,
+                "yes_volume": None,
+                "no_volume": None,
             }
     
     def update_market_ticker(self, market_ticker, orderbook_data):
@@ -383,40 +388,46 @@ class KalshiMarketTickerWebSocket:
             strike = parts[-1].replace("T", "") if len(parts) > 1 else None
             
             with self.db_connection.cursor() as cursor:
-                # Update or insert market ticker data with ALL fields to match production table
-                cursor.execute("""
-                    INSERT INTO testing.market_kalshi_btc_websocket 
-                    (event_ticker, market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask,
-                     last_price, volume_fp, volume_24h_fp, open_interest, liquidity, yes_volume, no_volume, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                cursor.execute(
+                    """
+                    INSERT INTO testing.market_kalshi_btc_websocket
+                    (event_ticker, market_ticker, strike,
+                     yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars,
+                     last_price_dollars, volume_fp, open_interest_fp, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                     ON CONFLICT (event_ticker, market_ticker)
-                    DO UPDATE SET 
+                    DO UPDATE SET
                         strike = EXCLUDED.strike,
-                        yes_bid = EXCLUDED.yes_bid,
-                        yes_ask = EXCLUDED.yes_ask,
-                        no_bid = EXCLUDED.no_bid,
-                        no_ask = EXCLUDED.no_ask,
-                        last_price = EXCLUDED.last_price,
-                        volume = EXCLUDED.volume,
-                        volume_24h_fp = EXCLUDED.volume_24h_fp,
-                        open_interest = EXCLUDED.open_interest,
-                        liquidity = EXCLUDED.liquidity,
-                        yes_volume = EXCLUDED.yes_volume,
-                        no_volume = EXCLUDED.no_volume,
+                        yes_bid_dollars = EXCLUDED.yes_bid_dollars,
+                        yes_ask_dollars = EXCLUDED.yes_ask_dollars,
+                        no_bid_dollars = EXCLUDED.no_bid_dollars,
+                        no_ask_dollars = EXCLUDED.no_ask_dollars,
+                        last_price_dollars = EXCLUDED.last_price_dollars,
+                        volume_fp = EXCLUDED.volume_fp,
+                        open_interest_fp = EXCLUDED.open_interest_fp,
                         updated_at = NOW()
-                """, (
-                    event_ticker, market_ticker, strike,
-                    market_data['yes_bid'], market_data['yes_ask'],
-                    market_data['no_bid'], market_data['no_ask'],
-                    market_data['last_price'], market_data['volume'],
-                    market_data['volume_24h_fp'], market_data['open_interest'],
-                    market_data['liquidity'], market_data['yes_volume'],
-                    market_data['no_volume']
-                ))
-                
+                """,
+                    (
+                        event_ticker,
+                        market_ticker,
+                        strike,
+                        market_data["yes_bid_dollars"],
+                        market_data["yes_ask_dollars"],
+                        market_data["no_bid_dollars"],
+                        market_data["no_ask_dollars"],
+                        market_data["last_price_dollars"],
+                        market_data["volume_fp"],
+                        market_data["open_interest_fp"],
+                    ),
+                )
+
                 self.db_connection.commit()
-            
-            print(f"[{datetime.now(EST)}] 📊 Updated {market_ticker}: YB={market_data['yes_bid']}, YA={market_data['yes_ask']}, NB={market_data['no_bid']}, NA={market_data['no_ask']}, LP={market_data['last_price']}, YV={market_data['yes_volume']}, NV={market_data['no_volume']}")
+
+            print(
+                f"[{datetime.now(EST)}] 📊 Updated {market_ticker}: "
+                f"YA$={market_data['yes_ask_dollars']} NA$={market_data['no_ask_dollars']} "
+                f"vol_fp={market_data['volume_fp']} oi_fp={market_data['open_interest_fp']}"
+            )
             return True
             
         except Exception as e:

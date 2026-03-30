@@ -52,13 +52,8 @@ DEFAULT_PORTS = {
     "symbol_price_watchdog_xrp": 8026,
 
     "kalshi_account_sync": 8004,
-    "kalshi_market_watchdog_hourly_btc": 8005,
-    "kalshi_market_watchdog_hourly_eth": 8011,
-    "strike_table_generator_hourly_btc": 8014,
-    "strike_table_generator_hourly_eth": 8015,
-    # SPX/NDX not currently traded; uncomment to re-enable later.
-    # "strike_table_generator_hourly_spx": 8016,
-    # "strike_table_generator_hourly_ndx": 8017,
+    "market_watchdog_ws_kalshi_hourly": 8005,
+    "strike_table_generator_ws_hourly": 8014,
     "market_watchdog_kalshi_15m": 8031,
     "market_watchdog_ws_kalshi_15m": 8035,
     "strike_table_generator_15m": 8032,
@@ -103,37 +98,16 @@ def ensure_port_config_exists():
                     "description": "Kalshi account synchronization",
                     "status": "RUNNING"
                 },
-                "kalshi_market_watchdog_hourly_btc": {
+                "market_watchdog_ws_kalshi_hourly": {
                     "port": 8005,
-                    "description": "Kalshi BTC hourly market data monitoring",
+                    "description": "Kalshi hourly market WebSocket → live_data.market_kalshi_hourly",
                     "status": "RUNNING"
                 },
-                "kalshi_market_watchdog_hourly_eth": {
-                    "port": 8011,
-                    "description": "Kalshi ETH hourly market data monitoring",
-                    "status": "RUNNING"
-                },
-                "strike_table_generator_hourly_btc": {
+                "strike_table_generator_ws_hourly": {
                     "port": 8014,
-                    "description": "Strike table generator hourly BTC",
+                    "description": "WS/Redis hourly strike generator → live_data.strike_table_hourly",
                     "status": "RUNNING"
                 },
-                "strike_table_generator_hourly_eth": {
-                    "port": 8015,
-                    "description": "Strike table generator hourly ETH",
-                    "status": "RUNNING"
-                },
-                # SPX/NDX not currently traded; uncomment to re-enable later.
-                # "strike_table_generator_hourly_spx": {
-                #     "port": 8016,
-                #     "description": "Strike table generator hourly SPX",
-                #     "status": "RUNNING"
-                # },
-                # "strike_table_generator_hourly_ndx": {
-                #     "port": 8017,
-                #     "description": "Strike table generator hourly NDX",
-                #     "status": "RUNNING"
-                # },
                 "strike_table_generator_15m": {
                     "port": 8032,
                     "description": "Unified 15m strike table generator (all symbols)",

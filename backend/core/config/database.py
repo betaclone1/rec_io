@@ -675,89 +675,27 @@ def init_database():
             END $$;
         """)
 
-        # WS-backed unified 15m strike table (phase-1 deployment target for Redis-triggered generator).
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS live_data.strike_table_ws_15m (
-                id SERIAL PRIMARY KEY,
-                "timestamp" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                symbol VARCHAR(10) NOT NULL,
+            CREATE TABLE IF NOT EXISTS live_data.strike_pipeline_health (
                 exchange VARCHAR(20) NOT NULL,
-                market TEXT DEFAULT '15m',
-                current_price NUMERIC(18,5),
-                ttc_hourly INTEGER,
-                ttc_15m INTEGER,
-                event_ticker VARCHAR(50),
-                market_title TEXT,
-                strike_tier INTEGER,
-                market_status VARCHAR(20),
-                strike NUMERIC(18,5),
-                buffer NUMERIC(18,5),
-                buffer_pct NUMERIC(12,6),
-                probability_hourly DECIMAL(5,2),
-                probability_15m DECIMAL(5,2),
-                yes_ask DECIMAL(5,2),
-                no_ask DECIMAL(5,2),
-                yes_ask_dollars TEXT,
-                no_ask_dollars TEXT,
-                yes_bid_dollars TEXT,
-                no_bid_dollars TEXT,
-                yes_price_spread NUMERIC(6,4),
-                no_price_spread NUMERIC(6,4),
-                yes_diff DECIMAL(5,2),
-                no_diff DECIMAL(5,2),
-                volume INTEGER,
-                ticker VARCHAR(50),
-                active_side VARCHAR(10),
-                momentum_weighted_score DECIMAL(5,3),
-                momentum_percentile DECIMAL(5,1),
-                volatility NUMERIC(10,6),
-                volatility_percentile NUMERIC(5,1),
-                movement NUMERIC(10,4),
-                movement_percentile NUMERIC(5,1),
-                yes_ask_min_15m NUMERIC(18,4),
-                yes_ask_max_15m NUMERIC(18,4),
-                no_ask_min_15m NUMERIC(18,4),
-                no_ask_max_15m NUMERIC(18,4),
-                yes_ask_range_15m NUMERIC(18,4),
-                no_ask_range_15m NUMERIC(18,4),
-                pipeline_healthy BOOLEAN NOT NULL DEFAULT FALSE,
-                pipeline_health_reason TEXT,
-                pipeline_health_checked_at TIMESTAMP WITH TIME ZONE,
-                pipeline_health_max_age_sec INTEGER NOT NULL DEFAULT 30,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-            );
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS strike_table_ws_15m_exchange_symbol_idx
-            ON live_data.strike_table_ws_15m USING btree (exchange, symbol);
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_strike_table_ws_15m_lookup
-            ON live_data.strike_table_ws_15m USING btree ("timestamp", symbol, current_price);
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS strike_table_ws_15m_exchange_symbol_timestamp_idx
-            ON live_data.strike_table_ws_15m USING btree (exchange, symbol, "timestamp" DESC);
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS strike_table_ws_15m_exchange_symbol_health_checked_idx
-            ON live_data.strike_table_ws_15m USING btree (exchange, symbol, pipeline_health_checked_at DESC);
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS live_data.strike_pipeline_health_15m (
-                exchange VARCHAR(20) NOT NULL,
+                market VARCHAR(20) NOT NULL,
                 symbol VARCHAR(10) NOT NULL,
                 pipeline_healthy BOOLEAN NOT NULL DEFAULT FALSE,
                 pipeline_health_reason TEXT,
                 pipeline_health_checked_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-                pipeline_health_max_age_sec INTEGER NOT NULL DEFAULT 30,
+                pipeline_health_max_age_sec INTEGER NOT NULL DEFAULT 900,
+                ws_transport_ok_at TIMESTAMP WITH TIME ZONE,
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (exchange, symbol)
+                PRIMARY KEY (exchange, market, symbol)
             );
         """)
         cursor.execute("""
-            CREATE INDEX IF NOT EXISTS strike_pipeline_health_15m_checked_idx
-            ON live_data.strike_pipeline_health_15m USING btree (pipeline_health_checked_at DESC);
+            CREATE INDEX IF NOT EXISTS strike_pipeline_health_checked_idx
+            ON live_data.strike_pipeline_health USING btree (pipeline_health_checked_at DESC);
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS strike_pipeline_health_transport_idx
+            ON live_data.strike_pipeline_health USING btree (ws_transport_ok_at DESC NULLS LAST);
         """)
         # Add status and external_transfer_id to transfers_0001 if table exists
         cursor.execute("""
@@ -827,16 +765,6 @@ def init_database():
                 created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
-        
-        
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS live_data.eth_price_log (
-                id SERIAL PRIMARY KEY,
-                price DECIMAL(15,2),
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
-        
         # New naming convention tables
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS live_data.live_price_log_1s_btc (
@@ -949,7 +877,7 @@ def init_database():
                 ty text;
                 tbl regclass;
             BEGIN
-                FOREACH t IN ARRAY ARRAY['live_price_log_1s_btc','live_price_log_1s_eth','live_price_log_1s_sol','live_price_log_1s_xrp','live_price_log_1s_spx','live_price_log_1s_ndx'] LOOP
+                FOREACH t IN ARRAY ARRAY['live_price_log_1s_btc','live_price_log_1s_eth','live_price_log_1s_sol','live_price_log_1s_xrp'] LOOP
                     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'live_data' AND table_name = t) THEN
                         FOREACH c IN ARRAY ARRAY['move_1m','move_2m','move_3m','move_4m','move_15m','move_30m','movement','movement_percentile'] LOOP
                             IF c = 'movement_percentile' THEN ty := 'DECIMAL(5,1)'; ELSE ty := 'DECIMAL(10,4)'; END IF;
@@ -968,7 +896,7 @@ def init_database():
             DECLARE
                 t text;
             BEGIN
-                FOREACH t IN ARRAY ARRAY['live_price_log_1s_btc','live_price_log_1s_eth','live_price_log_1s_sol','live_price_log_1s_xrp','live_price_log_1s_spx','live_price_log_1s_ndx'] LOOP
+                FOREACH t IN ARRAY ARRAY['live_price_log_1s_btc','live_price_log_1s_eth','live_price_log_1s_sol','live_price_log_1s_xrp'] LOOP
                     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'live_data' AND table_name = t) THEN
                         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'live_data' AND table_name = t AND column_name = 'momentum_percentile') THEN
                             EXECUTE format('ALTER TABLE live_data.%I ADD COLUMN momentum_percentile DECIMAL(5,1)', t);
@@ -990,14 +918,14 @@ def init_database():
             END $$;
         """)
         
-        # Add volatility and movement columns to strike tables (btc, eth, spx, ndx)
+        # Add volatility and movement columns to hourly strike tables (btc, eth)
         cursor.execute("""
             DO $$
             DECLARE
                 t text;
                 r record;
             BEGIN
-                FOREACH t IN ARRAY ARRAY['strike_table_hourly_btc','strike_table_hourly_eth','strike_table_hourly_spx','strike_table_hourly_ndx'] LOOP
+                FOREACH t IN ARRAY ARRAY['strike_table_hourly'] LOOP
                     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'live_data' AND table_name = t) THEN
                         FOR r IN (SELECT unnest(ARRAY['volatility','volatility_percentile','movement','movement_percentile']) AS col,
                                          unnest(ARRAY['NUMERIC(10,6)','NUMERIC(5,1)','NUMERIC(10,4)','NUMERIC(5,1)']) AS typ) LOOP
@@ -1019,21 +947,10 @@ def init_database():
                 def text;
             BEGIN
                 FOR r IN (
-                    SELECT unnest(ARRAY['market_kalshi_hourly_btc','market_kalshi_hourly_eth','market_kalshi_hourly_ndx','market_kalshi_hourly_spx']) AS t, 'hourly' AS d
+                    SELECT unnest(ARRAY['market_kalshi_hourly']) AS t, 'hourly' AS d
                     UNION ALL SELECT 'market_kalshi_15m', '15m'
-                    UNION ALL SELECT 'market_kalshi_15m_btc', '15m'
-                    UNION ALL SELECT 'market_kalshi_15m_eth', '15m'
-                    UNION ALL SELECT 'market_kalshi_15m_sol', '15m'
-                    UNION ALL SELECT 'market_kalshi_15m_xrp', '15m'
-                    UNION ALL SELECT 'strike_table_hourly_btc', 'hourly'
-                    UNION ALL SELECT 'strike_table_hourly_eth', 'hourly'
-                    UNION ALL SELECT 'strike_table_hourly_ndx', 'hourly'
-                    UNION ALL SELECT 'strike_table_hourly_spx', 'hourly'
+                    UNION ALL SELECT 'strike_table_hourly', 'hourly'
                     UNION ALL SELECT 'strike_table_15m', '15m'
-                    UNION ALL SELECT 'strike_table_15m_btc', '15m'
-                    UNION ALL SELECT 'strike_table_15m_eth', '15m'
-                    UNION ALL SELECT 'strike_table_15m_sol', '15m'
-                    UNION ALL SELECT 'strike_table_15m_xrp', '15m'
                 ) LOOP
                     tbl := r.t;
                     def := r.d;
@@ -1272,33 +1189,44 @@ def init_database():
             );
         """)
         
-        # New naming convention for hourly strike table (BTC)
-        # NOTE: Hourly and 15m strike tables share the same column set (ttc_hourly, ttc_15m, probability_hourly, probability_15m); 15m tables use ttc_15m/probability_15m only.
+        # Unified hourly strike table (BTC+ETH rows); same column types as strike_table_15m / migration 20260331_1530.
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS live_data.strike_table_hourly_btc (
+            CREATE TABLE IF NOT EXISTS live_data.strike_table_hourly (
                 id SERIAL PRIMARY KEY,
                 timestamp TIMESTAMP WITH TIME ZONE DEFAULT now(),
-                symbol VARCHAR(10),
+                symbol VARCHAR(10) NOT NULL,
+                exchange VARCHAR(20) NOT NULL DEFAULT 'kalshi',
                 market TEXT DEFAULT 'hourly',
-                current_price DECIMAL(10,2),
+                current_price NUMERIC(18,5),
                 ttc_hourly INTEGER,
-                broker VARCHAR(20),
+                ttc_15m INTEGER,
                 event_ticker VARCHAR(50),
                 market_title TEXT,
                 strike_tier INTEGER,
                 market_status VARCHAR(20),
-                strike INTEGER,
-                buffer DECIMAL(10,2),
-                buffer_pct DECIMAL(5,2),
+                strike NUMERIC(18,5),
+                buffer NUMERIC(18,5),
+                buffer_pct NUMERIC(12,6),
                 probability_hourly DECIMAL(5,2),
-                yes_ask DECIMAL(5,2),
-                no_ask DECIMAL(5,2),
+                probability_15m DECIMAL(5,2),
+                yes_ask_dollars TEXT,
+                no_ask_dollars TEXT,
+                yes_bid_dollars TEXT,
+                no_bid_dollars TEXT,
+                yes_price_spread NUMERIC(6,4),
+                no_price_spread NUMERIC(6,4),
                 yes_diff DECIMAL(5,2),
                 no_diff DECIMAL(5,2),
-                volume INTEGER,
+                volume_fp TEXT,
+                open_interest_fp TEXT,
                 ticker VARCHAR(50),
                 active_side VARCHAR(10),
                 momentum_weighted_score DECIMAL(5,3),
+                momentum_percentile DECIMAL(5,1),
+                volatility NUMERIC(10,6),
+                volatility_percentile NUMERIC(5,1),
+                movement NUMERIC(10,4),
+                movement_percentile NUMERIC(5,1),
                 yes_ask_min_15m NUMERIC(18,4),
                 yes_ask_max_15m NUMERIC(18,4),
                 no_ask_min_15m NUMERIC(18,4),
@@ -1318,10 +1246,7 @@ def init_database():
                 tbl TEXT;
             BEGIN
                 FOR tbl IN SELECT unnest(ARRAY[
-                    'strike_table_hourly_btc',
-                    'strike_table_hourly_eth',
-                    'strike_table_hourly_spx',
-                    'strike_table_hourly_ndx'
+                    'strike_table_hourly'
                 ]) LOOP
                     -- Rename ttc_seconds to ttc_hourly if old column exists and new one does not
                     IF EXISTS (
@@ -1374,96 +1299,6 @@ def init_database():
             END
             $$;
         """)
-        
-        # 15m strike tables (single strike per table; strike_tier 0).
-        # Same column set as hourly: ttc_hourly/probability_hourly (NULL for 15m), ttc_15m/probability_15m (used).
-        for sym in ('btc', 'eth'):
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS live_data.strike_table_15m_{sym} (
-                    id SERIAL PRIMARY KEY,
-                    timestamp TIMESTAMP WITH TIME ZONE DEFAULT now(),
-                    symbol VARCHAR(10),
-                    market TEXT DEFAULT '15m',
-                    current_price DECIMAL(10,2),
-                    ttc_hourly INTEGER,
-                    probability_hourly DECIMAL(5,2),
-                    ttc_15m INTEGER,
-                    probability_15m DECIMAL(5,2),
-                    yes_ask DECIMAL(5,2),
-                    no_ask DECIMAL(5,2),
-                    yes_ask_dollars TEXT,
-                    no_ask_dollars TEXT,
-                    yes_bid_dollars TEXT,
-                    no_bid_dollars TEXT,
-                    yes_price_spread NUMERIC(6,4),
-                    no_price_spread NUMERIC(6,4),
-                    yes_diff DECIMAL(5,2),
-                    no_diff DECIMAL(5,2),
-                    volume INTEGER,
-                    ticker VARCHAR(50),
-                    active_side VARCHAR(10),
-                    momentum_weighted_score DECIMAL(5,3),
-                    momentum_percentile DECIMAL(5,1),
-                    volatility NUMERIC(10,6),
-                    volatility_percentile NUMERIC(5,1),
-                    movement NUMERIC(10,4),
-                    movement_percentile NUMERIC(5,1),
-                    yes_ask_min_15m NUMERIC(18,4),
-                    yes_ask_max_15m NUMERIC(18,4),
-                    no_ask_min_15m NUMERIC(18,4),
-                    no_ask_max_15m NUMERIC(18,4),
-                    yes_ask_range_15m NUMERIC(18,4),
-                    no_ask_range_15m NUMERIC(18,4),
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
-                );
-            """)
-
-            # Ensure hourly-aligned columns exist on existing 15m tables
-            cursor.execute(f"""
-                ALTER TABLE live_data.strike_table_15m_{sym}
-                ADD COLUMN IF NOT EXISTS ttc_hourly INTEGER,
-                ADD COLUMN IF NOT EXISTS probability_hourly DECIMAL(5,2),
-                ADD COLUMN IF NOT EXISTS ttc_15m INTEGER,
-                ADD COLUMN IF NOT EXISTS probability_15m DECIMAL(5,2),
-                ADD COLUMN IF NOT EXISTS yes_ask_min_15m NUMERIC(18,4),
-                ADD COLUMN IF NOT EXISTS yes_ask_max_15m NUMERIC(18,4),
-                ADD COLUMN IF NOT EXISTS no_ask_min_15m NUMERIC(18,4),
-                ADD COLUMN IF NOT EXISTS no_ask_max_15m NUMERIC(18,4),
-                ADD COLUMN IF NOT EXISTS yes_ask_range_15m NUMERIC(18,4),
-                ADD COLUMN IF NOT EXISTS no_ask_range_15m NUMERIC(18,4);
-            """)
-        
-        # Remove legacy columns from 15m strike tables (use ttc_15m / probability_15m only)
-        for sym in ('btc', 'eth'):
-            cursor.execute(f"ALTER TABLE live_data.strike_table_15m_{sym} DROP COLUMN IF EXISTS ttc_seconds")
-            cursor.execute(f"ALTER TABLE live_data.strike_table_15m_{sym} DROP COLUMN IF EXISTS probability")
-
-        # SOL/XRP 15m: widen price/buffer/strike precision (matches strike_table_generator + migration 20260322_1200).
-        cursor.execute("""
-            DO $$
-            BEGIN
-              IF EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'live_data' AND table_name = 'strike_table_15m_sol'
-              ) THEN
-                ALTER TABLE live_data.strike_table_15m_sol
-                  ALTER COLUMN current_price TYPE NUMERIC(18,5) USING round(current_price::numeric, 5),
-                  ALTER COLUMN buffer TYPE NUMERIC(18,5) USING round(buffer::numeric, 5),
-                  ALTER COLUMN buffer_pct TYPE NUMERIC(12,6) USING round(buffer_pct::numeric, 6),
-                  ALTER COLUMN strike TYPE NUMERIC(18,5) USING round(strike::numeric, 5);
-              END IF;
-              IF EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'live_data' AND table_name = 'strike_table_15m_xrp'
-              ) THEN
-                ALTER TABLE live_data.strike_table_15m_xrp
-                  ALTER COLUMN current_price TYPE NUMERIC(18,5) USING round(current_price::numeric, 5),
-                  ALTER COLUMN buffer TYPE NUMERIC(18,5) USING round(buffer::numeric, 5),
-                  ALTER COLUMN buffer_pct TYPE NUMERIC(12,6) USING round(buffer_pct::numeric, 6),
-                  ALTER COLUMN strike TYPE NUMERIC(18,5) USING round(strike::numeric, 5);
-              END IF;
-            END $$;
-        """)
 
         # Final-quarter (15m window) YES/NO ask extrema in dollars — matches migration
         # 20260328_2115_strike_table_final_quarter_ask_tracking.
@@ -1473,15 +1308,7 @@ def init_database():
               t TEXT;
               tables TEXT[] := ARRAY[
                 'strike_table_15m',
-                'strike_table_ws_15m',
-                'strike_table_hourly_btc',
-                'strike_table_hourly_eth',
-                'strike_table_hourly_ndx',
-                'strike_table_hourly_spx',
-                'strike_table_15m_btc',
-                'strike_table_15m_eth',
-                'strike_table_15m_sol',
-                'strike_table_15m_xrp'
+                'strike_table_hourly'
               ];
             BEGIN
               FOREACH t IN ARRAY tables LOOP

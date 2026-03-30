@@ -6,6 +6,52 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-30 — Unified hourly Kalshi pipeline, WS rollover + tick verify, migrations, AES/ATS reads
+
+**Summary**
+- **Hourly market WS (`market_watchdog_ws.py`):** Discover-before-delete; **atomic** DELETE + REST seed in **one transaction** (no committed empty `market_kalshi_hourly` window). **Relaxed first-tick verify** for hourly (fraction + minimum count; illiquid strikes often never emit Kalshi ticker). Longer effective verify window for hourly (env `MARKET_WATCHDOG_WS_HOURLY_VERIFY_SEC`, default 240s). Optional strict mode via `MARKET_WATCHDOG_WS_HOURLY_TICK_VERIFY_STRICT=1`.
+- **AES / ATS:** Unified `strike_table_hourly` + exchange/symbol filters; **15m vs hourly** “no strike ladder” log hints point at the correct `market_kalshi_*` watchdog and strike generator.
+- **Pipeline health:** `live_data.strike_pipeline_health`, `backend/core/strike_pipeline_health.py`, integration with AES/trade paths where applicable.
+- **DB:** Restore/migrations for unified hourly tables, column alignment with 15m shape, legacy table drops, housekeeping restore migration. See ordered ids below.
+- **Other:** Kalshi normalization/watchdog/test workflow tweaks, trade monitor / database monitor / mobile parity edits, `generate_unified_supervisor_config`, cascading failure detector, runbook updates.
+
+**Plans:** `.cursor/plans/unified-kalshi-ws-master-aes-ats.md`, `.cursor/plans/unified-15m-aes-ats-reads.md`, `.cursor/plans/db-prod-schema-alignment.md`
+
+**DB migrations (required on production, in this order — runner skips already-applied ids)**
+
+1. `20260327_2230_restore_accidental_housekeeping_table_drops`
+2. `20260329_1500_hourly_kalshi_strike_dollars_fp` (legacy hourly BTC/ETH tables; skip safely if already superseded — runner records applied)
+3. `20260329_1800_strike_tables_volume_open_interest_fp_text`
+4. `20260329_1900_testing_market_kalshi_btc_websocket_dollars_fp` (`testing` schema parity)
+5. `20260329_2359_unified_hourly_pipeline_health`
+6. `20260330_1000_hourly_tables_match_15m_shape`
+7. `20260331_1200_live_data_drop_legacy_split_and_equity_tables`
+8. `20260331_1400_strike_hourly_yes_no_ask_dollars`
+9. `20260331_1410_strike_hourly_momentum_percentile`
+10. `20260331_1530_hourly_market_strike_align_15m`
+
+**Production checklist**
+- [ ] Confirm codebase:  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations **in order** (from project root; use `venv/bin/python` or `.venv/bin/python` as on server):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260327_2230_restore_accidental_housekeeping_table_drops`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260329_1500_hourly_kalshi_strike_dollars_fp`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260329_1800_strike_tables_volume_open_interest_fp_text`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260329_1900_testing_market_kalshi_btc_websocket_dollars_fp`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260329_2359_unified_hourly_pipeline_health`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260330_1000_hourly_tables_match_15m_shape`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260331_1200_live_data_drop_legacy_split_and_equity_tables`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260331_1400_strike_hourly_yes_no_ask_dollars`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260331_1410_strike_hourly_momentum_percentile`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260331_1530_hourly_market_strike_align_15m`  
+  (Runner skips ids already in `system.schema_migrations`.)
+- [ ] Schema drift:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart: `./scripts/MASTER_RESTART.sh` (from repo root on the server)
+- [ ] Verify: `main_app` :3000 and `trade_executor` :8001 health; supervisor RUNNING for hourly/15m WS and strike generators; spot-check `live_data.market_kalshi_hourly` / `strike_table_hourly`.
+
+---
+
 ## 2026-03-28 — Combined deploy: trade cadence, symbol expiration W/L, strike final-quarter asks, trades snapshot columns, monitor stop-loss, ATS 15m, dashboards
 
 **Summary**

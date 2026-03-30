@@ -34,8 +34,8 @@
         <th>yes_ask_dollars</th>
         <th>no_ask_dollars</th>
         <th>current_price</th>
-        <th>volume</th>
-        <th>open_interest</th>
+        <th>volume_fp</th>
+        <th>open_interest_fp</th>
         <th>timestamp</th>
       </tr>
     </thead>
@@ -114,8 +114,8 @@
       const nearest = res.nearest;
       const yesAskD = nearest ? nearest.yes_ask_dollars : null;
       const noAskD = nearest ? nearest.no_ask_dollars : null;
-      const volume = nearest ? nearest.volume : null;
-      const openInterest = nearest ? nearest.open_interest : null;
+      const volume = nearest ? nearest.volume_fp : null;
+      const openInterest = nearest ? nearest.open_interest_fp : null;
 
       row.innerHTML = `
         <td class="mono">${res.event_ticker || "—"}</td>

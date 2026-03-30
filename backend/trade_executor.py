@@ -39,6 +39,7 @@ TRADE_EXECUTOR_PORT = get_port("trade_executor")
 from backend.util.paths import get_accounts_data_dir, get_host, get_logs_dir
 from backend.account_mode import get_account_mode
 from backend.core.config.database import get_postgresql_connection
+from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
 
 # Create Flask app
 app = Flask(__name__)
@@ -220,37 +221,24 @@ def _is_15m_trade_payload(data: Dict[str, Any]) -> bool:
     return ("15M" in ticker) or (market == "15m") or ("15m" in strategy) or ("15m" in monitor)
 
 
-def _check_ws_pipeline_health(symbol: Optional[str], max_staleness_sec: int) -> tuple[bool, str]:
+def _kalshi_strike_pipeline_market(data: Dict[str, Any]) -> Optional[str]:
+    """Return health ``market`` key (15m or hourly) when this trade should be pipeline-gated."""
+    if _is_15m_trade_payload(data):
+        return "15m"
+    m = str(data.get("market") or "").strip().lower()
+    if m == "hourly":
+        return "hourly"
+    return None
+
+
+def _check_ws_pipeline_health(symbol: Optional[str], *, market: str) -> tuple[bool, str]:
     if not symbol:
         return False, "missing_symbol_for_pipeline_health_check"
     conn = get_postgresql_connection()
     if not conn:
         return False, "pipeline_health_db_unavailable"
     try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT
-                pipeline_healthy,
-                pipeline_health_reason,
-                EXTRACT(EPOCH FROM (NOW() - pipeline_health_checked_at))
-            FROM live_data.strike_pipeline_health_15m
-            WHERE exchange = %s AND symbol = %s
-            LIMIT 1
-            """,
-            ("kalshi", symbol.upper()),
-        )
-        row = cur.fetchone()
-        if not row:
-            return False, "pipeline_health_missing_latest_row"
-        is_healthy = bool(row[0])
-        reason = str(row[1] or "")
-        age_sec = float(row[2]) if row[2] is not None else float("inf")
-        if not is_healthy:
-            return False, f"pipeline_unhealthy:{reason or 'unknown'}"
-        if age_sec > float(max_staleness_sec):
-            return False, f"pipeline_health_stale:{age_sec:.1f}s>{max_staleness_sec}s"
-        return True, "ok"
+        return evaluate_pipeline_gate_conn(conn, exchange="kalshi", market=market, symbol=symbol)
     except Exception as e:
         return False, f"pipeline_health_check_error:{e}"
     finally:
@@ -289,14 +277,14 @@ def trigger_trade():
         log_event(ticket_id, "RECEIVED TICKET", trade_id=trade_id)
 
         ticker = data.get("ticker")
-        if _is_15m_trade_payload(data):
+        pipe_mkt = _kalshi_strike_pipeline_market(data)
+        if pipe_mkt:
             symbol = str(data.get("symbol") or "").upper() or _extract_symbol_from_ticker(ticker)
-            max_staleness_sec = int(os.getenv("STRIKE_PIPELINE_MAX_STALENESS_SEC", "30"))
-            healthy, health_reason = _check_ws_pipeline_health(symbol, max_staleness_sec=max_staleness_sec)
+            healthy, health_reason = _check_ws_pipeline_health(symbol, market=pipe_mkt)
             if not healthy:
                 msg = (
                     f"BLOCKED by WS strike pipeline health gate: symbol={symbol or 'unknown'} "
-                    f"reason={health_reason}"
+                    f"market={pipe_mkt} reason={health_reason}"
                 )
                 log_event(ticket_id, msg, trade_id=trade_id)
                 return jsonify({"status": "rejected", "error": msg}), 503

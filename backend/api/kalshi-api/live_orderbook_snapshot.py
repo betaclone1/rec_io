@@ -237,18 +237,24 @@ class LiveOrderbookSnapshot:
             }
         }
         
+        def _dollar_key_to_text(v):
+            if v is None:
+                return None
+            s = f"{float(v):.6f}".rstrip("0").rstrip(".")
+            return s if s else "0"
+
         for market_ticker, orderbook in self.orderbooks.items():
             # Calculate best bid/ask for YES side
             yes_prices = sorted([float(p) for p in orderbook['yes'].keys()], reverse=True)
             no_prices = sorted([float(p) for p in orderbook['no'].keys()])
             
             # For YES side: bid = highest price (best bid), ask = lowest price (best ask)
-            yes_bid = yes_prices[0] if yes_prices else None
-            yes_ask = yes_prices[-1] if yes_prices else None
+            best_yes_bid = yes_prices[0] if yes_prices else None
+            best_yes_ask = yes_prices[-1] if yes_prices else None
             
             # For NO side: bid = lowest price (best bid), ask = highest price (best ask)
-            no_bid = no_prices[-1] if no_prices else None
-            no_ask = no_prices[0] if no_prices else None
+            best_no_bid = no_prices[-1] if no_prices else None
+            best_no_ask = no_prices[0] if no_prices else None
             
             # Calculate total volume
             yes_volume = sum(orderbook['yes'].values())
@@ -257,14 +263,14 @@ class LiveOrderbookSnapshot:
             
             # Determine if market is active
             is_active = total_volume > 0
-            
+
             market_data = {
                 'ticker': market_ticker,
                 'status': 'active' if is_active else 'inactive',
-                'yes_bid': yes_bid,
-                'yes_ask': yes_ask,
-                'no_bid': no_bid,
-                'no_ask': no_ask,
+                'yes_bid_dollars': _dollar_key_to_text(best_yes_bid),
+                'yes_ask_dollars': _dollar_key_to_text(best_yes_ask),
+                'no_bid_dollars': _dollar_key_to_text(best_no_bid),
+                'no_ask_dollars': _dollar_key_to_text(best_no_ask),
                 'yes_volume': yes_volume,
                 'no_volume': no_volume,
                 'total_volume': total_volume,

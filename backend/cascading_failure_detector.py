@@ -89,17 +89,9 @@ class CascadingFailureDetector:
             "symbol_price_watchdog_xrp", # XRP price data
             # SPX/NDX not currently traded; uncomment to re-enable later.
             # "symbol_price_watchdog_spx", # SPX price data
-            "strike_table_generator_hourly_btc", # BTC strike table data
-            "strike_table_generator_hourly_eth", # ETH strike table data
-            # "strike_table_generator_hourly_spx", # SPX strike table data
-            # "strike_table_generator_hourly_ndx", # NDX strike table data
+            "strike_table_generator_ws_hourly",  # WS hourly strikes → live_data.strike_table_hourly
             "kalshi_account_sync", # Kalshi API sync
-            "kalshi_market_watchdog_hourly_btc", # BTC Kalshi hourly market data
-            "kalshi_market_watchdog_hourly_eth", # ETH Kalshi hourly market data
-            # "kalshi_market_watchdog_hourly_spx", # SPX Kalshi hourly market data
-            # "kalshi_market_watchdog_hourly_ndx", # NDX Kalshi hourly market data
-            # "kalshi_market_watchdog_hourly_inx", # INX - not in supervisor; uncomment when deployed
-            # "kalshi_market_watchdog_hourly_nasdaq100", # NASDAQ100 - not in supervisor; uncomment when deployed
+            "market_watchdog_ws_kalshi_hourly",  # Kalshi hourly WS ticker → live_data.market_kalshi_hourly
             "market_watchdog_ws_kalshi_15m", # Kalshi 15m WS ticker → live_data.market_kalshi_ws_15m
             "strike_table_generator_ws_15m", # WS 15m strikes → live_data.strike_table_15m
         ]

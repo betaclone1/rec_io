@@ -521,13 +521,13 @@ async function updateStrikeTable() {
         const noAsk = Math.round(parseFloat(strikeData.no_ask_dollars) * 100);
         const yesDiff = strikeData.yes_diff;
         const noDiff = strikeData.no_diff;
-        const volume = strikeData.volume;
+        const volumeFp = strikeData.volume_fp;
 
         // Get current diff mode state
         const diffMode = window.diffMode || false;
 
-        // Simplified button enabling logic
-        const volumeNum = parseInt(volume) || 0;
+        // Simplified button enabling logic (Kalshi depth from volume_fp text)
+        const volumeNum = Number.isFinite(parseFloat(volumeFp)) ? parseFloat(volumeFp) : 0;
         // Get min_volume from current monitor settings (default to 1000 if not available)
         const minVolume = window.currentMonitorMinVolume || 1000;
         const volumeOk = volumeNum >= minVolume;

@@ -380,18 +380,14 @@ def _build_strike_row(
     if diffs is None:
         return None
     yes_diff, no_diff, active_side = diffs
-    yes_c = int(round(yes_ask_d * 100))
-    no_c = int(round(no_ask_d * 100))
     return {
         "strike": strike,
         "buffer": abs(current_price - strike),
         "buffer_pct": (abs(current_price - strike) / current_price * 100) if current_price else None,
         "probability": probability,
-        "yes_ask": yes_c,
-        "no_ask": no_c,
         "yes_ask_dollars": yes_ask_d,
         "no_ask_dollars": no_ask_d,
-        "volume": volume,
+        "volume_fp": str(int(volume)),
         "ticker": ticker,
         "yes_diff": yes_diff,
         "no_diff": no_diff,

@@ -237,10 +237,8 @@ SELECT DISTINCT ON (exchange, symbol)
     id, "timestamp", symbol, exchange, market, current_price,
     ttc_hourly, ttc_15m, event_ticker, market_title, strike_tier, market_status,
     strike, buffer, buffer_pct, probability_hourly, probability_15m,
-    ROUND((yes_ask_dollars::numeric * 100)::numeric, 2) AS yes_ask,
-    ROUND((no_ask_dollars::numeric * 100)::numeric, 2) AS no_ask,
     yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
-    ticker, active_side, volume, open_interest,
+    ticker, active_side, volume_fp, open_interest_fp,
     momentum_weighted_score, momentum_percentile, volatility, volatility_percentile,
     movement, movement_percentile, created_at
 FROM live_data.strike_table_15m

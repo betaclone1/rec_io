@@ -3503,7 +3503,6 @@ function getTruncatedMarketTitle() {
   const cell = document.getElementById('strikePanelMarketTitleCell');
   if (cell && cell.textContent && cell.textContent !== 'Loading market title...') {
     const marketTitle = cell.textContent.trim();
-    // Extract time from "BTC price today at 5pm?" -> "5pm"
     const timeMatch = marketTitle.match(/at\s+(.+?)\?/i);
     if (timeMatch) {
       return `${currentSymbol} ${timeMatch[1].trim()}`;
@@ -6708,7 +6707,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const noAsk = strikeData.no_ask_dollars ? Math.round(parseFloat(strikeData.no_ask_dollars) * 100) : null;
         const yesDiff = strikeData.yes_diff;
         const noDiff = strikeData.no_diff;
-        const volume = strikeData.volume;
+        const volNum = Number.isFinite(parseFloat(strikeData.volume_fp)) ? parseFloat(strikeData.volume_fp) : NaN;
+        const minVol = window.currentMonitorMinVolume || 1000;
         const ticker = strikeData.ticker;
         const diffMode = window.diffMode || false;
         
@@ -6719,11 +6719,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (activeSide === 'yes') {
           activeAsk = yesAsk;
           activeDiff = yesDiff;
-          activeEnabled = yesAsk <= 98;
+          activeEnabled = yesAsk != null && yesAsk <= 98 && volNum >= minVol;
         } else if (activeSide === 'no') {
           activeAsk = noAsk;
           activeDiff = noDiff;
-          activeEnabled = noAsk <= 98;
+          activeEnabled = noAsk != null && noAsk <= 98 && volNum >= minVol;
         }
         
         // Set buy button display based on mode

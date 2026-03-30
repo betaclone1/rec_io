@@ -149,7 +149,7 @@ def derive_no_side_dollars_from_yes(
     dollar_decimal_places: int | None = None,
 ):
     """
-    Binary contract complement: no_bid ~= 1 - yes_ask, no_ask ~= 1 - yes_bid (Kalshi dollar strings).
+    Binary contract complement: ``no_bid_dollars`` ≈ ``1 - yes_ask_dollars``, ``no_ask_dollars`` ≈ ``1 - yes_bid_dollars`` (Kalshi dollar strings).
     If ``dollar_decimal_places`` is set (e.g. ``KALSHI_WS_TICKER_DOLLAR_PLACES`` for WebSocket ticks),
     use that width so complements match normalized yes sides. Otherwise infer from string inputs
     (minimum 3 when unspecified).
@@ -185,14 +185,15 @@ def ticker_msg_to_row_values(
     symbol: str,
     event_ticker: str,
     exchange: str,
+    market_interval: str = "15m",
 ):
     """
     Map Kalshi WebSocket Market Ticker `msg` (see docs.kalshi.com/websockets/market-ticker)
-    to values for `live_data.market_kalshi_ws_15m` (dollar-quote columns + volume_fp + open_interest_fp text).
+    to values for unified Kalshi market tables (dollar-quote columns + volume_fp + open_interest_fp text).
     """
     sym = symbol.upper()
     br = exchange.lower().strip()
-    market_val = "15m"
+    market_val = str(market_interval or "15m").strip().lower() or "15m"
     market_ticker = msg.get("market_ticker") or ""
     if not market_ticker:
         raise ValueError("missing market_ticker")

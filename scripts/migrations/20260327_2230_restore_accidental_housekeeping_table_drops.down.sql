@@ -1,0 +1,1 @@
+-- No automatic DOWN: these objects are shared with normal prod schema. Drop manually only if needed.

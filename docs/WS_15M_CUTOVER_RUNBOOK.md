@@ -28,7 +28,7 @@ This runbook switches 15m trading data consumers and producers to the WS pipelin
 ## Pre-Cutover Checks
 
 1. Verify WS pipeline health rows exist and are fresh:
-   - `SELECT exchange, symbol, pipeline_healthy, pipeline_health_reason, pipeline_health_checked_at FROM live_data.strike_pipeline_health_15m ORDER BY symbol;`
+   - `SELECT exchange, market, symbol, pipeline_healthy, pipeline_health_reason, pipeline_health_checked_at, ws_transport_ok_at FROM live_data.strike_pipeline_health ORDER BY market, symbol;`
 2. Run parity check:
    - `venv/bin/python3 scripts/diagnostics/check_15m_ws_parity.py --symbols BTC,ETH,SOL,XRP`
 3. Confirm no persistent all-symbol degradation in dashboard power lights.

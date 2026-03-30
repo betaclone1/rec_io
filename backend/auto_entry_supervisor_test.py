@@ -37,6 +37,19 @@ from backend.util.paths import get_host, get_data_dir, get_service_url, get_trad
 
 # Add these functions after the existing imports and before the get_monitor_identifier function
 
+def _kalshi_fp_volume_number(vfp):
+    """Parse Kalshi-style volume_fp text for numeric gates (same idea as production AES)."""
+    if vfp is None:
+        return None
+    s = str(vfp).strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
 def create_monitor_watchlist_table():
     """Create monitor-specific watchlist table when supervisor starts"""
     try:
@@ -65,11 +78,11 @@ def create_monitor_watchlist_table():
                     buffer DECIMAL(10,2),
                     buffer_pct DECIMAL(5,2),
                     probability DECIMAL(5,2),
-                    yes_ask INTEGER,
-                    no_ask INTEGER,
+                    yes_ask_dollars NUMERIC(12,6),
+                    no_ask_dollars NUMERIC(12,6),
                     yes_diff INTEGER,
                     no_diff INTEGER,
-                    volume INTEGER,
+                    volume_fp TEXT,
                     ticker VARCHAR(50),
                     active_side VARCHAR(10),
                     created_at TIMESTAMP DEFAULT NOW()
@@ -470,10 +483,16 @@ def get_current_momentum(symbol="BTC"):
         cursor = conn.cursor()
         
         # Get momentum percentile from strike table (same value across all rows)
-        cursor.execute(f"""
-            SELECT momentum_percentile FROM live_data.strike_table_hourly_{symbol.lower()} 
+        cursor.execute(
+            """
+            SELECT momentum_percentile FROM live_data.strike_table_hourly
+            WHERE LOWER(TRIM(exchange::text)) = 'kalshi'
+              AND UPPER(TRIM(symbol::text)) = %s
+            ORDER BY timestamp DESC NULLS LAST
             LIMIT 1
-        """)
+            """,
+            (symbol.upper(),),
+        )
         
         result = cursor.fetchone()
         conn.close()
@@ -1044,7 +1063,8 @@ def get_master_strike_table_data():
         with conn.cursor() as cursor:
             current_symbol = get_current_monitor_symbol()
             # Hourly test strike tables follow production naming: ttc_hourly/probability_hourly.
-            cursor.execute(f"""
+            cursor.execute(
+                """
                 SELECT
                     symbol,
                     current_price,
@@ -1053,29 +1073,45 @@ def get_master_strike_table_data():
                     market_title,
                     strike_tier,
                     market_status
-                FROM live_data.strike_table_hourly_{current_symbol.lower()}
+                FROM live_data.strike_table_hourly
+                WHERE LOWER(TRIM(exchange::text)) = 'kalshi'
+                  AND UPPER(TRIM(symbol::text)) = %s
+                ORDER BY timestamp DESC NULLS LAST
                 LIMIT 1
-            """)
+                """,
+                (current_symbol.upper(),),
+            )
             header_data = cursor.fetchone()
             if not header_data:
                 log(f"[WATCHLIST] No strike table data found in PostgreSQL")
                 return None
-            cursor.execute(f"""
+            cursor.execute(
+                """
                 SELECT
                     strike,
                     buffer,
                     buffer_pct,
                     probability_hourly,
-                    yes_ask,
-                    no_ask,
-                    volume,
+                    yes_ask_dollars,
+                    no_ask_dollars,
+                    volume_fp,
+                    open_interest_fp,
                     ticker,
                     yes_diff,
                     no_diff,
                     active_side
-                FROM live_data.strike_table_hourly_{current_symbol.lower()}
+                FROM live_data.strike_table_hourly
+                WHERE LOWER(TRIM(exchange::text)) = 'kalshi'
+                  AND UPPER(TRIM(symbol::text)) = %s
+                  AND timestamp = (
+                    SELECT MAX(timestamp) FROM live_data.strike_table_hourly
+                    WHERE LOWER(TRIM(exchange::text)) = 'kalshi'
+                      AND UPPER(TRIM(symbol::text)) = %s
+                  )
                 ORDER BY strike
-            """)
+                """,
+                (current_symbol.upper(), current_symbol.upper()),
+            )
             strikes_data = cursor.fetchall()
             response = {
                 "symbol": header_data[0],
@@ -1093,13 +1129,14 @@ def get_master_strike_table_data():
                     "buffer": float(strike_row[1]) if strike_row[1] else None,
                     "buffer_pct": float(strike_row[2]) if strike_row[2] else None,
                     "probability": float(strike_row[3]) if strike_row[3] else None,
-                    "yes_ask": int(strike_row[4]) if strike_row[4] else None,
-                    "no_ask": int(strike_row[5]) if strike_row[5] else None,
-                    "volume": int(strike_row[6]) if strike_row[6] else None,
-                    "ticker": strike_row[7],
-                    "yes_diff": float(strike_row[8]) if strike_row[8] else None,
-                    "no_diff": float(strike_row[9]) if strike_row[9] else None,
-                    "active_side": strike_row[10]
+                    "yes_ask_dollars": strike_row[4],
+                    "no_ask_dollars": strike_row[5],
+                    "volume_fp": strike_row[6] if strike_row[6] is None else str(strike_row[6]).strip(),
+                    "open_interest_fp": strike_row[7] if strike_row[7] is None else str(strike_row[7]).strip(),
+                    "ticker": strike_row[8],
+                    "yes_diff": float(strike_row[9]) if strike_row[9] else None,
+                    "no_diff": float(strike_row[10]) if strike_row[10] else None,
+                    "active_side": strike_row[11]
                 }
                 response["strikes"].append(strike_data)
             conn.close()
@@ -1150,20 +1187,23 @@ def generate_watchlist_from_strike_table():
         # Filter strikes for watchlist
         filtered_strikes = []
         for strike in strikes:
-            volume = strike.get("volume")
+            volume = _kalshi_fp_volume_number(strike.get("volume_fp"))
             probability = strike.get("probability")
-            yes_ask = strike.get("yes_ask")
-            no_ask = strike.get("no_ask")
+            yes_ask_dollars = strike.get("yes_ask_dollars")
+            no_ask_dollars = strike.get("no_ask_dollars")
             yes_diff = strike.get("yes_diff")
             no_diff = strike.get("no_diff")
             
             if (volume is None or probability is None or 
-                yes_ask is None or no_ask is None or
+                yes_ask_dollars is None or no_ask_dollars is None or
                 yes_diff is None or no_diff is None):
                 continue
             
-            # Get the higher of yes_ask and no_ask
-            max_ask_price = max(yes_ask, no_ask)
+            max_ask_price_cents = max(
+                float(yes_ask_dollars) * 100.0,
+                float(no_ask_dollars) * 100.0,
+            )
+            max_ask_threshold_cents = max_ask * 100.0 if max_ask < 1 else float(max_ask)
             
             # Determine which side would be the active buy button
             is_above_money_line = strike.get("strike", 0) > current_price
@@ -1190,7 +1230,7 @@ def generate_watchlist_from_strike_table():
             # Apply filter criteria from auto entry settings
             volume_ok = volume >= min_volume
             probability_ok = probability > min_probability
-            ask_ok = max_ask_price <= max_ask
+            ask_ok = max_ask_price_cents <= max_ask_threshold_cents
             
             if (volume_ok and probability_ok and ask_ok and at_least_one_diff_ok and max_diff_ok):
                 filtered_strikes.append(strike)
@@ -1235,16 +1275,16 @@ def generate_watchlist_from_strike_table():
                         INSERT INTO live_data.{watchlist_table} (
                             symbol, current_price, ttc_seconds, broker, event_ticker,
                             market_title, strike_tier, market_status, strike, buffer,
-                            buffer_pct, probability, yes_ask, no_ask, yes_diff, no_diff,
-                            volume, ticker, active_side
+                            buffer_pct, probability, yes_ask_dollars, no_ask_dollars, yes_diff, no_diff,
+                            volume_fp, ticker, active_side
                         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
                         current_symbol, current_price, ttc_seconds, "Kalshi", market_data.get("event_ticker"),
                         market_data.get("event_title"), market_data.get("strike_tier"),
                         market_data.get("market_status"), strike.get("strike"), strike.get("buffer"),
-                        strike.get("buffer_pct"), strike.get("probability"), strike.get("yes_ask"),
-                        strike.get("no_ask"), strike.get("yes_diff"), strike.get("no_diff"),
-                        strike.get("volume"), strike.get("ticker"), strike.get("active_side")
+                        strike.get("buffer_pct"), strike.get("probability"), strike.get("yes_ask_dollars"),
+                        strike.get("no_ask_dollars"), strike.get("yes_diff"), strike.get("no_diff"),
+                        strike.get("volume_fp"), strike.get("ticker"), strike.get("active_side")
                     ))
                 conn.commit()
                 conn.close()
@@ -1293,11 +1333,11 @@ def get_watchlist_data():
                     buffer,
                     buffer_pct,
                     probability,
-                    yes_ask,
-                    no_ask,
+                    yes_ask_dollars,
+                    no_ask_dollars,
                     yes_diff,
                     no_diff,
-                    volume,
+                    volume_fp,
                     ticker,
                     active_side
                 FROM live_data.{watchlist_table}
@@ -1321,11 +1361,11 @@ def get_watchlist_data():
                     "buffer": float(strike_row[1]) if strike_row[1] else None,
                     "buffer_pct": float(strike_row[2]) if strike_row[2] else None,
                     "probability": float(strike_row[3]) if strike_row[3] else None,
-                    "yes_ask": int(strike_row[4]) if strike_row[4] else None,
-                    "no_ask": int(strike_row[5]) if strike_row[5] else None,
+                    "yes_ask_dollars": float(strike_row[4]) if strike_row[4] is not None else None,
+                    "no_ask_dollars": float(strike_row[5]) if strike_row[5] is not None else None,
                     "yes_diff": float(strike_row[6]) if strike_row[6] else None,
                     "no_diff": float(strike_row[7]) if strike_row[7] else None,
-                    "volume": int(strike_row[8]) if strike_row[8] else None,
+                    "volume_fp": strike_row[8] if strike_row[8] is None else str(strike_row[8]).strip(),
                     "ticker": strike_row[9],
                     "active_side": strike_row[10]
                 }
@@ -1430,10 +1470,13 @@ def trigger_auto_entry_trade(strike_data):
         port = get_port("trade_manager")
         url = f"http://localhost:{port}/trades"
         
-        # Get contract name from watchlist market_title
-        watchlist_data = get_watchlist_data()
+        watchlist_data = get_watchlist_data() or {}
         current_symbol = get_current_monitor_symbol()
-        contract_name = watchlist_data.get("market_title", f"{current_symbol} Market") if watchlist_data else f"{current_symbol} Market"
+        from backend.auto_entry_supervisor import resolve_auto_entry_contract_name
+
+        contract_name = resolve_auto_entry_contract_name(
+            current_symbol, watchlist_data, strike_data.get("ticker")
+        )
         
         # Get position size from trade preferences
         position_size = get_position_size()
@@ -1768,11 +1811,15 @@ def check_auto_entry_conditions():
                 # STEP 5: Determine buy price based on active_side
                 if active_side == 'yes':
                     side = 'yes'
-                    buy_price = strike.get('yes_ask', 0) / 100.0  # Convert cents to decimal
+                    yd = strike.get('yes_ask_dollars')
+                    buy_price = float(yd) if yd is not None else None
                 elif active_side == 'no':
                     side = 'no'
-                    buy_price = strike.get('no_ask', 0) / 100.0  # Convert cents to decimal
+                    nd = strike.get('no_ask_dollars')
+                    buy_price = float(nd) if nd is not None else None
                 else:
+                    continue
+                if buy_price is None:
                     continue
                 
                 # STEP 6: Prepare strike data for trade trigger

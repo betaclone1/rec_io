@@ -168,15 +168,9 @@ class SupervisorConfigGenerator:
                 "symbol_price_watchdog_spx": 8017,
                 "symbol_price_watchdog_ndx": 8019,
                 "kalshi_account_sync": 8004,
-                "kalshi_market_watchdog_hourly_btc": 8005,
-                "kalshi_market_watchdog_hourly_eth": 8010,
-                "kalshi_market_watchdog_hourly_spx": 8018,
-                "kalshi_market_watchdog_hourly_ndx": 8020,
-                "strike_table_generator_hourly_btc": 8014,
-                "strike_table_generator_hourly_eth": 8015,
-                "strike_table_generator_hourly_spx": 8016,
-                "strike_table_generator_hourly_ndx": 8017,
+                "market_watchdog_ws_kalshi_hourly": 8005,
                 "market_watchdog_ws_kalshi_15m": 8035,
+                "strike_table_generator_ws_hourly": 8014,
                 "strike_table_generator_ws_15m": 8036,
                 "auto_entry_supervisor_15m": 8033,
                 "active_trade_supervisor_15m": 8034,
@@ -273,27 +267,10 @@ class SupervisorConfigGenerator:
                 "port": ports.get("kalshi_account_sync", 8004)
             },
             {
-                "name": "kalshi_market_watchdog_hourly_btc",
-                "script": "kalshi_market_watchdog.py BTC",
-                "port": ports.get("kalshi_market_watchdog_hourly_btc", 8005)
+                "name": "market_watchdog_ws_kalshi_hourly",
+                "script": "market_watchdog_ws.py --exchange kalshi --market hourly",
+                "port": ports.get("market_watchdog_ws_kalshi_hourly", 8005),
             },
-            {
-                "name": "kalshi_market_watchdog_hourly_eth",
-                "script": "kalshi_market_watchdog.py ETH",
-                "port": ports.get("kalshi_market_watchdog_hourly_eth", 8010)
-            },
-            # SPX/NDX not currently traded; uncomment to re-enable later.
-            # {
-            #     "name": "kalshi_market_watchdog_hourly_spx",
-            #     "script": "kalshi_market_watchdog.py SPX",
-            #     "port": ports.get("kalshi_market_watchdog_hourly_spx", 8018)
-            # },
-            # {
-            #     "name": "kalshi_market_watchdog_hourly_ndx",
-            #     "script": "kalshi_market_watchdog.py NDX",
-            #     "port": ports.get("kalshi_market_watchdog_hourly_ndx", 8020)
-            # },
-            # 15m Kalshi market data cutover: WS watchdog is primary.
             {
                 "name": "market_watchdog_ws_kalshi_15m",
                 "script": "market_watchdog_ws.py --exchange kalshi --market 15m",
@@ -354,23 +331,14 @@ class SupervisorConfigGenerator:
                 "port": active_trade_port
             })
         
-        # Add symbol-specific strike table generators (hourly).
-        # SPX/NDX not currently traded; add 'SPX', 'NDX' to supported_symbols to re-enable.
-        supported_symbols = ['BTC', 'ETH']  # was ['BTC', 'ETH', 'SPX', 'NDX']
-        strike_table_default_ports = {
-            'btc': 8014, 'eth': 8015, 'spx': 8016, 'ndx': 8017
-        }
-        for symbol in supported_symbols:
-            key = f"strike_table_generator_hourly_{symbol.lower()}"
-            services.append({
-                "name": key,
-                "script": f"strike_table_generator.py {symbol} continuous 1",
-                "port": ports.get(key, strike_table_default_ports[symbol.lower()])
-            })
-        # 15m strikes cutover: WS generator is primary.
+        services.append({
+            "name": "strike_table_generator_ws_hourly",
+            "script": "strike_table_generator_ws.py --exchange kalshi --market hourly --debounce-ms 1200 --min-refresh-sec 1.2 --pipeline-max-age-sec 30",
+            "port": ports.get("strike_table_generator_ws_hourly", 8014),
+        })
         services.append({
             "name": "strike_table_generator_ws_15m",
-            "script": "strike_table_generator_ws.py --exchange kalshi --debounce-ms 1200 --min-refresh-sec 1.2 --pipeline-max-age-sec 30",
+            "script": "strike_table_generator_ws.py --exchange kalshi --market 15m --debounce-ms 1200 --min-refresh-sec 1.2 --pipeline-max-age-sec 30",
             "port": ports.get("strike_table_generator_ws_15m", 8036),
         })
         # Supervisord main log: durable path under logs/ with rotation (critical for incident review)

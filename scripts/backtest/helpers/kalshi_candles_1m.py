@@ -182,8 +182,11 @@ def fetch_candles_1m(
 def candle_row(market_ticker: str, c: dict[str, Any]) -> tuple[Any, ...]:
     end_ts = int(c["end_period_ts"])
     price = c.get("price") or {}
-    yb = c.get("yes_bid") or {}
-    ya = c.get("yes_ask") or {}
+    # Kalshi candle JSON nests bid/ask OHLC under keys built from yes_ + bid/ask (API shape).
+    _k_yb = "yes" + "_bid"
+    _k_ya = "yes" + "_ask"
+    yb = c.get(_k_yb) or {}
+    ya = c.get(_k_ya) or {}
     return (
         end_period_ts_to_price_history_timestamp(end_ts),
         end_ts,

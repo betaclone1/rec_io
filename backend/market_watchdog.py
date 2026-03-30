@@ -519,6 +519,59 @@ def get_current_event_ticker_15m(symbol: str, last_failed_by_symbol: dict):
     return None, None
 
 
+_hourly_event_resolve_last_failed: dict[str, str | None] = {}
+
+
+def get_current_event_ticker(symbol: str, interval: str = "hourly"):
+    """
+    Resolve Kalshi hourly crypto event (BTC/ETH) by constructing the period event ticker for the
+    upcoming hour (America/New_York wall clock) and fetching ``/events/{ticker}``.
+
+    The 15m WebSocket rollover path uses :func:`get_current_event_ticker_15m` with a
+    ``last_failed_by_symbol`` dict instead.
+
+    Same ticker construction as ``kalshi_market_watchdog.get_current_event_ticker``; uses this
+    module's serialized :func:`fetch_event_json` so REST stays quota-safe alongside rollover.
+    """
+    sym_u = (symbol or "").strip().upper()
+    iv = (interval or "hourly").strip().lower()
+    if iv == "15m":
+        raise ValueError(
+            "use get_current_event_ticker_15m(symbol, last_failed_by_symbol) for the 15m WS path"
+        )
+    if iv != "hourly":
+        logger.warning("get_current_event_ticker: unsupported interval %r", interval)
+        return None, None
+
+    symbol_config = {
+        "BTC": "KXBTCD",
+        "ETH": "KXETHD",
+    }
+    prefix = symbol_config.get(sym_u)
+    if not prefix:
+        logger.error("Unsupported symbol for hourly Kalshi discovery: %s", symbol)
+        return None, None
+
+    now = datetime.now(EST)
+    test_time = now + timedelta(hours=1)
+    year_str = test_time.strftime("%y")
+    month_str = test_time.strftime("%b").upper()
+    day_str = test_time.strftime("%d")
+    hour_str = test_time.strftime("%H")
+    current_ticker = f"{prefix}-{year_str}{month_str}{day_str}{hour_str}"
+
+    data = fetch_event_json(current_ticker)
+    if data and "markets" in data:
+        _hourly_event_resolve_last_failed[sym_u] = None
+        return current_ticker, data
+
+    prev = _hourly_event_resolve_last_failed.get(sym_u)
+    if prev != current_ticker:
+        logger.warning("Failed to fetch hourly event data for %s", current_ticker)
+        _hourly_event_resolve_last_failed[sym_u] = current_ticker
+    return None, None
+
+
 def save_kalshi_15m_unified(
     event_ticker: str, markets_data: list, symbol_upper: str, exchange: str
 ) -> bool:

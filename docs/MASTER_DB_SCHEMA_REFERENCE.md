@@ -8256,32 +8256,9 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 ---
 
-### Table: `live_data.eth_price_log`
-
-#### Columns
-
-| Column Name | Data Type | Nullable | Default | Description |
-|-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.eth_price_log_id_seq'::regcl... | |
-| `price` | `numeric(15,2)` | YES | - | |
-| `timestamp` | `timestamp without time zone` | YES | CURRENT_TIMESTAMP | |
-
-#### Constraints
-
-- **Primary Key:** `eth_price_log_pkey` on `id`
-
-#### Indexes
-
-- `eth_price_log_pkey`
-  ```sql
-  CREATE UNIQUE INDEX eth_price_log_pkey ON live_data.eth_price_log USING btree (id)
-  ```
-
----
-
 ### Table: `live_data.live_price_log_1s_btc`
 
-**Population (movement columns):** `move_1m` … `move_30m`, `movement`, and `movement_percentile` are written by `backend/symbol_price_watchdog.py` on each tick. High/low/open per window are derived from ticks in the same table; the weighted composite and percentile use `analytics.{symbol}_movement_profile` (which has column **movement_value** at each percentile). Same applies to `live_price_log_1s_eth`, `live_price_log_1s_sol`, `live_price_log_1s_xrp`, `live_price_log_1s_spx`, and `live_price_log_1s_ndx`.
+**Population (movement columns):** `move_1m` … `move_30m`, `movement`, and `movement_percentile` are written by `backend/symbol_price_watchdog.py` on each tick. High/low/open per window are derived from ticks in the same table; the weighted composite and percentile use `analytics.{symbol}_movement_profile` (which has column **movement_value** at each percentile). Same applies to `live_price_log_1s_eth`, `live_price_log_1s_sol`, and `live_price_log_1s_xrp`.
 
 #### Columns
 
@@ -8459,103 +8436,9 @@ Same as `live_data.live_price_log_1s_sol` (including `numeric(10,6)` for spot pr
 
 ---
 
-### Table: `live_data.live_price_log_1s_ndx`
-
-#### Columns
-
-| Column Name | Data Type | Nullable | Default | Description |
-|-------------|-----------|----------|---------|-------------|
-| `timestamp` | `text` | NO | - | |
-| `price` | `numeric(10,2)` | YES | - | |
-| `one_minute_avg` | `numeric(10,2)` | YES | - | |
-| `momentum` | `numeric(10,4)` | YES | - | |
-| `delta_1m` | `numeric(10,4)` | YES | - | |
-| `delta_2m` | `numeric(10,4)` | YES | - | |
-| `delta_3m` | `numeric(10,4)` | YES | - | |
-| `delta_4m` | `numeric(10,4)` | YES | - | |
-| `delta_15m` | `numeric(10,4)` | YES | - | |
-| `delta_30m` | `numeric(10,4)` | YES | - | |
-| `momentum_percentile` | `numeric(5,1)` | YES | - | |
-| `momentum_5s_avg` | `numeric(5,1)` | YES | - | |
-| `momentum_30s_avg` | `numeric(5,1)` | YES | - | |
-| `volatility` | `numeric(10,6)` | YES | - | |
-| `volatility_percentile` | `numeric(5,1)` | YES | - | |
-| `move_1m` | `numeric(10,4)` | YES | - | Raw movement (high-low)/open for last 1m window. |
-| `move_2m` | `numeric(10,4)` | YES | - | Raw movement for last 2m window. |
-| `move_3m` | `numeric(10,4)` | YES | - | Raw movement for last 3m window. |
-| `move_4m` | `numeric(10,4)` | YES | - | Raw movement for last 4m window. |
-| `move_15m` | `numeric(10,4)` | YES | - | Raw movement for last 15m window. |
-| `move_30m` | `numeric(10,4)` | YES | - | Raw movement for last 30m window. |
-| `movement` | `numeric(10,4)` | YES | - | Weighted composite of move_1m..move_30m (same weights as momentum). |
-| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile from analytics movement profile (0.5–99.5). |
-
-#### Constraints
-
-- **Primary Key:** `live_price_log_1s_ndx_pkey` on `timestamp`
-
-#### Indexes
-
-- `live_price_log_1s_ndx_pkey`
-  ```sql
-  CREATE UNIQUE INDEX live_price_log_1s_ndx_pkey ON live_data.live_price_log_1s_ndx USING btree ("timestamp")
-  ```
-- `live_price_log_1s_ndx_timestamp_idx`
-  ```sql
-  CREATE INDEX live_price_log_1s_ndx_timestamp_idx ON live_data.live_price_log_1s_ndx USING btree ("timestamp")
-  ```
-
----
-
-### Table: `live_data.live_price_log_1s_spx`
-
-#### Columns
-
-| Column Name | Data Type | Nullable | Default | Description |
-|-------------|-----------|----------|---------|-------------|
-| `timestamp` | `text` | NO | - | |
-| `price` | `numeric(10,2)` | YES | - | |
-| `one_minute_avg` | `numeric(10,2)` | YES | - | |
-| `momentum` | `numeric(10,4)` | YES | - | |
-| `delta_1m` | `numeric(10,4)` | YES | - | |
-| `delta_2m` | `numeric(10,4)` | YES | - | |
-| `delta_3m` | `numeric(10,4)` | YES | - | |
-| `delta_4m` | `numeric(10,4)` | YES | - | |
-| `delta_15m` | `numeric(10,4)` | YES | - | |
-| `delta_30m` | `numeric(10,4)` | YES | - | |
-| `momentum_percentile` | `numeric(5,1)` | YES | - | |
-| `momentum_5s_avg` | `numeric(5,1)` | YES | - | |
-| `momentum_30s_avg` | `numeric(5,1)` | YES | - | |
-| `volatility` | `numeric(10,6)` | YES | - | |
-| `volatility_percentile` | `numeric(5,1)` | YES | - | |
-| `move_1m` | `numeric(10,4)` | YES | - | Raw movement (high-low)/open for last 1m window. |
-| `move_2m` | `numeric(10,4)` | YES | - | Raw movement for last 2m window. |
-| `move_3m` | `numeric(10,4)` | YES | - | Raw movement for last 3m window. |
-| `move_4m` | `numeric(10,4)` | YES | - | Raw movement for last 4m window. |
-| `move_15m` | `numeric(10,4)` | YES | - | Raw movement for last 15m window. |
-| `move_30m` | `numeric(10,4)` | YES | - | Raw movement for last 30m window. |
-| `movement` | `numeric(10,4)` | YES | - | Weighted composite of move_1m..move_30m (same weights as momentum). |
-| `movement_percentile` | `numeric(5,1)` | YES | - | Percentile from analytics movement profile (0.5–99.5). |
-
-#### Constraints
-
-- **Primary Key:** `live_price_log_1s_spx_pkey` on `timestamp`
-
-#### Indexes
-
-- `idx_live_price_log_1s_spx_timestamp`
-  ```sql
-  CREATE INDEX idx_live_price_log_1s_spx_timestamp ON live_data.live_price_log_1s_spx USING btree ("timestamp")
-  ```
-- `live_price_log_1s_spx_pkey`
-  ```sql
-  CREATE UNIQUE INDEX live_price_log_1s_spx_pkey ON live_data.live_price_log_1s_spx USING btree ("timestamp")
-  ```
-
----
-
 ### Table: `live_data.live_symbol_status`
 
-**Population:** Trigger-driven from `live_data.live_price_log_1s_btc`, `live_price_log_1s_eth`, `live_price_log_1s_sol`, and `live_price_log_1s_xrp` (latest row per symbol via upsert on `symbol`). Non-triggered symbols (e.g., SPX/NDX) are updated by `backend/symbol_price_watchdog.py`.
+**Population:** Trigger-driven from `live_data.live_price_log_1s_btc`, `live_price_log_1s_eth`, `live_price_log_1s_sol`, and `live_price_log_1s_xrp` (latest row per symbol via upsert on `symbol`).
 
 #### Columns
 
@@ -8608,309 +8491,26 @@ Same as `live_data.live_price_log_1s_sol` (including `numeric(10,6)` for spot pr
 
 ---
 
-### Table: `live_data.market_kalshi_hourly_btc`
+### Table: `live_data.market_kalshi_hourly`
 
-#### Columns
+Unified hourly Kalshi market ladder for **BTC** and **ETH** (and any future rows) in one table; filter by **`symbol`** and **`exchange`**. Same logical shape as unified 15m market tables: dollar quote columns, **TEXT** `volume_fp` / `open_interest_fp`, **`updated_at`** for freshness.
 
-| Column Name | Data Type | Nullable | Default | Description |
-|-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_hourly_btc_id_seq'::r... | |
-| `event_ticker` | `character varying(50)` | NO | - | |
-| `market_ticker` | `character varying(100)` | NO | - | |
-| `market` | `text` | YES | 'hourly' | Interval: hourly or 15m |
-| `strike` | `character varying(20)` | YES | - | |
-| `yes_bid` | `integer(32)` | YES | - | |
-| `yes_ask` | `integer(32)` | YES | - | |
-| `no_bid` | `integer(32)` | YES | - | |
-| `no_ask` | `integer(32)` | YES | - | |
-| `last_price` | `integer(32)` | YES | - | |
-| `volume_fp` | `integer(32)` | YES | - | Fixed-point volume count (Kalshi `volume_fp`) |
-| `volume_24h_fp` | `integer(32)` | YES | - | Fixed-point 24h volume count (Kalshi `volume_24h_fp`) |
-| `open_interest` | `integer(32)` | YES | - | |
-| `liquidity` | `integer(32)` | YES | - | |
-| `created_at` | `timestamp with time zone` | YES | now() | |
-| `updated_at` | `timestamp with time zone` | YES | now() | |
-| `yes_bid_dollars` | `text` | YES | - | |
-| `yes_ask_dollars` | `text` | YES | - | |
-| `no_bid_dollars` | `text` | YES | - | |
-| `no_ask_dollars` | `text` | YES | - | |
-| `last_price_dollars` | `text` | YES | - | |
+**Migrations:** `20260329_2359_unified_hourly_pipeline_health` (merge + drop `market_kalshi_hourly_btc` / `market_kalshi_hourly_eth`); optional follow-ups such as `20260330_1000_hourly_tables_match_15m_shape` for column-order parity with 15m.
 
 #### Constraints
 
-- **Primary Key:** `market_kalshi_btc_pkey` on `id`
-- **Unique:** `market_kalshi_btc_event_market_unique` on `event_ticker`
-- **Unique:** `market_kalshi_btc_event_market_unique` on `event_ticker`
-- **Unique:** `market_kalshi_btc_event_market_unique` on `market_ticker`
-- **Unique:** `market_kalshi_btc_event_market_unique` on `market_ticker`
+- **Unique:** `market_kalshi_hourly_ex_sym_evt_mkt_uniq` on `(exchange, symbol, event_ticker, market_ticker)`
 
 #### Indexes
 
-- `market_kalshi_btc_event_market_unique`
-  ```sql
-  CREATE UNIQUE INDEX market_kalshi_btc_event_market_unique ON live_data.market_kalshi_hourly_btc USING btree (event_ticker, market_ticker)
-  ```
-- `market_kalshi_btc_pkey`
-  ```sql
-  CREATE UNIQUE INDEX market_kalshi_btc_pkey ON live_data.market_kalshi_hourly_btc USING btree (id)
-  ```
-
----
-
-### Table: `live_data.market_kalshi_hourly_eth`
-
-#### Columns
-
-| Column Name | Data Type | Nullable | Default | Description |
-|-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_hourly_eth_id_seq'::r... | |
-| `event_ticker` | `character varying(50)` | NO | - | |
-| `market_ticker` | `character varying(100)` | NO | - | |
-| `market` | `text` | YES | - | Interval: 'hourly' or '15m' |
-| `strike` | `character varying(20)` | YES | - | |
-| `yes_bid` | `integer(32)` | YES | - | |
-| `yes_ask` | `integer(32)` | YES | - | |
-| `no_bid` | `integer(32)` | YES | - | |
-| `no_ask` | `integer(32)` | YES | - | |
-| `last_price` | `integer(32)` | YES | - | |
-| `volume_fp` | `integer(32)` | YES | - | Fixed-point volume count (Kalshi `volume_fp`) |
-| `volume_24h_fp` | `integer(32)` | YES | - | Fixed-point 24h volume count (Kalshi `volume_24h_fp`) |
-| `open_interest` | `integer(32)` | YES | - | |
-| `liquidity` | `integer(32)` | YES | - | |
-| `created_at` | `timestamp with time zone` | YES | now() | |
-| `updated_at` | `timestamp with time zone` | YES | now() | |
-| `yes_bid_dollars` | `text` | YES | - | |
-| `yes_ask_dollars` | `text` | YES | - | |
-| `no_bid_dollars` | `text` | YES | - | |
-| `no_ask_dollars` | `text` | YES | - | |
-| `last_price_dollars` | `text` | YES | - | |
-
-#### Constraints
-
-- **Primary Key:** `market_kalshi_eth_pkey` on `id`
-- **Unique:** `market_kalshi_eth_event_market_unique` on `event_ticker`
-- **Unique:** `market_kalshi_eth_event_market_unique` on `event_ticker`
-- **Unique:** `market_kalshi_eth_event_market_unique` on `market_ticker`
-- **Unique:** `market_kalshi_eth_event_market_unique` on `market_ticker`
-
-#### Indexes
-
-- `market_kalshi_eth_event_market_unique`
-  ```sql
-  CREATE UNIQUE INDEX market_kalshi_eth_event_market_unique ON live_data.market_kalshi_hourly_eth USING btree (event_ticker, market_ticker)
-  ```
-- `market_kalshi_eth_pkey`
-  ```sql
-  CREATE UNIQUE INDEX market_kalshi_eth_pkey ON live_data.market_kalshi_hourly_eth USING btree (id)
-  ```
-
----
-
-### Table: `live_data.market_kalshi_hourly_ndx`
-
-#### Columns
-
-| Column Name | Data Type | Nullable | Default | Description |
-|-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_hourly_ndx_id_seq'::r... | |
-| `event_ticker` | `character varying(50)` | NO | - | |
-| `market_ticker` | `character varying(100)` | NO | - | |
-| `market` | `text` | YES | - | Interval: 'hourly' or '15m' |
-| `strike` | `character varying(20)` | YES | - | |
-| `yes_bid` | `integer(32)` | YES | - | |
-| `yes_ask` | `integer(32)` | YES | - | |
-| `no_bid` | `integer(32)` | YES | - | |
-| `no_ask` | `integer(32)` | YES | - | |
-| `last_price` | `integer(32)` | YES | - | |
-| `volume_fp` | `integer(32)` | YES | - | Fixed-point volume count (Kalshi `volume_fp`) |
-| `volume_24h_fp` | `integer(32)` | YES | - | Fixed-point 24h volume count (Kalshi `volume_24h_fp`) |
-| `open_interest` | `integer(32)` | YES | - | |
-| `liquidity` | `integer(32)` | YES | - | |
-| `created_at` | `timestamp with time zone` | YES | now() | |
-| `updated_at` | `timestamp with time zone` | YES | now() | |
-| `yes_bid_dollars` | `text` | YES | - | |
-| `yes_ask_dollars` | `text` | YES | - | |
-| `no_bid_dollars` | `text` | YES | - | |
-| `no_ask_dollars` | `text` | YES | - | |
-| `last_price_dollars` | `text` | YES | - | |
-
-#### Constraints
-
-- **Primary Key:** `market_kalshi_ndx_pkey` on `id`
-- **Unique:** `market_kalshi_ndx_event_market_unique` on `event_ticker`
-- **Unique:** `market_kalshi_ndx_event_market_unique` on `market_ticker`
-- **Unique:** `market_kalshi_ndx_event_market_unique` on `market_ticker`
-- **Unique:** `market_kalshi_ndx_event_market_unique` on `event_ticker`
-- **Unique:** `market_kalshi_ndx_event_ticker_market_ticker_key` on `event_ticker`
-- **Unique:** `market_kalshi_ndx_event_ticker_market_ticker_key` on `market_ticker`
-- **Unique:** `market_kalshi_ndx_event_ticker_market_ticker_key` on `market_ticker`
-- **Unique:** `market_kalshi_ndx_event_ticker_market_ticker_key` on `event_ticker`
-
-#### Indexes
-
-- `market_kalshi_ndx_event_market_unique`
-  ```sql
-  CREATE UNIQUE INDEX market_kalshi_ndx_event_market_unique ON live_data.market_kalshi_hourly_ndx USING btree (event_ticker, market_ticker)
-  ```
-- `market_kalshi_ndx_event_ticker_market_ticker_key`
-  ```sql
-  CREATE UNIQUE INDEX market_kalshi_ndx_event_ticker_market_ticker_key ON live_data.market_kalshi_hourly_ndx USING btree (event_ticker, market_ticker)
-  ```
-- `market_kalshi_ndx_pkey`
-  ```sql
-  CREATE UNIQUE INDEX market_kalshi_ndx_pkey ON live_data.market_kalshi_hourly_ndx USING btree (id)
-  ```
-
----
-
-### Table: `live_data.market_kalshi_hourly_spx`
-
-#### Columns
-
-| Column Name | Data Type | Nullable | Default | Description |
-|-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_hourly_spx_id_seq'::r... | |
-| `event_ticker` | `character varying(50)` | NO | - | |
-| `market_ticker` | `character varying(100)` | NO | - | |
-| `market` | `text` | YES | - | Interval: 'hourly' or '15m' |
-| `strike` | `character varying(20)` | YES | - | |
-| `yes_bid` | `integer(32)` | YES | - | |
-| `yes_ask` | `integer(32)` | YES | - | |
-| `no_bid` | `integer(32)` | YES | - | |
-| `no_ask` | `integer(32)` | YES | - | |
-| `last_price` | `integer(32)` | YES | - | |
-| `volume_fp` | `integer(32)` | YES | - | Fixed-point volume count (Kalshi `volume_fp`) |
-| `volume_24h_fp` | `integer(32)` | YES | - | Fixed-point 24h volume count (Kalshi `volume_24h_fp`) |
-| `open_interest` | `integer(32)` | YES | - | |
-| `liquidity` | `integer(32)` | YES | - | |
-| `created_at` | `timestamp with time zone` | YES | now() | |
-| `updated_at` | `timestamp with time zone` | YES | now() | |
-| `yes_bid_dollars` | `text` | YES | - | |
-| `yes_ask_dollars` | `text` | YES | - | |
-| `no_bid_dollars` | `text` | YES | - | |
-| `no_ask_dollars` | `text` | YES | - | |
-| `last_price_dollars` | `text` | YES | - | |
-
-#### Constraints
-
-- **Primary Key:** `market_kalshi_spx_pkey` on `id`
-- **Unique:** `market_kalshi_spx_event_market_unique` on `event_ticker`
-- **Unique:** `market_kalshi_spx_event_market_unique` on `event_ticker`
-- **Unique:** `market_kalshi_spx_event_market_unique` on `market_ticker`
-- **Unique:** `market_kalshi_spx_event_market_unique` on `market_ticker`
-
-#### Indexes
-
-- `market_kalshi_spx_event_market_unique`
-  ```sql
-  CREATE UNIQUE INDEX market_kalshi_spx_event_market_unique ON live_data.market_kalshi_hourly_spx USING btree (event_ticker, market_ticker)
-  ```
-- `market_kalshi_spx_pkey`
-  ```sql
-  CREATE UNIQUE INDEX market_kalshi_spx_pkey ON live_data.market_kalshi_hourly_spx USING btree (id)
-  ```
-
----
-
-### Table: `live_data.market_kalshi_15m_btc`
-
-Kalshi 15-minute market data for BTC. One row per current 15m window; truncated and repopulated on each rollover. `strike` is backfilled from `live_data.live_price_log_1s_btc`.`one_minute_avg` at the market's opening time (start of the 15m window).
-
-#### Columns
-
-| Column Name | Data Type | Nullable | Default | Description |
-|-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_15m_btc_id_seq'::regclass) | |
-| `event_ticker` | `character varying(50)` | NO | - | |
-| `market_ticker` | `character varying(100)` | NO | - | |
-| `market` | `text` | YES | '15m' | Interval: 'hourly' or '15m' |
-| `strike` | `character varying(20)` | YES | - | Backfilled from 1s price log at opening time |
-| `yes_bid` | `integer(32)` | YES | - | |
-| `yes_ask` | `integer(32)` | YES | - | |
-| `no_bid` | `integer(32)` | YES | - | |
-| `no_ask` | `integer(32)` | YES | - | |
-| `last_price` | `integer(32)` | YES | - | |
-| `volume_fp` | `integer(32)` | YES | - | Fixed-point volume count (Kalshi `volume_fp`) |
-| `volume_24h_fp` | `integer(32)` | YES | - | Fixed-point 24h volume count (Kalshi `volume_24h_fp`) |
-| `open_interest` | `integer(32)` | YES | - | |
-| `liquidity` | `integer(32)` | YES | - | |
-| `created_at` | `timestamp with time zone` | YES | now() | |
-| `updated_at` | `timestamp with time zone` | YES | now() | |
-| `yes_bid_dollars` | `text` | YES | - | |
-| `yes_ask_dollars` | `text` | YES | - | |
-| `no_bid_dollars` | `text` | YES | - | |
-| `no_ask_dollars` | `text` | YES | - | |
-| `last_price_dollars` | `text` | YES | - | |
-
-#### Constraints
-
-- **Primary Key:** `market_kalshi_15m_btc_pkey` on `id`
-- **Unique:** `market_kalshi_15m_btc_event_market_unique` on `(event_ticker, market_ticker)`
-
-#### Indexes
-
-- `market_kalshi_15m_btc_event_market_unique`
-  ```sql
-  CREATE UNIQUE INDEX market_kalshi_15m_btc_event_market_unique ON live_data.market_kalshi_15m_btc USING btree (event_ticker, market_ticker)
-  ```
-- `market_kalshi_15m_btc_pkey`
-  ```sql
-  CREATE UNIQUE INDEX market_kalshi_15m_btc_pkey ON live_data.market_kalshi_15m_btc USING btree (id)
-  ```
-
----
-
-### Table: `live_data.market_kalshi_15m_eth`
-
-Kalshi 15-minute market data for ETH. One row per current 15m window; truncated and repopulated on each rollover. `strike` is backfilled from `live_data.live_price_log_1s_eth`.`one_minute_avg` at the market's opening time (start of the 15m window).
-
-#### Columns
-
-| Column Name | Data Type | Nullable | Default | Description |
-|-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_15m_eth_id_seq'::regclass) | |
-| `event_ticker` | `character varying(50)` | NO | - | |
-| `market_ticker` | `character varying(100)` | NO | - | |
-| `market` | `text` | YES | '15m' | Interval: 'hourly' or '15m' |
-| `strike` | `character varying(20)` | YES | - | Backfilled from 1s price log at opening time |
-| `yes_bid` | `integer(32)` | YES | - | |
-| `yes_ask` | `integer(32)` | YES | - | |
-| `no_bid` | `integer(32)` | YES | - | |
-| `no_ask` | `integer(32)` | YES | - | |
-| `last_price` | `integer(32)` | YES | - | |
-| `volume_fp` | `integer(32)` | YES | - | Fixed-point volume count (Kalshi `volume_fp`) |
-| `volume_24h_fp` | `integer(32)` | YES | - | Fixed-point 24h volume count (Kalshi `volume_24h_fp`) |
-| `open_interest` | `integer(32)` | YES | - | |
-| `liquidity` | `integer(32)` | YES | - | |
-| `created_at` | `timestamp with time zone` | YES | now() | |
-| `updated_at` | `timestamp with time zone` | YES | now() | |
-| `yes_bid_dollars` | `text` | YES | - | |
-| `yes_ask_dollars` | `text` | YES | - | |
-| `no_bid_dollars` | `text` | YES | - | |
-| `no_ask_dollars` | `text` | YES | - | |
-| `last_price_dollars` | `text` | YES | - | |
-
-#### Constraints
-
-- **Primary Key:** `market_kalshi_15m_eth_pkey` on `id`
-- **Unique:** `market_kalshi_15m_eth_event_market_unique` on `(event_ticker, market_ticker)`
-
-#### Indexes
-
-- `market_kalshi_15m_eth_event_market_unique`
-  ```sql
-  CREATE UNIQUE INDEX market_kalshi_15m_eth_event_market_unique ON live_data.market_kalshi_15m_eth USING btree (event_ticker, market_ticker)
-  ```
-- `market_kalshi_15m_eth_pkey`
-  ```sql
-  CREATE UNIQUE INDEX market_kalshi_15m_eth_pkey ON live_data.market_kalshi_15m_eth USING btree (id)
-  ```
+- `market_kalshi_hourly_exchange_symbol_idx` on `(exchange, symbol)`
+- `market_kalshi_hourly_exchange_symbol_event_idx` on `(exchange, symbol, event_ticker)`
 
 ---
 
 ### Table: `live_data.market_kalshi_15m`
 
-Unified 15-minute market snapshots for tracked crypto symbols (BTC, ETH, SOL, XRP). Multiple rows per symbol (one per venue market in the active event). **`exchange`** identifies the exchange/API source (e.g. `kalshi`). `symbol` plus `exchange` replace the role of separate per-symbol tables (`market_kalshi_15m_btc`, …) for this feed. On event rotation for a given symbol and exchange, those rows are deleted and repopulated; open-trade tickers may be preserved and re-inserted. `strike` is seeded from Kalshi `floor_strike`/subtitle at rollover. Migration `20260326_1000_venue_exchange_column_names` renames **`broker` → `exchange`**, migration `20260326_1600_market_kalshi_15m_drop_unused_legacy_columns` drops unused integer quote columns, and migration `20260327_2005_market_kalshi_15m_fp_text_columns` aligns fixed-point API fields (`volume_fp`, `open_interest_fp`) as text columns.
+Unified 15-minute market snapshots for tracked crypto symbols (BTC, ETH, SOL, XRP). Multiple rows per symbol (one per venue market in the active event). **`exchange`** identifies the exchange/API source (e.g. `kalshi`). Legacy split-symbol 15m market tables were dropped in migration `20260331_1200_live_data_drop_legacy_split_and_equity_tables`. On event rotation for a given symbol and exchange, those rows are deleted and repopulated; open-trade tickers may be preserved and re-inserted. `strike` is seeded from Kalshi `floor_strike`/subtitle at rollover. Migration `20260326_1000_venue_exchange_column_names` renames **`broker` → `exchange`**, migration `20260326_1600_market_kalshi_15m_drop_unused_legacy_columns` drops unused integer quote columns, and migration `20260327_2005_market_kalshi_15m_fp_text_columns` aligns fixed-point API fields (`volume_fp`, `open_interest_fp`) as text columns.
 
 #### Columns
 
@@ -9051,302 +8651,25 @@ Parallel 15-minute Kalshi market rows fed only by **`backend/market_watchdog_ws.
 
 ---
 
-### Table: `live_data.price_change_spx`
+### Table: `live_data.strike_table_hourly`
 
-#### Columns
+Unified hourly strike snapshots for **BTC**, **ETH**, and any future symbols in one table; filter by **`exchange`** + **`symbol`**. **Column set, types, and physical order match `live_data.strike_table_15m`** (see that section for the full column list).
 
-| Column Name | Data Type | Nullable | Default | Description |
-|-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.price_change_spx_id_seq'::re... | |
-| `change1h` | `numeric(10,6)` | YES | - | |
-| `change3h` | `numeric(10,6)` | YES | - | |
-| `change1d` | `numeric(10,6)` | YES | - | |
-| `timestamp` | `timestamp without time zone` | YES | CURRENT_TIMESTAMP | |
-
-#### Constraints
-
-- **Primary Key:** `price_change_spx_pkey` on `id`
+**Migrations:** `20260329_2359_unified_hourly_pipeline_health` (merge + drop `strike_table_hourly_btc` / `strike_table_hourly_eth`); `20260330_1000_hourly_tables_match_15m_shape` rebuilds from `LIKE` 15m where applied.
 
 #### Indexes
 
-- `price_change_spx_pkey`
-  ```sql
-  CREATE UNIQUE INDEX price_change_spx_pkey ON live_data.price_change_spx USING btree (id)
-  ```
-
----
-
-### Table: `live_data.strike_table_hourly_btc`
-
-#### Columns
-
-| Column Name | Data Type | Nullable | Default | Description |
-|-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.strike_table_hourly_btc_id_seq'::re... | |
-| `timestamp` | `timestamp with time zone` | YES | now() | |
-| `symbol` | `character varying(10)` | YES | - | |
-| `market` | `text` | YES | 'hourly' | Interval: 'hourly' or '15m' |
-| `current_price` | `numeric(10,2)` | YES | - | |
-| `ttc_hourly` | `integer(32)` | YES | - | Time to close for the hourly contract, in seconds. |
-| `ttc_15m` | `integer(32)` | YES | - | Time to close for the next 15-minute boundary, in seconds (simulated cycles). |
-| `broker` | `character varying(20)` | YES | - | |
-| `event_ticker` | `character varying(50)` | YES | - | |
-| `market_title` | `text` | YES | - | |
-| `strike_tier` | `integer(32)` | YES | - | |
-| `market_status` | `character varying(20)` | YES | - | |
-| `strike` | `integer(32)` | YES | - | |
-| `buffer` | `numeric(10,2)` | YES | - | |
-| `buffer_pct` | `numeric(5,2)` | YES | - | |
-| `probability_hourly` | `numeric(5,2)` | YES | - | Hourly probability from TTC×buffer×momentum lookup. |
-| `probability_15m` | `numeric(5,2)` | YES | - | 15m probability from TTC×buffer×momentum lookup (simulated cycles). |
-| `yes_ask` | `numeric(5,2)` | YES | - | |
-| `no_ask` | `numeric(5,2)` | YES | - | |
-| `yes_diff` | `numeric(5,2)` | YES | - | |
-| `no_diff` | `numeric(5,2)` | YES | - | |
-| `volume` | `integer(32)` | YES | - | |
-| `ticker` | `character varying(50)` | YES | - | |
-| `active_side` | `character varying(10)` | YES | - | |
-| `momentum_weighted_score` | `numeric(5,3)` | YES | - | |
-| `created_at` | `timestamp with time zone` | YES | now() | |
-| `momentum_percentile` | `numeric(5,1)` | YES | - | |
-| `yes_ask_dollars` | `text` | YES | - | |
-| `no_ask_dollars` | `text` | YES | - | |
-| `yes_bid_dollars` | `text` | YES | - | |
-| `no_bid_dollars` | `text` | YES | - | |
-| `yes_price_spread` | `numeric(6,4)` | YES | - | |
-| `no_price_spread` | `numeric(6,4)` | YES | - | |
-| `volatility` | `numeric(10,6)` | YES | - | From live price log; current-minute volatility. |
-| `volatility_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics volatility profile. |
-| `movement` | `numeric(10,4)` | YES | - | From live price log; weighted composite (H-L)/O. |
-| `movement_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics movement profile. |
-| `yes_ask_min_15m` / `yes_ask_max_15m` / `no_ask_min_15m` / `no_ask_max_15m` / `yes_ask_range_15m` / `no_ask_range_15m` | `numeric(18,4)` | YES | - | Final **15 minutes of the hourly** window (`ttc_hourly` ≤ 900): min/max/range of ask **dollars** per market ticker (4 dp). Migrations `20260328_2115`, `20260330_2130`. |
-
-#### Constraints
-
-- **Primary Key:** `strike_table_btc_pkey` on `id`
-- **Unique:** `strike_table_btc_strike_unique` on `strike`
-
-#### Indexes
-
-- `idx_strike_table_btc_lookup`
-  ```sql
-  CREATE INDEX idx_strike_table_btc_lookup ON live_data.strike_table_hourly_btc USING btree ("timestamp", symbol, current_price)
-  ```
-- `strike_table_btc_pkey`
-  ```sql
-  CREATE UNIQUE INDEX strike_table_btc_pkey ON live_data.strike_table_hourly_btc USING btree (id)
-  ```
-- `strike_table_btc_strike_unique`
-  ```sql
-  CREATE UNIQUE INDEX strike_table_btc_strike_unique ON live_data.strike_table_hourly_btc USING btree (strike)
-  ```
-
----
-
-### Table: `live_data.strike_table_hourly_eth`
-
-#### Columns
-
-| Column Name | Data Type | Nullable | Default | Description |
-|-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.strike_table_hourly_eth_id_seq'::re... | |
-| `timestamp` | `timestamp with time zone` | YES | now() | |
-| `symbol` | `character varying(10)` | YES | - | |
-| `market` | `text` | YES | 'hourly' | Interval: 'hourly' or '15m' |
-| `current_price` | `numeric(10,2)` | YES | - | |
-| `ttc_hourly` | `integer(32)` | YES | - | Time to close for the hourly contract, in seconds. |
-| `broker` | `character varying(20)` | YES | - | |
-| `event_ticker` | `character varying(50)` | YES | - | |
-| `market_title` | `text` | YES | - | |
-| `strike_tier` | `integer(32)` | YES | - | |
-| `market_status` | `character varying(20)` | YES | - | |
-| `strike` | `integer(32)` | YES | - | |
-| `buffer` | `numeric(10,2)` | YES | - | |
-| `buffer_pct` | `numeric(5,2)` | YES | - | |
-| `probability_hourly` | `numeric(5,2)` | YES | - | Hourly probability from TTC×buffer×momentum lookup. |
-| `yes_ask` | `numeric(5,2)` | YES | - | |
-| `no_ask` | `numeric(5,2)` | YES | - | |
-| `yes_diff` | `numeric(5,2)` | YES | - | |
-| `no_diff` | `numeric(5,2)` | YES | - | |
-| `volume` | `integer(32)` | YES | - | |
-| `ticker` | `character varying(50)` | YES | - | |
-| `active_side` | `character varying(10)` | YES | - | |
-| `momentum_percentile` | `numeric(5,1)` | YES | - | |
-| `created_at` | `timestamp with time zone` | YES | now() | |
-| `momentum_weighted_score` | `numeric(5,3)` | YES | - | |
-| `yes_ask_dollars` | `text` | YES | - | |
-| `no_ask_dollars` | `text` | YES | - | |
-| `yes_bid_dollars` | `text` | YES | - | |
-| `no_bid_dollars` | `text` | YES | - | |
-| `yes_price_spread` | `numeric(6,4)` | YES | - | |
-| `no_price_spread` | `numeric(6,4)` | YES | - | |
-| `volatility` | `numeric(10,6)` | YES | - | From live price log; current-minute volatility. |
-| `volatility_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics volatility profile. |
-| `movement` | `numeric(10,4)` | YES | - | From live price log; weighted composite (H-L)/O. |
-| `movement_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics movement profile. |
-
-#### Constraints
-
-- **Primary Key:** `strike_table_eth_pkey` on `id`
-
-#### Indexes
-
-- `idx_strike_table_eth_lookup`
-  ```sql
-  CREATE INDEX idx_strike_table_eth_lookup ON live_data.strike_table_hourly_eth USING btree ("timestamp", symbol, current_price)
-  ```
-- `strike_table_eth_pkey`
-  ```sql
-  CREATE UNIQUE INDEX strike_table_eth_pkey ON live_data.strike_table_hourly_eth USING btree (id)
-  ```
-
----
-
-### Table: `live_data.strike_table_hourly_ndx`
-
-#### Columns
-
-| Column Name | Data Type | Nullable | Default | Description |
-|-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.strike_table_hourly_ndx_id_seq'::re... | |
-| `timestamp` | `timestamp with time zone` | YES | now() | |
-| `symbol` | `character varying(10)` | YES | - | |
-| `market` | `text` | YES | 'hourly' | Interval: 'hourly' or '15m' |
-| `current_price` | `numeric(10,2)` | YES | - | |
-| `ttc_seconds` | `integer(32)` | YES | - | |
-| `broker` | `character varying(20)` | YES | - | |
-| `event_ticker` | `character varying(50)` | YES | - | |
-| `market_title` | `text` | YES | - | |
-| `strike_tier` | `integer(32)` | YES | - | |
-| `market_status` | `character varying(20)` | YES | - | |
-| `strike` | `integer(32)` | YES | - | |
-| `buffer` | `numeric(10,2)` | YES | - | |
-| `buffer_pct` | `numeric(5,2)` | YES | - | |
-| `probability` | `numeric(5,2)` | YES | - | |
-| `yes_ask` | `numeric(5,2)` | YES | - | |
-| `no_ask` | `numeric(5,2)` | YES | - | |
-| `yes_diff` | `numeric(5,2)` | YES | - | |
-| `no_diff` | `numeric(5,2)` | YES | - | |
-| `volume` | `integer(32)` | YES | - | |
-| `ticker` | `character varying(50)` | YES | - | |
-| `active_side` | `character varying(10)` | YES | - | |
-| `momentum_weighted_score` | `numeric(5,3)` | YES | - | |
-| `created_at` | `timestamp with time zone` | YES | now() | |
-| `momentum_percentile` | `numeric(5,1)` | YES | - | |
-| `yes_ask_dollars` | `text` | YES | - | |
-| `no_ask_dollars` | `text` | YES | - | |
-| `yes_bid_dollars` | `text` | YES | - | |
-| `no_bid_dollars` | `text` | YES | - | |
-| `yes_price_spread` | `numeric(6,4)` | YES | - | |
-| `no_price_spread` | `numeric(6,4)` | YES | - | |
-| `volatility` | `numeric(10,6)` | YES | - | From live price log; current-minute volatility. |
-| `volatility_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics volatility profile. |
-| `movement` | `numeric(10,4)` | YES | - | From live price log; weighted composite (H-L)/O. |
-| `movement_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics movement profile. |
-
-#### Constraints
-
-- **Primary Key:** `strike_table_ndx_pkey` on `id`
-- **Unique:** `strike_table_ndx_strike_key` on `strike`
-
-#### Indexes
-
-- `idx_strike_table_ndx_lookup`
-  ```sql
-  CREATE INDEX idx_strike_table_ndx_lookup ON live_data.strike_table_hourly_ndx USING btree ("timestamp", symbol, current_price)
-  ```
-- `strike_table_ndx_pkey`
-  ```sql
-  CREATE UNIQUE INDEX strike_table_ndx_pkey ON live_data.strike_table_hourly_ndx USING btree (id)
-  ```
-- `strike_table_ndx_strike_key`
-  ```sql
-  CREATE UNIQUE INDEX strike_table_ndx_strike_key ON live_data.strike_table_hourly_ndx USING btree (strike)
-  ```
-- `strike_table_ndx_timestamp_symbol_current_price_idx`
-  ```sql
-  CREATE INDEX strike_table_ndx_timestamp_symbol_current_price_idx ON live_data.strike_table_hourly_ndx USING btree ("timestamp", symbol, current_price)
-  ```
-- `strike_table_ndx_timestamp_symbol_current_price_idx1`
-  ```sql
-  CREATE INDEX strike_table_ndx_timestamp_symbol_current_price_idx1 ON live_data.strike_table_hourly_ndx USING btree ("timestamp", symbol, current_price)
-  ```
-
----
-
-### Table: `live_data.strike_table_hourly_spx`
-
-#### Columns
-
-| Column Name | Data Type | Nullable | Default | Description |
-|-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('live_data.strike_table_hourly_spx_id_seq'::re... | |
-| `timestamp` | `timestamp with time zone` | YES | now() | |
-| `symbol` | `character varying(10)` | YES | - | |
-| `market` | `text` | YES | 'hourly' | Interval: 'hourly' or '15m' |
-| `current_price` | `numeric(10,2)` | YES | - | |
-| `ttc_seconds` | `integer(32)` | YES | - | |
-| `broker` | `character varying(20)` | YES | - | |
-| `event_ticker` | `character varying(50)` | YES | - | |
-| `market_title` | `text` | YES | - | |
-| `strike_tier` | `integer(32)` | YES | - | |
-| `market_status` | `character varying(20)` | YES | - | |
-| `strike` | `integer(32)` | YES | - | |
-| `buffer` | `numeric(10,2)` | YES | - | |
-| `buffer_pct` | `numeric(5,2)` | YES | - | |
-| `probability` | `numeric(5,2)` | YES | - | |
-| `yes_ask` | `numeric(5,2)` | YES | - | |
-| `no_ask` | `numeric(5,2)` | YES | - | |
-| `yes_diff` | `numeric(5,2)` | YES | - | |
-| `no_diff` | `numeric(5,2)` | YES | - | |
-| `volume` | `integer(32)` | YES | - | |
-| `ticker` | `character varying(50)` | YES | - | |
-| `active_side` | `character varying(10)` | YES | - | |
-| `momentum_weighted_score` | `numeric(5,3)` | YES | - | |
-| `created_at` | `timestamp with time zone` | YES | now() | |
-| `momentum_percentile` | `numeric(5,1)` | YES | - | |
-| `yes_ask_dollars` | `text` | YES | - | |
-| `no_ask_dollars` | `text` | YES | - | |
-| `yes_bid_dollars` | `text` | YES | - | |
-| `no_bid_dollars` | `text` | YES | - | |
-| `yes_price_spread` | `numeric(6,4)` | YES | - | |
-| `no_price_spread` | `numeric(6,4)` | YES | - | |
-| `volatility` | `numeric(10,6)` | YES | - | From live price log; current-minute volatility. |
-| `volatility_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics volatility profile. |
-| `movement` | `numeric(10,4)` | YES | - | From live price log; weighted composite (H-L)/O. |
-| `movement_percentile` | `numeric(5,1)` | YES | - | From live price log; percentile vs analytics movement profile. |
-
-#### Constraints
-
-- **Primary Key:** `strike_table_spx_pkey` on `id`
-- **Unique:** `strike_table_spx_strike_key` on `strike`
-
-#### Indexes
-
-- `idx_strike_table_spx_lookup`
-  ```sql
-  CREATE INDEX idx_strike_table_spx_lookup ON live_data.strike_table_hourly_spx USING btree ("timestamp", symbol, current_price)
-  ```
-- `strike_table_spx_pkey`
-  ```sql
-  CREATE UNIQUE INDEX strike_table_spx_pkey ON live_data.strike_table_hourly_spx USING btree (id)
-  ```
-- `strike_table_spx_strike_key`
-  ```sql
-  CREATE UNIQUE INDEX strike_table_spx_strike_key ON live_data.strike_table_hourly_spx USING btree (strike)
-  ```
-- `strike_table_spx_timestamp_symbol_current_price_idx`
-  ```sql
-  CREATE INDEX strike_table_spx_timestamp_symbol_current_price_idx ON live_data.strike_table_hourly_spx USING btree ("timestamp", symbol, current_price)
-  ```
+- `idx_strike_table_hourly_lookup` on `("timestamp", symbol, current_price)`
+- `strike_table_hourly_exchange_symbol_idx` on `(exchange, symbol)`
+- `strike_table_hourly_exchange_symbol_timestamp_idx` on `(exchange, symbol, "timestamp" DESC)`
 
 ---
 
 ### Table: `live_data.strike_table_15m`
 
-Unified 15-minute strike table for all Kalshi 15m symbols (**BTC**, **ETH**, **SOL**, **XRP**). Rows are scoped by **`exchange`** (same role as per-symbol strike tables: in the unified feed the value is the data-source key **e.g. `kalshi`**, aligned with `live_data.market_kalshi_15m.exchange`; legacy per-symbol 15m tables may still use a `broker` column until cutover). Populated by `backend/strike_table_generator.py --master-15m`; per-symbol tables `strike_table_15m_*` remain until application cutover.
+Unified 15-minute strike table for all Kalshi 15m symbols (**BTC**, **ETH**, **SOL**, **XRP**). Rows are scoped by **`exchange`** (data-source key, e.g. `kalshi`, aligned with `live_data.market_kalshi_15m.exchange`). Populated by `backend/strike_table_generator.py --master-15m` and `backend/strike_table_generator_ws.py` (same table unless `STRIKE_TABLE_15M_TARGET` overrides). Legacy split-symbol `strike_table_15m_*` tables and **`strike_table_ws_15m`** were dropped in migration `20260331_1200_live_data_drop_legacy_split_and_equity_tables`.
 
-Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_table_15m_drop_exchange_display`, `20260326_1000_venue_exchange_column_names` (renames **`broker` → `exchange`** on this table), `20260326_2000_strike_table_15m_db_notify` (trigger `strike_table_15m_rec_io_db_notify` → `public.rec_io_db_notify()` for real-time backbone / pilot UIs), `20260327_2030_strike_table_15m_open_interest_and_dollars_only` (drop legacy cents asks, widen volume precision, add open_interest), `20260328_2115_strike_table_final_quarter_ask_tracking` (final-window YES/NO ask min/max/range in dollars for full 15m cycles), `20260330_2130_strike_final_quarter_asks_numeric_4dp` (store those six columns as `NUMERIC(18,4)`).
+Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_table_15m_drop_exchange_display`, `20260326_1000_venue_exchange_column_names` (renames **`broker` → `exchange`** on this table), `20260326_2000_strike_table_15m_db_notify` (trigger `strike_table_15m_rec_io_db_notify` → `public.rec_io_db_notify()` for real-time backbone / pilot UIs), `20260327_2030_strike_table_15m_open_interest_and_dollars_only` (drop legacy cents asks, widen volume precision, add open_interest), `20260328_2115_strike_table_final_quarter_ask_tracking` (final-window YES/NO ask min/max/range in dollars for full 15m cycles), `20260330_2130_strike_final_quarter_asks_numeric_4dp` (store those six columns as `NUMERIC(18,4)`), `20260331_1200_live_data_drop_legacy_split_and_equity_tables` (drops `strike_table_ws_15m` and split-symbol `strike_table_15m_*`), `20260329_1800_strike_tables_volume_open_interest_fp_text` (Kalshi depth columns **`volume_fp` / `open_interest_fp` TEXT** only; drops `volume` / `open_interest`).
 
 #### Columns
 
@@ -9373,8 +8696,8 @@ Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_tabl
 | `yes_bid_dollars` / `no_bid_dollars` | `text` | YES | - | |
 | `yes_price_spread` / `no_price_spread` | `numeric(6,4)` | YES | - | |
 | `yes_diff` / `no_diff` | `decimal(5,2)` | YES | - | |
-| `volume` | `numeric(20,2)` | YES | - | Kalshi fixed-point depth copied from `volume_fp` |
-| `open_interest` | `numeric(20,2)` | YES | - | Kalshi fixed-point depth copied from `open_interest_fp` |
+| `volume_fp` | `text` | YES | - | Kalshi fixed-point volume string (same semantics as `live_data.market_kalshi_*`) |
+| `open_interest_fp` | `text` | YES | - | Kalshi fixed-point open-interest string |
 | `ticker` | `varchar(50)` | YES | - | Market ticker |
 | `active_side` | `varchar(10)` | YES | - | |
 | `momentum_weighted_score` | `decimal(5,3)` | YES | - | |
@@ -9396,93 +8719,32 @@ Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_tabl
 
 ---
 
-### Table: `live_data.strike_table_ws_15m`
+### Table: `live_data.strike_pipeline_health`
 
-WS-backed 15-minute strike table for Kalshi symbols (**BTC**, **ETH**, **SOL**, **XRP**), generated by `backend/strike_table_generator_ws.py` from:
-- `live_data.market_kalshi_ws_15m` (event/strike ladder + quote columns)
-- `live_data.live_symbol_status` (spot + momentum/volatility/movement snapshot)
+Per-symbol pipeline health for **Kalshi 15m and hourly** WS strike publishers, trading gates, and dashboard power-light display (when `STRIKE_PIPELINE_HEALTH_STRICT_MODE` is on). Rows are keyed by **`(exchange, market, symbol)`** where **`market`** is `15m` or `hourly`. **`ws_transport_ok_at`** is updated by the market WS path (ping/recv) for catastrophic transport detection; strike WS writers update **`pipeline_health_checked_at`** and boolean health.
 
-Rows are scoped by `exchange` + `symbol`, matching unified 15m conventions. Column shape intentionally mirrors `live_data.strike_table_15m` to preserve downstream compatibility while allowing WS-specific orchestration.
-
-Migrations:
-- `20260326_1215_strike_table_ws_15m_and_ws_notify`
-- `20260326_1245_strike_table_ws_15m_pipeline_health_columns`
-- `20260328_2115_strike_table_final_quarter_ask_tracking` (final-window ask min/max/range columns)
-- `20260330_2130_strike_final_quarter_asks_numeric_4dp` (`NUMERIC(18,4)` for those six columns)
-
-#### Columns
-
-Same as `live_data.strike_table_15m` plus pipeline gate health metadata:
-- `pipeline_healthy` BOOLEAN NOT NULL DEFAULT FALSE
-- `pipeline_health_reason` TEXT
-- `pipeline_health_checked_at` TIMESTAMPTZ
-- `pipeline_health_max_age_sec` INTEGER NOT NULL DEFAULT 30
-
-#### Indexes
-
-- `strike_table_ws_15m_exchange_symbol_idx` on `(exchange, symbol)`
-- `idx_strike_table_ws_15m_lookup` on `(timestamp, symbol, current_price)`
-- `strike_table_ws_15m_exchange_symbol_timestamp_idx` on `(exchange, symbol, timestamp DESC)`
-- `strike_table_ws_15m_exchange_symbol_health_checked_idx` on `(exchange, symbol, pipeline_health_checked_at DESC)`
-
----
-
-### Table: `live_data.strike_pipeline_health_15m`
-
-Per-symbol WS pipeline health state for 15m trading gates and dashboard power-light display. This table is intentionally decoupled from strike row write volume so transient `strike_table_ws_15m` row-count gaps do not erase health visibility.
-
-Migrations:
-- `20260326_1335_strike_pipeline_health_15m`
+**Migrations:** `20260329_2359_unified_hourly_pipeline_health` (creates table, backfills `market='15m'` from legacy `strike_pipeline_health_15m`, drops legacy table). Older migration `20260326_1335_strike_pipeline_health_15m` applies only on DBs that have not yet run the unified migration.
 
 #### Columns
 
 - `exchange` VARCHAR(20) NOT NULL
+- `market` VARCHAR(20) NOT NULL
 - `symbol` VARCHAR(10) NOT NULL
 - `pipeline_healthy` BOOLEAN NOT NULL DEFAULT FALSE
 - `pipeline_health_reason` TEXT
 - `pipeline_health_checked_at` TIMESTAMPTZ NOT NULL DEFAULT NOW()
-- `pipeline_health_max_age_sec` INTEGER NOT NULL DEFAULT 30
+- `pipeline_health_max_age_sec` INTEGER NOT NULL DEFAULT 900
+- `ws_transport_ok_at` TIMESTAMPTZ
 - `updated_at` TIMESTAMPTZ NOT NULL DEFAULT NOW()
 
 #### Constraints
 
-- Primary key on `(exchange, symbol)`
+- Primary key on `(exchange, market, symbol)`
 
 #### Indexes
 
-- `strike_pipeline_health_15m_checked_idx` on `(pipeline_health_checked_at DESC)`
-
----
-
-### Table: `live_data.strike_table_15m_btc`
-
-15-minute strike table for BTC. Single strike per table; `market` = '15m'. Same column set as `strike_table_hourly_btc`: `ttc_hourly`, `ttc_15m`, `probability_hourly`, `probability_15m`. For 15m tables `ttc_hourly` and `probability_hourly` are NULL; readers use `ttc_15m` and `probability_15m` only. Legacy columns `ttc_seconds` and `probability` have been removed.
-
-#### Columns
-
-Same as `live_data.strike_table_hourly_btc` (including `ttc_hourly`, `ttc_15m`, `probability_hourly`, `probability_15m`); `market` TEXT DEFAULT '15m'. 15m-specific values are in `ttc_15m` and `probability_15m`.
-
----
-
-### Table: `live_data.strike_table_15m_eth`
-
-15-minute strike table for ETH. Single strike per table; `market` = '15m'. Same column set as hourly; 15m readers use `ttc_15m` and `probability_15m` only. Legacy `ttc_seconds` and `probability` removed.
-
-#### Columns
-
-Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m values in `ttc_15m` and `probability_15m`.
-
----
-
-### Table: `live_data.strike_table_15m_sol`
-
-15-minute strike table for SOL. Same role as `strike_table_15m_btc` / `_eth`. **`current_price`**, **`buffer`**, and **`strike`** use **`NUMERIC(18,5)`**; **`buffer_pct`** uses **`NUMERIC(12,6)`** so sub-dollar spot and buffers are not rounded away (see migration `20260322_1200_strike_15m_sol_xrp_numeric_precision`).
-
----
-
-### Table: `live_data.strike_table_15m_xrp`
-
-15-minute strike table for XRP. Same precision rules as `strike_table_15m_sol`: **`NUMERIC(18,5)`** for `current_price`, `buffer`, `strike`; **`NUMERIC(12,6)`** for `buffer_pct`.
+- `strike_pipeline_health_checked_idx` on `(pipeline_health_checked_at DESC)`
+- `strike_pipeline_health_transport_idx` on `(ws_transport_ok_at DESC NULLS LAST)`
 
 ---
 
@@ -9935,36 +9197,31 @@ Same as `live_data.strike_table_hourly_eth`; `market` TEXT DEFAULT '15m'. 15m va
 
 ### Table: `testing.market_kalshi_btc_websocket`
 
+Dev/testing sink for `backend/api/kalshi-api/kalshi_market_ticker_websocket.py`. Migration `20260329_1900_testing_market_kalshi_btc_websocket_dollars_fp` replaces legacy integer cent columns with dollar TEXT quotes and **`volume_fp` / `open_interest_fp` TEXT** only (parity with `live_data.market_kalshi_*`).
+
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval('testing.market_kalshi_btc_websocket_id... | |
+| `id` | `integer(32)` | NO | nextval | |
 | `event_ticker` | `character varying(50)` | NO | - | |
 | `market_ticker` | `character varying(100)` | NO | - | |
-| `market` | `text` | YES | - | Interval: 'hourly' or '15m' |
+| `market` | `text` | YES | `hourly` | Interval label |
 | `strike` | `character varying(20)` | YES | - | |
-| `yes_bid` | `integer(32)` | YES | - | |
-| `yes_ask` | `integer(32)` | YES | - | |
-| `no_bid` | `integer(32)` | YES | - | |
-| `no_ask` | `integer(32)` | YES | - | |
-| `last_price` | `integer(32)` | YES | - | |
-| `volume` | `integer(32)` | YES | - | |
-| `volume_24h` | `integer(32)` | YES | - | |
-| `open_interest` | `integer(32)` | YES | - | |
-| `liquidity` | `integer(32)` | YES | - | |
+| `yes_bid_dollars` | `text` | YES | - | |
+| `yes_ask_dollars` | `text` | YES | - | |
+| `no_bid_dollars` | `text` | YES | - | |
+| `no_ask_dollars` | `text` | YES | - | |
+| `last_price_dollars` | `text` | YES | - | |
+| `volume_fp` | `text` | YES | - | Orderbook total contracts as string |
+| `open_interest_fp` | `text` | YES | - | Same source as `volume_fp` in this test writer |
 | `created_at` | `timestamp with time zone` | YES | now() | |
 | `updated_at` | `timestamp with time zone` | YES | now() | |
-| `yes_volume` | `integer(32)` | YES | - | |
-| `no_volume` | `integer(32)` | YES | - | |
 
 #### Constraints
 
 - **Primary Key:** `market_kalshi_btc_websocket_pkey` on `id`
-- **Unique:** `market_kalshi_btc_websocket_event_ticker_market_ticker_key` on `event_ticker`
-- **Unique:** `market_kalshi_btc_websocket_event_ticker_market_ticker_key` on `event_ticker`
-- **Unique:** `market_kalshi_btc_websocket_event_ticker_market_ticker_key` on `market_ticker`
-- **Unique:** `market_kalshi_btc_websocket_event_ticker_market_ticker_key` on `market_ticker`
+- **Unique:** `market_kalshi_btc_websocket_event_ticker_market_ticker_key` on `(event_ticker, market_ticker)`
 
 #### Indexes
 

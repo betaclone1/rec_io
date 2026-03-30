@@ -585,11 +585,12 @@ class StrikeTableGenerator:
         logger.debug("Strike table generator initialized for %s (%s)", symbol.upper(), self.interval)
 
     def _strike_table_name(self) -> str:
-        """Table name: unified strike_table_15m or strike_table_hourly_{symbol} / strike_table_15m_{symbol}."""
+        """Table name: unified strike_table_15m, unified strike_table_hourly, or legacy per-symbol 15m."""
         if self.unified_15m:
             return "strike_table_15m"
-        suffix = "15m" if self.interval == "15m" else "hourly"
-        return f"strike_table_{suffix}_{self.symbol}"
+        if self.interval == "hourly":
+            return "strike_table_hourly"
+        return f"strike_table_15m_{self.symbol}"
 
     def _setup_unified_15m_schema(self, cursor, conn) -> None:
         """CREATE IF NOT EXISTS live_data.strike_table_15m (matches migration)."""
@@ -621,8 +622,8 @@ class StrikeTableGenerator:
                 no_price_spread NUMERIC(6,4),
                 yes_diff DECIMAL(5,2),
                 no_diff DECIMAL(5,2),
-                volume NUMERIC(20,2),
-                open_interest NUMERIC(20,2),
+                volume_fp TEXT,
+                open_interest_fp TEXT,
                 ticker VARCHAR(50),
                 active_side VARCHAR(10),
                 momentum_weighted_score DECIMAL(5,3),
@@ -746,23 +747,94 @@ class StrikeTableGenerator:
                 self._setup_unified_15m_schema(cursor, conn)
                 return
             
-            # Create strike table (hourly or 15m). Same column set: ttc_hourly, ttc_15m, probability_hourly, probability_15m.
+            # Create strike table (hourly or legacy per-symbol 15m). Hourly matches strike_table_15m (exchange, numeric strikes).
             table_name = self._strike_table_name()
-            if uses_high_precision_price(self.symbol):
-                price_t, buffer_t, strike_t, buffer_pct_t = (
-                    "NUMERIC(18,5)",
-                    "NUMERIC(18,5)",
-                    "NUMERIC(18,5)",
-                    "NUMERIC(12,6)",
+            market_default = "hourly" if self.interval == "hourly" else "15m"
+
+            if self.interval == "hourly":
+                strike_table_sql = f"""
+            CREATE TABLE IF NOT EXISTS live_data.{table_name} (
+                id SERIAL PRIMARY KEY,
+                timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                symbol VARCHAR(10) NOT NULL,
+                exchange VARCHAR(20) NOT NULL,
+                market TEXT DEFAULT '{market_default}',
+                current_price NUMERIC(18,5),
+                ttc_hourly INTEGER,
+                ttc_15m INTEGER,
+                event_ticker VARCHAR(50),
+                market_title TEXT,
+                strike_tier INTEGER,
+                market_status VARCHAR(20),
+                strike NUMERIC(18,5),
+                buffer NUMERIC(18,5),
+                buffer_pct NUMERIC(12,6),
+                probability_hourly DECIMAL(5,2),
+                probability_15m DECIMAL(5,2),
+                yes_ask_dollars TEXT,
+                no_ask_dollars TEXT,
+                yes_bid_dollars TEXT,
+                no_bid_dollars TEXT,
+                yes_price_spread NUMERIC(6,4),
+                no_price_spread NUMERIC(6,4),
+                yes_diff DECIMAL(5,2),
+                no_diff DECIMAL(5,2),
+                volume_fp TEXT,
+                open_interest_fp TEXT,
+                ticker VARCHAR(50),
+                active_side VARCHAR(10),
+                momentum_weighted_score DECIMAL(5,3),
+                momentum_percentile DECIMAL(5,1),
+                volatility NUMERIC(10,6),
+                volatility_percentile NUMERIC(5,1),
+                movement NUMERIC(10,4),
+                movement_percentile NUMERIC(5,1),
+                yes_ask_min_15m NUMERIC(18,4),
+                yes_ask_max_15m NUMERIC(18,4),
+                no_ask_min_15m NUMERIC(18,4),
+                no_ask_max_15m NUMERIC(18,4),
+                yes_ask_range_15m NUMERIC(18,4),
+                no_ask_range_15m NUMERIC(18,4),
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+            """
+                cursor.execute(strike_table_sql)
+                conn.commit()
+                cursor.execute(
+                    f"""
+                    CREATE INDEX IF NOT EXISTS {table_name}_exchange_symbol_idx
+                        ON live_data.{table_name} (exchange, symbol)
+                    """
                 )
+                cursor.execute(
+                    f"""
+                    CREATE INDEX IF NOT EXISTS idx_{table_name}_lookup
+                        ON live_data.{table_name} (timestamp, symbol, current_price)
+                    """
+                )
+                cursor.execute(
+                    f"""
+                    CREATE INDEX IF NOT EXISTS {table_name}_exchange_symbol_timestamp_idx
+                        ON live_data.{table_name} (exchange, symbol, timestamp DESC)
+                    """
+                )
+                conn.commit()
             else:
-                price_t, buffer_t, strike_t, buffer_pct_t = (
-                    "DECIMAL(10,2)",
-                    "DECIMAL(10,2)",
-                    "INTEGER",
-                    "DECIMAL(5,2)",
-                )
-            strike_table_sql = f"""
+                if uses_high_precision_price(self.symbol):
+                    price_t, buffer_t, strike_t, buffer_pct_t = (
+                        "NUMERIC(18,5)",
+                        "NUMERIC(18,5)",
+                        "NUMERIC(18,5)",
+                        "NUMERIC(12,6)",
+                    )
+                else:
+                    price_t, buffer_t, strike_t, buffer_pct_t = (
+                        "DECIMAL(10,2)",
+                        "DECIMAL(10,2)",
+                        "INTEGER",
+                        "DECIMAL(5,2)",
+                    )
+                strike_table_sql = f"""
             CREATE TABLE IF NOT EXISTS live_data.{table_name} (
                 id SERIAL PRIMARY KEY,
                 timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -781,8 +853,6 @@ class StrikeTableGenerator:
                 buffer_pct {buffer_pct_t},
                 probability_hourly DECIMAL(5,2),
                 probability_15m DECIMAL(5,2),
-                yes_ask DECIMAL(5,2),
-                no_ask DECIMAL(5,2),
                 yes_ask_dollars TEXT,
                 no_ask_dollars TEXT,
                 yes_bid_dollars TEXT,
@@ -791,7 +861,8 @@ class StrikeTableGenerator:
                 no_price_spread NUMERIC(6,4),
                 yes_diff DECIMAL(5,2),
                 no_diff DECIMAL(5,2),
-                volume INTEGER,
+                volume_fp TEXT,
+                open_interest_fp TEXT,
                 ticker VARCHAR(50),
                 active_side VARCHAR(10),
                 momentum_weighted_score DECIMAL(5,3),
@@ -809,44 +880,51 @@ class StrikeTableGenerator:
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             )
             """
-            cursor.execute(strike_table_sql)
-            conn.commit()  # Persist table before ALTERs so rollback in loop doesn't drop it
-            
-            # Add missing columns if they don't exist
-            missing_columns = [
-                ("market", "TEXT"),
-                ("momentum_weighted_score", "DECIMAL(5,3)"),
-                ("yes_bid_dollars", "TEXT"),
-                ("no_bid_dollars", "TEXT"),
-                ("yes_price_spread", "NUMERIC(6,4)"),
-                ("no_price_spread", "NUMERIC(6,4)"),
-                ("volatility", "NUMERIC(10,6)"),
-                ("volatility_percentile", "NUMERIC(5,1)"),
-                ("movement", "NUMERIC(10,4)"),
-                ("movement_percentile", "NUMERIC(5,1)"),
-                ("yes_ask_min_15m", "NUMERIC(18,4)"),
-                ("yes_ask_max_15m", "NUMERIC(18,4)"),
-                ("no_ask_min_15m", "NUMERIC(18,4)"),
-                ("no_ask_max_15m", "NUMERIC(18,4)"),
-                ("yes_ask_range_15m", "NUMERIC(18,4)"),
-                ("no_ask_range_15m", "NUMERIC(18,4)"),
-            ]
-            for column_name, column_type in missing_columns:
-                try:
-                    cursor.execute(f"ALTER TABLE live_data.{table_name} ADD COLUMN {column_name} {column_type};")
-                    conn.commit()
-                except psycopg2.ProgrammingError:
-                    conn.rollback()  # Only rolls back the failed ALTER
-                    pass
-            
-            # Create index for strike table
-            strike_index_sql = f"""
+                cursor.execute(strike_table_sql)
+                conn.commit()
+
+                missing_columns = [
+                    ("market", "TEXT"),
+                    ("ttc_15m", "INTEGER"),
+                    ("probability_15m", "DECIMAL(5,2)"),
+                    ("yes_ask_dollars", "TEXT"),
+                    ("no_ask_dollars", "TEXT"),
+                    ("yes_bid_dollars", "TEXT"),
+                    ("no_bid_dollars", "TEXT"),
+                    ("volume_fp", "TEXT"),
+                    ("open_interest_fp", "TEXT"),
+                    ("momentum_weighted_score", "DECIMAL(5,3)"),
+                    ("momentum_percentile", "DECIMAL(5,1)"),
+                    ("yes_price_spread", "NUMERIC(6,4)"),
+                    ("no_price_spread", "NUMERIC(6,4)"),
+                    ("volatility", "NUMERIC(10,6)"),
+                    ("volatility_percentile", "NUMERIC(5,1)"),
+                    ("movement", "NUMERIC(10,4)"),
+                    ("movement_percentile", "NUMERIC(5,1)"),
+                    ("yes_ask_min_15m", "NUMERIC(18,4)"),
+                    ("yes_ask_max_15m", "NUMERIC(18,4)"),
+                    ("no_ask_min_15m", "NUMERIC(18,4)"),
+                    ("no_ask_max_15m", "NUMERIC(18,4)"),
+                    ("yes_ask_range_15m", "NUMERIC(18,4)"),
+                    ("no_ask_range_15m", "NUMERIC(18,4)"),
+                ]
+                for column_name, column_type in missing_columns:
+                    try:
+                        cursor.execute(
+                            f"ALTER TABLE live_data.{table_name} ADD COLUMN {column_name} {column_type};"
+                        )
+                        conn.commit()
+                    except psycopg2.ProgrammingError:
+                        conn.rollback()
+                        pass
+
+                strike_index_sql = f"""
                     CREATE INDEX IF NOT EXISTS idx_{table_name}_lookup
         ON live_data.{table_name} (timestamp, symbol, current_price)
             """
-            cursor.execute(strike_index_sql)
-            
-            conn.commit()
+                cursor.execute(strike_index_sql)
+
+                conn.commit()
             logger.debug("Live data schema and tables created for %s", self.symbol.upper())
             
         except Exception as e:
@@ -904,13 +982,13 @@ class StrikeTableGenerator:
             raise
     
     def get_kalshi_market_snapshot(self) -> Dict[str, Any]:
-        """Get live Kalshi market snapshot from market_kalshi_hourly_{symbol}, market_kalshi_15m_{symbol}, or unified market_kalshi_15m."""
+        """Get live Kalshi market snapshot from unified market_kalshi_hourly or market_kalshi_15m (_dollars + _fp only)."""
         try:
             conn = get_postgresql_connection()
             cursor = conn.cursor()
             sym_u = self.symbol.upper()
 
-            if self.interval == "15m" and self.unified_15m:
+            if self.interval == "15m":
                 cursor.execute(
                     """
                     SELECT event_ticker
@@ -930,9 +1008,9 @@ class StrikeTableGenerator:
                 event_ticker = result[0]
                 cursor.execute(
                     """
-                    SELECT market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask, last_price,
+                    SELECT market_ticker, strike,
                            yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
-                           volume_fp AS volume, volume_24h_fp AS volume_24h, open_interest_fp AS open_interest, liquidity, updated_at
+                           volume_fp, open_interest_fp, updated_at
                     FROM live_data.market_kalshi_15m
                     WHERE event_ticker = %s AND exchange = %s AND symbol = %s
                     ORDER BY updated_at DESC
@@ -941,69 +1019,74 @@ class StrikeTableGenerator:
                 )
                 market_rows = cursor.fetchall()
             else:
-                if self.interval == "15m":
-                    market_table = f"market_kalshi_15m_{self.symbol}"
-                else:
-                    market_table = f"market_kalshi_hourly_{self.symbol}"
-
                 cursor.execute(
-                    f"""
+                    """
                     SELECT event_ticker
-                    FROM live_data.{market_table}
+                    FROM live_data.market_kalshi_hourly
+                    WHERE exchange = %s AND symbol = %s
                     ORDER BY updated_at DESC
                     LIMIT 1
-                    """
+                    """,
+                    (self.data_exchange, sym_u),
                 )
                 result = cursor.fetchone()
                 if not result:
-                    raise ValueError("No event_ticker found in %s table" % market_table)
+                    raise ValueError(
+                        "No event_ticker in market_kalshi_hourly for exchange=%s symbol=%s"
+                        % (self.data_exchange, sym_u)
+                    )
                 event_ticker = result[0]
-
                 cursor.execute(
-                    f"""
-                    SELECT market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask, last_price,
+                    """
+                    SELECT market_ticker, strike,
                            yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
-                           volume_fp AS volume, volume_24h_fp AS volume_24h, open_interest, liquidity, updated_at
-                    FROM live_data.{market_table}
-                    WHERE event_ticker = %s
+                           volume_fp, open_interest_fp, updated_at
+                    FROM live_data.market_kalshi_hourly
+                    WHERE event_ticker = %s AND exchange = %s AND symbol = %s
                     ORDER BY updated_at DESC
                     """,
-                    (event_ticker,),
+                    (event_ticker, self.data_exchange, sym_u),
                 )
                 market_rows = cursor.fetchall()
+
             if not market_rows:
                 raise ValueError("No markets found for event_ticker: %s" % event_ticker)
-            
+
             markets = []
             for row in market_rows:
-                market_ticker, strike, yes_bid, yes_ask, no_bid, no_ask, last_price, yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars, volume, volume_24h, open_interest, liquidity, updated_at = row
+                (
+                    market_ticker,
+                    strike,
+                    yes_bid_dollars,
+                    yes_ask_dollars,
+                    no_bid_dollars,
+                    no_ask_dollars,
+                    last_price_dollars,
+                    volume_fp,
+                    open_interest_fp,
+                    _updated_at,
+                ) = row
                 floor_strike = None
                 if strike:
                     try:
-                        clean_strike = strike.replace('$', '').replace(',', '')
+                        clean_strike = strike.replace("$", "").replace(",", "")
                         floor_strike = float(clean_strike)
                     except ValueError:
                         continue
-                market = {
-                    "ticker": market_ticker,
-                    "floor_strike": floor_strike,
-                    "yes_bid": yes_bid,
-                    "yes_ask": yes_ask,
-                    "no_bid": no_bid,
-                    "no_ask": no_ask,
-                    "last_price": last_price,
-                    "yes_bid_dollars": yes_bid_dollars,
-                    "yes_ask_dollars": yes_ask_dollars,
-                    "no_bid_dollars": no_bid_dollars,
-                    "no_ask_dollars": no_ask_dollars,
-                    "last_price_dollars": last_price_dollars,
-                    "volume": volume,
-                    "volume_24h": volume_24h,
-                    "open_interest": open_interest,
-                    "liquidity": liquidity,
-                    "status": "active"
-                }
-                markets.append(market)
+                markets.append(
+                    {
+                        "ticker": market_ticker,
+                        "floor_strike": floor_strike,
+                        "yes_bid_dollars": yes_bid_dollars,
+                        "yes_ask_dollars": yes_ask_dollars,
+                        "no_bid_dollars": no_bid_dollars,
+                        "no_ask_dollars": no_ask_dollars,
+                        "last_price_dollars": last_price_dollars,
+                        "volume_fp": volume_fp,
+                        "open_interest_fp": open_interest_fp,
+                        "status": "active",
+                    }
+                )
             
             # 15m: single strike, strike_tier 0; hourly: detect from spacing
             if self.interval == "15m":
@@ -1208,7 +1291,7 @@ class StrikeTableGenerator:
                     f"SELECT event_ticker, ticker, yes_ask_min_15m, yes_ask_max_15m, "
                     f"no_ask_min_15m, no_ask_max_15m FROM live_data.{table_name}"
                 )
-                if self.unified_15m:
+                if self.unified_15m or self.interval == "hourly":
                     sel += " WHERE exchange = %s AND symbol = %s"
                     cursor.execute(sel, (self.data_exchange, self.symbol.upper()))
                 else:
@@ -1228,7 +1311,7 @@ class StrikeTableGenerator:
             # All strike tables use ttc_hourly, ttc_15m, probability_hourly, probability_15m (15m tables leave hourly cols NULL).
             # Clear ALL previous strike table data - only keep current iteration
             try:
-                if self.unified_15m:
+                if self.unified_15m or self.interval == "hourly":
                     cursor.execute(
                         f"DELETE FROM live_data.{table_name} WHERE exchange = %s AND symbol = %s",
                         (self.data_exchange, self.symbol.upper()),
@@ -1281,15 +1364,13 @@ class StrikeTableGenerator:
                     if self.interval == "15m":
                         probability = probability_15m or probability  # 15m row uses 15m probability for diff calc
                     
-                    # Get market data for this strike
-                    yes_ask = None
-                    no_ask = None
+                    # Get market data for this strike (Kalshi _dollars + fp-derived depth only)
                     yes_ask_dollars = None
                     no_ask_dollars = None
                     yes_bid_dollars = None
                     no_bid_dollars = None
-                    volume = None
-                    open_interest = None
+                    volume_fp = None
+                    open_interest_fp = None
                     ticker = None
                     
                     # Find the matching market
@@ -1297,20 +1378,14 @@ class StrikeTableGenerator:
                         floor_strike = market.get("floor_strike")
                         if floor_strike is not None:
                             if strikes_equivalent(self.symbol, float(floor_strike), float(strike)):
-                                yes_ask = market.get("yes_ask")
-                                no_ask = market.get("no_ask")
                                 yes_ask_dollars = market.get("yes_ask_dollars")
                                 no_ask_dollars = market.get("no_ask_dollars")
                                 yes_bid_dollars = market.get("yes_bid_dollars")
                                 no_bid_dollars = market.get("no_bid_dollars")
-                                volume = market.get("volume")
-                                open_interest = market.get("open_interest")
+                                volume_fp = market.get("volume_fp")
+                                open_interest_fp = market.get("open_interest_fp")
                                 ticker = market.get("ticker")
                                 break
-                    
-                    if yes_ask is None or no_ask is None:
-                        logger.warning("Missing ask prices for strike %s, skipping", strike)
-                        continue
                     
                     # Calculate yes_diff and no_diff based on money line position using subpenny precision
                     # Convert _dollars values to cents for calculation (multiply by 100)
@@ -1381,15 +1456,15 @@ class StrikeTableGenerator:
                         prev=prev_6,
                     )
 
-                    # Insert: unified 15m uses exchange as execution venue key (e.g. kalshi).
-                    if self.unified_15m:
+                    # Unified 15m and hourly strike tables use exchange (same shape as strike_table_15m).
+                    if self.unified_15m or self.interval == "hourly":
                         cursor.execute(
                             f"""
                             INSERT INTO live_data.{table_name}
                             (symbol, exchange, market, current_price, ttc_hourly, ttc_15m, event_ticker, market_title,
                              strike_tier, market_status, strike, buffer, buffer_pct, probability_hourly, probability_15m,
                              yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
-                             yes_price_spread, no_price_spread, yes_diff, no_diff, volume, open_interest, ticker, active_side,
+                             yes_price_spread, no_price_spread, yes_diff, no_diff, volume_fp, open_interest_fp, ticker, active_side,
                              momentum_weighted_score, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile,
                              yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m, yes_ask_range_15m, no_ask_range_15m,
                              timestamp, created_at)
@@ -1419,8 +1494,8 @@ class StrikeTableGenerator:
                                 no_price_spread,
                                 yes_diff,
                                 no_diff,
-                                volume,
-                                open_interest,
+                                volume_fp,
+                                open_interest_fp,
                                 ticker,
                                 active_side,
                                 momentum_score,
@@ -1445,12 +1520,12 @@ class StrikeTableGenerator:
                             INSERT INTO live_data.{table_name}
                             (symbol, market, current_price, ttc_hourly, ttc_15m, broker, event_ticker, market_title,
                              strike_tier, market_status, strike, buffer, buffer_pct, probability_hourly, probability_15m,
-                             yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
-                             yes_price_spread, no_price_spread, yes_diff, no_diff, volume, ticker, active_side,
+                             yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
+                             yes_price_spread, no_price_spread, yes_diff, no_diff, volume_fp, open_interest_fp, ticker, active_side,
                              momentum_weighted_score, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile,
                              yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m, yes_ask_range_15m, no_ask_range_15m,
                              timestamp, created_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             (
                                 self.symbol.upper(),
@@ -1468,8 +1543,6 @@ class StrikeTableGenerator:
                                 buffer_pct,
                                 prob_hourly_val,
                                 probability_15m,
-                                yes_ask,
-                                no_ask,
                                 yes_ask_dollars,
                                 no_ask_dollars,
                                 yes_bid_dollars,
@@ -1478,7 +1551,8 @@ class StrikeTableGenerator:
                                 no_price_spread,
                                 yes_diff,
                                 no_diff,
-                                volume,
+                                volume_fp,
+                                open_interest_fp,
                                 ticker,
                                 active_side,
                                 momentum_score,
@@ -1502,9 +1576,7 @@ class StrikeTableGenerator:
                         "strike": strike,
                         "buffer": buffer,
                         "probability": probability,
-                        "yes_ask": yes_ask,
-                        "no_ask": no_ask,
-                        "active_side": active_side
+                        "active_side": active_side,
                     })
                     
                 except Exception as e:
@@ -1547,9 +1619,11 @@ class StrikeTableGenerator:
 
             table_name = self._strike_table_name()
             sym_u = self.symbol.upper()
-            venue_col = "exchange" if self.unified_15m else "broker"
+            venue_col = (
+                "exchange" if (self.unified_15m or self.interval == "hourly") else "broker"
+            )
 
-            if self.unified_15m:
+            if self.unified_15m or self.interval == "hourly":
                 cursor.execute(
                     f"""
                     SELECT MAX(timestamp) FROM live_data.{table_name}
@@ -1572,14 +1646,12 @@ class StrikeTableGenerator:
             ttc_col = "ttc_15m" if self.interval == "15m" else "ttc_hourly"
             prob_col = "probability_15m" if self.interval == "15m" else "probability_hourly"
 
-            if self.unified_15m:
+            if self.unified_15m or self.interval == "hourly":
                 cursor.execute(
                     f"""
                     SELECT symbol, current_price, {ttc_col}, {venue_col}, event_ticker, market_title,
                            strike_tier, market_status, strike, buffer, buffer_pct, {prob_col},
-                           ROUND((yes_ask_dollars::numeric * 100)::numeric, 2) AS yes_ask,
-                           ROUND((no_ask_dollars::numeric * 100)::numeric, 2) AS no_ask,
-                           yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume, open_interest, ticker, active_side,
+                           yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume_fp, open_interest_fp, ticker, active_side,
                            yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
                            yes_ask_range_15m, no_ask_range_15m,
                            momentum_percentile, volatility, volatility_percentile, movement, movement_percentile
@@ -1594,7 +1666,7 @@ class StrikeTableGenerator:
                     f"""
                     SELECT symbol, current_price, {ttc_col}, {venue_col}, event_ticker, market_title,
                            strike_tier, market_status, strike, buffer, buffer_pct, {prob_col},
-                           yes_ask, no_ask, yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume, ticker, active_side,
+                           yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume_fp, open_interest_fp, ticker, active_side,
                            yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
                            yes_ask_range_15m, no_ask_range_15m,
                            momentum_percentile, volatility, volatility_percentile, movement, movement_percentile
@@ -1611,7 +1683,11 @@ class StrikeTableGenerator:
                 return None
 
             raw_venue = rows[0][3]
-            if self.unified_15m and raw_venue is not None and str(raw_venue).lower() == "kalshi":
+            if (
+                (self.unified_15m or self.interval == "hourly")
+                and raw_venue is not None
+                and str(raw_venue).lower() == "kalshi"
+            ):
                 json_exchange = "Kalshi"
             else:
                 json_exchange = raw_venue
@@ -1635,54 +1711,27 @@ class StrikeTableGenerator:
                     if _sf is not None and _sf == int(_sf)
                     else _sf
                 )
-                if self.unified_15m:
-                    strike_entry = {
-                        "strike": _strike_out,
-                        "buffer": float(row[9]),
-                        "buffer_pct": float(row[10]),
-                        "probability": float(row[11]),
-                        "yes_ask": float(row[12]) if row[12] is not None else None,
-                        "no_ask": float(row[13]) if row[13] is not None else None,
-                        "yes_ask_dollars": row[14],
-                        "no_ask_dollars": row[15],
-                        "yes_diff": float(row[16]) if row[16] is not None else None,
-                        "no_diff": float(row[17]) if row[17] is not None else None,
-                        "volume": float(row[18]) if row[18] is not None else None,
-                        "open_interest": float(row[19]) if row[19] is not None else None,
-                        "ticker": row[20],
-                        "active_side": row[21],
-                        "yes_ask_min_15m": float(row[22]) if row[22] is not None else None,
-                        "yes_ask_max_15m": float(row[23]) if row[23] is not None else None,
-                        "no_ask_min_15m": float(row[24]) if row[24] is not None else None,
-                        "no_ask_max_15m": float(row[25]) if row[25] is not None else None,
-                        "yes_ask_range_15m": float(row[26]) if row[26] is not None else None,
-                        "no_ask_range_15m": float(row[27]) if row[27] is not None else None,
-                    }
-                    mo = 28
-                else:
-                    strike_entry = {
-                        "strike": _strike_out,
-                        "buffer": float(row[9]),
-                        "buffer_pct": float(row[10]),
-                        "probability": float(row[11]),
-                        "yes_ask": float(row[12]) if row[12] is not None else None,
-                        "no_ask": float(row[13]) if row[13] is not None else None,
-                        "yes_ask_dollars": row[14],
-                        "no_ask_dollars": row[15],
-                        "yes_diff": float(row[16]) if row[16] is not None else None,
-                        "no_diff": float(row[17]) if row[17] is not None else None,
-                        "volume": float(row[18]) if row[18] is not None else None,
-                        "open_interest": None,
-                        "ticker": row[19],
-                        "active_side": row[20],
-                        "yes_ask_min_15m": float(row[21]) if row[21] is not None else None,
-                        "yes_ask_max_15m": float(row[22]) if row[22] is not None else None,
-                        "no_ask_min_15m": float(row[23]) if row[23] is not None else None,
-                        "no_ask_max_15m": float(row[24]) if row[24] is not None else None,
-                        "yes_ask_range_15m": float(row[25]) if row[25] is not None else None,
-                        "no_ask_range_15m": float(row[26]) if row[26] is not None else None,
-                    }
-                    mo = 27
+                strike_entry = {
+                    "strike": _strike_out,
+                    "buffer": float(row[9]),
+                    "buffer_pct": float(row[10]),
+                    "probability": float(row[11]),
+                    "yes_ask_dollars": row[12],
+                    "no_ask_dollars": row[13],
+                    "yes_diff": float(row[14]) if row[14] is not None else None,
+                    "no_diff": float(row[15]) if row[15] is not None else None,
+                    "volume_fp": row[16] if row[16] is None else str(row[16]).strip(),
+                    "open_interest_fp": row[17] if row[17] is None else str(row[17]).strip(),
+                    "ticker": row[18],
+                    "active_side": row[19],
+                    "yes_ask_min_15m": float(row[20]) if row[20] is not None else None,
+                    "yes_ask_max_15m": float(row[21]) if row[21] is not None else None,
+                    "no_ask_min_15m": float(row[22]) if row[22] is not None else None,
+                    "no_ask_max_15m": float(row[23]) if row[23] is not None else None,
+                    "yes_ask_range_15m": float(row[24]) if row[24] is not None else None,
+                    "no_ask_range_15m": float(row[25]) if row[25] is not None else None,
+                }
+                mo = 26
                 result["strikes"].append(strike_entry)
 
             # Momentum / IV context from first row (same for all strikes at this timestamp)
@@ -1713,7 +1762,7 @@ class StrikeTableGenerator:
             conn = get_postgresql_connection()
             cursor = conn.cursor()
             table_name = self._strike_table_name()
-            if self.unified_15m:
+            if self.unified_15m or self.interval == "hourly":
                 cursor.execute(
                     f"""
                     SELECT
@@ -1784,13 +1833,29 @@ def run_continuous_generation(interval_seconds: int = 30, symbol: str = "btc", i
                     conn = get_postgresql_connection()
                     cursor = conn.cursor()
                     prob_col = "probability_15m" if generator.interval == "15m" else "probability_hourly"
-                    cursor.execute(f"""
-                    SELECT COUNT(*) as total_strikes, 
-                           MIN({prob_col}) as min_prob, 
-                           MAX({prob_col}) as max_prob,
-                           AVG({prob_col}) as avg_prob
-                    FROM live_data.{generator._strike_table_name()}
-                    """)
+                    tn = generator._strike_table_name()
+                    if generator.unified_15m or generator.interval == "hourly":
+                        cursor.execute(
+                            f"""
+                            SELECT COUNT(*) as total_strikes,
+                                   MIN({prob_col}) as min_prob,
+                                   MAX({prob_col}) as max_prob,
+                                   AVG({prob_col}) as avg_prob
+                            FROM live_data.{tn}
+                            WHERE exchange = %s AND symbol = %s
+                            """,
+                            (generator.data_exchange, generator.symbol.upper()),
+                        )
+                    else:
+                        cursor.execute(
+                            f"""
+                            SELECT COUNT(*) as total_strikes,
+                                   MIN({prob_col}) as min_prob,
+                                   MAX({prob_col}) as max_prob,
+                                   AVG({prob_col}) as avg_prob
+                            FROM live_data.{tn}
+                            """
+                        )
                     result = cursor.fetchone()
                     if result:
                         total_strikes, min_prob, max_prob, avg_prob = result
@@ -1992,7 +2057,7 @@ def main():
                 # Show sample strike table data
                 prob_col = "probability_15m" if generator.interval == "15m" else "probability_hourly"
                 cursor.execute(f"""
-                SELECT strike, buffer, {prob_col}, yes_ask, no_ask, active_side 
+                SELECT strike, buffer, {prob_col}, yes_ask_dollars, no_ask_dollars, active_side 
                 FROM live_data.{generator._strike_table_name()} 
                 ORDER BY strike 
                 LIMIT 5
@@ -2001,8 +2066,8 @@ def main():
                 rows = cursor.fetchall()
                 logger.debug("Sample strike table data")
                 for row in rows:
-                    strike, buffer, prob, yes_ask, no_ask, active_side = row
-                    logger.debug("Strike $%s: %s%% | YES: %s | NO: %s | %s", f"{strike:,}", f"{prob:.2f}", yes_ask, no_ask, active_side.upper())
+                    strike, buffer, prob, yad, nad, active_side = row
+                    logger.debug("Strike $%s: %s%% | YES$: %s | NO$: %s | %s", f"{strike:,}", f"{prob:.2f}", yad, nad, active_side.upper())
             else:
                 logger.error("No strike table data found")
             

@@ -14,6 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Legacy Kalshi quote guard (dollars-only contract)
+        run: bash scripts/dev/check_no_legacy_kalshi_quotes.sh
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:

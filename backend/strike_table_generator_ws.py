@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-WS strike table generator.
+WS strike table generator (Redis-triggered).
 
-Phase 1 target: 15m WS market rows -> live_data.strike_table_ws_15m.
-Architecture remains interval-aware so hourly can be wired later without redesign.
+Refreshes unified strike tables from Kalshi WS-backed market rows: 15m or hourly.
+Writes canonical health to live_data.strike_pipeline_health (exchange, market, symbol).
 """
 
 from __future__ import annotations
@@ -26,6 +26,12 @@ from backend.strike_table_generator import (
     fetch_kalshi_15m_symbols_ordered_from_db,
 )
 from backend.core.exchange_ids import normalize_exchange
+from backend.core.strike_pipeline_health import (
+    MARKET_15M,
+    MARKET_HOURLY,
+    pipeline_health_writer_dead_sec,
+    upsert_strike_pipeline_health,
+)
 
 
 def _est_formatter():
@@ -55,11 +61,12 @@ def _configure_logging():
 logger = _configure_logging()
 
 DEFAULT_STREAM_MARKET = "market_kalshi_15m"
+DEFAULT_STREAM_MARKET_HOURLY = "market_kalshi_hourly"
 DEFAULT_STREAM_SYMBOL = "live_symbol_status"
 DEFAULT_REDIS_CHANNEL = "rec_io:db_changes"
 DEFAULT_PIPELINE_MAX_AGE_SEC = 30
 DEFAULT_DEGRADE_CONFIRM_SEC = 30
-HEALTH_TABLE_15M = "strike_pipeline_health_15m"
+KALSHI_HOURLY_SYMBOLS = frozenset({"BTC", "ETH"})
 
 
 def _redis_client():
@@ -70,18 +77,6 @@ def _redis_client():
     port = int(os.getenv("REDIS_PORT", "6379"))
     password = os.getenv("REDIS_PASSWORD")
     return redis.Redis(host=host, port=port, password=password, decode_responses=True)
-
-
-def _dollars_to_cents(dollars_val):
-    if dollars_val is None:
-        return None
-    s = str(dollars_val).strip()
-    if not s:
-        return None
-    try:
-        return float(s) * 100.0
-    except Exception:
-        return None
 
 
 def _symbol_price_log_table(symbol: str) -> str | None:
@@ -95,7 +90,7 @@ def _symbol_price_log_table(symbol: str) -> str | None:
 
 
 class StrikeTableGeneratorWS(StrikeTableGenerator):
-    """WS-backed strike table generator for 15m; keeps interval-aware extension points."""
+    """WS-backed strike table generator (15m or hourly); Redis-triggered refresh + pipeline health rows."""
 
     def __init__(
         self,
@@ -103,194 +98,112 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
         *,
         interval: str = "15m",
         data_exchange: str = "kalshi",
-        strike_table_name: str = "strike_table_15m",
-        market_table_name: str = "market_kalshi_15m",
+        strike_table_name: str | None = None,
+        market_table_name: str | None = None,
         pipeline_max_age_sec: int = DEFAULT_PIPELINE_MAX_AGE_SEC,
         degrade_confirm_sec: int = DEFAULT_DEGRADE_CONFIRM_SEC,
     ):
-        if interval.lower() != "15m":
-            raise ValueError("phase 1 supports only interval=15m for WS generator")
+        iv = interval.strip().lower()
+        if iv not in ("15m", "hourly"):
+            raise ValueError("WS generator supports interval=15m or hourly")
+        if iv == "hourly" and symbol.upper() not in KALSHI_HOURLY_SYMBOLS:
+            raise ValueError(f"hourly WS generator only supports {sorted(KALSHI_HOURLY_SYMBOLS)}, got {symbol}")
         super().__init__(
             symbol=symbol,
-            interval=interval,
-            unified_15m=True,
+            interval=iv,
+            unified_15m=(iv == "15m"),
             data_exchange=data_exchange,
         )
-        self.strike_table_name = strike_table_name
-        self.market_table_name = market_table_name
+        self.pipeline_health_market = MARKET_15M if iv == "15m" else MARKET_HOURLY
+        self.strike_table_name = strike_table_name or (
+            "strike_table_15m" if iv == "15m" else "strike_table_hourly"
+        )
+        self.market_table_name = market_table_name or (
+            "market_kalshi_15m" if iv == "15m" else "market_kalshi_hourly"
+        )
         self.pipeline_max_age_sec = max(5, int(pipeline_max_age_sec))
         self.degrade_confirm_sec = max(5, int(degrade_confirm_sec))
 
     def _strike_table_name(self) -> str:
         return self.strike_table_name
 
-    def _setup_unified_15m_schema(self, cursor, conn) -> None:
-        table_name = self._strike_table_name()
+    def _ensure_strike_pipeline_health_schema(self, cursor, conn) -> None:
         cursor.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS live_data.{HEALTH_TABLE_15M} (
+            """
+            CREATE TABLE IF NOT EXISTS live_data.strike_pipeline_health (
                 exchange VARCHAR(20) NOT NULL,
+                market VARCHAR(20) NOT NULL,
                 symbol VARCHAR(10) NOT NULL,
                 pipeline_healthy BOOLEAN NOT NULL DEFAULT FALSE,
                 pipeline_health_reason TEXT,
                 pipeline_health_checked_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-                pipeline_health_max_age_sec INTEGER NOT NULL DEFAULT 30,
+                pipeline_health_max_age_sec INTEGER NOT NULL DEFAULT 900,
+                ws_transport_ok_at TIMESTAMP WITH TIME ZONE,
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (exchange, symbol)
+                PRIMARY KEY (exchange, market, symbol)
             )
             """
         )
         cursor.execute(
-            f"""
-            CREATE INDEX IF NOT EXISTS {HEALTH_TABLE_15M}_checked_idx
-                ON live_data.{HEALTH_TABLE_15M} (pipeline_health_checked_at DESC)
+            """
+            CREATE INDEX IF NOT EXISTS strike_pipeline_health_checked_idx
+                ON live_data.strike_pipeline_health (pipeline_health_checked_at DESC)
             """
         )
         cursor.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS live_data.{table_name} (
-                id SERIAL PRIMARY KEY,
-                timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                symbol VARCHAR(10) NOT NULL,
-                exchange VARCHAR(20) NOT NULL,
-                market TEXT DEFAULT '15m',
-                current_price NUMERIC(18,5),
-                ttc_hourly INTEGER,
-                ttc_15m INTEGER,
-                event_ticker VARCHAR(50),
-                market_title TEXT,
-                strike_tier INTEGER,
-                market_status VARCHAR(20),
-                strike NUMERIC(18,5),
-                buffer NUMERIC(18,5),
-                buffer_pct NUMERIC(12,6),
-                probability_hourly DECIMAL(5,2),
-                probability_15m DECIMAL(5,2),
-                yes_ask DECIMAL(5,2),
-                no_ask DECIMAL(5,2),
-                yes_ask_dollars TEXT,
-                no_ask_dollars TEXT,
-                yes_bid_dollars TEXT,
-                no_bid_dollars TEXT,
-                yes_price_spread NUMERIC(6,4),
-                no_price_spread NUMERIC(6,4),
-                yes_diff DECIMAL(5,2),
-                no_diff DECIMAL(5,2),
-                volume INTEGER,
-                ticker VARCHAR(50),
-                active_side VARCHAR(10),
-                momentum_weighted_score DECIMAL(5,3),
-                momentum_percentile DECIMAL(5,1),
-                volatility NUMERIC(10,6),
-                volatility_percentile NUMERIC(5,1),
-                movement NUMERIC(10,4),
-                movement_percentile NUMERIC(5,1),
-                yes_ask_min_15m NUMERIC(18,4),
-                yes_ask_max_15m NUMERIC(18,4),
-                no_ask_min_15m NUMERIC(18,4),
-                no_ask_max_15m NUMERIC(18,4),
-                yes_ask_range_15m NUMERIC(18,4),
-                no_ask_range_15m NUMERIC(18,4),
-                pipeline_healthy BOOLEAN NOT NULL DEFAULT FALSE,
-                pipeline_health_reason TEXT,
-                pipeline_health_checked_at TIMESTAMP WITH TIME ZONE,
-                pipeline_health_max_age_sec INTEGER NOT NULL DEFAULT 30,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-            )
+            """
+            CREATE INDEX IF NOT EXISTS strike_pipeline_health_transport_idx
+                ON live_data.strike_pipeline_health (ws_transport_ok_at DESC NULLS LAST)
             """
         )
-        cursor.execute(
-            f"""
-            CREATE INDEX IF NOT EXISTS {table_name}_exchange_symbol_idx
-                ON live_data.{table_name} (exchange, symbol)
-            """
-        )
-        cursor.execute(
-            f"""
-            CREATE INDEX IF NOT EXISTS idx_{table_name}_lookup
-                ON live_data.{table_name} (timestamp, symbol, current_price)
-            """
-        )
-        cursor.execute(
-            f"""
-            CREATE INDEX IF NOT EXISTS {table_name}_exchange_symbol_timestamp_idx
-                ON live_data.{table_name} (exchange, symbol, timestamp DESC)
-            """
-        )
-        conn.commit()
+
+    def setup_live_data_schema(self) -> None:
+        """Ensure health table exists, then parent strike/market DDL (migrations are source of truth)."""
+        conn = None
+        try:
+            conn = get_postgresql_connection()
+            cursor = conn.cursor()
+            cursor.execute("CREATE SCHEMA IF NOT EXISTS live_data")
+            self._ensure_strike_pipeline_health_schema(cursor, conn)
+            conn.commit()
+        except Exception:
+            if conn:
+                conn.rollback()
+            raise
+        finally:
+            if conn:
+                conn.close()
+        super().setup_live_data_schema()
+
+    def _setup_unified_15m_schema(self, cursor, conn) -> None:
+        self._ensure_strike_pipeline_health_schema(cursor, conn)
+        super()._setup_unified_15m_schema(cursor, conn)
 
     def set_pipeline_health(self, *, healthy: bool, reason: str) -> None:
         conn = get_postgresql_connection()
         if not conn:
             return
         try:
-            cur = conn.cursor()
-            # Write to dedicated health table (source of truth for UI/trade gate).
-            cur.execute(
-                f"""
-                INSERT INTO live_data.{HEALTH_TABLE_15M}
-                    (exchange, symbol, pipeline_healthy, pipeline_health_reason,
-                     pipeline_health_checked_at, pipeline_health_max_age_sec, updated_at)
-                VALUES (%s, %s, %s, %s, NOW(), %s, NOW())
-                ON CONFLICT (exchange, symbol) DO UPDATE SET
-                    pipeline_healthy = EXCLUDED.pipeline_healthy,
-                    pipeline_health_reason = EXCLUDED.pipeline_health_reason,
-                    pipeline_health_checked_at = EXCLUDED.pipeline_health_checked_at,
-                    pipeline_health_max_age_sec = EXCLUDED.pipeline_health_max_age_sec,
-                    updated_at = NOW()
-                """,
-                (
-                    self.data_exchange,
-                    self.symbol.upper(),
-                    bool(healthy),
-                    reason,
-                    self.pipeline_max_age_sec,
-                ),
+            upsert_strike_pipeline_health(
+                conn,
+                exchange=self.data_exchange,
+                market=self.pipeline_health_market,
+                symbol=self.symbol.upper(),
+                healthy=healthy,
+                reason=reason,
+                max_age_sec=pipeline_health_writer_dead_sec(),
             )
-            conn.commit()
         except Exception:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             logger.exception(
                 "[%s] failed setting pipeline health healthy=%s reason=%s",
                 self.symbol.upper(),
                 healthy,
                 reason,
             )
-            conn.close()
-            return
-
-        try:
-            cur = conn.cursor()
-            # Backfill legacy health columns on latest strike row when present.
-            # This is best-effort and must never block canonical health updates.
-            cur.execute(
-                f"""
-                UPDATE live_data.{self.strike_table_name}
-                SET pipeline_healthy = %s,
-                    pipeline_health_reason = %s,
-                    pipeline_health_checked_at = NOW(),
-                    pipeline_health_max_age_sec = %s
-                WHERE exchange = %s
-                  AND symbol = %s
-                  AND timestamp = (
-                    SELECT MAX(timestamp) FROM live_data.{self.strike_table_name}
-                    WHERE exchange = %s AND symbol = %s
-                  )
-                """,
-                (
-                    bool(healthy),
-                    reason,
-                    self.pipeline_max_age_sec,
-                    self.data_exchange,
-                    self.symbol.upper(),
-                    self.data_exchange,
-                    self.symbol.upper(),
-                ),
-            )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            logger.debug("[%s] legacy health-column backfill skipped", self.symbol.upper(), exc_info=True)
         finally:
             conn.close()
 
@@ -352,13 +265,27 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
             conn.close()
 
     def evaluate_pipeline_health(self, ok: bool, row_count: int) -> tuple[bool, str]:
-        """Determine health from WS market + live price freshness (feed-level truth)."""
-        market_age_sec = self.market_stream_age_sec()
-        if market_age_sec > float(self.pipeline_max_age_sec):
-            return False, f"market_stream_stale:{market_age_sec:.1f}s>{self.pipeline_max_age_sec}s"
-        price_age_sec = self.price_stream_age_sec()
-        if price_age_sec > float(self.pipeline_max_age_sec):
-            return False, f"price_stream_stale:{price_age_sec:.1f}s>{self.pipeline_max_age_sec}s"
+        """
+        Integrity: refresh succeeded and produced rows. Optional strict freshness:
+        when STRIKE_PIPELINE_FRESHNESS_STRICT is set, also require recent market + price ticks.
+        Trade gates use ws_transport + writer-dead thresholds on strike_pipeline_health, not this.
+        """
+        if not ok:
+            return False, "strike_refresh_failed"
+        if row_count <= 0:
+            return False, "strike_row_count_zero"
+        strict = os.getenv("STRIKE_PIPELINE_FRESHNESS_STRICT", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if strict:
+            market_age_sec = self.market_stream_age_sec()
+            if market_age_sec > float(self.pipeline_max_age_sec):
+                return False, f"market_stream_stale:{market_age_sec:.1f}s>{self.pipeline_max_age_sec}s"
+            price_age_sec = self.price_stream_age_sec()
+            if price_age_sec > float(self.pipeline_max_age_sec):
+                return False, f"price_stream_stale:{price_age_sec:.1f}s>{self.pipeline_max_age_sec}s"
         return True, "ok"
 
     def get_current_market_data(self):
@@ -412,7 +339,7 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
         }
 
     def get_kalshi_market_snapshot(self):
-        """Read latest event + ladder from live_data.market_kalshi_15m."""
+        """Read latest event + ladder from the configured WS market table (15m or hourly)."""
         conn = get_postgresql_connection()
         if not conn:
             raise ValueError("database unavailable")
@@ -463,23 +390,17 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
                     floor_strike = float(str(strike_txt).replace("$", "").replace(",", ""))
                 except ValueError:
                     floor_strike = None
-            # Keep fields compatible with base class strike-table generation.
             markets.append(
                 {
                     "ticker": market_ticker,
                     "floor_strike": floor_strike,
-                    "yes_ask": _dollars_to_cents(ya),
-                    "no_ask": _dollars_to_cents(na),
-                    "yes_bid": _dollars_to_cents(yb),
-                    "no_bid": _dollars_to_cents(nb),
-                    "last_price": _dollars_to_cents(lp),
                     "yes_ask_dollars": ya,
                     "no_ask_dollars": na,
                     "yes_bid_dollars": yb,
                     "no_bid_dollars": nb,
                     "last_price_dollars": lp,
-                    "volume": float(volume_fp) if volume_fp is not None else None,
-                    "open_interest": float(oi) if oi is not None else None,
+                    "volume_fp": volume_fp,
+                    "open_interest_fp": oi,
                     "status": "active",
                 }
             )
@@ -494,7 +415,13 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
         }
 
 
-def _coalesced_wait(pubsub, debounce_ms: int, stop_after_sec: float = 30.0) -> bool:
+def _coalesced_wait(
+    pubsub,
+    debounce_ms: int,
+    stop_after_sec: float = 30.0,
+    *,
+    stream_db_names: tuple[str, ...] = (DEFAULT_STREAM_MARKET, DEFAULT_STREAM_SYMBOL),
+) -> bool:
     """Wait for at least one message, then debounce briefly to coalesce bursts."""
     deadline = time.time() + stop_after_sec
     got_one = False
@@ -512,7 +439,7 @@ def _coalesced_wait(pubsub, debounce_ms: int, stop_after_sec: float = 30.0) -> b
         if payload.get("type") != "db_change":
             continue
         db_name = payload.get("database")
-        if db_name in (DEFAULT_STREAM_MARKET, DEFAULT_STREAM_SYMBOL):
+        if db_name in stream_db_names:
             got_one = True
             break
     if not got_one:
@@ -528,22 +455,38 @@ def run_redis_triggered(
     *,
     data_exchange: str,
     symbols: tuple[str, ...],
+    market_kind: str = "15m",
     redis_channel: str = DEFAULT_REDIS_CHANNEL,
     debounce_ms: int = 1200,
     min_refresh_sec: float = 1.2,
     pipeline_max_age_sec: int = DEFAULT_PIPELINE_MAX_AGE_SEC,
     degrade_confirm_sec: int = DEFAULT_DEGRADE_CONFIRM_SEC,
 ) -> None:
+    mk = (market_kind or "15m").strip().lower()
+    if mk == "hourly":
+        stream_db_names = (DEFAULT_STREAM_MARKET_HOURLY, DEFAULT_STREAM_SYMBOL)
+        default_strike = os.getenv("STRIKE_TABLE_HOURLY_TARGET", "strike_table_hourly")
+        default_market = "market_kalshi_hourly"
+    elif mk == "15m":
+        stream_db_names = (DEFAULT_STREAM_MARKET, DEFAULT_STREAM_SYMBOL)
+        default_strike = os.getenv("STRIKE_TABLE_15M_TARGET", "strike_table_15m")
+        default_market = "market_kalshi_15m"
+    else:
+        raise ValueError("market_kind must be 15m or hourly")
+
     syms = tuple(s.upper() for s in symbols)
     if not syms:
-        syms = DEFAULT_KALSHI_15M_SYMBOL_ORDER
+        syms = DEFAULT_KALSHI_15M_SYMBOL_ORDER if mk == "15m" else tuple(sorted(KALSHI_HOURLY_SYMBOLS))
+    if mk == "hourly":
+        syms = tuple(s for s in syms if s in KALSHI_HOURLY_SYMBOLS)
+
     generators = {
         s: StrikeTableGeneratorWS(
             s.lower(),
-            interval="15m",
+            interval="15m" if mk == "15m" else "hourly",
             data_exchange=data_exchange,
-            strike_table_name=os.getenv("STRIKE_TABLE_15M_TARGET", "strike_table_15m"),
-            market_table_name="market_kalshi_15m",
+            strike_table_name=default_strike,
+            market_table_name=default_market,
             pipeline_max_age_sec=pipeline_max_age_sec,
             degrade_confirm_sec=degrade_confirm_sec,
         )
@@ -575,7 +518,8 @@ def run_redis_triggered(
         logger.info("[%s] startup prime ok=%s event=%s rows=%s", s, ok, ev, n)
 
     logger.info(
-        "Redis-triggered WS strike generator start exchange=%s symbols=%s channel=%s debounce_ms=%s",
+        "Redis-triggered WS strike generator start market=%s exchange=%s symbols=%s channel=%s debounce_ms=%s",
+        mk,
         data_exchange,
         ",".join(syms),
         redis_channel,
@@ -590,7 +534,12 @@ def run_redis_triggered(
 
     while True:
         try:
-            fired = _coalesced_wait(pubsub, debounce_ms=debounce_ms, stop_after_sec=30.0)
+            fired = _coalesced_wait(
+                pubsub,
+                debounce_ms=debounce_ms,
+                stop_after_sec=30.0,
+                stream_db_names=stream_db_names,
+            )
             if not fired:
                 continue
             now = time.time()
@@ -630,10 +579,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="WS-backed strike table generator (Redis-triggered).")
     parser.add_argument("--exchange", default="kalshi")
     parser.add_argument(
+        "--market",
+        choices=("15m", "hourly"),
+        default="15m",
+        help="Which Kalshi interval / Redis db_change stream to follow.",
+    )
+    parser.add_argument(
         "--symbols",
         nargs="*",
         default=None,
-        help="Optional symbol list. Default: symbols_list order filtered to Kalshi 15m set.",
+        help="Optional symbol list. Default: symbols_list order filtered to Kalshi 15m or hourly set.",
     )
     parser.add_argument("--redis-channel", default=DEFAULT_REDIS_CHANNEL)
     parser.add_argument("--debounce-ms", type=int, default=1200)
@@ -648,15 +603,23 @@ def main() -> None:
 
     if args.symbols:
         syms = tuple(s.strip().upper() for s in args.symbols if s.strip())
+    elif args.market == "hourly":
+        syms = tuple(sorted(KALSHI_HOURLY_SYMBOLS))
     else:
         syms = fetch_kalshi_15m_symbols_ordered_from_db()
-    syms = tuple(s for s in syms if s in KALSHI_15M_SYMBOLS)
-    if not syms:
-        raise SystemExit("No valid 15m symbols configured")
+    if args.market == "hourly":
+        syms = tuple(s for s in syms if s in KALSHI_HOURLY_SYMBOLS)
+        if not syms:
+            raise SystemExit("No valid hourly symbols configured (BTC, ETH)")
+    else:
+        syms = tuple(s for s in syms if s in KALSHI_15M_SYMBOLS)
+        if not syms:
+            raise SystemExit("No valid 15m symbols configured")
 
     run_redis_triggered(
         data_exchange=venue,
         symbols=syms,
+        market_kind=args.market,
         redis_channel=args.redis_channel,
         debounce_ms=max(20, int(args.debounce_ms)),
         min_refresh_sec=max(0.1, float(args.min_refresh_sec)),

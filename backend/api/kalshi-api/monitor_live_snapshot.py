@@ -42,13 +42,17 @@ def display_snapshot(snapshot):
             
             print(f"🎯 {ticker} (${strike:,.0f})")
             
-            yes_bid = market['yes_bid'] if market['yes_bid'] is not None else "N/A"
-            yes_ask = market['yes_ask'] if market['yes_ask'] is not None else "N/A"
-            no_bid = market['no_bid'] if market['no_bid'] is not None else "N/A"
-            no_ask = market['no_ask'] if market['no_ask'] is not None else "N/A"
-            
-            print(f"   YES: {yes_bid} / {yes_ask} | Volume: {market['yes_volume']:,}")
-            print(f"   NO:  {no_bid} / {no_ask} | Volume: {market['no_volume']:,}")
+            yb = market.get("yes_bid_dollars", market.get("yes_bid"))
+            ya = market.get("yes_ask_dollars", market.get("yes_ask"))
+            nb = market.get("no_bid_dollars", market.get("no_bid"))
+            na = market.get("no_ask_dollars", market.get("no_ask"))
+            y_bid_s = yb if yb is not None else "N/A"
+            y_ask_s = ya if ya is not None else "N/A"
+            n_bid_s = nb if nb is not None else "N/A"
+            n_ask_s = na if na is not None else "N/A"
+
+            print(f"   YES: {y_bid_s} / {y_ask_s} | Volume: {market['yes_volume']:,}")
+            print(f"   NO:  {n_bid_s} / {n_ask_s} | Volume: {market['no_volume']:,}")
             print(f"   Total Volume: {market['total_volume']:,}")
             print(f"   Last Update: {market['last_update']}")
             print()

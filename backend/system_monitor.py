@@ -90,10 +90,10 @@ class SystemMonitor:
             "symbol_price_watchdog_eth": get_port("symbol_price_watchdog_eth"),
             "symbol_price_watchdog_sol": get_port("symbol_price_watchdog_sol"),
             "symbol_price_watchdog_xrp": get_port("symbol_price_watchdog_xrp"),
-            "strike_table_generator_hourly_btc": get_port("strike_table_generator_hourly_btc"),
+            "strike_table_generator_ws_hourly": get_port("strike_table_generator_ws_hourly"),
             "strike_table_generator_ws_15m": get_port("strike_table_generator_ws_15m"),
             "kalshi_account_sync": get_port("kalshi_account_sync"),
-            "kalshi_market_watchdog_hourly_btc": get_port("kalshi_market_watchdog_hourly_btc"),
+            "market_watchdog_ws_kalshi_hourly": get_port("market_watchdog_ws_kalshi_hourly"),
             "market_watchdog_ws_kalshi_15m": get_port("market_watchdog_ws_kalshi_15m"),
             "monitor_manager": get_port("monitor_manager"),
             "cascading_failure_detector": get_port("cascading_failure_detector"),
@@ -142,10 +142,10 @@ class SystemMonitor:
                 # {"name": "symbol_price_watchdog_ndx", "script": "symbol_price_watchdog.py NDX"},
                 # {"name": "symbol_price_watchdog_spx", "script": "symbol_price_watchdog.py SPX"},
                 {"name": "kalshi_account_sync", "script": "kalshi_account_sync_ws.py"},
-                {"name": "kalshi_market_watchdog_hourly_btc", "script": "kalshi_market_watchdog.py BTC"},
-                {"name": "kalshi_market_watchdog_hourly_eth", "script": "kalshi_market_watchdog.py ETH"},
-                # {"name": "kalshi_market_watchdog_hourly_ndx", "script": "kalshi_market_watchdog.py NDX"},
-                # {"name": "kalshi_market_watchdog_hourly_spx", "script": "kalshi_market_watchdog.py SPX"},
+                {
+                    "name": "market_watchdog_ws_kalshi_hourly",
+                    "script": "market_watchdog_ws.py --exchange kalshi --market hourly",
+                },
                 {
                     "name": "market_watchdog_ws_kalshi_15m",
                     "script": "market_watchdog_ws.py --exchange kalshi --market 15m",
@@ -184,15 +184,12 @@ class SystemMonitor:
                 active_trade_name = f"active_trade_supervisor_{monitor_identifier}"
                 discovered_services[active_trade_name] = active_trade_port
             
-            # Add strike table generators (hourly). SPX/NDX not currently traded; add to list to re-enable.
-            supported_symbols = ['BTC', 'ETH']  # was ['BTC', 'ETH', 'NDX', 'SPX']
-            strike_table_default_ports = {'btc': 8014, 'eth': 8015, 'spx': 8016, 'ndx': 8017}
-            for symbol in supported_symbols:
-                strike_table_name = f"strike_table_generator_hourly_{symbol.lower()}"
-                discovered_services[strike_table_name] = ports.get(
-                    strike_table_name, strike_table_default_ports[symbol.lower()]
-                )
-            discovered_services["strike_table_generator_ws_15m"] = ports.get("strike_table_generator_ws_15m", 8036)
+            discovered_services["strike_table_generator_ws_hourly"] = ports.get(
+                "strike_table_generator_ws_hourly", 8014
+            )
+            discovered_services["strike_table_generator_ws_15m"] = ports.get(
+                "strike_table_generator_ws_15m", 8036
+            )
 
             # Update the service URLs with discovered services
             self.service_urls = discovered_services

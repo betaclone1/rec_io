@@ -31,7 +31,9 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from backend.core.port_config import get_port, get_monitor_port, register_monitor_ports
+from backend.core.exchange_ids import DEFAULT_EXCHANGE
 from backend.core.config.database import get_postgresql_connection
+from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
 from backend.util.paths import get_host
 
 # Cached per symbol; same master lookup tables as strike_table_generator (not fingerprint calc).
@@ -464,7 +466,7 @@ def get_strike_table_name(symbol: str, market: str) -> str:
         if src == "ws":
             return "strike_table_ws_15m"
         return "strike_table_15m"
-    return f"strike_table_{m}_{symbol.lower()}"
+    return "strike_table_hourly"
 
 _sym_mkt = get_monitor_symbol()
 MONITOR_SYMBOL = _sym_mkt[0] if isinstance(_sym_mkt, tuple) else _sym_mkt
@@ -989,16 +991,43 @@ def handle_trade_manager_notification():
         if not data:
             return jsonify({"error": "No data received", "success": False}), 200
         
-        trade_id = data.get('trade_id')
-        ticket_id = data.get('ticket_id')
-        status = data.get('status')
-        monitor_identifier = data.get('monitor_identifier')
-        
-        if not all([trade_id, ticket_id, status]):
-            return jsonify({
-                "error": "Missing required fields: trade_id, ticket_id, status",
-                "success": False
-            }), 200
+        trade_id = data.get("trade_id")
+        ticket_id = (data.get("ticket_id") or "").strip() or None
+        status = data.get("status")
+        monitor_identifier = data.get("monitor_identifier")
+
+        if trade_id is None or not status:
+            return jsonify(
+                {
+                    "error": "Missing required fields: trade_id, status",
+                    "success": False,
+                }
+            ), 200
+
+        # Some callers omit ticket_id; enrollment reads authoritative fields from trades rows anyway.
+        if not ticket_id:
+            u_trade = USER_NUMBER
+            if monitor_identifier and "_" in str(monitor_identifier):
+                u_trade = str(monitor_identifier).split("_")[0]
+            elif not ATS_UNIFIED_15M and MONITOR_IDENTIFIER and "_" in MONITOR_IDENTIFIER:
+                u_trade = MONITOR_IDENTIFIER.split("_", 1)[0]
+            pg = get_postgresql_connection()
+            if pg:
+                try:
+                    with pg.cursor() as cur:
+                        cur.execute(
+                            f"SELECT ticket_id FROM users.trades_{u_trade} WHERE id = %s",
+                            (trade_id,),
+                        )
+                        row = cur.fetchone()
+                        if row and row[0]:
+                            ticket_id = str(row[0]).strip() or None
+                except Exception as e:
+                    log(f"⚠️ ticket_id backfill failed for trade {trade_id}: {e}")
+                finally:
+                    pg.close()
+        if not ticket_id:
+            ticket_id = ""
         
         if ATS_UNIFIED_15M:
             if not monitor_identifier or "_" not in str(monitor_identifier):
@@ -1829,7 +1858,7 @@ def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Option
     """Get the latest Kalshi market snapshot data from PostgreSQL.
     15m: reads configured unified source (`market_kalshi_ws_15m` default, legacy fallback `market_kalshi_15m`).
     Legacy per-symbol ``market_kalshi_15m_btc`` tables are not updated by that pipeline and are ignored.
-    Hourly: ``live_data.market_kalshi_hourly_{symbol}``."""
+    Hourly: unified ``live_data.market_kalshi_hourly`` (filter by symbol)."""
     try:
         # Use current monitor symbol and market if not specified
         if symbol is None or market is None:
@@ -1870,9 +1899,8 @@ def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Option
                 (sym_u,),
             )
         else:
-            table_name = f"market_kalshi_hourly_{(symbol or 'BTC').lower()}"
             cursor.execute(
-                f"""
+                """
                 SELECT
                     market_ticker,
                     yes_ask_dollars,
@@ -1880,9 +1908,12 @@ def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Option
                     volume_fp,
                     event_ticker,
                     strike
-                FROM live_data.{table_name}
+                FROM live_data.market_kalshi_hourly
+                WHERE LOWER(TRIM(exchange::text)) = 'kalshi'
+                  AND UPPER(TRIM(symbol::text)) = %s
                 ORDER BY updated_at DESC
-                """
+                """,
+                (sym_u,),
             )
 
         markets_data = cursor.fetchall()
@@ -1991,15 +2022,12 @@ def get_current_closing_price_for_trade(
                 # Use _dollars values for subpenny precision, fallback to cent conversion
                 if trade_side.upper() == "Y":  # YES trade
                     closing_price_dollars = market.get("no_ask_dollars")
-                    closing_price_cents = market.get("no_ask")
                 elif trade_side.upper() == "N":  # NO trade
                     closing_price_dollars = market.get("yes_ask_dollars")
-                    closing_price_cents = market.get("yes_ask")
                 else:
                     log(f"⚠️ Unknown trade side: {trade_side}")
                     return None
                 
-                # Use _dollars values directly (no fallback to cents)
                 if closing_price_dollars is not None:
                     # Use subpenny precision directly (no conversion needed)
                     closing_price_decimal = float(closing_price_dollars)
@@ -3155,7 +3183,17 @@ def start_event_driven_supervisor():
     
     http_thread = threading.Thread(target=start_http_server, daemon=True)
     http_thread.start()
-    
+
+    def _startup_reconcile():
+        time.sleep(5)
+        try:
+            log("🔄 Startup reconcile: sync_with_trades_db() (missed Redis/HTTP enrollments)")
+            sync_with_trades_db()
+        except Exception as e:
+            log(f"❌ Startup reconcile failed: {e}")
+
+    threading.Thread(target=_startup_reconcile, daemon=True).start()
+
     # Keep the process alive with brute force failsafe
     try:
         while True:
@@ -3308,38 +3346,22 @@ def trigger_auto_stop_close(
     conn = None
     try:
         symbol, market = get_current_monitor_symbol_and_market()
-        if market == "15m":
-            max_staleness_sec = int(os.getenv("STRIKE_PIPELINE_MAX_STALENESS_SEC", "30"))
+        mnorm = (market or "").strip().lower()
+        if mnorm in ("15m", "hourly"):
             conn = get_db_connection()
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT
-                        pipeline_healthy,
-                        pipeline_health_reason,
-                        EXTRACT(EPOCH FROM (NOW() - pipeline_health_checked_at))
-                    FROM live_data.strike_pipeline_health_15m
-                    WHERE exchange = 'kalshi' AND symbol = %s
-                    LIMIT 1
-                    """,
-                    (str(symbol or "").upper(),),
+            try:
+                ok, reason = evaluate_pipeline_gate_conn(
+                    conn,
+                    exchange="kalshi",
+                    market=mnorm,
+                    symbol=str(symbol or "").upper(),
                 )
-                hr = cursor.fetchone()
-            conn.close()
-            if not hr:
+            finally:
+                conn.close()
+            if not ok:
                 log(
-                    f"[AUTO STOP] 🚫 BLOCKED by pipeline gate: missing health row symbol={symbol} "
-                    f"trigger={trigger_reason} trade_id={tid}"
-                )
-                return False
-            is_healthy = bool(hr[0])
-            reason = str(hr[1] or "")
-            age_sec = float(hr[2]) if hr[2] is not None else float("inf")
-            if (not is_healthy) or (age_sec > float(max_staleness_sec)):
-                log(
-                    f"[AUTO STOP] 🚫 BLOCKED by pipeline gate symbol={symbol} "
-                    f"healthy={is_healthy} reason={reason} age={age_sec:.1f}s max={max_staleness_sec}s "
-                    f"trigger={trigger_reason} trade_id={tid}"
+                    f"[AUTO STOP] 🚫 BLOCKED by pipeline gate symbol={symbol} market={mnorm} "
+                    f"reason={reason} trigger={trigger_reason} trade_id={tid}"
                 )
                 return False
     except Exception as gate_err:
@@ -3699,9 +3721,16 @@ def get_unified_ttc_seconds(symbol: str = None):
         table_name = get_strike_table_name(sym, mkt)
         conn = get_db_connection()
         cursor = conn.cursor()
-        # Hourly strike tables use ttc_hourly; 15m strike tables use ttc_15m.
         ttc_column = "ttc_15m" if mkt == "15m" else "ttc_hourly"
-        cursor.execute(f"SELECT {ttc_column} FROM live_data.{table_name} LIMIT 1")
+        cursor.execute(
+            f"""
+            SELECT {ttc_column} FROM live_data.{table_name}
+            WHERE exchange = %s AND symbol = %s
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            (DEFAULT_EXCHANGE, sym.upper()),
+        )
         result = cursor.fetchone()
         conn.close()
         

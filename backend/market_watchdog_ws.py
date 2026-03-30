@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -44,16 +45,26 @@ from backend.market_watchdog import (
     connect_database,
     fetch_event_json,
     fetch_kalshi_15m_symbols_ordered_from_db,
+    get_current_event_ticker,
     get_current_event_ticker_15m,
     next_15m_close_est,
 )
 
 WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
 WS_TABLE = "live_data.market_kalshi_15m"
+WS_TABLE_HOURLY = "live_data.market_kalshi_hourly"
+KALSHI_HOURLY_SYMBOLS = ("BTC", "ETH")
+DEFAULT_HOUR_ROLLOVER_SKEW_SEC = 0
+DEFAULT_WS_PING_INTERVAL_SEC = 25
+DEFAULT_WS_TRANSPORT_BEAT_SEC = 25
 
 DEFAULT_QUARTER_ROLLOVER_SKEW_SEC = 0
 DEFAULT_DB_CONNECT_RETRY_SEC = 90.0
 DEFAULT_WS_FLOW_VERIFY_SEC = 120.0
+# Hourly books are wide; Kalshi often sends no ticker for illiquid strikes — do not require every ticker.
+DEFAULT_HOURLY_WS_VERIFY_SEC = 240.0
+DEFAULT_HOURLY_TICK_VERIFY_FRAC = 0.10
+DEFAULT_HOURLY_TICK_VERIFY_MIN = 20
 DEFAULT_CYCLE_RETRY_SEC = 10.0
 DEFAULT_DB_POOL_MAX_CONN = 16
 DEFAULT_DISCOVERY_SLEEP_SEC = 2.0
@@ -67,8 +78,9 @@ DEFAULT_ROLLOVER_REST_MAX_WORKERS = 1
 _POOL_LOCK = threading.Lock()
 _DB_POOL: psycopg2.pool.ThreadedConnectionPool | None = None
 
-TICKER_UPSERT_SQL = f"""
-INSERT INTO {WS_TABLE} AS ws
+def _ticker_upsert_sql(table_ref: str) -> str:
+    return f"""
+INSERT INTO {table_ref} AS ws
     (symbol, exchange, event_ticker, market_ticker, market, strike,
      yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
      volume_fp, open_interest_fp, updated_at)
@@ -86,6 +98,14 @@ ON CONFLICT (exchange, symbol, event_ticker, market_ticker) DO UPDATE SET
     open_interest_fp = EXCLUDED.open_interest_fp,
     updated_at = NOW()
 """
+
+
+_TICKER_UPSERT_SQL_ACTIVE = _ticker_upsert_sql(WS_TABLE)
+_WS_TRANSPORT_CTX: dict[str, object] = {
+    "exchange": "kalshi",
+    "market": "15m",
+    "symbols": (),
+}
 
 
 def _configure_logging():
@@ -212,23 +232,45 @@ def ensure_ws_15m_table(conn) -> None:
             market_ticker VARCHAR(100) NOT NULL,
             market TEXT DEFAULT '15m',
             strike VARCHAR(20),
-            yes_bid INTEGER,
-            yes_ask INTEGER,
-            no_bid INTEGER,
-            no_ask INTEGER,
-            last_price INTEGER,
             yes_bid_dollars TEXT,
             yes_ask_dollars TEXT,
             no_bid_dollars TEXT,
             no_ask_dollars TEXT,
             last_price_dollars TEXT,
             volume_fp TEXT,
-            volume_24h_fp INTEGER,
             open_interest_fp TEXT,
-            liquidity INTEGER,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
             updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
             CONSTRAINT market_kalshi_15m_exchange_symbol_event_market_unique
+                UNIQUE (exchange, symbol, event_ticker, market_ticker)
+        );
+        """
+    )
+    conn.commit()
+
+
+def ensure_ws_hourly_table(conn) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {WS_TABLE_HOURLY} (
+            id SERIAL PRIMARY KEY,
+            symbol VARCHAR(10) NOT NULL,
+            exchange VARCHAR(20) NOT NULL,
+            event_ticker VARCHAR(50) NOT NULL,
+            market_ticker VARCHAR(100) NOT NULL,
+            market TEXT DEFAULT 'hourly',
+            strike VARCHAR(20),
+            yes_bid_dollars TEXT,
+            yes_ask_dollars TEXT,
+            no_bid_dollars TEXT,
+            no_ask_dollars TEXT,
+            last_price_dollars TEXT,
+            volume_fp TEXT,
+            open_interest_fp TEXT,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            CONSTRAINT market_kalshi_hourly_ex_sym_evt_mkt_uniq
                 UNIQUE (exchange, symbol, event_ticker, market_ticker)
         );
         """
@@ -391,8 +433,17 @@ def _expected_row_count(resolved: dict[str, tuple[str, dict]]) -> int:
     return n
 
 
-def _seed_from_event_json(conn, exchange_key: str, resolved: dict[str, tuple[str, dict]]) -> bool:
+def _seed_from_event_json(
+    conn,
+    exchange_key: str,
+    resolved: dict[str, tuple[str, dict]],
+    *,
+    table_ref: str,
+    market_label: str,
+    do_commit: bool = True,
+) -> bool:
     br = exchange_key.lower().strip()
+    ml = market_label.strip().lower()
     cur = conn.cursor()
     try:
         for sym, (event_ticker, ed) in resolved.items():
@@ -417,15 +468,16 @@ def _seed_from_event_json(conn, exchange_key: str, resolved: dict[str, tuple[str
                     symbol=sup,
                     event_ticker=event_ticker,
                     exchange=exchange_key,
+                    market_interval=ml,
                 )
                 _s, _b, _et, _mt, _mv, _ts, yb, ya, nb, na, lp, vf, oif = _normalize_row_for_canonical_15m(row)
                 cur.execute(
                     f"""
-                    INSERT INTO {WS_TABLE} AS ws
+                    INSERT INTO {table_ref} AS ws
                     (symbol, exchange, event_ticker, market_ticker, market, strike,
                      yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars,
                      last_price_dollars, volume_fp, open_interest_fp, updated_at)
-                    VALUES (%s, %s, %s, %s, '15m', %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                     ON CONFLICT (exchange, symbol, event_ticker, market_ticker) DO UPDATE SET
                         market = EXCLUDED.market,
                         strike = COALESCE(EXCLUDED.strike, ws.strike),
@@ -438,9 +490,10 @@ def _seed_from_event_json(conn, exchange_key: str, resolved: dict[str, tuple[str
                         open_interest_fp = COALESCE(EXCLUDED.open_interest_fp, ws.open_interest_fp),
                         updated_at = NOW()
                     """,
-                    (sup, br, event_ticker, mt, strike, yb, ya, nb, na, lp, vf, oif),
+                    (sup, br, event_ticker, mt, ml, strike, yb, ya, nb, na, lp, vf, oif),
                 )
-        conn.commit()
+        if do_commit:
+            conn.commit()
         return True
     except Exception:
         logger.exception("seed_from_event_json failed")
@@ -451,6 +504,20 @@ def _seed_from_event_json(conn, exchange_key: str, resolved: dict[str, tuple[str
 def _delete_all_rows(conn, table_ref: str) -> int:
     cur = conn.cursor()
     cur.execute(f"DELETE FROM {table_ref}")
+    n = cur.rowcount
+    conn.commit()
+    return n
+
+
+def _delete_rows_for_symbols(conn, table_ref: str, exchange_key: str, symbols: tuple[str, ...]) -> int:
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        DELETE FROM {table_ref}
+        WHERE exchange = %s AND UPPER(TRIM(symbol::text)) = ANY(%s)
+        """,
+        (exchange_key.lower(), [s.upper() for s in symbols]),
+    )
     n = cur.rowcount
     conn.commit()
     return n
@@ -482,13 +549,50 @@ def _verify_count(conn, table_ref: str, exchange_key: str, symbols: tuple[str, .
 # --- WS + shared state ---
 
 
+def _touch_ws_transport_liveness() -> None:
+    """Update ws_transport_ok_at for each in-scope symbol (RFC ping / recv / heartbeat)."""
+    ex = str(_WS_TRANSPORT_CTX.get("exchange") or "kalshi").lower().strip()
+    mk = str(_WS_TRANSPORT_CTX.get("market") or "15m").lower().strip()
+    syms = _WS_TRANSPORT_CTX.get("symbols") or ()
+    if not syms:
+        return
+    conn = _borrow_conn_retry("ws_transport_touch", max_wait_sec=8.0)
+    if not conn:
+        return
+    try:
+        cur = conn.cursor()
+        for sym in syms:
+            sym_u = str(sym).upper().strip()
+            cur.execute(
+                """
+                INSERT INTO live_data.strike_pipeline_health
+                    (exchange, market, symbol, pipeline_healthy, pipeline_health_reason,
+                     pipeline_health_checked_at, pipeline_health_max_age_sec, ws_transport_ok_at, updated_at)
+                VALUES (%s, %s, %s, false, 'ws_pending_strike_eval', NOW(), 900, NOW(), NOW())
+                ON CONFLICT (exchange, market, symbol) DO UPDATE SET
+                    ws_transport_ok_at = NOW(),
+                    updated_at = NOW()
+                """,
+                (ex, mk, sym_u),
+            )
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.debug("ws transport touch failed", exc_info=True)
+    finally:
+        _return_conn(conn)
+
+
 def _upsert_ticker_row(row: tuple) -> None:
     conn = _borrow_conn_retry("ws_upsert", max_wait_sec=30.0)
     if not conn:
         return
     try:
         cur = conn.cursor()
-        cur.execute(TICKER_UPSERT_SQL, _normalize_row_for_canonical_15m(row))
+        cur.execute(_TICKER_UPSERT_SQL_ACTIVE, _normalize_row_for_canonical_15m(row))
         conn.commit()
     except Exception:
         try:
@@ -567,6 +671,65 @@ def _sleep_until_next_quarter(skew_sec: int) -> float:
     return max(0.0, (wake - now).total_seconds())
 
 
+def next_hour_close_est():
+    """Next hour boundary in America/New_York (top of the upcoming hour)."""
+    now = datetime.now(EST)
+    return now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+
+
+def _sleep_until_next_hour(skew_sec: int) -> float:
+    wake = next_hour_close_est() + timedelta(seconds=skew_sec)
+    now = datetime.now(EST)
+    return max(0.0, (wake - now).total_seconds())
+
+
+def _resolve_one_hourly_symbol(
+    sym: str,
+    *,
+    max_wait_sec: float,
+    sleep_sec: float,
+) -> tuple[str, tuple[str | None, dict]]:
+    sym_u = sym.upper()
+    deadline = time.monotonic() + max_wait_sec
+    while time.monotonic() < deadline:
+        et, ed = get_current_event_ticker(sym_u, "hourly")
+        if et and ed and (ed.get("markets") or []):
+            logger.info("[%s] hourly resolved event=%s markets=%s", sym_u, et, len(ed.get("markets") or []))
+            return sym_u, (et, ed)
+        time.sleep(sleep_sec)
+    logger.warning("[%s] hourly discovery timed out after %.0fs", sym_u, max_wait_sec)
+    return sym_u, (None, {})
+
+
+def _discover_hourly_all(
+    symbols: tuple[str, ...],
+    *,
+    max_wait_sec: float,
+    sleep_sec: float,
+) -> dict[str, tuple[str | None, dict]]:
+    resolved: dict[str, tuple[str | None, dict]] = {}
+    workers = _rollover_rest_max_workers(len(symbols))
+    if len(symbols) > 1 and workers > 1:
+        logger.warning(
+            "hourly rollover REST using %s parallel workers (set MARKET_WATCHDOG_WS_ROLLOVER_REST_WORKERS=1 to reduce bursts)",
+            workers,
+        )
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        fmap = {
+            pool.submit(
+                _resolve_one_hourly_symbol,
+                s,
+                max_wait_sec=max_wait_sec,
+                sleep_sec=sleep_sec,
+            ): s.upper()
+            for s in symbols
+        }
+        for fut in as_completed(fmap):
+            sym_u, pair = fut.result()
+            resolved[sym_u] = pair
+    return resolved
+
+
 def _run_rollover(
     symbols: tuple[str, ...],
     exchange_key: str,
@@ -575,32 +738,23 @@ def _run_rollover(
     previous_event: dict[str, str | None],
     last_markets: dict[str, list | None],
     db_retry_sec: float,
+    *,
+    table_ref: str,
+    market_label: str,
+    delete_mode: str,
+    discover_fn,
 ) -> bool:
     """
-    Wipe DB → REST discovery (serial by default) until markets have usable strike inputs →
-    seed from event JSON → subscribe WS.
+    REST discovery first, then wipe + seed in one DB transaction (no empty-table window).
+
+    delete_mode: ``all`` (15m) or ``scoped`` (hourly symbols only).
+    discover_fn: ``(symbols, last_failed) -> resolved dict`` for 15m, or hourly variant
+    (caller wraps to match signature).
     """
-    table_ref = WS_TABLE
     sub.rolling.set()
     try:
-        conn = _borrow_conn_retry("rollover_delete", db_retry_sec)
-        if not conn:
-            return False
-        try:
-            cleared = _delete_all_rows(conn, table_ref)
-            logger.info("DELETE FROM %s rows=%s", table_ref, cleared)
-        finally:
-            _return_conn(conn)
-
-        # Quarter-boundary contract reset: clear subscriptions immediately.
-        sub.replace({}, [])
-
-        resolved = _discover_all(
-            symbols,
-            last_failed,
-            max_wait_sec=DEFAULT_DISCOVERY_MAX_WAIT_SEC,
-            sleep_sec=DEFAULT_DISCOVERY_SLEEP_SEC,
-        )
+        # Discover before any DELETE so we never commit an empty table if discovery fails.
+        resolved = discover_fn(symbols, last_failed)
         ready: dict[str, tuple[str | None, dict]] = {
             sym: pair
             for sym, pair in resolved.items()
@@ -609,25 +763,81 @@ def _run_rollover(
         expected = _expected_row_count(ready)
         if expected <= 0:
             logger.warning(
-                "rollover discovery returned zero seed rows; table remains empty until symbols become ready"
+                "rollover discovery returned zero seed rows; table not modified"
+            )
+            return False
+        sym_set = {str(s).upper() for s in symbols}
+        ready_set = set(ready.keys())
+        if ready_set < sym_set:
+            pending = sorted(sym_set - ready_set)
+            logger.warning(
+                "rollover partial: ready=%s pending=%s; not deleting or seeding (retry later)",
+                ",".join(sorted(ready_set)),
+                ",".join(pending),
             )
             return False
 
-        conn2 = _borrow_conn_retry("rollover_seed", db_retry_sec)
-        if not conn2:
-            sub.replace({}, [])
+        sub.replace({}, [])
+
+        conn = _borrow_conn_retry("rollover_atomic", db_retry_sec)
+        if not conn:
             return False
+        old_ac = getattr(conn, "autocommit", False)
         try:
-            if not _seed_from_event_json(conn2, exchange_key, ready):
+            if old_ac:
+                conn.autocommit = False
+            cur = conn.cursor()
+            if delete_mode == "scoped":
+                cur.execute(
+                    f"""
+                    DELETE FROM {table_ref}
+                    WHERE exchange = %s AND UPPER(TRIM(symbol::text)) = ANY(%s)
+                    """,
+                    (exchange_key.lower(), [str(s).upper() for s in symbols]),
+                )
+            else:
+                cur.execute(f"DELETE FROM {table_ref}")
+            cleared = cur.rowcount
+            logger.info(
+                "DELETE FROM %s rows=%s mode=%s (same txn as seed)",
+                table_ref,
+                cleared,
+                delete_mode,
+            )
+
+            if not _seed_from_event_json(
+                conn,
+                exchange_key,
+                ready,
+                table_ref=table_ref,
+                market_label=market_label,
+                do_commit=False,
+            ):
+                conn.rollback()
                 sub.replace({}, [])
                 return False
             if not _verify_count(
-                conn2, table_ref, exchange_key, tuple(sorted(ready.keys())), expected
+                conn, table_ref, exchange_key, tuple(sorted(ready.keys())), expected
             ):
+                conn.rollback()
                 sub.replace({}, [])
                 return False
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            logger.exception("rollover atomic delete+seed failed")
+            sub.replace({}, [])
+            return False
         finally:
-            _return_conn(conn2)
+            if old_ac:
+                try:
+                    conn.autocommit = True
+                except Exception:
+                    pass
+            _return_conn(conn)
 
         for sym in sorted(ready.keys()):
             et, ed = ready.get(sym, (None, {}))
@@ -638,14 +848,6 @@ def _run_rollover(
         meta, tickers = _build_meta(symbols, previous_event, last_markets)
         sub.replace(meta, tickers)
         ok = len(tickers) > 0
-        if len(ready) < len(symbols):
-            pending = sorted(set(symbols) - set(ready.keys()))
-            logger.warning(
-                "rollover partial: ready=%s pending=%s; retrying pending symbols",
-                ",".join(sorted(ready.keys())),
-                ",".join(pending),
-            )
-            return False
         logger.info(
             "rollover %s symbols=%s rows=%s ws_tickers=%s",
             "OK" if ok else "INCOMPLETE",
@@ -661,19 +863,62 @@ def _run_rollover(
         sub.rolling.clear()
 
 
-def _wait_first_tick(sub: SubState, tickers: list[str], max_wait_sec: float) -> bool:
+def _wait_first_tick(
+    sub: SubState,
+    tickers: list[str],
+    max_wait_sec: float,
+    *,
+    hourly_relaxed: bool = False,
+) -> bool:
+    """After rollover subscribe, confirm WS is delivering tickers.
+
+    15m: require at least one ticker message per subscribed market_ticker.
+
+    Hourly (relaxed): require a fraction / minimum count — many strikes never tick unless traded.
+    Set ``MARKET_WATCHDOG_WS_HOURLY_TICK_VERIFY_STRICT=1`` to require all tickers (15m-style).
+    """
     if not tickers:
         return False
+    n = len(tickers)
+    strict_hourly = hourly_relaxed and os.getenv(
+        "MARKET_WATCHDOG_WS_HOURLY_TICK_VERIFY_STRICT", ""
+    ).strip().lower() in ("1", "true", "yes")
+    if hourly_relaxed and not strict_hourly:
+        frac = float(os.getenv("MARKET_WATCHDOG_WS_HOURLY_TICK_VERIFY_FRAC", str(DEFAULT_HOURLY_TICK_VERIFY_FRAC)))
+        min_abs = int(os.getenv("MARKET_WATCHDOG_WS_HOURLY_TICK_VERIFY_MIN", str(DEFAULT_HOURLY_TICK_VERIFY_MIN)))
+        frac = max(0.01, min(1.0, frac))
+        min_abs = max(1, min_abs)
+        need = min(n, max(min_abs, int(n * frac)))
+    else:
+        need = n
+
     deadline = time.monotonic() + max_wait_sec
     while time.monotonic() < deadline:
-        if sub.all_tickers_heard(tickers):
-            logger.info("ws first tick on all %s market_tickers", len(tickers))
+        with sub._lock:
+            heard = sum(1 for mt in tickers if mt in sub._ticker_rx)
+        if heard >= need:
+            if need < n:
+                logger.info(
+                    "ws hourly tick verify ok heard=%s/%s need=%s (relaxed; %s unique tickers)",
+                    heard,
+                    n,
+                    need,
+                    n,
+                )
+            else:
+                logger.info("ws first tick on all %s market_tickers", n)
             return True
         time.sleep(0.35)
     with sub._lock:
         have = set(sub._ticker_rx)
     missing = [mt for mt in tickers if mt not in have]
-    logger.error("ws verify timeout silent=%s sample=%s", len(missing), missing[:25])
+    logger.error(
+        "ws verify timeout need=%s heard=%s silent=%s sample=%s",
+        need,
+        n - len(missing),
+        len(missing),
+        missing[:25],
+    )
     return False
 
 
@@ -699,7 +944,22 @@ def _main_loop(
         # event can lag Kalshi until the *following* quarter unless we roll again immediately.
         quarter_close_target = next_15m_close_est()
         ok = _run_rollover(
-            symbols, exchange_key, sub, last_failed, prev_ev, last_m, db_retry_sec
+            symbols,
+            exchange_key,
+            sub,
+            last_failed,
+            prev_ev,
+            last_m,
+            db_retry_sec,
+            table_ref=WS_TABLE,
+            market_label="15m",
+            delete_mode="all",
+            discover_fn=lambda sy, lf: _discover_all(
+                sy,
+                lf,
+                max_wait_sec=DEFAULT_DISCOVERY_MAX_WAIT_SEC,
+                sleep_sec=DEFAULT_DISCOVERY_SLEEP_SEC,
+            ),
         )
         _, _, tickers_now = sub.snapshot()
 
@@ -712,7 +972,22 @@ def _main_loop(
                     quarter_close_target.strftime("%H:%M:%S"),
                 )
                 ok = _run_rollover(
-                    symbols, exchange_key, sub, last_failed, prev_ev, last_m, db_retry_sec
+                    symbols,
+                    exchange_key,
+                    sub,
+                    last_failed,
+                    prev_ev,
+                    last_m,
+                    db_retry_sec,
+                    table_ref=WS_TABLE,
+                    market_label="15m",
+                    delete_mode="all",
+                    discover_fn=lambda sy, lf: _discover_all(
+                        sy,
+                        lf,
+                        max_wait_sec=DEFAULT_DISCOVERY_MAX_WAIT_SEC,
+                        sleep_sec=DEFAULT_DISCOVERY_SLEEP_SEC,
+                    ),
                 )
                 if ok:
                     _, _, tickers_now = sub.snapshot()
@@ -741,7 +1016,100 @@ def _main_loop(
             break
 
 
+def _main_loop_hourly(
+    symbols: tuple[str, ...],
+    exchange_key: str,
+    sub: SubState,
+    stop: threading.Event,
+    *,
+    hour_skew_sec: int,
+    db_retry_sec: float,
+    ws_verify_sec: float,
+    cycle_retry_sec: float,
+) -> None:
+    prev_ev: dict[str, str | None] = {s: None for s in symbols}
+    last_m: dict[str, list | None] = {s: None for s in symbols}
+    last_failed: dict = {}
+    last_hb = time.time()
+
+    while not stop.is_set():
+        hour_close_target = next_hour_close_est()
+        ok = _run_rollover(
+            symbols,
+            exchange_key,
+            sub,
+            last_failed,
+            prev_ev,
+            last_m,
+            db_retry_sec,
+            table_ref=WS_TABLE_HOURLY,
+            market_label="hourly",
+            delete_mode="scoped",
+            discover_fn=lambda sy, lf: _discover_hourly_all(
+                sy,
+                max_wait_sec=DEFAULT_DISCOVERY_MAX_WAIT_SEC,
+                sleep_sec=DEFAULT_DISCOVERY_SLEEP_SEC,
+            ),
+        )
+        _, _, tickers_now = sub.snapshot()
+
+        if ok:
+            if not _wait_first_tick(sub, tickers_now, ws_verify_sec, hourly_relaxed=True):
+                ok = False
+            elif datetime.now(EST) >= hour_close_target:
+                logger.info(
+                    "crossed ET hour boundary during first-tick wait (>= %s); re-running rollover",
+                    hour_close_target.strftime("%H:%M:%S"),
+                )
+                ok = _run_rollover(
+                    symbols,
+                    exchange_key,
+                    sub,
+                    last_failed,
+                    prev_ev,
+                    last_m,
+                    db_retry_sec,
+                    table_ref=WS_TABLE_HOURLY,
+                    market_label="hourly",
+                    delete_mode="scoped",
+                    discover_fn=lambda sy, lf: _discover_hourly_all(
+                        sy,
+                        max_wait_sec=DEFAULT_DISCOVERY_MAX_WAIT_SEC,
+                        sleep_sec=DEFAULT_DISCOVERY_SLEEP_SEC,
+                    ),
+                )
+                if ok:
+                    _, _, tickers_now = sub.snapshot()
+                    if not _wait_first_tick(sub, tickers_now, ws_verify_sec, hourly_relaxed=True):
+                        ok = False
+
+        if time.time() - last_hb >= HEARTBEAT_INTERVAL_SEC:
+            logger.info(
+                "hourly heartbeat ok=%s tickers=%s symbols=%s",
+                ok,
+                len(tickers_now),
+                sum(1 for s in symbols if prev_ev.get(s)),
+            )
+            last_hb = time.time()
+
+        if not ok:
+            logger.warning("hourly rollover incomplete; retry in %ss", cycle_retry_sec)
+            if stop.wait(cycle_retry_sec):
+                break
+            continue
+
+        wait = _sleep_until_next_hour(hour_skew_sec)
+        nxt = next_hour_close_est() + timedelta(seconds=hour_skew_sec)
+        logger.info("hourly ws-only until next rollover ~%s ET (%.0fs)", nxt.strftime("%H:%M:%S"), wait)
+        if stop.wait(wait):
+            break
+
+
 async def _ws_loop(exchange_key: str, sub: SubState, stop: threading.Event) -> None:
+    ping_iv = max(10, int(os.getenv("KALSHI_WS_PING_INTERVAL_SEC", str(DEFAULT_WS_PING_INTERVAL_SEC))))
+    beat_sec = max(5, int(os.getenv("KALSHI_WS_TRANSPORT_BEAT_SEC", str(DEFAULT_WS_TRANSPORT_BEAT_SEC))))
+    market_iv = str(_WS_TRANSPORT_CTX.get("market") or "15m").strip().lower()
+
     while not stop.is_set():
         gen, meta, tickers = sub.snapshot()
         if not tickers:
@@ -754,19 +1122,20 @@ async def _ws_loop(exchange_key: str, sub: SubState, stop: threading.Event) -> N
             async with websockets.connect(
                 WS_URL,
                 additional_headers=headers,
-                ping_interval=None,
-                ping_timeout=60,
+                ping_interval=float(ping_iv),
+                ping_timeout=70,
                 close_timeout=10,
                 max_size=2**22,
             ) as ws:
                 cmd_id += 1
                 logger.info(
-                    "ws subscribe gen=%s exchange=%s n_tickers=%s sample_start=%s sample_end=%s",
+                    "ws subscribe gen=%s exchange=%s n_tickers=%s sample_start=%s sample_end=%s ping_iv=%ss",
                     gen,
                     exchange_key,
                     len(tickers),
                     ",".join(tickers[:3]),
                     ",".join(tickers[-3:]),
+                    ping_iv,
                 )
                 await ws.send(
                     json.dumps(
@@ -785,44 +1154,64 @@ async def _ws_loop(exchange_key: str, sub: SubState, stop: threading.Event) -> N
                     continue
                 logger.info("ws subscribed sid=%s n=%s", ack.get("sid"), len(tickers))
                 my_gen, _, _ = sub.snapshot()
+                await asyncio.to_thread(_touch_ws_transport_liveness)
 
-                while not stop.is_set():
-                    try:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=75.0)
-                    except asyncio.TimeoutError:
+                async def _transport_beat_loop() -> None:
+                    while not stop.is_set():
+                        await asyncio.sleep(float(beat_sec))
                         if sub.snapshot()[0] != my_gen:
+                            return
+                        await asyncio.to_thread(_touch_ws_transport_liveness)
+
+                beat_task = asyncio.create_task(_transport_beat_loop())
+                try:
+                    while not stop.is_set():
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=75.0)
+                        except asyncio.TimeoutError:
+                            if sub.snapshot()[0] != my_gen:
+                                break
+                            await asyncio.to_thread(_touch_ws_transport_liveness)
+                            continue
+
+                        gen2, meta2, _ = sub.snapshot()
+                        if gen2 != my_gen:
+                            logger.info("ws gen %s -> %s reconnect", my_gen, gen2)
                             break
-                        continue
 
-                    gen2, meta2, _ = sub.snapshot()
-                    if gen2 != my_gen:
-                        logger.info("ws gen %s -> %s reconnect", my_gen, gen2)
-                        break
-
-                    try:
-                        data = json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
-                    if data.get("type") not in ("ticker", "ticker_v2"):
-                        continue
-                    msg = data.get("msg") or {}
-                    mt = msg.get("market_ticker")
-                    if not mt:
-                        continue
-                    pair = meta2.get(mt)
-                    if not pair:
-                        continue
-                    sub.record_tick(mt)
-                    sym_u, ev = pair
-                    try:
-                        row = ticker_msg_to_row_values(
-                            msg, symbol=sym_u, event_ticker=ev, exchange=exchange_key
-                        )
-                    except ValueError:
-                        continue
-                    if sub.rolling.is_set():
-                        continue
-                    await asyncio.to_thread(_upsert_ticker_row, row)
+                        try:
+                            data = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        if data.get("type") not in ("ticker", "ticker_v2"):
+                            continue
+                        msg = data.get("msg") or {}
+                        mt = msg.get("market_ticker")
+                        if not mt:
+                            continue
+                        pair = meta2.get(mt)
+                        if not pair:
+                            continue
+                        sub.record_tick(mt)
+                        sym_u, ev = pair
+                        try:
+                            row = ticker_msg_to_row_values(
+                                msg,
+                                symbol=sym_u,
+                                event_ticker=ev,
+                                exchange=exchange_key,
+                                market_interval=market_iv,
+                            )
+                        except ValueError:
+                            continue
+                        if sub.rolling.is_set():
+                            continue
+                        await asyncio.to_thread(_upsert_ticker_row, row)
+                        await asyncio.to_thread(_touch_ws_transport_liveness)
+                finally:
+                    beat_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await beat_task
 
         except (ConnectionClosed, WebSocketException, OSError) as e:
             logger.warning("ws session ended: %s", e)
@@ -839,19 +1228,32 @@ def run(
     exchange_key: str,
     symbols: tuple[str, ...],
     *,
+    market_kind: str = "15m",
     quarter_rollover_skew_sec: int = DEFAULT_QUARTER_ROLLOVER_SKEW_SEC,
+    hour_rollover_skew_sec: int = DEFAULT_HOUR_ROLLOVER_SKEW_SEC,
     db_connect_retry_sec: float = DEFAULT_DB_CONNECT_RETRY_SEC,
     ws_flow_verify_sec: float = DEFAULT_WS_FLOW_VERIFY_SEC,
     cycle_retry_sec: float = DEFAULT_CYCLE_RETRY_SEC,
     db_pool_max_conn: int = DEFAULT_DB_POOL_MAX_CONN,
 ) -> None:
+    global _TICKER_UPSERT_SQL_ACTIVE, _WS_TRANSPORT_CTX
+
     normalized = tuple(s.upper() for s in symbols)
+    mk = market_kind.strip().lower()
+    if mk == "hourly":
+        _TICKER_UPSERT_SQL_ACTIVE = _ticker_upsert_sql(WS_TABLE_HOURLY)
+    else:
+        _TICKER_UPSERT_SQL_ACTIVE = _ticker_upsert_sql(WS_TABLE)
+    _WS_TRANSPORT_CTX = {"exchange": exchange_key, "market": mk, "symbols": normalized}
+
     _init_db_pool(db_pool_max_conn)
     logger.info(
-        "market_watchdog_ws exchange=%s symbols=%s skew=%ss db_retry=%.0fs verify=%.0fs retry=%.0fs pool=%s",
+        "market_watchdog_ws exchange=%s market=%s symbols=%s q_skew=%ss h_skew=%ss db_retry=%.0fs verify=%.0fs retry=%.0fs pool=%s",
         exchange_key,
+        mk,
         ",".join(normalized),
         quarter_rollover_skew_sec,
+        hour_rollover_skew_sec,
         db_connect_retry_sec,
         ws_flow_verify_sec,
         cycle_retry_sec,
@@ -860,7 +1262,10 @@ def run(
     conn = _borrow_conn_retry("ensure_table", min(30.0, db_connect_retry_sec))
     if conn:
         try:
-            ensure_ws_15m_table(conn)
+            if mk == "hourly":
+                ensure_ws_hourly_table(conn)
+            else:
+                ensure_ws_15m_table(conn)
         finally:
             _return_conn(conn)
     else:
@@ -871,16 +1276,32 @@ def run(
     ws_thread = threading.Thread(target=_ws_thread_main, args=(exchange_key, sub, stop), daemon=True)
     ws_thread.start()
     try:
-        _main_loop(
-            normalized,
-            exchange_key,
-            sub,
-            stop,
-            quarter_skew_sec=quarter_rollover_skew_sec,
-            db_retry_sec=db_connect_retry_sec,
-            ws_verify_sec=ws_flow_verify_sec,
-            cycle_retry_sec=cycle_retry_sec,
-        )
+        if mk == "hourly":
+            hourly_verify_sec = max(
+                float(ws_flow_verify_sec),
+                float(os.getenv("MARKET_WATCHDOG_WS_HOURLY_VERIFY_SEC", str(DEFAULT_HOURLY_WS_VERIFY_SEC))),
+            )
+            _main_loop_hourly(
+                normalized,
+                exchange_key,
+                sub,
+                stop,
+                hour_skew_sec=max(0, min(3600, int(hour_rollover_skew_sec))),
+                db_retry_sec=db_connect_retry_sec,
+                ws_verify_sec=hourly_verify_sec,
+                cycle_retry_sec=cycle_retry_sec,
+            )
+        else:
+            _main_loop(
+                normalized,
+                exchange_key,
+                sub,
+                stop,
+                quarter_skew_sec=quarter_rollover_skew_sec,
+                db_retry_sec=db_connect_retry_sec,
+                ws_verify_sec=ws_flow_verify_sec,
+                cycle_retry_sec=cycle_retry_sec,
+            )
     except KeyboardInterrupt:
         logger.info("stopped")
     finally:
@@ -909,6 +1330,13 @@ def main() -> None:
         metavar="N",
         help=f"Seconds after ET quarter-hour to start rollover (default {DEFAULT_QUARTER_ROLLOVER_SKEW_SEC}).",
     )
+    parser.add_argument(
+        "--hour-rollover-skew-sec",
+        type=int,
+        default=DEFAULT_HOUR_ROLLOVER_SKEW_SEC,
+        metavar="N",
+        help=f"Seconds after ET hour boundary for hourly rollover (default {DEFAULT_HOUR_ROLLOVER_SKEW_SEC}).",
+    )
     parser.add_argument("--db-connect-retry-sec", type=float, default=DEFAULT_DB_CONNECT_RETRY_SEC)
     parser.add_argument("--ws-flow-verify-sec", type=float, default=DEFAULT_WS_FLOW_VERIFY_SEC)
     parser.add_argument("--cycle-retry-sec", type=float, default=DEFAULT_CYCLE_RETRY_SEC)
@@ -918,9 +1346,41 @@ def main() -> None:
     if venue != EXCHANGE_KALSHI:
         logger.error("Only kalshi; got %s", venue)
         sys.exit(1)
-    if args.market != "15m":
-        logger.error("Only 15m")
-        sys.exit(1)
+    skip_from_env = tuple(
+        s.strip().upper() for s in str(os.getenv("WS_SKIP_SYMBOLS", "")).split(",") if s.strip()
+    )
+    skip_from_args = tuple(s.strip().upper() for s in (args.skip_symbols or []) if s.strip())
+    skip = tuple(sorted(set(skip_from_env + skip_from_args)))
+
+    if args.market == "hourly":
+        if args.symbols:
+            sym = tuple(s.strip().upper() for s in args.symbols if s.strip())
+        else:
+            raw = str(os.getenv("WS_HOURLY_SYMBOLS", "BTC,ETH")).upper()
+            sym = tuple(s.strip() for s in raw.split(",") if s.strip())
+        if skip:
+            logger.warning("WS subscription skip symbols active: %s", ",".join(skip))
+            sym = tuple(s for s in sym if s not in skip)
+        for s in sym:
+            if s not in KALSHI_HOURLY_SYMBOLS:
+                logger.error("unsupported hourly symbol %s (allowed %s)", s, ",".join(KALSHI_HOURLY_SYMBOLS))
+                sys.exit(1)
+        if not sym:
+            logger.error("no hourly symbols to subscribe")
+            sys.exit(1)
+        hskew = max(0, min(3600, int(args.hour_rollover_skew_sec)))
+        pool_max = max(2, min(64, int(args.db_pool_max)))
+        run(
+            venue,
+            sym,
+            market_kind="hourly",
+            hour_rollover_skew_sec=hskew,
+            db_connect_retry_sec=max(15.0, float(args.db_connect_retry_sec)),
+            ws_flow_verify_sec=max(15.0, float(args.ws_flow_verify_sec)),
+            cycle_retry_sec=max(3.0, float(args.cycle_retry_sec)),
+            db_pool_max_conn=pool_max,
+        )
+        return
 
     if args.symbols:
         sym = tuple(s.strip().upper() for s in args.symbols if s.strip())
@@ -929,11 +1389,6 @@ def main() -> None:
     else:
         sym = fetch_kalshi_15m_symbols_ordered_from_db()
 
-    skip_from_env = tuple(
-        s.strip().upper() for s in str(os.getenv("WS_SKIP_SYMBOLS", "")).split(",") if s.strip()
-    )
-    skip_from_args = tuple(s.strip().upper() for s in (args.skip_symbols or []) if s.strip())
-    skip = tuple(sorted(set(skip_from_env + skip_from_args)))
     if skip:
         logger.warning("WS subscription skip symbols active: %s", ",".join(skip))
         sym = tuple(s for s in sym if s not in skip)
@@ -952,6 +1407,7 @@ def main() -> None:
     run(
         venue,
         sym,
+        market_kind="15m",
         quarter_rollover_skew_sec=skew,
         db_connect_retry_sec=max(15.0, float(args.db_connect_retry_sec)),
         ws_flow_verify_sec=max(15.0, float(args.ws_flow_verify_sec)),

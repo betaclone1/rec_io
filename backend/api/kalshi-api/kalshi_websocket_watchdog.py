@@ -40,6 +40,18 @@ DB_PATH = Path(get_kalshi_data_dir()) / "kalshi_websocket_market_log.db"
 JSON_SNAPSHOT_PATH = Path(get_kalshi_data_dir()) / "latest_websocket_market_snapshot.json"
 HEARTBEAT_PATH = Path(get_kalshi_data_dir()) / "kalshi_websocket_heartbeat.txt"
 
+
+def _cents_to_dollar_text(cents):
+    if cents is None:
+        return None
+    try:
+        x = float(cents) / 100.0
+    except (TypeError, ValueError):
+        return None
+    s = f"{x:.6f}".rstrip("0").rstrip(".")
+    return s if s else "0"
+
+
 class KalshiWebSocketWatchdog:
     def __init__(self):
         self.websocket = None
@@ -324,15 +336,21 @@ class KalshiWebSocketWatchdog:
         for market in event_markets:
             market_ticker = market.get("ticker")
             if market_ticker in cache["markets"]:
-                # Update with latest WebSocket data
                 ws_data = cache["markets"][market_ticker]
-                market.update({
-                    "yes_bid": ws_data.get("yes_bid", market.get("yes_bid")),
-                    "yes_ask": ws_data.get("yes_ask", market.get("yes_ask")),
-                    "last_price": ws_data.get("price", market.get("last_price")),
-                    "volume": ws_data.get("volume_delta", market.get("volume", 0)),
-                    "ts": ws_data.get("ts", int(time.time()))
-                })
+                patch = {"ts": ws_data.get("ts", int(time.time()))}
+                yb = ws_data.get("yes_bid")
+                if yb is not None:
+                    patch["yes_bid_dollars"] = _cents_to_dollar_text(int(yb))
+                ya = ws_data.get("yes_ask")
+                if ya is not None:
+                    patch["yes_ask_dollars"] = _cents_to_dollar_text(int(ya))
+                price = ws_data.get("price")
+                if price is not None:
+                    patch["last_price_dollars"] = _cents_to_dollar_text(int(price))
+                vol_d = ws_data.get("volume_delta")
+                if vol_d is not None:
+                    patch["volume_fp"] = str(int(vol_d))
+                market.update(patch)
             
             snapshot["markets"].append(market)
         
@@ -352,8 +370,8 @@ class KalshiWebSocketWatchdog:
                 timestamp TEXT NOT NULL,
                 market_ticker TEXT NOT NULL,
                 price INTEGER,
-                yes_bid INTEGER,
-                yes_ask INTEGER,
+                y_bid_cents INTEGER,
+                y_ask_cents INTEGER,
                 volume_delta INTEGER,
                 open_interest_delta INTEGER,
                 dollar_volume_delta INTEGER,
@@ -374,7 +392,7 @@ class KalshiWebSocketWatchdog:
         try:
             c.execute("""
                 INSERT INTO websocket_market_data (
-                    timestamp, market_ticker, price, yes_bid, yes_ask,
+                    timestamp, market_ticker, price, y_bid_cents, y_ask_cents,
                     volume_delta, open_interest_delta, dollar_volume_delta,
                     dollar_open_interest_delta, ts
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

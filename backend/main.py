@@ -1940,12 +1940,18 @@ async def get_kalshi_snapshot():
             cursor.execute("""
                 SELECT 
                     market_ticker,
-                    yes_ask,
-                    no_ask,
-                    volume,
+                    yes_ask_dollars,
+                    no_ask_dollars,
+                    yes_bid_dollars,
+                    no_bid_dollars,
+                    last_price_dollars,
+                    volume_fp,
+                    open_interest_fp,
                     event_ticker,
                     strike
-                FROM live_data.market_kalshi_hourly_btc
+                FROM live_data.market_kalshi_hourly
+                WHERE LOWER(TRIM(exchange::text)) = 'kalshi'
+                  AND UPPER(TRIM(symbol::text)) = 'BTC'
                 ORDER BY updated_at DESC
             """)
             
@@ -1955,16 +1961,19 @@ async def get_kalshi_snapshot():
             if not markets_data:
                 return {"markets": []}
             
-            # Convert to the same format as the JSON file
             markets = []
             for row in markets_data:
                 market = {
-                    "ticker": row[0],  # market_ticker
-                    "yes_ask": row[1],
-                    "no_ask": row[2],
-                    "volume": row[3],
-                    "event_ticker": row[4],
-                    "strike": row[5]
+                    "ticker": row[0],
+                    "yes_ask_dollars": row[1],
+                    "no_ask_dollars": row[2],
+                    "yes_bid_dollars": row[3],
+                    "no_bid_dollars": row[4],
+                    "last_price_dollars": row[5],
+                    "volume_fp": row[6],
+                    "open_interest_fp": row[7],
+                    "event_ticker": row[8],
+                    "strike": row[9],
                 }
                 markets.append(market)
             
@@ -2775,28 +2784,54 @@ async def get_strike_table_mobile(request: Request):
         market = (request.query_params.get("market") or "").strip().lower()
         if market not in ("hourly", "15m"):
             return {"strikes": [], "error": "market required (hourly or 15m)"}
-        table_name = _strike_table_name(symbol, market)
+        sym_u = symbol.upper()
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            # Get strike table data from PostgreSQL
-            cursor.execute(f"""
-                SELECT 
-                    strike,
-                    buffer,
-                    buffer_pct,
-                    probability,
-                    yes_ask,
-                    no_ask,
-                    yes_ask_dollars,
-                    no_ask_dollars,
-                    volume,
-                    ticker,
-                    yes_diff,
-                    no_diff,
-                    active_side
+            if market == "hourly":
+                table_name = _strike_table_name(symbol, market)
+                cursor.execute(f"""
+                    SELECT 
+                        strike,
+                        buffer,
+                        buffer_pct,
+                        probability_hourly,
+                        yes_ask_dollars,
+                        no_ask_dollars,
+                        volume_fp,
+                        open_interest_fp,
+                        ticker,
+                        yes_diff,
+                        no_diff,
+                        active_side
                     FROM live_data.{table_name}
-                ORDER BY strike
-            """)
+                    ORDER BY strike
+                """)
+            else:
+                cursor.execute(
+                    """
+                    SELECT 
+                        strike,
+                        buffer,
+                        buffer_pct,
+                        probability_15m,
+                        yes_ask_dollars,
+                        no_ask_dollars,
+                        volume_fp,
+                        open_interest_fp,
+                        ticker,
+                        yes_diff,
+                        no_diff,
+                        active_side
+                    FROM live_data.strike_table_15m
+                    WHERE exchange = %s AND symbol = %s
+                      AND "timestamp" = (
+                        SELECT MAX("timestamp") FROM live_data.strike_table_15m
+                        WHERE exchange = %s AND symbol = %s
+                      )
+                    ORDER BY strike
+                    """,
+                    ("kalshi", sym_u, "kalshi", sym_u),
+                )
             
             strikes_data = cursor.fetchall()
             conn.close()
@@ -2804,25 +2839,22 @@ async def get_strike_table_mobile(request: Request):
             if not strikes_data:
                 return {"strikes": [], "error": "No strike table data found"}
             
-            # Convert to the same format as the JSON file
             strikes = []
             for row in strikes_data:
-                strike = {
+                strikes.append({
                     "strike": float(row[0]) if row[0] else None,
                     "buffer": float(row[1]) if row[1] else None,
                     "buffer_pct": float(row[2]) if row[2] else None,
                     "probability": float(row[3]) if row[3] else None,
-                    "yes_ask": int(row[4]) if row[4] else None,
-                    "no_ask": int(row[5]) if row[5] else None,
-                    "yes_ask_dollars": row[6],
-                    "no_ask_dollars": row[7],
-                    "volume": int(row[8]) if row[8] else None,
-                    "ticker": row[9],
-                    "yes_diff": float(row[10]) if row[10] else None,
-                    "no_diff": float(row[11]) if row[11] else None,
-                    "active_side": row[12]
-                }
-                strikes.append(strike)
+                    "yes_ask_dollars": row[4],
+                    "no_ask_dollars": row[5],
+                    "volume_fp": row[6] if row[6] is None else str(row[6]).strip(),
+                    "open_interest_fp": row[7] if row[7] is None else str(row[7]).strip(),
+                    "ticker": row[8],
+                    "yes_diff": float(row[9]) if row[9] else None,
+                    "no_diff": float(row[10]) if row[10] else None,
+                    "active_side": row[11],
+                })
             
             return {"strikes": strikes}
             
@@ -3694,11 +3726,10 @@ async def get_strike_table(symbol: str, request: Request):
                         buffer,
                         buffer_pct,
                         probability_15m,
-                        ROUND((yes_ask_dollars::numeric * 100)::numeric, 2) AS yes_ask,
-                        ROUND((no_ask_dollars::numeric * 100)::numeric, 2) AS no_ask,
                         yes_ask_dollars,
                         no_ask_dollars,
-                        volume,
+                        volume_fp,
+                        open_interest_fp,
                         ticker,
                         yes_diff,
                         no_diff,
@@ -3711,9 +3742,13 @@ async def get_strike_table(symbol: str, request: Request):
                         no_ask_range_15m
                     FROM live_data.strike_table_15m
                     WHERE exchange = %s AND symbol = %s
+                      AND "timestamp" = (
+                        SELECT MAX("timestamp") FROM live_data.strike_table_15m
+                        WHERE exchange = %s AND symbol = %s
+                      )
                     ORDER BY strike
                     """,
-                    ("kalshi", sym_u),
+                    ("kalshi", sym_u, "kalshi", sym_u),
                 )
                 strikes_data = cursor.fetchall()
             else:
@@ -3741,11 +3776,10 @@ async def get_strike_table(symbol: str, request: Request):
                         buffer,
                         buffer_pct,
                         probability_hourly,
-                        yes_ask,
-                        no_ask,
                         yes_ask_dollars,
                         no_ask_dollars,
-                        volume,
+                        volume_fp,
+                        open_interest_fp,
                         ticker,
                         yes_diff,
                         no_diff,
@@ -3783,21 +3817,20 @@ async def get_strike_table(symbol: str, request: Request):
                     "buffer": float(row[1]) if row[1] else None,
                     "buffer_pct": float(row[2]) if row[2] else None,
                     "probability": float(row[3]) if row[3] else None,
-                    "yes_ask": float(row[4]) if row[4] is not None else None,
-                    "no_ask": float(row[5]) if row[5] is not None else None,
-                    "yes_ask_dollars": row[6],
-                    "no_ask_dollars": row[7],
-                    "volume": float(row[8]) if row[8] is not None else None,
-                    "ticker": row[9],
-                    "yes_diff": float(row[10]) if row[10] is not None else None,
-                    "no_diff": float(row[11]) if row[11] is not None else None,
-                    "active_side": row[12],
-                    "yes_ask_min_15m": float(row[13]) if row[13] is not None else None,
-                    "yes_ask_max_15m": float(row[14]) if row[14] is not None else None,
-                    "no_ask_min_15m": float(row[15]) if row[15] is not None else None,
-                    "no_ask_max_15m": float(row[16]) if row[16] is not None else None,
-                    "yes_ask_range_15m": float(row[17]) if row[17] is not None else None,
-                    "no_ask_range_15m": float(row[18]) if row[18] is not None else None,
+                    "yes_ask_dollars": row[4],
+                    "no_ask_dollars": row[5],
+                    "volume_fp": row[6] if row[6] is None else str(row[6]).strip(),
+                    "open_interest_fp": row[7] if row[7] is None else str(row[7]).strip(),
+                    "ticker": row[8],
+                    "yes_diff": float(row[9]) if row[9] is not None else None,
+                    "no_diff": float(row[10]) if row[10] is not None else None,
+                    "active_side": row[11],
+                    "yes_ask_min_15m": float(row[12]) if row[12] is not None else None,
+                    "yes_ask_max_15m": float(row[13]) if row[13] is not None else None,
+                    "no_ask_min_15m": float(row[14]) if row[14] is not None else None,
+                    "no_ask_max_15m": float(row[15]) if row[15] is not None else None,
+                    "yes_ask_range_15m": float(row[16]) if row[16] is not None else None,
+                    "no_ask_range_15m": float(row[17]) if row[17] is not None else None,
                 }
                 response["strikes"].append(strike)
             
@@ -3846,12 +3879,10 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
                         buffer,
                         buffer_pct,
                         probability_15m,
-                        ROUND((yes_ask_dollars::numeric * 100)::numeric, 2) AS yes_ask,
-                        ROUND((no_ask_dollars::numeric * 100)::numeric, 2) AS no_ask,
                         yes_ask_dollars,
                         no_ask_dollars,
-                        volume,
-                        open_interest,
+                        volume_fp,
+                        open_interest_fp,
                         ticker,
                         yes_diff,
                         no_diff,
@@ -3864,9 +3895,13 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
                         no_ask_range_15m
                     FROM live_data.strike_table_15m
                     WHERE exchange = %s AND symbol = %s
+                      AND "timestamp" = (
+                        SELECT MAX("timestamp") FROM live_data.strike_table_15m
+                        WHERE exchange = %s AND symbol = %s
+                      )
                     ORDER BY strike
                     """,
-                    ("kalshi", sym_u),
+                    ("kalshi", sym_u, "kalshi", sym_u),
                 )
                 strikes_data = cursor.fetchall()
                 momentum_percentile = float(header_data[3]) if header_data[3] else 0.0
@@ -3907,11 +3942,10 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
                         buffer,
                         buffer_pct,
                         {prob_column},
-                        yes_ask,
-                        no_ask,
                         yes_ask_dollars,
                         no_ask_dollars,
-                        volume,
+                        volume_fp,
+                        open_interest_fp,
                         ticker,
                         yes_diff,
                         no_diff,
@@ -3940,54 +3974,28 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
                 }
 
             for strike_row in strikes_data:
-                if market == "15m":
-                    # 15m row shape includes open_interest at index 9; final-quarter asks at 14–19.
-                    strike_data = {
-                        "strike": (str(strike_row[0]) if raw else float(strike_row[0])) if strike_row[0] is not None else None,
-                        "buffer": (str(strike_row[1]) if raw else float(strike_row[1])) if strike_row[1] is not None else None,
-                        "buffer_pct": (str(strike_row[2]) if raw else float(strike_row[2])) if strike_row[2] is not None else None,
-                        "probability": (str(strike_row[3]) if raw else float(strike_row[3])) if strike_row[3] is not None else None,
-                        "yes_ask": (str(strike_row[4]) if raw else float(strike_row[4])) if strike_row[4] is not None else None,
-                        "no_ask": (str(strike_row[5]) if raw else float(strike_row[5])) if strike_row[5] is not None else None,
-                        "yes_ask_dollars": strike_row[6],
-                        "no_ask_dollars": strike_row[7],
-                        "volume": (str(strike_row[8]) if raw else float(strike_row[8])) if strike_row[8] is not None else None,
-                        "open_interest": (str(strike_row[9]) if raw else float(strike_row[9])) if strike_row[9] is not None else None,
-                        "ticker": strike_row[10],
-                        "yes_diff": (str(strike_row[11]) if raw else float(strike_row[11])) if strike_row[11] is not None else None,
-                        "no_diff": (str(strike_row[12]) if raw else float(strike_row[12])) if strike_row[12] is not None else None,
-                        "active_side": strike_row[13],
-                        "yes_ask_min_15m": (str(strike_row[14]) if raw else float(strike_row[14])) if strike_row[14] is not None else None,
-                        "yes_ask_max_15m": (str(strike_row[15]) if raw else float(strike_row[15])) if strike_row[15] is not None else None,
-                        "no_ask_min_15m": (str(strike_row[16]) if raw else float(strike_row[16])) if strike_row[16] is not None else None,
-                        "no_ask_max_15m": (str(strike_row[17]) if raw else float(strike_row[17])) if strike_row[17] is not None else None,
-                        "yes_ask_range_15m": (str(strike_row[18]) if raw else float(strike_row[18])) if strike_row[18] is not None else None,
-                        "no_ask_range_15m": (str(strike_row[19]) if raw else float(strike_row[19])) if strike_row[19] is not None else None,
-                    }
-                else:
-                    # Hourly row shape has no open_interest field; final-quarter asks at 13–18.
-                    strike_data = {
-                        "strike": (str(strike_row[0]) if raw else float(strike_row[0])) if strike_row[0] is not None else None,
-                        "buffer": (str(strike_row[1]) if raw else float(strike_row[1])) if strike_row[1] is not None else None,
-                        "buffer_pct": (str(strike_row[2]) if raw else float(strike_row[2])) if strike_row[2] is not None else None,
-                        "probability": (str(strike_row[3]) if raw else float(strike_row[3])) if strike_row[3] is not None else None,
-                        "yes_ask": (str(strike_row[4]) if raw else float(strike_row[4])) if strike_row[4] is not None else None,
-                        "no_ask": (str(strike_row[5]) if raw else float(strike_row[5])) if strike_row[5] is not None else None,
-                        "yes_ask_dollars": strike_row[6],
-                        "no_ask_dollars": strike_row[7],
-                        "volume": (str(strike_row[8]) if raw else float(strike_row[8])) if strike_row[8] is not None else None,
-                        "open_interest": None,
-                        "ticker": strike_row[9],
-                        "yes_diff": (str(strike_row[10]) if raw else float(strike_row[10])) if strike_row[10] is not None else None,
-                        "no_diff": (str(strike_row[11]) if raw else float(strike_row[11])) if strike_row[11] is not None else None,
-                        "active_side": strike_row[12],
-                        "yes_ask_min_15m": (str(strike_row[13]) if raw else float(strike_row[13])) if strike_row[13] is not None else None,
-                        "yes_ask_max_15m": (str(strike_row[14]) if raw else float(strike_row[14])) if strike_row[14] is not None else None,
-                        "no_ask_min_15m": (str(strike_row[15]) if raw else float(strike_row[15])) if strike_row[15] is not None else None,
-                        "no_ask_max_15m": (str(strike_row[16]) if raw else float(strike_row[16])) if strike_row[16] is not None else None,
-                        "yes_ask_range_15m": (str(strike_row[17]) if raw else float(strike_row[17])) if strike_row[17] is not None else None,
-                        "no_ask_range_15m": (str(strike_row[18]) if raw else float(strike_row[18])) if strike_row[18] is not None else None,
-                    }
+                vfp = strike_row[6]
+                oifp = strike_row[7]
+                strike_data = {
+                    "strike": (str(strike_row[0]) if raw else float(strike_row[0])) if strike_row[0] is not None else None,
+                    "buffer": (str(strike_row[1]) if raw else float(strike_row[1])) if strike_row[1] is not None else None,
+                    "buffer_pct": (str(strike_row[2]) if raw else float(strike_row[2])) if strike_row[2] is not None else None,
+                    "probability": (str(strike_row[3]) if raw else float(strike_row[3])) if strike_row[3] is not None else None,
+                    "yes_ask_dollars": strike_row[4],
+                    "no_ask_dollars": strike_row[5],
+                    "volume_fp": vfp if vfp is None else str(vfp).strip(),
+                    "open_interest_fp": oifp if oifp is None else str(oifp).strip(),
+                    "ticker": strike_row[8],
+                    "yes_diff": (str(strike_row[9]) if raw else float(strike_row[9])) if strike_row[9] is not None else None,
+                    "no_diff": (str(strike_row[10]) if raw else float(strike_row[10])) if strike_row[10] is not None else None,
+                    "active_side": strike_row[11],
+                    "yes_ask_min_15m": (str(strike_row[12]) if raw else float(strike_row[12])) if strike_row[12] is not None else None,
+                    "yes_ask_max_15m": (str(strike_row[13]) if raw else float(strike_row[13])) if strike_row[13] is not None else None,
+                    "no_ask_min_15m": (str(strike_row[14]) if raw else float(strike_row[14])) if strike_row[14] is not None else None,
+                    "no_ask_max_15m": (str(strike_row[15]) if raw else float(strike_row[15])) if strike_row[15] is not None else None,
+                    "yes_ask_range_15m": (str(strike_row[16]) if raw else float(strike_row[16])) if strike_row[16] is not None else None,
+                    "no_ask_range_15m": (str(strike_row[17]) if raw else float(strike_row[17])) if strike_row[17] is not None else None,
+                }
                 response["strikes"].append(strike_data)
             
             conn.close()
@@ -4042,11 +4050,11 @@ async def get_watchlist(monitor_name: str):
                     buffer,
                     buffer_pct,
                     probability,
-                    yes_ask,
-                    no_ask,
+                    yes_ask_dollars,
+                    no_ask_dollars,
                     yes_diff,
                     no_diff,
-                    volume,
+                    volume_fp,
                     ticker,
                     active_side
                 FROM live_data.watchlist_{table_suffix}
@@ -4075,11 +4083,11 @@ async def get_watchlist(monitor_name: str):
                     "buffer": float(row[1]) if row[1] else None,
                     "buffer_pct": float(row[2]) if row[2] else None,
                     "probability": float(row[3]) if row[3] else None,
-                    "yes_ask": int(row[4]) if row[4] else None,
-                    "no_ask": int(row[5]) if row[5] else None,
+                    "yes_ask_dollars": float(row[4]) if row[4] is not None else None,
+                    "no_ask_dollars": float(row[5]) if row[5] is not None else None,
                     "yes_diff": float(row[6]) if row[6] else None,
                     "no_diff": float(row[7]) if row[7] else None,
-                    "volume": int(row[8]) if row[8] else None,
+                    "volume_fp": row[8] if row[8] is None else str(row[8]).strip(),
                     "ticker": row[9],
                     "active_side": row[10]
                 }
@@ -5409,6 +5417,11 @@ async def get_monitors(user_id: str = "user_0001"):
     """Get monitors list for the specified user"""
     try:
         from backend.core.config.database import get_postgresql_connection
+        from backend.core.strike_pipeline_health import (
+            row_passes_trade_gate,
+            strike_pipeline_health_strict_mode_enabled,
+        )
+
         conn = get_postgresql_connection()
         
         # Extract user number from user_id (e.g., user_0001 -> 0001)
@@ -5450,33 +5463,33 @@ async def get_monitors(user_id: str = "user_0001"):
             
             results = cursor.fetchall()
 
-            # WS strike pipeline health snapshot from dedicated health table.
-            cursor.execute(
-                """
-                SELECT
-                    symbol,
-                    pipeline_healthy,
-                    pipeline_health_reason,
-                    EXTRACT(EPOCH FROM (NOW() - pipeline_health_checked_at))
-                FROM live_data.strike_pipeline_health_15m
-                WHERE exchange = 'kalshi'
-                """
-            )
-            health_rows = cursor.fetchall()
+            strict_pipeline_health = strike_pipeline_health_strict_mode_enabled()
+            health_by_sym_mkt = {}
+            if strict_pipeline_health:
+                cursor.execute(
+                    """
+                    SELECT
+                        market,
+                        symbol,
+                        pipeline_healthy,
+                        pipeline_health_reason,
+                        EXTRACT(EPOCH FROM (NOW() - pipeline_health_checked_at)),
+                        EXTRACT(EPOCH FROM (NOW() - ws_transport_ok_at))
+                    FROM live_data.strike_pipeline_health
+                    WHERE LOWER(TRIM(exchange::text)) = 'kalshi'
+                    """
+                )
+                for mkt, sym, ph, pr, cage, tage in cursor.fetchall():
+                    key = (str(sym).upper(), str(mkt).strip().lower())
+                    ok, rsn = row_passes_trade_gate((ph, pr, cage, tage))
+                    health_by_sym_mkt[key] = {
+                        "healthy": ok,
+                        "state": "healthy" if ok else "degraded",
+                        "reason": "ok" if ok else rsn,
+                        "age_sec": float(cage) if cage is not None else None,
+                    }
             
         conn.close()
-
-        max_stale_sec = int(os.getenv("STRIKE_PIPELINE_MAX_STALENESS_SEC", "30"))
-        symbol_health = {}
-        for sym, pipeline_healthy, reason, age_sec in health_rows:
-            age = float(age_sec) if age_sec is not None else float("inf")
-            healthy_now = bool(pipeline_healthy) and age <= float(max_stale_sec)
-            symbol_health[str(sym).upper()] = {
-                "healthy": healthy_now,
-                "state": "healthy" if healthy_now else "degraded",
-                "reason": "ok" if healthy_now else str(reason or "pipeline_unhealthy_or_stale"),
-                "age_sec": age,
-            }
         
         # Transform database results to frontend format
         monitors = []
@@ -5560,26 +5573,31 @@ async def get_monitors(user_id: str = "user_0001"):
                 "market": (market or "").strip().lower() if market else None,
             }
 
-            # Monitor health is sourced from WS strike pipeline for 15m monitors.
-            # Non-15m monitors are treated as healthy for this indicator.
+            # Kalshi WS strike pipeline health for 15m and hourly monitors (strict mode only).
             monitor_market = formatted_monitor.get("market")
             monitor_symbol = str(symbol or "").upper()
-            if monitor_market == "15m":
-                h = symbol_health.get(monitor_symbol)
-                if h:
-                    formatted_monitor["monitor_healthy"] = bool(h["healthy"])
-                    formatted_monitor["monitor_health_state"] = h["state"]
-                    formatted_monitor["monitor_health_reason"] = h["reason"]
-                    formatted_monitor["monitor_health_age_sec"] = h["age_sec"]
+            if monitor_market in ("15m", "hourly"):
+                if not strict_pipeline_health:
+                    formatted_monitor["monitor_healthy"] = True
+                    formatted_monitor["monitor_health_state"] = "healthy"
+                    formatted_monitor["monitor_health_reason"] = "strict_mode_off"
+                    formatted_monitor["monitor_health_age_sec"] = 0.0
                 else:
-                    formatted_monitor["monitor_healthy"] = False
-                    formatted_monitor["monitor_health_state"] = "degraded"
-                    formatted_monitor["monitor_health_reason"] = "pipeline_health_missing"
-                    formatted_monitor["monitor_health_age_sec"] = None
+                    h = health_by_sym_mkt.get((monitor_symbol, monitor_market))
+                    if h:
+                        formatted_monitor["monitor_healthy"] = bool(h["healthy"])
+                        formatted_monitor["monitor_health_state"] = h["state"]
+                        formatted_monitor["monitor_health_reason"] = h["reason"]
+                        formatted_monitor["monitor_health_age_sec"] = h["age_sec"]
+                    else:
+                        formatted_monitor["monitor_healthy"] = False
+                        formatted_monitor["monitor_health_state"] = "degraded"
+                        formatted_monitor["monitor_health_reason"] = "pipeline_health_missing"
+                        formatted_monitor["monitor_health_age_sec"] = None
             else:
                 formatted_monitor["monitor_healthy"] = True
                 formatted_monitor["monitor_health_state"] = "healthy"
-                formatted_monitor["monitor_health_reason"] = "not_15m"
+                formatted_monitor["monitor_health_reason"] = "not_ws_gated_market"
                 formatted_monitor["monitor_health_age_sec"] = 0.0
             monitors.append(formatted_monitor)
         
@@ -5618,9 +5636,14 @@ async def get_monitors_health(user_id: str = "user_0001"):
     """Get monitor health only (power-light payload), without full monitor tile data."""
     try:
         from backend.core.config.database import get_postgresql_connection
+        from backend.core.strike_pipeline_health import (
+            row_passes_trade_gate,
+            strike_pipeline_health_strict_mode_enabled,
+        )
+
         conn = get_postgresql_connection()
         user_number = user_id.replace("user_", "")
-        max_stale_sec = int(os.getenv("STRIKE_PIPELINE_MAX_STALENESS_SEC", "30"))
+        strict_pipeline_health = strike_pipeline_health_strict_mode_enabled()
 
         with conn.cursor() as cursor:
             cursor.execute(
@@ -5632,52 +5655,61 @@ async def get_monitors_health(user_id: str = "user_0001"):
                 """
             )
             monitor_rows = cursor.fetchall()
-            cursor.execute(
-                """
-                SELECT
-                    symbol,
-                    pipeline_healthy,
-                    pipeline_health_reason,
-                    EXTRACT(EPOCH FROM (NOW() - pipeline_health_checked_at))
-                FROM live_data.strike_pipeline_health_15m
-                WHERE exchange = 'kalshi'
-                """
-            )
-            health_rows = cursor.fetchall()
+            health_by_sym_mkt = {}
+            if strict_pipeline_health:
+                cursor.execute(
+                    """
+                    SELECT
+                        market,
+                        symbol,
+                        pipeline_healthy,
+                        pipeline_health_reason,
+                        EXTRACT(EPOCH FROM (NOW() - pipeline_health_checked_at)),
+                        EXTRACT(EPOCH FROM (NOW() - ws_transport_ok_at))
+                    FROM live_data.strike_pipeline_health
+                    WHERE LOWER(TRIM(exchange::text)) = 'kalshi'
+                    """
+                )
+                for mkt, sym, ph, pr, cage, tage in cursor.fetchall():
+                    key = (str(sym).upper(), str(mkt).strip().lower())
+                    ok, rsn = row_passes_trade_gate((ph, pr, cage, tage))
+                    health_by_sym_mkt[key] = {
+                        "monitor_healthy": ok,
+                        "monitor_health_state": "healthy" if ok else "degraded",
+                        "monitor_health_reason": "ok" if ok else rsn,
+                        "monitor_health_age_sec": float(cage) if cage is not None else None,
+                    }
         conn.close()
-
-        symbol_health = {}
-        for sym, pipeline_healthy, reason, age_sec in health_rows:
-            age = float(age_sec) if age_sec is not None else float("inf")
-            healthy_now = bool(pipeline_healthy) and age <= float(max_stale_sec)
-            symbol_health[str(sym).upper()] = {
-                "monitor_healthy": healthy_now,
-                "monitor_health_state": "healthy" if healthy_now else "degraded",
-                "monitor_health_reason": "ok" if healthy_now else str(reason or "pipeline_unhealthy_or_stale"),
-                "monitor_health_age_sec": age,
-            }
 
         out = {}
         for monitor_id, symbol, status, market in monitor_rows:
             monitor_key = f"mon_{user_number}_{monitor_id}"
             monitor_market = (market or "").strip().lower() if market else None
             monitor_symbol = str(symbol or "").upper()
-            if monitor_market == "15m":
-                h = symbol_health.get(monitor_symbol)
-                if h:
-                    out[monitor_key] = h
-                else:
+            if monitor_market in ("15m", "hourly"):
+                if not strict_pipeline_health:
                     out[monitor_key] = {
-                        "monitor_healthy": False,
-                        "monitor_health_state": "degraded",
-                        "monitor_health_reason": "pipeline_health_missing",
-                        "monitor_health_age_sec": None,
+                        "monitor_healthy": True,
+                        "monitor_health_state": "healthy",
+                        "monitor_health_reason": "strict_mode_off",
+                        "monitor_health_age_sec": 0.0,
                     }
+                else:
+                    h = health_by_sym_mkt.get((monitor_symbol, monitor_market))
+                    if h:
+                        out[monitor_key] = dict(h)
+                    else:
+                        out[monitor_key] = {
+                            "monitor_healthy": False,
+                            "monitor_health_state": "degraded",
+                            "monitor_health_reason": "pipeline_health_missing",
+                            "monitor_health_age_sec": None,
+                        }
             else:
                 out[monitor_key] = {
                     "monitor_healthy": True,
                     "monitor_health_state": "healthy",
-                    "monitor_health_reason": "not_15m",
+                    "monitor_health_reason": "not_ws_gated_market",
                     "monitor_health_age_sec": 0.0,
                 }
             out[monitor_key]["status"] = status

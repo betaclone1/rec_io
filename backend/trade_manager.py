@@ -32,6 +32,85 @@ CONTRACT_15M_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2}):[0-9]{2}\s*(am|pm)", r
 CONTRACT_15M_FULL_PATTERN = re.compile(r".*\s([0-9]{1,2}):([0-9]{2})\s*(am|pm)", re.IGNORECASE)
 MONITOR_KEY_PATTERN = re.compile(r"^mon_(\d+?)_(\d+)$", re.IGNORECASE)
 
+
+def _derive_kalshi_event_ticker(market_ticker: str) -> str:
+    parts = market_ticker.strip().split("-")
+    if len(parts) < 2:
+        return market_ticker.strip()
+    while len(parts) > 2:
+        last = parts[-1]
+        if last and last[0] == "T" and any(ch.isdigit() for ch in last[1:]):
+            parts = parts[:-1]
+        else:
+            break
+    return "-".join(parts) if parts else market_ticker.strip()
+
+
+def _derive_clock_from_kalshi_suffix(dt_part: str) -> Optional[tuple]:
+    if not dt_part or len(dt_part) < 7:
+        return None
+    if len(dt_part) >= 10 and dt_part[-4:].isdigit():
+        hhmm = int(dt_part[-4:])
+        h, m = hhmm // 100, hhmm % 100
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return h, m
+    if len(dt_part) >= 9 and dt_part[-2:].isdigit():
+        h = int(dt_part[-2:])
+        if 0 <= h <= 23:
+            return h, None
+    return None
+
+
+def _derive_format_time_label(hour_24: int) -> str:
+    if hour_24 == 0:
+        return "12am"
+    if hour_24 == 12:
+        return "12pm"
+    if hour_24 > 12:
+        return f"{hour_24 - 12}pm"
+    return f"{hour_24}am"
+
+
+def _derive_format_15m_contract(symbol: str, hour_24: int, minute: int) -> str:
+    s = symbol.upper()
+    if hour_24 == 0:
+        return f"{s} 12:{minute:02d}am"
+    if hour_24 == 12:
+        return f"{s} 12:{minute:02d}pm"
+    if hour_24 > 12:
+        return f"{s} {hour_24 - 12}:{minute:02d}pm"
+    return f"{s} {hour_24}:{minute:02d}am"
+
+
+def derive_contract_label_from_kalshi_ticker(symbol: Optional[str], ticker: Optional[str]) -> Optional[str]:
+    """Human-readable contract from Kalshi market ticker (e.g. KXETHD-…-T… -> 'ETH 7pm')."""
+    if not ticker or not str(ticker).strip():
+        return None
+    sym = _trade_symbol_norm(symbol) or "BTC"
+    ev = _derive_kalshi_event_ticker(str(ticker).strip())
+    parts = ev.split("-")
+    if len(parts) < 2:
+        return None
+    clock = _derive_clock_from_kalshi_suffix(parts[-1])
+    if not clock:
+        return None
+    h24, min_opt = clock
+    if min_opt is not None:
+        return _derive_format_15m_contract(sym, h24, min_opt)
+    return f"{sym} {_derive_format_time_label(h24)}"
+
+
+def _coalesce_trade_contract(symbol: str, contract: Optional[str], ticker: Optional[str]) -> str:
+    """Prefer explicit contract; else derive from ticker; else legacy segment label."""
+    c = str(contract).strip() if contract is not None else ""
+    if c:
+        return c
+    d = derive_contract_label_from_kalshi_ticker(symbol, ticker)
+    if d:
+        return d
+    return f"{_trade_symbol_norm(symbol) or 'BTC'} Market"
+
+
 # Spot/strike precision: BTC/ETH stay at 2dp for backward compatibility; SOL/XRP align with
 # 15m strike tables (NUMERIC scale 5) so settlement compares and UI match Kalshi granularity.
 _HIGH_PRECISION_TRADE_SPOT_SYMBOLS = frozenset({"SOL", "XRP"})
@@ -423,7 +502,7 @@ def _get_final_quarter_ask_snapshot_from_strike_table(symbol, ticker, market=Non
     """
     Latest strike row for this Kalshi market_ticker: final-window YES/NO ask min, max, range (dollars, 4 dp).
     Tries live_data.strike_table_15m (unified) for 15m, then legacy strike_table_15m_{symbol}; hourly uses
-    strike_table_hourly_{symbol}. Mirrors cadence used for price_spread.
+    unified strike_table_hourly with exchange + symbol filter. Mirrors cadence used for price_spread.
     """
     if not symbol or not ticker:
         return (None,) * 6
@@ -472,18 +551,19 @@ def _get_final_quarter_ask_snapshot_from_strike_table(symbol, ticker, market=Non
                 if row and any(v is not None for v in row):
                     return _row_to_float6(row)
             else:
-                ht = f"strike_table_hourly_{sym_lower}"
-                q = sql.SQL(
+                cursor.execute(
                     """
                     SELECT yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
                            yes_ask_range_15m, no_ask_range_15m
-                    FROM live_data.{tbl}
-                    WHERE ticker = %s
-                    ORDER BY created_at DESC NULLS LAST
+                    FROM live_data.strike_table_hourly
+                    WHERE LOWER(TRIM(exchange::text)) = %s
+                      AND UPPER(TRIM(symbol::text)) = %s
+                      AND ticker = %s
+                    ORDER BY "timestamp" DESC NULLS LAST
                     LIMIT 1
-                    """
-                ).format(tbl=sql.Identifier(ht))
-                cursor.execute(q, (ticker,))
+                    """,
+                    (ex, sym_upper, ticker),
+                )
                 row = cursor.fetchone()
                 if row and any(v is not None for v in row):
                     return _row_to_float6(row)
@@ -724,7 +804,8 @@ def insert_trade(trade):
         except Exception as e:
             log(f"⚠️ insert_trade: API fallback for symbol_open failed: {e}")
 
-    contract_original = trade.get('contract')
+    contract_original = _coalesce_trade_contract(symbol, trade.get("contract"), trade.get("ticker"))
+    trade["contract"] = contract_original
     contract_name = truncate_contract_name(contract_original, symbol)
 
     hour_idx_for_db = _extract_hour_idx(contract_original)
@@ -945,7 +1026,8 @@ def insert_simulated_trade(trade):
     if not symbol:
         raise ValueError("Trade symbol must be provided")
     symbol_lower = symbol.lower()
-    contract_original = trade.get('contract')
+    contract_original = _coalesce_trade_contract(symbol, trade.get("contract"), trade.get("ticker"))
+    trade["contract"] = contract_original
     contract_name = truncate_contract_name(contract_original, symbol)
     hour_idx_for_db = _extract_hour_idx(contract_original)
     base_weekly_cycle = _compute_weekly_cycle(trade.get('date'), hour_idx_for_db)
@@ -1080,7 +1162,7 @@ def insert_simulated_trade(trade):
                     yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
                     yes_ask_range_15m, no_ask_range_15m,
                     paper_trade, cooldown_timer, test_filter
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
                 trade.get('status', 'pending'), trade['date'], trade['time'],
@@ -3387,9 +3469,12 @@ async def add_trade(request: Request):
     if isinstance(simulated, str):
         simulated = simulated.lower() in ("true", "1", "yes")
     if simulated:
-        required = {"date", "time", "strike", "side", "symbol", "contract"}
+        required = {"date", "time", "strike", "side", "symbol"}
         if not required.issubset(data.keys()):
             raise HTTPException(status_code=400, detail="Missing required fields for simulated trade")
+        sym0 = str(data.get("symbol") or "").strip()
+        if sym0:
+            data["contract"] = _coalesce_trade_contract(sym0, data.get("contract"), data.get("ticker"))
         trade_id = insert_simulated_trade(data)
         if trade_id is None:
             raise HTTPException(status_code=500, detail="Failed to insert simulated trade")
@@ -3421,6 +3506,10 @@ async def add_trade(request: Request):
     if not required_fields.issubset(data.keys()):
         raise HTTPException(status_code=400, detail="Missing required trade fields")
 
+    sym0 = str(data.get("symbol") or "").strip()
+    if sym0:
+        data["contract"] = _coalesce_trade_contract(sym0, data.get("contract"), data.get("ticker"))
+
     now_est = datetime.now(ZoneInfo("America/New_York"))
     data["time"] = now_est.strftime("%H:%M:%S")
 
@@ -3440,7 +3529,7 @@ async def add_trade(request: Request):
         # Insert trade with 'pending' status first
         data['status'] = 'pending'
         trade_id = insert_trade(data)
-        
+
         if trade_id is None:
             log(f"❌ Failed to insert paper trade to database")
             log_event(data.get("ticket_id", "UNKNOWN"), "MANAGER: PAPER TRADE — DATABASE INSERT FAILED")
@@ -3506,7 +3595,7 @@ async def add_trade(request: Request):
     # Ensure the trade is inserted with 'pending' status
     data['status'] = 'pending'
     trade_id = insert_trade(data)
-    
+
     if trade_id is None:
         log(f"❌ Failed to insert trade to database - cannot notify active trade supervisor")
         log_event(data["ticket_id"], "MANAGER: SENT TO EXECUTOR — DATABASE INSERT FAILED")

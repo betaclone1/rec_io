@@ -123,12 +123,15 @@ async function updateWatchlistTable() {
       row.classList.add(riskClass);
       
       // Update buy button - use _dollars values when available
-      const yesAsk = strikeData.yes_ask_dollars ? Math.round(parseFloat(strikeData.yes_ask_dollars) * 100) : strikeData.yes_ask;
-      const noAsk = strikeData.no_ask_dollars ? Math.round(parseFloat(strikeData.no_ask_dollars) * 100) : strikeData.no_ask;
+      const yesAsk = strikeData.yes_ask_dollars != null && strikeData.yes_ask_dollars !== ''
+        ? Math.round(parseFloat(strikeData.yes_ask_dollars) * 100) : null;
+      const noAsk = strikeData.no_ask_dollars != null && strikeData.no_ask_dollars !== ''
+        ? Math.round(parseFloat(strikeData.no_ask_dollars) * 100) : null;
       const yesDiff = strikeData.yes_diff;
       const noDiff = strikeData.no_diff;
-      const volume = strikeData.volume;
+      const volumeFp = strikeData.volume_fp;
       const ticker = strikeData.ticker;
+      const volNum = Number.isFinite(parseFloat(volumeFp)) ? parseFloat(volumeFp) : NaN;
       
       let activeAsk = null;
       let activeDiff = null;
@@ -139,13 +142,13 @@ async function updateWatchlistTable() {
         activeDiff = yesDiff;
         // Get min_volume from current monitor settings (default to 1000 if not available)
         const minVolume = window.currentMonitorMinVolume || 1000;
-        activeEnabled = yesAsk <= 98 && parseInt(volume) >= minVolume;
+        activeEnabled = yesAsk != null && yesAsk <= 98 && volNum >= minVolume;
       } else if (activeSide === 'no') {
         activeAsk = noAsk;
         activeDiff = noDiff;
         // Get min_volume from current monitor settings (default to 1000 if not available)
         const minVolume = window.currentMonitorMinVolume || 1000;
-        activeEnabled = noAsk <= 98 && parseInt(volume) >= minVolume;
+        activeEnabled = noAsk != null && noAsk <= 98 && volNum >= minVolume;
       }
       
       updateWatchlistBuyButton(buySpan, strike, activeSide, activeAsk, activeEnabled, ticker, activeDiff);

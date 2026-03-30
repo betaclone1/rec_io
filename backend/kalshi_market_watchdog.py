@@ -198,6 +198,16 @@ def _market_cents_from_dollars(dollars_val, legacy_cents):
     return 0
 
 
+def _kalshi_fp_text(value):
+    """Kalshi API fixed-point string for DB TEXT columns (2dp), hourly pipeline."""
+    if value is None or value == "":
+        return None
+    try:
+        return f"{float(str(value).strip()):.2f}"
+    except (TypeError, ValueError):
+        return None
+
+
 def _int_from_fixed_point(value, default=0):
     """
     Convert Kalshi fixed-point strings (e.g. '56658.00') to integer counts.
@@ -301,48 +311,86 @@ def create_market_kalshi_table(connection, symbol, interval="hourly"):
     try:
         cursor = connection.cursor()
         
-        # Table: market_kalshi_hourly_{symbol} or market_kalshi_15m_{symbol}
+        # Legacy per-symbol table names. Production hourly ladder uses unified live_data.market_kalshi_hourly (WS).
         table_name = f"market_kalshi_{interval}_{symbol.lower()}"
         market_val = "hourly" if interval == "hourly" else "15m"
-        create_table_sql = f"""
+        sym_u = symbol.upper()
+        ex_default = "kalshi"
+        if interval == "hourly":
+            # Same column set and uniqueness as live_data.market_kalshi_15m (migration 20260331_1530).
+            create_table_sql = f"""
+        CREATE TABLE IF NOT EXISTS live_data.{table_name} (
+            id SERIAL PRIMARY KEY,
+            symbol VARCHAR(10) NOT NULL DEFAULT '{sym_u}',
+            exchange VARCHAR(20) NOT NULL DEFAULT '{ex_default}',
+            event_ticker VARCHAR(50) NOT NULL,
+            market_ticker VARCHAR(100) NOT NULL,
+            market TEXT DEFAULT '{market_val}',
+            strike VARCHAR(20),
+            volume_fp TEXT,
+            open_interest_fp TEXT,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            yes_bid_dollars TEXT,
+            yes_ask_dollars TEXT,
+            no_bid_dollars TEXT,
+            no_ask_dollars TEXT,
+            last_price_dollars TEXT
+        );
+        """
+        else:
+            create_table_sql = f"""
         CREATE TABLE IF NOT EXISTS live_data.{table_name} (
             id SERIAL PRIMARY KEY,
             event_ticker VARCHAR(50) NOT NULL,
             market_ticker VARCHAR(100) NOT NULL,
             market TEXT DEFAULT '{market_val}',
             strike VARCHAR(20),
-            yes_bid INTEGER,
-            yes_ask INTEGER,
-            no_bid INTEGER,
-            no_ask INTEGER,
-            last_price INTEGER,
             yes_bid_dollars TEXT,
             yes_ask_dollars TEXT,
             no_bid_dollars TEXT,
             no_ask_dollars TEXT,
             last_price_dollars TEXT,
-            volume_fp INTEGER,
-            volume_24h_fp INTEGER,
-            open_interest INTEGER,
-            liquidity INTEGER,
+            volume_fp TEXT,
+            open_interest_fp TEXT,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
             updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
         );
         """
-        
+
         cursor.execute(create_table_sql)
-        
-        # Add unique constraint if it doesn't exist
-        try:
-            constraint_name = f"{table_name}_event_market_unique"
-            cursor.execute(f"""
-                ALTER TABLE live_data.{table_name} 
-                ADD CONSTRAINT {constraint_name} 
-                UNIQUE (event_ticker, market_ticker)
-            """)
-        except Exception:
-            # Constraint already exists
-            pass
+
+        if interval == "hourly":
+            uq = f"{table_name}_ex_sym_evt_mkt_uniq"
+            try:
+                cursor.execute(f"""
+                    ALTER TABLE live_data.{table_name}
+                    ADD CONSTRAINT {uq}
+                    UNIQUE (exchange, symbol, event_ticker, market_ticker)
+                """)
+            except Exception:
+                pass
+            try:
+                cursor.execute(f"""
+                    CREATE INDEX IF NOT EXISTS {table_name}_exchange_symbol_idx
+                    ON live_data.{table_name} (exchange, symbol)
+                """)
+                cursor.execute(f"""
+                    CREATE INDEX IF NOT EXISTS {table_name}_exchange_symbol_event_idx
+                    ON live_data.{table_name} (exchange, symbol, event_ticker)
+                """)
+            except Exception:
+                pass
+        else:
+            try:
+                constraint_name = f"{table_name}_event_market_unique"
+                cursor.execute(f"""
+                    ALTER TABLE live_data.{table_name}
+                    ADD CONSTRAINT {constraint_name}
+                    UNIQUE (event_ticker, market_ticker)
+                """)
+            except Exception:
+                pass
         
         connection.commit()
         logger.debug("Market Kalshi %s (%s) table ready", symbol.upper(), interval)
@@ -579,7 +627,9 @@ def save_market_data_to_postgresql(event_ticker, markets_data, symbol, interval=
             
         cursor = connection.cursor()
         table_name = f"market_kalshi_{interval}_{symbol.lower()}"
-        
+        sym_u = symbol.upper()
+        ex_key = "kalshi"
+
         # Insert/update market data using ON CONFLICT
         for market in markets_data:
             try:
@@ -603,60 +653,85 @@ def save_market_data_to_postgresql(event_ticker, markets_data, symbol, interval=
                     except (ValueError, TypeError):
                         pass  # Keep original strike if parsing fails
                 
-                # Kalshi fixed-point (March 12 2026): legacy cents fields removed; prefer _dollars, derive cents when missing
                 yes_bid_dollars = market.get("yes_bid_dollars")
                 yes_ask_dollars = market.get("yes_ask_dollars")
                 no_bid_dollars = market.get("no_bid_dollars")
                 no_ask_dollars = market.get("no_ask_dollars")
                 last_price_dollars = market.get("last_price_dollars")
-                yes_bid = _market_cents_from_dollars(yes_bid_dollars, market.get("yes_bid"))
-                yes_ask = _market_cents_from_dollars(yes_ask_dollars, market.get("yes_ask"))
-                no_bid = _market_cents_from_dollars(no_bid_dollars, market.get("no_bid"))
-                no_ask = _market_cents_from_dollars(no_ask_dollars, market.get("no_ask"))
-                last_price = _market_cents_from_dollars(last_price_dollars, market.get("last_price"))
-                
-                # Kalshi volume fields migrated from volume/volume_24h → volume_fp/volume_24h_fp.
-                # API sends these as fixed-point strings (e.g. '56658.00'); convert to integer counts for storage.
-                volume_fp = _int_from_fixed_point(
-                    market.get("volume_fp"),
-                    default=_int_from_fixed_point(market.get("volume", 0)),
-                )
-                volume_24h_fp = _int_from_fixed_point(
-                    market.get("volume_24h_fp"),
-                    default=_int_from_fixed_point(market.get("volume_24h", 0)),
-                )
-                open_interest = market.get("open_interest", 0)
-                liquidity = market.get("liquidity", 0)
-                
-                # Insert with ON CONFLICT to handle updates
                 market_val = "hourly" if interval == "hourly" else "15m"
-                cursor.execute(f"""
-                    INSERT INTO live_data.{table_name} 
-                    (event_ticker, market_ticker, market, strike, yes_bid, yes_ask, no_bid, no_ask, last_price,
-                     yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
-                     volume_fp, volume_24h_fp, open_interest, liquidity, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                    ON CONFLICT (event_ticker, market_ticker) DO UPDATE SET
-                        market = EXCLUDED.market,
-                        strike = EXCLUDED.strike,
-                        yes_bid = EXCLUDED.yes_bid,
-                        yes_ask = EXCLUDED.yes_ask,
-                        no_bid = EXCLUDED.no_bid,
-                        no_ask = EXCLUDED.no_ask,
-                        last_price = EXCLUDED.last_price,
-                        yes_bid_dollars = EXCLUDED.yes_bid_dollars,
-                        yes_ask_dollars = EXCLUDED.yes_ask_dollars,
-                        no_bid_dollars = EXCLUDED.no_bid_dollars,
-                        no_ask_dollars = EXCLUDED.no_ask_dollars,
-                        last_price_dollars = EXCLUDED.last_price_dollars,
-                        volume_fp = EXCLUDED.volume_fp,
-                        volume_24h_fp = EXCLUDED.volume_24h_fp,
-                        open_interest = EXCLUDED.open_interest,
-                        liquidity = EXCLUDED.liquidity,
-                        updated_at = NOW()
-                """, (event_ticker, market_ticker, market_val, strike, yes_bid, yes_ask, no_bid, no_ask, last_price,
-                      yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
-                      volume_fp, volume_24h_fp, open_interest, liquidity))
+                volume_fp_text = _kalshi_fp_text(market.get("volume_fp"))
+                open_interest_fp_text = _kalshi_fp_text(market.get("open_interest_fp"))
+                if interval == "hourly":
+                    cursor.execute(
+                        f"""
+                        INSERT INTO live_data.{table_name}
+                        (symbol, exchange, event_ticker, market_ticker, market, strike,
+                         volume_fp, open_interest_fp,
+                         yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
+                         updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        ON CONFLICT (exchange, symbol, event_ticker, market_ticker) DO UPDATE SET
+                            market = EXCLUDED.market,
+                            strike = EXCLUDED.strike,
+                            volume_fp = EXCLUDED.volume_fp,
+                            open_interest_fp = EXCLUDED.open_interest_fp,
+                            yes_bid_dollars = EXCLUDED.yes_bid_dollars,
+                            yes_ask_dollars = EXCLUDED.yes_ask_dollars,
+                            no_bid_dollars = EXCLUDED.no_bid_dollars,
+                            no_ask_dollars = EXCLUDED.no_ask_dollars,
+                            last_price_dollars = EXCLUDED.last_price_dollars,
+                            updated_at = NOW()
+                    """,
+                        (
+                            sym_u,
+                            ex_key,
+                            event_ticker,
+                            market_ticker,
+                            market_val,
+                            strike,
+                            volume_fp_text,
+                            open_interest_fp_text,
+                            yes_bid_dollars,
+                            yes_ask_dollars,
+                            no_bid_dollars,
+                            no_ask_dollars,
+                            last_price_dollars,
+                        ),
+                    )
+                else:
+                    cursor.execute(
+                        f"""
+                        INSERT INTO live_data.{table_name}
+                        (event_ticker, market_ticker, market, strike,
+                         yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars, last_price_dollars,
+                         volume_fp, open_interest_fp, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        ON CONFLICT (event_ticker, market_ticker) DO UPDATE SET
+                            market = EXCLUDED.market,
+                            strike = EXCLUDED.strike,
+                            yes_bid_dollars = EXCLUDED.yes_bid_dollars,
+                            yes_ask_dollars = EXCLUDED.yes_ask_dollars,
+                            no_bid_dollars = EXCLUDED.no_bid_dollars,
+                            no_ask_dollars = EXCLUDED.no_ask_dollars,
+                            last_price_dollars = EXCLUDED.last_price_dollars,
+                            volume_fp = EXCLUDED.volume_fp,
+                            open_interest_fp = EXCLUDED.open_interest_fp,
+                            updated_at = NOW()
+                    """,
+                        (
+                            event_ticker,
+                            market_ticker,
+                            market_val,
+                            strike,
+                            yes_bid_dollars,
+                            yes_ask_dollars,
+                            no_bid_dollars,
+                            no_ask_dollars,
+                            last_price_dollars,
+                            volume_fp_text,
+                            open_interest_fp_text,
+                        ),
+                    )
                 
             except Exception as e:
                 logger.warning("Error processing market %s: %s", market.get("ticker", "unknown"), e)
