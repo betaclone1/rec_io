@@ -682,8 +682,9 @@ def _backfill_symbol_expiration_past_due_closed(now_est: datetime) -> None:
                 WHERE symbol IS NOT NULL
                   AND contract IS NOT NULL
                   AND date IS NOT NULL
-                  AND date >= %s
-                  AND date <= %s
+                  AND trim(both from date::text) <> ''
+                  AND (trim(both from date::text))::date >= %s::date
+                  AND (trim(both from date::text))::date <= %s::date
                 """,
                 (window_start, window_end),
             )
