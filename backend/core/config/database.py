@@ -591,6 +591,8 @@ def init_database():
             $$;
         """)
         
+        # Legacy generic table kept for backwards compatibility with older tooling.
+        # Unified ATS pool tables are users.active_trades_15m_0001 and users.active_trades_hourly_0001.
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users.active_trades_0001 (
                 id SERIAL PRIMARY KEY,

@@ -149,8 +149,8 @@ class CascadingFailureDetector:
             # Add core services (already defined in self.core_critical_services)
             discovered_services.extend(self.core_critical_services)
             
-            hourly_monitors = [m for m in active_monitors if m.get("market", "hourly") != "15m"]
             has_15m = any(m.get("market", "hourly") == "15m" for m in active_monitors)
+            has_hourly = any(m.get("market", "hourly") != "15m" for m in active_monitors)
             if has_15m:
                 discovered_services.extend(
                     [
@@ -158,16 +158,13 @@ class CascadingFailureDetector:
                         "active_trade_supervisor_15m",
                     ]
                 )
-
-            for monitor in hourly_monitors:
-                user_number = monitor['user_number']
-                monitor_id = monitor['monitor_id']
-                monitor_identifier = f"{user_number}_{monitor_id}"
-                
-                discovered_services.extend([
-                    f"auto_entry_supervisor_{monitor_identifier}",
-                    f"active_trade_supervisor_{monitor_identifier}"
-                ])
+            if has_hourly:
+                discovered_services.extend(
+                    [
+                        "auto_entry_supervisor_hourly",
+                        "active_trade_supervisor_hourly",
+                    ]
+                )
             
             # Update the critical services list
             self.critical_services = discovered_services

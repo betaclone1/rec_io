@@ -244,6 +244,223 @@ def _check_ws_pipeline_health(symbol: Optional[str], *, market: str) -> tuple[bo
     finally:
         conn.close()
 
+
+def _notify_trade_manager_executor_status(status_payload: dict) -> None:
+    """Notify trade_manager of executor result via Redis stream or HTTP fallback."""
+    try:
+        from backend.core.trading_redis_comms import (
+            redis_client_optional,
+            stream_tm_status,
+            use_trading_redis_comms,
+            xadd_trading_json,
+        )
+
+        if use_trading_redis_comms():
+            r = redis_client_optional()
+            if r:
+                if xadd_trading_json(
+                    r,
+                    stream_tm_status(),
+                    msg_type="update_trade_status",
+                    payload=status_payload,
+                    source="trade_executor",
+                ):
+                    return
+    except Exception:
+        pass
+    manager_port = get_manager_port()
+    status_url = f"http://{get_host()}:{manager_port}/api/update_trade_status"
+
+    def _run():
+        try:
+            requests.post(status_url, json=status_payload, timeout=5)
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def process_trigger_trade_request(data: dict):
+    """
+    Run Kalshi order path (same as /trigger_trade). Returns (response_dict, http_code).
+    Side effect: notifies trade_manager via Redis or HTTP.
+    """
+    ticket_id = data.get("ticket_id", "UNKNOWN")
+    trade_id = data.get("id")
+    if ticket_id.count("TICKET-") > 1:
+        ticket_id = ticket_id.split("TICKET-")[-1]
+        ticket_id = f"TICKET-{ticket_id}"
+    log_event(ticket_id, "RECEIVED TICKET", trade_id=trade_id)
+
+    ticker = data.get("ticker")
+    pipe_mkt = _kalshi_strike_pipeline_market(data)
+    if pipe_mkt:
+        symbol = str(data.get("symbol") or "").upper() or _extract_symbol_from_ticker(ticker)
+        healthy, health_reason = _check_ws_pipeline_health(symbol, market=pipe_mkt)
+        if not healthy:
+            msg = (
+                f"BLOCKED by WS strike pipeline health gate: symbol={symbol or 'unknown'} "
+                f"market={pipe_mkt} reason={health_reason}"
+            )
+            log_event(ticket_id, msg, trade_id=trade_id)
+            return {"status": "rejected", "error": msg}, 503
+    raw_side = data.get("side", "yes")
+    side = "yes" if raw_side in ["Y", "yes"] else "no"
+    count_fp_in = data.get("count_fp")
+    if count_fp_in is not None and str(count_fp_in).strip() != "":
+        try:
+            count_fp = f"{float(count_fp_in):.2f}"
+        except (TypeError, ValueError):
+            count_fp = f"{float(data.get('count', data.get('position', 1))):.2f}"
+    else:
+        count_val = data.get("count", data.get("position", 1))
+        count_fp = f"{float(count_val):.2f}"
+    order_type = "limit"
+    order_payload = {
+        "ticker": ticker,
+        "side": side,
+        "type": order_type,
+        "count_fp": count_fp,
+        "time_in_force": "fill_or_kill",
+        "action": "buy",
+        "client_order_id": str(uuid.uuid4()),
+    }
+    if side == "yes":
+        order_payload["yes_price_dollars"] = "0.9900"
+    else:
+        order_payload["no_price_dollars"] = "0.9900"
+
+    timestamp = str(int(time.time() * 1000))
+    path = "/portfolio/orders"
+    full_path = f"/trade-api/v2{path}"
+
+    KEY_ID, KEY_PATH = get_current_credentials()
+    log_event(ticket_id, f"🔑 CREDENTIALS: KEY_ID={KEY_ID[:8]}..., KEY_PATH={KEY_PATH}", trade_id=trade_id)
+
+    signature = generate_kalshi_signature("POST", full_path, timestamp, str(KEY_PATH))
+    log_event(ticket_id, f"🔐 SIGNATURE: timestamp={timestamp}, path={full_path}", trade_id=trade_id)
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "KalshiTradeExec/1.0",
+        "KALSHI-ACCESS-KEY": KEY_ID,
+        "KALSHI-ACCESS-TIMESTAMP": timestamp,
+        "KALSHI-ACCESS-SIGNATURE": signature,
+        "Content-Type": "application/json",
+    }
+
+    url = f"{get_base_url()}{path}"
+
+    log_event(ticket_id, f"🌐 SENDING TO KALSHI: {url}", trade_id=trade_id)
+    log_event(ticket_id, f"📤 REQUEST HEADERS: {json.dumps(headers, indent=2)}", trade_id=trade_id)
+    log_event(ticket_id, f"📤 REQUEST PAYLOAD: {json.dumps(order_payload, indent=2)}", trade_id=trade_id)
+
+    try:
+        response = requests.post(url, headers=headers, json=order_payload, timeout=10)
+
+        log_event(ticket_id, f"📥 RESPONSE STATUS: {response.status_code}", trade_id=trade_id)
+        log_event(ticket_id, f"📥 RESPONSE HEADERS: {dict(response.headers)}", trade_id=trade_id)
+        log_event(ticket_id, f"📥 RESPONSE BODY: {response.text}", trade_id=trade_id)
+    except requests.exceptions.RequestException as e:
+        log_event(ticket_id, f"❌ REQUEST FAILED: {type(e).__name__}: {str(e)}", trade_id=trade_id)
+        trade_id = data.get("id")
+        if trade_id:
+            status_payload = {"id": trade_id, "status": "error", "error_message": f"timeout: {str(e)}"}
+        else:
+            status_payload = {"ticket_id": ticket_id, "status": "error", "error_message": f"timeout: {str(e)}"}
+        _notify_trade_manager_executor_status(status_payload)
+        return {"status": "rejected", "error": f"timeout: {str(e)}"}, 500
+
+    if response.status_code >= 400:
+        intent = data.get("intent", "open")
+        log_event(
+            ticket_id,
+            f"❌ TRADE REJECTED (intent={intent}) - Status: {response.status_code}, Response: {response.text}",
+            trade_id=trade_id,
+        )
+        if "insufficient_resting_volume" in response.text.lower():
+            _log_insufficient_resting_volume_rejection(data, response.status_code, response.text, count_fp)
+        trade_id = data.get("id")
+        if trade_id:
+            status_payload = {"id": trade_id, "status": "error", "error_message": response.text, "intent": intent}
+        else:
+            status_payload = {"ticket_id": ticket_id, "status": "error", "error_message": response.text, "intent": intent}
+        _notify_trade_manager_executor_status(status_payload)
+        return {"status": "rejected", "error": response.text}, response.status_code
+
+    if response.status_code in [200, 201]:
+        log_event(ticket_id, f"✅ TRADE SUCCESS - Status: {response.status_code}, Response: {response.text}", trade_id=trade_id)
+
+        order_id = None
+        try:
+            response_json = response.json()
+            if "order" in response_json and "order_id" in response_json["order"]:
+                order_id = response_json["order"]["order_id"]
+                log_event(ticket_id, f"📋 EXTRACTED ORDER_ID: {order_id}", trade_id=trade_id)
+        except Exception as e:
+            log_event(ticket_id, f"⚠️ Failed to extract order_id: {e}", trade_id=trade_id)
+
+        trade_id = data.get("id")
+        intent = data.get("intent", "open")
+        if trade_id:
+            status_payload = {
+                "id": trade_id,
+                "status": "accepted",
+                "success_message": response.text,
+                "order_id": order_id,
+                "intent": intent,
+            }
+        else:
+            status_payload = {
+                "ticket_id": ticket_id,
+                "status": "accepted",
+                "success_message": response.text,
+                "order_id": order_id,
+                "intent": intent,
+            }
+        _notify_trade_manager_executor_status(status_payload)
+        return {"status": "sent", "message": "Trade sent successfully"}, 200
+
+    return {"error": "unexpected response"}, 500
+
+
+def _executor_stream_handler(decoded: dict, msg_id: str, raw_fields: dict) -> bool:
+    if decoded.get("type") != "trigger_trade":
+        return True
+    payload = decoded.get("payload")
+    if not isinstance(payload, dict):
+        return True
+    try:
+        from backend.core.trading_redis_comms import idempotency_begin, redis_client_optional, use_trading_redis_comms
+
+        if use_trading_redis_comms():
+            r = redis_client_optional()
+            if r:
+                cid = str(decoded.get("correlation_id") or msg_id)
+                if not idempotency_begin(r, f"trading:dedupe:ex:{cid}", ttl_sec=600):
+                    return True
+        process_trigger_trade_request(payload)
+    except Exception as e:
+        _te_logger.warning("executor stream handler: %s", e)
+    return True
+
+
+def _start_trading_redis_executor_consumer() -> None:
+    from backend.core.trading_redis_comms import (
+        default_consumer_name,
+        start_consumer_daemon,
+        stream_executor,
+        use_trading_redis_comms,
+    )
+
+    if not use_trading_redis_comms():
+        return
+    start_consumer_daemon(
+        stream_executor(),
+        "executor",
+        default_consumer_name("trade-exec"),
+        _executor_stream_handler,
+    )
+
 # Health check endpoint
 @app.route("/health")
 def health_check():
@@ -268,164 +485,13 @@ def trigger_trade():
     """Execute a trade."""
     try:
         data = request.get_json()
-        ticket_id = data.get("ticket_id", "UNKNOWN")
-        trade_id = data.get("id")  # Hero id from users.trades_0001 for full pipeline traceability
-        # Normalize ticket_id to avoid double "TICKET-" prefixing
-        if ticket_id.count("TICKET-") > 1:
-            ticket_id = ticket_id.split("TICKET-")[-1]
-            ticket_id = f"TICKET-{ticket_id}"
-        log_event(ticket_id, "RECEIVED TICKET", trade_id=trade_id)
-
-        ticker = data.get("ticker")
-        pipe_mkt = _kalshi_strike_pipeline_market(data)
-        if pipe_mkt:
-            symbol = str(data.get("symbol") or "").upper() or _extract_symbol_from_ticker(ticker)
-            healthy, health_reason = _check_ws_pipeline_health(symbol, market=pipe_mkt)
-            if not healthy:
-                msg = (
-                    f"BLOCKED by WS strike pipeline health gate: symbol={symbol or 'unknown'} "
-                    f"market={pipe_mkt} reason={health_reason}"
-                )
-                log_event(ticket_id, msg, trade_id=trade_id)
-                return jsonify({"status": "rejected", "error": msg}), 503
-        raw_side = data.get("side", "yes")
-        side = "yes" if raw_side in ["Y", "yes"] else "no"
-        # Kalshi fixed-point: send only count_fp (legacy count deprecated). Accept count_fp from caller or derive from count/position.
-        count_fp_in = data.get("count_fp")
-        if count_fp_in is not None and str(count_fp_in).strip() != "":
-            try:
-                count_fp = f"{float(count_fp_in):.2f}"
-            except (TypeError, ValueError):
-                count_fp = f"{float(data.get('count', data.get('position', 1))):.2f}"
-        else:
-            count_val = data.get("count", data.get("position", 1))
-            count_fp = f"{float(count_val):.2f}"
-        # Always use limit orders - Kalshi no longer accepts market orders
-        order_type = "limit"
-        buy_price = data.get("buy_price")
-        
-        order_payload = {
-            "ticker": ticker,
-            "side": side,
-            "type": order_type,
-            "count_fp": count_fp,
-            "time_in_force": "fill_or_kill",
-            "action": "buy",
-            "client_order_id": str(uuid.uuid4())
-        }
-        
-        # Add price field based on side (hardcoded to 99 for market-like behavior)
-        if side == "yes":
-            order_payload["yes_price_dollars"] = "0.9900"
-        else:
-            order_payload["no_price_dollars"] = "0.9900"
-        
-
-        timestamp = str(int(time.time() * 1000))
-        path = "/portfolio/orders"
-        full_path = f"/trade-api/v2{path}"
-        
-        # Refresh credentials at trade time
-        KEY_ID, KEY_PATH = get_current_credentials()
-        log_event(ticket_id, f"🔑 CREDENTIALS: KEY_ID={KEY_ID[:8]}..., KEY_PATH={KEY_PATH}", trade_id=trade_id)
-        
-        signature = generate_kalshi_signature("POST", full_path, timestamp, str(KEY_PATH))
-        log_event(ticket_id, f"🔐 SIGNATURE: timestamp={timestamp}, path={full_path}", trade_id=trade_id)
-        headers = {
-            "Accept": "application/json",
-            "User-Agent": "KalshiTradeExec/1.0",
-            "KALSHI-ACCESS-KEY": KEY_ID,
-            "KALSHI-ACCESS-TIMESTAMP": timestamp,
-            "KALSHI-ACCESS-SIGNATURE": signature,
-            "Content-Type": "application/json"
-        }
-
-        url = f"{get_base_url()}{path}"
-        
-        # Log the complete request details
-        log_event(ticket_id, f"🌐 SENDING TO KALSHI: {url}", trade_id=trade_id)
-        log_event(ticket_id, f"📤 REQUEST HEADERS: {json.dumps(headers, indent=2)}", trade_id=trade_id)
-        log_event(ticket_id, f"📤 REQUEST PAYLOAD: {json.dumps(order_payload, indent=2)}", trade_id=trade_id)
-        
-        try:
-            response = requests.post(url, headers=headers, json=order_payload, timeout=10)
-            
-            # Log the complete response details
-            log_event(ticket_id, f"📥 RESPONSE STATUS: {response.status_code}", trade_id=trade_id)
-            log_event(ticket_id, f"📥 RESPONSE HEADERS: {dict(response.headers)}", trade_id=trade_id)
-            log_event(ticket_id, f"📥 RESPONSE BODY: {response.text}", trade_id=trade_id)
-        except requests.exceptions.RequestException as e:
-            log_event(ticket_id, f"❌ REQUEST FAILED: {type(e).__name__}: {str(e)}", trade_id=trade_id)
-            # Handle timeout/network errors the same as 400+ errors
-            trade_id = data.get("id")
-            if trade_id:
-                status_payload = {"id": trade_id, "status": "error", "error_message": f"timeout: {str(e)}"}
-            else:
-                status_payload = {"ticket_id": ticket_id, "status": "error", "error_message": f"timeout: {str(e)}"}
-            manager_port = get_manager_port()
-            status_url = f"http://{get_host()}:{manager_port}/api/update_trade_status"
-            def notify_error():
-                try:
-                    resp = requests.post(status_url, json=status_payload, timeout=5)
-                except Exception as e:
-                    pass
-            threading.Thread(target=notify_error, daemon=True).start()
-            return jsonify({"status": "rejected", "error": f"timeout: {str(e)}"}), 500
-
-        if response.status_code >= 400:
-            intent = data.get("intent", "open")
-            log_event(ticket_id, f"❌ TRADE REJECTED (intent={intent}) - Status: {response.status_code}, Response: {response.text}", trade_id=trade_id)
-            if "insufficient_resting_volume" in response.text.lower():
-                _log_insufficient_resting_volume_rejection(data, response.status_code, response.text, count_fp)
-            # Use the trade ID if provided, otherwise use ticket_id
-            trade_id = data.get("id")
-            if trade_id:
-                status_payload = {"id": trade_id, "status": "error", "error_message": response.text, "intent": intent}
-            else:
-                status_payload = {"ticket_id": ticket_id, "status": "error", "error_message": response.text, "intent": intent}
-            manager_port = get_manager_port()
-            status_url = f"http://{get_host()}:{manager_port}/api/update_trade_status"
-            def notify_error():
-                try:
-                    resp = requests.post(status_url, json=status_payload, timeout=5)
-                except Exception as e:
-                    pass
-            threading.Thread(target=notify_error, daemon=True).start()
-            return jsonify({"status": "rejected", "error": response.text}), response.status_code
-        elif response.status_code in [200, 201]:
-            log_event(ticket_id, f"✅ TRADE SUCCESS - Status: {response.status_code}, Response: {response.text}", trade_id=trade_id)
-            
-            # Extract order_id from Kalshi response
-            order_id = None
-            try:
-                response_json = response.json()
-                if "order" in response_json and "order_id" in response_json["order"]:
-                    order_id = response_json["order"]["order_id"]
-                    log_event(ticket_id, f"📋 EXTRACTED ORDER_ID: {order_id}", trade_id=trade_id)
-            except Exception as e:
-                log_event(ticket_id, f"⚠️ Failed to extract order_id: {e}", trade_id=trade_id)
-            
-            # Use the trade ID if provided, otherwise use ticket_id
-            trade_id = data.get("id")
-            intent = data.get("intent", "open")  # Get the intent to determine which order_id field to use
-            if trade_id:
-                status_payload = {"id": trade_id, "status": "accepted", "success_message": response.text, "order_id": order_id, "intent": intent}
-            else:
-                status_payload = {"ticket_id": ticket_id, "status": "accepted", "success_message": response.text, "order_id": order_id, "intent": intent}
-            manager_port = get_manager_port()
-            status_url = f"http://{get_host()}:{manager_port}/api/update_trade_status"
-            def notify_accepted():
-                try:
-                    resp = requests.post(status_url, json=status_payload, timeout=5)
-                except Exception as e:
-                    pass
-            threading.Thread(target=notify_accepted, daemon=True).start()
-            return jsonify({"status": "sent", "message": "Trade sent successfully"}), 200
-
+        body, code = process_trigger_trade_request(data)
+        return jsonify(body), code
     except Exception as e:
         try:
-            log_event(ticket_id, f"❌ ERROR: {e}", trade_id=trade_id)
-        except NameError:
+            tid = (request.get_json() or {}).get("ticket_id", "UNKNOWN")
+            log_event(tid, f"❌ ERROR: {e}", trade_id=None)
+        except Exception:
             log_event("UNKNOWN", f"❌ ERROR: {e}", trade_id=None)
         return jsonify({"error": str(e)}), 500
 
@@ -445,8 +511,10 @@ def get_system_status():
         _te_logger.error("Error getting system status: %s", e)
         return {"error": str(e)}
 
+
+_start_trading_redis_executor_consumer()
+
 # Main entry point
 if __name__ == "__main__":
-    # print(f"[TRADE_EXECUTOR] 🚀 Launching trade executor on static port {TRADE_EXECUTOR_PORT}")
     app.run(host="0.0.0.0", port=TRADE_EXECUTOR_PORT, debug=False)
 

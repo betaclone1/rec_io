@@ -174,6 +174,8 @@ class SupervisorConfigGenerator:
                 "strike_table_generator_ws_15m": 8036,
                 "auto_entry_supervisor_15m": 8033,
                 "active_trade_supervisor_15m": 8034,
+                "auto_entry_supervisor_hourly": 8037,
+                "active_trade_supervisor_hourly": 8038,
                 "system_monitor": 8006,
                 "monitor_manager": 8012,
                 "cascading_failure_detector": 8007
@@ -293,10 +295,9 @@ class SupervisorConfigGenerator:
             }
         ]
         
-        # Per-monitor AES/ATS: hourly monitors only. 15m monitors share one global pair.
-        monitor_port_base = 8015  # Start monitor ports at 8015
-        hourly_monitors = [m for m in active_monitors if m.get("market", "hourly") != "15m"]
+        # Unified AES/ATS: one pair for all active 15m monitors; one pair for all active hourly monitors.
         has_15m = any(m.get("market", "hourly") == "15m" for m in active_monitors)
+        has_hourly = any(m.get("market", "hourly") != "15m" for m in active_monitors)
 
         if has_15m:
             services.append({
@@ -310,25 +311,16 @@ class SupervisorConfigGenerator:
                 "port": ports.get("active_trade_supervisor_15m", 8034),
             })
 
-        for i, monitor in enumerate(hourly_monitors):
-            user_number = monitor['user_number']
-            monitor_id = monitor['monitor_id']
-            monitor_identifier = f"{user_number}_{monitor_id}"
-            
-            # Auto entry supervisor for this monitor
-            auto_entry_port = monitor_port_base + (i * 2)
+        if has_hourly:
             services.append({
-                "name": f"auto_entry_supervisor_{monitor_identifier}",
-                "script": f"auto_entry_supervisor.py {monitor_identifier}",
-                "port": auto_entry_port
+                "name": "auto_entry_supervisor_hourly",
+                "script": "auto_entry_supervisor.py unified_hourly",
+                "port": ports.get("auto_entry_supervisor_hourly", 8037),
             })
-            
-            # Active trade supervisor for this monitor
-            active_trade_port = monitor_port_base + (i * 2) + 1
             services.append({
-                "name": f"active_trade_supervisor_{monitor_identifier}",
-                "script": f"active_trade_supervisor.py {monitor_identifier}",
-                "port": active_trade_port
+                "name": "active_trade_supervisor_hourly",
+                "script": "active_trade_supervisor.py unified_hourly",
+                "port": ports.get("active_trade_supervisor_hourly", 8038),
             })
         
         services.append({
@@ -440,6 +432,45 @@ environment={env_vars}
                 f'REC_DB_PORT="{db_config.get("port", 5432)}"',
                 f'REC_DB_SSLMODE="{db_config.get("sslmode", "disable")}"'
             ]
+
+            # Trading-plane Redis (pub/sub preferences, streams): supervisord does not inherit shell env.
+            # Propagate from the environment used when running this generator (or CI/deploy secrets).
+            _trading_redis_keys = (
+                "USE_TRADING_REDIS_COMMS",
+                "REDIS_URL",
+                "REDIS_HOST",
+                "REDIS_PORT",
+                "REDIS_PASSWORD",
+                "REDIS_CHANNEL_TRADING_PREFERENCES",
+                "REDIS_CHANNEL_ATS_TM_NOTIFICATIONS",
+                "REDIS_CHANNEL_ATS_ENROLL_REQUEST",
+                "REDIS_CHANNEL_DB_CHANGES",
+                "REDIS_CHANNEL_TM_POSITIONS_UPDATED",
+            )
+            for key in _trading_redis_keys:
+                val = os.getenv(key)
+                if val is None or str(val).strip() == "":
+                    continue
+                esc = str(val).replace("\\", "\\\\").replace('"', '\\"')
+                env_vars.append(f'{key}="{esc}"')
+
+            # Redis-first defaults for supervised services:
+            # - Enable trading Redis comms unless explicitly overridden.
+            # - If REDIS_URL is absent, provide localhost host/port defaults.
+            if not any(x.startswith("USE_TRADING_REDIS_COMMS=") for x in env_vars):
+                env_vars.append('USE_TRADING_REDIS_COMMS="1"')
+
+            has_redis_url = any(x.startswith("REDIS_URL=") for x in env_vars)
+            has_redis_host = any(x.startswith("REDIS_HOST=") for x in env_vars)
+            has_redis_port = any(x.startswith("REDIS_PORT=") for x in env_vars)
+            if not has_redis_url and not has_redis_host:
+                env_vars.append('REDIS_HOST="localhost"')
+            if not has_redis_url and not has_redis_port:
+                env_vars.append('REDIS_PORT="6379"')
+
+            # HTTP fallback should be opt-in during Redis cutover.
+            if not any(x.startswith("ATS_HTTP_FALLBACK_ENABLED=") for x in env_vars):
+                env_vars.append('ATS_HTTP_FALLBACK_ENABLED="0"')
             
             return ','.join(env_vars)
             

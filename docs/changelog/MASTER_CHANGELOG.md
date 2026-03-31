@@ -6,6 +6,42 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-31 — Trading Redis comms hardening + unified active-trades naming/hourly pool
+
+**Summary**
+- **Trading-plane Redis comms:** `trade_manager`, `trade_executor`, `monitor_manager`, `main.py`, `auto_entry_supervisor`, and `active_trade_supervisor` now use Redis-first communication for trigger/status/DB-change paths with controlled HTTP fallback where configured.
+- **ATS/TM reliability:** Added Redis consumer/subscriber paths, idempotency guards, and throttled fallback logging to reduce noisy retries and duplicate/late notifications.
+- **Unified active-trades table naming:** Standardized pooled table naming to `users.active_trades_15m_0001` and `users.active_trades_hourly_0001` (from legacy suffix-last names), with codepaths aligned across supervisors and manager services.
+- **Hourly active-trades pool migration:** Added the hourly pooled active-trades table migration for user `0001`, then rename normalization migration for both 15m/hourly pool table names plus index/constraint names.
+- **Docs/schema alignment:** Updated `docs/MASTER_DB_SCHEMA_REFERENCE.md`, `backend/core/config/database.py`, and Redis comms audit doc to reflect migration-backed table naming and communication topology.
+
+**Plans:** `.cursor/plans/redis-platform-initiative.md`, `.cursor/plans/unified-15m-aes-ats-reads.md`, `.cursor/plans/unified-kalshi-ws-master-aes-ats.md`
+
+**DB migrations (required on production, in this order — runner skips already-applied ids)**
+1. `20260330_2200_active_trades_0001_hourly_pool`
+2. `20260331_1115_active_trades_unified_table_naming`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations in order (from project root):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260330_2200_active_trades_0001_hourly_pool`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260331_1115_active_trades_unified_table_naming`
+- [ ] Schema drift check after migrations:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services:  
+  `./scripts/MASTER_RESTART.sh`
+- [ ] Verify health and runtime status: `main_app` :3000, `trade_executor` :8001, supervisor `RUNNING`, and no fresh post-restart critical errors in `trade_manager`, `kalshi_account_sync`, `main_app`, `market_watchdog_ws_kalshi_15m`.
+- [ ] Verify unified active-trades tables present and used:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py list` and spot-check table existence/row flow for `users.active_trades_15m_0001` and `users.active_trades_hourly_0001`.
+- [ ] Fast rollback readiness (only if errant live behavior appears): keep this snapshot id handy and execute in this order: stop trading entry points, run migration downs below, restart, then verify health before re-enabling trading.
+- [ ] Rollback migration commands (reverse order):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py down 20260331_1115_active_trades_unified_table_naming`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py down 20260330_2200_active_trades_0001_hourly_pool`
+- [ ] Snapshot reference for emergency VM restore: `rec-io-prod-pre-update-2026-03-31` (DO action `3117800227`, status `completed`).
+
+---
+
 ## 2026-03-30 — Unified hourly Kalshi pipeline, WS rollover + tick verify, migrations, AES/ATS reads
 
 **Summary**

@@ -60,6 +60,8 @@ DEFAULT_PORTS = {
     "strike_table_generator_ws_15m": 8036,
     "auto_entry_supervisor_15m": 8033,
     "active_trade_supervisor_15m": 8034,
+    "auto_entry_supervisor_hourly": 8037,
+    "active_trade_supervisor_hourly": 8038,
 }
 
 def ensure_port_config_exists():
@@ -136,6 +138,16 @@ def ensure_port_config_exists():
                 "active_trade_supervisor_15m": {
                     "port": 8034,
                     "description": "Unified active trade supervisor for all active 15m monitors",
+                    "status": "RUNNING"
+                },
+                "auto_entry_supervisor_hourly": {
+                    "port": 8037,
+                    "description": "Unified auto entry supervisor for all active hourly monitors",
+                    "status": "RUNNING"
+                },
+                "active_trade_supervisor_hourly": {
+                    "port": 8038,
+                    "description": "Unified active trade supervisor for all active hourly monitors",
                     "status": "RUNNING"
                 },
                 "monitor_manager": {
@@ -457,15 +469,54 @@ def monitor_suffix_uses_unified_15m_pool(monitor_suffix: str) -> bool:
                 pass
 
 
+def monitor_suffix_uses_unified_hourly_pool(monitor_suffix: str) -> bool:
+    """True when this monitor should use the unified hourly AES/ATS ports (market = hourly)."""
+    if "_" not in monitor_suffix:
+        return False
+    user_number, monitor_id = monitor_suffix.split("_", 1)
+    conn = None
+    try:
+        from backend.core.config.database import get_postgresql_connection
+
+        conn = get_postgresql_connection()
+        if not conn:
+            return False
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT LOWER(TRIM(COALESCE(NULLIF(TRIM(market), ''), 'hourly')))
+                FROM users.monitor_list_{user_number}
+                WHERE id = %s
+                """,
+                (monitor_id,),
+            )
+            row = cursor.fetchone()
+            if not row or row[0] is None:
+                return False
+            return str(row[0]).strip() == "hourly"
+    except Exception:
+        return False
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def get_active_trade_supervisor_http_port_for_monitor_suffix(monitor_suffix: str) -> int:
     if monitor_suffix_uses_unified_15m_pool(monitor_suffix):
         return get_port("active_trade_supervisor_15m")
+    if monitor_suffix_uses_unified_hourly_pool(monitor_suffix):
+        return get_port("active_trade_supervisor_hourly")
     return get_monitor_port("active_trade_supervisor", monitor_suffix)
 
 
 def get_auto_entry_supervisor_http_port_for_monitor_suffix(monitor_suffix: str) -> int:
     if monitor_suffix_uses_unified_15m_pool(monitor_suffix):
         return get_port("auto_entry_supervisor_15m")
+    if monitor_suffix_uses_unified_hourly_pool(monitor_suffix):
+        return get_port("auto_entry_supervisor_hourly")
     return get_monitor_port("auto_entry_supervisor", monitor_suffix)
 
 

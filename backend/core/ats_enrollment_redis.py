@@ -32,6 +32,9 @@ REDIS_CHANNEL_ATS_ENROLL_REQUEST = os.getenv(
 REDIS_KEY_PREFIX_ATS_ENROLL_RESULT = os.getenv(
     "REDIS_KEY_PREFIX_ATS_ENROLL_RESULT", "ats:enroll:result:"
 )
+REDIS_CHANNEL_ATS_TM_NOTIFICATIONS = os.getenv(
+    "REDIS_CHANNEL_ATS_TM_NOTIFICATIONS", "rec_io:ats_tm_notifications"
+)
 
 
 def _redis_client():
@@ -109,22 +112,31 @@ def wait_trade_open_enroll_ack(
     return None
 
 
-def start_enroll_subscriber_loop(handler) -> None:
+def start_enroll_subscriber_loop(handler, tm_notify_handler=None) -> None:
     """
-    Blocking loop (run in a daemon thread). handler(msg: dict) -> None
+    Blocking loop (run in a daemon thread).
+    handler(msg: dict) -> None for REDIS_CHANNEL_ATS_ENROLL_REQUEST (open enroll).
+    tm_notify_handler(msg: dict) -> None optional for REDIS_CHANNEL_ATS_TM_NOTIFICATIONS.
     """
     r = redis_client_optional()
     if not r:
         logger.warning("ATS enrollment subscriber not started (no Redis)")
         return
     pubsub = r.pubsub()
-    pubsub.subscribe(REDIS_CHANNEL_ATS_ENROLL_REQUEST)
-    logger.info("ATS enrollment subscribed to %s", REDIS_CHANNEL_ATS_ENROLL_REQUEST)
+    channels = [REDIS_CHANNEL_ATS_ENROLL_REQUEST]
+    if tm_notify_handler:
+        channels.append(REDIS_CHANNEL_ATS_TM_NOTIFICATIONS)
+    pubsub.subscribe(*channels)
+    logger.info("ATS Redis subscribed to %s", channels)
     for message in pubsub.listen():
         if message["type"] != "message":
             continue
         try:
+            ch = message.get("channel")
             data = json.loads(message["data"])
-            handler(data)
+            if ch == REDIS_CHANNEL_ATS_TM_NOTIFICATIONS and tm_notify_handler:
+                tm_notify_handler(data)
+            else:
+                handler(data)
         except Exception as e:
             logger.warning("ATS enrollment message error: %s", e)

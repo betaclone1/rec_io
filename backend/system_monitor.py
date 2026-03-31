@@ -160,8 +160,8 @@ class SystemMonitor:
                 service_name = service["name"]
                 discovered_services[service_name] = ports.get(service_name, 8000)
             
-            hourly_monitors = [m for m in active_monitors if m.get("market", "hourly") != "15m"]
             has_15m = any(m.get("market", "hourly") == "15m" for m in active_monitors)
+            has_hourly = any(m.get("market", "hourly") != "15m" for m in active_monitors)
             if has_15m:
                 discovered_services["auto_entry_supervisor_15m"] = ports.get(
                     "auto_entry_supervisor_15m", 8033
@@ -169,20 +169,13 @@ class SystemMonitor:
                 discovered_services["active_trade_supervisor_15m"] = ports.get(
                     "active_trade_supervisor_15m", 8034
                 )
-
-            monitor_port_base = 8015
-            for i, monitor in enumerate(hourly_monitors):
-                user_number = monitor['user_number']
-                monitor_id = monitor['monitor_id']
-                monitor_identifier = f"{user_number}_{monitor_id}"
-                
-                auto_entry_port = monitor_port_base + (i * 2)
-                auto_entry_name = f"auto_entry_supervisor_{monitor_identifier}"
-                discovered_services[auto_entry_name] = auto_entry_port
-                
-                active_trade_port = monitor_port_base + (i * 2) + 1
-                active_trade_name = f"active_trade_supervisor_{monitor_identifier}"
-                discovered_services[active_trade_name] = active_trade_port
+            if has_hourly:
+                discovered_services["auto_entry_supervisor_hourly"] = ports.get(
+                    "auto_entry_supervisor_hourly", 8037
+                )
+                discovered_services["active_trade_supervisor_hourly"] = ports.get(
+                    "active_trade_supervisor_hourly", 8038
+                )
             
             discovered_services["strike_table_generator_ws_hourly"] = ports.get(
                 "strike_table_generator_ws_hourly", 8014

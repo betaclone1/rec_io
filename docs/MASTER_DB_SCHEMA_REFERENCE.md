@@ -9366,9 +9366,9 @@ Same as `testing.candlesticks_1m_KXBTCD-26JAN1320-T95499.99` except `market_tick
 
 ---
 
-### Table: `users.active_trades_0001_15m`
+### Table: `users.active_trades_15m_0001`
 
-Unified Kalshi 15m active-trade tracking: **one table per user** (`active_trades_<user>_15m`), with **`monitor_id`** scoping (numeric monitor id, e.g. `10034`). Populated by `active_trade_supervisor` when run as `unified_15m`. At most one open/pending/closing row per monitor in normal operation; **`trade_id`** is globally unique in the table.
+Unified Kalshi 15m active-trade tracking: **one table per user** (`active_trades_15m_<user>`), with **`monitor_id`** scoping (numeric monitor id, e.g. `10034`). Populated by `active_trade_supervisor` when run as `unified_15m`. At most one open/pending/closing row per monitor in normal operation; **`trade_id`** is globally unique in the table.
 
 #### Columns
 
@@ -9411,7 +9411,56 @@ Unified Kalshi 15m active-trade tracking: **one table per user** (`active_trades
 - **Unique:** `trade_id` (one row per trade).
 - **Index:** `(monitor_id, status)` for lookups by monitor.
 
-**Migrations:** `20260326_1800_active_trades_0001_15m_pool` (create pool). `20260327_1015_active_trades_ensure_exchange` (idempotent: rename `market` → `exchange` or add `exchange` on any `users.active_trades_*` still missing it). `20260327_1020_active_trades_monitoring_price_precision` (`current_symbol_price`, `buffer_from_entry` → `numeric(20,8)` on all `users.active_trades_*`).
+**Migrations:** `20260326_1800_active_trades_0001_15m_pool` (create pool). `20260331_1115_active_trades_unified_table_naming` (rename to `active_trades_15m_0001`). `20260327_1015_active_trades_ensure_exchange` (idempotent: rename `market` → `exchange` or add `exchange` on any `users.active_trades_*` still missing it). `20260327_1020_active_trades_monitoring_price_precision` (`current_symbol_price`, `buffer_from_entry` → `numeric(20,8)` on all `users.active_trades_*`).
+
+---
+
+### Table: `users.active_trades_hourly_0001`
+
+Unified Kalshi **hourly** active-trade tracking: **one table per user** (`active_trades_hourly_<user>`), with **`monitor_id`** scoping. Populated by `active_trade_supervisor` when run as `unified_hourly`. **`trade_id`** is globally unique in the table (same shape as `users.active_trades_15m_0001`).
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | serial | |
+| `monitor_id` | `character varying(20)` | NO | - | Monitor id (e.g. `10034`), not `mon_` prefix |
+| `trade_id` | `integer(32)` | NO | - | Reference to `users.trades_0001.id` |
+| `ticket_id` | `character varying(50)` | YES | - | |
+| `date` | `date` | YES | - | |
+| `time` | `time without time zone` | YES | - | |
+| `strike` | `character varying(50)` | YES | - | |
+| `side` | `character varying(10)` | YES | - | |
+| `buy_price` | `numeric(10,4)` | YES | - | |
+| `position` | `integer(32)` | YES | - | |
+| `contract` | `character varying(50)` | YES | - | |
+| `ticker` | `character varying(50)` | YES | - | |
+| `symbol` | `character varying(10)` | YES | - | |
+| `exchange` | `character varying(50)` | YES | - | Execution venue slug |
+| `trade_strategy` | `character varying(50)` | YES | - | |
+| `symbol_open` | `numeric(10,2)` | YES | - | |
+| `momentum` | `numeric(5,2)` | YES | - | |
+| `prob` | `numeric(5,2)` | YES | - | |
+| `fees` | `numeric(10,4)` | YES | - | |
+| `diff` | `numeric(10,4)` | YES | - | |
+| `status` | `character varying(20)` | YES | `'active'` | |
+| `current_symbol_price` | `numeric(20,8)` | YES | - | |
+| `current_probability` | `numeric(5,2)` | YES | - | |
+| `buffer_from_entry` | `numeric(20,8)` | YES | - | |
+| `time_since_entry` | `integer(32)` | YES | - | |
+| `current_close_price` | `numeric(10,4)` | YES | - | |
+| `current_pnl` | `character varying(20)` | YES | - | |
+| `high_price` | `numeric(10,4)` | YES | - | |
+| `low_price` | `numeric(10,4)` | YES | - | |
+| `last_updated` | `timestamp without time zone` | YES | `CURRENT_TIMESTAMP` | |
+| `created_at` | `timestamp without time zone` | YES | `CURRENT_TIMESTAMP` | |
+
+#### Constraints / indexes
+
+- **Unique:** `trade_id`.
+- **Index:** `(monitor_id, status)` for lookups by monitor.
+
+**Migrations:** `20260330_2200_active_trades_0001_hourly_pool` (create pool). `20260331_1115_active_trades_unified_table_naming` (rename to `active_trades_hourly_0001`). Same follow-on migrations as other `users.active_trades_*` tables apply where idempotent (`exchange` column, monitoring price precision).
 
 ---
 

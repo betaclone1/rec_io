@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Tuple
 from contextvars import ContextVar
 from contextlib import contextmanager
+from collections import defaultdict
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 _HIGH_PRECISION_STRIKE_SYMBOLS = frozenset({"SOL", "XRP"})
@@ -97,6 +98,20 @@ from backend.core.port_config import get_port, get_monitor_port, register_monito
 from backend.core.config.database import get_postgresql_connection as get_db_connection
 from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
 from backend.util.paths import get_host, get_data_dir, get_service_url, get_trade_history_dir, get_logs_dir
+
+
+def _aes_preferences_notify(event_type: str, data: dict, http_path: str) -> None:
+    """Redis rec_io:preferences first (when USE_TRADING_REDIS_COMMS), else POST to main_app."""
+    try:
+        from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
+
+        if use_trading_redis_comms() and publish_preferences_event(event_type, data):
+            return
+        port = get_port("main_app")
+        requests.post(f"http://localhost:{port}{http_path}", json=data, timeout=2)
+    except Exception:
+        pass
+
 
 # Add these functions after the existing imports and before the get_monitor_identifier function
 
@@ -172,6 +187,8 @@ def get_monitor_identifier():
     if len(sys.argv) > 1:
         if sys.argv[1] == "unified_15m":
             return "unified_15m"
+        if sys.argv[1] == "unified_hourly":
+            return "unified_hourly"
         return sys.argv[1]  # Use first argument as monitor identifier
     
     # Default to first active monitor if no identifier provided
@@ -180,7 +197,9 @@ def get_monitor_identifier():
 # Get monitor identifier
 MONITOR_IDENTIFIER = get_monitor_identifier()
 AES_UNIFIED_15M = MONITOR_IDENTIFIER == "unified_15m"
-if AES_UNIFIED_15M:
+AES_UNIFIED_HOURLY = MONITOR_IDENTIFIER == "unified_hourly"
+AES_UNIFIED_POOL = AES_UNIFIED_15M or AES_UNIFIED_HOURLY
+if AES_UNIFIED_POOL:
     USER_NUMBER = "0001"
     MONITOR_ID = "0"
 else:
@@ -189,6 +208,26 @@ else:
 
 _aes_bind_u: ContextVar[Optional[str]] = ContextVar("_aes_bind_u", default=None)
 _aes_bind_m: ContextVar[Optional[str]] = ContextVar("_aes_bind_m", default=None)
+
+# Unified pool: one strike-table snapshot per (symbol, market) per monitoring tick (see docs/UNIFIED_AES_TICK_CONTRACT.md).
+_aes_unified_tick_context: ContextVar[Optional[Dict[str, Any]]] = ContextVar("_aes_unified_tick_context", default=None)
+
+AES_UNIFIED_PROFILE = os.environ.get("AES_UNIFIED_PROFILE", "").strip().lower() in ("1", "true", "yes")
+_unified_profile_state: Dict[str, Any] = {
+    "master_cache_hits": 0,
+    "master_fetch_sec": 0.0,
+    "group_prefetch_sec": 0.0,
+    "trigger_trade_sec": 0.0,
+    "monitor_wall_sec": [],
+}
+
+
+def _reset_unified_profile_state() -> None:
+    _unified_profile_state["master_cache_hits"] = 0
+    _unified_profile_state["master_fetch_sec"] = 0.0
+    _unified_profile_state["group_prefetch_sec"] = 0.0
+    _unified_profile_state["trigger_trade_sec"] = 0.0
+    _unified_profile_state["monitor_wall_sec"] = []
 
 
 def ctx_user() -> str:
@@ -205,9 +244,17 @@ def ctx_ident() -> str:
     return f"{ctx_user()}_{ctx_mid()}"
 
 
+def _strike_cooldown_key(strike_value, active_side: str) -> str:
+    """Cooldown map key; unified pool scopes by monitor_id to avoid cross-monitor suppression."""
+    base = f"{strike_value}-{active_side}"
+    if AES_UNIFIED_POOL:
+        return f"{ctx_mid()}-{base}"
+    return base
+
+
 @contextmanager
 def aes_monitor_bind(user_num: str, monitor_id: str):
-    if not AES_UNIFIED_15M:
+    if not AES_UNIFIED_POOL:
         yield
         return
     t1 = _aes_bind_u.set(user_num)
@@ -641,6 +688,15 @@ def get_monitor_symbol():
                 os._exit(0)
             uid0 = rows[0]["user_number"]
             mid0 = rows[0]["monitor_id"]
+        elif AES_UNIFIED_HOURLY:
+            from backend.core.unified_hourly_monitors import list_active_hourly_monitor_rows
+
+            rows = list_active_hourly_monitor_rows()
+            if not rows:
+                log("[AUTO_ENTRY_SUPERVISOR] ❌ unified_hourly: no active hourly monitors in DB; exiting")
+                os._exit(0)
+            uid0 = rows[0]["user_number"]
+            mid0 = rows[0]["monitor_id"]
         else:
             uid0, mid0 = ctx_user(), ctx_mid()
 
@@ -701,7 +757,7 @@ def get_current_monitor_symbol_and_market():
     global MONITOR_SYMBOL, MONITOR_MARKET
     try:
         import psycopg2
-        if AES_UNIFIED_15M and _aes_bind_m.get() is None:
+        if AES_UNIFIED_POOL and _aes_bind_m.get() is None:
             return MONITOR_SYMBOL, MONITOR_MARKET
         conn = get_db_connection()
         if not conn:
@@ -735,6 +791,9 @@ def get_current_monitor_symbol():
 if AES_UNIFIED_15M:
     AUTO_ENTRY_SUPERVISOR_PORT = get_port("auto_entry_supervisor_15m")
     _aes_logger.info("Using unified 15m AES port: %s", AUTO_ENTRY_SUPERVISOR_PORT)
+elif AES_UNIFIED_HOURLY:
+    AUTO_ENTRY_SUPERVISOR_PORT = get_port("auto_entry_supervisor_hourly")
+    _aes_logger.info("Using unified hourly AES port: %s", AUTO_ENTRY_SUPERVISOR_PORT)
 else:
     register_monitor_ports(MONITOR_IDENTIFIER)
     AUTO_ENTRY_SUPERVISOR_PORT = get_monitor_port("auto_entry_supervisor", MONITOR_IDENTIFIER)
@@ -780,8 +839,8 @@ _aes_indicator_states: Dict[str, dict] = {}
 
 
 def _aes_indicator_bucket() -> dict:
-    """Per-monitor indicator dict in unified 15m pool; singleton for hourly."""
-    if not AES_UNIFIED_15M:
+    """Per-monitor indicator dict in unified pool; singleton for per-monitor AES."""
+    if not AES_UNIFIED_POOL:
         return auto_entry_indicator_state
     key = ctx_ident()
     if key not in _aes_indicator_states:
@@ -874,22 +933,12 @@ def load_auto_entry_state_from_db():
                     
                     conn.commit()
                     
-                    # Notify frontend of cooldown timer change
-                    try:
-                        port = get_port("main_app")
-                        url = f"http://localhost:{port}/api/notify_cooldown_timer_change"
-                        # Send full monitor ID format that dashboard expects (mon_0001_10002) - lowercase
-                        full_monitor_id = f"mon_{ctx_user()}_{ctx_mid()}"
-                        response = requests.post(url, json={
-                            "monitor_id": full_monitor_id,
-                            "cooldown_timer": int(remaining_seconds)
-                        }, timeout=2)
-                        if response.ok:
-                            log_debug(f"Cooldown timer change notification sent: monitor_id={full_monitor_id}, timer={remaining_seconds}")
-                        else:
-                            log_debug(f"Failed to send cooldown timer notification: {response.status_code}")
-                    except Exception as e:
-                        log_debug(f"Error sending cooldown timer notification: {e}")
+                    full_monitor_id = f"mon_{ctx_user()}_{ctx_mid()}"
+                    _aes_preferences_notify(
+                        "cooldown_timer_change",
+                        {"monitor_id": full_monitor_id, "cooldown_timer": int(remaining_seconds)},
+                        "/api/notify_cooldown_timer_change",
+                    )
                 
                 state = {
                     "user_id": "user_0001",
@@ -1239,22 +1288,12 @@ def update_cooldown_timer_in_db(seconds):
         conn.close()
         log_debug(f"Updated cooldown_timer to {seconds} seconds in production database (LEGACY)")
         
-        # Notify frontend of cooldown timer change
-        try:
-            port = get_port("main_app")
-            url = f"http://localhost:{port}/api/notify_cooldown_timer_change"
-            # Send full monitor ID format that dashboard expects (mon_0001_10002) - lowercase
-            full_monitor_id = f"mon_{ctx_user()}_{ctx_mid()}"
-            response = requests.post(url, json={
-                "monitor_id": full_monitor_id,
-                "cooldown_timer": seconds
-            }, timeout=2)
-            if response.ok:
-                log_debug(f"Cooldown timer change notification sent: monitor_id={full_monitor_id}, timer={seconds}")
-            else:
-                log_debug(f"Failed to send cooldown timer notification: {response.status_code}")
-        except Exception as e:
-            log_debug(f"Error sending cooldown timer notification: {e}")
+        full_monitor_id = f"mon_{ctx_user()}_{ctx_mid()}"
+        _aes_preferences_notify(
+            "cooldown_timer_change",
+            {"monitor_id": full_monitor_id, "cooldown_timer": seconds},
+            "/api/notify_cooldown_timer_change",
+        )
     except Exception as e:
         log(f"[AUTO ENTRY] ❌ Error updating cooldown_timer: {e}")
 
@@ -1280,21 +1319,12 @@ def update_auto_entry_status_in_db(status):
         # Only log actual status changes, not every update
         pass
         
-        # Send WebSocket notification that the database has been updated
-        try:
-            port = get_port("main_app")
-            url = f"http://localhost:{port}/api/notify_auto_trade_status_change"
-            # Send full monitor ID format that dashboard expects (mon_0001_10002) - lowercase
-            full_monitor_id = f"mon_{ctx_user()}_{ctx_mid()}"
-            response = requests.post(url, json={
-                "monitor_id": full_monitor_id,
-                "auto_trade_status": status
-            }, timeout=2)
-            if not response.ok:
-                log(f"[AUTO ENTRY] ⚠️ Failed to send WebSocket notification: {response.status_code}")
-        except Exception as e:
-            # Don't log connection errors every second - they're expected when main app is down
-            pass
+        full_monitor_id = f"mon_{ctx_user()}_{ctx_mid()}"
+        _aes_preferences_notify(
+            "auto_trade_status_change",
+            {"monitor_id": full_monitor_id, "auto_trade_status": status},
+            "/api/notify_auto_trade_status_change",
+        )
     except Exception as e:
         log(f"[AUTO ENTRY] ❌ Error updating auto_trade_status in database: {e}")
 
@@ -1717,22 +1747,12 @@ def broadcast_auto_entry_indicator_change():
         # except Exception as e:
         #     log(f"[AUTO ENTRY] ❌ Error broadcasting indicator change: {e}")
         
-        # ALSO send auto_trade_status_change notification to the new WebSocket channel
-        try:
-            port = get_port("main_app")
-            url = f"http://localhost:{port}/api/notify_auto_trade_status_change"
-            # Send full monitor ID format that dashboard expects (mon_0001_10002) - lowercase
-            full_monitor_id = f"mon_{ctx_user()}_{ctx_mid()}"
-            response = requests.post(url, json={
-                "monitor_id": full_monitor_id,
-                "auto_trade_status": new_status
-            }, timeout=2)
-            if response.ok:
-                log_debug(f"Auto trade status change notification sent: monitor_id={full_monitor_id}, status={new_status}")
-            else:
-                log_debug(f"Failed to send auto trade status notification: {response.status_code}")
-        except Exception as e:
-            log(f"[AUTO ENTRY] ❌ Error sending auto trade status notification: {e}")
+        full_monitor_id = f"mon_{ctx_user()}_{ctx_mid()}"
+        _aes_preferences_notify(
+            "auto_trade_status_change",
+            {"monitor_id": full_monitor_id, "auto_trade_status": new_status},
+            "/api/notify_auto_trade_status_change",
+        )
             
     except Exception as e:
         log(f"[AUTO ENTRY] ❌ Error in broadcast_auto_entry_indicator_change: {e}")
@@ -1747,10 +1767,16 @@ def periodic_status_sync():
     delegates to determine_auto_entry_status + update_auto_entry_status_in_db.
     """
     try:
-        if AES_UNIFIED_15M:
-            from backend.core.unified_15m_monitors import iter_active_15m_monitor_bindings
+        if AES_UNIFIED_POOL:
+            if AES_UNIFIED_15M:
+                from backend.core.unified_15m_monitors import iter_active_15m_monitor_bindings
 
-            for u, m in iter_active_15m_monitor_bindings():
+                iter_bindings = iter_active_15m_monitor_bindings()
+            else:
+                from backend.core.unified_hourly_monitors import iter_active_hourly_monitor_bindings
+
+                iter_bindings = iter_active_hourly_monitor_bindings()
+            for u, m in iter_bindings:
                 with aes_monitor_bind(u, m):
                     if is_auto_trade_enabled():
                         status = determine_auto_entry_status()
@@ -1768,7 +1794,7 @@ def periodic_status_sync():
 
 def is_auto_trade_enabled():
     """Check if AUTO ENTRY is enabled by checking auto_trade boolean in monitor_list"""
-    if AES_UNIFIED_15M and _aes_bind_m.get() is None:
+    if AES_UNIFIED_POOL and _aes_bind_m.get() is None:
         return False
     try:
         import psycopg2
@@ -1873,6 +1899,12 @@ def get_current_ttc():
         current_symbol, current_market = get_current_monitor_symbol_and_market()
         if not current_market or current_market not in ("hourly", "15m"):
             return 0
+        ctx = _aes_unified_tick_context.get()
+        if ctx and ctx.get("data") is not None:
+            if ctx.get("symbol") == current_symbol and ctx.get("market") == current_market:
+                ttc_val = ctx["data"].get("ttc")
+                if ttc_val is not None:
+                    return int(ttc_val)
         import psycopg2
         conn = get_db_connection()
         with conn.cursor() as cursor:
@@ -1927,11 +1959,27 @@ def get_watchlist_path_DELETED():
 
 def get_master_strike_table_data():
     """Get current master strike table data from PostgreSQL (uses monitor symbol + market)."""
+    sym, mkt = get_current_monitor_symbol_and_market()
+    ctx = _aes_unified_tick_context.get()
+    if ctx and ctx.get("data") is not None:
+        if ctx.get("symbol") == sym and ctx.get("market") == mkt:
+            if AES_UNIFIED_PROFILE and AES_UNIFIED_POOL:
+                _unified_profile_state["master_cache_hits"] += 1
+            return ctx["data"]
+    t0 = time.perf_counter()
+    try:
+        return _fetch_master_strike_table_data(sym, mkt)
+    finally:
+        if AES_UNIFIED_PROFILE and AES_UNIFIED_POOL:
+            _unified_profile_state["master_fetch_sec"] += time.perf_counter() - t0
+
+
+def _fetch_master_strike_table_data(current_symbol: str, current_market: str):
+    """Load ladder snapshot for explicit symbol and market (hourly or 15m)."""
     try:
         import psycopg2
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            current_symbol, current_market = get_current_monitor_symbol_and_market()
             table_name = get_strike_table_name(current_symbol, current_market)
             # Hourly: ttc_hourly/probability_hourly; 15m: ttc_15m/probability_15m (same column set).
             ttc_column = "ttc_15m" if current_market == "15m" else "ttc_hourly"
@@ -2481,7 +2529,7 @@ def get_loss_prevention_state():
 
 def get_trade_strategy():
     """Get trade strategy from monitor-specific configuration"""
-    if AES_UNIFIED_15M and _aes_bind_m.get() is None:
+    if AES_UNIFIED_POOL and _aes_bind_m.get() is None:
         return "Hourly HTC"
     conn = None
     try:
@@ -2525,13 +2573,43 @@ def get_bankroll_allotment():
         if conn:
             conn.close()
 
+
+def _defer_unified_aes_trade_followup(ticket_id: str, log_message: str, notification_data: dict) -> None:
+    """Best-effort trade_logger + preferences notify off the unified AES hot path."""
+
+    def _run():
+        import requests as _req
+
+        try:
+            from backend.util.trade_logger import log_trade_event
+
+            log_trade_event(ticket_id, log_message, service="auto_entry_supervisor")
+        except Exception:
+            pass
+        try:
+            from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
+
+            if use_trading_redis_comms() and publish_preferences_event(
+                "automated_trade_triggered", notification_data
+            ):
+                return
+            main_port = get_port("main_app")
+            main_url = f"http://localhost:{main_port}/api/notify_automated_trade"
+            _req.post(main_url, json=notification_data, timeout=2)
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def trigger_auto_entry_trade(strike_data):
     """Trigger a buy trade by calling the trade_manager service directly"""
     import requests
     import uuid
     from datetime import datetime
     from zoneinfo import ZoneInfo
-    
+
+    t_trig = time.perf_counter()
     log(f"[AUTO ENTRY] 🟢 Triggered AUTO ENTRY for strike: {strike_data.get('strike')} {strike_data.get('side')}")
     
     try:
@@ -2609,20 +2687,22 @@ def trigger_auto_entry_trade(strike_data):
             converted_side = "Y"
         elif side == "no":
             converted_side = "N"
-        
-        # Get current price for symbol_open from main app API
-        try:
-            main_port = get_port("main_app")
-            price_url = f"http://localhost:{main_port}/api/{current_symbol.lower()}_price"
-            price_response = requests.get(price_url, timeout=2)
-            if price_response.ok:
-                price_data = price_response.json()
-                symbol_open = price_data.get("price")
-            else:
-                symbol_open = None
-        except Exception as e:
-            log(f"[AUTO ENTRY] ⚠️ Could not get {current_symbol} price: {e}")
-            symbol_open = None
+
+        from backend.core.trading_redis_comms import publish_trade_manager_command, use_trading_redis_comms
+
+        use_redis = use_trading_redis_comms()
+        unified_redis_fast = AES_UNIFIED_POOL and use_redis
+
+        # trade_manager insert_trade loads symbol_open from live_price_log; skip main_app on unified+Redis hot path
+        if not unified_redis_fast:
+            try:
+                main_port = get_port("main_app")
+                price_url = f"http://localhost:{main_port}/api/{current_symbol.lower()}_price"
+                price_response = requests.get(price_url, timeout=2)
+                if price_response.ok:
+                    price_response.json()
+            except Exception as e:
+                log(f"[AUTO ENTRY] ⚠️ Could not get {current_symbol} price: {e}")
         
         # Get trade strategy from PostgreSQL
         trade_strategy = get_trade_strategy()
@@ -2668,50 +2748,91 @@ def trigger_auto_entry_trade(strike_data):
         }
         
         log(f"[AUTO ENTRY] 📤 Sending trade to trade_manager: {trade_payload}")
-        
-        response = requests.post(url, json=trade_payload, timeout=10)
-        
+
+        log_message = (
+            f"ENTRY | {contract_name} | {strike_data.get('strike')} | {strike_data.get('side')} | "
+            f"{position_size} | {strike_data.get('buy_price')} | {strike_data.get('probability')}"
+        )
+        notification_data = {
+            "strike": strike_data.get("strike"),
+            "side": strike_data.get("side"),
+            "ticker": strike_data.get("ticker"),
+            "buy_price": strike_data.get("buy_price"),
+            "probability": strike_data.get("probability"),
+            "contract": contract_name,
+            "position": position_size,
+            "entry_method": "auto",
+        }
+
+        redis_published = bool(
+            use_redis
+            and publish_trade_manager_command(
+                "add_trade",
+                trade_payload,
+                "auto_entry_supervisor",
+                correlation_id=ticket_id,
+            )
+        )
+
+        if redis_published and AES_UNIFIED_POOL:
+            _defer_unified_aes_trade_followup(ticket_id, log_message, notification_data)
+            log(f"[AUTO ENTRY] ✅ Trade enqueued to trade_manager (Redis); follow-up logging/notify deferred")
+            return True
+
+        if redis_published:
+            class _Ok201:
+                status_code = 201
+
+                def json(self):
+                    return {}
+
+            response = _Ok201()
+        else:
+            if AES_UNIFIED_POOL:
+                log(
+                    "[AUTO ENTRY] ⚠️ Unified pool: Redis add_trade unavailable; "
+                    "falling back to synchronous HTTP POST trade_manager"
+                )
+            response = requests.post(url, json=trade_payload, timeout=10)
+
         if response.status_code == 201:
             result = response.json()
             log(f"[AUTO ENTRY] ✅ Trade initiated successfully via trade_manager: {result}")
-            
+
             from backend.util.trade_logger import log_trade_event
-            
-            # Log to PostgreSQL instead of text file
-            log_message = f"ENTRY | {contract_name} | {strike_data.get('strike')} | {strike_data.get('side')} | {position_size} | {strike_data.get('buy_price')} | {strike_data.get('probability')}"
+
             log_trade_event(ticket_id, log_message, service="auto_entry_supervisor")
-            
-            # Send WebSocket notification to frontend for audio/popup alerts
+
             try:
-                main_port = get_port("main_app")
-                main_url = f"http://localhost:{main_port}/api/notify_automated_trade"
-                notification_data = {
-                    "strike": strike_data.get("strike"),
-                    "side": strike_data.get("side"),
-                    "ticker": strike_data.get("ticker"),
-                    "buy_price": strike_data.get("buy_price"),
-                    "probability": strike_data.get("probability"),
-                    "contract": contract_name,
-                    "position": position_size,
-                    "entry_method": "auto"
-                }
-                notification_response = requests.post(main_url, json=notification_data, timeout=2)
-                if notification_response.ok:
-                    log(f"[AUTO ENTRY] ✅ WebSocket notification sent successfully")
+                from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms as _use_trc
+
+                if _use_trc() and publish_preferences_event(
+                    "automated_trade_triggered", notification_data
+                ):
+                    log(f"[AUTO ENTRY] ✅ WebSocket notification sent via Redis")
                 else:
-                    log(f"[AUTO ENTRY] ⚠️ WebSocket notification failed: {notification_response.status_code}")
-            except Exception as e:
-                # Don't log connection errors every second - they're expected when main app is down
+                    main_port = get_port("main_app")
+                    main_url = f"http://localhost:{main_port}/api/notify_automated_trade"
+                    notification_response = requests.post(main_url, json=notification_data, timeout=2)
+                    if notification_response.ok:
+                        log(f"[AUTO ENTRY] ✅ WebSocket notification sent successfully")
+                    else:
+                        log(
+                            f"[AUTO ENTRY] ⚠️ WebSocket notification failed: {notification_response.status_code}"
+                        )
+            except Exception:
                 pass
-            
+
             return True
-        else:
-            log(f"[AUTO ENTRY] ❌ Trade initiation failed: {response.status_code} - {response.text}")
-            return False
+        log(f"[AUTO ENTRY] ❌ Trade initiation failed: {response.status_code} - {getattr(response, 'text', '')}")
+        return False
         
     except Exception as e:
         log(f"[AUTO ENTRY] ❌ Error initiating trade via trade_manager: {e}")
         return False
+    finally:
+        if AES_UNIFIED_PROFILE and AES_UNIFIED_POOL:
+            _unified_profile_state["trigger_trade_sec"] += time.perf_counter() - t_trig
 
 def can_trade_strike(strike_key):
     """ATOMIC: Check if we can trade this strike (cooldown check)"""
@@ -2963,7 +3084,20 @@ def trigger_simulated_trade(strike_data):
             "entry_method": "simulated_15m", "loss_prevention": False, "multiplier": get_current_multiplier(),
             "paper_trade": True, "simulated_trade": True,
         }
-        r = requests.post(f"http://localhost:{port}/trades", json=payload, timeout=10)
+        from backend.core.trading_redis_comms import publish_trade_manager_command, use_trading_redis_comms
+
+        r = None
+        if use_trading_redis_comms() and publish_trade_manager_command(
+            "add_trade", payload, "auto_entry_supervisor"
+        ):
+            class _Ok:
+                status_code = 201
+                def json(self):
+                    return {}
+
+            r = _Ok()
+        if r is None:
+            r = requests.post(f"http://localhost:{port}/trades", json=payload, timeout=10)
         if r.status_code == 201:
             log_debug(f"[SIMULATED 15m] Recorded trade id={r.json().get('id')}")
             return True
@@ -3022,7 +3156,7 @@ def check_simulated_15m_entry_hourly_htc():
                 active_side = strike.get("active_side")
                 if not active_side:
                     continue
-                strike_key = f"{strike.get('strike')}-{active_side}"
+                strike_key = _strike_cooldown_key(strike.get("strike"), active_side)
                 if strike_key in processed:
                     continue
                 processed.add(strike_key)
@@ -3052,17 +3186,81 @@ def check_simulated_15m_entry_hourly_htc():
 
 def check_auto_entry_conditions():
     """Check if auto entry conditions are met and trigger trades - routes to strategy-specific logic"""
-    if AES_UNIFIED_15M:
+    if AES_UNIFIED_POOL:
         try:
-            from backend.core.unified_15m_monitors import iter_active_15m_monitor_bindings
+            t_pass0 = time.perf_counter()
+            if AES_UNIFIED_PROFILE:
+                _reset_unified_profile_state()
+            if AES_UNIFIED_15M:
+                from backend.core.unified_15m_monitors import list_active_15m_monitor_rows
 
-            for u, m in iter_active_15m_monitor_bindings():
-                with aes_monitor_bind(u, m):
-                    _check_auto_entry_conditions_impl()
+                rows = list_active_15m_monitor_rows()
+            else:
+                from backend.core.unified_hourly_monitors import list_active_hourly_monitor_rows
+
+                rows = list_active_hourly_monitor_rows()
+            by_ladder: Dict[Tuple[str, str], List[Tuple[str, str]]] = defaultdict(list)
+            for row in rows:
+                sym = (row.get("symbol") or "BTC").strip().upper() or "BTC"
+                mkt = (row.get("market") or "").strip().lower()
+                if mkt not in ("hourly", "15m"):
+                    mkt = "15m" if AES_UNIFIED_15M else "hourly"
+                by_ladder[(sym, mkt)].append((row["user_number"], row["monitor_id"]))
+            for (sym, mkt) in sorted(by_ladder.keys()):
+                bindings = by_ladder[(sym, mkt)]
+                tg0 = time.perf_counter()
+                snap = _fetch_master_strike_table_data(sym, mkt)
+                if AES_UNIFIED_PROFILE:
+                    _unified_profile_state["group_prefetch_sec"] += time.perf_counter() - tg0
+                if snap:
+                    token = _aes_unified_tick_context.set({"symbol": sym, "market": mkt, "data": snap})
+                    try:
+                        for u, m in bindings:
+                            tw0 = time.perf_counter()
+                            with aes_monitor_bind(u, m):
+                                ms, mm = get_current_monitor_symbol_and_market()
+                                if ms != sym or mm != mkt:
+                                    inner = _aes_unified_tick_context.set(None)
+                                    try:
+                                        _check_auto_entry_conditions_impl()
+                                    finally:
+                                        _aes_unified_tick_context.reset(inner)
+                                else:
+                                    _check_auto_entry_conditions_impl()
+                            if AES_UNIFIED_PROFILE:
+                                _unified_profile_state["monitor_wall_sec"].append((m, time.perf_counter() - tw0))
+                    finally:
+                        _aes_unified_tick_context.reset(token)
+                else:
+                    for u, m in bindings:
+                        tw0 = time.perf_counter()
+                        with aes_monitor_bind(u, m):
+                            _check_auto_entry_conditions_impl()
+                        if AES_UNIFIED_PROFILE:
+                            _unified_profile_state["monitor_wall_sec"].append((m, time.perf_counter() - tw0))
+            if AES_UNIFIED_PROFILE:
+                elapsed = time.perf_counter() - t_pass0
+                wall = _unified_profile_state["monitor_wall_sec"]
+                wall_sum = sum(w for _, w in wall)
+                log(
+                    "[AES PROFILE] unified_pass=%.3fs groups=%s prefetch=%.3fs get_master_extra=%.3fs "
+                    "master_hits=%s trigger_trade=%.3fs monitor_wall_sum=%.3fs detail=%s"
+                    % (
+                        elapsed,
+                        len(by_ladder),
+                        _unified_profile_state["group_prefetch_sec"],
+                        _unified_profile_state["master_fetch_sec"],
+                        _unified_profile_state["master_cache_hits"],
+                        _unified_profile_state["trigger_trade_sec"],
+                        wall_sum,
+                        [(mid, round(sec, 3)) for mid, sec in wall],
+                    )
+                )
         except Exception as e:
             import traceback
 
-            log(f"[AUTO ENTRY] ❌ Error checking entry conditions (15m pool): {e}")
+            pool_n = "15m" if AES_UNIFIED_15M else "hourly"
+            log(f"[AUTO ENTRY] ❌ Error checking entry conditions ({pool_n} pool): {e}")
             log(f"[AUTO ENTRY] ❌ Traceback: {traceback.format_exc()}")
         return
     _check_auto_entry_conditions_impl()
@@ -3289,7 +3487,7 @@ def check_auto_entry_conditions_hourly_htc():
                 if not active_side:
                     continue
                     
-                strike_key = f"{strike.get('strike')}-{active_side}"
+                strike_key = _strike_cooldown_key(strike.get("strike"), active_side)
                 
                 # Prevent duplicate processing
                 if strike_key in processed_strikes:
@@ -3565,7 +3763,7 @@ def check_auto_entry_conditions_reverse_htc():
                 if not active_side:
                     continue
                     
-                strike_key = f"{strike.get('strike')}-{active_side}"
+                strike_key = _strike_cooldown_key(strike.get("strike"), active_side)
                 
                 # Prevent duplicate processing
                 if strike_key in processed_strikes:
@@ -4579,7 +4777,7 @@ def check_auto_entry_conditions_momentum_scalp():
         for strike in eligible_strikes:
             try:
                 active_side = strike.get('active_side')
-                strike_key = f"{strike.get('strike')}-{active_side}"
+                strike_key = _strike_cooldown_key(strike.get("strike"), active_side)
                 
                 # Prevent duplicate processing
                 if strike_key in processed_strikes:
@@ -4825,7 +5023,7 @@ def check_auto_entry_conditions_momentum_reversal():
         for strike in eligible_strikes:
             try:
                 active_side = strike.get('active_side')
-                strike_key = f"{strike.get('strike')}-{active_side}"
+                strike_key = _strike_cooldown_key(strike.get("strike"), active_side)
                 
                 # Prevent duplicate processing
                 if strike_key in processed_strikes:
@@ -5000,11 +5198,11 @@ def health_check():
 @app.route("/api/auto_entry_indicator")
 def get_auto_entry_indicator():
     """Get current auto entry indicator state (unified 15m: pass ?monitor_id=10019&user_number=0001)"""
-    if AES_UNIFIED_15M:
+    if AES_UNIFIED_POOL:
         mid = request.args.get("monitor_id")
         user = request.args.get("user_number", "0001")
         if not mid:
-            return jsonify({"error": "monitor_id query parameter required for unified 15m AES"}), 400
+            return jsonify({"error": "monitor_id query parameter required for unified pool AES"}), 400
         with aes_monitor_bind(user, str(mid)):
             return jsonify(_aes_indicator_bucket())
     return jsonify(_aes_indicator_bucket())
@@ -5045,11 +5243,11 @@ def get_auto_entry_scanning_status():
                 "timestamp": datetime.now().isoformat()
             }
 
-        if AES_UNIFIED_15M:
+        if AES_UNIFIED_POOL:
             mid = request.args.get("monitor_id")
             user = request.args.get("user_number", "0001")
             if not mid:
-                return jsonify({"error": "monitor_id query parameter required for unified 15m AES"}), 400
+                return jsonify({"error": "monitor_id query parameter required for unified pool AES"}), 400
             with aes_monitor_bind(user, str(mid)):
                 return jsonify(_payload())
         return jsonify(_payload())
@@ -5064,15 +5262,13 @@ def notify_automated_trade():
         data = request.json
         log(f"[AUTO ENTRY] 🔔 Notifying frontend of automated trade: {data}")
         
-        # Forward the notification to the main app for WebSocket broadcast
         try:
-            port = get_port("main_app")
-            url = f"http://localhost:{port}/api/notify_automated_trade"
-            response = requests.post(url, json=data, timeout=2)
-            if response.ok:
-                log(f"[AUTO ENTRY] ✅ Frontend notification sent successfully")
-            else:
-                log(f"[AUTO ENTRY] ⚠️ Frontend notification failed: {response.status_code}")
+            _aes_preferences_notify(
+                "automated_trade_triggered",
+                data if isinstance(data, dict) else {},
+                "/api/notify_automated_trade",
+            )
+            log(f"[AUTO ENTRY] ✅ Frontend notification sent (Redis or HTTP)")
         except Exception as e:
             log(f"[AUTO ENTRY] ❌ Error sending frontend notification: {e}")
         

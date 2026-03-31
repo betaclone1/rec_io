@@ -150,13 +150,13 @@ STALE_ACTIVE_TRADE_FLUSH_AFTER_SETTLEMENT = timedelta(hours=2)
 # Add these functions after the existing imports and before the get_monitor_identifier function
 
 def create_unified_15m_active_trades_pool_table():
-    """Single users.active_trades_<user>_15m table for all 15m monitors (monitor_id column)."""
+    """Single users.active_trades_15m_<user> table for all 15m monitors (monitor_id column)."""
     try:
         conn = get_postgresql_connection()
         if not conn:
             return
         u = ctx_user()
-        tbl = f"active_trades_{u}_15m"
+        tbl = f"active_trades_15m_{u}"
         with conn.cursor() as cursor:
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS users.{tbl} (
@@ -207,10 +207,71 @@ def create_unified_15m_active_trades_pool_table():
         log(f"[ACTIVE_TRADES] ❌ Error creating unified 15m pool table: {e}")
 
 
+def create_unified_hourly_active_trades_pool_table():
+    """Single users.active_trades_hourly_<user> table for all hourly monitors (monitor_id column)."""
+    try:
+        conn = get_postgresql_connection()
+        if not conn:
+            return
+        u = ctx_user()
+        tbl = f"active_trades_hourly_{u}"
+        with conn.cursor() as cursor:
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS users.{tbl} (
+                    id SERIAL PRIMARY KEY,
+                    monitor_id VARCHAR(20) NOT NULL,
+                    trade_id INTEGER NOT NULL,
+                    ticket_id VARCHAR(50),
+                    date DATE,
+                    time TIME,
+                    strike VARCHAR(50),
+                    side VARCHAR(10),
+                    buy_price DECIMAL(10,4),
+                    position INTEGER,
+                    contract VARCHAR(50),
+                    ticker VARCHAR(50),
+                    symbol VARCHAR(10),
+                    exchange VARCHAR(50),
+                    trade_strategy VARCHAR(50),
+                    symbol_open DECIMAL(10,2),
+                    momentum DECIMAL(5,2),
+                    prob DECIMAL(5,2),
+                    fees DECIMAL(10,4),
+                    diff DECIMAL(10,4),
+                    status VARCHAR(20) DEFAULT 'active',
+                    current_symbol_price DECIMAL(20,8),
+                    current_probability DECIMAL(5,2),
+                    buffer_from_entry DECIMAL(20,8),
+                    time_since_entry INTEGER,
+                    current_close_price DECIMAL(10,4),
+                    current_pnl VARCHAR(20),
+                    high_price DECIMAL(10,4),
+                    low_price DECIMAL(10,4),
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT {tbl}_trade_id_key UNIQUE (trade_id)
+                )
+            """)
+            cursor.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS idx_{tbl}_monitor_status
+                ON users.{tbl} (monitor_id, status)
+                """
+            )
+            conn.commit()
+        conn.close()
+        log_debug(f"Ensured unified hourly active trades pool table: {tbl}")
+    except Exception as e:
+        log(f"[ACTIVE_TRADES] ❌ Error creating unified hourly pool table: {e}")
+
+
 def create_monitor_active_trades_table():
-    """Create per-monitor table (hourly) or unified 15m pool table (one row set per monitor_id)."""
+    """Create per-monitor table (legacy hourly) or unified pool table (15m or hourly; monitor_id column)."""
     if ATS_UNIFIED_15M:
         create_unified_15m_active_trades_pool_table()
+        return
+    if ATS_UNIFIED_HOURLY:
+        create_unified_hourly_active_trades_pool_table()
         return
     try:
         conn = get_postgresql_connection()
@@ -260,7 +321,7 @@ def create_monitor_active_trades_table():
 
 def drop_monitor_active_trades_table():
     """Drop monitor-specific active trades table when supervisor stops"""
-    if ATS_UNIFIED_15M:
+    if ATS_UNIFIED_POOL:
         return
     try:
         import psycopg2
@@ -276,15 +337,17 @@ def drop_monitor_active_trades_table():
         log(f"[ACTIVE_TRADES] ❌ Error dropping active trades table: {e}")
 
 def get_monitor_active_trades_table():
-    """Per-monitor table (hourly) or unified pool active_trades_<user>_15m (15m pool)."""
+    """Per-monitor legacy table or unified pool active_trades_15m_<user>|active_trades_hourly_<user>."""
     if ATS_UNIFIED_15M:
-        return f"active_trades_{ctx_user()}_15m"
+        return f"active_trades_15m_{ctx_user()}"
+    if ATS_UNIFIED_HOURLY:
+        return f"active_trades_hourly_{ctx_user()}"
     return f"active_trades_{ctx_user()}_{ctx_mid()}"
 
 
 def _active_trades_monitor_scope_sql():
     """Extra WHERE fragment for unified pool (monitor_id scoping)."""
-    if ATS_UNIFIED_15M:
+    if ATS_UNIFIED_POOL:
         return " AND monitor_id = %s", (ctx_mid(),)
     return "", ()
 
@@ -305,6 +368,8 @@ def get_monitor_identifier():
     if len(sys.argv) > 1:
         if sys.argv[1] == "unified_15m":
             return "unified_15m"
+        if sys.argv[1] == "unified_hourly":
+            return "unified_hourly"
         return sys.argv[1]  # Use first argument as monitor identifier
     
     # Default to first active monitor if no identifier provided
@@ -313,7 +378,33 @@ def get_monitor_identifier():
 # Get monitor identifier
 MONITOR_IDENTIFIER = get_monitor_identifier()
 ATS_UNIFIED_15M = MONITOR_IDENTIFIER == "unified_15m"
-if ATS_UNIFIED_15M:
+ATS_UNIFIED_HOURLY = MONITOR_IDENTIFIER == "unified_hourly"
+ATS_UNIFIED_POOL = ATS_UNIFIED_15M or ATS_UNIFIED_HOURLY
+
+
+def _unified_pool_accepts_monitor_suffix(monitor_suffix: str) -> bool:
+    """
+    Unified 15m and unified hourly ATS both subscribe to the same Redis enrollment/TM channels.
+    Ignore messages for monitors that belong to the other pool so rows do not land in the wrong table.
+    """
+    if not ATS_UNIFIED_POOL:
+        return True
+    s = str(monitor_suffix or "").strip()
+    if "_" not in s:
+        return False
+    from backend.core.port_config import (
+        monitor_suffix_uses_unified_15m_pool,
+        monitor_suffix_uses_unified_hourly_pool,
+    )
+
+    if ATS_UNIFIED_15M:
+        return monitor_suffix_uses_unified_15m_pool(s)
+    if ATS_UNIFIED_HOURLY:
+        return monitor_suffix_uses_unified_hourly_pool(s)
+    return False
+
+
+if ATS_UNIFIED_POOL:
     USER_NUMBER = "0001"
     MONITOR_ID = "0"
 else:
@@ -340,7 +431,7 @@ def ctx_ident() -> str:
 
 @contextmanager
 def ats_monitor_bind(user_num: str, monitor_id: str):
-    if not ATS_UNIFIED_15M:
+    if not ATS_UNIFIED_POOL:
         yield
         return
     t1 = _ats_bind_u.set(user_num)
@@ -393,6 +484,13 @@ def _ats_heartbeat_loop():
 _ats_hb_thread = threading.Thread(target=_ats_heartbeat_loop, daemon=True)
 _ats_hb_thread.start()
 
+ATS_HTTP_FALLBACK_ENABLED = (os.getenv("ATS_HTTP_FALLBACK_ENABLED") or "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
 
 def log(message: str):
     """Stdout log at INFO (use log_debug for plumbing)."""
@@ -405,11 +503,33 @@ def log_debug(message: str):
 
 
 _ats_logger.info(
-    "Monitor-aware supervisor starting user=%s monitor=%s unified_15m=%s",
+    "Monitor-aware supervisor starting user=%s monitor=%s unified_15m=%s unified_hourly=%s",
     ctx_user(),
     ctx_mid(),
     ATS_UNIFIED_15M,
+    ATS_UNIFIED_HOURLY,
 )
+try:
+    from backend.core.trading_redis_comms import redis_client_optional, use_trading_redis_comms
+
+    if use_trading_redis_comms():
+        _rc = redis_client_optional()
+        _ats_logger.info(
+            "Trading Redis: enabled, connection=%s",
+            "ok" if _rc else "failed (falling back to HTTP for preferences)",
+        )
+    else:
+        _ats_logger.info(
+            "Trading Redis: disabled (USE_TRADING_REDIS_COMMS unset); "
+            "active_trades UI events will POST main_app unless env is set"
+        )
+    _ats_logger.info(
+        "ATS HTTP fallback: %s (ATS_HTTP_FALLBACK_ENABLED=%s)",
+        "enabled" if ATS_HTTP_FALLBACK_ENABLED else "disabled",
+        "1" if ATS_HTTP_FALLBACK_ENABLED else "0",
+    )
+except Exception as _e:
+    _ats_logger.info("Trading Redis startup check: %s", _e)
 
 # Get symbol for this monitor (will be updated dynamically)
 def get_monitor_symbol():
@@ -423,6 +543,15 @@ def get_monitor_symbol():
             rows = list_active_15m_monitor_rows()
             if not rows:
                 log("[ACTIVE_TRADE_SUPERVISOR] ❌ unified_15m: no active 15m monitors in DB; exiting")
+                os._exit(0)
+            uid0 = rows[0]["user_number"]
+            mid0 = rows[0]["monitor_id"]
+        elif ATS_UNIFIED_HOURLY:
+            from backend.core.unified_hourly_monitors import list_active_hourly_monitor_rows
+
+            rows = list_active_hourly_monitor_rows()
+            if not rows:
+                log("[ACTIVE_TRADE_SUPERVISOR] ❌ unified_hourly: no active hourly monitors in DB; exiting")
                 os._exit(0)
             uid0 = rows[0]["user_number"]
             mid0 = rows[0]["monitor_id"]
@@ -477,7 +606,7 @@ def get_current_monitor_symbol_and_market():
     """Get (symbol, market) for this monitor from database. market is 'hourly' or '15m'."""
     global MONITOR_SYMBOL, MONITOR_MARKET
     try:
-        if ATS_UNIFIED_15M and _ats_bind_m.get() is None:
+        if ATS_UNIFIED_POOL and _ats_bind_m.get() is None:
             return MONITOR_SYMBOL, MONITOR_MARKET
         conn = get_postgresql_connection()
         if not conn:
@@ -517,20 +646,23 @@ def _get_symbol_and_market_for_strike(symbol: str = None):
 if ATS_UNIFIED_15M:
     ACTIVE_TRADE_SUPERVISOR_PORT = get_port("active_trade_supervisor_15m")
     _ats_logger.info("Using unified 15m ATS port: %s", ACTIVE_TRADE_SUPERVISOR_PORT)
+elif ATS_UNIFIED_HOURLY:
+    ACTIVE_TRADE_SUPERVISOR_PORT = get_port("active_trade_supervisor_hourly")
+    _ats_logger.info("Using unified hourly ATS port: %s", ACTIVE_TRADE_SUPERVISOR_PORT)
 else:
     register_monitor_ports(MONITOR_IDENTIFIER)
     ACTIVE_TRADE_SUPERVISOR_PORT = get_monitor_port("active_trade_supervisor", MONITOR_IDENTIFIER)
     _ats_logger.info("Using monitor-specific port: %s", ACTIVE_TRADE_SUPERVISOR_PORT)
 
 
-def _count_active_trades_across_unified_15m_monitors() -> int:
-    """Rows in unified pool that need the monitoring loop (active, pending, or closing)."""
+def _count_active_trades_across_unified_pool_monitors() -> int:
+    """Rows in unified 15m or hourly pool that need the monitoring loop (active, pending, or closing)."""
     conn = get_postgresql_connection()
     if not conn:
         return 0
     try:
         cur = conn.cursor()
-        tbl = f"active_trades_{ctx_user()}_15m"
+        tbl = get_monitor_active_trades_table()
         cur.execute(
             f"""
             SELECT COUNT(*) FROM users.{tbl}
@@ -646,7 +778,7 @@ def get_active_trades_for_monitor(monitor_identifier):
             return jsonify({"error": "Invalid monitor identifier format"}), 400
 
         u, mid = str(monitor_identifier).split("_", 1)
-        if ATS_UNIFIED_15M:
+        if ATS_UNIFIED_POOL:
             with ats_monitor_bind(u, mid):
                 active_trades = _get_all_active_trades_for_current_monitor()
         else:
@@ -685,15 +817,19 @@ def notify_automated_close():
         data = request.json
         log_debug(f"Notifying frontend of automated trade close: {data}")
         
-        # Forward the notification to the main app for WebSocket broadcast
         try:
-            port = get_port("main_app")
-            url = get_service_url(port) + "/api/notify_automated_close"
-            response = requests.post(url, json=data, timeout=2)
-            if response.ok:
-                log_debug(f"Frontend notification sent successfully")
+            from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
+
+            if use_trading_redis_comms() and publish_preferences_event("automated_trade_closed", data):
+                log_debug("Frontend notification sent via Redis")
             else:
-                log_debug(f"Frontend notification failed: {response.status_code}")
+                port = get_port("main_app")
+                url = get_service_url(port) + "/api/notify_automated_close"
+                response = requests.post(url, json=data, timeout=2)
+                if response.ok:
+                    log_debug(f"Frontend notification sent successfully")
+                else:
+                    log_debug(f"Frontend notification failed: {response.status_code}")
         except Exception as e:
             log(f"[AUTO STOP] ❌ Error sending frontend notification: {e}")
         
@@ -748,31 +884,76 @@ def get_momentum_5s_avg_from_postgresql(symbol="BTC"):
         log(f"[MOMENTUM SPIKE] Error getting momentum_5s_avg from PostgreSQL: {e}")
         return None
 
+_broadcast_fail_last_log_ts: float = 0.0
+_BROADCAST_FAIL_LOG_INTERVAL_SEC = 60.0
+
+
+def _log_broadcast_failure_throttled(message: str) -> None:
+    """Avoid IO storm when main_app is slow or down (Redis disabled / publish failed)."""
+    global _broadcast_fail_last_log_ts
+    now = time.time()
+    if now - _broadcast_fail_last_log_ts >= _BROADCAST_FAIL_LOG_INTERVAL_SEC:
+        _broadcast_fail_last_log_ts = now
+        log(message)
+    else:
+        log_debug(message)
+
+
 def broadcast_active_trades_change():
-    """Broadcast active trades change via WebSocket to main app"""
+    """Broadcast active trades change via WebSocket to main app (Redis preferred)."""
     try:
-        # Get current active trades
         active_trades = get_all_active_trades()
-        
-        # Send to main app for WebSocket broadcast
+        body = {
+            "active_trades": active_trades,
+            "count": len(active_trades),
+            "timestamp": datetime.now().isoformat(),
+        }
         try:
-            port = get_port("main_app")
-            url = get_service_url(port) + "/api/broadcast_active_trades_change"
-            response = requests.post(url, json={
-                "active_trades": active_trades,
-                "count": len(active_trades),
-                "timestamp": datetime.now().isoformat()
-            }, timeout=2)
-            if response.ok:
-                # Broadcast successful
-                pass
-            else:
-                log(f"⚠️ Failed to broadcast active trades change: {response.status_code}")
+            from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
+
+            if use_trading_redis_comms() and publish_preferences_event(
+                "active_trades_change", body
+            ):
+                return
         except Exception as e:
-            log(f"❌ Error broadcasting active trades change: {e}")
-            
+            _log_broadcast_failure_throttled(
+                f"⚠️ Active trades broadcast Redis path failed: {e}"
+            )
+
+        if not ATS_HTTP_FALLBACK_ENABLED:
+            _log_broadcast_failure_throttled(
+                "⚠️ Active trades broadcast dropped: Redis unavailable and ATS_HTTP_FALLBACK_ENABLED=0"
+            )
+            return
+
+        port = get_port("main_app")
+        url = get_service_url(port) + "/api/broadcast_active_trades_change"
+        try:
+            connect_t = float(os.getenv("ATS_BROADCAST_HTTP_CONNECT_TIMEOUT", "4"))
+            read_t = float(os.getenv("ATS_BROADCAST_HTTP_READ_TIMEOUT", "25"))
+        except ValueError:
+            connect_t, read_t = 4.0, 25.0
+
+        def _http_fallback():
+            try:
+                response = requests.post(
+                    url, json=body, timeout=(connect_t, read_t)
+                )
+                if not response.ok:
+                    _log_broadcast_failure_throttled(
+                        f"⚠️ Failed to broadcast active trades change: HTTP {response.status_code}"
+                    )
+            except Exception as e:
+                _log_broadcast_failure_throttled(
+                    f"❌ Error broadcasting active trades change: {e}"
+                )
+
+        threading.Thread(target=_http_fallback, daemon=True).start()
+
     except Exception as e:
-        log(f"❌ Error in broadcast_active_trades_change: {e}")
+        _log_broadcast_failure_throttled(
+            f"❌ Error in broadcast_active_trades_change: {e}"
+        )
 
 def check_for_open_trades():
     """
@@ -872,7 +1053,7 @@ def _open_enrollment_ack_payload(
             cursor = conn.cursor()
             cursor.execute(
                 f"""
-                SELECT ticker, side FROM users.trades_{ctx_user()}
+                SELECT ticker, side, symbol FROM users.trades_{ctx_user()}
                 WHERE id = %s AND status = 'open'
                 """,
                 (trade_id,),
@@ -880,10 +1061,22 @@ def _open_enrollment_ack_payload(
             row = cursor.fetchone()
             conn.close()
             if row:
-                ticker, side = row[0], row[1]
-                snapshot = get_kalshi_market_snapshot_cached()
+                ticker, side, tr_sym = row[0], row[1], row[2]
+                sym_m, mkt_m = get_current_monitor_symbol_and_market()
+                tsym = (
+                    str(tr_sym).strip().upper()
+                    if tr_sym is not None and str(tr_sym).strip()
+                    else sym_m
+                )
+                snapshot = get_kalshi_market_snapshot_cached(symbol=tsym, market=mkt_m)
                 if snapshot and ticker:
-                    mp = get_current_closing_price_for_trade(ticker, side, snapshot_data=snapshot)
+                    mp = get_current_closing_price_for_trade(
+                        ticker,
+                        side,
+                        snapshot_data=snapshot,
+                        symbol=tsym,
+                        market=mkt_m,
+                    )
                     has_quote = mp is not None
                 if not has_quote:
                     degraded = True
@@ -911,8 +1104,13 @@ def _handle_ats_enroll_redis_message(data: dict) -> None:
         if data.get("type") != "ats_trade_open":
             return
         suffix = data.get("monitor_suffix") or ""
-        if ATS_UNIFIED_15M:
+        if ATS_UNIFIED_POOL:
             if "_" not in suffix:
+                return
+            if not _unified_pool_accepts_monitor_suffix(suffix):
+                log_debug(
+                    f"ATS ENROLL Redis: skip mon={suffix} (not this unified pool)"
+                )
                 return
             u, mid = suffix.split("_", 1)
             correlation_id = data.get("correlation_id")
@@ -974,11 +1172,70 @@ def start_ats_enroll_redis_subscriber():
     t.start()
 
 
+def _handle_ats_tm_notification_redis(data: dict) -> None:
+    """trade_manager → ATS status fanout (non-open); same routing as /api/trade_manager_notification."""
+    try:
+        if data.get("type") != "ats_tm_notification":
+            return
+        trade_id = data.get("trade_id")
+        ticket_id = (data.get("ticket_id") or "").strip() or None
+        status = data.get("status")
+        monitor_identifier = data.get("monitor_identifier")
+        if trade_id is None or not status:
+            return
+        if not ticket_id:
+            u_trade = USER_NUMBER
+            if monitor_identifier and "_" in str(monitor_identifier):
+                u_trade = str(monitor_identifier).split("_")[0]
+            elif not ATS_UNIFIED_POOL and MONITOR_IDENTIFIER and "_" in MONITOR_IDENTIFIER:
+                u_trade = MONITOR_IDENTIFIER.split("_", 1)[0]
+            pg = get_postgresql_connection()
+            if pg:
+                try:
+                    with pg.cursor() as cur:
+                        cur.execute(
+                            f"SELECT ticket_id FROM users.trades_{u_trade} WHERE id = %s",
+                            (trade_id,),
+                        )
+                        row = cur.fetchone()
+                        if row and row[0]:
+                            ticket_id = str(row[0]).strip() or None
+                except Exception as e:
+                    log(f"⚠️ ticket_id backfill failed for trade {trade_id}: {e}")
+                finally:
+                    pg.close()
+        if not ticket_id:
+            ticket_id = ""
+        if ATS_UNIFIED_POOL:
+            if not monitor_identifier or "_" not in str(monitor_identifier):
+                log(f"⚠️ ATS Redis tm notify: missing monitor_identifier trade={trade_id}")
+                return
+            mon_s = str(monitor_identifier).strip()
+            if not _unified_pool_accepts_monitor_suffix(mon_s):
+                log_debug(
+                    f"ATS Redis tm notify: skip mon={mon_s} trade={trade_id} (wrong unified pool)"
+                )
+                return
+            u, mid = mon_s.split("_", 1)
+            log(
+                f"📡 REDIS TM NOTIFY (unified pool): mon={monitor_identifier} trade={trade_id} status={status}"
+            )
+            with ats_monitor_bind(u, mid):
+                process_trade_manager_notification_core(trade_id, ticket_id, status)
+            return
+        if monitor_identifier and monitor_identifier != MONITOR_IDENTIFIER:
+            return
+        log(f"📡 REDIS TM NOTIFY: Trade ID: {trade_id}, Ticket ID: {ticket_id}, Status: {status}")
+        process_trade_manager_notification_core(trade_id, ticket_id, status)
+    except Exception as e:
+        log(f"❌ ATS tm notification redis: {e}")
+
+
 def _ats_enroll_subscriber_thread_main():
     try:
         from backend.core.ats_enrollment_redis import start_enroll_subscriber_loop
 
-        start_enroll_subscriber_loop(_handle_ats_enroll_redis_message)
+        start_enroll_subscriber_loop(_handle_ats_enroll_redis_message, _handle_ats_tm_notification_redis)
     except Exception as e:
         log(f"❌ ATS enrollment subscriber exit: {e}")
 
@@ -1009,7 +1266,7 @@ def handle_trade_manager_notification():
             u_trade = USER_NUMBER
             if monitor_identifier and "_" in str(monitor_identifier):
                 u_trade = str(monitor_identifier).split("_")[0]
-            elif not ATS_UNIFIED_15M and MONITOR_IDENTIFIER and "_" in MONITOR_IDENTIFIER:
+            elif not ATS_UNIFIED_POOL and MONITOR_IDENTIFIER and "_" in MONITOR_IDENTIFIER:
                 u_trade = MONITOR_IDENTIFIER.split("_", 1)[0]
             pg = get_postgresql_connection()
             if pg:
@@ -1029,7 +1286,7 @@ def handle_trade_manager_notification():
         if not ticket_id:
             ticket_id = ""
         
-        if ATS_UNIFIED_15M:
+        if ATS_UNIFIED_POOL:
             if not monitor_identifier or "_" not in str(monitor_identifier):
                 return jsonify(
                     {
@@ -1037,9 +1294,22 @@ def handle_trade_manager_notification():
                         "success": False,
                     }
                 ), 200
-            u, mid = str(monitor_identifier).split("_", 1)
+            mon_s = str(monitor_identifier).strip()
+            if not _unified_pool_accepts_monitor_suffix(mon_s):
+                log_debug(
+                    f"📡 DIRECT NOTIFICATION (unified pool): ignored mon={mon_s} "
+                    f"(wrong pool for this ATS process) trade={trade_id}"
+                )
+                return jsonify(
+                    {
+                        "status": "ignored",
+                        "message": f"Monitor {mon_s} is not enrolled in this unified pool",
+                        "success": True,
+                    }
+                ), 200
+            u, mid = mon_s.split("_", 1)
             log(
-                f"📡 DIRECT NOTIFICATION (15m pool): mon={monitor_identifier} trade={trade_id} status={status}"
+                f"📡 DIRECT NOTIFICATION (unified pool): mon={monitor_identifier} trade={trade_id} status={status}"
             )
             with ats_monitor_bind(u, mid):
                 success = process_trade_manager_notification_core(trade_id, ticket_id, status)
@@ -1200,7 +1470,7 @@ def add_new_active_trade(trade_id: int, ticket_id: str) -> bool:
                 log_debug(f"Trade {trade_id} already in closing state in pool (skip insert)")
                 return True
 
-        if ATS_UNIFIED_15M:
+        if ATS_UNIFIED_POOL:
             cursor.execute(f"""
                 INSERT INTO users.{active_trades_table} (
                     monitor_id, trade_id, ticket_id, date, time, strike, side, buy_price, position,
@@ -1292,6 +1562,37 @@ def add_pending_trade(trade_id: int, ticket_id: str) -> bool:
         conn.close()
         
         if not row:
+            # Common race: by the time ATS receives "pending", trade_manager may have already
+            # advanced the row to open/closed and pending no longer exists.
+            # Treat this as idempotent by checking canonical trade status.
+            tr_conn = get_trades_db_connection()
+            tr_status = None
+            if tr_conn:
+                try:
+                    tr_cur = tr_conn.cursor()
+                    tr_cur.execute(
+                        f"SELECT status FROM users.trades_{ctx_user()} WHERE id = %s",
+                        (trade_id,),
+                    )
+                    tr_row = tr_cur.fetchone()
+                    if tr_row and tr_row[0]:
+                        tr_status = str(tr_row[0]).strip().lower()
+                except Exception:
+                    tr_status = None
+                finally:
+                    tr_conn.close()
+
+            if tr_status == "open":
+                log_debug(
+                    f"Pending notify race for trade {trade_id}: row already open; enrolling as active"
+                )
+                return add_new_active_trade(trade_id, ticket_id)
+            if tr_status in ("closing", "closed", "expired", "error", "deleted"):
+                log_debug(
+                    f"Pending notify stale for trade {trade_id}: status={tr_status}; skipping"
+                )
+                return True
+
             log(f"No pending trade found with id {trade_id}")
             return False
             
@@ -1304,7 +1605,7 @@ def add_pending_trade(trade_id: int, ticket_id: str) -> bool:
         conn = get_db_connection()
         cursor = conn.cursor()
         active_trades_table = get_monitor_active_trades_table()
-        if ATS_UNIFIED_15M:
+        if ATS_UNIFIED_POOL:
             cursor.execute(f"""
                 INSERT INTO users.{active_trades_table} (
                     monitor_id, trade_id, ticket_id, date, time, strike, side, buy_price, position,
@@ -1681,7 +1982,7 @@ def flush_stale_active_trades_past_contract_settlement() -> None:
         log_debug("[STALE FLUSH] skipped — no PostgreSQL connection")
         return
     try:
-        if ATS_UNIFIED_15M:
+        if ATS_UNIFIED_POOL:
             q = f"""
                 SELECT id, trade_id, ticket_id, monitor_id, ticker, status, contract, symbol,
                        trade_strategy, strike, side, created_at, last_updated
@@ -1716,7 +2017,7 @@ def flush_stale_active_trades_past_contract_settlement() -> None:
             continue
         trade_id = r.get("trade_id")
         main_st = _users_trade_status_for_stale_flush(int(trade_id)) if trade_id is not None else None
-        mon_disp = r.get("monitor_id") if ATS_UNIFIED_15M else ctx_mid()
+        mon_disp = r.get("monitor_id") if ATS_UNIFIED_POOL else ctx_mid()
         age_sec = (est_now - end).total_seconds()
         log(
             "[STALE FLUSH] scheduled DELETE — "
@@ -1960,6 +2261,136 @@ def _kalshi_snapshot_cache_key(symbol: str, market: str) -> str:
     return f"{s}:{m}"
 
 
+def _normalize_kalshi_ticker(t: Optional[str]) -> str:
+    if t is None:
+        return ""
+    return str(t).strip().upper()
+
+
+_last_market_notfound_log: Dict[str, float] = {}
+
+
+def _log_market_notfound_throttled(ticker: str, interval_sec: float = 60.0) -> None:
+    """Rate-limit noisy per-tick warnings when ladder omits a contract (rotation, etc.)."""
+    key = _normalize_kalshi_ticker(ticker)
+    now = time.time()
+    last = _last_market_notfound_log.get(key, 0.0)
+    if not key:
+        return
+    if now - last >= interval_sec:
+        _last_market_notfound_log[key] = now
+        log(f"⚠️ Market not found for ticker: {ticker}")
+    else:
+        log_debug(f"⚠️ Market not found for ticker (throttled): {ticker}")
+
+
+def _kalshi_direct_closing_price_for_ticker(
+    trade_ticker: str,
+    trade_side: str,
+    symbol: Optional[str],
+    market: str,
+) -> Optional[float]:
+    """
+    Point lookup in live_data Kalshi tables when the bulk snapshot list misses a row
+    (normalization, race, or rare ingestion gaps). Same tables as get_kalshi_market_snapshot.
+    """
+    tt = _normalize_kalshi_ticker(trade_ticker)
+    if not tt:
+        return None
+    sym_u = (symbol or "").strip().upper()
+    mkt = (market or "hourly").strip().lower()
+    if mkt not in ("hourly", "15m"):
+        mkt = "hourly"
+    conn = get_postgresql_connection()
+    if not conn:
+        return None
+    side_u = (trade_side or "").strip().upper()
+    if side_u in ("YES",):
+        side_u = "Y"
+    if side_u in ("NO",):
+        side_u = "N"
+    try:
+        cursor = conn.cursor()
+        row = None
+        if mkt == "15m":
+            source = os.getenv("KALSHI_15M_MARKET_SOURCE", "legacy").strip().lower()
+            market_table = "market_kalshi_ws_15m" if source == "ws" else "market_kalshi_15m"
+            cursor.execute(
+                f"""
+                SELECT yes_ask_dollars, no_ask_dollars
+                FROM live_data.{market_table}
+                WHERE LOWER(TRIM(exchange::text)) = 'kalshi'
+                  AND UPPER(TRIM(market_ticker::text)) = %s
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (tt,),
+            )
+            row = cursor.fetchone()
+            if row is None and sym_u:
+                cursor.execute(
+                    f"""
+                    SELECT yes_ask_dollars, no_ask_dollars
+                    FROM live_data.{market_table}
+                    WHERE LOWER(TRIM(exchange::text)) = 'kalshi'
+                      AND UPPER(TRIM(symbol::text)) = %s
+                      AND UPPER(TRIM(market_ticker::text)) = %s
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (sym_u, tt),
+                )
+                row = cursor.fetchone()
+        else:
+            cursor.execute(
+                """
+                SELECT yes_ask_dollars, no_ask_dollars
+                FROM live_data.market_kalshi_hourly
+                WHERE LOWER(TRIM(exchange::text)) = 'kalshi'
+                  AND UPPER(TRIM(market_ticker::text)) = %s
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (tt,),
+            )
+            row = cursor.fetchone()
+            if row is None and sym_u:
+                cursor.execute(
+                    """
+                    SELECT yes_ask_dollars, no_ask_dollars
+                    FROM live_data.market_kalshi_hourly
+                    WHERE LOWER(TRIM(exchange::text)) = 'kalshi'
+                      AND UPPER(TRIM(symbol::text)) = %s
+                      AND UPPER(TRIM(market_ticker::text)) = %s
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (sym_u, tt),
+                )
+                row = cursor.fetchone()
+        if not row:
+            return None
+        yes_d, no_d = row[0], row[1]
+        if side_u == "Y":
+            closing_price_dollars = no_d
+        elif side_u == "N":
+            closing_price_dollars = yes_d
+        else:
+            log(f"⚠️ Unknown trade side: {trade_side}")
+            return None
+        if closing_price_dollars is None:
+            return None
+        return float(closing_price_dollars)
+    except Exception as e:
+        log_debug(f"direct Kalshi quote for {trade_ticker}: {e}")
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def get_kalshi_market_snapshot_cached(
     symbol: str = None, market: str = None,
 ) -> Optional[Dict[str, Any]]:
@@ -1994,6 +2425,9 @@ def get_current_closing_price_for_trade(
     trade_ticker: str,
     trade_side: str,
     snapshot_data: Optional[Dict[str, Any]] = None,
+    *,
+    symbol: Optional[str] = None,
+    market: Optional[str] = None,
 ) -> Optional[float]:
     """
     Get the current closing price for a specific trade from Kalshi market snapshot.
@@ -2002,43 +2436,62 @@ def get_current_closing_price_for_trade(
         trade_ticker: The ticker of the trade (e.g., "KXBTCD-25JUL1617-T119499.99" or "KXETHD-25JUL1617-T119499.99")
         trade_side: The side of the trade ("Y" for YES, "N" for NO)
         snapshot_data: Optional pre-fetched snapshot (e.g. cached); default uses get_kalshi_market_snapshot_cached.
-        
+        symbol: Trade symbol for DB point-lookup when the snapshot omits the ticker.
+        market: Monitor market ('hourly' or '15m') for DB fallback.
+
     Returns:
         The closing price as a decimal (e.g., 0.94 for 94 cents), or None if not found
     """
     try:
         if snapshot_data is None:
-            snapshot_data = get_kalshi_market_snapshot_cached()
+            snapshot_data = get_kalshi_market_snapshot_cached(
+                symbol=symbol,
+                market=market,
+            )
         if not snapshot_data or "markets" not in snapshot_data:
-            return None
-            
+            snapshot_data = {"markets": []}
+
         markets = snapshot_data["markets"]
-        
-        # Find the market that matches the trade ticker
-        for market in markets:
-            if market.get("ticker") == trade_ticker:
-                # For YES trades, we want the NO_ASK (opposite side)
-                # For NO trades, we want the YES_ASK (opposite side)
-                # Use _dollars values for subpenny precision, fallback to cent conversion
-                if trade_side.upper() == "Y":  # YES trade
-                    closing_price_dollars = market.get("no_ask_dollars")
-                elif trade_side.upper() == "N":  # NO trade
-                    closing_price_dollars = market.get("yes_ask_dollars")
-                else:
-                    log(f"⚠️ Unknown trade side: {trade_side}")
-                    return None
-                
-                if closing_price_dollars is not None:
-                    # Use subpenny precision directly (no conversion needed)
-                    closing_price_decimal = float(closing_price_dollars)
-                    return closing_price_decimal
-                else:
-                    log(f"⚠️ No closing price (_dollars) found for {trade_ticker} ({trade_side})")
-                    return None
-        
-        log(f"⚠️ Market not found for ticker: {trade_ticker}")
+        tt_norm = _normalize_kalshi_ticker(trade_ticker)
+        side_u = (trade_side or "").strip().upper()
+        if side_u in ("YES",):
+            side_u = "Y"
+        if side_u in ("NO",):
+            side_u = "N"
+
+        for mrec in markets:
+            if _normalize_kalshi_ticker(mrec.get("ticker")) != tt_norm:
+                continue
+            if side_u == "Y":  # YES trade
+                closing_price_dollars = mrec.get("no_ask_dollars")
+            elif side_u == "N":  # NO trade
+                closing_price_dollars = mrec.get("yes_ask_dollars")
+            else:
+                log(f"⚠️ Unknown trade side: {trade_side}")
+                return None
+
+            if closing_price_dollars is not None:
+                return float(closing_price_dollars)
+            log(f"⚠️ No closing price (_dollars) found for {trade_ticker} ({trade_side})")
+            return None
+
+        mkt_fb = market
+        sym_fb = symbol
+        if mkt_fb is None or sym_fb is None:
+            sym_d, mkt_d = get_current_monitor_symbol_and_market()
+            if mkt_fb is None:
+                mkt_fb = mkt_d
+            if sym_fb is None:
+                sym_fb = sym_d
+        direct = _kalshi_direct_closing_price_for_ticker(
+            trade_ticker, trade_side, sym_fb, mkt_fb or "hourly"
+        )
+        if direct is not None:
+            return direct
+
+        _log_market_notfound_throttled(trade_ticker)
         return None
-        
+
     except Exception as e:
         log(f"Error getting closing price for trade {trade_ticker}: {e}")
         return None
@@ -2148,28 +2601,37 @@ def get_current_probability(strike: float, current_price: float, ttc_seconds: fl
         log(f"⚠️ Strike-table probability fallback exception: {e}")
     return None
 
-def _iter_unified_15m_monitor_bindings_for_monitoring():
+def _iter_unified_pool_monitor_bindings_for_monitoring():
     """
-    Monitors to tick in unified ATS: active 15m rows in monitor_list, plus any monitor_id
-    that still has an active row in the pool (reconcile may enroll paused monitors).
+    Monitors to tick in unified ATS: active rows in monitor_list for this pool, plus any
+    monitor_id that still has an active row in the pool (reconcile may enroll paused monitors).
     """
-    from backend.core.unified_15m_monitors import iter_active_15m_monitor_bindings
-
     seen = set()
     out: List[Tuple[str, str]] = []
-    for u, m in iter_active_15m_monitor_bindings():
+    if ATS_UNIFIED_15M:
+        from backend.core.unified_15m_monitors import iter_active_15m_monitor_bindings
+
+        iter_bindings = iter_active_15m_monitor_bindings()
+    elif ATS_UNIFIED_HOURLY:
+        from backend.core.unified_hourly_monitors import iter_active_hourly_monitor_bindings
+
+        iter_bindings = iter_active_hourly_monitor_bindings()
+    else:
+        return out
+    for u, m in iter_bindings:
         t = (u, m)
         if t not in seen:
             seen.add(t)
             out.append(t)
     u = USER_NUMBER
+    tbl = get_monitor_active_trades_table()
     conn = get_postgresql_connection()
     if conn:
         try:
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
-                    SELECT DISTINCT monitor_id FROM users.active_trades_{u}_15m
+                    SELECT DISTINCT monitor_id FROM users.{tbl}
                     WHERE status = 'active'
                     """
                 )
@@ -2201,14 +2663,27 @@ def update_active_trade_monitoring_data():
         # Get current symbol price for each trade
         # Note: We'll get the price per trade since each trade might have a different symbol
         
-        # Snapshot for *this* monitor binding (unified 15m rotates ctx per monitor).
+        # Snapshots keyed by trade symbol so rows match the correct Kalshi ladder (monitor symbol + ETH/BTC mismatches).
         sym, mkt = get_current_monitor_symbol_and_market()
-        snapshot_data = get_kalshi_market_snapshot_cached(symbol=sym, market=mkt)
-        if not snapshot_data:
-            snapshot_data = {"markets": [], "timestamp": None}
-        elif "markets" not in snapshot_data:
-            snapshot_data["markets"] = []
-        if not snapshot_data.get("markets"):
+        snap_cache: Dict[str, Dict[str, Any]] = {}
+
+        def _snapshot_for_trade_symbol(trade_symbol) -> Dict[str, Any]:
+            base = sym or "BTC"
+            ts = trade_symbol
+            if ts is not None and str(ts).strip():
+                tsu = str(ts).strip().upper()
+            else:
+                tsu = str(base).strip().upper()
+            key = _kalshi_snapshot_cache_key(tsu, mkt)
+            if key not in snap_cache:
+                sd = get_kalshi_market_snapshot_cached(symbol=tsu, market=mkt)
+                snap_cache[key] = sd if sd else {"markets": [], "timestamp": None}
+            out = snap_cache[key]
+            if "markets" not in out:
+                out["markets"] = []
+            return out
+
+        if not _snapshot_for_trade_symbol(sym).get("markets"):
             log_debug("⚠️ Kalshi snapshot empty; using per-trade DB fallbacks where possible")
         
         # Get all active trades
@@ -2243,9 +2718,18 @@ def update_active_trade_monitoring_data():
                     log(f"⚠️ Could not get current {symbol} price for trade {trade_id}, skipping")
                     continue
                 
-                # Get current market ask price for this specific contract
+                trade_sym_u = (
+                    str(symbol).strip().upper()
+                    if symbol is not None and str(symbol).strip()
+                    else str(sym or "BTC").strip().upper()
+                )
+                snapshot_data = _snapshot_for_trade_symbol(trade_sym_u)
                 current_market_price = get_current_closing_price_for_trade(
-                    ticker, side, snapshot_data=snapshot_data
+                    ticker,
+                    side,
+                    snapshot_data=snapshot_data,
+                    symbol=trade_sym_u,
+                    market=mkt,
                 )
                 if current_market_price is None and current_close_price_db is not None:
                     current_market_price = float(current_close_price_db)
@@ -2350,8 +2834,14 @@ def update_active_trade_monitoring_data():
                 # Invalidate cache when trade data is updated
                 invalidate_active_trades_cache()
                 
-                # Broadcast active trades change to frontend (throttled for performance - status changes are broadcast immediately)
-                if time_since_entry % 1 == 0:  # Broadcast every 1 second to match monitoring frequency
+                # Broadcast throttled: integer time_since_entry % 1 was always true → Redis/HTTP storm.
+                _mb_interval = 2.0
+                _now_br = time.time()
+                _last_br = getattr(
+                    update_active_trade_monitoring_data, "_last_monitor_broadcast_ts", 0.0
+                )
+                if _now_br - _last_br >= _mb_interval:
+                    update_active_trade_monitoring_data._last_monitor_broadcast_ts = _now_br
                     broadcast_active_trades_change()
                 
                 # Only log significant updates (every 60 seconds) to reduce noise
@@ -2384,8 +2874,8 @@ def check_monitoring_failsafe():
             log("❌ FAILSAFE: No DB connection; skipping failsafe check (restart would not help)")
             return
         cursor = conn.cursor()
-        if ATS_UNIFIED_15M:
-            active_count = _count_active_trades_across_unified_15m_monitors()
+        if ATS_UNIFIED_POOL:
+            active_count = _count_active_trades_across_unified_pool_monitors()
         else:
             active_trades_table = get_monitor_active_trades_table()
             cursor.execute(
@@ -2467,11 +2957,12 @@ def restart_active_trade_supervisor_process():
     try:
         from backend.util.paths import get_supervisorctl_path, get_supervisor_config_path
         
-        service_name = (
-            "active_trade_supervisor_15m"
-            if ATS_UNIFIED_15M
-            else f"active_trade_supervisor_{MONITOR_IDENTIFIER}"
-        )
+        if ATS_UNIFIED_15M:
+            service_name = "active_trade_supervisor_15m"
+        elif ATS_UNIFIED_HOURLY:
+            service_name = "active_trade_supervisor_hourly"
+        else:
+            service_name = f"active_trade_supervisor_{MONITOR_IDENTIFIER}"
         
         log(f"🔄 PROCESS RESTART: Restarting {service_name} via supervisorctl...")
         log(f"🚨 CRITICAL: Process restart initiated due to monitoring failure")
@@ -2560,8 +3051,8 @@ def start_monitoring_loop():
         
         try:
             while True:
-                if ATS_UNIFIED_15M:
-                    _ats_monitors = _iter_unified_15m_monitor_bindings_for_monitoring()
+                if ATS_UNIFIED_POOL:
+                    _ats_monitors = _iter_unified_pool_monitor_bindings_for_monitoring()
                 else:
                     _ats_monitors = [(USER_NUMBER, MONITOR_ID)]
 
@@ -2868,8 +3359,8 @@ def start_monitoring_loop():
             
             # Check if there are still active trades that need monitoring
             try:
-                if ATS_UNIFIED_15M:
-                    active_count = _count_active_trades_across_unified_15m_monitors()
+                if ATS_UNIFIED_POOL:
+                    active_count = _count_active_trades_across_unified_pool_monitors()
                 else:
                     conn = get_db_connection()
                     cursor = conn.cursor()
@@ -2980,11 +3471,11 @@ def _get_all_active_trades_for_current_monitor() -> List[Dict[str, Any]]:
 
 
 def _get_all_active_trades_unified_pool_unbound() -> List[Dict[str, Any]]:
-    """All monitors' rows from users.active_trades_<user>_15m (no ContextVar bind)."""
+    """All monitors' rows from users.active_trades_<user>_{15m|hourly} (no ContextVar bind)."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        tbl = f"active_trades_{ctx_user()}_15m"
+        tbl = get_monitor_active_trades_table()
         cursor.execute(
             f"""
             SELECT * FROM users.{tbl}
@@ -3003,7 +3494,7 @@ def _get_all_active_trades_unified_pool_unbound() -> List[Dict[str, Any]]:
 
 def get_all_active_trades() -> List[Dict[str, Any]]:
     """Get all currently active, pending, and closing trades (unified pool = one table)."""
-    if ATS_UNIFIED_15M and _ats_bind_m.get() is None:
+    if ATS_UNIFIED_POOL and _ats_bind_m.get() is None:
         return _get_all_active_trades_unified_pool_unbound()
     return _get_all_active_trades_for_current_monitor()
 
@@ -3023,11 +3514,13 @@ def _sync_with_trades_db_for_current_monitor():
     conn = get_db_connection()
     cursor = conn.cursor()
     active_trades_table = get_monitor_active_trades_table()
+    scope_sql, scope_params = _active_trades_monitor_scope_sql()
     cursor.execute(
         f"""
         SELECT trade_id FROM users.{active_trades_table}
-        WHERE status IN ('active', 'pending', 'closing')
-        """
+        WHERE status IN ('active', 'pending', 'closing'){scope_sql}
+        """,
+        scope_params,
     )
     active_trade_ids = [row[0] for row in cursor.fetchall()]
     conn.close()
@@ -3052,18 +3545,116 @@ def _sync_with_trades_db_for_current_monitor():
         log(f"Sync complete ({ctx_ident()}): no changes needed")
 
 
-def _reconcile_unified_15m_open_trades_full_scan() -> None:
+def _purge_unified_active_trades_wrong_market() -> int:
     """
-    Failsafe: enroll any open trade whose monitor is 15m (by monitor_list market),
-    even if that monitor is not in iter_active_15m_monitor_bindings (e.g. paused list row).
+    Delete pool rows whose monitor_id is not in this pool's market (15m vs hourly).
+    Both unified ATS processes share Redis fanout; stray rows can land in the wrong table.
     """
-    from backend.core.port_config import monitor_suffix_uses_unified_15m_pool
+    from backend.core.port_config import (
+        monitor_suffix_uses_unified_15m_pool,
+        monitor_suffix_uses_unified_hourly_pool,
+    )
 
     user = USER_NUMBER
-    tbl = f"active_trades_{user}_15m"
+    if ATS_UNIFIED_15M:
+        tbl = f"active_trades_15m_{user}"
+
+        def belongs(suffix: str) -> bool:
+            return monitor_suffix_uses_unified_15m_pool(suffix)
+
+        pool_label = "15m"
+    elif ATS_UNIFIED_HOURLY:
+        tbl = f"active_trades_hourly_{user}"
+
+        def belongs(suffix: str) -> bool:
+            return monitor_suffix_uses_unified_hourly_pool(suffix)
+
+        pool_label = "hourly"
+    else:
+        return 0
+
+    conn = get_db_connection()
+    if not conn:
+        return 0
+    removed = 0
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT DISTINCT monitor_id FROM users.{tbl}
+                WHERE status IN ('active', 'pending', 'closing')
+                """
+            )
+            mismatched: List[str] = []
+            for (mid,) in cur.fetchall():
+                if mid is None:
+                    continue
+                sm = str(mid).strip()
+                if not sm:
+                    continue
+                suffix = f"{user}_{sm}"
+                if not belongs(suffix):
+                    mismatched.append(sm)
+            for sm in mismatched:
+                cur.execute(
+                    f"""
+                    DELETE FROM users.{tbl}
+                    WHERE monitor_id::text = %s
+                      AND status IN ('active', 'pending', 'closing')
+                    """,
+                    (sm,),
+                )
+                removed += cur.rowcount
+        conn.commit()
+    except Exception as e:
+        log(f"🧹 Purge wrong-pool rows failed ({pool_label}): {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    if removed:
+        log(
+            f"🧹 Removed {removed} row(s) from {tbl} — monitors not in {pool_label} pool "
+            f"(repair stray Redis/HTTP enrollments)"
+        )
+    return removed
+
+
+def _reconcile_unified_pool_open_trades_full_scan() -> None:
+    """
+    Failsafe: enroll any open trade whose monitor uses this unified pool (by monitor_list market),
+    even if that monitor is not in iter_active_*_monitor_bindings (e.g. paused list row).
+    """
+    from backend.core.port_config import (
+        monitor_suffix_uses_unified_15m_pool,
+        monitor_suffix_uses_unified_hourly_pool,
+    )
+
+    user = USER_NUMBER
+    if ATS_UNIFIED_15M:
+        tbl = f"active_trades_15m_{user}"
+
+        def _use_unified_pool(suffix: str) -> bool:
+            return monitor_suffix_uses_unified_15m_pool(suffix)
+
+        pool_label = "15m"
+    elif ATS_UNIFIED_HOURLY:
+        tbl = f"active_trades_hourly_{user}"
+
+        def _use_unified_pool(suffix: str) -> bool:
+            return monitor_suffix_uses_unified_hourly_pool(suffix)
+
+        pool_label = "hourly"
+    else:
+        return
     conn = get_postgresql_connection()
     if not conn:
-        log("🔄 RECONCILE: no DB connection; skipping unified 15m open-trade scan")
+        log(f"🔄 RECONCILE: no DB connection; skipping unified {pool_label} open-trade scan")
         return
     try:
         with conn.cursor() as cur:
@@ -3101,7 +3692,7 @@ def _reconcile_unified_15m_open_trades_full_scan() -> None:
         if not mon.startswith("mon_"):
             continue
         suffix = mon[4:]
-        if not monitor_suffix_uses_unified_15m_pool(suffix):
+        if not _use_unified_pool(suffix):
             continue
         parts = suffix.split("_", 1)
         if len(parts) != 2:
@@ -3112,7 +3703,8 @@ def _reconcile_unified_15m_open_trades_full_scan() -> None:
                 added += 1
                 tracked.add(tid)
     if added:
-        log(f"🔄 RECONCILE (full scan): added {added} open 15m trade(s) to pool")
+        log(f"🔄 RECONCILE (full scan): added {added} open {pool_label} trade(s) to pool")
+    _purge_unified_active_trades_wrong_market()
 
 
 def sync_with_trades_db():
@@ -3121,13 +3713,19 @@ def sync_with_trades_db():
     This should be called on demand to catch any missed updates.
     """
     try:
-        if ATS_UNIFIED_15M:
-            from backend.core.unified_15m_monitors import iter_active_15m_monitor_bindings
+        if ATS_UNIFIED_POOL:
+            if ATS_UNIFIED_15M:
+                from backend.core.unified_15m_monitors import iter_active_15m_monitor_bindings
 
-            for u, m in iter_active_15m_monitor_bindings():
+                iter_bindings = iter_active_15m_monitor_bindings()
+            else:
+                from backend.core.unified_hourly_monitors import iter_active_hourly_monitor_bindings
+
+                iter_bindings = iter_active_hourly_monitor_bindings()
+            for u, m in iter_bindings:
                 with ats_monitor_bind(u, m):
                     _sync_with_trades_db_for_current_monitor()
-            _reconcile_unified_15m_open_trades_full_scan()
+            _reconcile_unified_pool_open_trades_full_scan()
             return
         _sync_with_trades_db_for_current_monitor()
     except Exception as e:
@@ -3149,11 +3747,12 @@ def start_event_driven_supervisor():
     start_ats_enroll_redis_subscriber()
 
     # Check if there are already active trades and start monitoring if needed
-    if ATS_UNIFIED_15M:
-        active_count = _count_active_trades_across_unified_15m_monitors()
+    if ATS_UNIFIED_POOL:
+        active_count = _count_active_trades_across_unified_pool_monitors()
         if active_count > 0:
+            pool_n = "15m" if ATS_UNIFIED_15M else "hourly"
             log(
-                f"📊 MONITORING: Found {active_count} existing active trade(s) in 15m pool, starting monitoring"
+                f"📊 MONITORING: Found {active_count} existing active trade(s) in {pool_n} pool, starting monitoring"
             )
             start_monitoring_loop()
     else:
@@ -3199,8 +3798,8 @@ def start_event_driven_supervisor():
         while True:
             # BRUTE FORCE FAILSAFE: Check database every 10 seconds for active trades
             # If there are active trades but no monitoring thread, restart it
-            if ATS_UNIFIED_15M:
-                active_count = _count_active_trades_across_unified_15m_monitors()
+            if ATS_UNIFIED_POOL:
+                active_count = _count_active_trades_across_unified_pool_monitors()
             else:
                 conn = get_db_connection()
                 cursor = conn.cursor()
@@ -3317,6 +3916,38 @@ def _close_method_for_auto_trigger(trigger_reason: str) -> str:
     return mapped.get(key, f"auto_{key}")
 
 
+def _defer_unified_ats_close_followup(
+    ticket_id: str,
+    log_message: str,
+    notification_data: dict,
+) -> None:
+    """trade_logger + close notify off the unified ATS hot path (same idea as unified AES)."""
+
+    def _run():
+        import requests as _req
+
+        try:
+            from backend.util.trade_logger import log_trade_event
+
+            log_trade_event(ticket_id, log_message, service="active_trade_supervisor")
+        except Exception:
+            pass
+        try:
+            from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
+
+            if use_trading_redis_comms() and publish_preferences_event(
+                "automated_trade_closed", notification_data
+            ):
+                return
+            port = get_port("main_app")
+            url = get_service_url(port) + "/api/notify_automated_close"
+            _req.post(url, json=notification_data, timeout=2)
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def trigger_auto_stop_close(
     trade,
     *,
@@ -3376,8 +4007,8 @@ def trigger_auto_stop_close(
             pass
         return False
 
-    # Generate unique ticket ID
-    ticket_id = f"TICKET-{{random.getrandbits(32):x}}-{{int(time.time() * 1000)}}"
+    # Generate unique ticket ID (single braces: random/time must run)
+    ticket_id = f"TICKET-{random.getrandbits(32):08x}-{int(time.time() * 1000)}"
     # Invert side
     side = trade['side']
     inverted_side = 'N' if side.upper() in ['Y', 'YES'] else 'Y' if side.upper() in ['N', 'NO'] else side
@@ -3402,27 +4033,118 @@ def trigger_auto_stop_close(
     
     position_val = trade.get('position', 1)
     close_method_val = _close_method_for_auto_trigger(trigger_reason)
+    try:
+        trade_pk = int(trade["trade_id"]) if trade.get("trade_id") is not None else None
+    except (TypeError, ValueError):
+        trade_pk = trade.get("trade_id")
+    try:
+        pos_int = int(position_val) if position_val is not None else 1
+    except (TypeError, ValueError):
+        pos_int = 1
     payload = {
-        'id': trade['trade_id'],  # Include the specific trade_id from active_trades table
-        'ticket_id': ticket_id,
-        'intent': 'close',
-        'ticker': trade['ticker'],
-        'side': inverted_side,
-        'count': position_val,
-        'count_fp': f"{float(position_val):.2f}",
-        'action': 'close',
-        'type': 'market',
-        'time_in_force': 'IOC',
-        'buy_price': sell_price_float,
-        'symbol_close': symbol_close_float,
-        'close_method': close_method_val,
+        "id": trade_pk,
+        "ticket_id": ticket_id,
+        "intent": "close",
+        "ticker": trade["ticker"],
+        "side": inverted_side,
+        "count": pos_int,
+        "count_fp": f"{float(pos_int):.2f}",
+        "action": "close",
+        "type": "market",
+        "time_in_force": "IOC",
+        "buy_price": float(sell_price_float),
+        "symbol_close": float(symbol_close_float),
+        "close_method": close_method_val,
     }
     try:
-        port = get_port('main_app')
-        url = get_service_url(port) + "/trades"
-        resp = requests.post(url, json=payload, timeout=3)
+        from backend.core.trading_redis_comms import publish_trade_manager_command, use_trading_redis_comms
+
+        detail_part = f" | {trigger_detail}" if trigger_detail else ""
+        log_message = (
+            f"CLOSE | close_method={close_method_val} | trigger={trigger_reason} | {trigger_detail or '-'} | "
+            f"{trade.get('ticker', 'Unknown')} | {trade.get('strike')} | {trade.get('side')} | "
+            f"{trade.get('position')} | {sell_price} | {trade.get('current_probability')} | "
+            f"{trade.get('current_pnl', 'Unknown')}"
+        )
+        buy_price_float = (
+            float(trade.get("buy_price"))
+            if hasattr(trade.get("buy_price"), "__float__")
+            else trade.get("buy_price")
+        )
+        probability_float = (
+            float(trade.get("current_probability"))
+            if hasattr(trade.get("current_probability"), "__float__")
+            else trade.get("current_probability")
+        )
+        notification_data = {
+            "type": "automated_trade_closed",
+            "trade_id": trade["trade_id"],
+            "ticker": trade["ticker"],
+            "strike": trade["strike"],
+            "side": trade["side"],
+            "buy_price": buy_price_float,
+            "sell_price": sell_price_float,
+            "position": trade["position"],
+            "probability": probability_float,
+            "pnl": trade.get("current_pnl"),
+            "timestamp": datetime.now().isoformat(),
+            "close_method": close_method_val,
+            "auto_stop_trigger": trigger_reason,
+            "auto_stop_trigger_detail": trigger_detail,
+        }
+
+        use_redis = use_trading_redis_comms()
+        resp = None
+        if use_redis and publish_trade_manager_command(
+            "add_trade",
+            payload,
+            "active_trade_supervisor",
+            correlation_id=ticket_id,
+        ):
+            if ATS_UNIFIED_POOL:
+                log(
+                    f"[AUTO STOP] CLOSE enqueued (Redis) trigger={trigger_reason}{detail_part} "
+                    f"close_method={close_method_val} trade_id={tid} ticker={trade.get('ticker')} "
+                    f"prob={trade.get('current_probability')} sell_price={sell_price_float:.4f}"
+                )
+                _defer_unified_ats_close_followup(ticket_id, log_message, notification_data)
+                return True
+
+            class _Ok:
+                status_code = 201
+                text = ""
+
+                def json(self):
+                    return {}
+
+            resp = _Ok()
+        if resp is None:
+            if not ATS_HTTP_FALLBACK_ENABLED:
+                log(
+                    f"[AUTO STOP] Redis close enqueue unavailable trigger={trigger_reason} trade_id={tid}; "
+                    "ATS_HTTP_FALLBACK_ENABLED=0 so HTTP fallback is disabled"
+                )
+                return False
+            if ATS_UNIFIED_POOL:
+                log(
+                    "[AUTO STOP] ⚠️ Unified pool: Redis add_trade unavailable; "
+                    "falling back to synchronous HTTP POST main_app /trades (proxy to trade_manager)"
+                )
+            # Prefer main_app: it proxies to trade_manager with the same contract as legacy ATS.
+            main_port = get_port("main_app")
+            url = get_service_url(main_port) + "/trades"
+            resp = requests.post(url, json=payload, timeout=10)
         if resp.status_code == 201 or resp.status_code == 200:
-            detail_part = f" | {trigger_detail}" if trigger_detail else ""
+            try:
+                body = resp.json()
+                if isinstance(body, dict) and body.get("error"):
+                    log(
+                        f"[AUTO STOP] Close rejected (proxy/body error) trigger={trigger_reason} "
+                        f"trade_id={tid}: {body.get('error')}"
+                    )
+                    return False
+            except Exception:
+                pass
             log(
                 f"[AUTO STOP] CLOSE trigger={trigger_reason}{detail_part} "
                 f"close_method={close_method_val} trade_id={tid} ticker={trade.get('ticker')} "
@@ -3431,54 +4153,31 @@ def trigger_auto_stop_close(
 
             from backend.util.trade_logger import log_trade_event
 
-            log_message = (
-                f"CLOSE | close_method={close_method_val} | trigger={trigger_reason} | {trigger_detail or '-'} | "
-                f"{trade.get('ticker', 'Unknown')} | {trade.get('strike')} | {trade.get('side')} | "
-                f"{trade.get('position')} | {sell_price} | {trade.get('current_probability')} | "
-                f"{trade.get('current_pnl', 'Unknown')}"
-            )
             log_trade_event(ticket_id, log_message, service="active_trade_supervisor")
-            
-            # Notify frontend of automated trade close for audio/visual alerts
+
             try:
-                # Convert Decimal objects to float for JSON serialization
-                buy_price_float = float(trade.get('buy_price')) if hasattr(trade.get('buy_price'), '__float__') else trade.get('buy_price')
-                probability_float = float(trade.get('current_probability')) if hasattr(trade.get('current_probability'), '__float__') else trade.get('current_probability')
-                
-                notification_data = {
-                    "type": "automated_trade_closed",
-                    "trade_id": trade['trade_id'],
-                    "ticker": trade['ticker'],
-                    "strike": trade['strike'],
-                    "side": trade['side'],
-                    "buy_price": buy_price_float,
-                    "sell_price": sell_price_float,
-                    "position": trade['position'],
-                    "probability": probability_float,
-                    "pnl": trade.get('current_pnl'),
-                    "timestamp": datetime.now().isoformat(),
-                    "close_method": close_method_val,
-                    "auto_stop_trigger": trigger_reason,
-                    "auto_stop_trigger_detail": trigger_detail,
-                }
-                
-                # Call our own notification endpoint
-                notification_url = get_service_url(ACTIVE_TRADE_SUPERVISOR_PORT) + "/api/notify_automated_close"
-                notification_response = requests.post(notification_url, json=notification_data, timeout=2)
+                notification_url = (
+                    get_service_url(ACTIVE_TRADE_SUPERVISOR_PORT) + "/api/notify_automated_close"
+                )
+                notification_response = requests.post(
+                    notification_url, json=notification_data, timeout=2
+                )
                 if notification_response.ok:
-                    log_debug(f"Frontend notification sent for automated trade close")
+                    log_debug("Frontend notification sent for automated trade close")
                 else:
-                    log(f"[AUTO STOP] ⚠️ Frontend notification failed: {notification_response.status_code}")
+                    log(
+                        f"[AUTO STOP] ⚠️ Frontend notification failed: "
+                        f"{notification_response.status_code}"
+                    )
             except Exception as e:
                 log(f"[AUTO STOP] ❌ Error sending frontend notification: {e}")
-            
+
             return True
-        else:
-            log(
-                f"[AUTO STOP] Failed to trigger close trigger={trigger_reason} trade_id={tid}: "
-                f"{resp.status_code} {resp.text}"
-            )
-            return False
+        log(
+            f"[AUTO STOP] Failed to trigger close trigger={trigger_reason} trade_id={tid}: "
+            f"{resp.status_code} {getattr(resp, 'text', '')}"
+        )
+        return False
     except Exception as e:
         # Check if this is a timeout exception
         is_timeout = 'timeout' in str(e).lower() or 'timed out' in str(e).lower()
@@ -3584,6 +4283,7 @@ def handle_close_failed_trade(trade_id: int, ticket_id: str) -> bool:
 
 def get_trade_strategy():
     """Get trade strategy from monitor-specific configuration"""
+    conn = None
     try:
         import psycopg2
         conn = get_postgresql_connection()

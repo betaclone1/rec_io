@@ -75,8 +75,9 @@ Systematic checklist of every backend and frontend use of the legacy notify/broa
 | 1 | `notify_frontend_db_change(db_name, ...)` | POST to main `/api/notify_db_change` | Replace with Redis publish; or add triggers for fills, positions, settlements, orders, account_balance, subaccounts, transfers and remove calls. |
 | 2 | Call sites: account_balance, subaccounts, transfers, positions, fills, settlements, orders | Various lines | Register streams + triggers for those tables; or keep single publish helper for “db_change” and pass db_name. |
 | 3 | `notify_monitor_manager(bankroll_stepped_down)` | POST to monitor_manager `/api/bankroll_updated` | Optional: publish to Redis; monitor_manager subscribes. |
+| 4 | `_notify_trade_manager_positions_updated` | POST trade_manager `/api/positions_updated` | When `USE_TRADING_REDIS_COMMS`: `publish_positions_updated_notification` on `REDIS_CHANNEL_TM_POSITIONS_UPDATED` (default `rec_io:tm:positions_updated`); `trade_manager` subscriber calls `apply_positions_updated_payload`. HTTP fallback when flag off. |
 
-- [ ] A3 done: All `notify_frontend_db_change` use Redis (or removed in favor of triggers); notify_monitor_manager optional Redis.
+- [ ] A3 done: All `notify_frontend_db_change` use Redis (or removed in favor of triggers); notify_monitor_manager optional Redis; trade_manager `positions_updated` uses Redis with HTTP fallback (portfolio-plane parity with db_change / bankroll).
 
 ---
 

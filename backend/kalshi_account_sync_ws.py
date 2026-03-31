@@ -5,10 +5,11 @@ Real-time account data synchronization using WebSocket triggers + REST API polli
 
 HYBRID APPROACH:
 1. Initial sync on startup (one-time polling cycle)
-2. WebSocket subscription to market_positions channel
-3. When position change detected → trigger full polling cycle
-4. Periodic polling every 5 minutes to ensure data freshness
-5. Hourly balance checks on the hour + daily 1AM balance check
+2. WebSocket: market_positions, fill, user_orders (ACCOUNT_SYNC_WS_CHANNELS)
+3. Debounced per-resource REST syncs (ACCOUNT_SYNC_DEBOUNCE_MS); no direct DB writes from WS payloads
+4. Quick periodic: settlements + balance (ACCOUNT_SYNC_QUICK_PERIODIC_SEC, default 300s)
+5. Full reconcile: all five syncs (ACCOUNT_SYNC_FULL_RECONCILE_SEC, default 900s)
+6. Hourly balance checks on the hour + daily 1AM balance check
 
 This balances responsiveness with data freshness and API efficiency.
 
@@ -58,6 +59,7 @@ from psycopg2.extras import RealDictCursor
 import schedule
 from decimal import Decimal
 import logging
+from typing import Optional
 
 # Add project root to path for imports
 import sys
@@ -123,6 +125,39 @@ def _configure_logging():
 
 
 logger = _configure_logging()
+
+
+def _account_sync_debounce_sec() -> float:
+    try:
+        return max(0.05, float(os.getenv("ACCOUNT_SYNC_DEBOUNCE_MS", "400")) / 1000.0)
+    except ValueError:
+        return 0.4
+
+
+def _account_sync_quick_periodic_sec() -> int:
+    try:
+        return max(60, int(os.getenv("ACCOUNT_SYNC_QUICK_PERIODIC_SEC", "300")))
+    except ValueError:
+        return 300
+
+
+def _account_sync_full_reconcile_sec() -> int:
+    try:
+        return max(120, int(os.getenv("ACCOUNT_SYNC_FULL_RECONCILE_SEC", "900")))
+    except ValueError:
+        return 900
+
+
+def _account_sync_poc_log_max() -> int:
+    try:
+        return max(0, int(os.getenv("ACCOUNT_SYNC_POC_LOG_MAX", "20")))
+    except ValueError:
+        return 20
+
+
+def _account_sync_ws_channels():
+    raw = os.getenv("ACCOUNT_SYNC_WS_CHANNELS", "market_positions,fill,user_orders")
+    return [c.strip() for c in raw.split(",") if c.strip()]
 
 
 async def retry_api_call_with_fallback(api_call_func, fallback_func, max_retries=3, base_delay=1):
@@ -350,25 +385,22 @@ LAST_SETTLEMENTS_HASH = None
 def notify_frontend_db_change(db_name: str, change_data: dict = None):
     """Send WebSocket notification to frontend about database changes"""
     try:
-        # Use requests instead of aiohttp to avoid event loop conflicts
         import requests
-        
-        # Try to import get_host, with fallback
-        try:
-            from backend.util.paths import get_host
-            host = get_host()
-        except ImportError:
-            host = "localhost"  # Fallback to localhost
-        
-        # Use get_port function to get main_app port
+        from backend.util.paths import get_host
+        from backend.core.trading_redis_comms import publish_db_change_json, use_trading_redis_comms
+
+        change_data = change_data or {}
+        if use_trading_redis_comms() and publish_db_change_json(
+            db_name,
+            {"timestamp": time.time(), "change_data": change_data},
+        ):
+            logger.debug("Frontend notified of %s change (Redis)", db_name)
+            return
+
+        host = get_host()
         main_app_port = get_port("main_app")
         notification_url = f"http://{host}:{main_app_port}/api/notify_db_change"
-        payload = {
-            "db_name": db_name,
-            "timestamp": time.time(),
-            "change_data": change_data or {}
-        }
-        
+        payload = {"db_name": db_name, "timestamp": time.time(), "change_data": change_data}
         response = requests.post(notification_url, json=payload, timeout=5)
         if response.status_code == 200:
             logger.debug("Frontend notified of %s change", db_name)
@@ -383,7 +415,23 @@ def notify_monitor_manager(bankroll_stepped_down=False):
     try:
         import requests
         from backend.core.port_config import get_port
-        
+        from backend.core.trading_redis_comms import (
+            channel_monitor_manager,
+            redis_client_optional,
+            use_trading_redis_comms,
+        )
+
+        body = {"type": "bankroll_updated", "bankroll_stepped_down": bankroll_stepped_down}
+        if use_trading_redis_comms():
+            r = redis_client_optional()
+            if r:
+                try:
+                    r.publish(channel_monitor_manager(), json.dumps(body))
+                    logger.debug("Monitor manager notified via Redis")
+                    return
+                except Exception:
+                    pass
+
         monitor_port = get_port("monitor_manager")
         response = requests.post(
             f"http://localhost:{monitor_port}/api/bankroll_updated",
@@ -1143,7 +1191,15 @@ def sync_balance():
 
 
 def _notify_trade_manager_positions_updated(payload):
-    """POST to trade_manager /api/positions_updated with retries. Handles connection refused at startup (trade_manager may not be listening yet)."""
+    """Notify trade_manager: Redis when USE_TRADING_REDIS_COMMS, else POST /api/positions_updated with retries."""
+    try:
+        from backend.core.trading_redis_comms import publish_positions_updated_notification, use_trading_redis_comms
+
+        if use_trading_redis_comms() and publish_positions_updated_notification(payload):
+            logger.debug("Notified trade_manager (Redis) about %s", payload.get("database", "update"))
+            return
+    except Exception as e:
+        logger.debug("Redis positions_updated notify failed: %s", e)
     trade_manager_port = get_port("trade_manager")
     url = f"http://localhost:{trade_manager_port}/api/positions_updated"
     max_attempts = 3
@@ -1151,7 +1207,7 @@ def _notify_trade_manager_positions_updated(payload):
         try:
             response = requests.post(url, json=payload, timeout=5)
             if response.status_code == 200:
-                logger.debug("Notified trade_manager about %s", payload.get("database", "update"))
+                logger.debug("Notified trade_manager (HTTP) about %s", payload.get("database", "update"))
                 return
             logger.warning("trade_manager returned %s on attempt %s/%s", response.status_code, attempt + 1, max_attempts)
         except Exception as e:
@@ -1903,6 +1959,42 @@ def sync_orders():
     logger.info("Orders sync OK")
 
 
+def _flush_debounced_pending(pending: set) -> None:
+    """REST syncs for keys accumulated from debounced WS triggers."""
+    if not pending:
+        return
+    need_balance = False
+    if "positions" in pending:
+        sync_positions()
+        need_balance = True
+    if "fills" in pending:
+        sync_fills()
+        need_balance = True
+    if "orders" in pending:
+        sync_orders()
+        need_balance = True
+    if "settlements" in pending:
+        sync_settlements()
+        need_balance = True
+    if "balance" in pending:
+        need_balance = True
+    if need_balance:
+        sync_balance()
+
+
+def _quick_periodic_sync() -> None:
+    sync_settlements()
+    sync_balance()
+
+
+def _full_reconcile_sync() -> None:
+    sync_positions()
+    sync_fills()
+    sync_orders()
+    sync_settlements()
+    sync_balance()
+
+
 class KalshiWebSocketSync:
     def __init__(self):
         self.websocket = None
@@ -1910,6 +2002,13 @@ class KalshiWebSocketSync:
         self.command_id = 1
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = 5
+        self._pending: set = set()
+        self._debounce_task: Optional[asyncio.Task] = None
+        self._debounce_sec = _account_sync_debounce_sec()
+        self._quick_sec = _account_sync_quick_periodic_sec()
+        self._full_sec = _account_sync_full_reconcile_sec()
+        self._poc_fill_count = 0
+        self._poc_order_count = 0
         
     def load_kalshi_credentials(self):
         """Load Kalshi API credentials"""
@@ -1992,135 +2091,119 @@ class KalshiWebSocketSync:
             logger.error("Failed to connect to User Fills WebSocket: %s", e)
             return False
     
-    async def subscribe_to_market_positions(self):
-        """Subscribe to market positions channel"""
+    async def subscribe_to_portfolio_channels(self):
+        """Subscribe to market_positions, fill, user_orders (configurable via ACCOUNT_SYNC_WS_CHANNELS)."""
         if not self.websocket:
             return False
-        
+
+        channels = _account_sync_ws_channels()
+        if not channels:
+            logger.error("ACCOUNT_SYNC_WS_CHANNELS resolved empty")
+            return False
+
         try:
-            # Subscribe to market positions channel only
             subscription_message = {
                 "id": self.command_id,
                 "cmd": "subscribe",
-                "params": {
-                    "channels": ["market_positions"]
-                }
+                "params": {"channels": channels},
             }
-            
+            self.command_id += 1
             await self.websocket.send(json.dumps(subscription_message))
-            logger.debug("Sent market positions subscription")
+            logger.debug("Sent portfolio channel subscription: %s", channels)
 
-            # Wait for subscription confirmation
-            response = await asyncio.wait_for(self.websocket.recv(), timeout=10)
-            response_data = json.loads(response)
-            
-            if response_data.get("type") == "subscribed":
-                self.subscription_id = response_data.get("msg", {}).get("sid")
-                logger.info("Subscribed to market positions (sid=%s)", self.subscription_id)
-                return True
-            else:
-                logger.error("Market positions subscription failed: %s", response_data)
-                return False
+            deadline = time.time() + 15.0
+            while time.time() < deadline:
+                remaining = min(5.0, max(0.1, deadline - time.time()))
+                response = await asyncio.wait_for(self.websocket.recv(), timeout=remaining)
+                response_data = json.loads(response)
+                if response_data.get("type") == "subscribed":
+                    self.subscription_id = response_data.get("msg", {}).get("sid")
+                    logger.info("Subscribed to portfolio channels %s (sid=%s)", channels, self.subscription_id)
+                    return True
+                if response_data.get("type") == "error":
+                    logger.error("Portfolio subscription error: %s", response_data)
+                    return False
+                logger.debug("Pre-subscribe message: %s", response_data.get("type"))
+
+            logger.error("Portfolio subscription timed out waiting for subscribed ack")
+            return False
 
         except Exception as e:
-            logger.error("Failed to subscribe to market positions: %s", e)
+            logger.error("Failed to subscribe to portfolio channels: %s", e)
             return False
-    
-    async def handle_market_position_message(self, message):
-        """Handle incoming market position messages and trigger full polling cycle"""
+
+    async def _add_pending_and_debounce(self, keys) -> None:
+        for k in keys:
+            self._pending.add(k)
+        await self._schedule_debounced_flush()
+
+    async def _schedule_debounced_flush(self) -> None:
+        async def _run():
+            try:
+                await asyncio.sleep(self._debounce_sec)
+                pending = self._pending.copy()
+                self._pending.clear()
+                if not pending:
+                    return
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, _flush_debounced_pending, pending)
+            except asyncio.CancelledError:
+                raise
+            finally:
+                self._debounce_task = None
+
+        if self._debounce_task and not self._debounce_task.done():
+            self._debounce_task.cancel()
+            try:
+                await self._debounce_task
+            except asyncio.CancelledError:
+                pass
+        self._debounce_task = asyncio.create_task(_run())
+
+    async def handle_ws_message(self, message):
+        """Route Kalshi WS messages to debounced REST syncs; PoC logging for fill / user_orders."""
         try:
             data = json.loads(message)
-            
-            if data.get("type") == "market_position":
+            t = data.get("type")
+            max_poc = _account_sync_poc_log_max()
+
+            if t == "market_position":
                 position_data = data.get("msg", {})
-                
-                # Store latest WebSocket data for fallback use
                 global LATEST_WEBSOCKET_POSITION_DATA, LATEST_WEBSOCKET_TIMESTAMP
                 LATEST_WEBSOCKET_POSITION_DATA = position_data
                 LATEST_WEBSOCKET_TIMESTAMP = datetime.now().isoformat() + "Z"
-                
-                logger.debug("Market position update: ticker=%s position=%s", position_data.get("market_ticker"), position_data.get("position"))
+                logger.debug(
+                    "Market position update: ticker=%s position=%s",
+                    position_data.get("market_ticker"),
+                    position_data.get("position"),
+                )
+                await self._add_pending_and_debounce({"positions", "balance"})
 
-                # WebSocket ONLY as trigger - NO direct database writes
-                logger.debug("Position change detected, triggering full REST API polling cycle")
-                await self.trigger_full_polling_cycle()
-                
-            elif data.get("type") == "subscribed":
+            elif t == "fill":
+                if self._poc_fill_count < max_poc:
+                    self._poc_fill_count += 1
+                    logger.info("PoC fill WS message (compare to REST): %s", json.dumps(data, default=str)[:3000])
+                await self._add_pending_and_debounce({"fills", "balance"})
+
+            elif t in ("order", "user_order", "orders", "order_update"):
+                if self._poc_order_count < max_poc:
+                    self._poc_order_count += 1
+                    logger.info("PoC user_orders WS message (compare to REST): %s", json.dumps(data, default=str)[:3000])
+                await self._add_pending_and_debounce({"orders", "balance"})
+
+            elif t == "subscribed":
                 logger.debug("Subscription confirmed: %s", data)
 
-            elif data.get("type") == "error":
+            elif t == "error":
                 logger.warning("WebSocket error: %s", data)
 
             else:
-                logger.debug("WebSocket message: type=%s", data.get("type"))
+                logger.debug("WebSocket message: type=%s", t)
 
         except Exception as e:
             logger.error("Error handling message: %s", e)
             logger.debug("Raw message: %s", message)
-    
-    async def trigger_full_polling_cycle(self):
-        """Trigger a complete polling cycle for all endpoints when position changes"""
-        try:
-            logger.debug("Starting triggered polling cycle")
 
-            # Run all sync functions asynchronously - balance LAST so it can reference latest positions data
-            await self.async_sync_positions()
-            await self.async_sync_fills()
-            await self.async_sync_orders()
-            await self.async_sync_settlements()
-            await self.async_sync_balance()
-
-            logger.debug("Triggered polling cycle completed")
-
-        except Exception as e:
-            logger.error("Error in triggered polling cycle: %s", e)
-    
-    async def async_sync_balance(self):
-        """Async version of sync_balance"""
-        try:
-            logger.debug("Triggered balance sync")
-            sync_balance()
-        except Exception as e:
-            logger.error("Error in triggered balance sync: %s", e)
-
-    async def async_sync_positions(self):
-        """Async version of sync_positions"""
-        try:
-            logger.debug("Triggered positions sync")
-            sync_positions()
-        except Exception as e:
-            logger.error("Error in triggered positions sync: %s", e)
-
-    async def async_sync_fills(self):
-        """Async version of sync_fills"""
-        try:
-            logger.debug("Triggered fills sync")
-            sync_fills()
-        except Exception as e:
-            logger.error("Error in triggered fills sync: %s", e)
-
-    async def async_sync_orders(self):
-        """Async version of sync_orders"""
-        try:
-            logger.debug("Triggered orders sync")
-            sync_orders()
-        except Exception as e:
-            logger.error("Error in triggered orders sync: %s", e)
-
-    async def async_sync_settlements(self):
-        """Async version of sync_settlements"""
-        try:
-            logger.debug("Triggered settlements sync")
-            sync_settlements()
-        except Exception as e:
-            logger.error("Error in triggered settlements sync: %s", e)
-    
-    # REMOVED: write_market_position_to_db function
-    # WebSocket now ONLY serves as a trigger for REST API polling
-    # All database writes happen through the standardized REST API sync functions
-    
-
-    
     async def store_market_lifecycle(self, lifecycle_data):
         """Store market lifecycle data (placeholder for future use)"""
         try:
@@ -2137,51 +2220,66 @@ class KalshiWebSocketSync:
         except Exception as e:
             logger.error("Error storing event lifecycle: %s", e)
 
-    async def periodic_polling_task(self):
-        """Periodic polling task that runs every 5 minutes"""
+    async def periodic_quick_task(self):
+        """Settlements + balance on ACCOUNT_SYNC_QUICK_PERIODIC_SEC (default 300s)."""
         while True:
             try:
-                await asyncio.sleep(300)  # 5 minutes = 300 seconds
+                await asyncio.sleep(self._quick_sec)
                 logger.info("heartbeat")
-                logger.debug("5-minute periodic polling triggered")
-                await self.trigger_full_polling_cycle()
+                logger.debug("quick periodic: settlements + balance")
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, _quick_periodic_sync)
             except Exception as e:
-                logger.error("Error in periodic polling task: %s", e)
+                logger.error("Error in quick periodic task: %s", e)
+
+    async def periodic_full_task(self):
+        """Full five-way REST reconcile on ACCOUNT_SYNC_FULL_RECONCILE_SEC (default 900s)."""
+        while True:
+            try:
+                await asyncio.sleep(self._full_sec)
+                logger.debug("full reconcile periodic")
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, _full_reconcile_sync)
+            except Exception as e:
+                logger.error("Error in full reconcile periodic task: %s", e)
 
     async def run_websocket(self):
-        """Main WebSocket run loop - Hybrid approach: WebSocket triggers + periodic polling"""
+        """WebSocket triggers (debounced per resource) + quick + full periodic REST."""
         logger.info("Starting Kalshi Hybrid WebSocket/Polling Sync")
 
-        # Start periodic polling task in the background
-        periodic_task = asyncio.create_task(self.periodic_polling_task())
-        logger.debug("Started 5-minute periodic polling task")
+        asyncio.create_task(self.periodic_quick_task())
+        asyncio.create_task(self.periodic_full_task())
+        logger.debug(
+            "Started periodic quick every %ss + full reconcile every %ss",
+            self._quick_sec,
+            self._full_sec,
+        )
 
         while True:
             try:
-                # Connect to WebSocket
                 if not await self.connect():
                     logger.warning("Failed to connect, retrying in 5 seconds")
                     await asyncio.sleep(5)
                     continue
-                
-                # Subscribe to market positions
-                if not await self.subscribe_to_market_positions():
+
+                if not await self.subscribe_to_portfolio_channels():
                     logger.warning("Failed to subscribe, retrying in 5 seconds")
                     await asyncio.sleep(5)
                     continue
 
-                logger.info("Listening for market position notifications (hybrid: WS triggers + 5-min polling)")
-                
-                # Listen for messages
+                logger.info(
+                    "Listening for portfolio WS (debounced REST) + quick (settle/bal) + full reconcile"
+                )
+
                 async for message in self.websocket:
-                    await self.handle_market_position_message(message)
-                    
+                    await self.handle_ws_message(message)
+
             except websockets.exceptions.ConnectionClosed:
                 logger.warning("WebSocket connection closed, attempting to reconnect")
                 if self.websocket:
                     await self.websocket.close()
                 await asyncio.sleep(5)
-                
+
             except Exception as e:
                 logger.error("WebSocket error: %s", e)
                 await asyncio.sleep(5)
@@ -2249,7 +2347,7 @@ def main():
     sync_settlements()
     sync_balance()  # Update balance LAST so it can reference latest positions data
 
-    logger.info("Initial baseline sync complete; starting hybrid mode (WS triggers + 5-min polling)")
+    logger.info("Initial baseline sync complete; starting hybrid mode (WS debounced + quick + full reconcile)")
 
     # Start scheduler in a separate thread
     scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)

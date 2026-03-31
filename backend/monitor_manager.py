@@ -424,16 +424,83 @@ environment={env_vars}
         self._notify_frontend_monitor_list_updated("Monitor process sync completed")
         return True
 
+    def _deliver_preferences_ws(
+        self,
+        redis_message: Dict[str, Any],
+        *,
+        http_path: Optional[str],
+        http_payload: Optional[Dict[str, Any]] = None,
+        context: str = "preferences",
+    ) -> None:
+        """Push UI events through Redis (trading plane). When USE_TRADING_REDIS_COMMS is on, do not fall back
+        to blocking HTTP on localhost; that path was timing out under load and defeats the refactor."""
+        try:
+            from backend.core.trading_redis_comms import (
+                publish_preferences_ws_message,
+                use_trading_redis_comms,
+            )
+
+            if use_trading_redis_comms():
+                if publish_preferences_ws_message(redis_message):
+                    return
+                _logger.warning(
+                    "Trading Redis preferences publish failed (%s); skipping main_app HTTP fallback",
+                    context,
+                )
+                return
+
+            if not http_path:
+                return
+            mp = get_port("main_app")
+            body = http_payload if http_payload is not None else redis_message
+            timeout_s = float(os.getenv("MONITOR_MANAGER_MAIN_HTTP_TIMEOUT", "15"))
+            requests.post(
+                f"http://localhost:{mp}{http_path}",
+                json=body,
+                timeout=timeout_s,
+            )
+        except Exception as e:
+            self.log_event("WEBSOCKET_ERROR", f"Failed frontend fanout ({context}): {e}")
+
     def _notify_frontend_monitor_list_updated(self, message: str = "Monitor list updated") -> None:
         """Whenever monitor_manager changes monitor_list, alert frontend so displays refresh."""
-        try:
-            import requests
-            requests.post("http://localhost:3000/api/broadcast_monitor_list_update", json={
-                "type": "monitor_list_updated",
-                "message": message
-            }, timeout=5)
-        except Exception as e:
-            self.log_event("WEBSOCKET_ERROR", f"Failed to notify frontend: {e}")
+        body = {"type": "monitor_list_updated", "message": message}
+        self._deliver_preferences_ws(
+            body,
+            http_path="/api/broadcast_monitor_list_update",
+            http_payload=body,
+            context="monitor_list_updated",
+        )
+
+    def _notify_frontend_monitor_total_position(
+        self, monitor_id: int, total_position: int, multiplier: float = None
+    ) -> None:
+        msg: Dict[str, Any] = {
+            "type": "monitor_total_position_updated",
+            "monitor_id": monitor_id,
+            "total_position": total_position,
+        }
+        if multiplier is not None:
+            msg["multiplier"] = multiplier
+        self._deliver_preferences_ws(
+            msg,
+            http_path="/api/broadcast_monitor_total_position",
+            http_payload={
+                "monitor_id": monitor_id,
+                "total_position": total_position,
+                "multiplier": multiplier,
+            },
+            context="monitor_total_position",
+        )
+
+    def _notify_frontend_monitor_statistics(self, payload: dict) -> None:
+        msg = {"type": "monitor_statistics_update", **payload}
+        self._deliver_preferences_ws(
+            msg,
+            http_path="/api/broadcast_monitor_statistics_update",
+            http_payload=msg,
+            context="monitor_statistics",
+        )
 
     # === CORE FUNCTIONALITY (Starting Point) ===
     
@@ -479,50 +546,59 @@ environment={env_vars}
         conn = None
         try:
             conn = self.get_database_connection()
-            
+
             with conn.cursor() as cursor:
-                # Get current bankroll in cents
-                cursor.execute("SELECT bankroll_current FROM users.account_balance_0001 ORDER BY timestamp DESC LIMIT 1")
+                cursor.execute(
+                    "SELECT bankroll_current FROM users.account_balance_0001 ORDER BY timestamp DESC LIMIT 1"
+                )
                 bankroll_result = cursor.fetchone()
                 if not bankroll_result:
                     return {"status": "error", "message": "No bankroll data found"}
-                
-                bankroll_cents = bankroll_result[0]  # Already in cents
-                
-                # Get all active monitors
-                cursor.execute("""
+
+                bankroll_cents = bankroll_result[0]
+
+                cursor.execute(
+                    """
                     SELECT id, name, bankroll_allotment_pct 
                     FROM users.monitor_list_0001 
                     WHERE status = 'active'
-                """)
-                
-                monitors = cursor.fetchall()
-                updated_count = 0
-                
-                for monitor_id, monitor_name, allotment_pct in monitors:
-                    if allotment_pct is None:
-                        continue
-                    
-                    # Simple calculation: allotment_pct * bankroll_cents
-                    allotment_total_cents = int(allotment_pct * bankroll_cents)
-                    
-                    # Update bankroll_allotment_total
-                    cursor.execute("""
-                        UPDATE users.monitor_list_0001 
-                        SET bankroll_allotment_total = %s 
-                        WHERE id = %s
-                    """, (allotment_total_cents, monitor_id))
-                    
-                    # Update total_position for all monitors
-                    cursor.execute("""
-                        SELECT position_size, position_type, multiplier, current_max_pct_exposure 
-                        FROM users.monitor_list_0001 
-                        WHERE id = %s
-                    """, (monitor_id,))
-                    
-                    pos_result = cursor.fetchone()
-                    if pos_result:
-                        position_size, position_type, multiplier, current_max_pct_exposure = pos_result
+                    """
+                )
+                monitors = list(cursor.fetchall())
+
+            updated_count = 0
+            for monitor_id, monitor_name, allotment_pct in monitors:
+                if allotment_pct is None:
+                    continue
+                allotment_total_cents = int(allotment_pct * bankroll_cents)
+                try:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            """
+                            UPDATE users.monitor_list_0001 
+                            SET bankroll_allotment_total = %s 
+                            WHERE id = %s
+                            """,
+                            (allotment_total_cents, monitor_id),
+                        )
+                        cursor.execute(
+                            """
+                            SELECT position_size, position_type, multiplier, current_max_pct_exposure 
+                            FROM users.monitor_list_0001 
+                            WHERE id = %s
+                            """,
+                            (monitor_id,),
+                        )
+                        pos_result = cursor.fetchone()
+                        if not pos_result or len(pos_result) < 4:
+                            conn.commit()
+                            continue
+                        (
+                            position_size,
+                            position_type,
+                            multiplier,
+                            current_max_pct_exposure,
+                        ) = pos_result
                         multiplier_value = float(multiplier or 0)
                         max_pct_cap = None
                         try:
@@ -530,11 +606,10 @@ environment={env_vars}
                                 max_pct_cap = float(current_max_pct_exposure)
                         except (TypeError, ValueError):
                             max_pct_cap = None
-                        
+
                         if multiplier_value == 0:
                             new_total_position = 1
-                        elif position_type == 'percent':
-                            # For percent: round((position_size * allotment_dollars / 100) * multiplier)
+                        elif position_type == "percent":
                             allotment_dollars = allotment_total_cents / 100
                             base_pct = (position_size or 0) / 100.0
                             effective_pct = base_pct * multiplier_value
@@ -544,38 +619,40 @@ environment={env_vars}
                             if new_total_position < 1:
                                 new_total_position = 1
                         else:
-                            # For contracts: position_size * multiplier
                             new_total_position = int(position_size * multiplier_value)
-                        
-                        # Update total_position in monitor table
-                        cursor.execute("""
+
+                        cursor.execute(
+                            """
                             UPDATE users.monitor_list_0001 
                             SET total_position = %s 
                             WHERE id = %s
-                        """, (new_total_position, monitor_id))
-                        
-                        # Send WebSocket notification to frontend about total_position update
-                        try:
-                            import requests
-                            requests.post('http://localhost:3000/api/broadcast_monitor_total_position', json={
-                                'monitor_id': monitor_id,
-                                'total_position': new_total_position,
-                                'multiplier': multiplier_value
-                            }, timeout=1)
-                        except Exception as e:
-                            self.log_event("WEBSOCKET_ERROR", f"Failed to send total_position update notification: {str(e)}")
-                        
-                        updated_count += 1
-                
-                conn.commit()
-                
-                return {
-                    "status": "success",
-                    "message": f"Updated {updated_count} monitors",
-                    "updated_count": updated_count,
-                    "bankroll_cents": bankroll_cents
-                }
-                
+                            """,
+                            (new_total_position, monitor_id),
+                        )
+                    conn.commit()
+                    self._notify_frontend_monitor_total_position(
+                        monitor_id, new_total_position, multiplier_value
+                    )
+                    updated_count += 1
+                except Exception as mon_e:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    _logger.warning(
+                        "update_monitor_bankroll_allotments: monitor id=%s name=%r: %s",
+                        monitor_id,
+                        monitor_name,
+                        mon_e,
+                    )
+
+            return {
+                "status": "success",
+                "message": f"Updated {updated_count} monitors",
+                "updated_count": updated_count,
+                "bankroll_cents": bankroll_cents,
+            }
+
         except Exception as e:
             return {"status": "error", "message": str(e)}
         finally:
@@ -717,16 +794,9 @@ environment={env_vars}
                 conn.commit()
                 self.log_event("TIMING", f"Commit: {time.time() - commit_start:.3f}s")
                 
-                # Send WebSocket notification to frontend
-                try:
-                    import requests
-                    requests.post('http://localhost:3000/api/broadcast_monitor_total_position', json={
-                        'monitor_id': monitor_id,
-                        'total_position': new_total_position,
-                        'multiplier': multiplier_value
-                    }, timeout=1)
-                except Exception as e:
-                    self.log_event("WEBSOCKET_ERROR", f"Failed to send total_position update notification: {str(e)}")
+                self._notify_frontend_monitor_total_position(
+                    monitor_id, new_total_position, multiplier_value
+                )
                 
                 self._notify_frontend_monitor_list_updated("Monitor position variables updated")
                 total_time = time.time() - start_time
@@ -755,7 +825,6 @@ environment={env_vars}
             conn = self.get_database_connection()
 
             with conn.cursor() as cursor:
-                # Get all active monitors; include performance_based_allocation
                 cursor.execute("""
                     SELECT id,
                            name,
@@ -768,11 +837,13 @@ environment={env_vars}
                     FROM users.monitor_list_0001 
                     WHERE status = 'active'
                 """)
+                monitors = list(cursor.fetchall())
 
-                monitors = cursor.fetchall()
-                updated_count = 0
-
-                for (
+            updated_count = 0
+            for row in monitors:
+                if not row or len(row) < 8:
+                    continue
+                (
                     monitor_id,
                     monitor_name,
                     position_size,
@@ -781,68 +852,67 @@ environment={env_vars}
                     bankroll_allotment_total,
                     current_max_pct_exposure,
                     performance_based_allocation,
-                ) in monitors:
-                    if position_size is None or position_type is None or multiplier is None:
-                        continue
-                    
-                    multiplier_value = float(multiplier or 0)
+                ) = row
+                if position_size is None or position_type is None or multiplier is None:
+                    continue
+
+                multiplier_value = float(multiplier or 0)
+                max_pct_cap = None
+                try:
+                    if current_max_pct_exposure is not None:
+                        max_pct_cap = float(current_max_pct_exposure)
+                except (TypeError, ValueError):
                     max_pct_cap = None
-                    try:
-                        if current_max_pct_exposure is not None:
-                            max_pct_cap = float(current_max_pct_exposure)
-                    except (TypeError, ValueError):
-                        max_pct_cap = None
-                    
-                    if multiplier_value == 0:
-                        new_total_position = 1
-                    elif position_type == 'percent':
-                        # For percent: round((position_size * allotment_dollars / 100) * multiplier)
-                        if bankroll_allotment_total is not None:
-                            allotment_dollars = bankroll_allotment_total / 100
-                            base_pct = (position_size or 0) / 100.0
-                            effective_pct = base_pct * multiplier_value
-                            # Only apply current_max_pct_exposure cap when performance-based
-                            # allocation is enabled for this monitor.
-                            if performance_based_allocation and max_pct_cap is not None and max_pct_cap > 0:
-                                effective_pct = min(effective_pct, max_pct_cap)
-                            new_total_position = int(round(allotment_dollars * effective_pct))
-                            if new_total_position < 1:
-                                new_total_position = 1
-                        else:
-                            # If no bankroll allotment, skip this monitor
-                            continue
+
+                if multiplier_value == 0:
+                    new_total_position = 1
+                elif position_type == "percent":
+                    if bankroll_allotment_total is not None:
+                        allotment_dollars = bankroll_allotment_total / 100
+                        base_pct = (position_size or 0) / 100.0
+                        effective_pct = base_pct * multiplier_value
+                        if performance_based_allocation and max_pct_cap is not None and max_pct_cap > 0:
+                            effective_pct = min(effective_pct, max_pct_cap)
+                        new_total_position = int(round(allotment_dollars * effective_pct))
+                        if new_total_position < 1:
+                            new_total_position = 1
                     else:
-                        # For contracts: position_size * multiplier
-                        new_total_position = int(position_size * multiplier_value)
-                    
-                    # Update total_position in monitor table
-                    cursor.execute("""
-                        UPDATE users.monitor_list_0001 
-                        SET total_position = %s 
-                        WHERE id = %s
-                    """, (new_total_position, monitor_id))
-                    
-                    # Send WebSocket notification to frontend about total_position update
-                    try:
-                        import requests
-                        requests.post('http://localhost:3000/api/broadcast_monitor_total_position', json={
-                            'monitor_id': monitor_id,
-                            'total_position': new_total_position,
-                            'multiplier': multiplier_value
-                        }, timeout=1)
-                    except Exception as e:
-                        self.log_event("WEBSOCKET_ERROR", f"Failed to send total_position update notification: {str(e)}")
-                    
+                        continue
+                else:
+                    new_total_position = int(position_size * multiplier_value)
+
+                try:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            """
+                            UPDATE users.monitor_list_0001 
+                            SET total_position = %s 
+                            WHERE id = %s
+                            """,
+                            (new_total_position, monitor_id),
+                        )
+                    conn.commit()
+                    self._notify_frontend_monitor_total_position(
+                        monitor_id, new_total_position, multiplier_value
+                    )
                     updated_count += 1
-                
-                conn.commit()
-                
-                return {
-                    "status": "success",
-                    "message": f"Recalculated total_position for {updated_count} monitors",
-                    "updated_count": updated_count
-                }
-                
+                except Exception as mon_e:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    _logger.warning(
+                        "recalculate_monitor_total_positions: monitor id=%s: %s",
+                        monitor_id,
+                        mon_e,
+                    )
+
+            return {
+                "status": "success",
+                "message": f"Recalculated total_position for {updated_count} monitors",
+                "updated_count": updated_count,
+            }
+
         except Exception as e:
             return {"status": "error", "message": str(e)}
         finally:
@@ -902,11 +972,11 @@ environment={env_vars}
                             SELECT strategy FROM users.monitor_list_0001 WHERE id = %s
                         """, (monitor_id,))
                         strategy_row = cursor.fetchone()
-                        strategy = (
-                            strategy_row[0]
-                            if strategy_row and len(strategy_row) > 0 and strategy_row[0]
-                            else "Hourly HTC"
-                        )
+                        strategy = "Hourly HTC"
+                        if strategy_row and len(strategy_row) >= 1 and strategy_row[0] is not None:
+                            raw_s = str(strategy_row[0]).strip()
+                            if raw_s:
+                                strategy = raw_s
                         
                         # Check if this is Momentum Contain or Momentum Breakout
                         is_momentum_contain = strategy and "Momentum Contain" in strategy
@@ -1125,10 +1195,10 @@ environment={env_vars}
                     (monitor_id,),
                 )
                 row = cursor.fetchone()
-                if not row:
+                if not row or len(row) < 3:
                     return
 
-                regime_enabled, regime_window, current_paper_trade = row
+                regime_enabled, regime_window, current_paper_trade = row[0], row[1], row[2]
                 if not regime_enabled:
                     return
 
@@ -1154,7 +1224,10 @@ environment={env_vars}
                     """,
                     (monitor_name, interval_str),
                 )
-                window_ret_pct, window_trade_count = cursor.fetchone()
+                win_row = cursor.fetchone()
+                if not win_row or len(win_row) < 2:
+                    return
+                window_ret_pct, window_trade_count = win_row[0], win_row[1]
 
                 window_ret_pct = float(window_ret_pct or 0.0)
                 window_trade_count = int(window_trade_count or 0)
@@ -1232,19 +1305,16 @@ environment={env_vars}
                 # Update statistics for the specific monitor
                 result = self.update_monitor_statistics_from_trades()
                 
-                # Send WebSocket notification to frontend about monitor statistics update
-                try:
-                    import requests
-                    requests.post('http://localhost:3000/api/broadcast_monitor_statistics_update', json={
-                        'monitor': monitor,
-                        'trade_id': trade_id,
-                        'status': status,
-                        'bulk_update': bulk_update,
-                        'ticker': ticker,
-                        'timestamp': time.time()
-                    }, timeout=1)
-                except Exception as e:
-                    self.log_event("WEBSOCKET_ERROR", f"Failed to send monitor statistics update notification: {str(e)}")
+                self._notify_frontend_monitor_statistics(
+                    {
+                        "monitor": monitor,
+                        "trade_id": trade_id,
+                        "status": status,
+                        "bulk_update": bulk_update,
+                        "ticker": ticker,
+                        "timestamp": time.time(),
+                    }
+                )
 
                 # Regime Monitor: evaluate rolling performance and switch LIVE/PAPER if enabled.
                 try:
@@ -1362,7 +1432,7 @@ environment={env_vars}
                 """, (monitor_id,))
                 
                 result = cursor.fetchone()
-                if result:
+                if result and len(result) >= 11:
                     monitor_id, name, symbol, strategy, trades, win_loss, ret_pct, pnl, bankroll_allotment_total, total_position, status = result
                     
                     return {
@@ -1381,8 +1451,12 @@ environment={env_vars}
                             "status": status
                         }
                     }
-                else:
-                    return {"status": "error", "message": "Monitor not found"}
+                if result and len(result) < 11:
+                    return {
+                        "status": "error",
+                        "message": "Monitor row shape mismatch (expected 11 columns)",
+                    }
+                return {"status": "error", "message": "Monitor not found"}
                 
         except Exception as e:
             self.log_event("ERROR", f"Error getting monitor statistics: {e}")
@@ -1410,6 +1484,12 @@ environment={env_vars}
                 
                 monitors = []
                 for row in cursor.fetchall():
+                    if not row or len(row) < 11:
+                        self.log_event(
+                            "ERROR",
+                            f"Skipping monitor row with unexpected width (expected 11 cols): {row!r}",
+                        )
+                        continue
                     monitor_id, name, symbol, strategy, trades, win_loss, ret_pct, pnl, bankroll_allotment_total, total_position, status = row
                     
                     monitors.append({
@@ -2587,9 +2667,7 @@ class MonitorStatusWatcher:
         except Exception as e:
             _logger.error("Error handling status change for monitor %s: %s", monitor_id, e)
 
-# Initialize monitor manager instance
-monitor_manager = MonitorManager()
-
+# Single process-global instance (startup init + Redis subscriber + Flask routes share this).
 # Initialize the status watcher
 status_watcher = MonitorStatusWatcher(monitor_manager)
 
@@ -2606,6 +2684,62 @@ monitor_manager.start_daily_cleanup_scheduler()
 # Temporary safety net: periodically validate/recalculate total_position for all active monitors.
 # Long term this will be replaced by the Redis-backed position sizing pipeline.
 monitor_manager.start_total_position_refresher(interval_seconds=30)
+
+
+def start_monitor_manager_redis_subscriber() -> None:
+    """trade_manager → monitor_manager trade events via Redis (rec_io:mm:trade_events)."""
+    from backend.core.trading_redis_comms import channel_monitor_manager, redis_client_optional, use_trading_redis_comms
+
+    if not use_trading_redis_comms():
+        return
+
+    def loop():
+        backoff = 3.0
+        while True:
+            try:
+                r = redis_client_optional()
+                if not r:
+                    time.sleep(backoff)
+                    continue
+                pubsub = r.pubsub()
+                ch = channel_monitor_manager()
+                pubsub.subscribe(ch)
+                _logger.info("monitor_manager subscribed to Redis %s", ch)
+                backoff = 3.0
+                for msg in pubsub.listen():
+                    if msg.get("type") != "message":
+                        continue
+                    raw = msg.get("data")
+                    if raw is None:
+                        continue
+                    try:
+                        data = json.loads(raw)
+                    except Exception:
+                        continue
+                    try:
+                        if data.get("type") == "bankroll_updated":
+                            monitor_manager.handle_bankroll_update(
+                                bool(data.get("bankroll_stepped_down", False))
+                            )
+                            continue
+                        monitor_manager.handle_trade_status_update(
+                            data.get("trade_id"),
+                            data.get("status"),
+                            data.get("monitor"),
+                            bool(data.get("bulk_update", False)),
+                            data.get("ticker"),
+                        )
+                    except Exception as e:
+                        _logger.warning("Redis trade_status handling: %s", e)
+            except Exception as e:
+                _logger.warning("monitor_manager Redis subscriber reconnect: %s", e)
+                time.sleep(backoff)
+                backoff = min(backoff * 1.3, 60.0)
+
+    threading.Thread(target=loop, daemon=True, name="monitor-manager-redis").start()
+
+
+start_monitor_manager_redis_subscriber()
 
 def _heartbeat_loop():
     while True:

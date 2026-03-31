@@ -711,14 +711,103 @@ async def _redis_db_changes_consume_loop(queue: asyncio.Queue) -> None:
             _main_logger.warning("Redis db_changes consumer: %s", e)
 
 
+def _redis_trading_preferences_subscriber_thread(queue: asyncio.Queue, loop: asyncio.AbstractEventLoop) -> None:
+    import redis.exceptions as redis_exc
+
+    channel = os.getenv("REDIS_CHANNEL_TRADING_PREFERENCES", "rec_io:preferences")
+    get_timeout_s = float(os.getenv("REDIS_DB_FORWARDER_GET_TIMEOUT", "30"))
+    backoff = 5.0
+    while True:
+        r = None
+        pubsub = None
+        try:
+            r = _redis_client_for_db_changes_forwarder()
+            pubsub = r.pubsub()
+            pubsub.subscribe(channel)
+            _main_logger.info(
+                "Main app: subscribed to Redis channel %s for /ws/preferences forward",
+                channel,
+            )
+            backoff = 5.0
+            while True:
+                message = pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=get_timeout_s,
+                )
+                if message is None:
+                    try:
+                        r.ping()
+                    except (redis_exc.ConnectionError, redis_exc.TimeoutError, OSError) as ping_e:
+                        _main_logger.warning(
+                            "Redis preferences forwarder: ping failed (%s); reconnecting",
+                            ping_e,
+                        )
+                        break
+                    continue
+                if message.get("type") != "message":
+                    continue
+                data = message.get("data")
+                if data is None:
+                    continue
+                if isinstance(data, bytes):
+                    data = data.decode("utf-8")
+                asyncio.run_coroutine_threadsafe(queue.put(data), loop)
+        except (redis_exc.ConnectionError, redis_exc.TimeoutError, OSError) as e:
+            _main_logger.warning(
+                "Redis preferences forwarder: connection issue (%s); retry in %ss",
+                e,
+                backoff,
+            )
+            time.sleep(backoff)
+            backoff = min(backoff * 1.5, 60.0)
+        except Exception as e:
+            _main_logger.warning(
+                "Redis preferences forwarder: %s; retry in %ss",
+                e,
+                backoff,
+            )
+            time.sleep(backoff)
+            backoff = min(backoff * 1.5, 60.0)
+        finally:
+            try:
+                if pubsub is not None:
+                    pubsub.close()
+            except Exception:
+                pass
+            try:
+                if r is not None:
+                    r.close()
+            except Exception:
+                pass
+
+
+async def _redis_trading_preferences_consume_loop(queue: asyncio.Queue) -> None:
+    while True:
+        try:
+            text = await queue.get()
+            to_remove = set()
+            for client in list(connected_clients):
+                try:
+                    await client.send_text(text)
+                except Exception:
+                    to_remove.add(client)
+            connected_clients.difference_update(to_remove)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            _main_logger.warning("Redis preferences consumer: %s", e)
+
+
 # Lifespan: startup/shutdown (replaces deprecated on_event)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown; use instead of on_event for FastAPI compatibility."""
     _main_logger.info("Main app started on port %s", MAIN_APP_PORT)
     redis_queue: asyncio.Queue = asyncio.Queue()
+    pref_queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
     consumer = asyncio.create_task(_redis_db_changes_consume_loop(redis_queue))
+    pref_consumer = asyncio.create_task(_redis_trading_preferences_consume_loop(pref_queue))
     forwarder_thread = threading.Thread(
         target=_redis_db_changes_subscriber_thread,
         args=(redis_queue, loop),
@@ -726,12 +815,24 @@ async def lifespan(app: FastAPI):
         name="redis_db_changes_forwarder",
     )
     forwarder_thread.start()
+    pref_forwarder = threading.Thread(
+        target=_redis_trading_preferences_subscriber_thread,
+        args=(pref_queue, loop),
+        daemon=True,
+        name="redis_trading_preferences_forwarder",
+    )
+    pref_forwarder.start()
     try:
         yield
     finally:
         consumer.cancel()
+        pref_consumer.cancel()
         try:
             await consumer
+        except asyncio.CancelledError:
+            pass
+        try:
+            await pref_consumer
         except asyncio.CancelledError:
             pass
         _main_logger.info("Main app shutting down")
@@ -4104,7 +4205,10 @@ async def get_active_trades_for_monitor(monitor_name: str):
     try:
         import psycopg2
 
-        from backend.core.port_config import monitor_suffix_uses_unified_15m_pool
+        from backend.core.port_config import (
+            monitor_suffix_uses_unified_15m_pool,
+            monitor_suffix_uses_unified_hourly_pool,
+        )
         
         # Extract the numeric part from monitor name (e.g., "mon_0001_10002" -> "0001_10002")
         # The table name format is active_trades_0001_10002, not active_trades_mon_0001_10002
@@ -4113,8 +4217,9 @@ async def get_active_trades_for_monitor(monitor_name: str):
             table_suffix = monitor_name[4:]  # Remove "mon_" prefix
 
         use_15m_pool = monitor_suffix_uses_unified_15m_pool(table_suffix)
+        use_hourly_pool = monitor_suffix_uses_unified_hourly_pool(table_suffix)
         pool_user, pool_mid = None, None
-        if use_15m_pool:
+        if use_15m_pool or use_hourly_pool:
             parts = table_suffix.split("_", 1)
             if len(parts) == 2:
                 pool_user, pool_mid = parts[0], parts[1]
@@ -4133,7 +4238,20 @@ async def get_active_trades_for_monitor(monitor_name: str):
                         momentum, prob, fees, diff, status, current_symbol_price,
                         current_probability, buffer_from_entry, time_since_entry,
                         current_close_price, current_pnl, last_updated, created_at
-                    FROM users.active_trades_{pool_user}_15m
+                    FROM users.active_trades_15m_{pool_user}
+                    WHERE monitor_id = %s
+                      AND status IN ('active', 'pending', 'closing')
+                    ORDER BY created_at DESC
+                """, (pool_mid,))
+            elif use_hourly_pool and pool_user and pool_mid:
+                cursor.execute(f"""
+                    SELECT 
+                        trade_id, ticket_id, date, time, strike, side, buy_price, position,
+                        contract, ticker, symbol, exchange, trade_strategy, symbol_open,
+                        momentum, prob, fees, diff, status, current_symbol_price,
+                        current_probability, buffer_from_entry, time_since_entry,
+                        current_close_price, current_pnl, last_updated, created_at
+                    FROM users.active_trades_hourly_{pool_user}
                     WHERE monitor_id = %s
                       AND status IN ('active', 'pending', 'closing')
                     ORDER BY created_at DESC
@@ -4540,6 +4658,28 @@ async def broadcast_monitor_list_update(request: Request):
         
     except Exception as e:
         _main_logger.warning(f"[MAIN] ❌ Error handling monitor list update: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/broadcast_monitor_statistics_update")
+async def broadcast_monitor_statistics_update(request: Request):
+    """Receive monitor statistics fanout (legacy HTTP path; Redis preferences is preferred on prod)."""
+    try:
+        data = await request.json()
+        if not isinstance(data, dict):
+            return {"success": False, "error": "expected JSON object"}
+        if data.get("type") != "monitor_statistics_update":
+            message = {"type": "monitor_statistics_update", **data}
+        else:
+            message = data
+        for websocket in connected_clients.copy():
+            try:
+                await websocket.send_text(json.dumps(message))
+            except Exception as e:
+                _main_logger.warning(f"Error sending to WebSocket client: {e}")
+                connected_clients.discard(websocket)
+        return {"success": True, "message": "Monitor statistics update broadcasted"}
+    except Exception as e:
+        _main_logger.warning(f"[MAIN] ❌ Error handling monitor statistics update: {e}")
         return {"success": False, "error": str(e)}
 
 # Momentum and fingerprint now consolidated in strike table - no separate broadcast endpoints needed

@@ -1,3 +1,4 @@
+import json
 import logging
 import math
 import random
@@ -39,6 +40,22 @@ _ATS_ENROLL_REDIS_ATTEMPTS = max(1, int(os.getenv("ATS_ENROLL_REDIS_ATTEMPTS", "
 _ATS_HTTP_NOTIFY_ATTEMPTS = max(1, int(os.getenv("ATS_HTTP_NOTIFY_ATTEMPTS", "6")))
 _ATS_HTTP_CONNECT_TIMEOUT = float(os.getenv("ATS_HTTP_CONNECT_TIMEOUT", "4"))
 _ATS_HTTP_READ_TIMEOUT = float(os.getenv("ATS_HTTP_READ_TIMEOUT", "25"))
+ATS_HTTP_FALLBACK_ENABLED = (os.getenv("ATS_HTTP_FALLBACK_ENABLED") or "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+_ATS_HTTP_FALLBACK_LAST_LOG_TS = 0.0
+_ATS_HTTP_FALLBACK_LOG_INTERVAL_SEC = 60.0
+
+
+def _log_ats_http_fallback_throttled(message: str) -> None:
+    global _ATS_HTTP_FALLBACK_LAST_LOG_TS
+    now = time.time()
+    if now - _ATS_HTTP_FALLBACK_LAST_LOG_TS >= _ATS_HTTP_FALLBACK_LOG_INTERVAL_SEC:
+        _ATS_HTTP_FALLBACK_LAST_LOG_TS = now
+        log(message)
 
 
 def _monitor_suffix_from_identifier(monitor_identifier: Optional[str]) -> Optional[str]:
@@ -801,6 +818,104 @@ def _is_trading_enabled() -> bool:
 def get_executor_port():
     return get_port("trade_executor")
 
+
+def send_trigger_to_executor(payload: dict) -> None:
+    """Redis stream to trade_executor when enabled, else HTTP /trigger_trade."""
+    try:
+        from backend.core.trading_redis_comms import (
+            redis_client_optional,
+            stream_executor,
+            use_trading_redis_comms,
+            xadd_trading_json,
+        )
+
+        if use_trading_redis_comms():
+            r = redis_client_optional()
+            if r and xadd_trading_json(
+                r,
+                stream_executor(),
+                msg_type="trigger_trade",
+                payload=payload,
+                source="trade_manager",
+            ):
+                return
+    except Exception as e:
+        log(f"⚠️ Executor trigger via Redis failed, using HTTP: {e}")
+    try:
+        executor_port = get_executor_port()
+        requests.post(
+            f"http://localhost:{executor_port}/trigger_trade",
+            json=payload,
+            timeout=5,
+        )
+    except Exception as e:
+        log(f"EXECUTOR HTTP ERROR: {e}")
+
+
+def _fanout_active_trades_change_via_redis_or_http(broadcast_payload: dict) -> None:
+    try:
+        from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
+
+        if use_trading_redis_comms() and publish_preferences_event("active_trades_change", broadcast_payload):
+            log("NOTIFIED FRONTEND - ACTIVE TRADES CHANGE (Redis)")
+            return
+    except Exception:
+        pass
+    try:
+        broadcast_url = f"http://localhost:{get_port('main_app')}/api/broadcast_active_trades_change"
+        response = requests.post(broadcast_url, json=broadcast_payload, timeout=2)
+        if response.status_code == 200:
+            log("NOTIFIED FRONTEND - ACTIVE TRADES CHANGE")
+        else:
+            log(f"ACTIVE TRADES BROADCAST FAILED: {response.status_code}")
+    except Exception as e:
+        log(f"ACTIVE TRADES BROADCAST ERROR: {e}")
+
+
+def notify_frontend_trade_change_redis_or_http() -> None:
+    try:
+        from backend.core.trading_redis_comms import publish_db_change_json, use_trading_redis_comms
+
+        inner = {"timestamp": time.time(), "change_data": {"trades": 1}}
+        if use_trading_redis_comms() and publish_db_change_json("trades", inner):
+            log("NOTIFIED FRONTEND (Redis db_changes)")
+            return
+    except Exception:
+        pass
+    try:
+        notification_url = f"http://localhost:{get_port('main_app')}/api/notify_db_change"
+        requests.post(
+            notification_url,
+            json={"db_name": "trades", "timestamp": time.time(), "change_data": {"trades": 1}},
+            timeout=2,
+        )
+        log("NOTIFIED FRONTEND")
+    except Exception:
+        pass
+
+
+def notify_strike_table_trade_change_redis_or_http(trade_id: int, status: str) -> None:
+    cd = {"trade_id": trade_id, "status": status}
+    try:
+        from backend.core.trading_redis_comms import publish_db_change_json, use_trading_redis_comms
+
+        inner = {"timestamp": time.time(), "change_data": cd}
+        if use_trading_redis_comms() and publish_db_change_json("trades", inner):
+            log("NOTIFIED STRIKE TABLE (Redis)")
+            return
+    except Exception:
+        pass
+    try:
+        notification_url = f"http://localhost:{get_port('main_app')}/api/notify_db_change"
+        requests.post(
+            notification_url,
+            json={"db_name": "trades", "timestamp": time.time(), "change_data": cd},
+            timeout=1,
+        )
+        log("NOTIFIED STRIKE TABLE")
+    except Exception:
+        pass
+
 # ---------- CORE TRADE FUNCTIONS ----------------------------------------------------
 
 def insert_trade(trade):
@@ -811,6 +926,26 @@ def insert_trade(trade):
     if not symbol:
         raise ValueError("Trade symbol must be provided - no fallbacks allowed")
     symbol_lower = symbol.lower()
+
+    ticket_id = trade.get("ticket_id")
+    if ticket_id:
+        tid = str(ticket_id).strip()
+        if tid:
+            try:
+                pg_idem = get_postgresql_connection()
+                if pg_idem:
+                    with pg_idem.cursor() as cur_i:
+                        cur_i.execute(
+                            "SELECT id FROM users.trades_0001 WHERE ticket_id = %s LIMIT 1",
+                            (tid,),
+                        )
+                        existing = cur_i.fetchone()
+                    pg_idem.close()
+                    if existing and existing[0] is not None:
+                        log_debug(f"insert_trade: idempotent reuse ticket_id={tid} id={existing[0]}")
+                        return int(existing[0])
+            except Exception as e:
+                log(f"⚠️ insert_trade ticket_id idempotency lookup failed: {e}")
     
     # Get symbol price and all market-context fields from live_data (same source as momentum)
     symbol_open = None
@@ -1798,11 +1933,16 @@ def get_high_low_prices_from_active_trades(trade_id: int) -> tuple:
             log(f"⚠️ Monitor identifier doesn't start with 'mon_': {monitor_identifier}")
             return (None, None)
         
-        from backend.core.port_config import monitor_suffix_uses_unified_15m_pool
+        from backend.core.port_config import (
+            monitor_suffix_uses_unified_15m_pool,
+            monitor_suffix_uses_unified_hourly_pool,
+        )
 
         suffix = f"{user_number}_{monitor_id}"
         if monitor_suffix_uses_unified_15m_pool(suffix):
-            active_trades_table = f"active_trades_{user_number}_15m"
+            active_trades_table = f"active_trades_15m_{user_number}"
+        elif monitor_suffix_uses_unified_hourly_pool(suffix):
+            active_trades_table = f"active_trades_hourly_{user_number}"
         else:
             active_trades_table = f"active_trades_{user_number}_{monitor_id}"
 
@@ -2216,7 +2356,7 @@ def log_event(ticket_id, message):
         log(f"[LOG ERROR] Failed to write log: {message} — {e}")
 
 def notify_active_trade_supervisor_direct_with_monitor(trade_id: int, ticket_id: str, status: str, monitor_identifier: str) -> bool:
-    """Send direct notification to ATS via HTTP with retries (system-critical path)."""
+    """Send direct notification to ATS via Redis (non-open) or HTTP with retries (system-critical path)."""
     monitor_suffix = _monitor_suffix_from_identifier(monitor_identifier)
     if not monitor_suffix:
         log(f"ERROR: No valid monitor identifier found for trade {trade_id}")
@@ -2227,6 +2367,38 @@ def notify_active_trade_supervisor_direct_with_monitor(trade_id: int, ticket_id:
         "status": status,
         "monitor_identifier": monitor_suffix,
     }
+    try:
+        from backend.core.trading_redis_comms import publish_ats_tm_notification, redis_client_optional, use_trading_redis_comms
+
+        if use_trading_redis_comms() and status != "open":
+            r = redis_client_optional()
+            if r and publish_ats_tm_notification(
+                r, trade_id, ticket_id or "", status, monitor_suffix
+            ):
+                log(
+                    f"NOTIFIED ATS (Redis) for monitor {monitor_suffix} trade_id={trade_id} status={status}"
+                )
+                return True
+            if not ATS_HTTP_FALLBACK_ENABLED:
+                _log_ats_http_fallback_throttled(
+                    f"ATS notify dropped (Redis unavailable, HTTP fallback disabled) "
+                    f"mon={monitor_suffix} trade_id={trade_id} status={status}"
+                )
+                return False
+    except Exception as e:
+        if not ATS_HTTP_FALLBACK_ENABLED:
+            _log_ats_http_fallback_throttled(
+                f"ATS Redis notify failed and HTTP fallback disabled mon={monitor_suffix} "
+                f"trade_id={trade_id} status={status}: {e}"
+            )
+            return False
+        log(f"⚠️ ATS Redis notify failed, using HTTP: {e}")
+    if not ATS_HTTP_FALLBACK_ENABLED:
+        _log_ats_http_fallback_throttled(
+            f"ATS notify dropped (Redis not selected, HTTP fallback disabled) "
+            f"mon={monitor_suffix} trade_id={trade_id} status={status}"
+        )
+        return False
     ok, err = _post_ats_trade_notification_http(monitor_suffix, payload)
     if ok:
         log(f"NOTIFIED ACTIVE TRADE SUPERVISOR for monitor {monitor_suffix} trade_id={trade_id} status={status}")
@@ -2350,43 +2522,11 @@ def notify_ats_trade_open_with_ack(trade_id: int) -> None:
 
 def notify_frontend_trade_change() -> None:
     """Send notification to frontend when trades are updated"""
-    try:
-        import requests
-        notification_url = f"http://localhost:{get_port('main_app')}/api/notify_db_change"
-        payload = {
-            "db_name": "trades",
-            "timestamp": time.time(),
-            "change_data": {"trades": 1}
-        }
-        
-        response = requests.post(notification_url, json=payload, timeout=2)
-        if response.status_code == 200:
-            log("NOTIFIED FRONTEND")
-        else:
-            log(f"FRONTEND NOTIFICATION FAILED")
-    except Exception as e:
-        # Don't log errors for frontend notifications - they're not critical
-        pass
+    notify_frontend_trade_change_redis_or_http()
 
 def notify_strike_table_trade_change(trade_id: int, status: str) -> None:
     """Notify strike table about trade status changes for display updates"""
-    try:
-        import requests
-        notification_url = f"http://localhost:{get_port('main_app')}/api/notify_db_change"
-        payload = {
-            "db_name": "trades",
-            "timestamp": time.time(),
-            "change_data": {"trade_id": trade_id, "status": status}
-        }
-        
-        response = requests.post(notification_url, json=payload, timeout=1)
-        if response.status_code == 200:
-            log(f"NOTIFIED STRIKE TABLE")
-        else:
-            log(f"STRIKE TABLE NOTIFICATION FAILED")
-    except Exception as e:
-        # Don't log errors for strike table notifications - they're not critical
-        pass
+    notify_strike_table_trade_change_redis_or_http(trade_id, status)
 
 def truncate_contract_name(contract_name, symbol=None):
     """Truncate contract name to short form like 'SYMBOL 5pm'"""
@@ -2729,22 +2869,14 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                 pg_conn.close()
                 
                 # Broadcast active trades change to frontend
-                try:
-                    import requests
-                    broadcast_url = f"http://localhost:{get_port('main_app')}/api/broadcast_active_trades_change"
-                    broadcast_payload = {
+                _fanout_active_trades_change_via_redis_or_http(
+                    {
                         "count": 1,
                         "trade_id": trade_id,
                         "status": status,
-                        "timestamp": time.time()
+                        "timestamp": time.time(),
                     }
-                    response = requests.post(broadcast_url, json=broadcast_payload, timeout=2)
-                    if response.status_code == 200:
-                        log("NOTIFIED FRONTEND - ACTIVE TRADES CHANGE")
-                    else:
-                        log(f"ACTIVE TRADES BROADCAST FAILED: {response.status_code}")
-                except Exception as e:
-                    log(f"ACTIVE TRADES BROADCAST ERROR: {e}")
+                )
         else:
             log(f"⚠️ Skipping PostgreSQL update - no connection available")
     except Exception as e:
@@ -2853,22 +2985,14 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
                 pg_conn.close()
                 
                 # Broadcast active trades change to frontend
-                try:
-                    import requests
-                    broadcast_url = f"http://localhost:{get_port('main_app')}/api/broadcast_active_trades_change"
-                    broadcast_payload = {
+                _fanout_active_trades_change_via_redis_or_http(
+                    {
                         "count": 1,
                         "trade_id": trade_id,
                         "status": status,
-                        "timestamp": time.time()
+                        "timestamp": time.time(),
                     }
-                    response = requests.post(broadcast_url, json=broadcast_payload, timeout=2)
-                    if response.status_code == 200:
-                        log("NOTIFIED FRONTEND - ACTIVE TRADES CHANGE")
-                    else:
-                        log(f"ACTIVE TRADES BROADCAST FAILED: {response.status_code}")
-                except Exception as e:
-                    log(f"ACTIVE TRADES BROADCAST ERROR: {e}")
+                )
         else:
             log(f"⚠️ Skipping PostgreSQL update - no connection available")
     except Exception as e:
@@ -3209,7 +3333,7 @@ def check_and_update_cycle_metrics(trade_id: int) -> None:
 
 # ---------- API ENDPOINTS ----------------------------------------------------
 
-from fastapi import APIRouter, HTTPException, status, Request
+from fastapi import APIRouter, FastAPI, HTTPException, status, Request
 router = APIRouter()
 
 @router.get("/api/ports")
@@ -3426,8 +3550,6 @@ async def add_trade(request: Request):
                     # LIVE TRADE: Send to executor as normal
                     # IMMEDIATELY send to executor with trade_id
                     try:
-                        import requests
-                        executor_port = get_executor_port()
                         log(f"SENDING CLOSE TO EXECUTOR")
                         close_payload = {
                             "id": trade_id,  # Include trade_id for close orders
@@ -3442,8 +3564,7 @@ async def add_trade(request: Request):
                             "intent": "close",
                             "ticket_id": data.get("ticket_id")  # Include ticket_id for close orders
                         }
-                        response = requests.post(f"http://localhost:{executor_port}/trigger_trade", json=close_payload, timeout=5)
-                        log(f"EXECUTOR RESPONSE: {response.status_code}")
+                        send_trigger_to_executor(close_payload)
                     except Exception as e:
                         log(f"CLOSE EXECUTOR ERROR: {e}")
                 
@@ -3599,13 +3720,10 @@ async def add_trade(request: Request):
         # LIVE TRADE: Send to executor as normal
         # IMMEDIATELY send to executor first (use count_fp for full-chain consistency)
         try:
-            import requests
-            executor_port = get_executor_port()
             if "count_fp" not in data or (data.get("count_fp") is None or str(data.get("count_fp", "")).strip() == ""):
                 data["count_fp"] = _format_count_fp(data, for_close=False)
             log(f"SENDING TO EXECUTOR")
-            response = requests.post(f"http://localhost:{executor_port}/trigger_trade", json=data, timeout=5)
-            log(f"EXECUTOR RESPONSE: {response.status_code}")
+            send_trigger_to_executor(data)
         except Exception as e:
             log(f"EXECUTOR ERROR: {e}")
             log_event(data.get("ticket_id", "UNKNOWN"), f"EXECUTOR ERROR: {e}")
@@ -3629,19 +3747,21 @@ async def add_trade(request: Request):
 
     return {"id": trade_id}
 
-@router.post("/api/update_trade_status")
-async def update_trade_status_api(request: Request):
-    """Handle status updates from executor"""
+
+def apply_update_trade_status_payload(data: dict):
+    """
+    Core handler for executor status updates (HTTP + Redis stream).
+    Returns (response_dict, None) on success or (None, (status_code, detail)) on error.
+    """
     log(f"STATUS UPDATE RECEIVED")
-    data = await request.json()
     id = data.get("id")
     ticket_id = data.get("ticket_id")
     new_status = data.get("status", "").strip().lower()
-    order_id = data.get("order_id")  # Extract order_id from payload
-    intent = data.get("intent", "open")  # Extract intent to determine which order_id field to use
-        
+    order_id = data.get("order_id")
+    intent = data.get("intent", "open")
+
     if not new_status or (not id and not ticket_id):
-        raise HTTPException(status_code=400, detail="Missing id or ticket_id or status")
+        return None, (400, "Missing id or ticket_id or status")
 
     if not id and ticket_id:
         pg_conn = get_postgresql_connection()
@@ -3652,7 +3772,7 @@ async def update_trade_status_api(request: Request):
         else:
             row = None
         if not row:
-            raise HTTPException(status_code=404, detail="Trade with provided ticket_id not found")
+            return None, (404, "Trade with provided ticket_id not found")
         id = row[0]
 
     if not ticket_id:
@@ -3709,7 +3829,7 @@ async def update_trade_status_api(request: Request):
                     log_event(ticket_id, f"MANAGER: ERROR STORING {log_type} ORDER_ID: {e}")
         
         log(f"WAITING FOR POSITION CONFIRMATION")
-        return {"message": "Trade accepted – waiting for position confirmation", "id": id}
+        return ({"message": "Trade accepted – waiting for position confirmation", "id": id}, None)
 
     elif new_status == "error":
         error_message = data.get("error_message", "")
@@ -3742,7 +3862,7 @@ async def update_trade_status_api(request: Request):
             # Notify active trade supervisor about close failure
             notify_active_trade_supervisor_direct(id, ticket_id, "close_failed")
             
-            return {"message": "Close order failed - marked as close_failed", "id": id}
+            return ({"message": "Close order failed - marked as close_failed", "id": id}, None)
         
         # Check if it's an insufficient volume or insufficient balance error for OPEN orders
         elif "insufficient_resting_volume" in error_message.lower() or "insufficient balance" in error_message.lower():
@@ -3778,13 +3898,13 @@ async def update_trade_status_api(request: Request):
                             notify_active_trade_supervisor_direct_with_monitor(id, ticket_id, "deleted", monitor_identifier)
                         else:
                             notify_active_trade_supervisor_direct(id, ticket_id, "deleted")
-                        return {"message": f"Pending trade deleted due to {error_type.lower()}", "id": id}
+                        return ({"message": f"Pending trade deleted due to {error_type.lower()}", "id": id}, None)
                     else:
                         log(f"NO PENDING TRADE FOUND TO DELETE")
-                        return {"message": "No pending trade found to delete", "id": id}
+                        return ({"message": "No pending trade found to delete", "id": id}, None)
             else:
                 log(f"CANNOT CONNECT TO DATABASE TO DELETE TRADE")
-                return {"message": "Database connection error", "id": id}
+                return ({"message": "Database connection error", "id": id}, None)
         else:
             # Handle other errors normally
             update_trade_status(id, "error")
@@ -3793,20 +3913,27 @@ async def update_trade_status_api(request: Request):
             
             notify_active_trade_supervisor_direct(id, ticket_id, "error")
             
-            return {"message": "Trade marked error", "id": id}
+            return ({"message": "Trade marked error", "id": id}, None)
 
     else:
-        raise HTTPException(status_code=400, detail=f"Unrecognized status value: '{new_status}'")
+        return None, (400, f"Unrecognized status value: '{new_status}'")
 
-@router.post("/api/positions_updated")
-async def positions_updated_api(request: Request):
-    """Endpoint for kalshi_account_sync to notify about database updates"""
+
+@router.post("/api/update_trade_status")
+async def update_trade_status_api(request: Request):
+    """Handle status updates from executor"""
+    data = await request.json()
+    body, err = apply_update_trade_status_payload(data)
+    if err:
+        raise HTTPException(status_code=err[0], detail=err[1])
+    return body
+
+
+def apply_positions_updated_payload(data: dict) -> dict:
+    """kalshi_account_sync_ws: same logic as POST /api/positions_updated (HTTP or Redis pub/sub)."""
     try:
-        data = await request.json()
         db_name = data.get("database", "positions")
-        # log(f"[🔔 POSITIONS UPDATED] Database: {db_name} - checking for pending/closing trades")
-        
-        # Handle pending trades (only when positions database is updated)
+
         if db_name == "positions":
             pg_conn = get_postgresql_connection()
             if pg_conn:
@@ -3815,13 +3942,12 @@ async def positions_updated_api(request: Request):
                     pending_trades = cursor.fetchall()
             else:
                 pending_trades = []
-            
+
             if pending_trades:
                 log(f"[🔔 POSITIONS UPDATED] Found {len(pending_trades)} pending trades to confirm")
                 for id, ticket_id in pending_trades:
                     threading.Thread(target=confirm_open_trade, args=(id, ticket_id), daemon=True).start()
-        
-        # Handle closing trades (when orders database is updated)
+
         if db_name == "orders":
             pg_conn = get_postgresql_connection()
             if pg_conn:
@@ -3830,7 +3956,7 @@ async def positions_updated_api(request: Request):
                     closing_trades = cursor.fetchall()
             else:
                 closing_trades = []
-            
+
             if closing_trades:
                 log(f"[🔔 ORDERS UPDATED] Found {len(closing_trades)} closing trades to confirm")
                 for id, ticket_id in closing_trades:
@@ -3841,16 +3967,22 @@ async def positions_updated_api(request: Request):
                             current_status = cursor.fetchone()
                     else:
                         current_status = None
-                    
-                    if current_status and current_status[0] == 'closing':
-                        # Process closing trade directly - no threading needed for single trades
+
+                    if current_status and current_status[0] == "closing":
                         log(f"[🔔 ORDERS UPDATED] Confirming close for trade {id}")
                         confirm_close_trade(id, ticket_id)
-        
+
         return {"message": f"{db_name}_updated received"}
     except Exception as e:
         log(f"[ERROR /api/positions_updated] {e}")
         return {"error": str(e)}
+
+
+@router.post("/api/positions_updated")
+async def positions_updated_api(request: Request):
+    """Endpoint for kalshi_account_sync to notify about database updates"""
+    data = await request.json()
+    return apply_positions_updated_payload(data)
 
 @router.post("/api/manual_expiration_check")
 async def manual_expiration_check():
@@ -4697,12 +4829,6 @@ def check_expired_trades_for_settlements():
 def notify_monitor_manager_trade_closed(trade_id: int, status: str) -> None:
     """Notify monitor_manager when a trade is closed to update monitor statistics"""
     try:
-        import requests
-        from backend.core.port_config import get_port
-        
-        # Get the monitor_manager port
-        monitor_manager_port = get_port("monitor_manager")
-        
         # Get the monitor identifier for this trade
         pg_conn = get_postgresql_connection()
         if pg_conn:
@@ -4715,19 +4841,9 @@ def notify_monitor_manager_trade_closed(trade_id: int, status: str) -> None:
             monitor = None
         
         if monitor:
-            # Send notification to monitor_manager
-            notification_url = f"http://localhost:{monitor_manager_port}/api/trade_status_update"
-            payload = {
-                "trade_id": trade_id,
-                "status": status,
-                "monitor": monitor
-            }
-            
-            response = requests.post(notification_url, json=payload, timeout=5)
-            if response.status_code == 200:
-                log(f"✅ Notified monitor_manager about closed trade {trade_id} for monitor {monitor}")
-            else:
-                log(f"⚠️ monitor_manager notification failed for trade {trade_id}: {response.status_code}")
+            payload = {"trade_id": trade_id, "status": status, "monitor": monitor}
+            _notify_monitor_manager_trade_payload(payload)
+            log(f"✅ Notified monitor_manager (Redis or HTTP) about closed trade {trade_id} for monitor {monitor}")
         else:
             log(f"⚠️ No monitor found for trade {trade_id}, skipping monitor_manager notification")
             
@@ -4738,12 +4854,6 @@ def notify_monitor_manager_trade_closed(trade_id: int, status: str) -> None:
 def notify_monitor_manager_trades_closed_by_ticker(ticker: str, status: str) -> None:
     """Notify monitor_manager about trades closed by ticker (for settlements/expired trades)"""
     try:
-        import requests
-        from backend.core.port_config import get_port
-        
-        # Get the monitor_manager port
-        monitor_manager_port = get_port("monitor_manager")
-        
         # Get all trades for this ticker and their monitor identifiers
         pg_conn = get_postgresql_connection()
         if pg_conn:
@@ -4764,20 +4874,17 @@ def notify_monitor_manager_trades_closed_by_ticker(ticker: str, status: str) -> 
             # Send notification to monitor_manager for each affected monitor
             for monitor in monitors:
                 try:
-                    notification_url = f"http://localhost:{monitor_manager_port}/api/trade_status_update"
                     payload = {
-                        "trade_id": None,  # No specific trade ID for bulk updates
+                        "trade_id": None,
                         "status": status,
                         "monitor": monitor,
                         "bulk_update": True,
-                        "ticker": ticker
+                        "ticker": ticker,
                     }
-                    
-                    response = requests.post(notification_url, json=payload, timeout=5)
-                    if response.status_code == 200:
-                        log(f"✅ Notified monitor_manager about bulk trade closure for ticker {ticker}, monitor {monitor}")
-                    else:
-                        log(f"⚠️ monitor_manager bulk notification failed for ticker {ticker}, monitor {monitor}: {response.status_code}")
+                    _notify_monitor_manager_trade_payload(payload)
+                    log(
+                        f"✅ Notified monitor_manager (Redis or HTTP) bulk closure ticker {ticker} monitor {monitor}"
+                    )
                     refresh_monitor_cycle_performance_for_monitor(monitor)
                 except Exception as e:
                     log(f"⚠️ Error notifying monitor_manager about bulk trade closure for ticker {ticker}, monitor {monitor}: {e}")
@@ -4787,6 +4894,136 @@ def notify_monitor_manager_trades_closed_by_ticker(ticker: str, status: str) -> 
     except Exception as e:
         # Don't fail the settlement if monitor notification fails
         log(f"⚠️ Error notifying monitor_manager about bulk trade closure for ticker {ticker}: {e}")
+
+def _trade_manager_executor_status_handler(decoded: dict, msg_id: str, raw_fields: dict) -> bool:
+    if decoded.get("type") != "update_trade_status":
+        return True
+    payload = decoded.get("payload") if isinstance(decoded.get("payload"), dict) else {}
+    try:
+        from backend.core.trading_redis_comms import idempotency_begin, redis_client_optional, use_trading_redis_comms
+
+        if use_trading_redis_comms():
+            r = redis_client_optional()
+            if r:
+                cid = str(decoded.get("correlation_id") or msg_id)
+                if not idempotency_begin(r, f"trading:dedupe:tmst:{cid}", ttl_sec=600):
+                    return True
+        body, err = apply_update_trade_status_payload(payload)
+        if err:
+            log(f"⚠️ Redis executor status: {err}")
+        elif body:
+            pass
+    except Exception as e:
+        log(f"❌ trade_manager executor status stream: {e}")
+    return True
+
+
+def _trade_manager_command_handler(decoded: dict, msg_id: str, raw_fields: dict) -> bool:
+    if decoded.get("type") != "add_trade":
+        return True
+    payload = decoded.get("payload") if isinstance(decoded.get("payload"), dict) else {}
+    try:
+        from backend.core.trading_redis_comms import idempotency_begin, redis_client_optional, use_trading_redis_comms
+
+        if use_trading_redis_comms():
+            r = redis_client_optional()
+            if r:
+                cid = str(decoded.get("correlation_id") or msg_id)
+                if not idempotency_begin(r, f"trading:dedupe:tm_cmd:{cid}", ttl_sec=600):
+                    return True
+        port = get_port("trade_manager")
+        host = get_host()
+        requests.post(f"http://{host}:{port}/trades", json=payload, timeout=120)
+    except Exception as e:
+        log(f"❌ trade_manager command stream: {e}")
+    return True
+
+
+def start_trading_redis_trade_manager_consumers() -> None:
+    from backend.core.trading_redis_comms import (
+        default_consumer_name,
+        start_consumer_daemon,
+        stream_tm_commands,
+        stream_tm_status,
+        use_trading_redis_comms,
+    )
+
+    if not use_trading_redis_comms():
+        return
+    start_consumer_daemon(
+        stream_tm_status(),
+        "tm_status",
+        default_consumer_name("tm-status"),
+        _trade_manager_executor_status_handler,
+    )
+    start_consumer_daemon(
+        stream_tm_commands(),
+        "tm_commands",
+        default_consumer_name("tm-cmd"),
+        _trade_manager_command_handler,
+    )
+
+
+def start_trade_manager_positions_updated_subscriber() -> None:
+    """kalshi_account_sync_ws → trade_manager via Redis (rec_io:tm:positions_updated)."""
+    from backend.core.trading_redis_comms import channel_tm_positions_updated, redis_client_optional, use_trading_redis_comms
+
+    if not use_trading_redis_comms():
+        return
+
+    def loop():
+        backoff = 3.0
+        while True:
+            try:
+                r = redis_client_optional()
+                if not r:
+                    time.sleep(backoff)
+                    continue
+                pubsub = r.pubsub()
+                ch = channel_tm_positions_updated()
+                pubsub.subscribe(ch)
+                log(f"trade_manager subscribed to Redis {ch}")
+                backoff = 3.0
+                for msg in pubsub.listen():
+                    if msg.get("type") != "message":
+                        continue
+                    raw = msg.get("data")
+                    if raw is None:
+                        continue
+                    try:
+                        data = json.loads(raw)
+                    except Exception:
+                        continue
+                    try:
+                        apply_positions_updated_payload(data)
+                    except Exception as e:
+                        log(f"Redis positions_updated handling: {e}")
+            except Exception as e:
+                log(f"trade_manager positions_updated Redis subscriber reconnect: {e}")
+                time.sleep(backoff)
+                backoff = min(backoff * 1.3, 60.0)
+
+    threading.Thread(target=loop, daemon=True, name="tm-positions-updated-redis").start()
+
+
+def _notify_monitor_manager_trade_payload(payload: dict) -> None:
+    try:
+        from backend.core.trading_redis_comms import publish_monitor_manager_event, use_trading_redis_comms
+
+        if use_trading_redis_comms() and publish_monitor_manager_event(payload):
+            return
+    except Exception:
+        pass
+    try:
+        monitor_manager_port = get_port("monitor_manager")
+        requests.post(
+            f"http://localhost:{monitor_manager_port}/api/trade_status_update",
+            json=payload,
+            timeout=5,
+        )
+    except Exception:
+        pass
+
 
 # ---------- APScheduler Setup ----------------------------------------------------
 
@@ -4800,10 +5037,6 @@ _scheduler.add_job(
     coalesce=True
 )
 
-from fastapi import FastAPI
-
-app = FastAPI()
-
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
@@ -4816,6 +5049,8 @@ async def lifespan(app: FastAPI):
             kwargs={"window_days": 84},
             daemon=True
         ).start()
+        start_trading_redis_trade_manager_consumers()
+        start_trade_manager_positions_updated_subscriber()
     except Exception as e:
         pass
     yield

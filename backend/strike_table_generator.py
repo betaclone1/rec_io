@@ -16,7 +16,7 @@ import json
 import logging
 import argparse
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Any, Optional, Tuple
 from decimal import Decimal
@@ -137,11 +137,6 @@ def strikes_equivalent(symbol: str, a: float, b: float) -> bool:
     return int(round(float(a))) == int(round(float(b)))
 
 
-# Hourly: track only when this many seconds or less remain until the hour.
-# 15m contracts: track for the full active window (entire ~15m cycle).
-FINAL_QUARTER_HOURLY_TTC_SEC = 15 * 60
-
-
 def parse_ask_dollars_float(val: Any) -> Optional[float]:
     if val is None:
         return None
@@ -174,8 +169,6 @@ def merge_ask_extrema(
 
 def final_quarter_ask_tracking_fields(
     *,
-    interval: str,
-    ttc_hourly: Optional[int],
     event_ticker: Optional[str],
     ticker: Optional[str],
     yes_ask_dollars: Any,
@@ -190,13 +183,11 @@ def final_quarter_ask_tracking_fields(
     Optional[float],
 ]:
     """
+    Accumulate YES/NO ask min/max (and ranges) over the full active contract window for both 15m and hourly.
+
     prev: (event_ticker, ticker, yes_min, yes_max, no_min, no_max) from the prior strike row.
     Returns dollar-unit (yes_min, yes_max, no_min, no_max, yes_range, no_range).
     """
-    if interval == "hourly":
-        if ttc_hourly is None or ttc_hourly > FINAL_QUARTER_HOURLY_TTC_SEC:
-            return (None, None, None, None, None, None)
-
     yes_c = parse_ask_dollars_float(yes_ask_dollars)
     no_c = parse_ask_dollars_float(no_ask_dollars)
 
@@ -1160,13 +1151,12 @@ class StrikeTableGenerator:
         return int(tier_spacing)
     
     def calculate_ttc_seconds(self, strike_date: str) -> int:
-        """Calculate time to close: top of next hour (hourly) or next 15m boundary (15m)."""
+        """Calculate time to close: next Eastern top-of-hour (hourly) or next 15m boundary (15m)."""
         try:
-            from datetime import datetime, timedelta
             if self.interval == "15m":
                 ttc_seconds = self._seconds_to_next_15m_boundary_est()
             else:
-                now = datetime.now()
+                now = datetime.now(ZoneInfo("America/New_York"))
                 next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
                 ttc_seconds = int((next_hour - now).total_seconds())
             return max(0, ttc_seconds)
@@ -1443,8 +1433,6 @@ class StrikeTableGenerator:
                         else None
                     )
                     ymn, ymx, nmn, nmx, yrg, nrg = final_quarter_ask_tracking_fields(
-                        interval=self.interval,
-                        ttc_hourly=ttc_hourly_val,
                         event_ticker=ev_tk,
                         ticker=ticker,
                         yes_ask_dollars=yes_ask_dollars,

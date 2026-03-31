@@ -1,7 +1,6 @@
-"""Unit tests for strike_table_generator final-quarter YES/NO ask extrema."""
+"""Unit tests for strike_table_generator YES/NO ask extrema (full contract window)."""
 
 from backend.strike_table_generator import (
-    FINAL_QUARTER_HOURLY_TTC_SEC,
     final_quarter_ask_tracking_fields,
     merge_ask_extrema,
     parse_ask_dollars_float,
@@ -22,24 +21,23 @@ def test_merge_ask_extrema():
     assert merge_ask_extrema(0.1, 0.3, None) == (0.1, 0.3)
 
 
-def test_hourly_outside_final_quarter_nulls():
+def test_hourly_tracks_full_window_not_gated_by_ttc():
+    """Hourly min/max/range match 15m: accumulate whenever asks are present (no final-quarter-only gate)."""
     y_lo, y_hi, n_lo, n_hi, y_r, n_r = final_quarter_ask_tracking_fields(
-        interval="hourly",
-        ttc_hourly=FINAL_QUARTER_HOURLY_TTC_SEC + 1,
         event_ticker="E",
         ticker="M",
         yes_ask_dollars="0.5",
         no_ask_dollars="0.5",
         prev=None,
     )
-    assert (y_lo, y_hi, n_lo, n_hi, y_r, n_r) == (None, None, None, None, None, None)
+    assert y_lo == y_hi == 0.5
+    assert n_lo == n_hi == 0.5
+    assert y_r == n_r == 0.0
 
 
-def test_hourly_inside_window_carries_and_ranges():
+def test_carries_and_ranges():
     prev = ("E", "M", 0.05, 0.10, 0.40, 0.45)
     y_lo, y_hi, n_lo, n_hi, y_r, n_r = final_quarter_ask_tracking_fields(
-        interval="hourly",
-        ttc_hourly=400,
         event_ticker="E",
         ticker="M",
         yes_ask_dollars="0.75",
@@ -54,10 +52,8 @@ def test_hourly_inside_window_carries_and_ranges():
     assert abs(n_r - 0.05) < 1e-9
 
 
-def test_15m_full_window_always_tracks():
+def test_full_window_single_snapshot():
     y_lo, y_hi, _, _, y_r, _ = final_quarter_ask_tracking_fields(
-        interval="15m",
-        ttc_hourly=None,
         event_ticker="E",
         ticker="M",
         yes_ask_dollars="0.2",
@@ -71,8 +67,6 @@ def test_15m_full_window_always_tracks():
 def test_contract_roll_resets():
     prev = ("OLD", "M", 0.01, 0.99, 0.1, 0.2)
     y_lo, y_hi, _, _, _, _ = final_quarter_ask_tracking_fields(
-        interval="15m",
-        ttc_hourly=None,
         event_ticker="NEW",
         ticker="M",
         yes_ask_dollars="0.5",
