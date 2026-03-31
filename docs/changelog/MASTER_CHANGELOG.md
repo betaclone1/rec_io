@@ -20,13 +20,13 @@ This changelog is used when pushing updates to production. Each entry is timesta
 **DB migrations:** None for this release.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Confirm trading Redis is enabled for supervised services (e.g. `USE_TRADING_REDIS_COMMS=1` in prod environment / supervisord `environment=` — required for UI fanout after HTTP fallback removal).
-- [ ] Confirm **`trade_manager`** has adequate stop patience (e.g. **`stopwaitsecs=120`**) in production **`supervisord.conf`** if not using the latest generated template; reload supervisord if you edit the file by hand.
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `main_app` :3000 and `trade_executor` :8001 health; supervisor **RUNNING**; spot-check **`trade_manager`** log for clean **shutdown complete** after restart; **`main_app`** subscribed to Redis **`rec_io:preferences`** / **`rec_io:db_changes`** in log; no unexpected burst of **“broadcast dropped”** if Redis is healthy.
-- [ ] Snapshot reference (pre-deploy): **`rec-io-prod-pre-update-2026-03-31`** (DO action submitted **`3118238581`**, verify **`completed`** in DO when convenient).
+- [x] Confirm trading Redis is enabled for supervised services (e.g. `USE_TRADING_REDIS_COMMS=1` in prod environment / supervisord `environment=` — required for UI fanout after HTTP fallback removal).
+- [x] Confirm **`trade_manager`** has adequate stop patience (e.g. **`stopwaitsecs=120`**) in production **`supervisord.conf`** if not using the latest generated template; reload supervisord if you edit the file by hand.
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `main_app` :3000 and `trade_executor` :8001 health; supervisor **RUNNING**; spot-check **`trade_manager`** log for clean **shutdown complete** after restart; **`main_app`** subscribed to Redis **`rec_io:preferences`** / **`rec_io:db_changes`** in log; no unexpected burst of **“broadcast dropped”** if Redis is healthy.
+- [x] Snapshot reference (pre-deploy): **`rec-io-prod-pre-update-2026-03-31`** (DO action submitted **`3118238581`**, verify **`completed`** in DO when convenient).
 
 ---
 
