@@ -22,23 +22,23 @@ This changelog is used when pushing updates to production. Each entry is timesta
 2. `20260331_1115_active_trades_unified_table_naming`
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations in order (from project root):  
+- [x] Apply migrations in order (from project root):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260330_2200_active_trades_0001_hourly_pool`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260331_1115_active_trades_unified_table_naming`
-- [ ] Schema drift check after migrations:  
+- [x] Schema drift check after migrations:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services:  
+- [x] Restart services:  
   `./scripts/MASTER_RESTART.sh`
-- [ ] Verify health and runtime status: `main_app` :3000, `trade_executor` :8001, supervisor `RUNNING`, and no fresh post-restart critical errors in `trade_manager`, `kalshi_account_sync`, `main_app`, `market_watchdog_ws_kalshi_15m`.
-- [ ] Verify unified active-trades tables present and used:  
+- [x] Verify health and runtime status: `main_app` :3000, `trade_executor` :8001, supervisor `RUNNING`, and no fresh post-restart critical errors in `trade_manager`, `kalshi_account_sync`, `main_app`, `market_watchdog_ws_kalshi_15m`.
+- [x] Verify unified active-trades tables present and used:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py list` and spot-check table existence/row flow for `users.active_trades_15m_0001` and `users.active_trades_hourly_0001`.
-- [ ] Fast rollback readiness (only if errant live behavior appears): keep this snapshot id handy and execute in this order: stop trading entry points, run migration downs below, restart, then verify health before re-enabling trading.
-- [ ] Rollback migration commands (reverse order):  
+- [x] Fast rollback readiness (only if errant live behavior appears): keep this snapshot id handy and execute in this order: stop trading entry points, run migration downs below, restart, then verify health before re-enabling trading.
+- [x] Rollback migration commands (reverse order):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py down 20260331_1115_active_trades_unified_table_naming`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py down 20260330_2200_active_trades_0001_hourly_pool`
-- [ ] Snapshot reference for emergency VM restore: `rec-io-prod-pre-update-2026-03-31` (DO action `3117800227`, status `completed`).
+- [x] Snapshot reference for emergency VM restore: `rec-io-prod-pre-update-2026-03-31` (DO action `3117800227`, status `completed`).
 
 ---
 

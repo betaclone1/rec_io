@@ -855,12 +855,11 @@ previous_auto_trade_status = None
 previous_indicator_state = None
 _previous_indicator_by_monitor: Dict[str, Any] = {}
 
-# Track if Momentum Breakout has entered trades for current cycle
-momentum_breakout_trades_entered = False
-momentum_breakout_last_contract = None  # Track the contract we entered trades for
-
-momentum_contain_trades_entered = False
-momentum_contain_last_contract = None  # Track the contract we entered trades for
+# Per-monitor cycle-entry state for unified pool.
+# Without monitor scoping, one monitor's contract churn can reset another monitor's
+# "already entered this cycle" flag and allow duplicate entries.
+_momentum_breakout_cycle_state_by_monitor: Dict[str, Dict[str, Any]] = {}
+_momentum_contain_cycle_state_by_monitor: Dict[str, Dict[str, Any]] = {}
 
 # State tracking for logging reduction
 
@@ -3894,8 +3893,11 @@ def check_auto_entry_conditions_momentum_breakout():
     Uses strike_tier to find the correct strikes.
     After entering these two trades, it opens no more trades and holds until expiration.
     """
-    global momentum_breakout_trades_entered, momentum_breakout_last_contract
     try:
+        monitor_key = ctx_ident()
+        state = _momentum_breakout_cycle_state_by_monitor.setdefault(
+            monitor_key, {"entered": False, "contract": None}
+        )
         # Get strike table data
         check_spike_alert_conditions()
         
@@ -3927,11 +3929,15 @@ def check_auto_entry_conditions_momentum_breakout():
         current_contract = _LAST_MONITOR_STATE.get("contract")
         
         # Reset trades_entered flag when a new cycle starts (contract changes)
-        if current_contract and current_contract != momentum_breakout_last_contract:
-            momentum_breakout_trades_entered = False
-            if momentum_breakout_last_contract:
-                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] 🔄 New cycle detected: {momentum_breakout_last_contract} → {current_contract} - resetting entry flag")
-            momentum_breakout_last_contract = current_contract
+        if current_contract and current_contract != state.get("contract"):
+            prev_contract = state.get("contract")
+            state["entered"] = False
+            if prev_contract:
+                log(
+                    f"[AUTO ENTRY MOMENTUM BREAKOUT] 🔄 New cycle detected: "
+                    f"{prev_contract} → {current_contract} - resetting entry flag"
+                )
+            state["contract"] = current_contract
         
         # Check if AUTO TRADE is enabled for this monitor
         auto_trade_enabled = is_auto_trade_enabled()
@@ -4003,9 +4009,9 @@ def check_auto_entry_conditions_momentum_breakout():
             return
         
         # If we've already entered trades for this spike activation, do nothing
-        if momentum_breakout_trades_entered:
+        if state.get("entered"):
             return
-        
+
         if not strike_table_data:
             log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ No strike table data available")
             return
@@ -4024,6 +4030,10 @@ def check_auto_entry_conditions_momentum_breakout():
             return
         if strike_tier <= 0:
             log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Invalid strike_tier (<=0): {strike_tier}")
+            return
+
+        if has_bracket_for_cycle(contract=current_contract, strike_tier=strike_tier):
+            state["entered"] = True
             return
         
         # Find the actual available strikes from the strike table
@@ -4079,7 +4089,7 @@ def check_auto_entry_conditions_momentum_breakout():
             }
             if is_strike_already_traded(strike_data_for_check):
                 log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⏸️ YES trade already exists at strike ${strike_above_data.get('strike'):,.0f}")
-                momentum_breakout_trades_entered = True
+                state["entered"] = True
                 return
         
         if strike_below_data:
@@ -4091,7 +4101,7 @@ def check_auto_entry_conditions_momentum_breakout():
             }
             if is_strike_already_traded(strike_data_for_check):
                 log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⏸️ NO trade already exists at strike ${strike_below_data.get('strike'):,.0f}")
-                momentum_breakout_trades_entered = True
+                state["entered"] = True
                 return
         
         # Enter the two trades
@@ -4145,10 +4155,10 @@ def check_auto_entry_conditions_momentum_breakout():
         
         # Mark trades as entered if at least one trade was successful
         if trades_entered > 0:
-            momentum_breakout_trades_entered = True
+            state["entered"] = True
             # Update last contract to current contract to track which cycle we entered trades for
             if current_contract:
-                momentum_breakout_last_contract = current_contract
+                state["contract"] = current_contract
             log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ✅ Entered {trades_entered} trade(s) for cycle {current_contract} - will hold until expiration")
         
     except Exception as e:
@@ -4166,8 +4176,11 @@ def check_auto_entry_conditions_momentum_contain():
     Uses strike_tier to find the correct strikes.
     After entering these two trades, it opens no more trades and holds until expiration.
     """
-    global momentum_contain_trades_entered, momentum_contain_last_contract
     try:
+        monitor_key = ctx_ident()
+        state = _momentum_contain_cycle_state_by_monitor.setdefault(
+            monitor_key, {"entered": False, "contract": None}
+        )
         # Get strike table data
         check_spike_alert_conditions()
         
@@ -4199,11 +4212,15 @@ def check_auto_entry_conditions_momentum_contain():
         current_contract = _LAST_MONITOR_STATE.get("contract")
         
         # Reset trades_entered flag when a new cycle starts (contract changes)
-        if current_contract and current_contract != momentum_contain_last_contract:
-            momentum_contain_trades_entered = False
-            if momentum_contain_last_contract:
-                log(f"[AUTO ENTRY MOMENTUM CONTAIN] 🔄 New cycle detected: {momentum_contain_last_contract} → {current_contract} - resetting entry flag")
-            momentum_contain_last_contract = current_contract
+        if current_contract and current_contract != state.get("contract"):
+            prev_contract = state.get("contract")
+            state["entered"] = False
+            if prev_contract:
+                log(
+                    f"[AUTO ENTRY MOMENTUM CONTAIN] 🔄 New cycle detected: "
+                    f"{prev_contract} → {current_contract} - resetting entry flag"
+                )
+            state["contract"] = current_contract
         
         # Check if AUTO TRADE is enabled for this monitor
         auto_trade_enabled = is_auto_trade_enabled()
@@ -4313,9 +4330,9 @@ def check_auto_entry_conditions_momentum_contain():
                 return
         
         # If we've already entered trades for this spike activation, do nothing
-        if momentum_contain_trades_entered:
+        if state.get("entered"):
             return
-        
+
         if not strike_table_data:
             log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ No strike table data available")
             return
@@ -4334,6 +4351,10 @@ def check_auto_entry_conditions_momentum_contain():
             return
         if strike_tier <= 0:
             log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Invalid strike_tier (<=0): {strike_tier}")
+            return
+
+        if has_bracket_for_cycle(contract=current_contract, strike_tier=strike_tier):
+            state["entered"] = True
             return
         
         # Select strikes using the unified minimum-width + centering methodology:
@@ -4438,7 +4459,7 @@ def check_auto_entry_conditions_momentum_contain():
             }
             if is_strike_already_traded(strike_data_for_check):
                 log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ NO trade already exists at strike ${strike_above_data.get('strike'):,.0f}")
-                momentum_contain_trades_entered = True
+                state["entered"] = True
                 return
         
         if strike_below_data:
@@ -4449,7 +4470,7 @@ def check_auto_entry_conditions_momentum_contain():
             }
             if is_strike_already_traded(strike_data_for_check):
                 log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ YES trade already exists at strike ${strike_below_data.get('strike'):,.0f}")
-                momentum_contain_trades_entered = True
+                state["entered"] = True
                 return
         
         # VALIDATION CHECKS: Volume, Momentum, and Ask Price checks before entering trades
@@ -4585,10 +4606,10 @@ def check_auto_entry_conditions_momentum_contain():
         
         # Mark trades as entered if at least one trade was successful
         if trades_entered > 0:
-            momentum_contain_trades_entered = True
+            state["entered"] = True
             # Update last contract to current contract to track which cycle we entered trades for
             if current_contract:
-                momentum_contain_last_contract = current_contract
+                state["contract"] = current_contract
             log(f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ Entered {trades_entered} trade(s) for cycle {current_contract} - will hold until expiration")
         
     except Exception as e:
