@@ -820,16 +820,9 @@ def notify_automated_close():
         try:
             from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
 
-            if use_trading_redis_comms() and publish_preferences_event("automated_trade_closed", data):
+            if use_trading_redis_comms():
+                publish_preferences_event("automated_trade_closed", data)
                 log_debug("Frontend notification sent via Redis")
-            else:
-                port = get_port("main_app")
-                url = get_service_url(port) + "/api/notify_automated_close"
-                response = requests.post(url, json=data, timeout=2)
-                if response.ok:
-                    log_debug(f"Frontend notification sent successfully")
-                else:
-                    log_debug(f"Frontend notification failed: {response.status_code}")
         except Exception as e:
             log(f"[AUTO STOP] ❌ Error sending frontend notification: {e}")
         
@@ -920,35 +913,10 @@ def broadcast_active_trades_change():
                 f"⚠️ Active trades broadcast Redis path failed: {e}"
             )
 
-        if not ATS_HTTP_FALLBACK_ENABLED:
-            _log_broadcast_failure_throttled(
-                "⚠️ Active trades broadcast dropped: Redis unavailable and ATS_HTTP_FALLBACK_ENABLED=0"
-            )
-            return
-
-        port = get_port("main_app")
-        url = get_service_url(port) + "/api/broadcast_active_trades_change"
-        try:
-            connect_t = float(os.getenv("ATS_BROADCAST_HTTP_CONNECT_TIMEOUT", "4"))
-            read_t = float(os.getenv("ATS_BROADCAST_HTTP_READ_TIMEOUT", "25"))
-        except ValueError:
-            connect_t, read_t = 4.0, 25.0
-
-        def _http_fallback():
-            try:
-                response = requests.post(
-                    url, json=body, timeout=(connect_t, read_t)
-                )
-                if not response.ok:
-                    _log_broadcast_failure_throttled(
-                        f"⚠️ Failed to broadcast active trades change: HTTP {response.status_code}"
-                    )
-            except Exception as e:
-                _log_broadcast_failure_throttled(
-                    f"❌ Error broadcasting active trades change: {e}"
-                )
-
-        threading.Thread(target=_http_fallback, daemon=True).start()
+        _log_broadcast_failure_throttled(
+            "⚠️ Active trades broadcast dropped: Redis unavailable and HTTP fallback removed"
+        )
+        return
 
     except Exception as e:
         _log_broadcast_failure_throttled(
@@ -3935,13 +3903,8 @@ def _defer_unified_ats_close_followup(
         try:
             from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
 
-            if use_trading_redis_comms() and publish_preferences_event(
-                "automated_trade_closed", notification_data
-            ):
-                return
-            port = get_port("main_app")
-            url = get_service_url(port) + "/api/notify_automated_close"
-            _req.post(url, json=notification_data, timeout=2)
+            if use_trading_redis_comms():
+                publish_preferences_event("automated_trade_closed", notification_data)
         except Exception:
             pass
 

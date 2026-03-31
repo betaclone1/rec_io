@@ -6,6 +6,30 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-03-31 — Follow-on: trade_manager graceful shutdown, Redis-only trading UI fanout, logging cleanup
+
+**Summary**
+- **trade_manager:** Cooperative shutdown during long settlement polling (`poll_settlements_for_matches`); set a shutdown event on FastAPI lifespan teardown; `APScheduler.shutdown(wait=False)` so supervisord SIGTERM is not blocked for tens of minutes; **`generate_unified_supervisor_config`** adds **`stopwaitsecs=120`** for `trade_manager` (local `backend/supervisord.conf` already aligned in repo).
+- **Trading-plane UI notifications (Redis-first):** Remove HTTP fallbacks to `main_app` for ATS automated-close notify, active-trades broadcast, kalshi account sync DB-change notify, and **monitor_manager** monitor-list / total-position / statistics delivery (**`http_path=None`**). When Redis is off, paths now log drop/skip instead of posting removed routes.
+- **main.py:** Remove temporary legacy route-hit counter, **`/api/internal/legacy_route_hits`**, and **`[LEGACY_ROUTE_HIT]`** logs; surface **WARNING** when Redis **`publish_preferences_event`** fails for monitor total-position updates after allocation changes.
+- **auto_entry_supervisor:** Log Redis **`publish_preferences_event`** failures instead of silent **`except: pass`**.
+- **Frontend:** Small trade monitor desktop + mobile cleanups (removed lines as in diff).
+
+**Plans:** (informal) local verification and Redis transport hardening; no single plan file required for checklist traceability.
+
+**DB migrations:** None for this release.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Confirm trading Redis is enabled for supervised services (e.g. `USE_TRADING_REDIS_COMMS=1` in prod environment / supervisord `environment=` — required for UI fanout after HTTP fallback removal).
+- [ ] Confirm **`trade_manager`** has adequate stop patience (e.g. **`stopwaitsecs=120`**) in production **`supervisord.conf`** if not using the latest generated template; reload supervisord if you edit the file by hand.
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `main_app` :3000 and `trade_executor` :8001 health; supervisor **RUNNING**; spot-check **`trade_manager`** log for clean **shutdown complete** after restart; **`main_app`** subscribed to Redis **`rec_io:preferences`** / **`rec_io:db_changes`** in log; no unexpected burst of **“broadcast dropped”** if Redis is healthy.
+- [ ] Snapshot reference (pre-deploy): **`rec-io-prod-pre-update-2026-03-31`** (DO action submitted **`3118238581`**, verify **`completed`** in DO when convenient).
+
+---
+
 ## 2026-03-31 — Trading Redis comms hardening + unified active-trades naming/hourly pool
 
 **Summary**

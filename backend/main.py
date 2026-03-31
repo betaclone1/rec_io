@@ -95,9 +95,6 @@ connected_clients = set()
 # Global set of connected websocket clients for database changes
 db_change_clients = set()
 
-# Global set of connected websocket clients for unified frontend updates
-
-
 # Legacy preference path removed - all data now in PostgreSQL
 
 # Global preferences cache
@@ -993,44 +990,6 @@ async def get_system_health():
             "error": str(e)
         }
 
-# WebSocket connections
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-        _main_logger.debug(f"[WEBSOCKET] ✅ Client connected. Total clients: {len(self.active_connections)}")
-
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
-        _main_logger.debug(f"[WEBSOCKET] ❌ Client disconnected. Total clients: {len(self.active_connections)}")
-
-    async def send_personal_message(self, message: str, websocket: WebSocket):
-        await websocket.send_text(message)
-
-    async def broadcast(self, message: str):
-        for connection in self.active_connections:
-            try:
-                await connection.send_text(message)
-            except:
-                # Remove dead connections
-                self.active_connections.remove(connection)
-
-manager = ConnectionManager()
-
-# WebSocket endpoint
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
-    try:
-        while True:
-            data = await websocket.receive_text()
-            await manager.send_personal_message(f"Message text was: {data}", websocket)
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
-
 # WebSocket endpoint for preferences updates
 @app.websocket("/ws/preferences")
 async def websocket_preferences(websocket: WebSocket):
@@ -1051,7 +1010,6 @@ async def websocket_db_changes(websocket: WebSocket):
             await websocket.receive_text()  # Keep connection alive
     except WebSocketDisconnect:
         db_change_clients.discard(websocket)
-
 
 
 # Serve main index.html
@@ -3183,74 +3141,6 @@ async def set_trade_history_preferences(request: Request):
 
 # LEGACY REMOVED: /api/get_auto_entry_status endpoint - now using auto_trade_status system
 
-@app.post("/api/notify_auto_trade_status_change")
-async def notify_auto_trade_status_change(request: Request):
-    """Notify frontend of auto trade status change via WebSocket"""
-    try:
-        data = await request.json()
-        monitor_id = data.get("monitor_id")
-        auto_trade_status = data.get("auto_trade_status")
-        
-        if not monitor_id or not auto_trade_status:
-            return {"status": "error", "message": "Missing monitor_id or auto_trade_status"}
-        
-        # Broadcast to all connected WebSocket clients
-        message = {
-            "type": "auto_trade_status_change",
-            "data": {
-                "monitor_id": monitor_id,
-                "auto_trade_status": auto_trade_status
-            }
-        }
-        
-        # Send to preferences WebSocket clients
-        for websocket in connected_clients.copy():
-            try:
-                await websocket.send_text(json.dumps(message))
-            except Exception as e:
-                _main_logger.warning(f"Error sending to WebSocket client: {e}")
-                connected_clients.discard(websocket)
-        
-        _main_logger.debug(f"[MAIN] ✅ Auto trade status change broadcasted to {len(connected_clients)} clients")
-        return {"status": "ok", "message": "Auto trade status change notification sent"}
-    except Exception as e:
-        _main_logger.warning(f"Error in notify_auto_trade_status_change: {e}")
-        return {"status": "error", "message": str(e)}
-
-@app.post("/api/notify_cooldown_timer_change")
-async def notify_cooldown_timer_change(request: Request):
-    """Notify frontend of cooldown timer change via WebSocket"""
-    try:
-        data = await request.json()
-        monitor_id = data.get("monitor_id")
-        cooldown_timer = data.get("cooldown_timer")
-        
-        if not monitor_id or cooldown_timer is None:
-            return {"status": "error", "message": "Missing monitor_id or cooldown_timer"}
-        
-        # Broadcast to all connected WebSocket clients
-        message = {
-            "type": "cooldown_timer_change",
-            "data": {
-                "monitor_id": monitor_id,
-                "cooldown_timer": cooldown_timer
-            }
-        }
-        
-        # Send to preferences WebSocket clients
-        for websocket in connected_clients.copy():
-            try:
-                await websocket.send_text(json.dumps(message))
-            except Exception as e:
-                _main_logger.warning(f"Error sending to WebSocket client: {e}")
-                connected_clients.discard(websocket)
-        
-        _main_logger.debug(f"[MAIN] ✅ Cooldown timer change broadcasted to {len(connected_clients)} clients")
-        return {"status": "ok", "message": "Cooldown timer change notification sent"}
-    except Exception as e:
-        _main_logger.warning(f"Error in notify_cooldown_timer_change: {e}")
-        return {"status": "error", "message": str(e)}
-
 # Legacy /api/get_trade_preferences endpoint removed - position sizing and strategy now handled by monitor_list table
 
 # Legacy /api/update_trade_preferences endpoint removed - position sizing and strategy now handled by monitor_list table
@@ -4522,221 +4412,7 @@ async def log_event(request: Request):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-@app.post("/api/notify_automated_trade")
-async def notify_automated_trade(request: Request):
-    """Receive automated trade notification and broadcast to frontend via WebSocket"""
-    try:
-        data = await request.json()
-        _main_logger.debug(f"[MAIN] 🔔 Received automated trade notification: {data}")
-        
-        # Broadcast to all connected WebSocket clients
-        message = {
-            "type": "automated_trade_triggered",
-            "data": data
-        }
-        
-        # Send to preferences WebSocket clients
-        for websocket in connected_clients.copy():
-            try:
-                await websocket.send_text(json.dumps(message))
-            except Exception as e:
-                _main_logger.warning(f"Error sending to WebSocket client: {e}")
-                connected_clients.discard(websocket)
-        
-        _main_logger.debug(f"[MAIN] ✅ Automated trade notification broadcasted to {len(connected_clients)} clients")
-        return {"success": True, "message": "Notification broadcasted"}
-        
-    except Exception as e:
-        _main_logger.warning(f"[MAIN] ❌ Error handling automated trade notification: {e}")
-        return {"success": False, "error": str(e)}
-
-@app.post("/api/notify_automated_close")
-async def notify_automated_close(request: Request):
-    """Receive automated trade close notification and broadcast to frontend via WebSocket"""
-    try:
-        data = await request.json()
-        _main_logger.debug(f"[MAIN] 🔔 Received automated trade close notification: {data}")
-        
-        # Broadcast to all connected WebSocket clients
-        message = {
-            "type": "automated_trade_closed",
-            "data": data
-        }
-        
-        # Send to preferences WebSocket clients
-        for websocket in connected_clients.copy():
-            try:
-                await websocket.send_text(json.dumps(message))
-            except Exception as e:
-                _main_logger.warning(f"Error sending to WebSocket client: {e}")
-                connected_clients.discard(websocket)
-        
-        _main_logger.debug(f"[MAIN] ✅ Automated trade close notification broadcasted to {len(connected_clients)} clients")
-        return {"success": True, "message": "Close notification broadcasted"}
-        
-    except Exception as e:
-        _main_logger.warning(f"[MAIN] ❌ Error handling automated trade close notification: {e}")
-        return {"success": False, "error": str(e)}
-
-@app.post("/api/broadcast_auto_entry_indicator")
-async def broadcast_auto_entry_indicator(request: Request):
-    """Receive auto entry indicator change and broadcast to frontend via WebSocket"""
-    try:
-        data = await request.json()
-        _main_logger.debug(f"[MAIN] 🔔 Received auto entry indicator change: {data}")
-        
-        # Broadcast to all connected WebSocket clients
-        message = {
-            "type": "auto_entry_indicator_change",
-            "data": data
-        }
-        
-        # Send to preferences WebSocket clients
-        for websocket in connected_clients.copy():
-            try:
-                await websocket.send_text(json.dumps(message))
-            except Exception as e:
-                _main_logger.warning(f"Error sending to WebSocket client: {e}")
-                connected_clients.discard(websocket)
-        
-        _main_logger.debug(f"[MAIN] ✅ Auto entry indicator change broadcasted to {len(connected_clients)} clients")
-        return {"success": True, "message": "Indicator change broadcasted"}
-        
-    except Exception as e:
-        _main_logger.warning(f"[MAIN] ❌ Error handling auto entry indicator change: {e}")
-        return {"success": False, "error": str(e)}
-
-@app.post("/api/broadcast_active_trades_change")
-async def broadcast_active_trades_change(request: Request):
-    """Receive active trades change and broadcast to frontend via WebSocket"""
-    try:
-        data = await request.json()
-        _main_logger.debug(f"[MAIN] 🔔 Received active trades change: {data.get('count', 0)} trades")
-        
-        # Broadcast to all connected WebSocket clients
-        message = {
-            "type": "active_trades_change",
-            "data": data
-        }
-        
-        # Send to preferences WebSocket clients
-        for websocket in connected_clients.copy():
-            try:
-                await websocket.send_text(json.dumps(message))
-            except Exception as e:
-                _main_logger.warning(f"Error sending to WebSocket client: {e}")
-                connected_clients.discard(websocket)
-        
-        _main_logger.debug(f"[MAIN] ✅ Active trades change broadcasted to {len(connected_clients)} clients")
-        return {"success": True, "message": "Active trades change broadcasted"}
-        
-    except Exception as e:
-        _main_logger.warning(f"[MAIN] ❌ Error handling active trades change: {e}")
-        return {"success": False, "error": str(e)}
-
-@app.post("/api/broadcast_monitor_total_position")
-async def broadcast_monitor_total_position(request: Request):
-    """Receive monitor total position update and broadcast to frontend via WebSocket"""
-    try:
-        data = await request.json()
-        _main_logger.debug(f"[MAIN] 🔔 Received monitor total position update: {data}")
-        
-        # Broadcast to all connected WebSocket clients
-        message = {
-            "type": "monitor_total_position_updated",
-            "monitor_id": data.get("monitor_id"),
-            "total_position": data.get("total_position")
-        }
-        
-        # Send to preferences WebSocket clients
-        for websocket in connected_clients.copy():
-            try:
-                await websocket.send_text(json.dumps(message))
-            except Exception as e:
-                _main_logger.warning(f"Error sending to WebSocket client: {e}")
-                connected_clients.discard(websocket)
-        
-        _main_logger.debug(f"[MAIN] ✅ Monitor total position update broadcasted to {len(connected_clients)} clients")
-        return {"success": True, "message": "Monitor total position update broadcasted"}
-        
-    except Exception as e:
-        _main_logger.warning(f"[MAIN] ❌ Error handling monitor total position update: {e}")
-        return {"success": False, "error": str(e)}
-
-@app.post("/api/broadcast_monitor_list_update")
-async def broadcast_monitor_list_update(request: Request):
-    """Receive monitor list update and broadcast to frontend via WebSocket"""
-    try:
-        data = await request.json()
-        _main_logger.debug(f"[MAIN] 🔔 Received monitor list update: {data}")
-        _main_logger.debug(f"[MAIN] 🔔 Connected WebSocket clients: {len(connected_clients)}")
-        
-        # Broadcast to all connected WebSocket clients
-        message = {
-            "type": "monitor_list_updated",
-            "message": data.get("message", "Monitor list has been updated")
-        }
-        
-        # Send to preferences WebSocket clients
-        for websocket in connected_clients.copy():
-            try:
-                await websocket.send_text(json.dumps(message))
-            except Exception as e:
-                _main_logger.warning(f"Error sending to WebSocket client: {e}")
-                connected_clients.discard(websocket)
-        
-        _main_logger.debug(f"[MAIN] ✅ Monitor list update broadcasted to {len(connected_clients)} clients")
-        return {"success": True, "message": "Monitor list update broadcasted"}
-        
-    except Exception as e:
-        _main_logger.warning(f"[MAIN] ❌ Error handling monitor list update: {e}")
-        return {"success": False, "error": str(e)}
-
-@app.post("/api/broadcast_monitor_statistics_update")
-async def broadcast_monitor_statistics_update(request: Request):
-    """Receive monitor statistics fanout (legacy HTTP path; Redis preferences is preferred on prod)."""
-    try:
-        data = await request.json()
-        if not isinstance(data, dict):
-            return {"success": False, "error": "expected JSON object"}
-        if data.get("type") != "monitor_statistics_update":
-            message = {"type": "monitor_statistics_update", **data}
-        else:
-            message = data
-        for websocket in connected_clients.copy():
-            try:
-                await websocket.send_text(json.dumps(message))
-            except Exception as e:
-                _main_logger.warning(f"Error sending to WebSocket client: {e}")
-                connected_clients.discard(websocket)
-        return {"success": True, "message": "Monitor statistics update broadcasted"}
-    except Exception as e:
-        _main_logger.warning(f"[MAIN] ❌ Error handling monitor statistics update: {e}")
-        return {"success": False, "error": str(e)}
-
 # Momentum and fingerprint now consolidated in strike table - no separate broadcast endpoints needed
-
-@app.post("/api/notify_db_change")
-async def notify_db_change(request: Request):
-    """Handle database change notifications from kalshi_account_sync"""
-    try:
-        data = await request.json()
-        db_name = data.get("db_name")
-        timestamp = data.get("timestamp")
-        change_data = data.get("change_data", {})
-        
-        _main_logger.debug(f"📡 Received DB change notification: {db_name} at {timestamp}")
-        
-        # Broadcast to all connected WebSocket clients
-        await broadcast_db_change(db_name, {
-            "timestamp": timestamp,
-            "change_data": change_data
-        })
-        
-        return {"status": "ok", "message": f"Notification sent for {db_name}"}
-    except Exception as e:
-        _main_logger.debug(f"❌ Error handling DB change notification: {e}")
-        return {"status": "error", "message": str(e)}
 
 
 
@@ -6373,16 +6049,31 @@ async def update_monitors_allocation(request: dict):
                     
                     _main_logger.debug(f"Updated monitor {monitor_id}: {new_percentage}% (${new_dollar_amount_cents/100:.2f}) -> total_position: {new_total_position}")
                     
-                    # Send WebSocket notification to frontend about total_position update
+                    # Emit frontend event via Redis preferences channel.
                     try:
-                        import requests
-                        requests.post('http://localhost:3000/api/broadcast_monitor_total_position', json={
-                            'monitor_id': monitor_id,
-                            'total_position': new_total_position,
-                            'multiplier': multiplier_value
-                        }, timeout=1)
+                        from backend.core.trading_redis_comms import (
+                            publish_preferences_event,
+                            use_trading_redis_comms,
+                        )
+                        payload = {
+                            "type": "monitor_total_position_updated",
+                            "monitor_id": monitor_id,
+                            "total_position": new_total_position,
+                            "multiplier": multiplier_value,
+                        }
+                        if use_trading_redis_comms():
+                            if not publish_preferences_event(
+                                "monitor_total_position_updated", payload
+                            ):
+                                _main_logger.warning(
+                                    "Redis preferences publish failed for monitor_total_position_updated "
+                                    "(monitor_id=%s)",
+                                    monitor_id,
+                                )
                     except Exception as e:
-                        _main_logger.debug(f"Failed to send total_position update notification: {str(e)}")
+                        _main_logger.warning(
+                            "Failed to emit total_position update notification: %s", e
+                        )
                 else:
                     _main_logger.debug(f"Updated monitor {monitor_id}: {new_percentage}% (${new_dollar_amount_cents/100:.2f}) - no position data found")
         

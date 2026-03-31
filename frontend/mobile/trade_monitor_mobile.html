@@ -2241,24 +2241,6 @@ document.addEventListener('DOMContentLoaded', () => {
     populateMonitorPicker();
   }
   
-  // Test function to manually trigger monitor list update alert
-  async function testMonitorListAlert() {
-    console.log('TEST: Manually triggering monitor list alert...');
-    try {
-      const response = await fetch('/api/broadcast_monitor_list_update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'monitor_list_updated',
-          message: 'Test monitor list update'
-        })
-      });
-      console.log('Test alert response:', response.status);
-    } catch (error) {
-      console.error('Test alert error:', error);
-    }
-  }
-  
   // Make test functions globally accessible
   window.testMonitorListAlert = testMonitorListAlert;
   

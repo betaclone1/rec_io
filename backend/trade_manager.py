@@ -418,6 +418,30 @@ def _normalize_trade_date(value):
     return dt
 
 
+def _contract_session_date_variants(trade_date) -> list:
+    """Strings that may appear in ``users.trades_0001.date`` for the same session day."""
+    out: list = []
+    if trade_date is None:
+        return out
+    dt = _normalize_trade_date(trade_date)
+    if dt:
+        iso = dt.date().isoformat()
+        out.append(iso)
+        try:
+            mdy = dt.strftime("%m/%d/%Y")
+            if mdy not in out:
+                out.append(mdy)
+            mdshort = dt.strftime("%m/%d/%y")
+            if mdshort not in out:
+                out.append(mdshort)
+        except Exception:
+            pass
+    raw = str(trade_date).strip()
+    if raw and raw not in out:
+        out.append(raw)
+    return out
+
+
 def _extract_hour_idx(contract):
     """Parse contract string into hour_idx following EST rules.
     Hourly: 'BTC 2pm' -> 14. 15m: 'BTC 2:15pm' -> 14 (hour of the cycle; all 4 cycles in that hour share same hour_idx)."""
@@ -492,6 +516,404 @@ def _compute_weekly_cycle(trade_date, hour_idx):
 
     postgres_dow = (normalized_date.weekday() + 1) % 7  # Sunday=0 … Saturday=6
     return (postgres_dow * 24) + hour_idx
+
+
+def _contract_expiration_est(trade_date, contract, fallback_now_est):
+    """Resolve contract expiration timestamp (EST) from trade date + contract label."""
+    base_date = _normalize_trade_date(trade_date) or fallback_now_est
+    if not contract:
+        return fallback_now_est
+
+    s = str(contract).strip()
+    m15 = CONTRACT_15M_FULL_PATTERN.search(s)
+    if m15:
+        hour_raw = int(m15.group(1))
+        minutes = int(m15.group(2))
+        mer = m15.group(3).lower()
+    else:
+        mh = CONTRACT_HOUR_PATTERN.match(s)
+        if not mh:
+            return fallback_now_est
+        hour_raw = int(mh.group(1))
+        minutes = 0
+        mer = mh.group(2).lower()
+
+    day_shift = 0
+    if mer == "am":
+        if hour_raw == 12:
+            hour24 = 0
+            # In this codebase, "12am" maps to cycle hour 24 (end-of-day).
+            day_shift = 1
+        else:
+            hour24 = hour_raw
+    else:
+        hour24 = 12 if hour_raw == 12 else hour_raw + 12
+
+    expiration_est = datetime(
+        base_date.year,
+        base_date.month,
+        base_date.day,
+        hour24,
+        minutes,
+        0,
+        tzinfo=EST_ZONE,
+    )
+    if day_shift:
+        expiration_est += timedelta(days=day_shift)
+    return expiration_est
+
+
+def _live_price_log_timestamp_cutoff_str(expiration_est: datetime) -> str:
+    """ISO wall time string matching symbol_price_watchdog rows (America/New_York, no TZ suffix)."""
+    if expiration_est.tzinfo is None:
+        exp = expiration_est.replace(tzinfo=EST_ZONE)
+    else:
+        exp = expiration_est.astimezone(EST_ZONE)
+    return exp.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _fetch_one_minute_avg_at_or_before(symbol, expiration_est):
+    """Read one_minute_avg from the latest row at/before expiration_est.
+
+    ``live_price_log_1s_*`` stores ``timestamp`` as TEXT in ``%%Y-%%m-%%dT%%H:%%M:%%S`` EST.
+    A Python datetime bound param makes PostgreSQL compare ``text <= timestamp``, which errors.
+    """
+    if not symbol or expiration_est is None:
+        return None
+    cutoff_str = _live_price_log_timestamp_cutoff_str(expiration_est)
+    pg_conn = None
+    try:
+        pg_conn = get_postgresql_connection()
+        if not pg_conn:
+            return None
+        with pg_conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT one_minute_avg
+                FROM live_data.live_price_log_1s_{symbol.lower()}
+                WHERE one_minute_avg IS NOT NULL
+                  AND timestamp <= %s
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                (cutoff_str,),
+            )
+            row = cursor.fetchone()
+        pg_conn.close()
+        return normalize_trade_spot_price(symbol, row[0]) if row and row[0] is not None else None
+    except Exception as e:
+        log(f"⚠️ one_minute_avg lookup at/before {cutoff_str} for {symbol}: {e}")
+        if pg_conn:
+            try:
+                pg_conn.close()
+            except Exception:
+                pass
+        return None
+
+
+def _apply_symbol_expiration_for_contract_session(cursor, symbol: str, trade_date, contract: str) -> int:
+    """Same ``symbol_expiration`` for every trade with this session ``date`` + human ``contract`` (same cycle/event).
+
+    Different Kalshi market tickers (YES/NO legs, strikes) still share one contract label per cycle.
+    """
+    if not symbol or not contract or trade_date is None:
+        return 0
+    now_est = datetime.now(EST_ZONE)
+    exp_est = _contract_expiration_est(trade_date, contract, now_est)
+    if now_est < exp_est:
+        return 0
+    px = _fetch_one_minute_avg_at_or_before(symbol, exp_est)
+    if px is None:
+        return 0
+    contract_key = str(contract).strip()
+    variants = _contract_session_date_variants(trade_date)
+    if not variants:
+        return 0
+    sym_key = str(symbol).strip().upper()
+    ph = ",".join(["%s"] * len(variants))
+    cursor.execute(
+        f"""
+        UPDATE users.trades_0001
+        SET symbol_expiration = %s
+        WHERE upper(trim(both from coalesce(symbol, ''))) = %s
+          AND trim(both from coalesce(contract, '')) = %s
+          AND date::text IN ({ph})
+        """,
+        (px, sym_key, contract_key, *variants),
+    )
+    return cursor.rowcount
+
+
+def _trade_ids_pending_wlc_for_contract_session(cursor, symbol: str, contract: str, trade_date) -> list:
+    c = str(contract).strip()
+    variants = _contract_session_date_variants(trade_date)
+    if not c or not variants or not symbol:
+        return []
+    sym_key = str(symbol).strip().upper()
+    ph = ",".join(["%s"] * len(variants))
+    cursor.execute(
+        f"""
+        SELECT id FROM users.trades_0001
+        WHERE upper(trim(both from coalesce(symbol, ''))) = %s
+          AND trim(both from coalesce(contract, '')) = %s
+          AND date::text IN ({ph})
+          AND status = 'closed'
+          AND win_loss IS NOT NULL
+          AND win_loss_confirmed IS NULL
+        """,
+        (sym_key, c, *variants),
+    )
+    return [r[0] for r in cursor.fetchall()]
+
+
+def _backfill_symbol_expiration_past_due_closed(now_est: datetime) -> None:
+    """For each distinct ``date`` + ``contract`` in the window (past expiry), align symbol_expiration across all rows."""
+    pg = get_postgresql_connection()
+    if not pg:
+        return
+    try:
+        window_start = (now_est - timedelta(days=7)).date()
+        window_end = now_est.date()
+        with pg.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT symbol, date, contract
+                FROM users.trades_0001
+                WHERE symbol IS NOT NULL
+                  AND contract IS NOT NULL
+                  AND date IS NOT NULL
+                  AND date >= %s
+                  AND date <= %s
+                """,
+                (window_start, window_end),
+            )
+            markets = cur.fetchall()
+        sessions_touched: list = []
+        total_rows = 0
+        for symbol, trade_date, contract in markets:
+            exp_est = _contract_expiration_est(trade_date, contract, now_est)
+            if now_est < exp_est:
+                continue
+            with pg.cursor() as cur:
+                n = _apply_symbol_expiration_for_contract_session(cur, symbol, trade_date, contract)
+            if n:
+                total_rows += n
+                sessions_touched.append((str(symbol).strip(), str(contract).strip(), trade_date))
+        with pg.cursor() as cur:
+            ids = []
+            seen_sess = set()
+            for sym_k, ckey, td in sessions_touched:
+                sk = (sym_k.upper(), ckey, str(td))
+                if sk in seen_sess:
+                    continue
+                seen_sess.add(sk)
+                ids.extend(_trade_ids_pending_wlc_for_contract_session(cur, sym_k, ckey, td))
+            _apply_win_loss_confirmed_for_trade_ids(cur, ids)
+        pg.commit()
+        if total_rows:
+            log_debug(
+                f"[15-MIN CHECK] symbol_expiration contract-session alignment: {total_rows} row(s), "
+                f"{len(seen_sess)} session(s)"
+            )
+    except Exception as e:
+        log(f"⚠️ symbol_expiration past-due backfill failed: {e}")
+        try:
+            pg.rollback()
+        except Exception:
+            pass
+    finally:
+        pg.close()
+
+
+def _apply_win_loss_confirmed_for_trade_ids(cursor, trade_ids) -> None:
+    """Recompute win_loss_confirmed where symbol_expiration and win_loss are set."""
+    if not trade_ids:
+        return
+    for tid in trade_ids:
+        cursor.execute(
+            """
+            SELECT strike, side, symbol_expiration, win_loss
+            FROM users.trades_0001
+            WHERE id = %s
+              AND symbol_expiration IS NOT NULL
+              AND win_loss IS NOT NULL
+              AND win_loss_confirmed IS NULL
+            """,
+            (tid,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            continue
+        strike, side, sym_exp, win_loss = row
+        wlc = _compute_win_loss_confirmed(strike, side, sym_exp, win_loss)
+        if wlc is None:
+            continue
+        cursor.execute(
+            "UPDATE users.trades_0001 SET win_loss_confirmed = %s WHERE id = %s",
+            (wlc, tid),
+        )
+
+
+def _settle_one_expired_paper_trade(now_est: datetime, trade_id: int, ticker: str, symbol: str) -> None:
+    """Mark one ``expired`` paper row ``closed`` at settlement; repairs missing ``symbol_close``."""
+    pg_conn_paper = None
+    try:
+        pg_conn_paper = get_postgresql_connection()
+        if not pg_conn_paper:
+            log(f"⚠️ Cannot connect to PostgreSQL for paper trade {trade_id} settlement")
+            return
+
+        with pg_conn_paper.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT strike, side, symbol_close, buy_price, position, bankroll, mtb_base_value,
+                       high_price, low_price, fees, contract, date
+                FROM users.trades_0001
+                WHERE id = %s AND status = 'expired'
+                """,
+                (trade_id,),
+            )
+            trade_data = cursor.fetchone()
+
+        if not trade_data:
+            return
+
+        (
+            strike,
+            side,
+            symbol_close,
+            buy_price,
+            position,
+            bankroll,
+            mtb_base,
+            high_price,
+            low_price,
+            existing_fees,
+            contract,
+            trade_date,
+        ) = trade_data
+        existing_fees = float(existing_fees) if existing_fees is not None else 0.0
+
+        if symbol_close is None and contract and trade_date and symbol:
+            exp_est = _contract_expiration_est(trade_date, contract, now_est)
+            symbol_close = _fetch_one_minute_avg_at_or_before(symbol, exp_est)
+            if symbol_close is not None:
+                log_debug(
+                    f"📝 Repaired symbol_close for expired paper {trade_id} from expiration-tick 1m avg"
+                )
+
+        if symbol_close is None:
+            log(f"⚠️ Paper trade {trade_id} has no symbol_close, skipping settlement")
+            return
+
+        strike_clean = str(strike).replace("$", "").replace(",", "")
+        strike_float = float(strike_clean)
+        symbol_close_float = float(symbol_close)
+
+        is_winner = False
+        if side and side.upper() in ("Y", "YES"):
+            is_winner = symbol_close_float >= strike_float
+        elif side and side.upper() in ("N", "NO"):
+            is_winner = symbol_close_float <= strike_float
+        else:
+            log(f"⚠️ Paper trade {trade_id} has invalid side: {side}")
+            return
+
+        sell_price = 1.0000 if is_winner else 0.0000
+        fees = existing_fees
+
+        pnl = None
+        if buy_price is not None and position is not None:
+            buy_value = buy_price * position
+            sell_value = sell_price * position
+            pnl = round(sell_value - buy_value - fees, 2)
+
+        win_loss = "W" if is_winner else "L"
+
+        ret_pct = None
+        ret_pct_base = None
+        roi_pct = None
+        if bankroll is not None and bankroll > 0 and pnl is not None:
+            ret_pct = round((pnl / (bankroll / 100.0)) * 100, 5)
+        if mtb_base is not None and mtb_base > 0 and pnl is not None:
+            ret_pct_base = round((pnl / (mtb_base / 100.0)) * 100, 5)
+        if buy_price is not None and position is not None and pnl is not None:
+            buy_value = buy_price * position
+            if buy_value > 0:
+                roi_pct = round((pnl / buy_value) * 100.0, 5)
+
+        closed_at = now_est.strftime("%H:%M:%S")
+
+        update_trade_status_with_ret_pct(
+            trade_id=trade_id,
+            status="closed",
+            closed_at=closed_at,
+            sell_price=sell_price,
+            symbol_close=symbol_close,
+            win_loss=win_loss,
+            pnl=pnl,
+            close_method="expired",
+            fees=fees,
+            roi_pct=roi_pct,
+            ret_pct=ret_pct,
+            ret_pct_base=ret_pct_base,
+            high_price=high_price,
+            low_price=low_price,
+        )
+
+        with pg_conn_paper.cursor() as cursor:
+            cursor.execute("UPDATE users.trades_0001 SET order_id_close = NULL WHERE id = %s", (trade_id,))
+            pg_conn_paper.commit()
+
+        log(
+            f"📝 PAPER TRADE SETTLED: Trade {trade_id}, {ticker}, W/L={win_loss}, PnL=${pnl}, "
+            f"Sell=${sell_price}, SymbolClose=${symbol_close_float}, Strike=${strike_float}"
+        )
+
+        notify_active_trade_supervisor_direct(trade_id, str(ticker), "closed")
+        notify_strike_table_trade_change(trade_id, "closed")
+
+    except Exception as e:
+        log(f"❌ Error processing paper trade {trade_id} settlement: {e}")
+    finally:
+        if pg_conn_paper:
+            try:
+                pg_conn_paper.close()
+            except Exception:
+                pass
+
+
+def _settle_stuck_expired_paper_trades(now_est: datetime) -> None:
+    """Finalize paper rows left ``expired`` with NULL ``symbol_close`` (e.g. after a failed price lookup)."""
+    pg = get_postgresql_connection()
+    if not pg:
+        return
+    try:
+        with pg.cursor() as c:
+            c.execute(
+                """
+                SELECT id, ticker, symbol FROM users.trades_0001
+                WHERE paper_trade IS TRUE
+                  AND status = 'expired'
+                  AND symbol_close IS NULL
+                LIMIT 100
+                """
+            )
+            rows = c.fetchall()
+        pg.close()
+    except Exception as e:
+        log(f"⚠️ stuck expired paper scan: {e}")
+        try:
+            pg.close()
+        except Exception:
+            pass
+        return
+    if not rows:
+        return
+    log(f"📝 Settling {len(rows)} stuck expired paper trade(s) missing symbol_close")
+    for tid, tkr, sym in rows:
+        _settle_one_expired_paper_trade(now_est, tid, tkr, sym)
+
 
 def _get_price_spread_from_strike_table(symbol, ticker, side, market=None):
     """Get the price spread for a given ticker and side from the strike table.
@@ -861,15 +1283,7 @@ def _fanout_active_trades_change_via_redis_or_http(broadcast_payload: dict) -> N
             return
     except Exception:
         pass
-    try:
-        broadcast_url = f"http://localhost:{get_port('main_app')}/api/broadcast_active_trades_change"
-        response = requests.post(broadcast_url, json=broadcast_payload, timeout=2)
-        if response.status_code == 200:
-            log("NOTIFIED FRONTEND - ACTIVE TRADES CHANGE")
-        else:
-            log(f"ACTIVE TRADES BROADCAST FAILED: {response.status_code}")
-    except Exception as e:
-        log(f"ACTIVE TRADES BROADCAST ERROR: {e}")
+    log("ACTIVE TRADES BROADCAST SKIPPED: Redis unavailable and HTTP fallback removed")
 
 
 def notify_frontend_trade_change_redis_or_http() -> None:
@@ -882,16 +1296,7 @@ def notify_frontend_trade_change_redis_or_http() -> None:
             return
     except Exception:
         pass
-    try:
-        notification_url = f"http://localhost:{get_port('main_app')}/api/notify_db_change"
-        requests.post(
-            notification_url,
-            json={"db_name": "trades", "timestamp": time.time(), "change_data": {"trades": 1}},
-            timeout=2,
-        )
-        log("NOTIFIED FRONTEND")
-    except Exception:
-        pass
+    log("FRONTEND DB CHANGE NOTIFY SKIPPED: Redis unavailable and HTTP fallback removed")
 
 
 def notify_strike_table_trade_change_redis_or_http(trade_id: int, status: str) -> None:
@@ -905,16 +1310,7 @@ def notify_strike_table_trade_change_redis_or_http(trade_id: int, status: str) -
             return
     except Exception:
         pass
-    try:
-        notification_url = f"http://localhost:{get_port('main_app')}/api/notify_db_change"
-        requests.post(
-            notification_url,
-            json={"db_name": "trades", "timestamp": time.time(), "change_data": cd},
-            timeout=1,
-        )
-        log("NOTIFIED STRIKE TABLE")
-    except Exception:
-        pass
+    log("STRIKE TABLE DB CHANGE NOTIFY SKIPPED: Redis unavailable and HTTP fallback removed")
 
 # ---------- CORE TRADE FUNCTIONS ----------------------------------------------------
 
@@ -1754,7 +2150,7 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                         sell_price = None
                         log_event(ticket_id, f"MANAGER: Could not get close order data for sell price calculation")
                     
-                    # Get one_minute_avg from live price log for symbol_close
+                    # symbol_close from latest one_minute_avg only (no raw price column fallback)
                     symbol_close = None
                     try:
                         pg_conn_symbol = get_postgresql_connection()
@@ -1766,12 +2162,10 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                                     symbol_close = normalize_trade_spot_price(symbol, result[0])
                                     log_event(ticket_id, f"MANAGER: Retrieved one_minute_avg for close: {symbol_close}")
                                 else:
-                                    # Fallback to current price if one_minute_avg not available
-                                    cursor.execute(f"SELECT price FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
-                                    fallback_result = cursor.fetchone()
-                                    if fallback_result and fallback_result[0] is not None:
-                                        symbol_close = normalize_trade_spot_price(symbol, fallback_result[0])
-                                        log_event(ticket_id, f"MANAGER: Using current price as fallback for close: {symbol_close}")
+                                    log_event(
+                                        ticket_id,
+                                        f"MANAGER: No one_minute_avg in live price log for {symbol}; symbol_close left unset",
+                                    )
                             pg_conn_symbol.close()
                     except Exception as e:
                         log_event(ticket_id, f"MANAGER: Failed to get one_minute_avg from live price log: {e}")
@@ -2798,7 +3192,7 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                     # Check if trade is already closed and has existing values
                     cursor.execute(
                         """
-                        SELECT status, high_price, low_price, symbol_expiration, strike, side
+                        SELECT status, high_price, low_price, strike, side, date, contract, symbol
                         FROM users.trades_0001 WHERE id = %s
                         """,
                         (trade_id,),
@@ -2808,20 +3202,17 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                     # Preserve existing values if trade is already closed and provided values are None
                     final_high_price = high_price
                     final_low_price = low_price
-                    sym_exp_fill = None
-                    try:
-                        if symbol_close is not None:
-                            sym_exp_fill = float(symbol_close)
-                    except (TypeError, ValueError):
-                        sym_exp_fill = None
+                    trade_date = trade_contract = trade_symbol = None
                     if existing_row:
                         (
                             existing_status,
                             existing_high_price,
                             existing_low_price,
-                            sym_expiration,
                             _strike_c,
                             _side_c,
+                            trade_date,
+                            trade_contract,
+                            trade_symbol,
                         ) = existing_row
                         if existing_status == 'closed':
                             # Trade is already closed - preserve existing values
@@ -2829,10 +3220,6 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                                 final_high_price = existing_high_price
                             if low_price is None and existing_low_price is not None:
                                 final_low_price = existing_low_price
-                        if sym_exp_fill is not None and sym_expiration is None:
-                            log_debug(
-                                f"Trade {trade_id}: symbol_expiration will be filled from symbol_close={sym_exp_fill} on close"
-                            )
                     
                     # Set monitor_confirmed = TRUE if high_price != low_price (meaning ATS was monitoring correctly)
                     monitor_confirmed = False
@@ -2845,12 +3232,15 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                     
                     cursor.execute("""
                         UPDATE users.trades_0001 
-                        SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, roi_pct = %s, ret_pct = %s, ret_pct_base = %s, high_price = %s, low_price = %s, monitor_confirmed = %s,
-                            symbol_expiration = COALESCE(symbol_expiration, %s)
+                        SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, roi_pct = %s, ret_pct = %s, ret_pct_base = %s, high_price = %s, low_price = %s, monitor_confirmed = %s
                         WHERE id = %s
-                    """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, roi_value, ret_pct, ret_pct_base, final_high_price, final_low_price, monitor_confirmed, sym_exp_fill, trade_id))
+                    """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, roi_value, ret_pct, ret_pct_base, final_high_price, final_low_price, monitor_confirmed, trade_id))
                     if cursor.rowcount > 0:
                         wrote_trade_row = True
+                        if trade_symbol and trade_contract and trade_date:
+                            _apply_symbol_expiration_for_contract_session(
+                                cursor, trade_symbol, trade_date, trade_contract
+                            )
                         _finalize_closed_trade_win_loss_confirmed(cursor, trade_id)
                 else:
                     cursor.execute("""
@@ -2960,6 +3350,15 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
                             if mtb_base is not None and mtb_base > 0:
                                 ret_pct_base = round((calculated_pnl / (mtb_base / 100.0)) * 100, 5)
                     
+                    cursor.execute(
+                        "SELECT date, contract, symbol FROM users.trades_0001 WHERE id = %s",
+                        (trade_id,),
+                    )
+                    meta_row = cursor.fetchone()
+                    meta_sym = meta_contract = meta_date = None
+                    if meta_row:
+                        meta_date, meta_contract, meta_sym = meta_row[0], meta_row[1], meta_row[2]
+
                     cursor.execute("""
                         UPDATE users.trades_0001 
                         SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, ret_pct = %s, ret_pct_base = %s
@@ -2967,6 +3366,10 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
                     """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, ret_pct, ret_pct_base, trade_id))
                     if cursor.rowcount > 0:
                         wrote_trade_row = True
+                        if meta_sym and meta_contract and meta_date:
+                            _apply_symbol_expiration_for_contract_session(
+                                cursor, meta_sym, meta_date, meta_contract
+                            )
                         _finalize_closed_trade_win_loss_confirmed(cursor, trade_id)
                 else:
                     cursor.execute("""
@@ -3441,7 +3844,7 @@ async def add_trade(request: Request):
                     except Exception as e:
                         log(f"⚠️ Failed to get symbol for paper trade close: {e}")
                     
-                    # Get one_minute_avg from live price log for symbol_close
+                    # symbol_close from latest one_minute_avg only (no raw price column fallback)
                     symbol_close = None
                     if symbol:
                         try:
@@ -3454,12 +3857,9 @@ async def add_trade(request: Request):
                                         symbol_close = normalize_trade_spot_price(symbol, result[0])
                                         log(f"📝 PAPER TRADE: Retrieved one_minute_avg for close: {symbol_close}")
                                     else:
-                                        # Fallback to current price if one_minute_avg not available
-                                        cursor.execute(f"SELECT price FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
-                                        fallback_result = cursor.fetchone()
-                                        if fallback_result and fallback_result[0] is not None:
-                                            symbol_close = normalize_trade_spot_price(symbol, fallback_result[0])
-                                            log(f"📝 PAPER TRADE: Using current price as fallback: {symbol_close}")
+                                        log(
+                                            f"📝 PAPER TRADE: No one_minute_avg for {symbol}; symbol_close left unset",
+                                        )
                                 pg_conn_symbol.close()
                         except Exception as e:
                             log(f"⚠️ Failed to get one_minute_avg from live price log: {e}")
@@ -4114,57 +4514,6 @@ def _finalize_closed_trade_win_loss_confirmed(cursor, trade_id: int) -> None:
     )
 
 
-def _apply_symbol_expiration_and_confirmation_backfill(cursor, trades_to_process, symbol_prices) -> None:
-    """After trades expire on this sweep, set symbol_expiration for all rows on those tickers (paper and live); then win_loss_confirmed where W/L is known and computable."""
-    if not trades_to_process:
-        return
-    ticker_to_symbol: dict = {}
-    for _trade_id, ticker, symbol, _strategy, _contract in trades_to_process:
-        if ticker and symbol:
-            ticker_to_symbol[str(ticker)] = symbol
-    distinct_tickers = list(dict.fromkeys(ticker_to_symbol.keys()))
-    for ticker in distinct_tickers:
-        symbol = ticker_to_symbol[ticker]
-        price = symbol_prices.get(symbol)
-        if price is None:
-            log(
-                f"[15-MIN CHECK] No symbol price for {symbol} (ticker={ticker}); "
-                "skipping symbol_expiration backfill for this ticker"
-            )
-            continue
-        cursor.execute(
-            """
-            UPDATE users.trades_0001
-            SET symbol_expiration = %s
-            WHERE ticker = %s
-              AND symbol_expiration IS NULL
-            """,
-            (price, ticker),
-        )
-    for ticker in distinct_tickers:
-        cursor.execute(
-            """
-            SELECT id, strike, side, symbol_expiration, win_loss
-            FROM users.trades_0001
-            WHERE ticker = %s
-              AND symbol_expiration IS NOT NULL
-              AND win_loss IS NOT NULL
-              AND win_loss_confirmed IS NULL
-            """,
-            (ticker,),
-        )
-        rows = cursor.fetchall()
-        for row in rows:
-            tid, strike, side, sym_exp, win_loss = row
-            wlc = _compute_win_loss_confirmed(strike, side, sym_exp, win_loss)
-            if wlc is None:
-                continue
-            cursor.execute(
-                "UPDATE users.trades_0001 SET win_loss_confirmed = %s WHERE id = %s",
-                (wlc, tid),
-            )
-
-
 def check_expired_simulated_trades():
     """Expire and settle open simulated trades on the 15m schedule. All simulated trades are treated as 15m.
     Records sell_price as NULL; sets cycle_win_loss per 15m window (L if any loss in that monitor/cycle, else W)."""
@@ -4174,7 +4523,7 @@ def check_expired_simulated_trades():
             return
         with pg_conn.cursor() as cursor:
             cursor.execute(
-                "SELECT id, ticker, symbol, strike, side, monitor, date, weekly_cycle "
+                "SELECT id, ticker, symbol, strike, side, monitor, date, weekly_cycle, contract "
                 "FROM users.trades_simulated_0001 "
                 "WHERE status IN ('open', 'closing', 'close_failed')"
             )
@@ -4188,32 +4537,12 @@ def check_expired_simulated_trades():
         cycles_closed = set()  # (monitor, date, weekly_cycle) for cycle_win_loss update
         for row in active:
             trade_id, ticker, symbol, strike, side = row[0], row[1], row[2], row[3], row[4]
-            monitor, trade_date, weekly_cycle = row[5], row[6], row[7]
-            if symbol not in symbol_prices:
-                try:
-                    conn = get_postgresql_connection()
-                    if conn:
-                        with conn.cursor() as cur:
-                            cur.execute(
-                                f"SELECT one_minute_avg FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1"
-                            )
-                            r = cur.fetchone()
-                            if r and r[0] is not None:
-                                symbol_prices[symbol] = normalize_trade_spot_price(symbol, r[0])
-                            else:
-                                cur.execute(
-                                    f"SELECT price FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1"
-                                )
-                                fb = cur.fetchone()
-                                symbol_prices[symbol] = (
-                                    normalize_trade_spot_price(symbol, fb[0]) if fb and fb[0] is not None else None
-                                )
-                        conn.close()
-                    else:
-                        symbol_prices[symbol] = None
-                except Exception:
-                    symbol_prices[symbol] = None
-            symbol_close = symbol_prices.get(symbol)
+            monitor, trade_date, weekly_cycle, contract = row[5], row[6], row[7], row[8]
+            expiration_est = _contract_expiration_est(trade_date, contract, now_est)
+            cache_key = (symbol, expiration_est.replace(tzinfo=None))
+            if cache_key not in symbol_prices:
+                symbol_prices[cache_key] = _fetch_one_minute_avg_at_or_before(symbol, expiration_est)
+            symbol_close = symbol_prices.get(cache_key)
             if symbol_close is None:
                 continue
             strike_clean = str(strike).replace("$", "").replace(",", "")
@@ -4300,6 +4629,12 @@ def check_expired_trades():
         # Step 1: Delete trades with status ERROR
         delete_error_trades()
 
+        # Early-closed trades: fill symbol_expiration once contract end has passed (same 1m avg @ expiration tick).
+        _backfill_symbol_expiration_past_due_closed(now_est)
+
+        # Paper trades can be stuck ``expired`` if symbol_close failed during sweep (e.g. text vs timestamp bug).
+        _settle_stuck_expired_paper_trades(now_est)
+
         closed_at = now_est.strftime("%H:%M:%S")
         current_minute = now_est.minute
 
@@ -4316,7 +4651,7 @@ def check_expired_trades():
         if pg_conn:
             with pg_conn.cursor() as cursor:
                 cursor.execute(
-                    "SELECT id, ticker, symbol, trade_strategy, contract "
+                    "SELECT id, ticker, symbol, trade_strategy, contract, date "
                     "FROM users.trades_0001 "
                     "WHERE status IN ('open', 'closing', 'close_failed')"
                 )
@@ -4353,40 +4688,28 @@ def check_expired_trades():
             log("[15-MIN CHECK] No eligible trades found for expiration")
             return
         
-        # Get symbol-specific closing prices for each trade we plan to process
-        symbol_prices = {}
-        for trade_id, ticker, symbol, trade_strategy, contract in trades_to_process:
-            if symbol not in symbol_prices:
-                try:
-                    # Get one_minute_avg from symbol-specific price log
-                    pg_conn = get_postgresql_connection()
-                    if pg_conn:
-                        with pg_conn.cursor() as cursor:
-                            cursor.execute(f"SELECT one_minute_avg FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
-                            result = cursor.fetchone()
-                            if result and result[0] is not None:
-                                symbol_prices[symbol] = normalize_trade_spot_price(symbol, result[0])
-                            else:
-                                # Fallback to current price if one_minute_avg not available
-                                cursor.execute(f"SELECT price FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
-                                fallback_result = cursor.fetchone()
-                                if fallback_result and fallback_result[0] is not None:
-                                    symbol_prices[symbol] = normalize_trade_spot_price(symbol, fallback_result[0])
-                                else:
-                                    symbol_prices[symbol] = None
-                        pg_conn.close()
-                    else:
-                        symbol_prices[symbol] = None
-                except Exception as e:
-                    symbol_prices[symbol] = None
+        # Closing prices: one_minute_avg at or before each trade's contract expiration tick.
+        expiration_price_cache = {}
+        for trade_id, ticker, symbol, trade_strategy, contract, trade_date in trades_to_process:
+            expiration_est = _contract_expiration_est(trade_date, contract, now_est)
+            cache_key = (symbol, expiration_est.replace(tzinfo=None))
+            if cache_key not in expiration_price_cache:
+                expiration_price_cache[cache_key] = _fetch_one_minute_avg_at_or_before(symbol, expiration_est)
+            if expiration_price_cache.get(cache_key) is None:
+                log(
+                    f"[15-MIN CHECK] No one_minute_avg at/before expiration for {symbol} "
+                    f"(ticker={ticker}, exp={expiration_est.strftime('%Y-%m-%d %H:%M:%S %Z')})"
+                )
         
         # Update PostgreSQL - handle each trade individually with its symbol-specific closing price
         try:
             pg_conn = get_postgresql_connection()
             if pg_conn:
                 with pg_conn.cursor() as cursor:
-                    for trade_id, ticker, symbol, trade_strategy, contract in trades_to_process:
-                        symbol_close = symbol_prices.get(symbol)
+                    for trade_id, ticker, symbol, trade_strategy, contract, trade_date in trades_to_process:
+                        expiration_est = _contract_expiration_est(trade_date, contract, now_est)
+                        cache_key = (symbol, expiration_est.replace(tzinfo=None))
+                        symbol_close = expiration_price_cache.get(cache_key)
                         
                         # CRITICAL: Re-check trade status before UPDATE to prevent race condition
                         # If trade was already closed between SELECT and UPDATE, skip it entirely
@@ -4440,10 +4763,17 @@ def check_expired_trades():
                                 monitor_confirmed = %s
                             WHERE id = %s AND status IN ('open', 'closing', 'close_failed')
                         """, (closed_at, symbol_close, high_price, low_price, monitor_confirmed, trade_id))
+                    markets_applied = set()
+                    for _tid, _ticker, _symbol, _strategy, _contract, _trade_date in trades_to_process:
+                        k = (str(_symbol).strip(), str(_contract).strip(), str(_trade_date))
+                        if k in markets_applied:
+                            continue
+                        markets_applied.add(k)
+                        _apply_symbol_expiration_for_contract_session(cursor, _symbol, _trade_date, _contract)
                     pg_conn.commit()
                     with pg_conn.cursor() as bf_cursor:
-                        _apply_symbol_expiration_and_confirmation_backfill(
-                            bf_cursor, trades_to_process, symbol_prices
+                        _apply_win_loss_confirmed_for_trade_ids(
+                            bf_cursor, [row[0] for row in trades_to_process]
                         )
                     pg_conn.commit()
                     log_debug(f"💾 Expired trades update written to PostgreSQL users.trades_0001 for {len(trades_to_process)} trades (open, closing, and close_failed)")
@@ -4463,7 +4793,7 @@ def check_expired_trades():
             pg_conn_check = get_postgresql_connection()
             if pg_conn_check:
                 with pg_conn_check.cursor() as cursor:
-                    for trade_id, ticker, symbol, trade_strategy, contract in trades_to_process:
+                    for trade_id, ticker, symbol, trade_strategy, contract, trade_date in trades_to_process:
                         cursor.execute("SELECT paper_trade FROM users.trades_0001 WHERE id = %s", (trade_id,))
                         result = cursor.fetchone()
                         if result and result[0] is True:
@@ -4473,136 +4803,22 @@ def check_expired_trades():
                 pg_conn_check.close()
             else:
                 # If we can't check, treat all as live trades
-                for trade_id, ticker, symbol, trade_strategy, contract in trades_to_process:
+                for trade_id, ticker, symbol, trade_strategy, contract, trade_date in trades_to_process:
                     live_trade_tickers.append(ticker)
         except Exception as e:
             log(f"⚠️ Error separating paper/live trades: {e}, treating all as live")
-            for trade_id, ticker, symbol, trade_strategy, contract in trades_to_process:
+            for trade_id, ticker, symbol, trade_strategy, contract, trade_date in trades_to_process:
                 live_trade_tickers.append(ticker)
         
         # Notify active_trade_supervisor for all expired trades (both paper and live)
-        for trade_id, ticker, symbol, trade_strategy, contract in trades_to_process:
+        for trade_id, ticker, symbol, trade_strategy, contract, trade_date in trades_to_process:
             notify_active_trade_supervisor_direct(trade_id, str(ticker), "expired")
         
         # Process paper trades immediately (manual settlement)
         if paper_trade_ids:
             log(f"📝 Processing {len(paper_trade_ids)} expired paper trades")
             for trade_id, ticker, symbol in paper_trade_ids:
-                pg_conn_paper = None
-                try:
-                    # Get trade data for settlement calculation
-                    pg_conn_paper = get_postgresql_connection()
-                    if not pg_conn_paper:
-                        log(f"⚠️ Cannot connect to PostgreSQL for paper trade {trade_id} settlement")
-                        continue
-                    
-                    with pg_conn_paper.cursor() as cursor:
-                        cursor.execute("""
-                            SELECT strike, side, symbol_close, buy_price, position, bankroll, mtb_base_value, high_price, low_price, fees
-                            FROM users.trades_0001 
-                            WHERE id = %s AND status = 'expired'
-                        """, (trade_id,))
-                        trade_data = cursor.fetchone()
-                    
-                    if not trade_data:
-                        log(f"⚠️ Paper trade {trade_id} not found or not expired")
-                        continue
-                    
-                    strike, side, symbol_close, buy_price, position, bankroll, mtb_base, high_price, low_price, existing_fees = trade_data
-                    existing_fees = float(existing_fees) if existing_fees is not None else 0.0
-                    
-                    if symbol_close is None:
-                        log(f"⚠️ Paper trade {trade_id} has no symbol_close, skipping settlement")
-                        continue
-                    
-                    # Clean strike (remove $ and commas)
-                    strike_clean = str(strike).replace('$', '').replace(',', '')
-                    strike_float = float(strike_clean)
-                    symbol_close_float = float(symbol_close)
-                    
-                    # Determine winner/loser based on strike and side
-                    is_winner = False
-                    if side and side.upper() in ('Y', 'YES'):
-                        # YES trade: WINNER if symbol_close >= strike
-                        is_winner = symbol_close_float >= strike_float
-                    elif side and side.upper() in ('N', 'NO'):
-                        # NO trade: WINNER if symbol_close <= strike
-                        is_winner = symbol_close_float <= strike_float
-                    else:
-                        log(f"⚠️ Paper trade {trade_id} has invalid side: {side}")
-                        continue
-                    
-                    # Set sell_price: 1.0000 for winners, 0.0000 for losers. No close order at expiration; fees = open fee only.
-                    sell_price = 1.0000 if is_winner else 0.0000
-                    fees = existing_fees
-                    
-                    # Calculate PnL (fees = open fee only; no close fee at expiration)
-                    pnl = None
-                    if buy_price is not None and position is not None:
-                        buy_value = buy_price * position
-                        sell_value = sell_price * position
-                        pnl = round(sell_value - buy_value - fees, 2)
-                    
-                    # Determine win_loss
-                    win_loss = "W" if is_winner else "L"
-                    
-                    # Calculate ret_pct, ret_pct_base, and roi_pct
-                    ret_pct = None
-                    ret_pct_base = None
-                    roi_pct = None
-                    if bankroll is not None and bankroll > 0 and pnl is not None:
-                        ret_pct = round((pnl / (bankroll / 100.0)) * 100, 5)
-                    if mtb_base is not None and mtb_base > 0 and pnl is not None:
-                        ret_pct_base = round((pnl / (mtb_base / 100.0)) * 100, 5)
-                    if buy_price is not None and position is not None and pnl is not None:
-                        buy_value = buy_price * position
-                        if buy_value > 0:
-                            roi_pct = round((pnl / buy_value) * 100.0, 5)
-                    
-                    # Finalize the trade
-                    now_est = datetime.now(ZoneInfo("America/New_York"))
-                    closed_at = now_est.strftime("%H:%M:%S")
-                    
-                    update_trade_status_with_ret_pct(
-                        trade_id=trade_id,
-                        status="closed",
-                        closed_at=closed_at,
-                        sell_price=sell_price,
-                        symbol_close=symbol_close,
-                        win_loss=win_loss,
-                        pnl=pnl,
-                        close_method="expired",
-                        fees=fees,
-                        roi_pct=roi_pct,
-                        ret_pct=ret_pct,
-                        ret_pct_base=ret_pct_base,
-                        high_price=high_price,
-                        low_price=low_price
-                    )
-                    
-                    # Set order_id_close to NULL for paper trades
-                    if pg_conn_paper:
-                        with pg_conn_paper.cursor() as cursor:
-                            cursor.execute("UPDATE users.trades_0001 SET order_id_close = NULL WHERE id = %s", (trade_id,))
-                            pg_conn_paper.commit()
-                    
-                    log(f"📝 PAPER TRADE SETTLED: Trade {trade_id}, {ticker}, W/L={win_loss}, PnL=${pnl}, Sell=${sell_price}, SymbolClose=${symbol_close_float}, Strike=${strike_float}")
-                    
-                    # Notify active trade supervisor that it's closed
-                    notify_active_trade_supervisor_direct(trade_id, str(ticker), "closed")
-                    
-                    # Notify strike table for display update
-                    notify_strike_table_trade_change(trade_id, "closed")
-                    
-                except Exception as e:
-                    log(f"❌ Error processing paper trade {trade_id} settlement: {e}")
-                finally:
-                    # Always close the connection if it was opened
-                    if pg_conn_paper:
-                        try:
-                            pg_conn_paper.close()
-                        except:
-                            pass
+                _settle_one_expired_paper_trade(now_est, trade_id, ticker, symbol)
         
         # Process live trades with normal settlement polling
         if live_trade_tickers:
@@ -4661,6 +4877,9 @@ def poll_settlements_for_matches(expired_tickers):
     timeout_seconds = 30 * 60
 
     while found_tickers != target_tickers:
+        if _trade_manager_scheduler_shutdown.is_set():
+            log("[5-MIN CHECK] Settlement polling stopped early (service shutdown)")
+            break
         if time.time() - start_time > timeout_seconds:
             unresolved = sorted(list(target_tickers - found_tickers))
             if unresolved:
@@ -4669,6 +4888,8 @@ def poll_settlements_for_matches(expired_tickers):
             
         try:
             for ticker in unique_expired_tickers:
+                if _trade_manager_scheduler_shutdown.is_set():
+                    break
                 if ticker in found_tickers:
                     continue
                     
@@ -4704,6 +4925,8 @@ def poll_settlements_for_matches(expired_tickers):
                     
                     # Process each trade individually
                     for trade_row in trade_rows:
+                        if _trade_manager_scheduler_shutdown.is_set():
+                            break
                         (
                             trade_id,
                             buy_price,
@@ -4777,6 +5000,14 @@ def poll_settlements_for_matches(expired_tickers):
                         except Exception as pg_err:
                             log(f"❌ Failed to update settlement trade {trade_id} in PostgreSQL: {pg_err}")
                     
+                    if _trade_manager_scheduler_shutdown.is_set():
+                        if pg_conn_trades:
+                            try:
+                                pg_conn_trades.close()
+                            except Exception:
+                                pass
+                        break
+                    
                     if pg_conn_trades:
                         pg_conn_trades.close()
                     
@@ -4787,6 +5018,8 @@ def poll_settlements_for_matches(expired_tickers):
                     
                     found_tickers.add(ticker)
                     
+            if _trade_manager_scheduler_shutdown.is_set():
+                break
             if found_tickers != target_tickers:
                 time.sleep(2)
             else:
@@ -5027,6 +5260,11 @@ def _notify_monitor_manager_trade_payload(payload: dict) -> None:
 
 # ---------- APScheduler Setup ----------------------------------------------------
 
+# Cleared on app start; set during FastAPI shutdown so settlement polling exits promptly.
+# Default APScheduler shutdown(wait=True) can block up to poll_settlements_for_matches's
+# 30-minute window; supervisord's default stopwaitsecs (10) then SIGKILLs the process.
+_trade_manager_scheduler_shutdown = threading.Event()
+
 _scheduler = BackgroundScheduler(timezone=ZoneInfo("America/New_York"))
 _scheduler.add_job(check_expired_trades, CronTrigger(minute="*/15", second=0), max_instances=1, coalesce=True)
 _scheduler.add_job(check_expired_trades_for_settlements, CronTrigger(minute="*/5", second=0), max_instances=1, coalesce=True)
@@ -5042,6 +5280,7 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start APScheduler when FastAPI app starts"""
+    _trade_manager_scheduler_shutdown.clear()
     try:
         _scheduler.start()
         threading.Thread(
@@ -5055,9 +5294,13 @@ async def lifespan(app: FastAPI):
         pass
     yield
     try:
-        _scheduler.shutdown()
-    except Exception as e:
+        _trade_manager_scheduler_shutdown.set()
+    except Exception:
         pass
+    try:
+        _scheduler.shutdown(wait=False)
+    except Exception as e:
+        log(f"trade_manager APScheduler shutdown: {e}")
 
 app = FastAPI(lifespan=lifespan)
 

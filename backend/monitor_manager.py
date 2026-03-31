@@ -467,7 +467,7 @@ environment={env_vars}
         body = {"type": "monitor_list_updated", "message": message}
         self._deliver_preferences_ws(
             body,
-            http_path="/api/broadcast_monitor_list_update",
+            http_path=None,
             http_payload=body,
             context="monitor_list_updated",
         )
@@ -484,7 +484,7 @@ environment={env_vars}
             msg["multiplier"] = multiplier
         self._deliver_preferences_ws(
             msg,
-            http_path="/api/broadcast_monitor_total_position",
+            http_path=None,
             http_payload={
                 "monitor_id": monitor_id,
                 "total_position": total_position,
@@ -497,7 +497,7 @@ environment={env_vars}
         msg = {"type": "monitor_statistics_update", **payload}
         self._deliver_preferences_ws(
             msg,
-            http_path="/api/broadcast_monitor_statistics_update",
+            http_path=None,
             http_payload=msg,
             context="monitor_statistics",
         )

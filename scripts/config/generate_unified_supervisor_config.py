@@ -358,6 +358,10 @@ supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
 
 """
         
+        # Long settlement polling can run many minutes; allow graceful stop before SIGKILL.
+        PROGRAM_EXTRA_DIRECTIVES = {
+            "trade_manager": ["stopwaitsecs=120"],
+        }
         # Critical assets get higher log retention (see docs/CRITICAL_ASSET_LOGGING.md)
         CRITICAL_LOG_SERVICES = {"system_monitor", "cascading_failure_detector"}
         CRITICAL_STDOUT_MAX, CRITICAL_STDOUT_BACKUPS = "20MB", 10
@@ -381,6 +385,8 @@ supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
                 stdout_max, stdout_backups = DEFAULT_STDOUT_MAX, DEFAULT_STDOUT_BACKUPS
             
             run_cmd = f'{python_executable} {project_root}/backend/{script_path}'
+            extra_lines = "\n".join(PROGRAM_EXTRA_DIRECTIVES.get(service_name, []))
+            extra_block = f"{extra_lines}\n" if extra_lines else ""
             # Create program section
             config_content += f"""[program:{service_name}]
 command={run_cmd}
@@ -390,7 +396,7 @@ autorestart=true
 startretries=3
 stopasgroup=true
 killasgroup=true
-stderr_logfile={stderr_log}
+{extra_block}stderr_logfile={stderr_log}
 stderr_logfile_maxbytes={stderr_max}
 stderr_logfile_backups={stderr_backups}
 stdout_logfile={stdout_log}

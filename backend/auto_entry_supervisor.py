@@ -100,17 +100,19 @@ from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
 from backend.util.paths import get_host, get_data_dir, get_service_url, get_trade_history_dir, get_logs_dir
 
 
-def _aes_preferences_notify(event_type: str, data: dict, http_path: str) -> None:
-    """Redis rec_io:preferences first (when USE_TRADING_REDIS_COMMS), else POST to main_app."""
+def _aes_preferences_notify(event_type: str, data: dict) -> None:
+    """Redis-only preferences notify for unified refactor."""
     try:
         from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
 
-        if use_trading_redis_comms() and publish_preferences_event(event_type, data):
-            return
-        port = get_port("main_app")
-        requests.post(f"http://localhost:{port}{http_path}", json=data, timeout=2)
-    except Exception:
-        pass
+        if use_trading_redis_comms():
+            if not publish_preferences_event(event_type, data):
+                log(
+                    f"[AUTO_ENTRY] Redis publish_preferences_event failed "
+                    f"(event_type={event_type})"
+                )
+    except Exception as exc:
+        log(f"[AUTO_ENTRY] preferences notify error (event_type={event_type}): {exc}")
 
 
 # Add these functions after the existing imports and before the get_monitor_identifier function
@@ -936,7 +938,6 @@ def load_auto_entry_state_from_db():
                     _aes_preferences_notify(
                         "cooldown_timer_change",
                         {"monitor_id": full_monitor_id, "cooldown_timer": int(remaining_seconds)},
-                        "/api/notify_cooldown_timer_change",
                     )
                 
                 state = {
@@ -1291,7 +1292,6 @@ def update_cooldown_timer_in_db(seconds):
         _aes_preferences_notify(
             "cooldown_timer_change",
             {"monitor_id": full_monitor_id, "cooldown_timer": seconds},
-            "/api/notify_cooldown_timer_change",
         )
     except Exception as e:
         log(f"[AUTO ENTRY] ❌ Error updating cooldown_timer: {e}")
@@ -1322,7 +1322,6 @@ def update_auto_entry_status_in_db(status):
         _aes_preferences_notify(
             "auto_trade_status_change",
             {"monitor_id": full_monitor_id, "auto_trade_status": status},
-            "/api/notify_auto_trade_status_change",
         )
     except Exception as e:
         log(f"[AUTO ENTRY] ❌ Error updating auto_trade_status in database: {e}")
@@ -1750,7 +1749,6 @@ def broadcast_auto_entry_indicator_change():
         _aes_preferences_notify(
             "auto_trade_status_change",
             {"monitor_id": full_monitor_id, "auto_trade_status": new_status},
-            "/api/notify_auto_trade_status_change",
         )
             
     except Exception as e:
@@ -2588,13 +2586,8 @@ def _defer_unified_aes_trade_followup(ticket_id: str, log_message: str, notifica
         try:
             from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
 
-            if use_trading_redis_comms() and publish_preferences_event(
-                "automated_trade_triggered", notification_data
-            ):
-                return
-            main_port = get_port("main_app")
-            main_url = f"http://localhost:{main_port}/api/notify_automated_trade"
-            _req.post(main_url, json=notification_data, timeout=2)
+            if use_trading_redis_comms():
+                publish_preferences_event("automated_trade_triggered", notification_data)
         except Exception:
             pass
 
@@ -2805,20 +2798,8 @@ def trigger_auto_entry_trade(strike_data):
             try:
                 from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms as _use_trc
 
-                if _use_trc() and publish_preferences_event(
-                    "automated_trade_triggered", notification_data
-                ):
-                    log(f"[AUTO ENTRY] ✅ WebSocket notification sent via Redis")
-                else:
-                    main_port = get_port("main_app")
-                    main_url = f"http://localhost:{main_port}/api/notify_automated_trade"
-                    notification_response = requests.post(main_url, json=notification_data, timeout=2)
-                    if notification_response.ok:
-                        log(f"[AUTO ENTRY] ✅ WebSocket notification sent successfully")
-                    else:
-                        log(
-                            f"[AUTO ENTRY] ⚠️ WebSocket notification failed: {notification_response.status_code}"
-                        )
+                if _use_trc():
+                    publish_preferences_event("automated_trade_triggered", notification_data)
             except Exception:
                 pass
 
@@ -5287,7 +5268,6 @@ def notify_automated_trade():
             _aes_preferences_notify(
                 "automated_trade_triggered",
                 data if isinstance(data, dict) else {},
-                "/api/notify_automated_trade",
             )
             log(f"[AUTO ENTRY] ✅ Frontend notification sent (Redis or HTTP)")
         except Exception as e:

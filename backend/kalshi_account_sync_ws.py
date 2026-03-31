@@ -397,15 +397,7 @@ def notify_frontend_db_change(db_name: str, change_data: dict = None):
             logger.debug("Frontend notified of %s change (Redis)", db_name)
             return
 
-        host = get_host()
-        main_app_port = get_port("main_app")
-        notification_url = f"http://{host}:{main_app_port}/api/notify_db_change"
-        payload = {"db_name": db_name, "timestamp": time.time(), "change_data": change_data}
-        response = requests.post(notification_url, json=payload, timeout=5)
-        if response.status_code == 200:
-            logger.debug("Frontend notified of %s change", db_name)
-        else:
-            logger.warning("Failed to notify frontend: %s", response.status_code)
+        logger.warning("Frontend notify skipped for %s: Redis unavailable and HTTP fallback removed", db_name)
 
     except Exception as e:
         logger.error("Error notifying frontend: %s", e)
