@@ -44,7 +44,7 @@ function getCurrentSymbol() {
   return 'BTC';
 }
 
-// Get current market from monitor only. Source of truth: body.dataset (set by trade_monitor from monitor list), then picker option. No window fallback.
+// Current market from monitor: body.dataset (trade_monitor), picker option, then window.currentMarket (set on monitor load; avoids empty table before dataset sync).
 function getCurrentMarket() {
   const bodyMarket = document.body && document.body.dataset && document.body.dataset.currentMarket;
   if (bodyMarket === '15m' || bodyMarket === 'hourly') return bodyMarket;
@@ -52,6 +52,9 @@ function getCurrentMarket() {
   if (picker && picker.value && picker.selectedOptions && picker.selectedOptions[0]) {
     const m = picker.selectedOptions[0].dataset.market;
     if (m === '15m' || m === 'hourly') return m;
+  }
+  if (typeof window !== 'undefined' && (window.currentMarket === '15m' || window.currentMarket === 'hourly')) {
+    return window.currentMarket;
   }
   return null;
 }
@@ -73,14 +76,16 @@ async function fetchUnifiedTTC(symbol = 'BTC', market = null) {
 
 // System-agnostic API endpoint detection
 async function getApiBaseUrl() {
+  // Probe must include market= — endpoint returns 200 JSON with error if market is missing (undetectable as "working").
+  const probeMarket = 'hourly';
   // Try current origin first
   try {
     const currentSymbol = getCurrentSymbol();
-    const testUrl = window.location.origin + `/api/postgresql/strike_table/${currentSymbol.toLowerCase()}`;
+    const testUrl = window.location.origin + `/api/postgresql/strike_table/${currentSymbol.toLowerCase()}?market=${encodeURIComponent(probeMarket)}`;
     const response = await fetch(testUrl);
     if (response.ok) {
       const data = await response.json();
-      if (data && data.symbol === currentSymbol) {
+      if (data && data.symbol === currentSymbol && !data.error) {
         return window.location.origin;
       }
     }
@@ -92,11 +97,11 @@ async function getApiBaseUrl() {
   const mainAppUrl = `${window.location.protocol}//${window.location.hostname}:3000`;
   try {
     const currentSymbol = getCurrentSymbol();
-    const testUrl = mainAppUrl + `/api/postgresql/strike_table/${currentSymbol.toLowerCase()}`;
+    const testUrl = mainAppUrl + `/api/postgresql/strike_table/${currentSymbol.toLowerCase()}?market=${encodeURIComponent(probeMarket)}`;
     const response = await fetch(testUrl);
     if (response.ok) {
       const data = await response.json();
-      if (data && data.symbol === currentSymbol) {
+      if (data && data.symbol === currentSymbol && !data.error) {
         return mainAppUrl;
       }
     }
@@ -127,6 +132,53 @@ async function apiCall(endpoint, options = {}) {
   }
 }
 
+/** Parse strike / price from API (number, string, or numeric string with commas). */
+function numStrike(v) {
+  if (v == null || v === '') return NaN;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : NaN;
+  const s = String(v).replace(/,/g, '').trim();
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+/**
+ * Find ladder row for a UI row key. Exact match first; otherwise closest strike within a tier-based
+ * tolerance (ladder often uses 67599.99 while the grid shows 67600).
+ */
+function findStrikeDataForRow(strikes, rowStrikeKey, strikeTierHint) {
+  if (!strikes || !strikes.length) return null;
+  const row = numStrike(rowStrikeKey);
+  if (!Number.isFinite(row)) return null;
+
+  let best = null;
+  let bestDist = Infinity;
+  for (const s of strikes) {
+    const sv = numStrike(s.strike);
+    if (!Number.isFinite(sv)) continue;
+    if (sv === row) return s;
+    const d = Math.abs(sv - row);
+    if (d < bestDist) {
+      bestDist = d;
+      best = s;
+    }
+  }
+  const tier = numStrike(strikeTierHint);
+  const tol =
+    Number.isFinite(tier) && tier > 0
+      ? Math.min(Math.max(tier * 0.51, 5), 500)
+      : 150;
+  if (best && bestDist <= tol) return best;
+  return null;
+}
+
+function hasAskDollar(v) {
+  if (v == null) return false;
+  const s = String(v).trim();
+  if (s === '') return false;
+  const p = parseFloat(s.replace(/,/g, ''));
+  return Number.isFinite(p);
+}
+
 // Fetch strike table data from PostgreSQL. Requires market from monitor (hourly or 15m).
 async function fetchStrikeTableData(symbol = 'BTC', market = null) {
   const m = market || getCurrentMarket();
@@ -135,6 +187,10 @@ async function fetchStrikeTableData(symbol = 'BTC', market = null) {
     const url = `/api/postgresql/strike_table/${symbol.toLowerCase()}?market=${encodeURIComponent(m)}`;
     const response = await apiCall(url);
     const data = await response.json();
+    if (!response.ok || (data && data.error)) {
+      if (data && data.error) console.error('Strike table API error:', data.error);
+      return null;
+    }
     return data;
   } catch (error) {
     console.error('Error fetching PostgreSQL strike table data:', error);
@@ -332,22 +388,33 @@ async function buildStrikeTableRows(basePrice) {
   
   // Use actual strikes from API response but limit to 14 total (7 above + 7 below current price)
   if (strikeTableData && strikeTableData.strikes && strikeTableData.strikes.length > 0) {
-    const currentPrice = strikeTableData.current_price;
-    const allStrikes = strikeTableData.strikes.map(s => s.strike).sort((a, b) => a - b);
+    const currentPrice = numStrike(strikeTableData.current_price);
+    const allStrikes = strikeTableData.strikes
+      .map((s) => numStrike(s.strike))
+      .filter((n) => Number.isFinite(n))
+      .sort((a, b) => a - b);
     
-    // Find strikes closest to current price
-    const strikesBelow = allStrikes.filter(s => s < currentPrice).slice(-7); // 7 closest below
-    const strikesAbove = allStrikes.filter(s => s >= currentPrice).slice(0, 7); // 7 closest above
-    
-    return [...strikesBelow, ...strikesAbove];
+    if (!Number.isFinite(currentPrice) || allStrikes.length === 0) {
+      // fall through to synthetic grid
+    } else {
+      const strikesBelow = allStrikes.filter((s) => s < currentPrice).slice(-7);
+      const strikesAbove = allStrikes.filter((s) => s >= currentPrice).slice(0, 7);
+      return [...strikesBelow, ...strikesAbove];
+    }
   }
   
-  // Fallback to original logic if no strikes in API response
-  const strikeTier = strikeTableData.strike_tier;
-  const step = strikeTier;
+  // Fallback: synthetic grid when API strikes missing or unusable
+  const cp = strikeTableData ? numStrike(strikeTableData.current_price) : NaN;
+  const strikeTier = strikeTableData ? numStrike(strikeTableData.strike_tier) : NaN;
+  const step =
+    Number.isFinite(strikeTier) && strikeTier > 0
+      ? strikeTier
+      : Number.isFinite(cp) && cp > 0
+        ? Math.max(Math.round(cp * 0.0005), 25)
+        : 100;
+  const center = Number.isFinite(basePrice) ? basePrice : Number.isFinite(cp) ? Math.round(cp / step) * step : step * 675;
   const rows = [];
-  // Generate 7 rows above and 7 rows below the current price (14 total)
-  for (let i = basePrice - 7 * step; i <= basePrice + 7 * step; i += step) {
+  for (let i = center - 7 * step; i <= center + 7 * step; i += step) {
     rows.push(i);
   }
   return rows;
@@ -459,25 +526,34 @@ async function updateStrikeTable() {
     }
 
     const strikes = strikeTableData.strikes;
-    const currentPrice = strikeTableData.current_price;
+    const currentPrice = numStrike(strikeTableData.current_price);
     const symbol = strikeTableData.symbol || 'BTC';
+    const resolvedTier = numStrike(strikeTableData.strike_tier);
+    const gridTier =
+      Number.isFinite(resolvedTier) && resolvedTier > 0
+        ? resolvedTier
+        : Number.isFinite(currentPrice) && currentPrice > 0
+          ? Math.max(Math.round(currentPrice * 0.0005), 25)
+          : 250;
 
     // Initialize strike table if needed
     if (!window.strikeRowsMap || window.strikeRowsMap.size === 0) {
-      const strikeTier = strikeTableData.strike_tier;
-      const base = Math.round(currentPrice / strikeTier) * strikeTier;
+      const base = Number.isFinite(currentPrice)
+        ? Math.round(currentPrice / gridTier) * gridTier
+        : gridTier * 676;
       await initializeStrikeTable(base);
     }
 
     // Check if we need to re-center the table due to price drift
     if (window.strikeRowsMap && window.strikeRowsMap.size > 0) {
       const currentCenterStrike = [...window.strikeRowsMap.keys()].sort((a, b) => a - b)[Math.floor(window.strikeRowsMap.size / 2)];
-      const strikeTier = strikeTableData.strike_tier || 250;
-      const priceDrift = Math.abs(currentPrice - currentCenterStrike);
+      const cs = numStrike(currentCenterStrike);
+      const priceDrift = Number.isFinite(currentPrice) && Number.isFinite(cs) ? Math.abs(currentPrice - cs) : 0;
 
-      if (priceDrift > 2 * strikeTier) {
-    
-        const newBase = Math.round(currentPrice / strikeTier) * strikeTier;
+      if (priceDrift > 2 * gridTier) {
+        const newBase = Number.isFinite(currentPrice)
+          ? Math.round(currentPrice / gridTier) * gridTier
+          : cs;
         await initializeStrikeTable(newBase);
         setTimeout(updateStrikeTable, 50);
         return;
@@ -487,44 +563,42 @@ async function updateStrikeTable() {
     // Update each strike row with pre-calculated data
     window.strikeRowsMap.forEach((cells, strike) => {
       const { row, bufferTd, bmTd, probTd, yesSpan, noSpan } = cells;
+      const diffMode = window.diffMode || false;
 
-      // Find matching strike data from JSON
-      const strikeData = strikes.find(s => s.strike === strike);
+      const strikeData = findStrikeDataForRow(strikes, strike, strikeTableData.strike_tier ?? gridTier);
       
       if (strikeData) {
-        // Buffer (pre-calculated)
-        bufferTd.textContent = strikeData.buffer.toFixed(2);
+        const buf = numStrike(strikeData.buffer);
+        bufferTd.textContent = Number.isFinite(buf) ? buf.toFixed(2) : '—';
 
-        // Buffer % (pre-calculated)
-        bmTd.textContent = strikeData.buffer_pct ? strikeData.buffer_pct.toFixed(2) : '—';
+        const bmp = numStrike(strikeData.buffer_pct);
+        bmTd.textContent = Number.isFinite(bmp) ? bmp.toFixed(2) : '—';
 
-        // Probability (pre-calculated)
-        const prob = strikeData.probability;
-        probTd.textContent = prob.toFixed(1);
+        const prob = numStrike(strikeData.probability);
+        probTd.textContent = Number.isFinite(prob) ? prob.toFixed(1) : '—';
         
         // Risk color coding
         row.classList.remove('ultra-safe', 'safe', 'caution', 'high-risk', 'danger-stop');
         let riskClass = '';
-        if (prob >= 98) riskClass = 'ultra-safe';
-        else if (prob >= 95) riskClass = 'safe';
-        else if (prob >= 80) riskClass = 'caution';
-        else riskClass = 'high-risk';
-        row.classList.add(riskClass);
+        if (Number.isFinite(prob)) {
+          if (prob >= 98) riskClass = 'ultra-safe';
+          else if (prob >= 95) riskClass = 'safe';
+          else if (prob >= 80) riskClass = 'caution';
+          else riskClass = 'high-risk';
+          row.classList.add(riskClass);
+        }
 
-        // Yes/No ask prices (pre-calculated) - require _dollars values
-        // Convert _dollars to display format (multiply by 100, show as whole numbers)
-        if (!strikeData.yes_ask_dollars || !strikeData.no_ask_dollars) {
-          console.warn(`⚠️ Missing _dollars values for strike ${strike}, skipping`);
+        // Yes/No ask prices (pre-calculated) - require parseable _dollars values
+        if (!hasAskDollar(strikeData.yes_ask_dollars) || !hasAskDollar(strikeData.no_ask_dollars)) {
+          updateYesNoButton(yesSpan, strike, 'yes', null, false, null, false, diffMode, null);
+          updateYesNoButton(noSpan, strike, 'no', null, false, null, false, diffMode, null);
           return;
         }
-        const yesAsk = Math.round(parseFloat(strikeData.yes_ask_dollars) * 100);
-        const noAsk = Math.round(parseFloat(strikeData.no_ask_dollars) * 100);
+        const yesAsk = Math.round(parseFloat(String(strikeData.yes_ask_dollars).replace(/,/g, '')) * 100);
+        const noAsk = Math.round(parseFloat(String(strikeData.no_ask_dollars).replace(/,/g, '')) * 100);
         const yesDiff = strikeData.yes_diff;
         const noDiff = strikeData.no_diff;
         const volumeFp = strikeData.volume_fp;
-
-        // Get current diff mode state
-        const diffMode = window.diffMode || false;
 
         // Simplified button enabling logic (Kalshi depth from volume_fp text)
         const volumeNum = Number.isFinite(parseFloat(volumeFp)) ? parseFloat(volumeFp) : 0;
@@ -533,8 +607,9 @@ async function updateStrikeTable() {
         const volumeOk = volumeNum >= minVolume;
         const yesPriceOk = yesAsk <= 98;
         const noPriceOk = noAsk <= 98;
-        const currentPrice = strikeTableData.current_price;
-        const isAboveMoneyLine = strike > currentPrice;
+        const strikeNum = numStrike(strike);
+        const isAboveMoneyLine =
+          Number.isFinite(strikeNum) && Number.isFinite(currentPrice) && strikeNum > currentPrice;
         
         // Determine which button should be enabled
         let yesEnabled = false;

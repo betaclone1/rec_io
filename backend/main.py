@@ -2867,13 +2867,14 @@ async def get_momentum_score():
         _main_logger.warning(f"Error getting momentum score: {e}")
         return {"weighted_score": 0, "error": str(e)}
 
-def _strike_table_name(symbol: str, market: str) -> str:
-    """Build strike table name from symbol and market. Market must be 'hourly' or '15m'."""
-    s = (symbol or "btc").lower()
+def _unified_strike_table_for_market(market: str) -> str:
+    """Physical table in live_data: unified 15m or unified hourly (symbol scoped by exchange + symbol)."""
     m = (market or "").strip().lower()
-    if m not in ("hourly", "15m"):
-        raise ValueError("market must be 'hourly' or '15m'")
-    return f"strike_table_{m}_{s}"
+    if m == "15m":
+        return "strike_table_15m"
+    if m == "hourly":
+        return "strike_table_hourly"
+    raise ValueError("market must be 'hourly' or '15m'")
 
 
 @app.get("/api/strike_table")
@@ -2889,8 +2890,9 @@ async def get_strike_table_mobile(request: Request):
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             if market == "hourly":
-                table_name = _strike_table_name(symbol, market)
-                cursor.execute(f"""
+                h_tbl = _unified_strike_table_for_market("hourly")
+                cursor.execute(
+                    f"""
                     SELECT 
                         strike,
                         buffer,
@@ -2904,9 +2906,12 @@ async def get_strike_table_mobile(request: Request):
                         yes_diff,
                         no_diff,
                         active_side
-                    FROM live_data.{table_name}
+                    FROM live_data.{h_tbl}
+                    WHERE exchange = %s AND symbol = %s
                     ORDER BY strike
-                """)
+                    """,
+                    ("kalshi", sym_u),
+                )
             else:
                 cursor.execute(
                     """
@@ -3728,17 +3733,20 @@ async def get_live_probabilities(request: Request):
         market = (request.query_params.get("market") or "").strip().lower()
         if market not in ("hourly", "15m"):
             return {"error": "market required (hourly or 15m)"}
-        table_name = _strike_table_name(symbol, market)
+        sym_u = symbol.upper()
+        tbl = _unified_strike_table_for_market(market)
+        prob_col = "probability_15m" if market == "15m" else "probability_hourly"
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            # Get probability data from PostgreSQL strike table
-            cursor.execute(f"""
-                SELECT 
-                    strike,
-                    probability
-                    FROM live_data.{table_name}
+            cursor.execute(
+                f"""
+                SELECT strike, {prob_col}
+                    FROM live_data.{tbl}
+                    WHERE exchange = %s AND symbol = %s
                 ORDER BY strike
-            """)
+                """,
+                ("kalshi", sym_u),
+            )
             
             probabilities_data = cursor.fetchall()
             conn.close()
@@ -3853,8 +3861,9 @@ async def get_strike_table(symbol: str, request: Request):
                 )
                 strikes_data = cursor.fetchall()
             else:
-                table_name = _strike_table_name(symbol, market)
-                cursor.execute(f"""
+                h_tbl = _unified_strike_table_for_market("hourly")
+                cursor.execute(
+                    f"""
                     SELECT
                         symbol,
                         current_price,
@@ -3864,14 +3873,18 @@ async def get_strike_table(symbol: str, request: Request):
                         strike_tier,
                         market_status,
                         momentum_percentile
-                    FROM live_data.{table_name}
+                    FROM live_data.{h_tbl}
+                    WHERE exchange = %s AND symbol = %s
                     ORDER BY "timestamp" DESC
                     LIMIT 1
-                """)
+                    """,
+                    ("kalshi", sym_u),
+                )
                 header_data = cursor.fetchone()
                 if not header_data:
                     return {"error": f"No strike table data found for {symbol}"}
-                cursor.execute(f"""
+                cursor.execute(
+                    f"""
                     SELECT
                         strike,
                         buffer,
@@ -3891,9 +3904,12 @@ async def get_strike_table(symbol: str, request: Request):
                         no_ask_max_15m,
                         yes_ask_range_15m,
                         no_ask_range_15m
-                    FROM live_data.{table_name}
+                    FROM live_data.{h_tbl}
+                    WHERE exchange = %s AND symbol = %s
                     ORDER BY strike
-                """)
+                    """,
+                    ("kalshi", sym_u),
+                )
                 strikes_data = cursor.fetchall()
             conn.close()
             
@@ -4019,25 +4035,32 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
                     "strikes": [],
                 }
             else:
-                table_name = _strike_table_name(symbol, market)
+                h_tbl = _unified_strike_table_for_market("hourly")
                 ttc_column = "ttc_hourly"
                 prob_column = "probability_hourly"
-                cursor.execute(f"""
+                cursor.execute(
+                    f"""
                     SELECT 
                         symbol,
                         current_price,
                         {ttc_column},
                         momentum_percentile,
                         market_title,
-                        timestamp
-                    FROM live_data.{table_name}
+                        "timestamp",
+                        event_ticker,
+                        strike_tier
+                    FROM live_data.{h_tbl}
+                    WHERE exchange = %s AND symbol = %s
                     ORDER BY "timestamp" DESC
                     LIMIT 1
-                """)
+                    """,
+                    ("kalshi", sym_u),
+                )
                 header_data = cursor.fetchone()
                 if not header_data:
                     return {"error": f"No strike table data found for {symbol}"}
-                cursor.execute(f"""
+                cursor.execute(
+                    f"""
                     SELECT 
                         strike,
                         buffer,
@@ -4057,9 +4080,12 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
                         no_ask_max_15m,
                         yes_ask_range_15m,
                         no_ask_range_15m
-                    FROM live_data.{table_name}
+                    FROM live_data.{h_tbl}
+                    WHERE exchange = %s AND symbol = %s
                     ORDER BY strike
-                """)
+                    """,
+                    ("kalshi", sym_u),
+                )
                 strikes_data = cursor.fetchall()
                 momentum_percentile = float(header_data[3]) if header_data[3] else 0.0
                 momentum_bucket = round(momentum_percentile)
@@ -4071,6 +4097,8 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
                     "momentum_bucket": momentum_bucket,
                     "market_title": header_data[4],
                     "timestamp": header_data[5].isoformat() if header_data[5] else None,
+                    "event_ticker": header_data[6],
+                    "strike_tier": int(header_data[7]) if header_data[7] is not None else None,
                     "strikes": [],
                 }
 
@@ -4325,18 +4353,22 @@ async def get_unified_ttc(symbol: str, request: Request):
         market = (request.query_params.get("market") or "").strip().lower()
         if market not in ("hourly", "15m"):
             return {"error": "market required (hourly or 15m)", "ttc_seconds": 0}
-        table_name = _strike_table_name(symbol, market)
+        sym_u = (symbol or "BTC").upper()
+        tbl = _unified_strike_table_for_market(market)
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            # Hourly tables use ttc_hourly; 15m tables use ttc_15m.
             ttc_column = "ttc_15m" if market == "15m" else "ttc_hourly"
-            cursor.execute(f"""
+            cursor.execute(
+                f"""
                 SELECT {ttc_column}, event_ticker, market_title, market_status
-                    FROM live_data.{table_name}
-                WHERE market_status = 'active'
-                ORDER BY {ttc_column} ASC
+                    FROM live_data.{tbl}
+                WHERE exchange = %s AND symbol = %s
+                  AND market_status = 'active'
+                ORDER BY "timestamp" DESC, {ttc_column} ASC NULLS LAST
                 LIMIT 1
-            """)
+                """,
+                ("kalshi", sym_u),
+            )
             result = cursor.fetchone()
             conn.close()
             
