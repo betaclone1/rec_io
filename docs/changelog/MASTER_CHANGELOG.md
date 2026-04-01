@@ -22,16 +22,16 @@ This changelog is used when pushing updates to production. Each entry is timesta
 2. `20260401_1600_trades_0001_rec_io_db_notify`
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations (from project root on server):  
+- [x] Apply migrations (from project root on server):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260401_1500_rising_devil_min_ask_range`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260401_1600_trades_0001_rec_io_db_notify`
-- [ ] Schema drift check (recommended):  
+- [x] Schema drift check (recommended):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `main_app` :3000 and `trade_executor` :8001 `/health`; supervisor **RUNNING**; spot-check **`auto_entry_supervisor_*`** logs for monitor-scoped Rising Devil lines; confirm trade UI still receives **`/ws/db_changes`** updates for trade rows after NOTIFY trigger.
-- [ ] Snapshot reference (pre-deploy): **`rec-io-prod-pre-update-2026-04-01`** (DO action **`3119838396`**; confirm **completed** in DigitalOcean when convenient).
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `main_app` :3000 and `trade_executor` :8001 `/health`; supervisor **RUNNING**; spot-check **`auto_entry_supervisor_*`** logs for monitor-scoped Rising Devil lines; confirm trade UI still receives **`/ws/db_changes`** updates for trade rows after NOTIFY trigger.
+- [x] Snapshot reference (pre-deploy): **`rec-io-prod-pre-update-2026-04-01`** (DO action **`3119838396`**; confirm **completed** in DigitalOcean when convenient).
 
 ---
 
