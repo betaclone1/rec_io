@@ -16,6 +16,7 @@ Minimal index for current system. Historical and one-off docs were moved to `arc
 
 | Doc | Use |
 |-----|-----|
+| [PRODUCTION_HOST.md](PRODUCTION_HOST.md) | Canonical production IPv4, env vars (`REC_PROD_SSH_HOST` / `REC_PROD_DB_HOST`), server paths |
 | [PRODUCTION_SYNC_CHECKLIST.md](PRODUCTION_SYNC_CHECKLIST.md) | Production deploy and sync steps |
 | [PRODUCTION_DB_SCHEMA_AND_BACKFILL_MASTER.md](PRODUCTION_DB_SCHEMA_AND_BACKFILL_MASTER.md) | DB schema and backfill (e.g. `backfill_trades_volatility_movement.py`) |
 | [MASTER_DB_SCHEMA_REFERENCE.md](MASTER_DB_SCHEMA_REFERENCE.md) | Schema reference; used by drift check and DB work |

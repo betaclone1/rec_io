@@ -147,7 +147,7 @@ cd rec-io-server
 
 ### Database Configuration
 - **Local Database**: PostgreSQL on localhost:5432
-- **Remote Cloning**: production PostgreSQL host:5432 (read-only example; set `REC_PROD_DB_HOST` / `REC_PROD_SSH_HOST` for your deployment)
+- **Remote Cloning**: production PostgreSQL host:5432 (read-only example; set `REC_PROD_DB_HOST` / `REC_PROD_SSH_HOST` for your deployment). Current production IPv4: [PRODUCTION_HOST.md](PRODUCTION_HOST.md).
 - **Schemas**: users, live_data, system, analytics, historical_data
 
 ## Testing and Verification

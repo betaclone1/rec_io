@@ -4,6 +4,8 @@ Run **MASTER_RESTART on the production server** via SSH, wait for it to finish, 
 
 **Prerequisite:** Export `REC_PROD_SSH_HOST` to the production server IP or DNS name.
 
+**Current production:** IPv4 **`165.22.13.146`** (SSH and PostgreSQL co-located). Example: `export REC_PROD_SSH_HOST=165.22.13.146` (and `REC_PROD_DB_HOST` for local DB scripts). Canonical: `docs/PRODUCTION_HOST.md`.
+
 **Target:** `ssh root@$REC_PROD_SSH_HOST`. Project path on prod: **/opt/rec_io_server**.
 
 ## Steps

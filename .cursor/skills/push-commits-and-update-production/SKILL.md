@@ -2,6 +2,8 @@
 
 **Prerequisite:** Export `REC_PROD_SSH_HOST` to the production server IP or DNS name (SSH).
 
+**Current production:** IPv4 **`165.22.13.146`**. Example: `export REC_PROD_SSH_HOST=165.22.13.146`. Canonical: `docs/PRODUCTION_HOST.md`.
+
 Run when the user wants a **single command** to prepare an update, commit and push with the suggested message, and then apply that update to production. Intended for lighter, high-confidence commits.
 
 ## Workflow (execute in order)

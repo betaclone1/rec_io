@@ -6,6 +6,8 @@ description: "Production: run open MASTER_CHANGELOG checklists and calibrate thi
 
 **Use this only when the agent is already on the production server.** From local, use **/apply-update-from-local** instead.
 
+**Host reference:** `docs/PRODUCTION_HOST.md` (public IPv4 **`165.22.13.146`**, project root **`/opt/rec_io_server`**).
+
 Review the latest MASTER_CHANGELOG entries and instruction docs, run each **open** production checklist, and calibrate this server with the latest update. Equivalent to @updater new update. **This is a fully autonomous operation:** apply all necessary changes (including DB migrations), restart the system when required, and verify it is up and running. Do not pause for permission; run migrations, `scripts/MASTER_RESTART.sh`, and verification with the permissions needed for them to succeed.
 
 **Execute (do not only describe):**

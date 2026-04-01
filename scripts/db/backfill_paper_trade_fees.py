@@ -6,6 +6,7 @@ for closed-before-expiration adds close_fee = round_up(0.07 * position * (1 - se
 Updates ONLY the fees column; does not touch any row where paper_trade is not TRUE.
 
 Run against production with: DB_HOST=$REC_PROD_SSH_HOST PYTHONPATH=$(pwd) python3 scripts/db/backfill_paper_trade_fees.py
+(Canonical prod IPv4 and env: docs/PRODUCTION_HOST.md — currently 165.22.13.146.)
 Dry run (no writes): add --dry-run
 """
 

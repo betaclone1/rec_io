@@ -4,7 +4,7 @@ description: "Morning briefing: run steps 1–8 in order, then output the sectio
 
 # Daily briefing
 
-Execute **steps 1–8 in order**. **Prerequisite:** for any step that uses SSH to production, `export REC_PROD_SSH_HOST` to the server IP or DNS name. Then output the **briefing** using the **exact section template** at the end. Do not skip steps. If a step fails, note the failure in the relevant section and continue.
+Execute **steps 1–8 in order**. **Prerequisite:** for any step that uses SSH to production, `export REC_PROD_SSH_HOST` (current IPv4 **`165.22.13.146`**; see `docs/PRODUCTION_HOST.md`). Then output the **briefing** using the **exact section template** at the end. Do not skip steps. If a step fails, note the failure in the relevant section and continue.
 
 ---
 

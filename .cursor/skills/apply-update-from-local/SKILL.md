@@ -2,6 +2,8 @@
 
 **Prerequisite:** Export `REC_PROD_SSH_HOST` to the production server IP or DNS name (SSH).
 
+**Current production:** IPv4 **`165.22.13.146`** (SSH and PostgreSQL co-located). Example: `export REC_PROD_SSH_HOST=165.22.13.146` (and `export REC_PROD_DB_HOST=165.22.13.146` when local tooling connects to prod Postgres). Canonical: `docs/PRODUCTION_HOST.md`.
+
 **Primary way to apply updates to production.** Run from your **local workspace**. The agent SSHs to prod and executes every production checklist step there (pull, migrations, restart, verify). No agent runs on the production server.
 
 ## CRITICAL — DB migrations. Do not attempt any update on another server unless we are 100% certain we can update the DB.

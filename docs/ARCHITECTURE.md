@@ -21,7 +21,9 @@ Trading logic uses **US Eastern** (`America/New_York`) as the canonical wall clo
 
 ## Production targeting (local ops)
 
-Runbooks and utilities must not hardcode a DigitalOcean IP. For SSH, set **`REC_PROD_SSH_HOST`**; for PostgreSQL when it differs from the SSH target, set **`REC_PROD_DB_HOST`**. Helpers live in [`backend/core/prod_target.py`](../backend/core/prod_target.py) (`get_production_db_host`, `get_legacy_script_db_host`).
+**Canonical host:** see [PRODUCTION_HOST.md](PRODUCTION_HOST.md) (current production IPv4 **`165.22.13.146`**, repo path **`/opt/rec_io_server`**).
+
+Runbooks and utilities should not scatter ad-hoc IPs; use env vars. For SSH, set **`REC_PROD_SSH_HOST`**; for PostgreSQL when it differs from the SSH target, set **`REC_PROD_DB_HOST`**. Helpers live in [`backend/core/prod_target.py`](../backend/core/prod_target.py) (`get_production_db_host`, `get_legacy_script_db_host`).
 
 ## Data flow (simplified)
 

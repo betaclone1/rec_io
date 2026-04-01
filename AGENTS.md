@@ -8,6 +8,8 @@
 
 **Git command boundary (non-negotiable):** Agents must **never** run `git push`, `git pull`, or create git commits unless the user gives an explicit instruction for that specific action in the current chat. If not explicit, stop and ask first. Do not infer permission from deployment workflows or prior tasks.
 
+**Production server:** Canonical SSH/DB host and paths are in `docs/PRODUCTION_HOST.md` (agents should use `REC_PROD_SSH_HOST` / `REC_PROD_DB_HOST`, not hardcoded IPs in new code).
+
 ---
 
 ## Workflow agents (PM, Explorer, Builder, Reviewer)

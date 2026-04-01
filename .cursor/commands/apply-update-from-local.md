@@ -6,6 +6,8 @@ description: "Production (from local): run open MASTER_CHANGELOG checklists on p
 
 **Prerequisite:** Export `REC_PROD_SSH_HOST` to the production server IP or DNS name (SSH).
 
+**Current production:** IPv4 **`165.22.13.146`** (SSH and Postgres co-located). Example: `export REC_PROD_SSH_HOST=165.22.13.146`; for local scripts hitting prod DB, `export REC_PROD_DB_HOST=165.22.13.146`. Canonical: `docs/PRODUCTION_HOST.md`.
+
 **This is the primary way to apply updates to production.** Run it in your **local workspace**. The agent SSHs to prod and executes every production checklist step there (pull, migrations, restart, verify). No agent runs on the production server.
 
 **Execute the full workflow** (do not just describe it).

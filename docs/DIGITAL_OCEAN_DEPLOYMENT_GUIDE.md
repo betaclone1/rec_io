@@ -4,6 +4,8 @@
 
 The `deploy_digital_ocean.sh` script provides a complete, automated deployment solution for REC.IO on Digital Ocean servers. It handles everything from backup management to system verification.
 
+**This project’s live production box:** see [PRODUCTION_HOST.md](PRODUCTION_HOST.md) (public IPv4 **165.22.13.146**, app root **/opt/rec_io_server**). Examples below that use `<remote_host>` or older `/opt/rec_io` paths may differ on historical droplets; prefer the canonical doc when targeting prod.
+
 ## Prerequisites
 
 1. **SSH Access**: Ensure you have SSH access to your Digital Ocean droplet

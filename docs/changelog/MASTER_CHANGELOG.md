@@ -6,6 +6,27 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-01 — Canonical production host (165.22.13.146) and ops documentation
+
+**Summary**
+- **`docs/PRODUCTION_HOST.md`:** Single source for production IPv4, `/opt/rec_io_server`, and `REC_PROD_SSH_HOST` / `REC_PROD_DB_HOST`.
+- **Repo docs:** `AGENTS.md`, `ARCHITECTURE.md`, `README.md`, `MASTER_DB_SCHEMA_REFERENCE.md`, `PRODUCTION_SYNC_CHECKLIST.md`, `DIGITAL_OCEAN_DEPLOYMENT_GUIDE.md`, `INSTALLATION_PACKAGE_SUMMARY.md`, `PRODUCTION_DB_SCHEMA_AND_BACKFILL_MASTER.md`, changelog/audit notes — all point at the canonical host or include the current IP for copy-paste.
+- **Cursor:** Skills, commands, and `01-core-operating-law` updated with **165.22.13.146** and the host doc; `prepare-update` snapshot step references `PRODUCTION_HOST.md`.
+- **`db-prod-schema-alignment` plan:** Scope line for production host doc.
+- **Scripts:** Paper-trade backfill module docstrings reference `PRODUCTION_HOST.md`.
+
+**Plans:** Informal — production droplet / DNS alignment documentation (no feature plan file).
+
+**DB migrations:** None.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] No database migrations or `MASTER_RESTART` required (documentation and agent metadata only).
+- [ ] Verify: `main_app` :3000 and `trade_executor` :8001 `/health`; `supervisorctl` shows expected **RUNNING** programs.
+
+---
+
 ## 2026-04-01 — Eastern time helpers, hourly final-quarter strike asks, prod script DB hints
 
 **Summary**

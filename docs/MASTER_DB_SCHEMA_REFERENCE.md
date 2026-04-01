@@ -13,7 +13,7 @@ Python code should open PostgreSQL connections via `get_postgresql_connection()`
 
 ## How to Check and Update Your Database (No Scripts)
 
-Use this document as the source of truth. Do both steps whenever you pull schema changes or need to sync the DB. To check that `database.py` table definitions have not drifted from this doc (for critical tables), run `PYTHONPATH=$(pwd) python3 scripts/db/check_db_schema_drift.py` (exit 1 = drift).
+Use this document as the source of truth. Do both steps whenever you pull schema changes or need to sync the DB. To check that `database.py` table definitions have not drifted from this doc (for critical tables), run `PYTHONPATH=$(pwd) python3 scripts/db/check_db_schema_drift.py` (exit 1 = drift). For the **live production** host when running these steps over SSH or tunneled Postgres, see [PRODUCTION_HOST.md](PRODUCTION_HOST.md).
 
 ### 1. Run code-defined migrations
 

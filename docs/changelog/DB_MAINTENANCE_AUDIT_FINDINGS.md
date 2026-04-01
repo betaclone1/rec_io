@@ -79,7 +79,7 @@
 
 ## 6. 2026-03-12 — Prod audit classification (for db-prod-schema-alignment)
 
-**Context:** `ssh root@$REC_PROD_SSH_HOST` → `/opt/rec_io_server`, run `PYTHONPATH=. python3 scripts/db/audit_db_schema.py`. This section classifies the prod drift for use by `.cursor/plans/db-prod-schema-alignment.md`. **No prod DDL has been run.**
+**Context:** Production host: [PRODUCTION_HOST.md](../PRODUCTION_HOST.md). `ssh root@$REC_PROD_SSH_HOST` → `/opt/rec_io_server`, run `PYTHONPATH=. python3 scripts/db/audit_db_schema.py`. This section classifies the prod drift for use by `.cursor/plans/db-prod-schema-alignment.md`. **No prod DDL has been run.**
 
 ### 6.1 Out-of-scope drift (analytics/experimental/test)
 

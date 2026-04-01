@@ -2,6 +2,8 @@
 
 When the user runs **/apply-update-from-local** (from local) or **/apply-update** (when already on the prod server), the agent runs the production checklist **fully autonomously**. From local, follow `.cursor/commands/apply-update-from-local.md` (SSH to prod for each step). On prod, follow `.cursor/commands/apply-update.md`. Do not pause for permission; execute with the permissions needed for migrations, restart, and verify to succeed. The agent must do **both** of the following.
 
+**Production SSH host:** Canonical IPv4 and paths: `docs/PRODUCTION_HOST.md` (currently **`165.22.13.146`**, repo **`/opt/rec_io_server`**). Set `REC_PROD_SSH_HOST` for any local SSH steps.
+
 ---
 
 ## 1. Read all open changelog entries

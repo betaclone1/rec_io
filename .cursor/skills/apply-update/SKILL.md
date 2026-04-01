@@ -2,7 +2,7 @@
 
 When the user invokes **/apply-update** (or "apply update", "follow the changelog instructions"), they want the production server calibrated with the latest update. **Fully autonomous:** apply all necessary changes (including DB migrations), run `scripts/MASTER_RESTART.sh` when the checklist requires a restart (blocking until complete), then run the verify workflow. Do not pause for permission; execute with the permissions needed for migrations, restart, and verify to succeed.
 
-**Use this only when the agent is already on the production server.** From local, use **/apply-update-from-local**.
+**Use this only when the agent is already on the production server.** From local, use **/apply-update-from-local** (SSH target: `docs/PRODUCTION_HOST.md`, currently **165.22.13.146**).
 
 ## What to do
 

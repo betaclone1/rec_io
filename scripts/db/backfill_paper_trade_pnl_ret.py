@@ -12,6 +12,7 @@ Formulas:
   win_loss = 'W' | 'L' | 'D'
 
 Run against production: DB_HOST=$REC_PROD_SSH_HOST PYTHONPATH=$(pwd) python3 scripts/db/backfill_paper_trade_pnl_ret.py
+(Canonical prod IPv4 and env: docs/PRODUCTION_HOST.md — currently 165.22.13.146.)
 Dry run: add --dry-run
 """
 

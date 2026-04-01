@@ -8,6 +8,8 @@ Single command that runs the full pre-push and deploy flow: **prepare-update** (
 
 Use for lighter, high-confidence updates when you want a one-stop shop. For larger or riskier changes, run `/prepare-update` and `/apply-update-from-local` separately so you can review the commit and changelog before pushing.
 
+**Production host:** IPv4 **`165.22.13.146`** — set `REC_PROD_SSH_HOST` before SSH steps (`docs/PRODUCTION_HOST.md`).
+
 **Execute the full workflow** (do not just describe it):
 
 1. **Run prepare-update** — Execute the prepare-update workflow (see `.cursor/skills/prepare-update/SKILL.md`): prod snapshot (blocking), verify local system, server-agnostic audit, plans → changelog and DB docs, flag issues, then produce the **suggested commit message** and report readiness. If prepare-update reports **blocking issues**, stop here; do not commit or push. Report the blocking issues and that the flow was aborted.

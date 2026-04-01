@@ -5,6 +5,7 @@ Run when the user is ready to push a commit to the git repository. Orchestrates 
 ## Workflow (execute in order)
 
 1. **Prod snapshot (revertable backup)** — **BLOCKING.** Run this step first using the project-owned script. From the project root, run:
+   - **Production host IPv4** (SSH/Postgres): see `docs/PRODUCTION_HOST.md` (currently **`165.22.13.146`**).
    - `./scripts/do/snapshot_prod.sh rec-io-prod-pre-update-YYYY-MM-DD` (today’s date)
    This script uses `DIGITALOCEAN_API_TOKEN` from `.env` (or the environment) and `doctl` to snapshot droplet **513735057** (or `DO_PROD_DROPLET_ID` if set). If the script exits non‑zero (missing token, doctl not installed, API failure, etc.): **STOP the entire workflow.** Do not run steps 2–6. Output a clear explanation of why the snapshot failed and what needs to be fixed (e.g. set `DIGITALOCEAN_API_TOKEN` in `.env`, install/configure doctl), then wait for the user to address it and rerun `/prepare-update`. Only after the script reports that the snapshot action was submitted should you proceed to step 2.
 

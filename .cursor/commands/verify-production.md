@@ -6,6 +6,8 @@ description: "Verify system health on the production server (SSH). Same workflow
 
 **Prerequisite:** Export `REC_PROD_SSH_HOST` to the production server IP or DNS name (SSH).
 
+**Current production:** IPv4 **`165.22.13.146`**. Example: `export REC_PROD_SSH_HOST=165.22.13.146`. Canonical: `docs/PRODUCTION_HOST.md`.
+
 Verify that the **production** server is running as intended. Use the **same verification workflow** as verify-local (`.cursor/commands/verify-local.md`), but run every step **on the production server** via SSH.
 
 **Target:** `ssh root@$REC_PROD_SSH_HOST`; project path `/opt/rec_io_server` (logs at `/opt/rec_io_server/logs`). See `service ports in `backend/supervisord.conf`` (Production server section).

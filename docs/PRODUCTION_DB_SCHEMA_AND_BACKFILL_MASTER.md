@@ -121,7 +121,7 @@ Use this as the single set of instructions to bring production in line with the 
 
 ### 4.1 Prerequisites
 
-- Access to the production server and the application repo (codebase at the same version that includes the schema and backfill changes).
+- Access to the production server and the application repo (codebase at the same version that includes the schema and backfill changes). Canonical host and paths: [PRODUCTION_HOST.md](PRODUCTION_HOST.md) (IPv4 **165.22.13.146**, repo **/opt/rec_io_server**).
 - PostgreSQL connection for the production DB (env or config used by the app: `get_postgresql_connection()`).
 - Python environment that can run the app’s backend (so `backend.core.config.database` and the script’s imports work).
 

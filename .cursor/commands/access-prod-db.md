@@ -6,6 +6,8 @@ description: "SSH into production and confirm DB connectivity (list schemas)."
 
 **Prerequisite:** Export `REC_PROD_SSH_HOST` to the production server IP or DNS name (SSH).
 
+**Current production:** IPv4 **`165.22.13.146`**. Example: `export REC_PROD_SSH_HOST=165.22.13.146`. Canonical: `docs/PRODUCTION_HOST.md`.
+
 Use SSH to connect to the **production server** and run a minimal `psql` check. The command should:
 
 1. Confirm it can connect to the PostgreSQL database (`SELECT 1`).

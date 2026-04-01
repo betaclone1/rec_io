@@ -2,6 +2,8 @@
 
 **Prerequisite:** Export `REC_PROD_SSH_HOST` to the production server IP or DNS name (SSH).
 
+**Current production:** IPv4 **`165.22.13.146`**. Example: `export REC_PROD_SSH_HOST=165.22.13.146`. Canonical: `docs/PRODUCTION_HOST.md`.
+
 Run when the user wants to **only** pull the latest commit on production—no snapshot, no restart, no migrations. For small pushes (e.g. frontend-only) that don't require the full backup/restart process.
 
 ## What to do

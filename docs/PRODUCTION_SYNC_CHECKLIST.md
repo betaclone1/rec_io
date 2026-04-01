@@ -44,10 +44,10 @@ git push -u origin features/strategy-health-score
 
 ## 2. Production: pull and restart
 
-On the **production server** (e.g. SSH into the box):
+On the **production server** (SSH: see [PRODUCTION_HOST.md](PRODUCTION_HOST.md); canonical IPv4 **`165.22.13.146`**, project root **`/opt/rec_io_server`**):
 
 ```bash
-cd /opt/rec_io   # or your project root
+cd /opt/rec_io_server
 
 # See what branch you're on and if there are local changes
 git status
@@ -68,7 +68,7 @@ git pull origin main
 If you use the existing update script (it also pulls `origin/main` and restarts):
 
 ```bash
-cd /opt/rec_io
+cd /opt/rec_io_server
 ./scripts/install_deploy/git_update_system.sh update
 ```
 
