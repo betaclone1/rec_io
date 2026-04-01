@@ -20,10 +20,10 @@ This changelog is used when pushing updates to production. Each entry is timesta
 **DB migrations:** None.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] No database migrations or `MASTER_RESTART` required (documentation and agent metadata only).
-- [ ] Verify: `main_app` :3000 and `trade_executor` :8001 `/health`; `supervisorctl` shows expected **RUNNING** programs.
+- [x] No database migrations or `MASTER_RESTART` required (documentation and agent metadata only).
+- [x] Verify: `main_app` :3000 and `trade_executor` :8001 `/health`; `supervisorctl` shows expected **RUNNING** programs.
 
 ---
 
