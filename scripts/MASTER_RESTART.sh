@@ -180,21 +180,58 @@ start_supervisor() {
 # Restarts each program in sequence so we never have old + new instances (e.g. duplicate
 # auto_entry_supervisor per monitor). Supervisor "uncaptured python exception" / FileNotFoundError
 # in the log during restart is known noise on macOS (kqueue) and can be ignored if services end up RUNNING.
+#
+# supervisorctl restart sometimes returns non-zero (e.g. 7) while the child still reaches RUNNING
+# (abnormal termination during handoff). With set -e, treat that as success when status is RUNNING/STARTING.
 restart_all_services() {
     print_status "Restarting all services..."
     
     # Wait a moment for supervisor to fully initialize
     /bin/sleep 2
     
-    local programs=$(supervisorctl -c "$SUPERVISOR_CONFIG" status | awk '{print $1}' | grep -v "supervisorctl")
+    local programs
+    programs=$(supervisorctl -c "$SUPERVISOR_CONFIG" status | awk '{print $1}' | grep -v "supervisorctl")
     
     for program in $programs; do
         print_status "Restarting $program..."
-        supervisorctl -c "$SUPERVISOR_CONFIG" restart $program
+        if supervisorctl -c "$SUPERVISOR_CONFIG" restart "$program"; then
+            :
+        else
+            local rc=$?
+            print_warning "supervisorctl restart $program exited with code $rc (often transient); rechecking status..."
+            /bin/sleep 2
+            local state
+            state=$(supervisorctl -c "$SUPERVISOR_CONFIG" status "$program" 2>/dev/null | awk '{print $2}')
+            if [ "$state" = "RUNNING" ] || [ "$state" = "STARTING" ]; then
+                print_warning "$program is $state after non-zero restart exit; continuing"
+            else
+                print_error "$program restart failed (supervisorctl exit $rc, state=${state:-unknown})"
+                return "$rc"
+            fi
+        fi
         /bin/sleep 1
     done
     
     print_success "All services restarted"
+}
+
+# Set when Step 0 puts DB in maintenance; cleared after Step 8. If the script exits early (set -e),
+# restore trading mode so operators are not stuck in maintenance.
+_MASTER_RESTART_MAINT_ACTIVE=0
+
+_master_restart_exit_cleanup() {
+    if [ "${_MASTER_RESTART_MAINT_ACTIVE:-0}" != "1" ]; then
+        return 0
+    fi
+    print_warning "MASTER_RESTART did not finish all steps; setting core.system_state.mode to 'normal' (trading re-enabled)..."
+    PGPASSWORD="${POSTGRES_PASSWORD:-${DB_PASSWORD:-rec_io_password}}" psql -h localhost -U rec_io_user -d rec_io_db <<'EOF' >/dev/null 2>&1
+INSERT INTO core.system_state (id, mode)
+VALUES (1, 'normal')
+ON CONFLICT (id) DO UPDATE
+SET mode = EXCLUDED.mode,
+    updated_at = now();
+EOF
+    _MASTER_RESTART_MAINT_ACTIVE=0
 }
 
 # Function to verify all services are running
@@ -421,6 +458,8 @@ SET mode = EXCLUDED.mode,
     updated_at = now();
 EOF
     print_success "System state set to maintenance; new trades will be rejected during restart."
+    _MASTER_RESTART_MAINT_ACTIVE=1
+    trap '_master_restart_exit_cleanup' EXIT
     echo ""
 
     # Step 1: Stop supervisor first to prevent auto-restart
@@ -441,7 +480,7 @@ EOF
     
     # Kill core Python backend processes (exclude analytics tooling)
     print_warning "Killing all Python backend processes..."
-    ps aux 2>/dev/null | grep python | grep -E "(main\.py|trade_manager|trade_executor|active_trade_supervisor|auto_entry_supervisor|symbol_price_watchdog|strike_table_generator|kalshi_account_sync|kalshi_market_watchdog|market_watchdog|cascading_failure_detector|system_monitor)" | grep -v grep | grep -v "MASTER_RESTART" | grep -Ev "(analytics_gui\.py|analytics_updater\.py|daily_update\.py|daily_update_lightweight\.py|symbol_data_fetch_pg\.py|momentum_generator_pg\.py|movement_generator_pg\.py|volatility_generator_pg\.py|fingerprint_generator_postgresql\.py|probability_lookup_generator\.py|symbol_profiler\.py)" | awk '{print $2}' | xargs -r kill 2>/dev/null || true
+    ps aux 2>/dev/null | grep python | grep -E "(main\.py|trade_manager|trade_executor|active_trade_supervisor|auto_entry_supervisor|symbol_price_watchdog|strike_table_generator|kalshi_account_sync|market_watchdog_ws|market_watchdog|cascading_failure_detector|system_monitor)" | grep -v grep | grep -v "MASTER_RESTART" | grep -Ev "(analytics_gui\.py|analytics_updater\.py|daily_update\.py|daily_update_lightweight\.py|symbol_data_fetch_pg\.py|momentum_generator_pg\.py|movement_generator_pg\.py|volatility_generator_pg\.py|fingerprint_generator_postgresql\.py|probability_lookup_generator\.py|symbol_profiler\.py)" | awk '{print $2}' | xargs -r kill 2>/dev/null || true
     
     # Kill any remaining project processes, but preserve analytics tooling
     print_warning "Killing processes with project path..."
@@ -523,6 +562,8 @@ SET mode = EXCLUDED.mode,
     updated_at = now();
 EOF
     print_success "System state set to normal; trading operations re-enabled."
+    _MASTER_RESTART_MAINT_ACTIVE=0
+    trap - EXIT
     echo ""
 
     print_success "MASTER RESTART completed successfully!"

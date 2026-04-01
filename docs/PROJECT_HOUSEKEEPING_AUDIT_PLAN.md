@@ -12,7 +12,7 @@ Use these as the source of truth for *active* assets:
 
 | Area | Source of truth |
 |------|------------------|
-| **Backend services** | `scripts/config/generate_unified_supervisor_config.py` — list of `backend/*.py` scripts it generates `[program:...]` for (main_app, trade_executor, trade_manager, kalshi_account_sync_ws, kalshi_market_watchdog, symbol_price_watchdog_finance, strike_table_generator, system_monitor, monitor_manager, cascading_failure_detector, auto_entry_supervisor, active_trade_supervisor). |
+| **Backend services** | `scripts/config/generate_unified_supervisor_config.py` — list of `backend/*.py` scripts it generates `[program:...]` for (main_app, trade_executor, trade_manager, kalshi_account_sync_ws, market_watchdog_ws hourly/15m, symbol_price_watchdog_*, strike_table_generator_ws hourly/15m, system_monitor, monitor_manager, cascading_failure_detector, auto_entry_supervisor, active_trade_supervisor). |
 | **Scripts run at restart** | `scripts/MASTER_RESTART.sh` — what it invokes (e.g. generate_unified_supervisor_config, load_unified_config, supervisorctl). |
 | **Scripts referenced in docs/agents** | AGENTS.md, `.cursor/rules/`, `.cursor/commands/`, `.cursor/` (VERIFY_COMMAND, SYSTEM_RESTART_COMMAND, etc.) — e.g. verify, system-restart, run_migration, check_db_schema_drift, backfill_account_history_vendor_rail. |
 | **DB / migrations** | `scripts/db/run_migration.py`, `scripts/db/check_db_schema_drift.py`, `scripts/db/update_db_schema_to_reference.py`, migrations in `scripts/migrations/`. |

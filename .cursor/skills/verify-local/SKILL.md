@@ -6,7 +6,7 @@ Execute the local verification workflow in `.cursor/commands/verify-local.md` on
 
 1. Health endpoints (main_app :3000, trade_executor :8001).
 2. Supervisor status (`supervisorctl -c backend/supervisord.conf status`).
-3. Recent logs (trade_executor, kalshi_account_sync, main_app, one kalshi_market_watchdog); only treat errors as current if after process start.
+3. Recent logs (trade_executor, kalshi_account_sync, main_app, one `market_watchdog_ws` stdout log); only treat errors as current if after process start.
 4. Summary and required status block (✅ All good / ⚠️ Investigate / 🔴 Critical).
 5. If Investigate or Critical: diagnose.
 

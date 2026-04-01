@@ -254,6 +254,18 @@ def _strike_cooldown_key(strike_value, active_side: str) -> str:
     return base
 
 
+def _aes_side_bucket_for_dedupe(side) -> str:
+    """Map Y/yes/YES/N/no/NO (and a few aliases) to ``yes`` or ``no`` for duplicate-trade checks."""
+    if side is None:
+        return ""
+    s = str(side).strip().upper()
+    if s in ("Y", "YES", "TRUE", "1"):
+        return "yes"
+    if s in ("N", "NO", "FALSE", "0"):
+        return "no"
+    return ""
+
+
 @contextmanager
 def aes_monitor_bind(user_num: str, monitor_id: str):
     if not AES_UNIFIED_POOL:
@@ -2942,54 +2954,43 @@ def has_bracket_for_cycle(contract: Optional[str] = None, strike_tier: Optional[
         return False
 
 def is_strike_already_traded(strike_data):
-    """Check if we already have an open or pending trade on this strike by querying trades_0001 table directly.
-    Only blocks new trades if there's an existing trade from the SAME MONITOR on the same strike/side."""
+    """Check if we already have an in-flight trade on this Kalshi market ticker (same monitor + side).
+
+    Statuses counted as blocking: open, pending, closing, close_failed (anything not yet terminal).
+    Side comparison is canonicalized so DB ``Y`` matches strike_data ``yes`` (prior bug: never matched).
+    """
     try:
-        import psycopg2
         conn = get_db_connection()
         cursor = conn.cursor()
-        
-        # Get current monitor identifier
+
         current_monitor = f"mon_0001_{ctx_mid()}"
-        
-        # Query trades_0001 table directly for open/pending trades with ticker AND same monitor
-        cursor.execute("""
-            SELECT id, ticker, side, status, monitor 
-            FROM users.trades_0001 
-            WHERE status IN ('open', 'pending')
-        """)
-        
+        ticker = strike_data.get("ticker")
+        want_side = _aes_side_bucket_for_dedupe(strike_data.get("side"))
+        if not ticker or not want_side:
+            return False
+
+        cursor.execute(
+            """
+            SELECT id, ticker, side, status
+            FROM users.trades_0001
+            WHERE status IN ('open', 'pending', 'closing', 'close_failed')
+              AND monitor = %s
+            """,
+            (current_monitor,),
+        )
         trades = cursor.fetchall()
         conn.close()
-        
-        ticker = strike_data.get('ticker')
-        side = strike_data.get('side')
-        
-        # Don't log every check - only log when we find a match
-        for trade in trades:
-            trade_id, trade_ticker, trade_side, trade_status, trade_monitor = trade
-            
-            # Only check trades from the same monitor
-            if trade_monitor != current_monitor:
+
+        for trade_id, trade_ticker, trade_side, trade_status in trades:
+            if trade_ticker != ticker:
                 continue
-            
-            # Normalize side comparison (Y = yes, N = no)
-            normalized_trade_side = str(trade_side).upper()
-            normalized_strike_side = side.upper() if side else ''
-            
-            # Handle Y/YES and N/NO mapping
-            if normalized_trade_side == 'Y' and normalized_strike_side == 'YES':
-                normalized_trade_side = 'YES'
-            elif normalized_trade_side == 'N' and normalized_strike_side == 'NO':
-                normalized_trade_side = 'NO'
-            
-            # Compare ticker and side
-            if (trade_ticker == ticker and 
-                normalized_trade_side == normalized_strike_side):
-                log(f"⚠️ Found {trade_status} trade (ID: {trade_id}) on {strike_data.get('strike', 'unknown')} {side} from same monitor {current_monitor}")
-                return True
-        
-        # Don't log when no match found - this happens constantly and creates spam
+            if _aes_side_bucket_for_dedupe(trade_side) != want_side:
+                continue
+            log(
+                f"⚠️ Found {trade_status} trade (ID: {trade_id}) ticker={ticker} side_bucket={want_side} "
+                f"monitor={current_monitor}"
+            )
+            return True
         return False
     except Exception as e:
         log(f"Error checking trades_0001 table: {e}")
@@ -3481,13 +3482,14 @@ def check_auto_entry_conditions_hourly_htc():
                 
                 # STEP 2: Check if we already have an active trade on this strike
                 strike_data_for_check = {
-                    'strike': strike.get('strike'),
-                    'side': active_side
+                    "strike": strike.get("strike"),
+                    "side": active_side,
+                    "ticker": strike.get("ticker"),
                 }
-                
+
                 if is_strike_already_traded(strike_data_for_check):
                     continue
-                
+
                 # STEP 3: Check probability window (min_probability <= prob <= max_probability)
                 prob = strike.get('probability')
                 if prob is None or prob < min_probability or prob > max_probability:
@@ -4792,12 +4794,13 @@ def check_auto_entry_conditions_momentum_scalp():
                 
                 # Check if already traded
                 strike_data_for_check = {
-                    'strike': strike.get('strike'),
-                    'side': active_side
+                    "strike": strike.get("strike"),
+                    "side": active_side,
+                    "ticker": strike.get("ticker"),
                 }
                 if is_strike_already_traded(strike_data_for_check):
                     continue
-                
+
                 # Prepare strike data
                 prob = strike.get('probability')
                 if active_side == 'yes':
@@ -5038,12 +5041,13 @@ def check_auto_entry_conditions_momentum_reversal():
                 
                 # Check if already traded
                 strike_data_for_check = {
-                    'strike': strike.get('strike'),
-                    'side': active_side
+                    "strike": strike.get("strike"),
+                    "side": active_side,
+                    "ticker": strike.get("ticker"),
                 }
                 if is_strike_already_traded(strike_data_for_check):
                     continue
-                
+
                 # Prepare strike data - MOMENTUM REVERSAL: SWAP THE SIDE
                 prob = strike.get('probability')
                 if active_side == 'yes':

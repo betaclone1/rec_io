@@ -30,7 +30,8 @@
     "btc_price_watchdog": 8002,  // DEPRECATED: Migrated to PostgreSQL
 
     "kalshi_account_sync": 8004,
-    "kalshi_market_watchdog": 8005,
+    "market_watchdog_ws_kalshi_hourly": 8005,
+    "market_watchdog_ws_kalshi_15m": 8035,
     "active_trade_supervisor": 8007,
     "auto_entry_supervisor": 8009
   },

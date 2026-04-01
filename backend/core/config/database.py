@@ -335,6 +335,14 @@ def init_database():
                 ) THEN
                     ALTER TABLE users.trades_0001 ADD COLUMN win_loss_confirmed BOOLEAN;
                 END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'market_result'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN market_result TEXT;
+                END IF;
 
                 -- Kalshi cadence: hourly vs 15m (not venue; see `exchange`)
                 IF NOT EXISTS (

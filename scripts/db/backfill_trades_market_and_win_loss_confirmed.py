@@ -6,8 +6,8 @@ One-time / prod-sync backfill for users.trades_* (live + paper, not trades_simul
    (monitor_list.market when monitor_key resolves; else strategy/ticker infer hourly vs 15m).
 
 2. win_loss_confirmed — closed rows only, NULL confirmation only; uses persisted
-   symbol_expiration, else symbol_close, with strike/side/win_loss (logic aligned with
-   trade_manager._finalize_closed_trade_win_loss_confirmed).
+   symbol_expiration, else symbol_close, with strike/side/win_loss (same counterfactual
+   rules as trade_manager._compute_win_loss_confirmed / _apply_win_loss_confirmed_for_trade_ids).
 
 Run from repo root (after deploy; uses prod credentials from your env):
 

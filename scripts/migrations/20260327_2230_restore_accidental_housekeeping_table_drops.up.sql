@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS live_data.price_change_spx (
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Kalshi market tables (pattern from kalshi_market_watchdog.create_market_kalshi_table)
+-- Kalshi market tables (pattern from legacy kalshi_market_watchdog; archived under archive/2026-03-legacy-kalshi-market-watchdog/)
 CREATE TABLE IF NOT EXISTS live_data.market_kalshi_hourly_btc (
     id SERIAL PRIMARY KEY,
     event_ticker VARCHAR(50) NOT NULL,

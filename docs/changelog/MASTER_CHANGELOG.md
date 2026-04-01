@@ -6,6 +6,40 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-01 — Trade resolution: market_result finalization, lifecycle hook, remove settlement polling
+
+**Summary**
+- **trade_manager:** Held-to-expiration closes use venue **`market_result`** + **`side`** for **`sell_price`** (0/1), PnL, and returns; **`finalize_expired_trade_from_market_result`** promotes **`expired` → `closed`**. Removed **`poll_settlements_for_matches`** (DB settlement polling loop). Five-minute job **`sweep_finalize_expired_trades_with_market_result`** finalizes **`expired`** rows that already have **`market_result`**. **`/api/manual_settlement_poll`** triggers that sweep. Paper expiry repairs **`symbol_close`** only; closes via the same finalizer when **`market_result`** exists. **`_finalize_closed_trade_win_loss_confirmed`** prefers venue confirmation for **`close_method = expired`** when **`market_result`** is set.
+- **kalshi_lifecycle_trade_outcome** + **kalshi_event_market_fetch:** Normalize Kalshi lifecycle **`result`**; **`apply_lifecycle_market_result_for_ticker`** applies **`market_result`** to trade rows and calls **`finalize_expired_trade_from_market_result`** for **`expired`** rows after commit.
+- **market_watchdog_ws:** Lifecycle subscription retention keeps tickers while rows need **`market_result`**, any **`expired`** row (until **`closed`**), or **`closed`** pending backfill.
+- **Other (already staged):** Remove legacy **`kalshi_market_watchdog`**; watchdog / account-sync / auto-entry / restart script / schema ref / frontend system tab / firewall whitelist / docs touch-ups as in diff.
+
+**Plans:** Trade resolution unification (informal; prior `.cursor/plans/unify_trade_resolution_source_dc53d53e.plan.md` if present in workspace).
+
+**DB migrations (required on production, in timestamp order — runner skips already-applied ids)**
+1. `20260331_2300_trades_kalshi_outcome_verified_at`
+2. `20260401_1200_trades_rename_outcome_evaluated_column`
+3. `20260402_1000_trades_outcome_checked_at_short_name`
+4. `20260402_1400_trades_market_result_from_outcome_check`
+5. `20260403_1000_trades_drop_outcome_checked_at`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations in order (from project root):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260331_2300_trades_kalshi_outcome_verified_at`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260401_1200_trades_rename_outcome_evaluated_column`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260402_1000_trades_outcome_checked_at_short_name`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260402_1400_trades_market_result_from_outcome_check`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260403_1000_trades_drop_outcome_checked_at`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `main_app` :3000 and `trade_executor` :8001 respond; supervisor **RUNNING**; spot-check **`trade_manager`** and **`market_watchdog_ws`** logs after restart; confirm recent **`expired` → `closed`** trades show **`market_result`** and coherent **`sell_price`** / **`win_loss`**.
+- [ ] Snapshot reference (pre-deploy): **`rec-io-prod-pre-update-2026-04-01`** (DO action **`3119398569`**; confirm **completed** in DigitalOcean when convenient).
+
+---
+
 ## 2026-03-31 — Follow-on: trade_manager graceful shutdown, Redis-only trading UI fanout, logging cleanup
 
 **Summary**

@@ -82,29 +82,31 @@ Inventory of what each script logs and where. Used for the logging audit (see `d
 
 ---
 
-### kalshi_market_watchdog_hourly_* / kalshi_market_watchdog_15m_* — `backend/kalshi_market_watchdog.py`
+### kalshi_market_watchdog_* — **ARCHIVED**
 
-| Aspect | Details |
-|--------|---------|
-| **Mechanism** | `logging` only (logger name `kalshi_market_watchdog`). EST formatter, single handler to stdout with flush after each emit. |
-| **Destination** | stdout → supervisor. |
-| **Volume** | INFO = heartbeat every 5 min + errors + **market rotation** (one line when event/market changes: "Market rotated: X → Y (N tickers)"). All other flow at DEBUG. |
-| **Notable** | Exception for data aggregators: log when new markets are rotated, including count of tickers for the new event. |
-| **Extra files** | None. |
-
-**Phase 2 done (2026-03):** Replaced all `print()` with logger; EST timestamps; real-time flush; 5 min heartbeat; INFO for rotation + errors + heartbeat only; no behavior change.
+Legacy REST poller moved to `archive/2026-03-legacy-kalshi-market-watchdog/kalshi_market_watchdog.py`. Not started by unified supervisor.
 
 ---
 
-### market_watchdog_kalshi_15m — `backend/market_watchdog.py`
+### market_watchdog_ws_kalshi_hourly / market_watchdog_ws_kalshi_15m — `backend/market_watchdog_ws.py`
 
 | Aspect | Details |
 |--------|---------|
-| **Mechanism** | `logging` only (logger name `market_watchdog`). EST formatter, single handler to stdout with flush after each emit. |
-| **Destination** | stdout → supervisor. |
-| **Volume** | INFO = startup + heartbeat every 5 min + per-symbol **market rotation** (`[SYMBOL] Market rotated: …`) + preserved-row reinsert counts; WARNING = outage tracker; DEBUG = routine flow. |
-| **Notable** | One process polls all configured 15m symbols; writes `live_data.market_kalshi_15m` with `broker` = `kalshi` for Kalshi API rows. Status/outage JSON under `logs/market_watchdog_status_kalshi_15m_<symbol>.json` (and matching `.jsonl`). |
-| **Extra files** | Per-symbol status/outage JSON beside `logs/`. |
+| **Mechanism** | `logging` (logger name `market_watchdog_ws`). EST-style formatter, stdout with flush. |
+| **Destination** | stdout → supervisor (`logs/market_watchdog_ws_kalshi_hourly.out.log`, `logs/market_watchdog_ws_kalshi_15m.out.log`). |
+| **Volume** | INFO = rollover, subscription changes, lifecycle/trade outcome lines, heartbeats; WARNING = discovery timeouts, partial rollover; errors as exceptions. |
+| **Notable** | WebSocket for ticker (+ optional `market_lifecycle_v2`); REST only during rollover discovery (bounded retry). |
+| **Extra files** | None. |
+
+---
+
+### `backend/market_watchdog.py` (shared module, not a supervisor program)
+
+| Aspect | Details |
+|--------|---------|
+| **Mechanism** | Imported by `market_watchdog_ws` for public REST helpers (`fetch_event_json`, DB symbol order, event ticker helpers) and serialized `_kalshi_public_get`. |
+| **Destination** | N/A (no standalone process). |
+| **Notable** | Do not confuse with `market_watchdog_ws.py`, which is the running ingest service. |
 
 ---
 
@@ -256,7 +258,7 @@ Inventory of what each script logs and where. Used for the logging audit (see `d
 | trade_executor.py | print | — | Low | logging |
 | kalshi_account_sync_ws.py | print | — | High | logging; raw dumps→DEBUG |
 | symbol_price_watchdog.py | print | heartbeat file | Medium | remove DEBUG sys.path; logging |
-| kalshi_market_watchdog.py | print | — | Medium | logging; per-event→DEBUG |
+| market_watchdog_ws.py | logging | — | Medium | archived kalshi_market_watchdog → WS path |
 | system_monitor.py | _sm_logger | — | Low (INFO) | Phase 2 done; one line/cycle DEBUG |
 | monitor_manager.py | print + log_event | — | High | logging; TIMING→DEBUG |
 | cascading_failure_detector.py | _cfd_logger | — | Low (INFO) | Phase 2 done; healthy→DEBUG |
@@ -276,7 +278,7 @@ Cross-check of the **project `logs/`** directory and other log locations. Done 2
 
 - **Supervisor program logs:** `{program_name}.out.log`, `{program_name}.err.log` — all accounted for in §1. Many rotated copies (`.log.1`, `.log.2`, …) from past supervisor or manual rotation; no current rotation in generator so active files grow unbounded.
 - **Legacy / old program names (no longer in current supervisor):**  
-  `kalshi_market_watchdog_btc`, `kalshi_market_watchdog_eth` (and ndx, spx), `strike_table_generator_btc`, `strike_table_generator_eth` (and ndx, spx), `symbol_price_watchdog_ndx`, `symbol_price_watchdog_spx`. These are from older configs; current generator uses `kalshi_market_watchdog_hourly_btc`, `strike_table_generator_hourly_btc`, etc. Files remain on disk.
+  `kalshi_market_watchdog_*` (script archived 2026-03), per-symbol `strike_table_generator_*`, `symbol_price_watchdog_ndx`, `symbol_price_watchdog_spx`, etc. Current generator uses `market_watchdog_ws_kalshi_hourly`, `market_watchdog_ws_kalshi_15m`, `strike_table_generator_ws_hourly`, `strike_table_generator_ws_15m`. Old `.out.log` files may remain on disk.
 - **Dedicated `auto_entry_supervisor_0001_10019.log`:**  
   Single plain `.log` file (no `.out`/`.err`). **main.py** prefers this when serving the “out” log for script name `auto_entry_supervisor_0001_10019` (see §1 main_app). **Current `auto_entry_supervisor.py` does not write to it** — it only prints to stdout (supervisor captures to `.out.log`). So this file was either from an older code path, a test (`auto_entry_supervisor_test.py` references a similar path), or a one-off. **Action:** Treat as legacy; document that the UI prefers it if present; consider removing the special case in main once we standardize on .out.log.
 - **log_archive/monitor_log_archive/:**  

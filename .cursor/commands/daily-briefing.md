@@ -64,10 +64,8 @@ import os
 
 start_ts = os.environ['START_TS']
 logs = [
-    'logs/kalshi_market_watchdog_15m_btc.out.log',
-    'logs/kalshi_market_watchdog_15m_eth.out.log',
-    'logs/kalshi_market_watchdog_hourly_btc.out.log',
-    'logs/kalshi_market_watchdog_hourly_eth.out.log',
+    'logs/market_watchdog_ws_kalshi_15m.out.log',
+    'logs/market_watchdog_ws_kalshi_hourly.out.log',
 ]
 
 def scan(path):
@@ -83,7 +81,7 @@ def scan(path):
             started += 1
         elif 'DATA OUTAGE ENDED' in line:
             ended += 1
-        elif 'WARNING [kalshi_market_watchdog]' in line:
+        elif 'WARNING [market_watchdog_ws]' in line:
             warning += 1
     return started, ended, warning
 

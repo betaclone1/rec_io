@@ -35,6 +35,10 @@ import psycopg2.pool
 import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
+from backend.core.kalshi_lifecycle_trade_outcome import (
+    apply_lifecycle_market_result_for_ticker,
+    strike_display_from_floor_strike,
+)
 from backend.core.kalshi_market_normalize import (
     strike_from_kalshi_15m_rest_market,
     ticker_msg_to_row_values,
@@ -84,6 +88,107 @@ DEFAULT_ROLLOVER_REST_MAX_WORKERS = 1
 DEFAULT_HOURLY_ATM_STRIKES_EACH_SIDE = 20
 
 _POOL_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True)
+class SubSnapshot:
+    """Immutable view of subscription state for the WS thread."""
+
+    generation: int
+    ticker_meta: dict[str, tuple[str, str]]
+    ws_tickers: list[str]
+    lifecycle_meta: dict[str, tuple[str, str]]
+    cycle_tickers: list[str]
+
+
+def _market_watchdog_lifecycle_enabled() -> bool:
+    """Subscribe to Kalshi ``market_lifecycle_v2`` on the same WS as ``ticker`` (see Kalshi lifecycle docs)."""
+    return os.getenv("MARKET_WATCHDOG_WS_MARKET_LIFECYCLE", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _lifecycle_update_strike_on_created(
+    msg: dict, meta: dict, exchange_key: str, table_ref: str
+) -> None:
+    """Observe ``created`` + ``additional_metadata.floor_strike``; log and optionally refresh strike column."""
+    if msg.get("event_type") != "created":
+        return
+    mt = msg.get("market_ticker")
+    if not mt or mt not in meta:
+        return
+    am = msg.get("additional_metadata") or {}
+    fs = am.get("floor_strike")
+    sym_u, ev = meta[mt]
+    logger.info(
+        "[LIFECYCLE] created market_ticker=%s symbol=%s event_ticker=%s floor_strike=%s",
+        mt,
+        sym_u,
+        am.get("event_ticker") or ev,
+        fs,
+    )
+    if fs is None:
+        return
+    strike_s = strike_display_from_floor_strike(fs)
+    if not strike_s:
+        return
+    conn = _borrow_conn_retry("lifecycle_strike", 15.0)
+    if not conn:
+        return
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            UPDATE {table_ref}
+            SET strike = %s, updated_at = NOW()
+            WHERE exchange = %s AND market_ticker = %s
+            """,
+            (strike_s, exchange_key.lower(), mt),
+        )
+        conn.commit()
+        if cur.rowcount:
+            logger.info(
+                "[LIFECYCLE] strike column updated table=%s market_ticker=%s strike=%s",
+                table_ref,
+                mt,
+                strike_s,
+            )
+    except Exception:
+        logger.exception("lifecycle strike update failed")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        _return_conn(conn)
+
+
+def _lifecycle_apply_result_if_tracked(msg: dict) -> None:
+    """On ``determined`` / ``settled`` with ``result``, update ``users.trades_0001.market_result``.
+
+    Do not gate on ``lifecycle_meta`` membership: if Kalshi delivered the message on this socket,
+    the row update must run (avoids drops when pending/cycle meta is briefly out of sync).
+    """
+    mt = msg.get("market_ticker")
+    if not mt:
+        return
+    et = msg.get("event_type")
+    if et not in ("determined", "settled"):
+        return
+    result = msg.get("result")
+    if result is None or str(result).strip() == "":
+        return
+    logger.info(
+        "[LIFECYCLE] %s market_ticker=%s result=%s (trades.market_result + optional win_loss_confirmed)",
+        et,
+        mt,
+        result,
+    )
+    apply_lifecycle_market_result_for_ticker(str(mt).strip(), result)
+
 _DB_POOL: psycopg2.pool.ThreadedConnectionPool | None = None
 
 def _ticker_upsert_sql(table_ref: str) -> str:
@@ -746,25 +851,90 @@ def _upsert_ticker_row(row: tuple) -> None:
 
 @dataclass
 class SubState:
-    """Subscription list + generation bump on replace. ``rolling`` blocks WS DB writes during REST rollover."""
+    """Ticker subscribe list + lifecycle superspace. ``rolling`` blocks WS DB writes during REST rollover.
+
+    ``ticker_meta`` / ``cycle_tickers`` apply to the **current** Kalshi event only (ticker upserts).
+    ``pending_outcome_meta`` retains **any** market tickers (all cadences on this exchange) with rows
+    still missing ``market_result`` — open through closed — until lifecycle writes the venue outcome.
+    WebSocket ``market_tickers`` subscribe is the union
+    (cycle first, then pending). Rollover and pruning **do not** force a socket reconnect; the WS loop
+    sends an updated ``ticker`` subscribe on the same connection so ``determined`` is not dropped
+    in a disconnect gap. Only ``replace_clear`` bumps ``generation`` (hard reset).
+    """
 
     _lock: threading.Lock = field(default_factory=threading.Lock)
     generation: int = 0
     ticker_meta: dict[str, tuple[str, str]] = field(default_factory=dict)
+    pending_outcome_meta: dict[str, tuple[str, str]] = field(default_factory=dict)
+    _current_cycle_tickers: list[str] = field(default_factory=list)
     all_tickers: list[str] = field(default_factory=list)
+    lifecycle_meta: dict[str, tuple[str, str]] = field(default_factory=dict)
     _ticker_rx: dict[str, float] = field(default_factory=dict, repr=False)
     rolling: threading.Event = field(default_factory=threading.Event)
 
-    def replace(self, meta: dict[str, tuple[str, str]], tickers: list[str]) -> None:
+    def _rebuild_ws_and_lifecycle_unlocked(self) -> None:
+        seen: set[str] = set()
+        out: list[str] = []
+        for t in self._current_cycle_tickers:
+            if t not in seen:
+                seen.add(t)
+                out.append(t)
+        for mt in self.pending_outcome_meta:
+            if mt not in seen:
+                seen.add(mt)
+                out.append(mt)
+        self.all_tickers = out
+        self.lifecycle_meta = {**self.pending_outcome_meta, **self.ticker_meta}
+
+    def replace(
+        self,
+        meta: dict[str, tuple[str, str]],
+        tickers: list[str],
+        pending_outcome: dict[str, tuple[str, str]],
+    ) -> None:
         with self._lock:
             self.ticker_meta = dict(meta)
-            self.all_tickers = list(tickers)
+            self._current_cycle_tickers = list(tickers)
+            self.pending_outcome_meta = dict(pending_outcome)
+            self._rebuild_ws_and_lifecycle_unlocked()
+            self._ticker_rx.clear()
+
+    def replace_clear(self) -> None:
+        with self._lock:
+            self.ticker_meta.clear()
+            self.pending_outcome_meta.clear()
+            self._current_cycle_tickers.clear()
+            self.all_tickers.clear()
+            self.lifecycle_meta.clear()
             self._ticker_rx.clear()
             self.generation += 1
 
-    def snapshot(self) -> tuple[int, dict[str, tuple[str, str]], list[str]]:
+    def prune_pending_ticker(self, market_ticker: str) -> None:
+        mt = str(market_ticker).strip()
+        if not mt:
+            return
+        n_ws = 0
         with self._lock:
-            return self.generation, dict(self.ticker_meta), list(self.all_tickers)
+            if mt not in self.pending_outcome_meta:
+                return
+            del self.pending_outcome_meta[mt]
+            self._rebuild_ws_and_lifecycle_unlocked()
+            n_ws = len(self.all_tickers)
+        logger.info(
+            "lifecycle retention ended for market_ticker=%s (ws subscribe now %s tickers)",
+            mt,
+            n_ws,
+        )
+
+    def snapshot(self) -> SubSnapshot:
+        with self._lock:
+            return SubSnapshot(
+                self.generation,
+                dict(self.ticker_meta),
+                list(self.all_tickers),
+                dict(self.lifecycle_meta),
+                list(self._current_cycle_tickers),
+            )
 
     def record_tick(self, market_ticker: str) -> None:
         with self._lock:
@@ -775,6 +945,95 @@ class SubState:
             return False
         with self._lock:
             return all(mt in self._ticker_rx for mt in expected)
+
+
+def _fetch_lifecycle_pending_meta(exchange_key: str, market_label: str) -> dict[str, tuple[str, str]]:
+    """Tickers on this exchange with any row still missing ``market_result`` (all cadences).
+
+    ``market_label`` identifies the watchdog process only; retention is **not** split by ``trades.market``
+    so 15m and hourly rows cannot fall through the wrong subscription.
+    """
+    ex = str(exchange_key).strip().lower()
+    conn = _borrow_conn_retry("lifecycle_pending_meta", 15.0)
+    if not conn:
+        return {}
+    out: dict[str, tuple[str, str]] = {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT ON (ticker) ticker, symbol
+                FROM users.trades_0001
+                WHERE LOWER(TRIM(COALESCE(exchange, ''))) = %s
+                  AND ticker IS NOT NULL AND TRIM(ticker::text) != ''
+                  AND status IN ('open', 'closing', 'close_failed', 'expired', 'closed')
+                  AND (
+                    (status IN ('open', 'closing', 'close_failed') AND market_result IS NULL)
+                    OR (status = 'expired')
+                    OR (status = 'closed' AND market_result IS NULL)
+                  )
+                ORDER BY ticker, id DESC
+                """,
+                (ex,),
+            )
+            for row in cur.fetchall() or ():
+                tkr, sym = row[0], row[1]
+                if not tkr:
+                    continue
+                ts = str(tkr).strip()
+                su = str(sym or "").strip().upper()
+                out[ts] = (su, "")
+    except Exception:
+        logger.exception("lifecycle pending meta fetch failed")
+    finally:
+        _return_conn(conn)
+    return out
+
+
+def _ticker_still_needs_market_result(market_ticker: str, exchange_key: str) -> bool:
+    ex = str(exchange_key).strip().lower()
+    mt = str(market_ticker).strip()
+    if not mt:
+        return False
+    conn = _borrow_conn_retry("lifecycle_needs_result", 8.0)
+    if not conn:
+        return True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1
+                FROM users.trades_0001
+                WHERE ticker = %s
+                  AND LOWER(TRIM(COALESCE(exchange, ''))) = %s
+                  AND status IN ('open', 'closing', 'close_failed', 'expired', 'closed')
+                  AND (
+                    (status IN ('open', 'closing', 'close_failed') AND market_result IS NULL)
+                    OR (status = 'expired')
+                    OR (status = 'closed' AND market_result IS NULL)
+                  )
+                LIMIT 1
+                """,
+                (mt, ex),
+            )
+            return cur.fetchone() is not None
+    except Exception:
+        logger.exception("lifecycle needs_result check failed ticker=%s", mt)
+        return True
+    finally:
+        _return_conn(conn)
+
+
+def _lifecycle_ws_dispatch(lc_msg: dict, sub: "SubState", exchange_key: str, table_ref: str) -> None:
+    """Strike refresh uses current-cycle ``ticker_meta`` only; outcome uses full ``lifecycle_meta``."""
+    snap = sub.snapshot()
+    _lifecycle_update_strike_on_created(lc_msg, snap.ticker_meta, exchange_key, table_ref)
+    _lifecycle_apply_result_if_tracked(lc_msg)
+    mt = lc_msg.get("market_ticker")
+    if not mt:
+        return
+    if not _ticker_still_needs_market_result(str(mt).strip(), exchange_key):
+        sub.prune_pending_ticker(str(mt).strip())
 
 
 def _build_meta(
@@ -919,8 +1178,6 @@ def _run_rollover(
             )
             return False
 
-        sub.replace({}, [])
-
         conn = _borrow_conn_retry("rollover_atomic", db_retry_sec)
         if not conn:
             return False
@@ -956,13 +1213,13 @@ def _run_rollover(
                 do_commit=False,
             ):
                 conn.rollback()
-                sub.replace({}, [])
+                sub.replace_clear()
                 return False
             if not _verify_count(
                 conn, table_ref, exchange_key, tuple(sorted(ready.keys())), expected
             ):
                 conn.rollback()
-                sub.replace({}, [])
+                sub.replace_clear()
                 return False
             conn.commit()
         except Exception:
@@ -971,7 +1228,7 @@ def _run_rollover(
             except Exception:
                 pass
             logger.exception("rollover atomic delete+seed failed")
-            sub.replace({}, [])
+            sub.replace_clear()
             return False
         finally:
             if old_ac:
@@ -988,14 +1245,26 @@ def _run_rollover(
                 last_markets[sym] = ed["markets"]
 
         meta, tickers = _build_meta(symbols, previous_event, last_markets)
-        sub.replace(meta, tickers)
+        pending_lm = _fetch_lifecycle_pending_meta(exchange_key, market_label)
+        if pending_lm:
+            ext = sum(1 for t in pending_lm if t not in set(tickers))
+            logger.info(
+                "lifecycle retention: %s ticker(s) pending market_result (%s not in current event); "
+                "ws subscribe total=%s",
+                len(pending_lm),
+                ext,
+                len(tickers) + ext,
+            )
+        sub.replace(meta, tickers, pending_lm)
         ok = len(tickers) > 0
+        snap = sub.snapshot()
         logger.info(
-            "rollover %s symbols=%s rows=%s ws_tickers=%s",
+            "rollover %s symbols=%s rows=%s cycle_tickers=%s total_ws_tickers=%s",
             "OK" if ok else "INCOMPLETE",
             len(symbols),
             expected,
             len(tickers),
+            len(snap.ws_tickers),
         )
         return ok
     except Exception:
@@ -1103,7 +1372,7 @@ def _main_loop(
                 sleep_sec=DEFAULT_DISCOVERY_SLEEP_SEC,
             ),
         )
-        _, _, tickers_now = sub.snapshot()
+        tickers_now = sub.snapshot().cycle_tickers
 
         if ok:
             if not _wait_first_tick(sub, tickers_now, ws_verify_sec):
@@ -1132,7 +1401,7 @@ def _main_loop(
                     ),
                 )
                 if ok:
-                    _, _, tickers_now = sub.snapshot()
+                    tickers_now = sub.snapshot().cycle_tickers
                     if not _wait_first_tick(sub, tickers_now, ws_verify_sec):
                         ok = False
 
@@ -1193,7 +1462,7 @@ def _main_loop_hourly(
                 sleep_sec=DEFAULT_DISCOVERY_SLEEP_SEC,
             ),
         )
-        _, _, tickers_now = sub.snapshot()
+        tickers_now = sub.snapshot().cycle_tickers
 
         if ok:
             if not _wait_first_tick(sub, tickers_now, ws_verify_sec, hourly_relaxed=True):
@@ -1221,7 +1490,7 @@ def _main_loop_hourly(
                     ),
                 )
                 if ok:
-                    _, _, tickers_now = sub.snapshot()
+                    tickers_now = sub.snapshot().cycle_tickers
                     if not _wait_first_tick(sub, tickers_now, ws_verify_sec, hourly_relaxed=True):
                         ok = False
 
@@ -1247,17 +1516,104 @@ def _main_loop_hourly(
             break
 
 
+async def _handle_ws_data_message(
+    data: dict,
+    *,
+    sub: SubState,
+    exchange_key: str,
+    table_ref: str,
+    market_iv: str,
+) -> None:
+    """Apply lifecycle outcomes and ticker DB upserts. Ignores subscribe acks and unknown types."""
+    dtype = data.get("type")
+    if dtype == "market_lifecycle_v2" and _market_watchdog_lifecycle_enabled():
+        lc_msg = data.get("msg") or {}
+        await asyncio.to_thread(
+            _lifecycle_ws_dispatch,
+            lc_msg,
+            sub,
+            exchange_key,
+            table_ref,
+        )
+        await asyncio.to_thread(_touch_ws_transport_liveness)
+        return
+    if dtype not in ("ticker", "ticker_v2"):
+        return
+    snap2 = sub.snapshot()
+    msg = data.get("msg") or {}
+    mt = msg.get("market_ticker")
+    if not mt:
+        return
+    pair = snap2.ticker_meta.get(mt)
+    if not pair:
+        return
+    sub.record_tick(mt)
+    sym_u, ev = pair
+    try:
+        row = ticker_msg_to_row_values(
+            msg,
+            symbol=sym_u,
+            event_ticker=ev,
+            exchange=exchange_key,
+            market_interval=market_iv,
+        )
+    except ValueError:
+        return
+    if sub.rolling.is_set():
+        return
+    await asyncio.to_thread(_upsert_ticker_row, row)
+    await asyncio.to_thread(_touch_ws_transport_liveness)
+
+
+async def _drain_until_channel_subscribed(
+    ws,
+    channel: str,
+    *,
+    deadline_mono: float,
+    sub: SubState,
+    exchange_key: str,
+    table_ref: str,
+    market_iv: str,
+) -> bool:
+    """Read until ``subscribed`` for ``channel``, dispatching interleaved lifecycle/ticker frames."""
+    while time.monotonic() < deadline_mono:
+        timeout = min(25.0, deadline_mono - time.monotonic())
+        if timeout <= 0:
+            break
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
+        except asyncio.TimeoutError:
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if data.get("type") == "subscribed" and (data.get("msg") or {}).get("channel") == channel:
+            return True
+        await _handle_ws_data_message(
+            data,
+            sub=sub,
+            exchange_key=exchange_key,
+            table_ref=table_ref,
+            market_iv=market_iv,
+        )
+    return False
+
+
 async def _ws_loop(exchange_key: str, sub: SubState, stop: threading.Event) -> None:
     ping_iv = max(10, int(os.getenv("KALSHI_WS_PING_INTERVAL_SEC", str(DEFAULT_WS_PING_INTERVAL_SEC))))
     beat_sec = max(5, int(os.getenv("KALSHI_WS_TRANSPORT_BEAT_SEC", str(DEFAULT_WS_TRANSPORT_BEAT_SEC))))
     market_iv = str(_WS_TRANSPORT_CTX.get("market") or "15m").strip().lower()
+    table_ref = WS_TABLE_HOURLY if market_iv == "hourly" else WS_TABLE
 
     while not stop.is_set():
-        gen, meta, tickers = sub.snapshot()
-        if not tickers:
+        snap = sub.snapshot()
+        ws_tickers = snap.ws_tickers
+        if not ws_tickers:
             await asyncio.sleep(0.25)
             continue
 
+        my_gen = snap.generation
         headers = await asyncio.to_thread(kalshi_ws_connect_headers)
         cmd_id = 1
         try:
@@ -1269,87 +1625,132 @@ async def _ws_loop(exchange_key: str, sub: SubState, stop: threading.Event) -> N
                 close_timeout=10,
                 max_size=2**22,
             ) as ws:
-                cmd_id += 1
-                logger.info(
-                    "ws subscribe gen=%s exchange=%s n_tickers=%s sample_start=%s sample_end=%s ping_iv=%ss",
-                    gen,
-                    exchange_key,
-                    len(tickers),
-                    ",".join(tickers[:3]),
-                    ",".join(tickers[-3:]),
-                    ping_iv,
-                )
-                await ws.send(
-                    json.dumps(
-                        {
-                            "id": cmd_id,
-                            "cmd": "subscribe",
-                            "params": {"channels": ["ticker"], "market_tickers": tickers},
-                        }
+                last_tickers_sent: tuple[str, ...] | None = None
+
+                async def _send_ticker_subscription(tickers: list[str]) -> bool:
+                    nonlocal cmd_id
+                    if not tickers:
+                        return False
+                    cmd_id += 1
+                    logger.info(
+                        "ws ticker subscribe gen=%s exchange=%s n_tickers=%s sample_start=%s sample_end=%s",
+                        my_gen,
+                        exchange_key,
+                        len(tickers),
+                        ",".join(tickers[:3]),
+                        ",".join(tickers[-3:]),
                     )
-                )
-                raw = await asyncio.wait_for(ws.recv(), timeout=20.0)
-                ack = json.loads(raw)
-                if ack.get("type") != "subscribed":
-                    logger.warning("subscribe ack unexpected: %s", ack)
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "id": cmd_id,
+                                "cmd": "subscribe",
+                                "params": {"channels": ["ticker"], "market_tickers": tickers},
+                            }
+                        )
+                    )
+                    ok = await _drain_until_channel_subscribed(
+                        ws,
+                        "ticker",
+                        deadline_mono=time.monotonic() + 30.0,
+                        sub=sub,
+                        exchange_key=exchange_key,
+                        table_ref=table_ref,
+                        market_iv=market_iv,
+                    )
+                    if not ok:
+                        logger.warning("ticker subscribe ack missing after subscribe (exchange=%s)", exchange_key)
+                        return False
+                    logger.info("ws ticker channel subscribed n=%s", len(tickers))
+                    return True
+
+                if not await _send_ticker_subscription(list(ws_tickers)):
                     await asyncio.sleep(2.0)
                     continue
-                logger.info("ws subscribed sid=%s n=%s", ack.get("sid"), len(tickers))
-                my_gen, _, _ = sub.snapshot()
+                last_tickers_sent = tuple(ws_tickers)
+
+                if _market_watchdog_lifecycle_enabled():
+                    cmd_id += 1
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "id": cmd_id,
+                                "cmd": "subscribe",
+                                "params": {"channels": ["market_lifecycle_v2"]},
+                            }
+                        )
+                    )
+                    ok_lc = await _drain_until_channel_subscribed(
+                        ws,
+                        "market_lifecycle_v2",
+                        deadline_mono=time.monotonic() + 30.0,
+                        sub=sub,
+                        exchange_key=exchange_key,
+                        table_ref=table_ref,
+                        market_iv=market_iv,
+                    )
+                    if ok_lc:
+                        logger.info("ws market_lifecycle_v2 channel subscribed (same connection as ticker)")
+                    else:
+                        logger.warning(
+                            "market_lifecycle_v2 subscribe ack not confirmed (ticker continues): exchange=%s",
+                            exchange_key,
+                        )
                 await asyncio.to_thread(_touch_ws_transport_liveness)
 
                 async def _transport_beat_loop() -> None:
                     while not stop.is_set():
                         await asyncio.sleep(float(beat_sec))
-                        if sub.snapshot()[0] != my_gen:
+                        if sub.snapshot().generation != my_gen:
                             return
                         await asyncio.to_thread(_touch_ws_transport_liveness)
 
                 beat_task = asyncio.create_task(_transport_beat_loop())
                 try:
                     while not stop.is_set():
+                        snap_i = sub.snapshot()
+                        if snap_i.generation != my_gen:
+                            logger.info(
+                                "ws gen %s -> %s reconnect (hard reset)",
+                                my_gen,
+                                snap_i.generation,
+                            )
+                            break
+                        want = tuple(snap_i.ws_tickers)
+                        if not want:
+                            await asyncio.sleep(0.25)
+                            continue
+                        if want != last_tickers_sent:
+                            if not await _send_ticker_subscription(list(want)):
+                                break
+                            last_tickers_sent = want
+
                         try:
                             raw = await asyncio.wait_for(ws.recv(), timeout=75.0)
                         except asyncio.TimeoutError:
-                            if sub.snapshot()[0] != my_gen:
+                            if sub.snapshot().generation != my_gen:
                                 break
                             await asyncio.to_thread(_touch_ws_transport_liveness)
                             continue
-
-                        gen2, meta2, _ = sub.snapshot()
-                        if gen2 != my_gen:
-                            logger.info("ws gen %s -> %s reconnect", my_gen, gen2)
-                            break
 
                         try:
                             data = json.loads(raw)
                         except json.JSONDecodeError:
                             continue
-                        if data.get("type") not in ("ticker", "ticker_v2"):
-                            continue
-                        msg = data.get("msg") or {}
-                        mt = msg.get("market_ticker")
-                        if not mt:
-                            continue
-                        pair = meta2.get(mt)
-                        if not pair:
-                            continue
-                        sub.record_tick(mt)
-                        sym_u, ev = pair
-                        try:
-                            row = ticker_msg_to_row_values(
-                                msg,
-                                symbol=sym_u,
-                                event_ticker=ev,
-                                exchange=exchange_key,
-                                market_interval=market_iv,
+                        await _handle_ws_data_message(
+                            data,
+                            sub=sub,
+                            exchange_key=exchange_key,
+                            table_ref=table_ref,
+                            market_iv=market_iv,
+                        )
+                        if sub.snapshot().generation != my_gen:
+                            logger.info(
+                                "ws gen %s -> %s reconnect after message (hard reset)",
+                                my_gen,
+                                sub.snapshot().generation,
                             )
-                        except ValueError:
-                            continue
-                        if sub.rolling.is_set():
-                            continue
-                        await asyncio.to_thread(_upsert_ticker_row, row)
-                        await asyncio.to_thread(_touch_ws_transport_liveness)
+                            break
                 finally:
                     beat_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):

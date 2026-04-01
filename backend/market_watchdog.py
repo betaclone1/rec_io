@@ -7,7 +7,7 @@ Rows include `exchange` (e.g. kalshi) after `symbol` so additional venues can sh
 By default, which symbols are polled and in what order matches `live_data.symbols_list` (`ORDER BY id`),
 intersected with the Kalshi 15m symbol set. Pass `--symbols` to override.
 
-Legacy kalshi_market_watchdog.py and per-symbol tables stay in place until pipeline cutover.
+Legacy per-symbol tables were removed in favor of unified tables; REST polling for live quotes was replaced by ``market_watchdog_ws`` (see archive ``2026-03-legacy-kalshi-market-watchdog/``).
 """
 
 import argparse
@@ -530,7 +530,7 @@ def get_current_event_ticker(symbol: str, interval: str = "hourly"):
     The 15m WebSocket rollover path uses :func:`get_current_event_ticker_15m` with a
     ``last_failed_by_symbol`` dict instead.
 
-    Same ticker construction as ``kalshi_market_watchdog.get_current_event_ticker``; uses this
+    Same ticker construction as the archived REST watchdog; uses this
     module's serialized :func:`fetch_event_json` so REST stays quota-safe alongside rollover.
     """
     sym_u = (symbol or "").strip().upper()

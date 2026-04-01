@@ -297,7 +297,7 @@ master_restart() {
     
     # Kill all Python processes related to our project - BULLETPROOF
     print_warning "Killing all Python backend processes..."
-    ps aux 2>/dev/null | grep python | grep -E "(backend|main\.py|trade_manager|trade_executor|active_trade_supervisor|auto_entry_supervisor|symbol_price_watchdog|strike_table_generator|kalshi_account_sync|kalshi_market_watchdog|cascading_failure_detector|system_monitor)" | grep -v grep | grep -v "MASTER_RESTART" | awk '{print $2}' | xargs -r kill 2>/dev/null || true
+    ps aux 2>/dev/null | grep python | grep -E "(backend|main\.py|trade_manager|trade_executor|active_trade_supervisor|auto_entry_supervisor|symbol_price_watchdog|strike_table_generator|kalshi_account_sync|market_watchdog_ws|market_watchdog|cascading_failure_detector|system_monitor)" | grep -v grep | grep -v "MASTER_RESTART" | awk '{print $2}' | xargs -r kill 2>/dev/null || true
     
     # Kill any processes with our project path in the command line - BULLETPROOF
     print_warning "Killing processes with project path..."

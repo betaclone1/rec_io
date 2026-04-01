@@ -756,7 +756,7 @@ def _apply_win_loss_confirmed_for_trade_ids(cursor, trade_ids) -> None:
 
 
 def _settle_one_expired_paper_trade(now_est: datetime, trade_id: int, ticker: str, symbol: str) -> None:
-    """Mark one ``expired`` paper row ``closed`` at settlement; repairs missing ``symbol_close``."""
+    """Repair missing ``symbol_close`` for an expired paper row; close when ``market_result`` exists."""
     pg_conn_paper = None
     try:
         pg_conn_paper = get_postgresql_connection()
@@ -767,10 +767,10 @@ def _settle_one_expired_paper_trade(now_est: datetime, trade_id: int, ticker: st
         with pg_conn_paper.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT strike, side, symbol_close, buy_price, position, bankroll, mtb_base_value,
-                       high_price, low_price, fees, contract, date
+                SELECT symbol_close, contract, date, market_result
                 FROM users.trades_0001
                 WHERE id = %s AND status = 'expired'
+                  AND paper_trade IS TRUE
                 """,
                 (trade_id,),
             )
@@ -779,21 +779,7 @@ def _settle_one_expired_paper_trade(now_est: datetime, trade_id: int, ticker: st
         if not trade_data:
             return
 
-        (
-            strike,
-            side,
-            symbol_close,
-            buy_price,
-            position,
-            bankroll,
-            mtb_base,
-            high_price,
-            low_price,
-            existing_fees,
-            contract,
-            trade_date,
-        ) = trade_data
-        existing_fees = float(existing_fees) if existing_fees is not None else 0.0
+        symbol_close, contract, trade_date, market_result = trade_data
 
         if symbol_close is None and contract and trade_date and symbol:
             exp_est = _contract_expiration_est(trade_date, contract, now_est)
@@ -802,77 +788,17 @@ def _settle_one_expired_paper_trade(now_est: datetime, trade_id: int, ticker: st
                 log_debug(
                     f"📝 Repaired symbol_close for expired paper {trade_id} from expiration-tick 1m avg"
                 )
+                with pg_conn_paper.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE users.trades_0001 SET symbol_close = %s WHERE id = %s AND status = 'expired'",
+                        (symbol_close, trade_id),
+                    )
+                    pg_conn_paper.commit()
 
-        if symbol_close is None:
-            log(f"⚠️ Paper trade {trade_id} has no symbol_close, skipping settlement")
+        if market_result is None:
             return
 
-        strike_clean = str(strike).replace("$", "").replace(",", "")
-        strike_float = float(strike_clean)
-        symbol_close_float = float(symbol_close)
-
-        is_winner = False
-        if side and side.upper() in ("Y", "YES"):
-            is_winner = symbol_close_float >= strike_float
-        elif side and side.upper() in ("N", "NO"):
-            is_winner = symbol_close_float <= strike_float
-        else:
-            log(f"⚠️ Paper trade {trade_id} has invalid side: {side}")
-            return
-
-        sell_price = 1.0000 if is_winner else 0.0000
-        fees = existing_fees
-
-        pnl = None
-        if buy_price is not None and position is not None:
-            buy_value = buy_price * position
-            sell_value = sell_price * position
-            pnl = round(sell_value - buy_value - fees, 2)
-
-        win_loss = "W" if is_winner else "L"
-
-        ret_pct = None
-        ret_pct_base = None
-        roi_pct = None
-        if bankroll is not None and bankroll > 0 and pnl is not None:
-            ret_pct = round((pnl / (bankroll / 100.0)) * 100, 5)
-        if mtb_base is not None and mtb_base > 0 and pnl is not None:
-            ret_pct_base = round((pnl / (mtb_base / 100.0)) * 100, 5)
-        if buy_price is not None and position is not None and pnl is not None:
-            buy_value = buy_price * position
-            if buy_value > 0:
-                roi_pct = round((pnl / buy_value) * 100.0, 5)
-
-        closed_at = now_est.strftime("%H:%M:%S")
-
-        update_trade_status_with_ret_pct(
-            trade_id=trade_id,
-            status="closed",
-            closed_at=closed_at,
-            sell_price=sell_price,
-            symbol_close=symbol_close,
-            win_loss=win_loss,
-            pnl=pnl,
-            close_method="expired",
-            fees=fees,
-            roi_pct=roi_pct,
-            ret_pct=ret_pct,
-            ret_pct_base=ret_pct_base,
-            high_price=high_price,
-            low_price=low_price,
-        )
-
-        with pg_conn_paper.cursor() as cursor:
-            cursor.execute("UPDATE users.trades_0001 SET order_id_close = NULL WHERE id = %s", (trade_id,))
-            pg_conn_paper.commit()
-
-        log(
-            f"📝 PAPER TRADE SETTLED: Trade {trade_id}, {ticker}, W/L={win_loss}, PnL=${pnl}, "
-            f"Sell=${sell_price}, SymbolClose=${symbol_close_float}, Strike=${strike_float}"
-        )
-
-        notify_active_trade_supervisor_direct(trade_id, str(ticker), "closed")
-        notify_strike_table_trade_change(trade_id, "closed")
+        finalize_expired_trade_from_market_result(trade_id)
 
     except Exception as e:
         log(f"❌ Error processing paper trade {trade_id} settlement: {e}")
@@ -4401,35 +4327,145 @@ async def manual_expiration_check():
 
 @router.post("/api/manual_settlement_poll")
 async def manual_settlement_poll():
-    """Manually trigger settlement polling for expired trades"""
+    """Manually sweep ``expired`` trades that already have ``market_result`` (finalize to ``closed``)."""
     try:
-        log("[MANUAL] Manual settlement polling triggered")
-        
-        # Get expired trades that need settlement
-        pg_conn = get_postgresql_connection()
-        if pg_conn:
-            with pg_conn.cursor() as cursor:
-                cursor.execute("SELECT ticker FROM users.trades_0001 WHERE status = 'expired'")
-                expired_trades = cursor.fetchall()
-        else:
-            expired_trades = []
-        
-        if expired_trades:
-            expired_tickers = [trade[0] for trade in expired_trades]
-            log(f"[MANUAL] Found {len(expired_tickers)} expired trades to poll settlements for")
-            
-            # Run settlement polling in a separate thread
-            threading.Thread(target=poll_settlements_for_matches, args=(expired_tickers,), daemon=True).start()
-            
-            return {"message": f"Manual settlement polling triggered for {len(expired_tickers)} expired trades"}
-        else:
-            return {"message": "No expired trades found to poll settlements for"}
-            
+        log("[MANUAL] Manual finalize sweep for expired trades with market_result triggered")
+
+        def _run_sweep():
+            sweep_finalize_expired_trades_with_market_result()
+
+        threading.Thread(target=_run_sweep, daemon=True).start()
+        return {"message": "Manual finalize sweep started (expired rows with market_result)"}
     except Exception as e:
         log(f"[ERROR /api/manual_settlement_poll] {e}")
         return {"error": str(e)}
 
 # ---------- EXPIRATION FUNCTIONS ----------------------------------------------------
+
+def finalize_expired_trade_from_market_result(trade_id: int) -> bool:
+    """Promote ``expired`` → ``closed`` using venue ``market_result`` + ``side`` (held to expiration). Idempotent."""
+    from backend.core.kalshi_lifecycle_trade_outcome import expiry_win_loss_from_market_result
+
+    pg_conn = get_postgresql_connection()
+    if not pg_conn:
+        log(f"⚠️ finalize_expired_trade_from_market_result: no DB trade_id={trade_id}")
+        return False
+    try:
+        with pg_conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT status, market_result, side, buy_price, position, fees, bankroll, mtb_base_value,
+                       symbol_close, high_price, low_price, closed_at, ticker, paper_trade
+                FROM users.trades_0001
+                WHERE id = %s
+                """,
+                (trade_id,),
+            )
+            row = cursor.fetchone()
+        pg_conn.close()
+    except Exception as e:
+        log(f"❌ finalize_expired_trade_from_market_result load failed trade_id={trade_id}: {e}")
+        try:
+            pg_conn.close()
+        except Exception:
+            pass
+        return False
+
+    if not row:
+        return False
+    (
+        status,
+        market_result,
+        side,
+        buy_price,
+        position,
+        existing_fees,
+        bankroll,
+        mtb_base,
+        symbol_close,
+        high_price,
+        low_price,
+        closed_at,
+        ticker,
+        paper_trade,
+    ) = row
+
+    if status != "expired":
+        return False
+    if market_result is None:
+        return False
+
+    win_loss = expiry_win_loss_from_market_result(side, market_result)
+    if win_loss is None:
+        log(
+            f"⚠️ finalize_expired_trade_from_market_result: cannot derive W/L trade_id={trade_id} "
+            f"side={side} market_result={market_result}"
+        )
+        return False
+
+    sell_price = 1.0 if win_loss == "W" else 0.0
+    existing_fees_f = float(existing_fees) if existing_fees is not None else 0.0
+
+    pnl = None
+    ret_pct = None
+    ret_pct_base = None
+    roi_pct = None
+    if buy_price is not None and position is not None:
+        buy_value = buy_price * position
+        sell_value = sell_price * position
+        pnl = round(sell_value - buy_value - existing_fees_f, 2)
+        if bankroll is not None and bankroll > 0 and pnl is not None:
+            ret_pct = round((pnl / (bankroll / 100.0)) * 100, 5)
+        if mtb_base is not None and mtb_base > 0 and pnl is not None:
+            ret_pct_base = round((pnl / (mtb_base / 100.0)) * 100, 5)
+        if buy_value > 0 and pnl is not None:
+            roi_pct = round((pnl / buy_value) * 100.0, 5)
+
+    now_est = datetime.now(ZoneInfo("America/New_York"))
+    use_closed_at = closed_at if closed_at else now_est.strftime("%H:%M:%S")
+
+    update_trade_status_with_ret_pct(
+        trade_id=trade_id,
+        status="closed",
+        closed_at=use_closed_at,
+        sell_price=sell_price,
+        symbol_close=symbol_close,
+        win_loss=win_loss,
+        pnl=pnl,
+        close_method="expired",
+        fees=existing_fees_f,
+        roi_pct=roi_pct,
+        ret_pct=ret_pct,
+        ret_pct_base=ret_pct_base,
+        high_price=high_price,
+        low_price=low_price,
+    )
+
+    if paper_trade is True:
+        pg2 = get_postgresql_connection()
+        if pg2:
+            try:
+                with pg2.cursor() as c:
+                    c.execute(
+                        "UPDATE users.trades_0001 SET order_id_close = NULL WHERE id = %s",
+                        (trade_id,),
+                    )
+                pg2.commit()
+            except Exception:
+                pass
+            try:
+                pg2.close()
+            except Exception:
+                pass
+
+    log(
+        f"📝 EXPIRED FINALIZED (market_result): trade {trade_id}, {ticker}, "
+        f"W/L={win_loss}, PnL={pnl}, sell={sell_price}"
+    )
+    notify_active_trade_supervisor_direct(trade_id, str(ticker or ""), "closed")
+    notify_strike_table_trade_change(trade_id, "closed")
+    return True
+
 
 def _hypothetical_win_loss_at_expiration(strike, side, symbol_expiration) -> Optional[str]:
     """W/L if the trade were held to expiration given spot at cycle end (same rules as paper settlement)."""
@@ -4477,10 +4513,10 @@ def _compute_win_loss_confirmed(strike, side, symbol_expiration, win_loss_actual
 
 
 def _finalize_closed_trade_win_loss_confirmed(cursor, trade_id: int) -> None:
-    """Last persistence step for a closed live/paper trade: set win_loss_confirmed from the row as stored."""
+    """Last persistence step for a closed live/paper trade: set ``win_loss_confirmed`` from venue or spot-at-expiry."""
     cursor.execute(
         """
-        SELECT strike, side, symbol_expiration, symbol_close, win_loss, status
+        SELECT strike, side, symbol_expiration, symbol_close, win_loss, status, close_method, market_result
         FROM users.trades_0001 WHERE id = %s
         """,
         (trade_id,),
@@ -4488,21 +4524,33 @@ def _finalize_closed_trade_win_loss_confirmed(cursor, trade_id: int) -> None:
     row = cursor.fetchone()
     if not row:
         return
-    strike, side, sym_exp, sym_close, win_loss, row_status = row
+    strike, side, sym_exp, sym_close, win_loss, row_status, close_method, market_result = row
     if row_status != "closed":
         return
-    eff_sym_exp = sym_exp
-    if eff_sym_exp is None and sym_close is not None:
-        try:
-            eff_sym_exp = float(sym_close)
-        except (TypeError, ValueError):
-            eff_sym_exp = None
-    if eff_sym_exp is not None:
-        try:
-            eff_sym_exp = float(eff_sym_exp)
-        except (TypeError, ValueError):
-            eff_sym_exp = None
-    wlc = _compute_win_loss_confirmed(strike, side, eff_sym_exp, win_loss)
+    wlc = None
+    try:
+        cm = str(close_method or "").strip().lower()
+    except Exception:
+        cm = ""
+    if cm == "expired" and market_result:
+        from backend.core.kalshi_lifecycle_trade_outcome import compute_win_loss_confirmed_from_venue
+
+        mr = str(market_result).strip().lower()
+        if mr in ("yes", "no"):
+            wlc = compute_win_loss_confirmed_from_venue(side, mr, win_loss)
+    if wlc is None:
+        eff_sym_exp = sym_exp
+        if eff_sym_exp is None and sym_close is not None:
+            try:
+                eff_sym_exp = float(sym_close)
+            except (TypeError, ValueError):
+                eff_sym_exp = None
+        if eff_sym_exp is not None:
+            try:
+                eff_sym_exp = float(eff_sym_exp)
+            except (TypeError, ValueError):
+                eff_sym_exp = None
+        wlc = _compute_win_loss_confirmed(strike, side, eff_sym_exp, win_loss)
     if wlc is None:
         return
     cursor.execute(
@@ -4815,15 +4863,16 @@ def check_expired_trades():
         for trade_id, ticker, symbol, trade_strategy, contract, trade_date in trades_to_process:
             notify_active_trade_supervisor_direct(trade_id, str(ticker), "expired")
         
-        # Process paper trades immediately (manual settlement)
+        # Paper: repair symbol_close; finalize when ``market_result`` exists (same as live).
         if paper_trade_ids:
             log(f"📝 Processing {len(paper_trade_ids)} expired paper trades")
             for trade_id, ticker, symbol in paper_trade_ids:
                 _settle_one_expired_paper_trade(now_est, trade_id, ticker, symbol)
-        
-        # Process live trades with normal settlement polling
-        if live_trade_tickers:
-            poll_settlements_for_matches(live_trade_tickers)
+
+        paper_ids_set = {pid for pid, _, _ in paper_trade_ids}
+        for trade_id, ticker, symbol, trade_strategy, contract, trade_date in trades_to_process:
+            if trade_id not in paper_ids_set:
+                finalize_expired_trade_from_market_result(trade_id)
 
         log(
             f"[15-MIN CHECK] Completed expiry sweep; "
@@ -4865,200 +4914,42 @@ def delete_error_trades():
         except:
             pass
 
-def poll_settlements_for_matches(expired_tickers):
-    """Poll settlements for matches to expired trades"""
-    mode = get_account_mode()
-
-    # Deduplicate input tickers so completion checks and iteration cardinality align.
-    # Without this, repeated tickers can keep the loop alive until timeout.
-    unique_expired_tickers = list(dict.fromkeys(expired_tickers))
-    target_tickers = set(unique_expired_tickers)
-    found_tickers = set()
-    start_time = time.time()
-    timeout_seconds = 30 * 60
-
-    while found_tickers != target_tickers:
-        if _trade_manager_scheduler_shutdown.is_set():
-            log("[5-MIN CHECK] Settlement polling stopped early (service shutdown)")
-            break
-        if time.time() - start_time > timeout_seconds:
-            unresolved = sorted(list(target_tickers - found_tickers))
-            if unresolved:
-                log(f"[5-MIN CHECK] Settlement polling timed out; unresolved tickers={unresolved[:10]}")
-            break
-            
-        try:
-            for ticker in unique_expired_tickers:
-                if _trade_manager_scheduler_shutdown.is_set():
-                    break
-                if ticker in found_tickers:
-                    continue
-                    
-                pg_conn = get_postgresql_connection()
-                if pg_conn:
-                    with pg_conn.cursor() as cursor:
-                        cursor.execute("SELECT revenue FROM users.settlements_0001 WHERE ticker = %s ORDER BY settled_time DESC LIMIT 1", (ticker,))
-                        row = cursor.fetchone()
-                else:
-                    row = None
-                
-                if row:
-                    revenue = row[0]
-                    sell_price = 1.00 if revenue > 0 else 0.00
-                    
-                    # For settlements, process each trade individually to calculate correct PnL
-                    pg_conn_trades = get_postgresql_connection()
-                    if pg_conn_trades:
-                        with pg_conn_trades.cursor() as cursor_trades:
-                            # Get ALL trades for this ticker, not just the first one
-                            cursor_trades.execute(
-                                """
-                                SELECT id, buy_price, position, fees, bankroll, mtb_base_value,
-                                       strike, side, symbol_expiration
-                                FROM users.trades_0001
-                                WHERE ticker = %s AND status = 'expired'
-                                """,
-                                (ticker,),
-                            )
-                            trade_rows = cursor_trades.fetchall()
-                    else:
-                        trade_rows = []
-                    
-                    # Process each trade individually
-                    for trade_row in trade_rows:
-                        if _trade_manager_scheduler_shutdown.is_set():
-                            break
-                        (
-                            trade_id,
-                            buy_price,
-                            position,
-                            existing_fees,
-                            bankroll,
-                            mtb_base,
-                            strike,
-                            side,
-                            symbol_expiration,
-                        ) = trade_row
-                        pnl = None
-                        ret_pct = None
-                        ret_pct_base = None
-                        
-                        if buy_price is not None and sell_price is not None and position is not None:
-                            buy_value = buy_price * position
-                            sell_value = sell_price * position
-                            # Use existing fees from trade record (no additional settlement fees)
-                            total_fees_paid = existing_fees if existing_fees is not None else 0.0
-                            pnl = round(sell_value - buy_value - total_fees_paid, 2)
-                            
-                            # Calculate ret_pct and ret_pct_base for this specific trade
-                            if bankroll is not None and bankroll > 0:  # Prevent division by zero
-                                ret_pct = round((pnl / (bankroll / 100.0)) * 100, 5)
-                                log_debug(f"💾 Calculated ret_pct for trade {trade_id}: {ret_pct}% (PnL: {pnl}, Bankroll: {bankroll})")
-                            else:
-                                log(f"⚠️ Bankroll is zero or None for trade {trade_id}, cannot calculate ret_pct")
-                            if mtb_base is not None and mtb_base > 0:
-                                ret_pct_base = round((pnl / (mtb_base / 100.0)) * 100, 5)
-                        
-                        win_loss_val = "W" if sell_price > 0 else "L"
-                        
-                        # Update this specific trade
-                        # Note: high_price and low_price are already set during expiration, preserve them
-                        try:
-                            pg_conn_update = get_postgresql_connection()
-                            if pg_conn_update:
-                                with pg_conn_update.cursor() as cursor_update:
-                                    cursor_update.execute("""
-                                        UPDATE users.trades_0001 
-                                        SET status = 'closed',
-                                            sell_price = %s,
-                                            win_loss = %s,
-                                            pnl = %s,
-                                            ret_pct = %s,
-                                            ret_pct_base = %s
-                                        WHERE id = %s AND status = 'expired'
-                                    """, (
-                                        sell_price,
-                                        win_loss_val,
-                                        pnl,
-                                        ret_pct,
-                                        ret_pct_base,
-                                        trade_id,
-                                    ))
-                                    if cursor_update.rowcount > 0:
-                                        _finalize_closed_trade_win_loss_confirmed(cursor_update, trade_id)
-                                    pg_conn_update.commit()
-                                    log_debug(f"💾 Settlement update for trade {trade_id}: PnL={pnl}, ret_pct={ret_pct}, ret_pct_base={ret_pct_base}")
-                                    
-                                    # Update win_streak for the monitor
-                                    update_monitor_win_streak(trade_id)
-                                    refresh_monitor_cycle_performance_for_trade(trade_id)
-                                    # Check and update cycle metrics if all trades in cycle are closed
-                                    check_and_update_cycle_metrics(trade_id)
-                                    
-                                pg_conn_update.close()
-                            else:
-                                log(f"⚠️ Skipping PostgreSQL settlement update for trade {trade_id} - no connection available")
-                        except Exception as pg_err:
-                            log(f"❌ Failed to update settlement trade {trade_id} in PostgreSQL: {pg_err}")
-                    
-                    if _trade_manager_scheduler_shutdown.is_set():
-                        if pg_conn_trades:
-                            try:
-                                pg_conn_trades.close()
-                            except Exception:
-                                pass
-                        break
-                    
-                    if pg_conn_trades:
-                        pg_conn_trades.close()
-                    
-                    notify_frontend_trade_change()
-                    
-                    # Notify monitor_manager about trades closed by this settlement
-                    notify_monitor_manager_trades_closed_by_ticker(ticker, 'closed')
-                    
-                    found_tickers.add(ticker)
-                    
-            if _trade_manager_scheduler_shutdown.is_set():
-                break
-            if found_tickers != target_tickers:
-                time.sleep(2)
-            else:
-                break
-            
-        except Exception as e:
-            log(f"[5-MIN CHECK] Settlement polling loop error: {e}")
-            time.sleep(2)
-
-def check_expired_trades_for_settlements():
-    """Check every 10 minutes for expired trades that now have settlements available"""
+def sweep_finalize_expired_trades_with_market_result() -> None:
+    """Finalize ``expired`` rows that already have ``market_result`` (idempotent; repairs delayed finalize)."""
+    if _trade_manager_scheduler_shutdown.is_set():
+        return
     try:
         pg_conn = get_postgresql_connection()
         if not pg_conn:
             return
-        
-        # Get all expired trades
         with pg_conn.cursor() as cursor:
-            cursor.execute("SELECT ticker FROM users.trades_0001 WHERE status = 'expired'")
-            expired_trades = cursor.fetchall()
-        
+            cursor.execute(
+                """
+                SELECT id FROM users.trades_0001
+                WHERE status = 'expired' AND market_result IS NOT NULL
+                ORDER BY id
+                LIMIT 500
+                """
+            )
+            rows = cursor.fetchall() or []
         pg_conn.close()
-        
-        if not expired_trades:
+        if not rows:
             return
-        
-        expired_tickers = [trade[0] for trade in expired_trades if trade and trade[0]]
-        unique_expired_tickers = list(dict.fromkeys(expired_tickers))
         log(
-            f"[5-MIN CHECK] Found {len(expired_tickers)} expired trade rows "
-            f"across {len(unique_expired_tickers)} unique tickers, checking for settlements"
+            f"[5-MIN CHECK] Finalize sweep: {len(rows)} expired trade(s) with market_result"
         )
-        
-        # Run settlement polling for expired trades
-        poll_settlements_for_matches(unique_expired_tickers)
-        
+        for (tid,) in rows:
+            if _trade_manager_scheduler_shutdown.is_set():
+                break
+            finalize_expired_trade_from_market_result(int(tid))
     except Exception as e:
-        log(f"[5-MIN CHECK] Error: {e}")
+        log(f"[5-MIN CHECK] Finalize sweep error: {e}")
+
+
+def check_expired_trades_for_settlements():
+    """Periodic sweep: finalize ``expired`` trades once ``market_result`` is present."""
+    sweep_finalize_expired_trades_with_market_result()
+
 
 def notify_monitor_manager_trade_closed(trade_id: int, status: str) -> None:
     """Notify monitor_manager when a trade is closed to update monitor statistics"""
@@ -5262,8 +5153,8 @@ def _notify_monitor_manager_trade_payload(payload: dict) -> None:
 # ---------- APScheduler Setup ----------------------------------------------------
 
 # Cleared on app start; set during FastAPI shutdown so settlement polling exits promptly.
-# Default APScheduler shutdown(wait=True) can block up to poll_settlements_for_matches's
-# 30-minute window; supervisord's default stopwaitsecs (10) then SIGKILLs the process.
+# APScheduler shutdown(wait=True) can block for a long-running job; use wait=False on teardown
+# so supervisord's stopwaitsecs is not exceeded.
 _trade_manager_scheduler_shutdown = threading.Event()
 
 _scheduler = BackgroundScheduler(timezone=ZoneInfo("America/New_York"))
