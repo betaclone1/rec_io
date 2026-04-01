@@ -1,5 +1,7 @@
 # Push commits and update production (one-shot)
 
+**Prerequisite:** Export `REC_PROD_SSH_HOST` to the production server IP or DNS name (SSH).
+
 Run when the user wants a **single command** to prepare an update, commit and push with the suggested message, and then apply that update to production. Intended for lighter, high-confidence commits.
 
 ## Workflow (execute in order)
@@ -25,7 +27,7 @@ Run when the user wants a **single command** to prepare an update, commit and pu
    - Execute the full **apply-update-from-local** workflow per `.cursor/skills/apply-update-from-local/SKILL.md`:
      - Confirm the commit to deploy is pushed.
      - Read `docs/changelog/CHANGELOG_AGENT_INSTRUCTIONS.md`.
-     - List open MASTER_CHANGELOG entries (newest-first); for each, run every unchecked checklist task on prod via SSH (`ssh root@137.184.224.94 'cd /opt/rec_io_server && <command>'`).
+     - List open MASTER_CHANGELOG entries (newest-first); for each, run every unchecked checklist task on prod via SSH (`ssh root@$REC_PROD_SSH_HOST 'cd /opt/rec_io_server && <command>'`).
      - Mark each completed task as `- [x]` in MASTER_CHANGELOG.md locally.
      - Verify production (health, supervisor, logs; VERIFY STATUS block).
      - Fidelity check (local vs prod commit and migrations).

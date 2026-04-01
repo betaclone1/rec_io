@@ -6,6 +6,32 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-01 — Eastern time helpers, hourly final-quarter strike asks, prod script DB hints
+
+**Summary**
+- **`backend/core/time_eastern` + `prod_target`:** Central **America/New_York** wall time (`now_est`, `today_est`, UTC ISO helpers) and **psycopg2** `options` merge to pin session **`timezone=America/New_York`**. Optional **production DB host** helpers for legacy analytics/scripts.
+- **`strike_table_generator`:** Hourly **`yes_ask_*_15m` / `no_ask_*_15m` / `*_range_15m`** stay **NULL** until **`ttc_hourly <= 900`** (final 15m of the contract); **15m** tables unchanged. Title/TTC paths use **`now_est()`** instead of host-local **`datetime.now()`** / **pytz**.
+- **Trading plane:** **`trade_executor`**, **`active_trade_supervisor`**, **`auto_entry_supervisor`**, **`kalshi_account_sync_ws`**, **`monitor_manager`**, **`main`**, **`cascading_failure_detector`**, **`system_monitor`**, **`trading_redis_comms`**, **`port_config`**: adopt **`time_eastern`** where staged.
+- **Analytics / utilities:** Staged scripts use **`merge_psycopg2_connect_kwargs`** for consistent DB session TZ; **`installation_logger`** import path fixed to **`backend.core.time_eastern`**.
+- **Frontend:** **`frontend/js/ny-timezone.js`** for NY display on trade monitor (desktop + mobile) and system tab.
+- **Docs / Cursor:** **`ARCHITECTURE`**, **`MASTER_DB_SCHEMA_REFERENCE`**, install docs, DB audit notes; deploy/verify **skills** and **commands** updates.
+- **Other:** Staged **`market_watchdog`**, **`trade_manager`**, backfill/compare scripts, **`MASTER_RESTART`**, etc., as in diff.
+
+**Plans:** `.cursor/plans/db-prod-schema-alignment.md` (doc/skill alignment); hourly strike behavior per product spec (informal).
+
+**DB migrations:** None for this release.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `main_app` :3000 and `trade_executor` :8001 health; supervisor **RUNNING**; spot-check **strike_table_generator_ws** logs for hourly/15m **strike refresh ok**; spot-check **trade_manager** after restart.
+- [ ] Snapshot reference (pre-deploy): **`rec-io-prod-pre-update-2026-04-01`** (DO action **`3119534122`**; confirm **completed** in DigitalOcean when convenient).
+
+---
+
 ## 2026-04-01 — Trade resolution: market_result finalization, lifecycle hook, remove settlement polling
 
 **Summary**

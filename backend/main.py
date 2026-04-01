@@ -47,7 +47,18 @@ from backend.core.port_config import get_port, get_port_info
 from backend.core.unified_config import UnifiedConfigManager
 from backend.core.config.database import get_postgresql_connection, get_database_config
 from backend.core.exchange_ids import normalize_exchange
+from backend.core.time_eastern import EST, now_est
+
 unified_config = UnifiedConfigManager()
+
+
+def _auth_expiry_utc(iso_str: str) -> datetime:
+    """Parse auth token expiry as UTC for comparison (handles legacy naive ISO)."""
+    s = (iso_str or "").replace("Z", "+00:00")
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 # Get port from centralized system
 MAIN_APP_PORT = get_port("main_app")
@@ -597,7 +608,7 @@ async def broadcast_db_change(db_name: str, change_data: dict):
         "type": "db_change",
         "database": db_name,
         "data": change_data,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": now_est().isoformat()
     })
     await _broadcast_db_change_message_text(message)
 
@@ -906,7 +917,7 @@ async def health_check():
         "status": "healthy",
         "service": "main_app",
         "port": MAIN_APP_PORT,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_est().isoformat(),
         "port_system": "centralized"
     }
 
@@ -978,7 +989,7 @@ async def get_system_health():
         return {
             "status": overall_status,
             "issues": issues,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now_est().isoformat(),
             "health_report": health_report
         }
         
@@ -986,7 +997,7 @@ async def get_system_health():
         return {
             "status": "offline",
             "issues": [f"System monitor error: {str(e)}"],
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now_est().isoformat(),
             "error": str(e)
         }
 
@@ -1054,9 +1065,9 @@ async def serve_main_app(request: Request):
                 return RedirectResponse(url="/login")
             
             token_data = auth_tokens[token]
-            expires = datetime.fromisoformat(token_data["expires"])
+            expires = _auth_expiry_utc(token_data["expires"])
             
-            if datetime.now() >= expires:
+            if datetime.now(timezone.utc) >= expires:
                 return RedirectResponse(url="/login")
                 
         except Exception as e:
@@ -1188,9 +1199,9 @@ async def serve_mobile_trade_monitor(request: Request):
                 return RedirectResponse(url="/login")
             
             token_data = auth_tokens[token]
-            expires = datetime.fromisoformat(token_data["expires"])
+            expires = _auth_expiry_utc(token_data["expires"])
             
-            if datetime.now() >= expires:
+            if datetime.now(timezone.utc) >= expires:
                 return RedirectResponse(url="/login")
                 
         except Exception as e:
@@ -1232,9 +1243,9 @@ async def serve_mobile_dashboard(request: Request):
                 return RedirectResponse(url="/login")
             
             token_data = auth_tokens[token]
-            expires = datetime.fromisoformat(token_data["expires"])
+            expires = _auth_expiry_utc(token_data["expires"])
             
-            if datetime.now() >= expires:
+            if datetime.now(timezone.utc) >= expires:
                 return RedirectResponse(url="/login")
                 
         except Exception as e:
@@ -1276,9 +1287,9 @@ async def serve_mobile_account_manager(request: Request):
                 return RedirectResponse(url="/login")
             
             token_data = auth_tokens[token]
-            expires = datetime.fromisoformat(token_data["expires"])
+            expires = _auth_expiry_utc(token_data["expires"])
             
-            if datetime.now() >= expires:
+            if datetime.now(timezone.utc) >= expires:
                 return RedirectResponse(url="/login")
                 
         except Exception as e:
@@ -1320,9 +1331,9 @@ async def serve_mobile_index(request: Request):
                 return RedirectResponse(url="/login")
             
             token_data = auth_tokens[token]
-            expires = datetime.fromisoformat(token_data["expires"])
+            expires = _auth_expiry_utc(token_data["expires"])
             
-            if datetime.now() >= expires:
+            if datetime.now(timezone.utc) >= expires:
                 return RedirectResponse(url="/login")
                 
         except Exception as e:
@@ -1364,9 +1375,9 @@ async def serve_mobile_index_html(request: Request):
                 return RedirectResponse(url="/login")
             
             token_data = auth_tokens[token]
-            expires = datetime.fromisoformat(token_data["expires"])
+            expires = _auth_expiry_utc(token_data["expires"])
             
-            if datetime.now() >= expires:
+            if datetime.now(timezone.utc) >= expires:
                 return RedirectResponse(url="/login")
                 
         except Exception as e:
@@ -1439,9 +1450,9 @@ async def serve_mobile_user(request: Request):
                 return RedirectResponse(url="/login")
             
             token_data = auth_tokens[token]
-            expires = datetime.fromisoformat(token_data["expires"])
+            expires = _auth_expiry_utc(token_data["expires"])
             
-            if datetime.now() >= expires:
+            if datetime.now(timezone.utc) >= expires:
                 return RedirectResponse(url="/login")
                 
         except Exception as e:
@@ -1483,9 +1494,9 @@ async def serve_mobile_system(request: Request):
                 return RedirectResponse(url="/login")
             
             token_data = auth_tokens[token]
-            expires = datetime.fromisoformat(token_data["expires"])
+            expires = _auth_expiry_utc(token_data["expires"])
             
-            if datetime.now() >= expires:
+            if datetime.now(timezone.utc) >= expires:
                 return RedirectResponse(url="/login")
                 
         except Exception as e:
@@ -1527,9 +1538,9 @@ async def serve_mobile_trade_history(request: Request):
                 return RedirectResponse(url="/login")
             
             token_data = auth_tokens[token]
-            expires = datetime.fromisoformat(token_data["expires"])
+            expires = _auth_expiry_utc(token_data["expires"])
             
-            if datetime.now() >= expires:
+            if datetime.now(timezone.utc) >= expires:
                 return RedirectResponse(url="/login")
                 
         except Exception as e:
@@ -1554,19 +1565,18 @@ async def serve_mobile_trade_history(request: Request):
 def get_ttc_data_from_postgresql() -> Dict[str, Any]:
     """Get TTC data directly from PostgreSQL"""
     try:
-        from datetime import datetime, timezone, timedelta
-        from zoneinfo import ZoneInfo
-        
+        from datetime import timedelta
+
         # Calculate TTC (time to next hour)
-        now_est = datetime.now(ZoneInfo('US/Eastern'))
-        next_hour = now_est.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-        ttc_seconds = int((next_hour - now_est).total_seconds())
+        ne = now_est()
+        next_hour = ne.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        ttc_seconds = int((next_hour - ne).total_seconds())
         
         return {
             'ttc_seconds': ttc_seconds,
-            'timestamp': now_est.isoformat(),
-            'current_time_est': now_est.strftime("%I:%M:%S %p EDT"),
-            'next_hour_est': next_hour.strftime("%I:%M:%S %p EDT")
+            'timestamp': ne.isoformat(),
+            'current_time_est': ne.strftime("%I:%M:%S %p %Z"),
+            'next_hour_est': next_hour.strftime("%I:%M:%S %p %Z")
         }
     except Exception as e:
         _main_logger.warning(f"Error calculating TTC: {e}")
@@ -1583,9 +1593,9 @@ async def get_core_data(symbol: str = "BTC"):
     """Get core trading data for specified symbol."""
     try:
         # Get current time
-        now = datetime.now(pytz.timezone('US/Eastern'))
+        now = now_est()
         date_str = now.strftime("%A, %B %d, %Y")
-        time_str = now.strftime("%I:%M:%S %p EDT")
+        time_str = now.strftime("%I:%M:%S %p %Z")
         
         # Get TTC directly from PostgreSQL
         ttc_seconds = 0
@@ -1739,7 +1749,7 @@ async def get_core_data(symbol: str = "BTC"):
             "ttc_seconds": ttc_seconds,
             "btc_price": btc_price,
             "latest_db_price": latest_db_price,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now_est().isoformat(),
             **momentum_data,  # Include all momentum deltas and weighted score
             "status": "online",
             "volScore": 0,
@@ -1936,10 +1946,10 @@ async def get_btc_changes():
                 "change1h": float(result[0]) if result[0] is not None else None,
                 "change3h": float(result[1]) if result[1] is not None else None,
                 "change1d": float(result[2]) if result[2] is not None else None,
-                "timestamp": result[3].isoformat() if result[3] else datetime.now(ZoneInfo("America/New_York")).isoformat()
+                "timestamp": result[3].isoformat() if result[3] else now_est().isoformat()
             }
         else:
-            changes = {"change1h": None, "change3h": None, "change1d": None, "timestamp": datetime.now(ZoneInfo("America/New_York")).isoformat()}
+            changes = {"change1h": None, "change3h": None, "change1d": None, "timestamp": now_est().isoformat()}
         
         return changes
         
@@ -1974,10 +1984,10 @@ async def get_eth_changes():
                 "change1h": float(result[0]) if result[0] is not None else None,
                 "change3h": float(result[1]) if result[1] is not None else None,
                 "change1d": float(result[2]) if result[2] is not None else None,
-                "timestamp": result[3].isoformat() if result[3] else datetime.now(ZoneInfo("America/New_York")).isoformat()
+                "timestamp": result[3].isoformat() if result[3] else now_est().isoformat()
             }
         else:
-            changes = {"change1h": None, "change3h": None, "change1d": None, "timestamp": datetime.now(ZoneInfo("America/New_York")).isoformat()}
+            changes = {"change1h": None, "change3h": None, "change1d": None, "timestamp": now_est().isoformat()}
         
         return changes
         
@@ -2039,7 +2049,7 @@ async def get_kalshi_snapshot():
             # Return in the same format as the JSON file
             return {
                 "markets": markets,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": now_est().isoformat()
             }
             
     except Exception as e:
@@ -2259,7 +2269,7 @@ async def initiate_transfer(request: Request):
         from zoneinfo import ZoneInfo
         from datetime import datetime
         EST = ZoneInfo("America/New_York")
-        transfer_timestamp_est = datetime.now(EST).strftime("%Y-%m-%d %H:%M:%S")
+        transfer_timestamp_est = now_est().strftime("%Y-%m-%d %H:%M:%S")
 
         conn = get_postgresql_connection()
         try:
@@ -3495,10 +3505,10 @@ async def trigger_open_trade(request: Request):
         from zoneinfo import ZoneInfo
         
         # Generate unique ticket ID (same format as trade_initiator)
-        ticket_id = f"TICKET-{uuid.uuid4().hex[:9]}-{int(datetime.now().timestamp() * 1000)}"
+        ticket_id = f"TICKET-{uuid.uuid4().hex[:9]}-{int(now_est().timestamp() * 1000)}"
         
         # Get current time in Eastern Time (same as trade_initiator)
-        now = datetime.now(ZoneInfo("America/New_York"))
+        now = now_est()
         eastern_date = now.strftime('%Y-%m-%d')
         eastern_time = now.strftime('%H:%M:%S')
         
@@ -3655,7 +3665,7 @@ async def get_live_probabilities(request: Request):
             
             return {
                 "probabilities": probabilities,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": now_est().isoformat()
             }
             
     except Exception as e:
@@ -4226,7 +4236,7 @@ async def get_active_trades_for_monitor(monitor_name: str):
             
             return {
                 "status": "success",
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": now_est().isoformat(),
                 "active_trades": active_trades,
                 "count": len(active_trades),
                 "monitor_identifier": monitor_name
@@ -4449,13 +4459,18 @@ async def login(request: Request):
                 # Generate authentication token
                 token = generate_token()
                 device_id = f"device_{secrets.token_hex(8)}"
+                now_u = datetime.now(timezone.utc)
                 
                 # Store token
                 auth_tokens = load_auth_tokens()
                 auth_tokens[token] = {
                     "username": username,
-                    "created": datetime.now().isoformat(),
-                    "expires": (datetime.now() + timedelta(days=30)).isoformat() if remember_device else (datetime.now() + timedelta(hours=24)).isoformat()
+                    "created": now_u.isoformat(),
+                    "expires": (
+                        (now_u + timedelta(days=30)).isoformat()
+                        if remember_device
+                        else (now_u + timedelta(hours=24)).isoformat()
+                    ),
                 }
                 save_auth_tokens(auth_tokens)
                 
@@ -4465,8 +4480,8 @@ async def login(request: Request):
                     device_tokens[device_id] = {
                         "username": username,
                         "token": token,
-                        "created": datetime.now().isoformat(),
-                        "expires": (datetime.now() + timedelta(days=365)).isoformat()
+                        "created": now_u.isoformat(),
+                        "expires": (now_u + timedelta(days=365)).isoformat(),
                     }
                     save_device_tokens(device_tokens)
                 
@@ -4513,9 +4528,9 @@ async def verify_auth(request: Request):
         auth_tokens = load_auth_tokens()
         if token in auth_tokens:
             token_data = auth_tokens[token]
-            expires = datetime.fromisoformat(token_data["expires"])
+            expires = _auth_expiry_utc(token_data["expires"])
             
-            if datetime.now() < expires:
+            if datetime.now(timezone.utc) < expires:
                 return {
                     "authenticated": True,
                     "username": token_data["username"],
@@ -5371,21 +5386,22 @@ async def get_monitors(user_id: str = "user_0001"):
                 market,
             ) = row
             
-            # Calculate uptime from created timestamp
+            # Calculate uptime from created timestamp (Eastern wall if naive)
             from datetime import datetime
             uptime_str = "0d 0h 0m"
             if created:
-                now = datetime.now()
+                now = now_est()
                 if isinstance(created, str):
                     created_dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
                 else:
                     created_dt = created
                 
-                # Handle timezone if needed
                 if created_dt.tzinfo is None:
-                    created_dt = created_dt.replace(tzinfo=datetime.now().tzinfo)
+                    created_dt = created_dt.replace(tzinfo=EST)
+                else:
+                    created_dt = created_dt.astimezone(EST)
                 
-                diff = now - created_dt.replace(tzinfo=None)
+                diff = now - created_dt
                 days = diff.days
                 hours = diff.seconds // 3600
                 minutes = (diff.seconds % 3600) // 60

@@ -56,6 +56,7 @@ sys.path.insert(0, get_project_root())
 sys.path.insert(0, os.path.join(get_project_root(), 'scripts'))
 
 from backend.core.unified_config import unified_config
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs, now_est
 
 class FailureLevel:
     NONE = "none"
@@ -190,14 +191,14 @@ class CascadingFailureDetector:
                     "service": service_name,
                     "status": "healthy",
                     "consecutive_failures": 0,
-                    "last_check": datetime.now().isoformat()
+                    "last_check": now_est().isoformat()
                 }
             else:
                 return {
                     "service": service_name,
                     "status": "unhealthy",
                     "consecutive_failures": 1,
-                    "last_check": datetime.now().isoformat()
+                    "last_check": now_est().isoformat()
                 }
         except Exception as e:
             return {
@@ -205,7 +206,7 @@ class CascadingFailureDetector:
                 "status": "error",
                 "error": str(e),
                 "consecutive_failures": 1,
-                "last_check": datetime.now().isoformat()
+                "last_check": now_est().isoformat()
             }
     
     def update_service_health(self):
@@ -258,10 +259,14 @@ class CascadingFailureDetector:
             # Check trades database connection
             try:
                 conn_trades = psycopg2.connect(
-                    host="localhost",
-                    database="rec_io_db",
-                    user="rec_io_user",
-                    password="rec_io_password"
+                    **merge_psycopg2_connect_kwargs(
+                        {
+                            "host": "localhost",
+                            "database": "rec_io_db",
+                            "user": "rec_io_user",
+                            "password": "rec_io_password",
+                        }
+                    )
                 )
                 cursor_trades = conn_trades.cursor()
                 cursor_trades.execute("SELECT 1 FROM users.trades_0001 LIMIT 1")
@@ -274,10 +279,14 @@ class CascadingFailureDetector:
             # Check live_data database connection
             try:
                 conn_live_data = psycopg2.connect(
-                    host="localhost",
-                    database="rec_io_db",
-                    user="rec_io_user",
-                    password="rec_io_password"
+                    **merge_psycopg2_connect_kwargs(
+                        {
+                            "host": "localhost",
+                            "database": "rec_io_db",
+                            "user": "rec_io_user",
+                            "password": "rec_io_password",
+                        }
+                    )
                 )
                 cursor_live_data = conn_live_data.cursor()
                 cursor_live_data.execute("SELECT 1 FROM live_data.live_price_log_1s_btc LIMIT 1")

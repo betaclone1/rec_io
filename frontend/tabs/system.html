@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>System - REC.IO</title>
     <link rel="stylesheet" href="/styles/global.css">
+    <script src="/js/ny-timezone.js"></script>
     <style>
 
 
@@ -894,7 +895,7 @@
             const memoryPercent = data.memory_percent || 0;
             const diskPercent = data.disk_percent || 0;
             const services = `${data.services_healthy || 0}/${data.services_total || 0}`;
-            const timestamp = data.timestamp ? new Date(data.timestamp).toLocaleString() : 'Unknown';
+            const timestamp = data.timestamp ? formatRecNyLocaleString(data.timestamp) : 'Unknown';
             
             // Calculate storage details
             const totalDiskGB = data.disk_total_gb || 0;

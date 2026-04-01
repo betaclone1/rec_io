@@ -30,6 +30,8 @@ from cryptography.hazmat.primitives import hashes
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
+
 # Configuration
 WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
 EST = ZoneInfo("America/New_York")
@@ -131,10 +133,14 @@ class KalshiOrderbookWatchdog:
         """Connect to PostgreSQL database"""
         try:
             self.db_connection = psycopg2.connect(
-                host="localhost",
-                database="rec_io_db",
-                user="rec_io_user",
-                password="rec_io_password"
+                **merge_psycopg2_connect_kwargs(
+                    {
+                        "host": "localhost",
+                        "database": "rec_io_db",
+                        "user": "rec_io_user",
+                        "password": "rec_io_password",
+                    }
+                )
             )
             print(f"[{datetime.now(EST)}] ✅ Connected to PostgreSQL database")
             return True

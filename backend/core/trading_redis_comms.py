@@ -35,6 +35,8 @@ import time
 import uuid
 from typing import Any, Callable, Dict, Optional
 
+from backend.core.time_eastern import now_est
+
 logger = logging.getLogger(__name__)
 
 
@@ -367,8 +369,6 @@ def publish_positions_updated_notification(payload: Dict[str, Any], r=None) -> b
 
 def publish_db_change_json(db_name: str, change_data: Optional[Dict[str, Any]] = None, r=None) -> bool:
     """Same JSON shape as main.broadcast_db_change for /ws/db_changes subscribers."""
-    from datetime import datetime
-
     close_client = False
     if r is None:
         r = redis_client_optional()
@@ -381,7 +381,7 @@ def publish_db_change_json(db_name: str, change_data: Optional[Dict[str, Any]] =
                 "type": "db_change",
                 "database": db_name,
                 "data": change_data or {},
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": now_est().isoformat(),
             },
             default=str,
         )

@@ -40,6 +40,7 @@ from backend.util.paths import get_accounts_data_dir, get_host, get_logs_dir
 from backend.account_mode import get_account_mode
 from backend.core.config.database import get_postgresql_connection
 from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
+from backend.core.time_eastern import now_est
 
 # Create Flask app
 app = Flask(__name__)
@@ -107,7 +108,7 @@ def _log_insufficient_resting_volume_rejection(
     insufficient_resting_volume_rejections_YYYY-MM.jsonl and a fresh .jsonl is used.
     Used to track when we hit liquidity ceilings (position size vs available resting volume)."""
     try:
-        est = datetime.now(ZoneInfo("America/New_York"))
+        est = now_est()
         utc = datetime.now(timezone.utc)
         current_month = est.strftime("%Y-%m")
         error_code = None
@@ -469,7 +470,7 @@ def health_check():
         "status": "healthy",
         "service": "trade_executor",
         "port": TRADE_EXECUTOR_PORT,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_est().isoformat(),
         "port_system": "centralized"
     }
 
@@ -504,7 +505,7 @@ def get_system_status():
             "status": "online",
             "service": "trade_executor",
             "port": TRADE_EXECUTOR_PORT,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now_est().isoformat(),
             "port_system": "centralized"
         }
     except Exception as e:

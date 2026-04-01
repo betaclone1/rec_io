@@ -1,5 +1,7 @@
 # Apply update from local (production via SSH)
 
+**Prerequisite:** Export `REC_PROD_SSH_HOST` to the production server IP or DNS name (SSH).
+
 **Primary way to apply updates to production.** Run from your **local workspace**. The agent SSHs to prod and executes every production checklist step there (pull, migrations, restart, verify). No agent runs on the production server.
 
 ## CRITICAL — DB migrations. Do not attempt any update on another server unless we are 100% certain we can update the DB.
@@ -20,7 +22,7 @@ If an open changelog entry’s checklist includes **Apply migrations** (or runni
 
 4. **Execute each open entry on prod via SSH** — For each entry:
    - Read summary and all checklist items.
-   - For each unchecked task, run the command on prod via SSH: `ssh root@137.184.224.94 'cd /opt/rec_io_server && <command>'`.
+   - For each unchecked task, run the command on prod via SSH: `ssh root@$REC_PROD_SSH_HOST 'cd /opt/rec_io_server && <command>'`.
    - Examples: code sync (git fetch/pull), migrations (`run_migration.py up <slug>`), restart (`scripts/MASTER_RESTART.sh` — fire and do not hold SSH open).
    - After completing a task, set that item to `- [x]` in MASTER_CHANGELOG.md locally.
    - If a task cannot be completed, report why and do not mark it done.

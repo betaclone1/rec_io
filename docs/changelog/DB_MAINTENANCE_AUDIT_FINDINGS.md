@@ -70,7 +70,7 @@
 
 ## 5. Deferred / recommendations
 
-- **Prod (137.184.224.94):** No DDL or migrations run. Plan is in TODO.md; execute only during a maintenance window with backups. Prefer reversible migrations in `scripts/migrations/`.
+- **Prod:** No DDL or migrations run. Plan is in TODO.md; execute only during a maintenance window with backups. Prefer reversible migrations in `scripts/migrations/`.
 - **database.py CREATE TABLE for trades_0001:** Aligning it to the reference (TEXT, REAL, etc.) in one go could affect any code that assumes VARCHAR/DECIMAL. Prefer: (1) reversible migrations to alter existing DBs to match reference; (2) then update database.py CREATE TABLE so new envs match.
 - **Reference doc:** Add a standard “#### Columns” table for `users.trades_simulated_0001` (same as trades_0001 with nullable buy_price/position/fees/bankroll/price_spread/sell_price) so the audit script can compare. Update strike_table hourly ndx/spx to use probability_hourly/ttc_hourly and 15m columns instead of legacy names.
 - **update_db_schema_to_reference.py:** Uses hardcoded DB_CONFIG; should use `get_postgresql_connection()` from `backend.core.config.database` so it respects DB_* / REC_DB_* env.
@@ -79,7 +79,7 @@
 
 ## 6. 2026-03-12 — Prod audit classification (for db-prod-schema-alignment)
 
-**Context:** `ssh root@137.184.224.94` → `/opt/rec_io_server`, run `PYTHONPATH=. python3 scripts/db/audit_db_schema.py`. This section classifies the prod drift for use by `.cursor/plans/db-prod-schema-alignment.md`. **No prod DDL has been run.**
+**Context:** `ssh root@$REC_PROD_SSH_HOST` → `/opt/rec_io_server`, run `PYTHONPATH=. python3 scripts/db/audit_db_schema.py`. This section classifies the prod drift for use by `.cursor/plans/db-prod-schema-alignment.md`. **No prod DDL has been run.**
 
 ### 6.1 Out-of-scope drift (analytics/experimental/test)
 

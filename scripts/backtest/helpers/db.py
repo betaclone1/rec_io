@@ -244,13 +244,19 @@ def _get_connection_via_ssh_tunnel():
     rpp = int(params.get("remote_pg_port") or 5432)
     lp = _ensure_ssh_tunnel(ssh_target, rpp)
     try:
+        from backend.core.time_eastern import merge_psycopg2_connect_kwargs
+
         return psycopg2.connect(
-            host="127.0.0.1",
-            port=lp,
-            user=str(params["user"]),
-            password=str(params["password"]),
-            dbname=str(params["database"]),
-            sslmode=str(params.get("sslmode") or "disable"),
+            **merge_psycopg2_connect_kwargs(
+                {
+                    "host": "127.0.0.1",
+                    "port": lp,
+                    "user": str(params["user"]),
+                    "password": str(params["password"]),
+                    "dbname": str(params["database"]),
+                    "sslmode": str(params.get("sslmode") or "disable"),
+                }
+            )
         )
     except Exception as e:
         raise RuntimeError(f"PostgreSQL via SSH tunnel failed: {e}") from e

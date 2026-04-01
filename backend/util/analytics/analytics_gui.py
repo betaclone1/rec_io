@@ -16,6 +16,14 @@ from datetime import datetime
 import psycopg2
 import psutil
 
+_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
+from backend.core.prod_target import get_production_db_host
+
+
 class AnalyticsGUI:
     def __init__(self, root):
         self.root = root
@@ -32,12 +40,14 @@ class AnalyticsGUI:
         self.logs = []
         
         # Database configuration
-        self.db_config = {
-            'host': 'localhost',
-            'database': 'rec_io_db',
-            'user': 'rec_io_user',
-            'password': 'rec_io_password'
-        }
+        self.db_config = merge_psycopg2_connect_kwargs(
+            {
+                "host": "localhost",
+                "database": "rec_io_db",
+                "user": "rec_io_user",
+                "password": "rec_io_password",
+            }
+        )
         
         self.setup_ui()
         self.check_existing_progress()
@@ -627,7 +637,14 @@ class AnalyticsGUI:
     
     def sync_to_production(self):
         """Sync local analytics and historical_data schemas to production server"""
-        
+        prod_host = get_production_db_host()
+        if not prod_host:
+            messagebox.showerror(
+                "Production host not set",
+                "Set REC_PROD_DB_HOST or REC_PROD_SSH_HOST to the production PostgreSQL host, then retry.",
+            )
+            return
+
         # Confirmation dialog
         response = messagebox.askyesno(
             "Sync to Production",
@@ -635,7 +652,7 @@ class AnalyticsGUI:
             "This will:\n"
             "1. DROP analytics and historical_data schemas on PRODUCTION\n"
             "2. Replace them with your LOCAL data\n\n"
-            "Production server: 137.184.224.94\n\n"
+            f"Production server: {prod_host}\n\n"
             "Are you absolutely sure you want to continue?"
         )
         
@@ -663,7 +680,15 @@ class AnalyticsGUI:
     def _execute_production_sync(self):
         """Execute the production sync operation"""
         try:
-            prod_host = "137.184.224.94"
+            prod_host = get_production_db_host()
+            if not prod_host:
+                self.add_log("❌ REC_PROD_DB_HOST / REC_PROD_SSH_HOST not set")
+                self.status_var.set("Sync failed")
+                messagebox.showerror(
+                    "Sync Error",
+                    "Set REC_PROD_DB_HOST or REC_PROD_SSH_HOST before syncing.",
+                )
+                return
             
             # Step 1: Drop existing schemas on production
             self.add_log("📋 Step 1/3: Dropping production schemas...")

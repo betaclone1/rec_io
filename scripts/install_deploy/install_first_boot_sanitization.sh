@@ -3,9 +3,8 @@
 # =============================================================================
 # INSTALL FIRST BOOT SANITIZATION
 # =============================================================================
-# This script installs the first-boot sanitization service on the production
-# system. This ensures that any droplet created from a snapshot will
-# automatically sanitize user data on first boot.
+# Installs the first-boot systemd unit. OFF BY DEFAULT; use
+# REC_ENABLE_FIRST_BOOT_SANITIZE_SETUP=1 when deliberately enabling.
 # =============================================================================
 
 set -e
@@ -45,6 +44,11 @@ print_header() {
 install_first_boot_sanitization() {
     print_header
     print_status "Installing first boot sanitization service..."
+
+    if [[ "${REC_ENABLE_FIRST_BOOT_SANITIZE_SETUP:-}" != "1" ]]; then
+        print_warning "Install aborted: set REC_ENABLE_FIRST_BOOT_SANITIZE_SETUP=1 to enable first-boot sanitization on this host."
+        exit 0
+    fi
     
     # Check if we're in the project directory
     if [[ ! -f "scripts/MASTER_RESTART.sh" ]]; then

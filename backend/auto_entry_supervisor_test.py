@@ -34,6 +34,7 @@ if project_root not in sys.path:
 # Import the universal centralized port system
 from backend.core.port_config import get_port, get_monitor_port, register_monitor_ports
 from backend.util.paths import get_host, get_data_dir, get_service_url, get_trade_history_dir
+from backend.core.prod_target import get_legacy_script_db_host
 
 # Add these functions after the existing imports and before the get_monitor_identifier function
 
@@ -289,7 +290,7 @@ def save_auto_entry_state_to_db(state):
     try:
         import psycopg2
         conn = psycopg2.connect(
-            host='137.184.224.94',  # PRODUCTION SERVER
+            host=get_legacy_script_db_host(),
             database=os.getenv('POSTGRES_DB', 'rec_io_db'),
             user=os.getenv('POSTGRES_USER', 'rec_io_user'),
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
@@ -308,7 +309,7 @@ def load_auto_entry_state_from_db():
     try:
         import psycopg2
         conn = psycopg2.connect(
-            host='137.184.224.94',  # PRODUCTION SERVER
+            host=get_legacy_script_db_host(),
             database=os.getenv('POSTGRES_DB', 'rec_io_db'),
             user=os.getenv('POSTGRES_USER', 'rec_io_user'),
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
@@ -669,7 +670,7 @@ def start_cooldown_period_in_db():
     try:
         import psycopg2
         conn = psycopg2.connect(
-            host='137.184.224.94',  # PRODUCTION SERVER
+            host=get_legacy_script_db_host(),
             database=os.getenv('POSTGRES_DB', 'rec_io_db'),
             user=os.getenv('POSTGRES_USER', 'rec_io_user'),
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
@@ -692,7 +693,7 @@ def reset_cooldown_period_in_db():
     try:
         import psycopg2
         conn = psycopg2.connect(
-            host='137.184.224.94',  # PRODUCTION SERVER
+            host=get_legacy_script_db_host(),
             database=os.getenv('POSTGRES_DB', 'rec_io_db'),
             user=os.getenv('POSTGRES_USER', 'rec_io_user'),
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
@@ -716,7 +717,7 @@ def update_cooldown_timer_in_db(seconds):
     try:
         import psycopg2
         conn = psycopg2.connect(
-            host='137.184.224.94',  # PRODUCTION SERVER
+            host=get_legacy_script_db_host(),
             database=os.getenv('POSTGRES_DB', 'rec_io_db'),
             user=os.getenv('POSTGRES_USER', 'rec_io_user'),
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')

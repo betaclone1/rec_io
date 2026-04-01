@@ -12,6 +12,7 @@
 <script src="/js/strike-table.js"></script>
 <script src="/js/watchlist-table.js"></script>
 
+        <script src="/js/ny-timezone.js"></script>
         <script src="/js/globals.js"></script>
         
         <script src="/js/active-trade-supervisor_panel.js"></script>
@@ -3468,8 +3469,8 @@ function hideErrorTooltip() {
 
 function formatDateTime(isoString) {
   const date = new Date(isoString);
-  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  return [date.toLocaleDateString(), time];
+  const time = formatRecNyTimeString(date);
+  return [formatRecNyDateString(date), time];
 }
 
 // Utility function to get selected symbol (from monitor, read-only display)
@@ -3637,13 +3638,8 @@ async function fetchAndRenderRecentTrades() {
     recentFills.forEach(fill => {
       // Parse the created_time to extract date and time
       const createdTime = new Date(fill.created_time);
-      const dateCell = createdTime.toLocaleDateString();
-      const timeCell = createdTime.toLocaleTimeString([], { 
-        hour: '2-digit', 
-        minute: '2-digit', 
-        second: '2-digit',
-        hour12: false 
-      });
+      const dateCell = formatRecNyDateString(createdTime);
+      const timeCell = formatRecNyTimeString(createdTime, { hour12: false });
       // Contract: extract the part before '-T', then last two digits as hour
       let contract = '';
       if (fill.ticker) {
@@ -3849,13 +3845,8 @@ async function fetchAndRenderRecentTrades() {
     recentFills.forEach(fill => {
       // Parse the created_time to extract date and time
       const createdTime = new Date(fill.created_time);
-      const dateCell = createdTime.toLocaleDateString();
-      const timeCell = createdTime.toLocaleTimeString([], { 
-        hour: '2-digit', 
-        minute: '2-digit', 
-        second: '2-digit',
-        hour12: false 
-      });
+      const dateCell = formatRecNyDateString(createdTime);
+      const timeCell = formatRecNyTimeString(createdTime, { hour12: false });
       // Contract: display full ticker string from database
       const contract = fill.ticker || '';
       

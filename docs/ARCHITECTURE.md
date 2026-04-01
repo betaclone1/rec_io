@@ -15,6 +15,14 @@ High-level view of the REC.IO trading system: components, data flow, and where t
 | **read_api** | Single persistent process (supervisor: `read_api`). Hosts **all** read/aggregate HTTP endpoints (e.g. `/api/performance/realized`, `/api/account/balance`, `/api/subaccounts`, monitor stats, portfolio history). Request in → run query, compute, format → return JSON. Does not subscribe to Redis. See [REDIS_ARCHITECTURE.md](REDIS_ARCHITECTURE.md). |
 | **Kalshi** | External: markets, order execution, account/fills/orders. Backend uses Kalshi API and websockets; credentials in env or `backend/data/users/.../credentials/`. |
 
+## Timezone convention
+
+Trading logic uses **US Eastern** (`America/New_York`) as the canonical wall clock, independent of where the server runs. Use [`backend/core/time_eastern.py`](../backend/core/time_eastern.py) (`now_est`, `today_est`, `EST`) instead of bare `datetime.now()` for domain time. Auth token expiry and similar **absolute** instants use **UTC** in storage. PostgreSQL connections from [`get_database_config()` / `get_postgresql_connection()`](../backend/core/config/database.py) set `options=-c timezone=America/New_York` so `NOW()` into `timestamp without time zone` columns matches documented “Eastern naive” series. Optional: set `TZ=America/New_York` on supervisor programs and `CRON_TZ=America/New_York` for market-scheduled crons. Frontend trade surfaces load [`frontend/js/ny-timezone.js`](../frontend/js/ny-timezone.js) for NY-formatted display.
+
+## Production targeting (local ops)
+
+Runbooks and utilities must not hardcode a DigitalOcean IP. For SSH, set **`REC_PROD_SSH_HOST`**; for PostgreSQL when it differs from the SSH target, set **`REC_PROD_DB_HOST`**. Helpers live in [`backend/core/prod_target.py`](../backend/core/prod_target.py) (`get_production_db_host`, `get_legacy_script_db_host`).
+
 ## Data flow (simplified)
 
 - **Market data:** Kalshi → `market_watchdog_ws` (WebSocket + rollover REST) → `live_data` unified market tables; `strike_table_generator_ws` → strike tables. Price watchdogs → `live_data` price history. Legacy REST poller archived under `archive/2026-03-legacy-kalshi-market-watchdog/`.

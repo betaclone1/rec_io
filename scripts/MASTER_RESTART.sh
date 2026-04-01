@@ -53,9 +53,9 @@ print_header() {
     echo -e "${PURPLE}=============================================================================${NC}"
 }
 
-# Function to check if system has been sanitized (DISABLED FOR PRODUCTION)
+# Sanitization gate before restart: not enforced (snapshot→new prod; first-boot
+# wipe is opt-in in first_boot_sanitize.sh via REC_ENABLE_FIRST_BOOT_SANITIZE=1).
 # check_sanitization_status() {
-#     # Security check disabled for production systems
 #     return 0
 # }
 

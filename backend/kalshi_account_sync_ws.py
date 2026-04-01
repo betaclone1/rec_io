@@ -68,6 +68,7 @@ from backend.util.paths import get_project_root
 sys.path.insert(0, get_project_root())
 
 from backend.util.paths import get_kalshi_data_dir, get_accounts_data_dir, ensure_data_dirs, get_kalshi_credentials_dir
+from backend.core.time_eastern import utc_now_iso_z, now_est
 
 # Import get_port directly to avoid circular import issues
 try:
@@ -217,7 +218,7 @@ def use_websocket_fallback_for_positions():
         "fees_paid": ws_data.get("fees_paid"),
         "fees_paid_dollars": [0, 0],
         "resting_orders_count": 0,
-        "last_updated_ts": LATEST_WEBSOCKET_TIMESTAMP or datetime.now().isoformat() + "Z"
+        "last_updated_ts": LATEST_WEBSOCKET_TIMESTAMP or utc_now_iso_z()
     }
     
     # Filter out KXMAYORNYCPARTY positions (same as REST API logic)
@@ -256,7 +257,7 @@ def use_websocket_fallback_for_fills():
         "no_price": 99,
         "yes_price_dollars": [0, 0],
         "no_price_dollars": [0, 0],
-        "created_time": LATEST_WEBSOCKET_TIMESTAMP or datetime.now().isoformat() + "Z",
+        "created_time": LATEST_WEBSOCKET_TIMESTAMP or utc_now_iso_z(),
         "order_id": f"ws_fallback_{int(time.time())}",  # Generate a fallback order ID
         "user_id": ws_data.get("user_id")
     }
@@ -749,10 +750,10 @@ def _ensure_external_transfers_from_account_history(conn):
             try:
                 ts_est = created_at.astimezone(EST) if hasattr(created_at, "astimezone") else datetime.fromisoformat(str(created_at).replace("Z", "+00:00")).astimezone(EST)
             except Exception:
-                ts_est = datetime.now(EST)
+                ts_est = now_est()
             timestamp_str = ts_est.strftime("%Y-%m-%d %H:%M:%S")
         else:
-            timestamp_str = datetime.now(EST).strftime("%Y-%m-%d %H:%M:%S")
+            timestamp_str = now_est().strftime("%Y-%m-%d %H:%M:%S")
         status_str = (status or "").strip() or None
         if entry_type == "Deposit":
             raw = (deposit_type or "External").strip()
@@ -840,7 +841,7 @@ def sync_account_history(conn, kalshi_user_id):
 
 def get_current_event_ticker():
     global last_failed_ticker
-    now = datetime.now(EST)
+    now = now_est()
 
     # Construct current hour ticker
     test_time = now + timedelta(hours=1)
@@ -955,7 +956,7 @@ def subaccounts_update(cursor, portfolio_value):
         master_bankroll_balance = new_mtb_balance
         transfer_triggered = True
         # Record the transfer in users.transfers_0001
-        transfer_timestamp_est = datetime.now(EST).strftime("%Y-%m-%d %H:%M:%S")
+        transfer_timestamp_est = now_est().strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("""
             INSERT INTO users.transfers_0001 (timestamp, type, "from", "to", amount, initiated)
             VALUES (%s, %s, %s, %s, %s, %s)
@@ -1021,7 +1022,7 @@ def sync_balance():
             kalshi_user_id_for_history = None
             if pg_conn:
                 with pg_conn.cursor() as cursor:
-                    current_timestamp = datetime.now(EST).isoformat()
+                    current_timestamp = now_est().isoformat()
 
                     # Get previous bankroll for ratchet (and for hold when positions != 0)
                     cursor.execute("""
@@ -2163,7 +2164,7 @@ class KalshiWebSocketSync:
                 position_data = data.get("msg", {})
                 global LATEST_WEBSOCKET_POSITION_DATA, LATEST_WEBSOCKET_TIMESTAMP
                 LATEST_WEBSOCKET_POSITION_DATA = position_data
-                LATEST_WEBSOCKET_TIMESTAMP = datetime.now().isoformat() + "Z"
+                LATEST_WEBSOCKET_TIMESTAMP = utc_now_iso_z()
                 logger.debug(
                     "Market position update: ticker=%s position=%s",
                     position_data.get("market_ticker"),

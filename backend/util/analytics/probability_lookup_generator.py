@@ -45,6 +45,7 @@ import argparse
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from backend.util.paths import get_data_dir
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 
 # Configure logging
 logging.basicConfig(
@@ -83,12 +84,14 @@ class ProbabilityLookupGenerator:
     
     def __init__(self, symbol: str = "btc"):
         self.symbol = symbol.lower()
-        self.db_config = {
-            'host': os.getenv('POSTGRES_HOST', 'localhost'),
-            'database': os.getenv('POSTGRES_DB', 'rec_io_db'),
-            'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
-            'password': os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
-        }
+        self.db_config = merge_psycopg2_connect_kwargs(
+            {
+                "host": os.getenv("POSTGRES_HOST", "localhost"),
+                "database": os.getenv("POSTGRES_DB", "rec_io_db"),
+                "user": os.getenv("POSTGRES_USER", "rec_io_user"),
+                "password": os.getenv("POSTGRES_PASSWORD", "rec_io_password"),
+            }
+        )
         
         # Table names
         self.master_table_name = None  # Will be set by main() function

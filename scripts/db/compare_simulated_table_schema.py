@@ -2,7 +2,7 @@
 """
 Compare users.trades_simulated_0001 (and related) between local and prod DB.
 Usage: PYTHONPATH=$(pwd) venv/bin/python scripts/compare_simulated_table_schema.py
-Uses DB_* env vars (or REC_DB_* from .env). Prod host is 137.184.224.94.
+Uses DB_* env vars (or REC_DB_* from .env). Prod side requires REC_PROD_DB_HOST or REC_PROD_SSH_HOST.
 """
 import os
 import sys
@@ -21,6 +21,8 @@ for rec_k, db_k in _m:
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from backend.core.config.database import get_database_config
+
+from backend.core.prod_target import get_production_db_host
 
 def get_conn(host_override=None):
     import psycopg2
@@ -63,7 +65,13 @@ def get_sequence(conn, schema, table, column):
 
 def main():
     local_host = os.getenv('DB_HOST', 'localhost')
-    prod_host = '137.184.224.94'
+    prod_host = get_production_db_host()
+    if not prod_host:
+        print(
+            "Set REC_PROD_DB_HOST or REC_PROD_SSH_HOST for the production host, then re-run.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     schema, table = 'users', 'trades_simulated_0001'
 
     print("=== LOCAL (host=%s) ===" % local_host)

@@ -10,14 +10,25 @@ import numpy as np
 from datetime import datetime
 from typing import Dict, List, Tuple
 import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
+
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
+
 
 def get_db_connection():
     """Get PostgreSQL connection"""
     return psycopg2.connect(
-        host='localhost',
-        database='rec_io_db',
-        user='rec_io_user',
-        password='rec_io_password'
+        **merge_psycopg2_connect_kwargs(
+            {
+                "host": "localhost",
+                "database": "rec_io_db",
+                "user": "rec_io_user",
+                "password": "rec_io_password",
+            }
+        )
     )
 
 def load_btc_data(limit: int = None):

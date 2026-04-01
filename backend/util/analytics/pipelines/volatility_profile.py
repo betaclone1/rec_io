@@ -28,10 +28,16 @@ import sys
 import argparse
 from datetime import datetime
 
+_project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", ".."))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 try:
     import psycopg2
 except ImportError:
     psycopg2 = None
+
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 
 
 def get_db_connection():
@@ -41,7 +47,8 @@ def get_db_connection():
     user = os.getenv('DB_USER', 'rec_io_user')
     pwd = os.getenv('DB_PASSWORD', 'rec_io_password')
     port = int(os.getenv('DB_PORT', '5432'))
-    return psycopg2.connect(host=host, database=name, user=user, password=pwd, port=port)
+    base = {"host": host, "database": name, "user": user, "password": pwd, "port": port}
+    return psycopg2.connect(**merge_psycopg2_connect_kwargs(base))
 
 
 def ensure_analytics_schema(conn):

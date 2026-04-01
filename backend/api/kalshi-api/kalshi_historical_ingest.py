@@ -1,5 +1,6 @@
 import sys
 import sqlite3
+import psycopg2
 import requests
 import json
 import time
@@ -17,8 +18,21 @@ import backend.account_mode as account_mode
 from backend.util.paths import get_project_root, get_accounts_data_dir
 sys.path.insert(0, get_project_root())
 from backend.core.config.settings import config
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 
 # Usage: python kalshi_historical_ingest.py [prod|demo]
+
+def _pg_connect():
+    return psycopg2.connect(
+        **merge_psycopg2_connect_kwargs(
+            {
+                "host": "localhost",
+                "database": "rec_io_db",
+                "user": "rec_io_user",
+                "password": "rec_io_password",
+            }
+        )
+    )
 
 # mode = sys.argv[1] if len(sys.argv) > 1 else "prod"
 mode = account_mode.get_account_mode()
@@ -258,13 +272,7 @@ def write_settlements_to_db():
         settlements = data.get("settlements", [])
 
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = _pg_connect()
         c = conn.cursor()
 
         # Create settlements table if it doesn't exist (fixed-point counts and *_total_cost_dollars)
@@ -338,13 +346,7 @@ def write_fills_to_db():
         fills = data.get("fills", [])
 
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = _pg_connect()
         c = conn.cursor()
 
         # Create fills table if it doesn't exist (columns align with Kalshi API _dollars)
@@ -447,13 +449,7 @@ def write_positions_to_db():
     print(f"💾 All positions written to {json_output_path}")
 
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = _pg_connect()
         c = conn.cursor()
 
         # Create positions table if it doesn't exist (fixed-point / dollars only)
@@ -520,13 +516,7 @@ def write_orders_to_db():
     orders = data.get("orders", [])
 
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
-        )
+        conn = _pg_connect()
         c = conn.cursor()
 
         for order in orders:

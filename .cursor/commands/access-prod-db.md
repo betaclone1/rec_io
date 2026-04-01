@@ -4,19 +4,21 @@ description: "SSH into production and confirm DB connectivity (list schemas)."
 
 # Access prod DB
 
+**Prerequisite:** Export `REC_PROD_SSH_HOST` to the production server IP or DNS name (SSH).
+
 Use SSH to connect to the **production server** and run a minimal `psql` check. The command should:
 
 1. Confirm it can connect to the PostgreSQL database (`SELECT 1`).
 2. Print the visible schemas via `information_schema.schemata`.
 
-**Target:** `ssh root@137.184.224.94`
+**Target:** `ssh root@$REC_PROD_SSH_HOST`
 
 ## Execute on prod
 
 Run the following on the remote host via SSH (single SSH invocation):
 
 ```bash
-ssh root@137.184.224.94 'set -euo pipefail;
+ssh root@$REC_PROD_SSH_HOST 'set -euo pipefail;
 export PGPASSWORD="${REC_DB_PASS:-${DB_PASSWORD:-rec_io_password}}";
 export PGSSLMODE="${REC_DB_SSLMODE:-${DB_SSLMODE:-disable}}";
 psql \

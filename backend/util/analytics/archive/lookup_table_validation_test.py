@@ -4,7 +4,7 @@ Lookup Table Validation Test
 
 Compares probability results between:
 - NEW methodology: probability_lookup_btc_master_20250905 (local DB)
-- OLD methodology: probability_lookup_btc (remote server 137.184.224.94)
+- OLD methodology: probability_lookup_btc (remote DB; set REC_PROD_DB_HOST or REC_PROD_SSH_HOST)
 
 This simulates what would happen if we switched from the current production
 system to the new methodology in our strike table generation system.
@@ -22,6 +22,8 @@ import os
 # Add the project root to the path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
+from backend.core.prod_target import get_legacy_script_db_host
+
 class LookupTableValidator:
     def __init__(self, symbol: str = "btc"):
         self.symbol = symbol.lower()
@@ -36,7 +38,7 @@ class LookupTableValidator:
         
         # Remote server configuration (OLD methodology)
         self.remote_db_config = {
-            'host': '137.184.224.94',
+            'host': get_legacy_script_db_host(),
             'database': 'rec_io_db',
             'user': 'rec_io_user',
             'password': 'rec_io_password'

@@ -316,8 +316,9 @@ def get_monitor_port(service_name: str, monitor_identifier: str) -> int:
         # Backup corrupted manifest if it exists
         if os.path.exists(PORT_CONFIG_FILE):
             import shutil
-            from datetime import datetime
-            backup_path = f"{PORT_CONFIG_FILE}.corrupted_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            from backend.core.time_eastern import now_est
+
+            backup_path = f"{PORT_CONFIG_FILE}.corrupted_{now_est().strftime('%Y%m%d_%H%M%S')}"
             try:
                 shutil.copy2(PORT_CONFIG_FILE, backup_path)
                 print(f"[PORT_CONFIG] Backed up corrupted manifest to: {backup_path}")

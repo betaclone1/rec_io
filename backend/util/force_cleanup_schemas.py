@@ -10,18 +10,36 @@ import logging
 import sys
 import os
 
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
+from backend.core.prod_target import get_production_db_host
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 def force_cleanup_schemas():
     """Force cleanup of orphaned temporary schemas using superuser privileges."""
     try:
+        host = get_production_db_host()
+        if not host:
+            logger.error(
+                "Set REC_PROD_DB_HOST or REC_PROD_SSH_HOST to the PostgreSQL host (non-loopback)."
+            )
+            return False
         # Connect as postgres superuser
         conn = psycopg2.connect(
-            host='137.184.224.94',
-            user='postgres',
-            password='rec_io_password',
-            dbname='rec_io_db'
+            **merge_psycopg2_connect_kwargs(
+                {
+                    "host": host,
+                    "user": "postgres",
+                    "password": "rec_io_password",
+                    "dbname": "rec_io_db",
+                }
+            )
         )
         cursor = conn.cursor()
         

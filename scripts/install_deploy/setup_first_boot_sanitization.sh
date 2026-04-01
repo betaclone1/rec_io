@@ -3,8 +3,7 @@
 # =============================================================================
 # SETUP FIRST BOOT SANITIZATION SERVICE
 # =============================================================================
-# This script sets up the first-boot sanitization service that automatically
-# sanitizes new droplets created from snapshots.
+# Sets up the first-boot systemd unit. OFF BY DEFAULT; use REC_ENABLE_FIRST_BOOT_SANITIZE_SETUP=1 to install.
 # =============================================================================
 
 set -e
@@ -95,6 +94,11 @@ main() {
     print_header
     print_status "Setting up first-boot sanitization for new deployments..."
     echo ""
+
+    if [[ "${REC_ENABLE_FIRST_BOOT_SANITIZE_SETUP:-}" != "1" ]]; then
+        print_warning "First-boot sanitization setup is disabled by default (set REC_ENABLE_FIRST_BOOT_SANITIZE_SETUP=1 to install the unit)."
+        exit 0
+    fi
     
     # Only set this up if this is NOT a production system
     if [ -f "/opt/rec_io_server/.production_system" ]; then

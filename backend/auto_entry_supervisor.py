@@ -98,6 +98,7 @@ from backend.core.port_config import get_port, get_monitor_port, register_monito
 from backend.core.config.database import get_postgresql_connection as get_db_connection
 from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
 from backend.util.paths import get_host, get_data_dir, get_service_url, get_trade_history_dir, get_logs_dir
+from backend.core.time_eastern import now_est as est_now, today_est
 
 
 def _aes_preferences_notify(event_type: str, data: dict) -> None:
@@ -368,7 +369,7 @@ def _hour_label_to_hour24(hour_value: int, period: str) -> int:
 
 def _next_15m_boundary_est() -> tuple[int, int]:
     """Return (hour_24, minute) for the next 15m boundary (expiry of current quarter). Minute in (0, 15, 30, 45)."""
-    now = datetime.now(ZoneInfo("America/New_York"))
+    now = est_now()
     m, h = now.minute, now.hour
     next_m = ((m // 15) + 1) * 15
     if next_m >= 60:
@@ -426,7 +427,7 @@ def _kalshi_clock_from_event_suffix(dt_part: str) -> Optional[Tuple[int, Optiona
 def _resolve_event_time(symbol: str, market_title: Optional[str], event_ticker: Optional[str]) -> tuple[Optional[str], Optional[int]]:
     """Return (contract_label, hour_24) if we can parse a time from the market metadata.
     Contract label is simplified for DB: hourly e.g. 'BTC 2pm', 15m e.g. 'BTC 12:45pm'."""
-    now_est = datetime.now(ZoneInfo("America/New_York"))
+    now_est = est_now()
     time_hour_24 = None
     contract_label = None
 
@@ -511,7 +512,7 @@ def resolve_auto_entry_contract_name(
 def _compute_weekly_cycle(hour_24: Optional[int], reference_dt: Optional[datetime] = None) -> Optional[int]:
     if hour_24 is None:
         return None
-    ref = reference_dt or datetime.now(ZoneInfo("America/New_York"))
+    ref = reference_dt or est_now()
     ref_est = ref.astimezone(ZoneInfo("America/New_York"))
     hour_idx = 24 if hour_24 == 0 else hour_24
     day_index = (ref_est.weekday() + 1) % 7
@@ -925,7 +926,7 @@ def load_auto_entry_state_from_db():
                 remaining_minutes = None
                 
                 if cooldown_start_time:
-                    now = datetime.now(ZoneInfo("America/New_York"))
+                    now = est_now()
                     time_elapsed = (now - cooldown_start_time).total_seconds()
                     total_cooldown_seconds = cooldown_minutes * 60
                     remaining_seconds = total_cooldown_seconds - time_elapsed  # Can be negative
@@ -1175,7 +1176,7 @@ def check_spike_alert_conditions():
         recovery_conditions_met = (current_momentum < cooldown_threshold and 
                                   current_momentum > -cooldown_threshold)
         
-        now = datetime.now(ZoneInfo("America/New_York"))
+        now = est_now()
         
         # CRITICAL: Use the spike_alert_active from loaded state (which is based on cooldown timer)
         # This ensures Reverse HTC only activates when cooldown timer is actually positive
@@ -1947,12 +1948,12 @@ def get_current_ttc():
         if result and result[0] is not None:
             return int(result[0])
         # Fallback when strike table has no row (e.g. generator not yet run)
-        now = datetime.now(ZoneInfo("America/New_York"))
+        now = est_now()
         next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         return max(1, int((next_hour - now).total_seconds()))
     except Exception as e:
         log(f"[AUTO ENTRY] get_current_ttc fallback after error: {e}")
-        now = datetime.now(ZoneInfo("America/New_York"))
+        now = est_now()
         next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         return max(1, int((next_hour - now).total_seconds()))
 
@@ -2350,7 +2351,7 @@ def generate_watchlist_from_strike_table_DELETED():
             "market_title": market_data.get("event_title"),
             "strike_tier": market_data.get("strike_tier"),
             "market_status": market_data.get("market_status"),
-            "last_updated": datetime.now().isoformat(),
+            "last_updated": est_now().isoformat(),
             "strikes": filtered_strikes
         }
         
@@ -2677,10 +2678,10 @@ def trigger_auto_entry_trade(strike_data):
         
         # Create the exact same payload that trade_initiator would create
         # Generate unique ticket ID (same format as trade_initiator)
-        ticket_id = f"TICKET-{uuid.uuid4().hex[:9]}-{int(datetime.now().timestamp() * 1000)}"
+        ticket_id = f"TICKET-{uuid.uuid4().hex[:9]}-{int(est_now().timestamp() * 1000)}"
         
         # Get current time in Eastern Time (same as trade_initiator)
-        now = datetime.now(ZoneInfo("America/New_York"))
+        now = est_now()
         eastern_date = now.strftime('%Y-%m-%d')
         eastern_time = now.strftime('%H:%M:%S')
         
@@ -3054,9 +3055,9 @@ def trigger_simulated_trade(strike_data):
         side = strike_data.get("side")
         conv_side = "Y" if side == "yes" else "N" if side == "no" else side
         payload = {
-            "ticket_id": f"SIM-{uuid.uuid4().hex[:8]}-{int(datetime.now().timestamp() * 1000)}",
-            "status": "pending", "date": datetime.now(ZoneInfo("America/New_York")).strftime('%Y-%m-%d'),
-            "time": datetime.now(ZoneInfo("America/New_York")).strftime('%H:%M:%S'),
+            "ticket_id": f"SIM-{uuid.uuid4().hex[:8]}-{int(est_now().timestamp() * 1000)}",
+            "status": "pending", "date": today_est().strftime('%Y-%m-%d'),
+            "time": est_now().strftime('%H:%M:%S'),
             "symbol": current_symbol, "exchange": "kalshi", "trade_strategy": get_trade_strategy(),
             "contract": contract_name, "strike": strike_data.get("strike"), "side": conv_side,
             "ticker": strike_data.get("ticker"), "prob": strike_data.get("probability"),
@@ -3130,7 +3131,7 @@ def check_simulated_15m_entry_hourly_htc():
         current_symbol = get_current_monitor_symbol()
         hour_24, minute = _next_15m_boundary_est()
         contract_name = _format_15m_contract_label(current_symbol, hour_24, minute)
-        date_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        date_str = today_est().strftime("%Y-%m-%d")
         processed = set()
         for strike in data["strikes"]:
             try:
@@ -3280,7 +3281,7 @@ def _check_auto_entry_conditions_impl():
         # MARKET HOURS CHECK: Kalshi markets closed 00:00-08:00 EST
         # Skip trade entry during closed hours, but spike monitoring continues above
         # COMMENTED OUT: Time restriction disabled - auto_entry_supervisor can now find entries during these hours
-        # now_est = datetime.now(ZoneInfo("America/New_York"))
+        # now_est = est_now()
         # current_hour = now_est.hour
         # if 0 <= current_hour < 8:  # Between midnight and 8am EST
         #     return  # Skip trade entry checks during closed hours (spike monitoring already done)
@@ -3332,7 +3333,7 @@ def check_auto_entry_conditions_hourly_htc():
                 "service_healthy": service_healthy,
                 "spike_alert_active": spike_alert_active,
                 "current_ttc": 0,
-                "last_updated": datetime.now().isoformat()
+                "last_updated": est_now().isoformat()
             })
             # Broadcast indicator state change
             broadcast_auto_entry_indicator_change()
@@ -3386,7 +3387,7 @@ def check_auto_entry_conditions_hourly_htc():
             "current_ttc": current_ttc,
             "min_time": min_time,
             "max_time": max_time,
-            "last_updated": datetime.now().isoformat()
+            "last_updated": est_now().isoformat()
         })
         
         # Broadcast indicator state change
@@ -3612,7 +3613,7 @@ def check_auto_entry_conditions_reverse_htc():
                 "service_healthy": service_healthy,
                 "spike_alert_active": spike_alert_active,
                 "current_ttc": 0,
-                "last_updated": datetime.now().isoformat()
+                "last_updated": est_now().isoformat()
             })
             # Broadcast indicator state change
             broadcast_auto_entry_indicator_change()
@@ -3658,7 +3659,7 @@ def check_auto_entry_conditions_reverse_htc():
             "current_ttc": current_ttc,
             "min_time": min_time,
             "max_time": max_time,
-            "last_updated": datetime.now().isoformat()
+            "last_updated": est_now().isoformat()
         })
         
         # Broadcast indicator state change
@@ -3939,7 +3940,7 @@ def check_auto_entry_conditions_momentum_breakout():
                 "service_healthy": service_healthy,
                 "spike_alert_active": spike_alert_active,
                 "current_ttc": 0,
-                "last_updated": datetime.now().isoformat()
+                "last_updated": est_now().isoformat()
             })
             broadcast_auto_entry_indicator_change()
             return
@@ -3978,7 +3979,7 @@ def check_auto_entry_conditions_momentum_breakout():
             "current_ttc": current_ttc,
             "min_time": min_time,
             "max_time": max_time,
-            "last_updated": datetime.now().isoformat()
+            "last_updated": est_now().isoformat()
         })
         
         # Broadcast indicator state change
@@ -4222,7 +4223,7 @@ def check_auto_entry_conditions_momentum_contain():
                 "service_healthy": service_healthy,
                 "spike_alert_active": spike_alert_active,
                 "current_ttc": 0,
-                "last_updated": datetime.now().isoformat()
+                "last_updated": est_now().isoformat()
             })
             broadcast_auto_entry_indicator_change()
             return
@@ -4261,7 +4262,7 @@ def check_auto_entry_conditions_momentum_contain():
             "current_ttc": current_ttc,
             "min_time": min_time,
             "max_time": max_time,
-            "last_updated": datetime.now().isoformat()
+            "last_updated": est_now().isoformat()
         })
         
         # Broadcast indicator state change
@@ -4622,7 +4623,7 @@ def check_auto_entry_conditions_momentum_scalp():
                 "service_healthy": service_healthy,
                 "spike_alert_active": False,
                 "current_ttc": 0,
-                "last_updated": datetime.now().isoformat()
+                "last_updated": est_now().isoformat()
             })
             broadcast_auto_entry_indicator_change()
             return
@@ -4670,7 +4671,7 @@ def check_auto_entry_conditions_momentum_scalp():
                 "current_ttc": current_ttc,
                 "min_time": min_time,
                 "max_time": max_time,
-                "last_updated": datetime.now().isoformat()
+                "last_updated": est_now().isoformat()
             })
             broadcast_auto_entry_indicator_change()
             return
@@ -4699,7 +4700,7 @@ def check_auto_entry_conditions_momentum_scalp():
             "current_ttc": current_ttc,
             "min_time": min_time,
             "max_time": max_time,
-            "last_updated": datetime.now().isoformat()
+            "last_updated": est_now().isoformat()
         })
         
         # Broadcast indicator state change
@@ -4869,7 +4870,7 @@ def check_auto_entry_conditions_momentum_reversal():
                 "service_healthy": service_healthy,
                 "spike_alert_active": False,
                 "current_ttc": 0,
-                "last_updated": datetime.now().isoformat()
+                "last_updated": est_now().isoformat()
             })
             broadcast_auto_entry_indicator_change()
             return
@@ -4917,7 +4918,7 @@ def check_auto_entry_conditions_momentum_reversal():
                 "current_ttc": current_ttc,
                 "min_time": min_time,
                 "max_time": max_time,
-                "last_updated": datetime.now().isoformat()
+                "last_updated": est_now().isoformat()
             })
             broadcast_auto_entry_indicator_change()
             return
@@ -4946,7 +4947,7 @@ def check_auto_entry_conditions_momentum_reversal():
             "current_ttc": current_ttc,
             "min_time": min_time,
             "max_time": max_time,
-            "last_updated": datetime.now().isoformat()
+            "last_updated": est_now().isoformat()
         })
         
         # Broadcast indicator state change
@@ -5181,7 +5182,7 @@ def health_check():
             "user_number": ctx_user(),
             "monitor_id": ctx_mid(),
             "port": AUTO_ENTRY_SUPERVISOR_PORT,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": est_now().isoformat(),
             "port_system": "centralized",
             "monitoring_thread_alive": service_healthy,
             "auto_entry_enabled": enabled,
@@ -5195,7 +5196,7 @@ def health_check():
             "service": f"auto_entry_supervisor_{MONITOR_IDENTIFIER}",
             "monitor_identifier": MONITOR_IDENTIFIER,
             "error": str(e),
-            "timestamp": datetime.now().isoformat()
+            "timestamp": est_now().isoformat()
         }
 
 # LEGACY REMOVED: /api/auto_entry_status endpoint - now using auto_trade_status system
@@ -5246,7 +5247,7 @@ def get_auto_entry_scanning_status():
                 },
                 "cooldown_entries_count": len(last_trade_times),
                 "monitoring_thread_alive": service_healthy,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": est_now().isoformat()
             }
 
         if AES_UNIFIED_POOL:

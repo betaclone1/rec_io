@@ -19,6 +19,7 @@ import multiprocessing as mp
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from backend.util.probability_calculator import ProbabilityCalculator
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 
 class ChunkedMasterTableGenerator:
     def __init__(self, symbol: str = "btc"):
@@ -26,12 +27,14 @@ class ChunkedMasterTableGenerator:
         self.fingerprint_table_prefix = f"{symbol}_fingerprint_directional_momentum"
         
         # Database connection
-        self.db_config = {
-            'host': 'localhost',
-            'database': 'rec_io_db',
-            'user': 'rec_io_user',
-            'password': ''
-        }
+        self.db_config = merge_psycopg2_connect_kwargs(
+            {
+                "host": "localhost",
+                "database": "rec_io_db",
+                "user": "rec_io_user",
+                "password": "",
+            }
+        )
         
         # Generation parameters (practical range)
         self.ttc_range = (0, 900)  # 0-15 minutes

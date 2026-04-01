@@ -35,6 +35,7 @@ from backend.core.exchange_ids import DEFAULT_EXCHANGE
 from backend.core.config.database import get_postgresql_connection
 from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
 from backend.util.paths import get_host
+from backend.core.time_eastern import now_est as wall_now, EST
 
 # Cached per symbol; same master lookup tables as strike_table_generator (not fingerprint calc).
 _lookup_probability_calculator_cache: Dict[str, Any] = {}
@@ -128,7 +129,7 @@ def should_suppress_auto_close_past_kalshi_settlement(
     if end is None:
         return False
     grace = timedelta(seconds=10)
-    now_est = datetime.now(ZoneInfo("America/New_York"))
+    now_est = wall_now()
     if now_est <= end + grace:
         return False
     tid = int(trade_id) if trade_id is not None else 0
@@ -708,7 +709,7 @@ def health_check():
         "user_number": ctx_user(),
         "monitor_id": ctx_mid(),
         "port": ACTIVE_TRADE_SUPERVISOR_PORT,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": wall_now().isoformat(),
         "port_system": "centralized"
     }
 
@@ -729,7 +730,7 @@ def get_active_trades():
             active_trades = get_all_active_trades()
             return jsonify({
                 "status": "success",
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": wall_now().isoformat(),
                 "active_trades": active_trades,
                 "count": len(active_trades),
                 "cached": False,
@@ -742,7 +743,7 @@ def get_active_trades():
             current_time - active_trades_cache_time < CACHE_DURATION):
             return jsonify({
                 "status": "success",
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": wall_now().isoformat(),
                 "active_trades": active_trades_cache,
                 "count": len(active_trades_cache),
                 "cached": True,
@@ -758,7 +759,7 @@ def get_active_trades():
         
         return jsonify({
             "status": "success",
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": wall_now().isoformat(),
             "active_trades": active_trades,
             "count": len(active_trades),
             "cached": False,
@@ -788,7 +789,7 @@ def get_active_trades_for_monitor(monitor_identifier):
 
         return jsonify({
             "status": "success",
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": wall_now().isoformat(),
             "active_trades": active_trades,
             "count": len(active_trades),
             "monitor_identifier": monitor_identifier,
@@ -899,7 +900,7 @@ def broadcast_active_trades_change():
         body = {
             "active_trades": active_trades,
             "count": len(active_trades),
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": wall_now().isoformat(),
         }
         try:
             from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
@@ -1941,7 +1942,7 @@ def flush_stale_active_trades_past_contract_settlement() -> None:
 
     Logs one INFO line per removed row with identifiers and users.trades status for postmortems.
     """
-    est_now = datetime.now(ZoneInfo("America/New_York"))
+    est_now = wall_now()
     min_past_settlement = STALE_ACTIVE_TRADE_FLUSH_AFTER_SETTLEMENT
     tbl = get_monitor_active_trades_table()
 
@@ -2208,7 +2209,7 @@ def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Option
         # Return in the same format as the JSON file
         return {
             "markets": markets,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": wall_now().isoformat()
         }
         
     except Exception as e:
@@ -2730,12 +2731,12 @@ def update_active_trade_monitoring_data():
                     else:
                         # Handle legacy text format
                         entry_datetime = datetime.strptime(f"{str(date_str)} {str(time_str)}", "%Y-%m-%d %H:%M:%S")
-                    entry_datetime = entry_datetime.replace(tzinfo=ZoneInfo("America/New_York"))
+                    entry_datetime = entry_datetime.replace(tzinfo=EST)
                 except Exception as e:
                     log(f"Error calculating entry_datetime for trade {trade_id}: {e}, date_str: {date_str}, time_str: {time_str}")
                     # Use current time as fallback
-                    entry_datetime = datetime.now(ZoneInfo("America/New_York"))
-                now = datetime.now(ZoneInfo("America/New_York"))
+                    entry_datetime = wall_now()
+                now = wall_now()
                 time_since_entry = int((now - entry_datetime).total_seconds())
                 
                 # Get unified TTC from master strike table
@@ -4050,7 +4051,7 @@ def trigger_auto_stop_close(
             "position": trade["position"],
             "probability": probability_float,
             "pnl": trade.get("current_pnl"),
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": wall_now().isoformat(),
             "close_method": close_method_val,
             "auto_stop_trigger": trigger_reason,
             "auto_stop_trigger_detail": trigger_detail,
@@ -4402,14 +4403,14 @@ def get_unified_ttc_seconds(symbol: str = None):
         else:
             log_debug(f"No TTC data from master strike table, using fallback calculation")
             # Fallback to simple calculation
-            now = datetime.now(ZoneInfo("America/New_York"))
+            now = wall_now()
             next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
             return max(1, int((next_hour - now).total_seconds()))
             
     except Exception as e:
         log(f"[AUTO STOP] Error reading TTC from master strike table: {e}")
         # Fallback to simple calculation
-        now = datetime.now(ZoneInfo("America/New_York"))
+        now = wall_now()
         next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         return max(1, int((next_hour - now).total_seconds()))
 

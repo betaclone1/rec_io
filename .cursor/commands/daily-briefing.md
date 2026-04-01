@@ -4,7 +4,7 @@ description: "Morning briefing: run steps 1–8 in order, then output the sectio
 
 # Daily briefing
 
-Execute **steps 1–8 in order**. Then output the **briefing** using the **exact section template** at the end. Do not skip steps. If a step fails, note the failure in the relevant section and continue.
+Execute **steps 1–8 in order**. **Prerequisite:** for any step that uses SSH to production, `export REC_PROD_SSH_HOST` to the server IP or DNS name. Then output the **briefing** using the **exact section template** at the end. Do not skip steps. If a step fails, note the failure in the relevant section and continue.
 
 ---
 
@@ -36,7 +36,7 @@ From **repo root** run these in sequence:
 2. `curl -sS -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/health` — expect 200.
 3. `curl -sS -o /dev/null -w "%{http_code}" http://127.0.0.1:8001/health` — expect 200.
 4. `tail -n 50 logs/trade_executor.out.log logs/main_app.out.log 2>/dev/null | grep -iE 'ERROR|FATAL|CRITICAL'` — note any matches or "none".
-5. (For this week’s ETH monitoring): `ssh -o BatchMode=yes root@137.184.224.94 "cd /opt/rec_io_server && tail -n 80 logs/symbol_price_watchdog_eth.out.log | grep -iE 'error|timeout' || echo 'no recent ETH price watchdog errors'"` — note whether ETH price watchdog is still seeing websocket/transport errors.
+5. (For this week’s ETH monitoring): `ssh -o BatchMode=yes root@$REC_PROD_SSH_HOST "cd /opt/rec_io_server && tail -n 80 logs/symbol_price_watchdog_eth.out.log | grep -iE 'error|timeout' || echo 'no recent ETH price watchdog errors'"` — note whether ETH price watchdog is still seeing websocket/transport errors.
 
 Summarize in one line: e.g. "All RUNNING, health 200, no errors in tail" or list what failed.
 
@@ -47,7 +47,7 @@ Summarize in one line: e.g. "All RUNNING, health 200, no errors in tail" or list
 Run:
 
 ```bash
-ssh -o BatchMode=yes -o ConnectTimeout=10 root@137.184.224.94 "cd /opt/rec_io_server && supervisorctl -c backend/supervisord.conf status | head -5 && curl -sS -o /dev/null -w 'main_app:%{http_code}' http://127.0.0.1:3000/health && echo '' && curl -sS -o /dev/null -w 'trade_executor:%{http_code}' http://127.0.0.1:8001/health && echo '' && (tail -n 30 logs/trade_executor.out.log logs/main_app.out.log 2>/dev/null | grep -iE 'ERROR|FATAL|CRITICAL' || echo 'no errors')"
+ssh -o BatchMode=yes -o ConnectTimeout=10 root@$REC_PROD_SSH_HOST "cd /opt/rec_io_server && supervisorctl -c backend/supervisord.conf status | head -5 && curl -sS -o /dev/null -w 'main_app:%{http_code}' http://127.0.0.1:3000/health && echo '' && curl -sS -o /dev/null -w 'trade_executor:%{http_code}' http://127.0.0.1:8001/health && echo '' && (tail -n 30 logs/trade_executor.out.log logs/main_app.out.log 2>/dev/null | grep -iE 'ERROR|FATAL|CRITICAL' || echo 'no errors')"
 ```
 
 Summarize: "Prod: RUNNING, 200/200, no errors" or list what failed. If SSH fails, say "Prod: SSH failed — [reason]."
@@ -58,7 +58,7 @@ Then run a **market-watchdog outage check on production since the observability 
 2. Use that exact timestamp as `START_TS` in this production command:
 
 ```bash
-ssh -o BatchMode=yes -o ConnectTimeout=10 root@137.184.224.94 "cd /opt/rec_io_server && START_TS='REPLACE_WITH_MARKER' python3 - <<'PY'
+ssh -o BatchMode=yes -o ConnectTimeout=10 root@$REC_PROD_SSH_HOST "cd /opt/rec_io_server && START_TS='REPLACE_WITH_MARKER' python3 - <<'PY'
 from pathlib import Path
 import os
 

@@ -11,20 +11,26 @@ or hardcoded credentials.
 
 import os
 
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
+
 
 def get_database_config():
     """Get database configuration from environment variables. Prefer DB_*; fall back to REC_DB_*.
-    In production (REC_ENVIRONMENT=production), DB_PASSWORD or REC_DB_PASS is required; no default."""
+    In production (REC_ENVIRONMENT=production), DB_PASSWORD or REC_DB_PASS is required; no default.
+
+    Includes ``options`` so PostgreSQL session ``TimeZone`` is America/New_York (naive TIMESTAMP
+    columns and naive datetime adapters match project conventions)."""
     pw = os.getenv('DB_PASSWORD') or os.getenv('REC_DB_PASS')
     if os.getenv('REC_ENVIRONMENT') == 'production' and not pw:
         raise ValueError("DB_PASSWORD or REC_DB_PASS required in production")
-    return {
+    base = {
         'host': os.getenv('DB_HOST') or os.getenv('REC_DB_HOST') or 'localhost',
         'database': os.getenv('DB_NAME') or os.getenv('REC_DB_NAME') or 'rec_io_db',
         'user': os.getenv('DB_USER') or os.getenv('REC_DB_USER') or 'rec_io_user',
         'password': pw or 'rec_io_password',
         'port': int(os.getenv('DB_PORT') or os.getenv('REC_DB_PORT') or '5432'),
     }
+    return merge_psycopg2_connect_kwargs(base)
 
 def get_postgresql_connection():
     """Get a connection to the PostgreSQL database using environment configuration."""

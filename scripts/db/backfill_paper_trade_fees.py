@@ -5,7 +5,7 @@ Uses taker formula: open_fee = round_up(0.07 * position * buy_price * (1 - buy_p
 for closed-before-expiration adds close_fee = round_up(0.07 * position * (1 - sell_price) * sell_price).
 Updates ONLY the fees column; does not touch any row where paper_trade is not TRUE.
 
-Run against production with: DB_HOST=137.184.224.94 PYTHONPATH=$(pwd) python3 scripts/db/backfill_paper_trade_fees.py
+Run against production with: DB_HOST=$REC_PROD_SSH_HOST PYTHONPATH=$(pwd) python3 scripts/db/backfill_paper_trade_fees.py
 Dry run (no writes): add --dry-run
 """
 

@@ -18,6 +18,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.util.paths import get_project_root, get_data_dir
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 
 
 def safe_write_json(data: dict, filepath: str, timeout: float = 0.1):
@@ -83,11 +84,15 @@ class ProbabilityCalculatorPostgreSQL:
         """Establish connection to PostgreSQL database."""
         try:
             self.conn = psycopg2.connect(
-                host=os.getenv('DB_HOST', 'localhost'),
-                database=os.getenv('DB_NAME', 'rec_io_db'),
-                user=os.getenv('DB_USER', 'rec_io_user'),
-                password=os.getenv('DB_PASSWORD', 'rec_io_password'),
-                port=os.getenv('DB_PORT', '5432')
+                **merge_psycopg2_connect_kwargs(
+                    {
+                        "host": os.getenv("DB_HOST", "localhost"),
+                        "database": os.getenv("DB_NAME", "rec_io_db"),
+                        "user": os.getenv("DB_USER", "rec_io_user"),
+                        "password": os.getenv("DB_PASSWORD", "rec_io_password"),
+                        "port": int(os.getenv("DB_PORT", "5432")),
+                    }
+                )
             )
         except Exception as e:
             raise RuntimeError(f"Failed to connect to PostgreSQL: {e}")

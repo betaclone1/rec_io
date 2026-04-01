@@ -3,7 +3,7 @@
 **Goal:** Bring the **production** DB schema into a clean, intentional state: no surprises for core runtime tables, clear ownership of analytics/experimental tables, and drift documented.
 
 **Scope:**
-- **In:** Prod DB on 137.184.224.94, for **core/runtime tables only**:
+- **In:** Production database (not necessarily equal to `REC_PROD_SSH_HOST`; use your deployed `DB_HOST`), for **core/runtime tables only**:
   - `users.account_history_0001`, `users.monitor_list_0001`, `users.strategy_list_0001`, `users.trades_0001`, `users.trades_simulated_0001`
   - `live_data.strike_table_*` (15m/hourly BTC/ETH/SPX/NDX)
   - `system.health_status`, `system.installation_access_log`

@@ -4,6 +4,8 @@ description: "Production (from local): run open MASTER_CHANGELOG checklists on p
 
 # Apply update from local (production via SSH)
 
+**Prerequisite:** Export `REC_PROD_SSH_HOST` to the production server IP or DNS name (SSH).
+
 **This is the primary way to apply updates to production.** Run it in your **local workspace**. The agent SSHs to prod and executes every production checklist step there (pull, migrations, restart, verify). No agent runs on the production server.
 
 **Execute the full workflow** (do not just describe it).
@@ -25,11 +27,11 @@ description: "Production (from local): run open MASTER_CHANGELOG checklists on p
 
    - Read the full entry (summary + every checklist item).
    - For each unchecked task, run the corresponding command **over SSH on the production server**:
-     - Use `ssh root@137.184.224.94 'cd /opt/rec_io_server && <command>'`.
+     - Use `ssh root@$REC_PROD_SSH_HOST 'cd /opt/rec_io_server && <command>'`.
      - Examples:
-       - Code sync: `ssh root@137.184.224.94 'cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main'`
-       - DB migrations: `ssh root@137.184.224.94 'cd /opt/rec_io_server && PYTHONPATH=. venv/bin/python scripts/db/run_migration.py up <slug>'`
-       - Restart: run `ssh root@137.184.224.94 'cd /opt/rec_io_server && scripts/MASTER_RESTART.sh'` but do not hold the SSH session open; fire the restart and rely on verification to confirm completion.
+       - Code sync: `ssh root@$REC_PROD_SSH_HOST 'cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main'`
+       - DB migrations: `ssh root@$REC_PROD_SSH_HOST 'cd /opt/rec_io_server && PYTHONPATH=. venv/bin/python scripts/db/run_migration.py up <slug>'`
+       - Restart: run `ssh root@$REC_PROD_SSH_HOST 'cd /opt/rec_io_server && scripts/MASTER_RESTART.sh'` but do not hold the SSH session open; fire the restart and rely on verification to confirm completion.
    - After successfully completing each task, update `docs/changelog/MASTER_CHANGELOG.md` **locally** by changing that task's `- [ ]` to `- [x]`.
    - If a task cannot be completed (e.g. missing env, script not found, command fails): report clearly, leave its checkbox unchecked, and continue only with tasks that are safe to run.
 

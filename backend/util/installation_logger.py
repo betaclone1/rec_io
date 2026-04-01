@@ -20,6 +20,7 @@ from psycopg2.extras import RealDictCursor
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from core.config.config_manager import ConfigManager
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 
 class InstallationLogger:
     """Handles logging of installation access for system data cloning."""
@@ -27,13 +28,15 @@ class InstallationLogger:
     def __init__(self):
         self.config = ConfigManager()
         # Use the database configuration from environment variables
-        self.db_config = {
-            'host': os.getenv('DB_HOST', 'localhost'),
-            'database': os.getenv('DB_NAME', 'rec_io_db'),
-            'user': os.getenv('DB_USER', 'rec_io_user'),
-            'password': os.getenv('DB_PASSWORD', 'rec_io_password'),
-            'port': int(os.getenv('DB_PORT', '5432'))
-        }
+        self.db_config = merge_psycopg2_connect_kwargs(
+            {
+                "host": os.getenv("DB_HOST", "localhost"),
+                "database": os.getenv("DB_NAME", "rec_io_db"),
+                "user": os.getenv("DB_USER", "rec_io_user"),
+                "password": os.getenv("DB_PASSWORD", "rec_io_password"),
+                "port": int(os.getenv("DB_PORT", "5432")),
+            }
+        )
         self.log_entry_id = None
         self.connection_start_time = None
         

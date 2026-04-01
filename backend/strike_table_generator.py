@@ -25,6 +25,7 @@ from decimal import Decimal
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.core.config.config_manager import config
+from backend.core.time_eastern import now_est, today_est
 from backend.core.config.database import get_postgresql_connection
 from backend.util.paths import get_data_dir, get_kalshi_data_dir
 
@@ -155,6 +156,10 @@ def round_dollar_4dp(val: Optional[float]) -> Optional[float]:
     return round(float(val), 4)
 
 
+# Hourly contracts: YES/NO ask min/max/range columns track only the last 15 minutes before expiry.
+HOURLY_FINAL_QUARTER_TRACKING_SEC = 15 * 60
+
+
 def merge_ask_extrema(
     prev_lo: Optional[float],
     prev_hi: Optional[float],
@@ -183,7 +188,11 @@ def final_quarter_ask_tracking_fields(
     Optional[float],
 ]:
     """
-    Accumulate YES/NO ask min/max (and ranges) over the full active contract window for both 15m and hourly.
+    Accumulate YES/NO ask min/max (and ranges) for the same Kalshi (event_ticker, ticker).
+
+    For **15m** tables the generator calls this every tick (full 15m window).
+    For **hourly** tables the caller must only use the result when within the last 15 minutes
+    of the cycle; otherwise it writes NULL (see HOURLY_FINAL_QUARTER_TRACKING_SEC).
 
     prev: (event_ticker, ticker, yes_min, yes_max, no_min, no_max) from the prior strike row.
     Returns dollar-unit (yes_min, yes_max, no_min, no_max, yes_range, no_range).
@@ -711,9 +720,9 @@ class StrikeTableGenerator:
                     time_str = "12pm"
                 else:
                     time_str = f"{hour_24 - 12}pm"
-                today = datetime.now()
+                today_d = today_est()
                 event_date = datetime.strptime(f"{day}{month}20{year_2}", "%d%b%Y")
-                if event_date.date() == today.date():
+                if event_date.date() == today_d:
                     return f"{self.symbol.upper()} price today at {time_str}"
                 month_name = event_date.strftime("%b")
                 return f"{self.symbol.upper()} price on {month_name} {day} at {time_str}"
@@ -1156,7 +1165,7 @@ class StrikeTableGenerator:
             if self.interval == "15m":
                 ttc_seconds = self._seconds_to_next_15m_boundary_est()
             else:
-                now = datetime.now(ZoneInfo("America/New_York"))
+                now = now_est()
                 next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
                 ttc_seconds = int((next_hour - now).total_seconds())
             return max(0, ttc_seconds)
@@ -1167,10 +1176,9 @@ class StrikeTableGenerator:
     def _seconds_to_next_15m_boundary_est(self) -> int:
         """Seconds until the next 15-minute boundary in EST (:00, :15, :30, :45). Used for ttc_15m column."""
         try:
-            from datetime import datetime, timedelta
-            import pytz
-            est = pytz.timezone("America/New_York")
-            now = datetime.now(est)
+            from datetime import timedelta
+
+            now = now_est()
             minute = now.minute
             next_min = ((minute // 15) + 1) * 15
             if next_min >= 60:
@@ -1439,6 +1447,13 @@ class StrikeTableGenerator:
                         no_ask_dollars=no_ask_dollars,
                         prev=prev_6,
                     )
+                    # Hourly: keep min/max/range NULL until the final 15m of the cycle (new hour → fresh NULLs).
+                    if (
+                        self.interval == "hourly"
+                        and ttc_seconds is not None
+                        and ttc_seconds > HOURLY_FINAL_QUARTER_TRACKING_SEC
+                    ):
+                        ymn = ymx = nmn = nmx = yrg = nrg = None
 
                     # Unified 15m and hourly strike tables use exchange (same shape as strike_table_15m).
                     if self.unified_15m or self.interval == "hourly":
@@ -1494,8 +1509,8 @@ class StrikeTableGenerator:
                                 nmx,
                                 yrg,
                                 nrg,
-                                datetime.now(),
-                                datetime.now(),
+                                now_est(),
+                                now_est(),
                             ),
                         )
                     else:
@@ -1551,8 +1566,8 @@ class StrikeTableGenerator:
                                 nmx,
                                 yrg,
                                 nrg,
-                                datetime.now(),
-                                datetime.now(),
+                                now_est(),
+                                now_est(),
                             ),
                         )
                     

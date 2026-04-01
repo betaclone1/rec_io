@@ -29,7 +29,7 @@ def test_installation_logging():
     os.environ['INSTALLATION_PACKAGE_VERSION'] = '1.0.0'
     
     # Set remote database environment variables
-    os.environ['DB_HOST'] = '137.184.224.94'
+    os.environ.setdefault('DB_HOST', os.environ.get('REC_PROD_DB_HOST', 'localhost'))
     os.environ['DB_NAME'] = 'rec_io_db'
     os.environ['DB_USER'] = 'rec_io_installer'
     os.environ['DB_PASSWORD'] = 'secure_installer_password_2025'
@@ -94,7 +94,7 @@ def test_failed_installation_logging():
     os.environ['INSTALLATION_PACKAGE_VERSION'] = '1.0.0'
     
     # Set remote database environment variables
-    os.environ['DB_HOST'] = '137.184.224.94'
+    os.environ.setdefault('DB_HOST', os.environ.get('REC_PROD_DB_HOST', 'localhost'))
     os.environ['DB_NAME'] = 'rec_io_db'
     os.environ['DB_USER'] = 'rec_io_installer'
     os.environ['DB_PASSWORD'] = 'secure_installer_password_2025'
@@ -144,7 +144,7 @@ def test_database_access():
         
         # Test connection with installer credentials
         installer_config = {
-            'host': '137.184.224.94',  # Remote database
+            'host': os.environ.get('DB_HOST', os.environ.get('REC_PROD_DB_HOST', 'localhost')),  # Remote database
             'port': 5432,
             'database': 'rec_io_db',
             'user': 'rec_io_installer',
@@ -231,7 +231,7 @@ def view_test_results():
     print("=" * 50)
     
     # Set remote database environment variables
-    os.environ['DB_HOST'] = '137.184.224.94'
+    os.environ.setdefault('DB_HOST', os.environ.get('REC_PROD_DB_HOST', 'localhost'))
     os.environ['DB_NAME'] = 'rec_io_db'
     os.environ['DB_USER'] = 'rec_io_installer'
     os.environ['DB_PASSWORD'] = 'secure_installer_password_2025'

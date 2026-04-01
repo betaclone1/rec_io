@@ -2,13 +2,15 @@
 
 Run **MASTER_RESTART on the production server** via SSH, wait for it to finish, then **run verify-production** so the same report (including the required status block) is produced for the production server.
 
-**Target:** `ssh root@137.184.224.94`. Project path on prod: **/opt/rec_io_server**.
+**Prerequisite:** Export `REC_PROD_SSH_HOST` to the production server IP or DNS name.
+
+**Target:** `ssh root@$REC_PROD_SSH_HOST`. Project path on prod: **/opt/rec_io_server**.
 
 ## Steps
 
 1. **Run MASTER_RESTART on prod**
    - From your **local** workspace, run:  
-     `ssh root@137.184.224.94 'cd /opt/rec_io_server && ./scripts/MASTER_RESTART.sh'`
+     `ssh root@$REC_PROD_SSH_HOST 'cd /opt/rec_io_server && ./scripts/MASTER_RESTART.sh'`
    - Invoke as a **blocking** command so it runs to completion. Do not run it in the background.
    - **Permissions:** SSH requires network access. The script runs on the remote host as root, so it can stop supervisor and free ports there.
    - Wait for the script to exit before continuing.

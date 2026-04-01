@@ -11,7 +11,7 @@ Formulas:
   ret_pct = round((pnl / (bankroll/100)) * 100, 5) when bankroll in cents
   win_loss = 'W' | 'L' | 'D'
 
-Run against production: DB_HOST=137.184.224.94 PYTHONPATH=$(pwd) python3 scripts/db/backfill_paper_trade_pnl_ret.py
+Run against production: DB_HOST=$REC_PROD_SSH_HOST PYTHONPATH=$(pwd) python3 scripts/db/backfill_paper_trade_pnl_ret.py
 Dry run: add --dry-run
 """
 

@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, List
 from flask import Flask, request, jsonify
 from backend.core.unified_config import UnifiedConfigManager
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs, now_est, today_est
 from backend.core.port_config import get_port
 import threading
 import time
@@ -98,7 +99,7 @@ class MonitorManager:
         psycopg2_config = self.db_config.copy()
         if 'name' in psycopg2_config:
             psycopg2_config['database'] = psycopg2_config.pop('name')
-        return psycopg2.connect(**psycopg2_config)
+        return psycopg2.connect(**merge_psycopg2_connect_kwargs(psycopg2_config))
     
     def log_event(self, event_type: str, message: str, data: Optional[Dict] = None):
         """Centralized logging for monitor manager events. Uses standard logger (EST, flush)."""
@@ -219,7 +220,8 @@ class MonitorManager:
                 f'REC_DB_USER="{self.db_config.get("user", "rec_io_user")}"',
                 f'REC_DB_PASS="{self.db_config.get("password", "rec_io_password")}"',
                 f'REC_DB_PORT="{self.db_config.get("port", 5432)}"',
-                f'REC_DB_SSLMODE="{self.db_config.get("sslmode", "disable")}"'
+                f'REC_DB_SSLMODE="{self.db_config.get("sslmode", "disable")}"',
+                'TZ="America/New_York"'
             ]
             
             return ','.join(env_vars)
@@ -1711,10 +1713,10 @@ environment={env_vars}
         """Main loop for daily cleanup scheduler"""
         while self.cleanup_running:
             try:
-                current_time = datetime.now().time()
-                current_date = datetime.now().date()
+                current_time = now_est().time()
+                current_date = today_est()
                 
-                # Check if it's midnight (00:00) and we haven't run cleanup today
+                # Check if it's midnight (00:00) Eastern and we haven't run cleanup today
                 if (current_time.hour == 0 and current_time.minute == 0 and 
                     self.last_cleanup_date != current_date):
                     

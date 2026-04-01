@@ -65,6 +65,7 @@ sys.path.insert(0, os.path.join(get_project_root(), 'scripts'))
 from backend.core.port_config import get_port, get_port_info, list_all_ports
 from backend.util.paths import get_data_dir, get_trade_history_dir, get_price_history_dir
 from backend.core.unified_config import unified_config
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs, now_est
 
 class SystemMonitor:
     def __init__(self):
@@ -208,7 +209,7 @@ class SystemMonitor:
                     "status": "healthy",
                     "port": port,
                     "response_time": 0.0,  # No HTTP request
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": now_est().isoformat()
                 }
             else:
                 return {
@@ -216,7 +217,7 @@ class SystemMonitor:
                     "status": "unhealthy",
                     "port": port,
                     "error": "Service not running in supervisor",
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": now_est().isoformat()
                 }
         except Exception as e:
             return {
@@ -224,7 +225,7 @@ class SystemMonitor:
                 "status": "unhealthy",
                 "port": port,
                 "error": str(e),
-                "timestamp": datetime.now().isoformat()
+                "timestamp": now_est().isoformat()
             }
     
     def check_duplicate_processes(self) -> Dict[str, Any]:
@@ -343,10 +344,14 @@ class SystemMonitor:
         try:
             import psycopg2
             conn = psycopg2.connect(
-                host="localhost",
-                database="rec_io_db",
-                user="rec_io_user",
-                password="rec_io_password"
+                **merge_psycopg2_connect_kwargs(
+                    {
+                        "host": "localhost",
+                        "database": "rec_io_db",
+                        "user": "rec_io_user",
+                        "password": "rec_io_password",
+                    }
+                )
             )
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM users.trades_0001")
@@ -368,10 +373,14 @@ class SystemMonitor:
         try:
             import psycopg2
             conn = psycopg2.connect(
-                host="localhost",
-                database="rec_io_db",
-                user="rec_io_user",
-                password="rec_io_password"
+                **merge_psycopg2_connect_kwargs(
+                    {
+                        "host": "localhost",
+                        "database": "rec_io_db",
+                        "user": "rec_io_user",
+                        "password": "rec_io_password",
+                    }
+                )
             )
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM live_data.live_price_log_1s_btc")
@@ -565,13 +574,13 @@ class SystemMonitor:
             "running_services": len([s for s in service_status.values() if s["status"] == "running"]),
             "stopped_services": len([s for s in service_status.values() if s["status"] == "stopped"]),
             "fatal_services": len([s for s in service_status.values() if s["status"] == "fatal"]),
-            "timestamp": datetime.now().isoformat()
+            "timestamp": now_est().isoformat()
         }
     
     def generate_health_report(self) -> Dict[str, Any]:
         """Generate comprehensive health report."""
         report = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now_est().isoformat(),
             "system_resources": self.check_system_resources(),
             "database_health": self.check_database_health(),
             "supervisor_status": self.check_supervisor_status(),
@@ -593,7 +602,7 @@ class SystemMonitor:
                     "status": "healthy",
                     "port": None,
                     "response_time": 0.0,
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": now_est().isoformat()
                 }
             else:
                 report["services"][service_name] = {
@@ -601,7 +610,7 @@ class SystemMonitor:
                     "status": "unhealthy",
                     "port": None,
                     "error": f"Service status: {service_info.get('status', 'unknown')}",
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": now_est().isoformat()
                 }
         
         # Add to history
@@ -621,10 +630,14 @@ class SystemMonitor:
             import json
             
             conn = psycopg2.connect(
-                host="localhost",
-                database="rec_io_db",
-                user="rec_io_user",
-                password="rec_io_password"
+                **merge_psycopg2_connect_kwargs(
+                    {
+                        "host": "localhost",
+                        "database": "rec_io_db",
+                        "user": "rec_io_user",
+                        "password": "rec_io_password",
+                    }
+                )
             )
             
             with conn.cursor() as cursor:

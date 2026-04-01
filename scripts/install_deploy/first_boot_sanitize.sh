@@ -3,9 +3,10 @@
 # =============================================================================
 # FIRST BOOT SANITIZATION SCRIPT
 # =============================================================================
-# This script automatically runs on first boot of a droplet created from
-# a production snapshot. It ensures all user data and credentials are
-# sanitized before the system can be used.
+# This script CAN run on first boot if systemd invokes it.
+# It is OFF BY DEFAULT: set REC_ENABLE_FIRST_BOOT_SANITIZE=1 (e.g. Environment=
+# in the unit) to run the destructive wipe. Avoids snapshot→new prod losing data.
+# Multi-user snapshot deploy deferred until install is reworked.
 # =============================================================================
 
 set -e
@@ -299,6 +300,11 @@ main() {
     touch "$FIRST_BOOT_LOG"
     
     print_status "First boot sanitization script started"
+
+    if [[ "${REC_ENABLE_FIRST_BOOT_SANITIZE:-}" != "1" ]]; then
+        print_status "First-boot sanitization is disabled (REC_ENABLE_FIRST_BOOT_SANITIZE is not 1). No wipe performed. Exiting."
+        exit 0
+    fi
     
     # Check if already sanitized
     if check_sanitization_status; then

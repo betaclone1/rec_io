@@ -25,6 +25,8 @@ from zoneinfo import ZoneInfo
 import psycopg2
 import pytz
 import requests
+
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 from psycopg2.extras import RealDictCursor
 
 _script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -290,7 +292,7 @@ def _fixed_point_text(value, default="0.00"):
 
 def connect_database():
     try:
-        return psycopg2.connect(**DB_CONFIG)
+        return psycopg2.connect(**merge_psycopg2_connect_kwargs(DB_CONFIG))
     except Exception as e:
         logger.error("Database connection failed: %s", e)
         return None

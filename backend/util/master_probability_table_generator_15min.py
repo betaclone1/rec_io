@@ -27,6 +27,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.util.probability_calculator_postgresql import ProbabilityCalculatorPostgreSQL
 from backend.util.paths import get_data_dir
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 
 # Configure logging
 logging.basicConfig(
@@ -46,12 +47,13 @@ class MasterProbabilityTableGenerator15Min:
 
     def __init__(self, symbol: str = "btc", db_config: Optional[Dict] = None):
         self.symbol = symbol.lower()
-        self.db_config = db_config or {
-            'host': 'localhost',
-            'database': 'rec_io_db',
-            'user': 'rec_io_user',
-            'password': 'rec_io_password'
+        _base = db_config or {
+            "host": "localhost",
+            "database": "rec_io_db",
+            "user": "rec_io_user",
+            "password": "rec_io_password",
         }
+        self.db_config = merge_psycopg2_connect_kwargs(_base)
 
         # Parameter ranges for 15-minute window
         self.ttc_range = range(0, 901)  # 0-900 seconds (15 minutes)

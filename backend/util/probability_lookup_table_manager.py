@@ -23,14 +23,18 @@ try:
 except ImportError:
     config = None
 
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
+
 # PostgreSQL connection parameters
-POSTGRES_CONFIG = {
-    'host': os.getenv('POSTGRES_HOST', 'localhost'),
-    'port': int(os.getenv('POSTGRES_PORT', '5432')),
-    'database': os.getenv('POSTGRES_DB', 'rec_io_db'),
-    'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
-    'password': os.getenv('POSTGRES_PASSWORD', '')
-}
+POSTGRES_CONFIG = merge_psycopg2_connect_kwargs(
+    {
+        "host": os.getenv("POSTGRES_HOST", "localhost"),
+        "port": int(os.getenv("POSTGRES_PORT", "5432")),
+        "database": os.getenv("POSTGRES_DB", "rec_io_db"),
+        "user": os.getenv("POSTGRES_USER", "rec_io_user"),
+        "password": os.getenv("POSTGRES_PASSWORD", ""),
+    }
+)
 
 class ProbabilityLookupTableManager:
     """Manages versioned probability lookup tables with validation and swapping."""

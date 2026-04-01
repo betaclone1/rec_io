@@ -5,6 +5,10 @@
 This document provides a complete reference of all database schemas, tables, and columns.
 Update this document whenever schema changes are made during development.
 
+### Application connection timezone
+
+Python code should open PostgreSQL connections via `get_postgresql_connection()` / `get_database_config()` in [`backend/core/config/database.py`](../backend/core/config/database.py). Those connections include **`options=-c timezone=America/New_York`**, so session `TimeZone` is US Eastern. That keeps **`timestamp without time zone`** columns that use `DEFAULT CURRENT_TIMESTAMP` / `NOW()` aligned with the project convention (Eastern naive wall time), matching series such as `historical_data.*_price_history.timestamp` and Kalshi candle scratch tables documented below. **`timestamptz`** columns store absolute instants and are unaffected by session display semantics.
+
 ---
 
 ## How to Check and Update Your Database (No Scripts)

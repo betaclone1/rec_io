@@ -23,6 +23,12 @@ from psycopg2.extras import RealDictCursor
 import signal
 import threading
 
+_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
+
 # ANSI color codes for terminal output
 class Colors:
     GREEN = '\033[92m'
@@ -69,7 +75,7 @@ class TableWatcher:
     def _get_connection(self):
         """Create a database connection."""
         try:
-            conn = psycopg2.connect(**self.connection_params)
+            conn = psycopg2.connect(**merge_psycopg2_connect_kwargs(self.connection_params))
             return conn
         except psycopg2.Error as e:
             print(f"{Colors.RED}❌ Database connection failed: {e}{Colors.END}")

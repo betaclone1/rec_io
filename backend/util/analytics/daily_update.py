@@ -27,6 +27,11 @@ import psycopg2
 
 # Add the util directory to the path so we can import our modules
 sys.path.append(os.path.dirname(__file__))
+_project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 
 from symbol_data_fetch_pg import update_existing_db
 from momentum_generator_pg import fill_missing_momentum_in_db
@@ -80,11 +85,15 @@ def get_db_connection():
     """Get PostgreSQL database connection with proper error handling."""
     try:
         conn = psycopg2.connect(
-            host='localhost',
-            database='rec_io_db',
-            user='rec_io_user',
-            password='rec_io_password',
-            connect_timeout=10
+            **merge_psycopg2_connect_kwargs(
+                {
+                    "host": "localhost",
+                    "database": "rec_io_db",
+                    "user": "rec_io_user",
+                    "password": "rec_io_password",
+                    "connect_timeout": 10,
+                }
+            )
         )
         # Test the connection
         cursor = conn.cursor()

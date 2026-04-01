@@ -28,6 +28,7 @@ if get_project_root() not in sys.path:
 from backend.core.config.settings import config
 from backend.core.port_config import get_port
 from backend.util.paths import get_btc_price_history_dir, ensure_data_dirs
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 
 # Ensure all data directories exist
 ensure_data_dirs()
@@ -426,7 +427,7 @@ def calculate_volatility_percentile(symbol: str, volatility_value: float) -> Opt
 
 def get_postgres_connection():
     """Get a PostgreSQL connection"""
-    return psycopg2.connect(**POSTGRES_CONFIG)
+    return psycopg2.connect(**merge_psycopg2_connect_kwargs(POSTGRES_CONFIG))
 
 def get_1m_avg_price(symbol: str) -> float:
     """

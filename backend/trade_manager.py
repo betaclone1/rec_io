@@ -20,6 +20,7 @@ from typing import Optional, Tuple
 # Import the universal centralized port system
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from backend.core.port_config import get_port, get_port_info
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 from backend.core.exchange_ids import normalize_exchange
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -1009,10 +1010,14 @@ def get_momentum_data_from_postgresql(symbol):
     try:
         import psycopg2
         conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
+            **merge_psycopg2_connect_kwargs(
+                {
+                    "host": "localhost",
+                    "database": "rec_io_db",
+                    "user": "rec_io_user",
+                    "password": "rec_io_password",
+                }
+            )
         )
         cursor = conn.cursor()
         cursor.execute(f"SELECT momentum FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
@@ -1046,10 +1051,14 @@ def get_postgresql_connection():
     """Get a connection to the PostgreSQL database."""
     try:
         conn = psycopg2.connect(
-            host="localhost",
-            database="rec_io_db",
-            user="rec_io_user",
-            password="rec_io_password"
+            **merge_psycopg2_connect_kwargs(
+                {
+                    "host": "localhost",
+                    "database": "rec_io_db",
+                    "user": "rec_io_user",
+                    "password": "rec_io_password",
+                }
+            )
         )
         return conn
     except Exception as e:

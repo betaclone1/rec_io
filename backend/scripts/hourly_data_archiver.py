@@ -13,6 +13,8 @@ import time
 from datetime import datetime, timedelta
 import pytz
 
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
+
 EST = pytz.timezone("America/New_York")
 
 # Database configuration
@@ -27,7 +29,7 @@ DB_CONFIG = {
 def connect_database():
     """Connect to PostgreSQL database"""
     try:
-        connection = psycopg2.connect(**DB_CONFIG)
+        connection = psycopg2.connect(**merge_psycopg2_connect_kwargs(DB_CONFIG))
         return connection
     except Exception as e:
         print(f"[{datetime.now(EST)}] ❌ Database connection failed: {e}")
