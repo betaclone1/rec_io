@@ -24,19 +24,19 @@ This changelog is used when pushing updates to production. Each entry is timesta
 5. `20260403_1000_trades_drop_outcome_checked_at`
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations in order (from project root):  
+- [x] Apply migrations in order (from project root):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260331_2300_trades_kalshi_outcome_verified_at`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260401_1200_trades_rename_outcome_evaluated_column`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260402_1000_trades_outcome_checked_at_short_name`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260402_1400_trades_market_result_from_outcome_check`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260403_1000_trades_drop_outcome_checked_at`
-- [ ] Schema drift check:  
+- [x] Schema drift check:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `main_app` :3000 and `trade_executor` :8001 respond; supervisor **RUNNING**; spot-check **`trade_manager`** and **`market_watchdog_ws`** logs after restart; confirm recent **`expired` → `closed`** trades show **`market_result`** and coherent **`sell_price`** / **`win_loss`**.
-- [ ] Snapshot reference (pre-deploy): **`rec-io-prod-pre-update-2026-04-01`** (DO action **`3119398569`**; confirm **completed** in DigitalOcean when convenient).
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `main_app` :3000 and `trade_executor` :8001 respond; supervisor **RUNNING**; spot-check **`trade_manager`** and **`market_watchdog_ws`** logs after restart; confirm recent **`expired` → `closed`** trades show **`market_result`** and coherent **`sell_price`** / **`win_loss`**.
+- [x] Snapshot reference (pre-deploy): **`rec-io-prod-pre-update-2026-04-01`** (DO action **`3119398569`**; confirm **completed** in DigitalOcean when convenient).
 
 ---
 
