@@ -22,13 +22,13 @@ This changelog is used when pushing updates to production. Each entry is timesta
 **DB migrations:** None for this release.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Schema drift check (recommended):  
+- [x] Schema drift check (recommended):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `main_app` :3000 and `trade_executor` :8001 health; supervisor **RUNNING**; spot-check **strike_table_generator_ws** logs for hourly/15m **strike refresh ok**; spot-check **trade_manager** after restart.
-- [ ] Snapshot reference (pre-deploy): **`rec-io-prod-pre-update-2026-04-01`** (DO action **`3119534122`**; confirm **completed** in DigitalOcean when convenient).
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `main_app` :3000 and `trade_executor` :8001 health; supervisor **RUNNING**; spot-check **strike_table_generator_ws** logs for hourly/15m **strike refresh ok**; spot-check **trade_manager** after restart.
+- [x] Snapshot reference (pre-deploy): **`rec-io-prod-pre-update-2026-04-01`** (DO action **`3119534122`**; confirm **completed** in DigitalOcean when convenient).
 
 ---
 
