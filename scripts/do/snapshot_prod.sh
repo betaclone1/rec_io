@@ -9,7 +9,8 @@ set -e
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ENV_FILE="$PROJECT_ROOT/.env"
-PROD_DROPLET_ID="${DO_PROD_DROPLET_ID:-513735057}"
+# Default: active prod (rec-io-server-new-york-1, 165.22.13.146). Legacy: 513735057 was prior droplet (off).
+PROD_DROPLET_ID="${DO_PROD_DROPLET_ID:-562337636}"
 
 if [[ -z "$DIGITALOCEAN_API_TOKEN" ]]; then
   if [[ -f "$ENV_FILE" ]]; then
