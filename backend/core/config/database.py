@@ -1498,6 +1498,15 @@ def init_database():
                 ) THEN
                     ALTER TABLE users.monitor_list_0001 ADD COLUMN max_cooldown_timer INTEGER DEFAULT 3300;
                 END IF;
+
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'monitor_list_0001'
+                      AND column_name = 'min_ask_range'
+                ) THEN
+                    ALTER TABLE users.monitor_list_0001 ADD COLUMN min_ask_range NUMERIC(18,4);
+                END IF;
             END
             $$;
         """)
@@ -1573,6 +1582,7 @@ def init_database():
                 max_ask NUMERIC(6,4) DEFAULT 0.9800,
                 max_profit NUMERIC(6,4) DEFAULT 0.9900,
                 stop_loss_price NUMERIC(6,4) DEFAULT 0.0000,
+                min_ask_range NUMERIC(18,4),
                 min_cooldown_timer INTEGER DEFAULT 300,
                 max_cooldown_timer INTEGER DEFAULT 3300
             );
@@ -1907,6 +1917,15 @@ def init_database():
                       AND column_name = 'stop_loss_price'
                 ) THEN
                     ALTER TABLE users.strategy_list_0001 ADD COLUMN stop_loss_price NUMERIC(6,4) DEFAULT 0.0000;
+                END IF;
+
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'strategy_list_0001'
+                      AND column_name = 'min_ask_range'
+                ) THEN
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN min_ask_range NUMERIC(18,4);
                 END IF;
 
                 IF NOT EXISTS (

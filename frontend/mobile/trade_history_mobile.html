@@ -1392,8 +1392,9 @@
             console.log('All filters reset completed');
         }
 
-        async function fetchAllTrades() {
-            console.log('Fetching trades at', new Date().toLocaleTimeString());
+        async function fetchAllTrades(reason) {
+            const r = reason || 'unspecified';
+            console.log('[trade_history_mobile] GET /trades — reason:', r, '(not on a timer; load, tab visible, ws db_change/trades, or parent refresh)');
             try {
                 // Wait for port configuration to be loaded
                 let retries = 0;
@@ -2014,48 +2015,47 @@
                 // Apply filters after preferences are loaded
                 applyFilters();
             }); // Load paper trade preferences
-            fetchAllTrades();
-
-            function startTradeHistoryMobilePolling() {
-                if (window._thmRefreshInterval) clearInterval(window._thmRefreshInterval);
-                window._thmRefreshInterval = setInterval(fetchAllTrades, 10000);
-            }
-            window.startTradeHistoryMobilePolling = startTradeHistoryMobilePolling;
-            startTradeHistoryMobilePolling();
+            fetchAllTrades('initial-load');
         });
         
-        // Add WebSocket connection for real-time trade updates (paused when tab hidden)
+        let _thmTradeDbRefreshTimer = null;
+        function scheduleTradeHistoryMobileRefetchFromWs() {
+            if (window.TRADE_HISTORY_MOBILE_PAUSED) return;
+            if (_thmTradeDbRefreshTimer) clearTimeout(_thmTradeDbRefreshTimer);
+            _thmTradeDbRefreshTimer = setTimeout(() => {
+                _thmTradeDbRefreshTimer = null;
+                fetchAllTrades('ws-db_change-trades');
+            }, 250);
+        }
+
+        // /ws/db_changes: stream "trades" for users.trades_0001 (no interval polling)
         function setupTradeHistoryWebSocket() {
             if (window.TRADE_HISTORY_MOBILE_PAUSED) return;
+            if (window._thmDbChangesWs) {
+                try { window._thmDbChangesWs.close(); } catch (e) {}
+                window._thmDbChangesWs = null;
+            }
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const ws = new WebSocket(`${protocol}//${window.location.host}/ws/db_changes`);
             window._thmDbChangesWs = ws;
-            
-            ws.onopen = function() {
-                console.log('🔗 Connected to trade history WebSocket (mobile)');
-            };
-            
+
             ws.onmessage = function(event) {
                 try {
                     const data = JSON.parse(event.data);
-                    console.log('📡 Received database change notification (trade history mobile):', data);
-                    
-                    if (data.database === 'trades' || data.database === 'fills' || data.database === 'positions') {
-                        console.log('🔄 Refreshing trade history due to database change (mobile)');
-                        fetchAllTrades();
+                    if (data.type === 'db_change' && data.database === 'trades') {
+                        scheduleTradeHistoryMobileRefetchFromWs();
                     }
                 } catch (error) {
-                    console.error('❌ Error parsing WebSocket message (trade history mobile):', error);
+                    console.error('Error parsing WebSocket message (trade history mobile):', error);
                 }
             };
-            
+
             ws.onerror = function(error) {
-                console.error('❌ WebSocket error (trade history mobile):', error);
+                console.error('WebSocket error (trade history mobile):', error);
             };
-            
+
             ws.onclose = function() {
                 window._thmDbChangesWs = null;
-                console.log('🔌 Trade history WebSocket connection closed (mobile)');
                 if (!window.TRADE_HISTORY_MOBILE_PAUSED) {
                     setTimeout(() => setupTradeHistoryWebSocket(), 5000);
                 }
@@ -2069,10 +2069,17 @@
                 const visible = event.data.visible === true;
                 window.TRADE_HISTORY_MOBILE_PAUSED = !visible;
                 if (visible) {
-                    if (typeof window.startTradeHistoryMobilePolling === 'function') window.startTradeHistoryMobilePolling();
+                    if (_thmTradeDbRefreshTimer) {
+                        clearTimeout(_thmTradeDbRefreshTimer);
+                        _thmTradeDbRefreshTimer = null;
+                    }
                     setupTradeHistoryWebSocket();
+                    fetchAllTrades('tab-visible');
                 } else {
-                    if (window._thmRefreshInterval) { clearInterval(window._thmRefreshInterval); window._thmRefreshInterval = null; }
+                    if (_thmTradeDbRefreshTimer) {
+                        clearTimeout(_thmTradeDbRefreshTimer);
+                        _thmTradeDbRefreshTimer = null;
+                    }
                     if (window._thmDbChangesWs) { try { window._thmDbChangesWs.close(); } catch (e) {} window._thmDbChangesWs = null; }
                 }
             }
@@ -2081,9 +2088,8 @@
         // Mobile iframe coordination message handling
         window.addEventListener('message', function(event) {
             if (event.data && event.data.type === 'refresh_data') {
-                console.log('📱 Trade history mobile received refresh request');
                 // Trigger immediate data refresh
-                fetchAllTrades();
+                fetchAllTrades('parent-refresh_data');
                 // Notify parent of data update
                 window.parent.postMessage({
                     type: 'data_updated',

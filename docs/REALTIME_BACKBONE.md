@@ -120,6 +120,7 @@ The **stream registry** maps `(schema, table)` → stream name. It lives in code
 - **Location:** `backend/core/stream_registry.py`. The switchboard imports it. To add a new watched set of values you add one entry and (if not already present) a trigger on the table.
 - **Convention:** One logical stream per "thing" the UI or backend cares about (e.g. one stream `trades` for `users.trades_0001`). High-volume tables (e.g. orderbook rows) map to one stream (e.g. `orderbook`) and use statement-level or batched NOTIFY so we don’t emit one message per row.
 - **Documentation:** This doc and the registry file list all streams. When adding a stream, add a short comment in the registry and, if useful, a line in this doc’s stream list.
+- **Registered example — `trades`:** Table `users.trades_0001` maps to stream name **`trades`** (`stream_registry.py`). Row-level trigger **`trades_0001_rec_io_db_notify`** → `public.rec_io_db_notify()` (migration `20260401_1600_trades_0001_rec_io_db_notify`). Consumers include trade history UIs (`GET /trades` refetch on `database === "trades"`).
 
 ---
 

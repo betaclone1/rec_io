@@ -6,6 +6,35 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-01 — Rising Devil min ask range, AES ladder/logging, trades NOTIFY trigger
+
+**Summary**
+- **Database:** Migration adds **`min_ask_range`** (NUMERIC 18,4) to all **`users.monitor_list_*`** and **`users.strategy_list_*`** tables when missing; optional per-monitor Rising Devil threshold (NULL = unset).
+- **API:** **`main.py`** and **`monitor_manager`** expose get/set for **`min_ask_range`** alongside other monitor auto-entry fields.
+- **Frontend (desktop + mobile):** Rising Devil **`min_ask_range`** controls on dashboard, trade monitor, and trade history surfaces (parity across tabs).
+- **AES:** Master ladder fetch includes **`yes_ask_range_15m` / `no_ask_range_15m`** so Rising Devil sees DB ranges; per-monitor Rising Devil scan/TTC/diagnostic INFO; **`STATUS CHANGE`** INFO throttled (120s, always INFO for **DISABLED**); duplicate-trade skip message at **DEBUG**; **`cleanup_old_cooldowns`** logs once per pass at **DEBUG** (fixes nested-loop spam). **`auto_entry_supervisor_test`** aligned.
+- **Realtime backbone:** Migration adds **`AFTER INSERT OR UPDATE OR DELETE`** NOTIFY trigger on **`users.trades_0001`** using **`public.rec_io_db_notify()`**; **`stream_registry`** registers **`users.trades_0001`** → **`trades`** stream; **`REALTIME_BACKBONE`** doc touch.
+
+**Plans:** Informal — Rising Devil threshold + AES observability; trades row-level NOTIFY for WS/db_changes (no single repo plan file).
+
+**DB migrations (apply in order on production)**
+1. `20260401_1500_rising_devil_min_ask_range`
+2. `20260401_1600_trades_0001_rec_io_db_notify`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations (from project root on server):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260401_1500_rising_devil_min_ask_range`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260401_1600_trades_0001_rec_io_db_notify`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `main_app` :3000 and `trade_executor` :8001 `/health`; supervisor **RUNNING**; spot-check **`auto_entry_supervisor_*`** logs for monitor-scoped Rising Devil lines; confirm trade UI still receives **`/ws/db_changes`** updates for trade rows after NOTIFY trigger.
+- [ ] Snapshot reference (pre-deploy): **`rec-io-prod-pre-update-2026-04-01`** (DO action **`3119838396`**; confirm **completed** in DigitalOcean when convenient).
+
+---
+
 ## 2026-04-01 — Canonical production host (165.22.13.146) and ops documentation
 
 **Summary**

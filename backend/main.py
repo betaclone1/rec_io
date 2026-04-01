@@ -3190,7 +3190,7 @@ async def get_auto_entry_settings(monitor_id: str = None):
                        momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target,
                        min_ask, max_ask, loss_prevention_toggle, max_price_spread, prob_adj,
                        min_cooldown_timer, max_cooldown_timer,
-                       regime_monitor_enabled, regime_window, stop_loss_price
+                       regime_monitor_enabled, regime_window, stop_loss_price, min_ask_range
                 FROM users.monitor_list_0001 WHERE id = %s
             """, (monitor_id,))
             result = cursor.fetchone()
@@ -3231,7 +3231,8 @@ async def get_auto_entry_settings(monitor_id: str = None):
                     "max_cooldown_timer": result[29] if result[29] is not None else None,
                     "regime_monitor_enabled": bool(result[30]) if result[30] is not None else False,
                     "regime_window": str(result[31]) if result[31] is not None else "30d",
-                    "stop_loss_price": float(result[32]) if result[32] is not None else 0.0
+                    "stop_loss_price": float(result[32]) if result[32] is not None else 0.0,
+                    "min_ask_range": float(result[33]) if result[33] is not None else None,
                 }
             else:
                 return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
@@ -3389,6 +3390,22 @@ async def set_auto_entry_settings(request: Request):
                     }
                 update_fields.append("stop_loss_price = %s")
                 update_values.append(round(slp, 4))
+
+            if "min_ask_range" in data:
+                mar = data["min_ask_range"]
+                if mar is None:
+                    update_fields.append("min_ask_range = %s")
+                    update_values.append(None)
+                else:
+                    marf = float(mar)
+                    if marf < 0 or marf > 1.0:
+                        conn.close()
+                        return {
+                            "status": "error",
+                            "message": "min_ask_range must be between 0 and 1.0 (null or 0 disables)",
+                        }
+                    update_fields.append("min_ask_range = %s")
+                    update_values.append(round(marf, 4))
             
             if update_fields:
                 # Update the monitor in monitor_list table
@@ -6770,6 +6787,7 @@ async def get_strategies(user_id: str = "user_0001"):
                 'Momentum Scalp',
                 'Momentum Breakout',
                 'Momentum Contain',
+                'Rising Devil',
                 'Test Strategy',
                 'Daily HTC',
                 'Scalp Strategy'

@@ -9856,6 +9856,7 @@ Unified Kalshi **hourly** active-trade tracking: **one table per user** (`active
 | `cooldown_start_time` | `timestamp with time zone` | YES | - | |
 | `min_cooldown_timer` | `integer(32)` | YES | 300 | Minimum cooldown timer value (in seconds) required for auto entry activation. Strategy will not activate if cooldown_timer is below this value. |
 | `max_cooldown_timer` | `integer(32)` | YES | 3300 | Maximum cooldown timer value (in seconds) allowed for auto entry activation. Strategy will not activate if cooldown_timer is above this value. |
+| `min_ask_range` | `numeric(18,4)` | YES | - | Rising Devil: min active-side ask range (strike `yes_ask_range_15m` / `no_ask_range_15m`) to fire; NULL disables. Migration `20260401_1500_rising_devil_min_ask_range`. |
 | `updated_at` | `timestamp with time zone` | YES | CURRENT_TIMESTAMP | |
 | `created_strategy` | `timestamp without time zone` | YES | - | |
 | `updated_strategy` | `timestamp without time zone` | YES | - | |
@@ -10106,6 +10107,7 @@ Unified Kalshi **hourly** active-trade tracking: **one table per user** (`active
 | `max_profit` | `numeric(6,4)` | YES | 0.9900 | |
 | `min_cooldown_timer` | `integer(32)` | YES | 300 | Minimum cooldown timer value (in seconds) required for auto entry activation. Strategy will not activate if cooldown_timer is below this value. |
 | `max_cooldown_timer` | `integer(32)` | YES | 3300 | Maximum cooldown timer value (in seconds) allowed for auto entry activation. Strategy will not activate if cooldown_timer is above this value. |
+| `min_ask_range` | `numeric(18,4)` | YES | - | Rising Devil: min active-side ask range (strike `yes_ask_range_15m` / `no_ask_range_15m`) to fire; NULL disables. Migration `20260401_1500_rising_devil_min_ask_range`. |
 
 #### Constraints
 
@@ -10248,7 +10250,7 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 
 ### Table: `users.trades_0001`
 
-**Schema sync:** When changing this table (columns, types, indexes), apply the same changes to `users.trades_simulated_0001` so both stay in sync. **Exception:** `symbol_expiration`, `win_loss_confirmed`, and `market_result` (venue resolution snapshot on the trade row) exist on **`trades_0001` only** (not on `trades_simulated_0001`; see migrations `20260328_1500_trades_symbol_expiration_win_loss_confirmed`, `20260331_2300_trades_kalshi_outcome_verified_at`, `20260401_1200_trades_rename_outcome_evaluated_column`, `20260402_1000_trades_outcome_checked_at_short_name`, `20260402_1400_trades_market_result_from_outcome_check`, `20260403_1000_trades_drop_outcome_checked_at`). `market_result` is written from **Kalshi `market_lifecycle_v2`** in `market_watchdog_ws` for paper and live rows when the venue reports `determined` / `settled`. **`market` (cadence)** exists on both live and simulated tables (migration `20260330_1015_trades_market_cadence`). **Strike final-window ask snapshot** columns (`yes_ask_min_15m`, …, `no_ask_range_15m`) exist on both tables (migration `20260330_2200_trades_strike_final_quarter_asks`); `trade_manager` fills them at insert from the latest matching strike row when available.
+**Schema sync:** When changing this table (columns, types, indexes), apply the same changes to `users.trades_simulated_0001` so both stay in sync. **Exception:** `symbol_expiration`, `win_loss_confirmed`, and `market_result` (venue resolution snapshot on the trade row) exist on **`trades_0001` only** (not on `trades_simulated_0001`; see migrations `20260328_1500_trades_symbol_expiration_win_loss_confirmed`, `20260331_2300_trades_kalshi_outcome_verified_at`, `20260401_1200_trades_rename_outcome_evaluated_column`, `20260401_1600_trades_0001_rec_io_db_notify` (real-time NOTIFY trigger → stream `trades`), `20260402_1000_trades_outcome_checked_at_short_name`, `20260402_1400_trades_market_result_from_outcome_check`, `20260403_1000_trades_drop_outcome_checked_at`). `market_result` is written from **Kalshi `market_lifecycle_v2`** in `market_watchdog_ws` for paper and live rows when the venue reports `determined` / `settled`. **`market` (cadence)** exists on both live and simulated tables (migration `20260330_1015_trades_market_cadence`). **Strike final-window ask snapshot** columns (`yes_ask_min_15m`, …, `no_ask_range_15m`) exist on both tables (migration `20260330_2200_trades_strike_final_quarter_asks`); `trade_manager` fills them at insert from the latest matching strike row when available.
 
 #### Columns
 
@@ -10407,6 +10409,10 @@ WHERE t.monitor = cs.monitor
   ```sql
   CREATE INDEX trades_0001_weekly_cycle_idx ON users.trades_0001 USING btree (weekly_cycle)
   ```
+
+#### Triggers
+
+- **`trades_0001_rec_io_db_notify`** — `AFTER INSERT OR UPDATE OR DELETE` → `public.rec_io_db_notify()` on channel `rec_io_db_changes`. Switchboard maps `(users, trades_0001)` to stream **`trades`** (`backend/core/stream_registry.py`). Migration `20260401_1600_trades_0001_rec_io_db_notify`.
 
 ---
 

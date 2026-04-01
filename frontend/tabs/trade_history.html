@@ -1208,8 +1208,9 @@
       updateAnalysis();
     }
 
-    async function fetchAllTrades() {
-      console.log('Fetching trades at', new Date().toLocaleTimeString());
+    async function fetchAllTrades(reason) {
+      const r = reason || 'unspecified';
+      console.log('[trade_history] GET /trades — reason:', r, '(not on a timer; only load, tab focus, or ws db_change/trades)');
       try {
         const res = await fetch(window.location.origin + '/trades', { cache: 'no-store' });
         if (!res.ok) throw new Error('Network response was not ok');
@@ -1376,55 +1377,74 @@
       if (endDate) endDateInput.value = endDate;
     }
 
-    // WebSocket connection for database change notifications
+    // Debounced refetch when /ws/db_changes signals trades (collapses PG NOTIFY + app publish)
+    let _tradeHistoryDbRefreshTimer = null;
+    function scheduleTradesRefetchFromDbChange() {
+      if (window.TRADE_HISTORY_PAUSED) return;
+      if (_tradeHistoryDbRefreshTimer) clearTimeout(_tradeHistoryDbRefreshTimer);
+      _tradeHistoryDbRefreshTimer = setTimeout(() => {
+        _tradeHistoryDbRefreshTimer = null;
+        fetchAllTrades('ws-db_change-trades');
+      }, 250);
+    }
+
+    // WebSocket: same-origin /ws/db_changes (see docs/REALTIME_BACKBONE.md). Paused when History iframe is hidden.
     function setupDatabaseChangeListener() {
+      if (window.TRADE_HISTORY_PAUSED) return;
+      if (window._thDbChangesWs) {
+        try { window._thDbChangesWs.close(); } catch (e) {}
+        window._thDbChangesWs = null;
+      }
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const ws = new WebSocket(`${protocol}//${window.location.host}/ws/db_changes`);
-      
-      ws.onopen = function() {
-        console.log('🔗 Connected to database change notifications (trade history)');
-      };
-      
+      window._thDbChangesWs = ws;
+
       ws.onmessage = function(event) {
         try {
           const data = JSON.parse(event.data);
-          console.log('📡 Received database change notification (trade history):', data);
-          
-          // Handle trade database changes and refresh immediately
-          if (data.database === 'trades' || data.data?.trades) {
-            console.log('🔄 Refreshing trade history due to database change');
-            fetchAllTrades();
+          if (data.type === 'db_change' && data.database === 'trades') {
+            scheduleTradesRefetchFromDbChange();
           }
         } catch (error) {
-          console.error('❌ Error parsing database change notification (trade history):', error);
+          console.error('Error parsing database change notification (trade history):', error);
         }
       };
-      
+
       ws.onerror = function(error) {
-        console.error('❌ WebSocket error (trade history):', error);
+        console.error('WebSocket error (trade history):', error);
       };
-      
+
       ws.onclose = function() {
-        console.log('🔌 Database change WebSocket connection closed (trade history)');
-        // Attempt to reconnect after a delay
-        setTimeout(() => {
-          console.log('🔄 Attempting to reconnect to database change notifications (trade history)...');
-          setupDatabaseChangeListener();
-        }, 5000);
+        window._thDbChangesWs = null;
+        if (!window.TRADE_HISTORY_PAUSED) {
+          setTimeout(() => setupDatabaseChangeListener(), 5000);
+        }
       };
     }
 
-    // Periodic auto-refresh every 10 seconds
-    function setupPeriodicRefresh() {
-      const refreshInterval = 10000; // 10 seconds
-      
-      setInterval(() => {
-        console.log('⏰ Periodic refresh triggered (trade history)');
-        fetchAllTrades();
-      }, refreshInterval);
-      
-      console.log('⏰ Periodic refresh setup: every 10 seconds (trade history)');
-    }
+    window.addEventListener('message', function(event) {
+      if (event.origin !== window.location.origin) return;
+      if (!event.data || event.data.type !== 'tab-visibility') return;
+      const visible = event.data.visible === true;
+      window.TRADE_HISTORY_PAUSED = !visible;
+      if (visible) {
+        if (_tradeHistoryDbRefreshTimer) {
+          clearTimeout(_tradeHistoryDbRefreshTimer);
+          _tradeHistoryDbRefreshTimer = null;
+        }
+        setupDatabaseChangeListener();
+        fetchAllTrades('tab-visible');
+      } else {
+        if (window._thDbChangesWs) {
+          try { window._thDbChangesWs.close(); } catch (e) {}
+          window._thDbChangesWs = null;
+        }
+        if (_tradeHistoryDbRefreshTimer) {
+          clearTimeout(_tradeHistoryDbRefreshTimer);
+          _tradeHistoryDbRefreshTimer = null;
+        }
+      }
+    });
 
     // On initial load, show filtered trades
     window.addEventListener('DOMContentLoaded', async () => {
@@ -1612,7 +1632,7 @@
       }
 
       // Now fetch trades after preferences are loaded
-      fetchAllTrades();
+      fetchAllTrades('initial-load');
       
       // Set up event listeners
       const filterPicker = document.getElementById('date-filter-picker');
@@ -2095,12 +2115,9 @@
 
 
       
-      // Set up WebSocket connection for database change notifications
+      // WebSocket db_changes (no interval polling; see scheduleTradesRefetchFromDbChange)
       setupDatabaseChangeListener();
-      
-      // Set up periodic auto-refresh every 10 seconds
-      setupPeriodicRefresh();
-      
+
       // Set up analysis panel event listeners
       const analysisIntervalSelect = document.getElementById('analysis-time-interval');
       if (analysisIntervalSelect) {

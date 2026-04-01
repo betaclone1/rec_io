@@ -428,6 +428,13 @@ def log(message: str):
         # Don't break the system if logging fails
         print(f"[LOGGING ERROR] Failed to write to log file: {e}")
 
+
+def log_debug(message: str):
+    """Debug-level; test harness stays quiet unless AES_TEST_DEBUG is set."""
+    if os.environ.get("AES_TEST_DEBUG", "").strip().lower() in ("1", "true", "yes"):
+        log(message)
+
+
 def log_heartbeat():
     """Log heartbeat every 5 minutes with system status"""
     try:
@@ -1912,10 +1919,9 @@ def cleanup_old_cooldowns():
     
     for key in keys_to_remove:
         del last_trade_times[key]
-    
-            # Only log if we actually cleaned up something (and only if significant)
-        if len(keys_to_remove) > 5:
-            log(f"[AUTO ENTRY] Cleaned up {len(keys_to_remove)} old cooldowns")
+
+    if keys_to_remove:
+        log_debug(f"[AUTO ENTRY] Cleaned up {len(keys_to_remove)} expired cooldown(s)")
 
 def start_monitoring_loop():
     """Start the monitoring loop for auto entry conditions"""

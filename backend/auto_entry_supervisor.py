@@ -255,6 +255,14 @@ def _strike_cooldown_key(strike_value, active_side: str) -> str:
     return base
 
 
+def _rising_devil_ratelimit() -> Dict[str, float]:
+    """Per-monitor throttles for Rising Devil INFO logs (unified pool safe)."""
+    return _RISING_DEVIL_RATELIMIT.setdefault(
+        ctx_ident(),
+        {"ttc_out": 0.0, "scan": 0.0, "thr": 0.0, "no_range": 0.0, "no_ladder": 0.0},
+    )
+
+
 def _aes_side_bucket_for_dedupe(side) -> str:
     """Map Y/yes/YES/N/no/NO (and a few aliases) to ``yes`` or ``no`` for duplicate-trade checks."""
     if side is None:
@@ -864,7 +872,11 @@ def _aes_indicator_bucket() -> dict:
 
 # Track previous settings for change detection
 previous_settings = None
-previous_auto_trade_status = None
+# Per-monitor: unified pool must not share one global (false STATUS CHANGE spam across monitors).
+_previous_auto_trade_status_by_monitor: Dict[str, Optional[str]] = {}
+# Per ctx_ident(): throttle INFO for ACTIVE/INACTIVE flapping at TTC window edges (unified pool × tick rate).
+_status_change_info_log_ts: Dict[str, float] = {}
+STATUS_CHANGE_INFO_MIN_INTERVAL_SEC = 120.0
 
 # Track previous state to detect changes (per-monitor key in unified pool)
 previous_indicator_state = None
@@ -875,6 +887,9 @@ _previous_indicator_by_monitor: Dict[str, Any] = {}
 # "already entered this cycle" flag and allow duplicate entries.
 _momentum_breakout_cycle_state_by_monitor: Dict[str, Dict[str, Any]] = {}
 _momentum_contain_cycle_state_by_monitor: Dict[str, Dict[str, Any]] = {}
+
+# Rising Devil: rate-limited INFO per monitor (ctx_ident).
+_RISING_DEVIL_RATELIMIT: Dict[str, Dict[str, float]] = {}
 
 # State tracking for logging reduction
 
@@ -1311,13 +1326,24 @@ def update_cooldown_timer_in_db(seconds):
 
 def update_auto_entry_status_in_db(status):
     """Update auto trade status in the monitor_list table"""
-    global previous_auto_trade_status
     try:
-        # Only log if status actually changed
-        if previous_auto_trade_status != status:
-            log(f"[AUTO ENTRY] 🔄 STATUS CHANGE | Monitor {ctx_mid()} | {previous_auto_trade_status} → {status}")
-            previous_auto_trade_status = status
-        
+        ident = ctx_ident()
+        prev = _previous_auto_trade_status_by_monitor.get(ident)
+        if prev != status:
+            _previous_auto_trade_status_by_monitor[ident] = status
+            msg = f"[AUTO ENTRY] 🔄 STATUS CHANGE | Monitor {ctx_mid()} | {prev} → {status}"
+            import time as _t
+
+            now = _t.time()
+            last_info = _status_change_info_log_ts.get(ident, 0.0)
+            # DISABLED is safety-relevant; always surface at INFO.
+            force_info = status == "DISABLED" or prev == "DISABLED"
+            if force_info or (now - last_info >= STATUS_CHANGE_INFO_MIN_INTERVAL_SEC):
+                log(msg)
+                _status_change_info_log_ts[ident] = now
+            else:
+                log_debug(msg)
+
         import psycopg2
         conn = get_db_connection()
         with conn.cursor() as cursor:
@@ -1850,7 +1876,7 @@ def get_auto_entry_settings():
                            spike_alert_enabled, spike_alert_momentum_threshold, 
                            spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
                            min_volume, momentum_scalp_entry_threshold, min_ask, max_ask, max_price_spread, prob_adj,
-                           min_cooldown_timer, max_cooldown_timer
+                           min_cooldown_timer, max_cooldown_timer, min_ask_range
                     FROM users.monitor_list_0001 WHERE id = %s
                 """, (ctx_mid(),))
                 strategy_result = cursor.fetchone()
@@ -1875,7 +1901,8 @@ def get_auto_entry_settings():
                         "max_price_spread": float(strategy_result[15]) if strategy_result[15] is not None else 0.0300,
                         "prob_adj": float(strategy_result[16]) if strategy_result[16] is not None else 5.00,
                         "min_cooldown_timer": strategy_result[17] if strategy_result[17] is not None else None,
-                        "max_cooldown_timer": strategy_result[18] if strategy_result[18] is not None else None
+                        "max_cooldown_timer": strategy_result[18] if strategy_result[18] is not None else None,
+                        "min_ask_range": float(strategy_result[19]) if strategy_result[19] is not None else None,
                     }
                     
                     # Check for settings changes
@@ -2070,7 +2097,9 @@ def _fetch_master_strike_table_data(current_symbol: str, current_market: str):
                         no_diff,
                         active_side,
                         yes_price_spread,
-                        no_price_spread
+                        no_price_spread,
+                        yes_ask_range_15m,
+                        no_ask_range_15m
                     FROM (
                         SELECT DISTINCT ON (ticker)
                             strike,
@@ -2087,6 +2116,8 @@ def _fetch_master_strike_table_data(current_symbol: str, current_market: str):
                             active_side,
                             yes_price_spread,
                             no_price_spread,
+                            yes_ask_range_15m,
+                            no_ask_range_15m,
                             timestamp
                         FROM live_data.{table_15m}
                         WHERE exchange = %s AND symbol = %s
@@ -2111,7 +2142,9 @@ def _fetch_master_strike_table_data(current_symbol: str, current_market: str):
                         no_diff,
                         active_side,
                         yes_price_spread,
-                        no_price_spread
+                        no_price_spread,
+                        yes_ask_range_15m,
+                        no_ask_range_15m
                     FROM (
                         SELECT DISTINCT ON (ticker)
                             strike,
@@ -2128,6 +2161,8 @@ def _fetch_master_strike_table_data(current_symbol: str, current_market: str):
                             active_side,
                             yes_price_spread,
                             no_price_spread,
+                            yes_ask_range_15m,
+                            no_ask_range_15m,
                             timestamp
                         FROM live_data.{table_name}
                         WHERE exchange = %s AND symbol = %s
@@ -2164,6 +2199,8 @@ def _fetch_master_strike_table_data(current_symbol: str, current_market: str):
                     "active_side": strike_row[11],
                     "yes_price_spread": float(strike_row[12]) if strike_row[12] is not None else None,
                     "no_price_spread": float(strike_row[13]) if strike_row[13] is not None else None,
+                    "yes_ask_range_15m": float(strike_row[14]) if strike_row[14] is not None else None,
+                    "no_ask_range_15m": float(strike_row[15]) if strike_row[15] is not None else None,
                 }
                 response["strikes"].append(strike_data)
             conn.close()
@@ -2987,7 +3024,7 @@ def is_strike_already_traded(strike_data):
                 continue
             if _aes_side_bucket_for_dedupe(trade_side) != want_side:
                 continue
-            log(
+            log_debug(
                 f"⚠️ Found {trade_status} trade (ID: {trade_id}) ticker={ticker} side_bucket={want_side} "
                 f"monitor={current_monitor}"
             )
@@ -3296,6 +3333,8 @@ def _check_auto_entry_conditions_impl():
             check_auto_entry_conditions_momentum_breakout()
         elif strategy == "Momentum Contain":
             check_auto_entry_conditions_momentum_contain()
+        elif strategy == "Rising Devil":
+            check_auto_entry_conditions_rising_devil()
         else:
             # Default to Hourly HTC (including fallback)
             check_auto_entry_conditions_hourly_htc()
@@ -3579,6 +3618,259 @@ def check_auto_entry_conditions_hourly_htc():
                 
     except Exception as e:
         log(f"[AUTO ENTRY HTC] Error checking auto entry conditions: {e}")
+
+
+def check_auto_entry_conditions_rising_devil():
+    """Rising Devil: HTC gates (TTC, prob, volume, max_ask, spike/prob_adj) without min/max differential; trigger when active-side ask range >= min_ask_range."""
+    try:
+        check_spike_alert_conditions()
+
+        strike_table_data = get_master_strike_table_data()
+        if strike_table_data:
+            update_monitor_current_state(strike_table_data)
+
+        auto_trade_enabled = is_auto_trade_enabled()
+        service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
+        spike_alert_active = _aes_indicator_bucket().get("spike_alert_active", False)
+
+        if not auto_trade_enabled:
+            _aes_indicator_bucket().update({
+                "enabled": False,
+                "ttc_within_window": False,
+                "scanning_active": False,
+                "service_healthy": service_healthy,
+                "spike_alert_active": spike_alert_active,
+                "current_ttc": 0,
+                "last_updated": est_now().isoformat()
+            })
+            broadcast_auto_entry_indicator_change()
+            return
+
+        settings = get_auto_entry_settings()
+        required_settings = ["min_time", "max_time", "min_probability", "max_probability", "min_ask_range"]
+        missing_settings = [setting for setting in required_settings if setting not in settings]
+        if missing_settings:
+            log(f"[AUTO ENTRY RISING DEVIL] ❌ monitor={ctx_mid()} missing required settings: {missing_settings}")
+            return
+
+        min_ask_range = settings.get("min_ask_range")
+        if min_ask_range is None or (isinstance(min_ask_range, (int, float)) and float(min_ask_range) <= 0):
+            import time as _t
+            rl = _rising_devil_ratelimit()
+            now = _t.time()
+            if now - rl["thr"] >= 300:
+                log(
+                    f"[AUTO ENTRY RISING DEVIL] ⏸️ monitor={ctx_mid()} min_ask_range unset or <= 0; "
+                    "configure monitor to enable entries"
+                )
+                rl["thr"] = now
+            _aes_indicator_bucket().update({
+                "enabled": True,
+                "ttc_within_window": False,
+                "scanning_active": False,
+                "service_healthy": service_healthy,
+                "spike_alert_active": spike_alert_active,
+                "current_ttc": get_current_ttc(),
+                "last_updated": est_now().isoformat()
+            })
+            broadcast_auto_entry_indicator_change()
+            return
+
+        min_ask_range = float(min_ask_range)
+
+        min_time = settings["min_time"]
+        max_time = settings["max_time"]
+        base_min_probability = settings["min_probability"]
+        max_probability = settings["max_probability"]
+
+        prob_adj = settings.get("prob_adj", 5.00)
+        if spike_alert_active:
+            min_probability = base_min_probability + prob_adj
+            log_debug(f"[AUTO ENTRY RISING DEVIL] 📊 Adjusted probability floor: {base_min_probability:.2f} + {prob_adj:.2f} = {min_probability:.2f}%")
+        else:
+            min_probability = base_min_probability
+
+        current_ttc = get_current_ttc()
+        ttc_within_window = min_time <= current_ttc <= max_time
+        scanning_active = (auto_trade_enabled and service_healthy and ttc_within_window)
+
+        _aes_indicator_bucket().update({
+            "enabled": True,
+            "ttc_within_window": ttc_within_window,
+            "scanning_active": scanning_active,
+            "service_healthy": service_healthy,
+            "spike_alert_active": spike_alert_active,
+            "current_ttc": current_ttc,
+            "min_time": min_time,
+            "max_time": max_time,
+            "last_updated": est_now().isoformat()
+        })
+        broadcast_auto_entry_indicator_change()
+
+        if not ttc_within_window:
+            import time as _t
+            rl = _rising_devil_ratelimit()
+            now = _t.time()
+            if now - rl["ttc_out"] >= 300:
+                log(
+                    f"[AUTO ENTRY RISING DEVIL] ⏸️ monitor={ctx_mid()} TTC outside window | "
+                    f"ttc={current_ttc}s allowed={min_time}-{max_time}s"
+                )
+                rl["ttc_out"] = now
+            return
+
+        if not strike_table_data or "strikes" not in strike_table_data:
+            import time as _t
+            rl = _rising_devil_ratelimit()
+            no = _t.time()
+            if no - rl["no_ladder"] >= 120:
+                log(
+                    f"[AUTO ENTRY RISING DEVIL] ⚠️ monitor={ctx_mid()} no ladder snapshot "
+                    "(strike_table_data missing or no strikes key)"
+                )
+                rl["no_ladder"] = no
+            return
+
+        processed_strikes = set()
+        import time as _t
+        strikes_list = strike_table_data.get("strikes", []) or []
+        strike_count = len(strikes_list)
+        rl_scan = _rising_devil_ratelimit()
+        now_scan = _t.time()
+        if now_scan - rl_scan["scan"] >= 60:
+            sym = get_current_monitor_symbol() or "?"
+            log(
+                f"[AUTO ENTRY RISING DEVIL] 🔍 monitor={ctx_mid()} scanning | symbol={sym} "
+                f"strikes={strike_count} ttc={current_ttc}s window={min_time}-{max_time}s "
+                f"min_ask_range>={min_ask_range:.4f}"
+            )
+            rl_scan["scan"] = now_scan
+
+        with_active_side = 0
+        active_side_null_range = 0
+
+        for strike in strikes_list:
+            try:
+                active_side = strike.get('active_side')
+                if not active_side:
+                    continue
+
+                with_active_side += 1
+                _as = str(active_side).lower()
+                if _as == "yes" and strike.get("yes_ask_range_15m") is None:
+                    active_side_null_range += 1
+                elif _as == "no" and strike.get("no_ask_range_15m") is None:
+                    active_side_null_range += 1
+
+                strike_key = _strike_cooldown_key(strike.get("strike"), active_side)
+
+                if strike_key in processed_strikes:
+                    continue
+                processed_strikes.add(strike_key)
+
+                if not can_trade_strike(strike_key):
+                    continue
+
+                strike_data_for_check = {
+                    "strike": strike.get("strike"),
+                    "side": active_side,
+                    "ticker": strike.get("ticker"),
+                }
+                if is_strike_already_traded(strike_data_for_check):
+                    continue
+
+                prob = strike.get('probability')
+                if prob is None or prob < min_probability or prob > max_probability:
+                    continue
+
+                min_volume = settings.get("min_volume", 1000)
+                volume = _kalshi_fp_volume_number(strike.get("volume_fp")) or 0
+                if volume < min_volume:
+                    continue
+
+                max_ask = settings.get("max_ask", 0.9800)
+                yes_ask_dollars = strike.get('yes_ask_dollars')
+                no_ask_dollars = strike.get('no_ask_dollars')
+                if not yes_ask_dollars or not no_ask_dollars:
+                    continue
+                max_ask_price = max(float(yes_ask_dollars), float(no_ask_dollars))
+                max_ask_limit = float(max_ask) if max_ask < 1 else float(max_ask) / 100.0
+                if max_ask_price > max_ask_limit:
+                    continue
+
+                side_lower = str(active_side).lower()
+                if side_lower == 'yes':
+                    rng = strike.get('yes_ask_range_15m')
+                    yes_ask_dollars = strike.get('yes_ask_dollars')
+                    if not yes_ask_dollars:
+                        continue
+                    buy_price = float(yes_ask_dollars)
+                    side = 'yes'
+                elif side_lower == 'no':
+                    rng = strike.get('no_ask_range_15m')
+                    no_ask_dollars = strike.get('no_ask_dollars')
+                    if not no_ask_dollars:
+                        continue
+                    buy_price = float(no_ask_dollars)
+                    side = 'no'
+                else:
+                    continue
+
+                if rng is None:
+                    continue
+                try:
+                    rng_f = float(rng)
+                except (TypeError, ValueError):
+                    continue
+                if rng_f < min_ask_range:
+                    continue
+
+                diff = strike.get('yes_diff') if active_side == 'yes' else strike.get('no_diff')
+
+                strike_data = {
+                    'strike': format_trade_strike_label(strike.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike.get("ticker")),
+                    'side': side,
+                    'ticker': strike.get('ticker'),
+                    'buy_price': buy_price,
+                    'probability': prob,
+                    'diff': diff
+                }
+
+                if is_strike_already_traded(strike_data):
+                    log(f"[AUTO ENTRY RISING DEVIL] ⏸️ monitor={ctx_mid()} Skipping {strike_key} - already traded")
+                    continue
+
+                log(
+                    f"[AUTO ENTRY RISING DEVIL] 🚀 monitor={ctx_mid()} TRIGGERING | {strike_key} | range={rng_f:.4f} | "
+                    f"Prob: {prob}% | Buy: ${buy_price:.2f} | Ticker: {strike.get('ticker')}"
+                )
+                if trigger_auto_entry_trade(strike_data):
+                    log(f"[AUTO ENTRY RISING DEVIL] ✅ monitor={ctx_mid()} TRADE SUCCESSFUL | {strike_key}")
+                else:
+                    log(f"[AUTO ENTRY RISING DEVIL] ❌ monitor={ctx_mid()} TRADE FAILED | {strike_key}")
+                    if strike_key in last_trade_times:
+                        del last_trade_times[strike_key]
+
+            except Exception as e:
+                log(f"[AUTO ENTRY RISING DEVIL] monitor={ctx_mid()} Error processing strike {strike.get('strike')}: {e}")
+
+        if (
+            with_active_side > 0
+            and active_side_null_range == with_active_side
+        ):
+            import time as _t_nr
+            rl_nr = _rising_devil_ratelimit()
+            tn = _t_nr.time()
+            if tn - rl_nr["no_range"] >= 300:
+                log(
+                    f"[AUTO ENTRY RISING DEVIL] ⚠️ monitor={ctx_mid()} every active-side strike lacks "
+                    f"yes/no_ask_range_15m ({with_active_side} rows); check ladder fetch / DB"
+                )
+                rl_nr["no_range"] = tn
+
+    except Exception as e:
+        log(f"[AUTO ENTRY RISING DEVIL] ❌ monitor={ctx_mid()} Error: {e}")
+
 
 def check_auto_entry_conditions_reverse_htc():
     """Check if auto entry conditions are met and trigger trades for Reverse HTC strategy
@@ -5108,10 +5400,9 @@ def cleanup_old_cooldowns():
     
     for key in keys_to_remove:
         del last_trade_times[key]
-    
-            # Only log if we actually cleaned up something (and only if significant)
-        if len(keys_to_remove) > 20:
-            log(f"[AUTO ENTRY] Cleaned up {len(keys_to_remove)} old cooldowns")
+
+    if keys_to_remove:
+        log_debug(f"[AUTO ENTRY] Cleaned up {len(keys_to_remove)} expired cooldown(s)")
 
 def start_monitoring_loop():
     """Start the monitoring loop for auto entry conditions"""
