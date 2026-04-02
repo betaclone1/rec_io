@@ -17,14 +17,15 @@ This changelog is used when pushing updates to production. Each entry is timesta
 1. `20260410_1000_trades_monitor_confirmed_default_null`
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration (from project root on server):  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260410_1000_trades_monitor_confirmed_default_null`
-- [ ] Schema drift check (recommended):  
+- [x] Apply migration (from project root on server):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260410_1000_trades_monitor_confirmed_default_null`  
+  *(Already recorded in `system.schema_migrations` on prod before this pull; runner reported already applied.)*
+- [x] Schema drift check (recommended):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows **`active_trade_supervisor_*`**, **`trade_manager`**, **`main_app`**, **`trade_executor`** RUNNING.
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows **`active_trade_supervisor_*`**, **`trade_manager`**, **`main_app`**, **`trade_executor`** RUNNING.
 
 ---
 
