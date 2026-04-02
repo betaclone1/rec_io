@@ -6,6 +6,22 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-02 — Hotfix: trade list empty after archive UNION (RealDictCursor)
+
+**Summary**
+- **`main.py`:** `GET /trades` and `GET /api/db/trades` use a default psycopg2 cursor for `union_trades_with_archives_select` (which reads `information_schema` via tuple rows). `RealDictCursor` caused a silent exception and empty `[]` / `{ "trades": [] }`.
+- **`trade_manager.py`:** `GET /trades/{trade_id}` uses a default cursor for the same union; build the response dict from `cursor.description` while the cursor is still open.
+
+**DB migrations:** None.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows key programs RUNNING.
+
+---
+
 ## 2026-04-02 — Trade archival tables + Mobile Stop Loss Price UI parity
 
 **Summary**
@@ -20,16 +36,16 @@ This changelog is used when pushing updates to production. Each entry is timesta
 1. `20260327_2200_archive_trades_live_paper_0001`
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations (from project root on server):  
+- [x] Apply migrations (from project root on server):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260327_2200_archive_trades_live_paper_0001`
-- [ ] Run archive backfill sweep (from project root on server):  
+- [x] Run archive backfill sweep (from project root on server):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/backfill_archive_trades_for_archived_monitors.py --user-number 0001`
-- [ ] Schema drift check (recommended):  
+- [x] Schema drift check (recommended):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows key programs RUNNING.
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows key programs RUNNING.
 
 ---
 
@@ -1080,7 +1096,7 @@ No DB schema changes. Backend (kalshi_account_sync_ws, monitor_manager) and fron
 
 - [x] Confirm codebase changes (pull latest on production).
 - [x] No DB schema changes or migrations; no restart required.
-- [ ] Optional: On prod, if using Cursor/agents, add digitalocean-droplets MCP to mcp.json for snapshot/backup; token in env/headers.
+- [x] Optional: On prod, if using Cursor/agents, add digitalocean-droplets MCP to mcp.json for snapshot/backup; token in env/headers.
 
 ---
 
@@ -1097,7 +1113,7 @@ No DB schema changes. Backend (kalshi_account_sync_ws, monitor_manager) and fron
 
 - [x] Confirm codebase changes (pull latest on production).
 - [x] No DB schema changes or migrations; no restart required for this release.
-- [ ] Optional: If using Cursor/agents on this repo, ensure local `.cursor` config (e.g. MCP paths) is set for your machine; `mcp.json` and credentials remain gitignored.
+- [x] Optional: If using Cursor/agents on this repo, ensure local `.cursor` config (e.g. MCP paths) is set for your machine; `mcp.json` and credentials remain gitignored.
 
 ---
 
@@ -1127,7 +1143,7 @@ Each entry below uses:
 - [x] Confirm codebase changes (pull latest on production).
 - [x] No DB schema changes required; existing `_fp` and `_dollars` columns already used.
 - [x] Restart services that talk to Kalshi: `trade_executor`, `kalshi_account_sync`, `kalshi_market_watchdog` (and any hourly/15m watchdog instances), plus `main_app` if it proxies Kalshi. Full restart: `scripts/MASTER_RESTART.sh` or equivalent.
-- [ ] After March 12 2026: confirm orders, fills, positions, and market data continue to sync and display; no reliance on deprecated integer/cents fields.
+- [x] After March 12 2026: confirm orders, fills, positions, and market data continue to sync and display; no reliance on deprecated integer/cents fields.
 
 ---
 
@@ -1197,7 +1213,7 @@ Each entry below uses:
 
 - [x] Confirm codebase changes (pull latest on production).
 - [x] No prod DDL required for this release. CI will run drift check on future push/PR.
-- [ ] Optional: to audit prod schema, set DB_* (or REC_DB_*) to point at prod and run `PYTHONPATH=. python3 scripts/audit_db_schema.py` from project root. Do not run migrations or ALTERs on prod without a maintenance window and backup.
+- [x] Optional: to audit prod schema, set DB_* (or REC_DB_*) to point at prod and run `PYTHONPATH=. python3 scripts/audit_db_schema.py` from project root. Do not run migrations or ALTERs on prod without a maintenance window and backup.
 
 ---
 

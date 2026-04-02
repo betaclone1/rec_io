@@ -1827,12 +1827,13 @@ async def get_trades(status: Optional[str] = None):
     """Get trade data from PostgreSQL database."""
     try:
         import psycopg2
-        from psycopg2.extras import RealDictCursor
-        
+
         # Connect to PostgreSQL
         conn = get_postgresql_connection()
-        
-        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+
+        # Plain cursor required: union_trades_with_archives_select uses
+        # fetch_trades_0001_column_names(), which expects tuple rows from fetchall().
+        with conn.cursor() as cursor:
             union_sql, _ = union_trades_with_archives_select(cursor, "0001")
             # Build query based on status filter (master + archive live + archive paper)
             if status:
@@ -1851,27 +1852,27 @@ async def get_trades(status: Optional[str] = None):
                     ORDER BY id DESC
                     """
                 )
-            
+
             trades = cursor.fetchall()
-            
-            # Convert RealDictRow objects to regular dictionaries
+            columns = [desc[0] for desc in cursor.description]
+
             result = []
-            for trade in trades:
-                trade_dict = dict(trade)
-                
+            for row in trades:
+                trade_dict = dict(zip(columns, row))
+
                 # Create a combined timestamp field for frontend compatibility
-                if 'date' in trade_dict and 'time' in trade_dict:
-                    trade_dict['timestamp'] = f"{trade_dict['date']} {trade_dict['time']}"
-                
+                if "date" in trade_dict and "time" in trade_dict:
+                    trade_dict["timestamp"] = f"{trade_dict['date']} {trade_dict['time']}"
+
                 # Create a combined price field for frontend compatibility
-                if 'buy_price' in trade_dict:
-                    trade_dict['price'] = trade_dict['buy_price']
-                
+                if "buy_price" in trade_dict:
+                    trade_dict["price"] = trade_dict["buy_price"]
+
                 result.append(trade_dict)
-            
+
             conn.close()
             return result
-            
+
     except Exception as e:
         _main_logger.warning(f"Error getting trades from PostgreSQL: {e}")
         return []
@@ -2618,12 +2619,11 @@ def get_trades_from_postgresql():
     """Get trades data from PostgreSQL database."""
     try:
         import psycopg2
-        from psycopg2.extras import RealDictCursor
-        
+
         # Connect to PostgreSQL
         conn = get_postgresql_connection()
-        
-        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+
+        with conn.cursor() as cursor:
             union_sql, _ = union_trades_with_archives_select(cursor, "0001")
             cursor.execute(
                 f"""
@@ -2632,41 +2632,43 @@ def get_trades_from_postgresql():
                 """
             )
             trades = cursor.fetchall()
-            
-            # Convert RealDictRow objects to regular dictionaries
+            columns = [desc[0] for desc in cursor.description]
+
             trades_list = []
-            for trade in trades:
-                trade_dict = dict(trade)
+            for row in trades:
+                trade_dict = dict(zip(columns, row))
                 # Ensure all fields are present for frontend compatibility
-                trade_dict.update({
-                    'id': trade_dict.get('id'),
-                    'status': trade_dict.get('status', ''),
-                    'date': trade_dict.get('date', ''),
-                    'time': trade_dict.get('time', ''),
-                    'symbol': trade_dict.get('symbol', 'BTC'),
-                    'trade_strategy': trade_dict.get('trade_strategy', ''),
-                    'market': trade_dict.get('market', 'hourly'),
-                    'contract': trade_dict.get('contract', ''),
-                    'strike': trade_dict.get('strike', ''),
-                    'side': trade_dict.get('side', ''),
-                    'prob': trade_dict.get('prob'),
-                    'diff': trade_dict.get('diff'),
-                    'buy_price': trade_dict.get('buy_price'),
-                    'sell_price': trade_dict.get('sell_price'),
-                    'position': trade_dict.get('position'),
-                    'closed_at': trade_dict.get('closed_at'),
-                    'fees': trade_dict.get('fees'),
-                    'pnl': trade_dict.get('pnl'),
-                    'symbol_open': trade_dict.get('symbol_open'),
-                    'symbol_close': trade_dict.get('symbol_close'),
-                    'momentum': trade_dict.get('momentum'),
-                    'win_loss': trade_dict.get('win_loss')
-                })
+                trade_dict.update(
+                    {
+                        "id": trade_dict.get("id"),
+                        "status": trade_dict.get("status", ""),
+                        "date": trade_dict.get("date", ""),
+                        "time": trade_dict.get("time", ""),
+                        "symbol": trade_dict.get("symbol", "BTC"),
+                        "trade_strategy": trade_dict.get("trade_strategy", ""),
+                        "market": trade_dict.get("market", "hourly"),
+                        "contract": trade_dict.get("contract", ""),
+                        "strike": trade_dict.get("strike", ""),
+                        "side": trade_dict.get("side", ""),
+                        "prob": trade_dict.get("prob"),
+                        "diff": trade_dict.get("diff"),
+                        "buy_price": trade_dict.get("buy_price"),
+                        "sell_price": trade_dict.get("sell_price"),
+                        "position": trade_dict.get("position"),
+                        "closed_at": trade_dict.get("closed_at"),
+                        "fees": trade_dict.get("fees"),
+                        "pnl": trade_dict.get("pnl"),
+                        "symbol_open": trade_dict.get("symbol_open"),
+                        "symbol_close": trade_dict.get("symbol_close"),
+                        "momentum": trade_dict.get("momentum"),
+                        "win_loss": trade_dict.get("win_loss"),
+                    }
+                )
                 trades_list.append(trade_dict)
-            
+
             conn.close()
             return {"trades": trades_list}
-            
+
     except Exception as e:
         _main_logger.warning(f"Error getting trades from PostgreSQL: {e}")
         return {"trades": []}

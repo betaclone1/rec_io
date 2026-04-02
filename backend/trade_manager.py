@@ -3761,16 +3761,21 @@ def get_trade_by_id(trade_id: int):
     if not pg_conn:
         raise HTTPException(status_code=503, detail="Database unavailable")
     try:
-        with pg_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+        # NOTE: `union_trades_with_archives_select()` calls
+        # `fetch_trades_0001_column_names()`, which expects tuple rows from
+        # `cursor.fetchall()`. A `RealDictCursor` returns dict rows, which
+        # breaks column-name extraction and causes HTTP 500.
+        with pg_conn.cursor() as cursor:
             union_sql, _ = union_trades_with_archives_select(cursor, "0001")
             cursor.execute(
                 f"SELECT * FROM ({union_sql}) AS all_trades WHERE id = %s LIMIT 1",
                 (trade_id,),
             )
             row = cursor.fetchone()
+            columns = [desc[0] for desc in cursor.description]
         if not row:
             raise HTTPException(status_code=404, detail="Trade not found")
-        return dict(row)
+        return dict(zip(columns, row))
     except HTTPException:
         raise
     except Exception as e:
