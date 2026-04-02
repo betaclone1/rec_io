@@ -6,6 +6,28 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-02 — ATS trade-log tick reconcile; trades monitor_confirmed default NULL
+
+**Summary**
+- **`active_trade_supervisor`:** Each monitoring tick calls **`reconcile_active_trades_with_trade_log_each_tick()`** for the bound monitor: enroll missing **`pending` / `open` / `closing`** rows from **`users.trades_*`** (`monitor = mon_<user>_<id>`), promote pool pending when the log shows open, mark pool closing when the log shows closing, remove pool rows when the canonical trade is terminal. Monitoring loop, failsafes, and startup/brute-force checks treat **`active` + `pending` + `closing`** as “tracked” so pending-only monitors keep the loop alive. Unified pool monitor discovery includes monitors that only have pending/closing rows.
+- **Database:** New trades default **`monitor_confirmed`** to **NULL** until close logic sets true/false — **`init_database()`** DDL for **`users.trades_0001`** / **`users.trades_simulated_0001`** aligned; **`MASTER_DB_SCHEMA_REFERENCE`** updated.
+- **Migration:** **`20260410_1000_trades_monitor_confirmed_default_null`** alters column default on live + simulated trade tables.
+
+**DB migrations (required on production, in order)**
+1. `20260410_1000_trades_monitor_confirmed_default_null`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration (from project root on server):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260410_1000_trades_monitor_confirmed_default_null`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows **`active_trade_supervisor_*`**, **`trade_manager`**, **`main_app`**, **`trade_executor`** RUNNING.
+
+---
+
 ## 2026-04-02 — Hotfix: trade list empty after archive UNION (RealDictCursor)
 
 **Summary**

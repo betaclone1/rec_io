@@ -2601,7 +2601,7 @@ def _iter_unified_pool_monitor_bindings_for_monitoring():
                 cur.execute(
                     f"""
                     SELECT DISTINCT monitor_id FROM users.{tbl}
-                    WHERE status = 'active'
+                    WHERE status IN ('active', 'pending', 'closing')
                     """
                 )
                 for (mid,) in cur.fetchall():
@@ -2848,12 +2848,15 @@ def check_monitoring_failsafe():
         else:
             active_trades_table = get_monitor_active_trades_table()
             cursor.execute(
-                f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE status = 'active'"
+                f"""
+                SELECT COUNT(*) FROM users.{active_trades_table}
+                WHERE status IN ('active', 'pending', 'closing')
+                """
             )
             active_count = cursor.fetchone()[0]
         conn.close()
-        
-        # If there are active trades but no monitoring thread, restart it
+
+        # If there are tracked trades but no monitoring thread, restart it
         if active_count > 0:
             with monitoring_thread_lock:
                 thread_alive = False
@@ -2863,9 +2866,12 @@ def check_monitoring_failsafe():
                     log(f"⚠️ FAILSAFE: Thread object corrupted ({e}), forcing cleanup")
                     monitoring_thread = None
                     thread_alive = False
-                
+
                 if not thread_alive:
-                    log(f"🔄 FAILSAFE: Found {active_count} active trades but monitoring not running")
+                    log(
+                        f"🔄 FAILSAFE: Found {active_count} tracked trade row(s) "
+                        f"(active/pending/closing) but monitoring not running"
+                    )
                     
                     # Step 1: Try thread restart first (quick recovery)
                     log("🔄 FAILSAFE: Attempting thread restart...")
@@ -3025,9 +3031,15 @@ def start_monitoring_loop():
                 else:
                     _ats_monitors = [(USER_NUMBER, MONITOR_ID)]
 
-                _ats_round = False
                 for _ats_u, _ats_mid in _ats_monitors:
                     with ats_monitor_bind(_ats_u, _ats_mid):
+                        try:
+                            reconcile_active_trades_with_trade_log_each_tick()
+                        except Exception as _rec_e:
+                            log_debug(
+                                f"TICK RECONCILE: exception ({ctx_ident()}): {_rec_e}"
+                            )
+
                         # Check if there are still active trades
                         conn = get_db_connection()
                         cursor = conn.cursor()
@@ -3043,7 +3055,6 @@ def start_monitoring_loop():
 
                         if not active_trades:
                             continue
-                        _ats_round = True
 
                         # Update monitoring data
                         update_active_trade_monitoring_data()
@@ -3316,8 +3327,28 @@ def start_monitoring_loop():
                             except Exception as e:
                                 log(f"[MOMENTUM SPIKE] Error in momentum spike logic: {e}")
 
-                if not _ats_round:
-                    log("📊 MONITORING: No more active trades, stopping monitoring loop")
+                if ATS_UNIFIED_POOL:
+                    tracked_left = _count_active_trades_across_unified_pool_monitors()
+                else:
+                    try:
+                        _tconn = get_db_connection()
+                        _ttbl = get_monitor_active_trades_table()
+                        _tc = _tconn.cursor()
+                        _tc.execute(
+                            f"""
+                            SELECT COUNT(*) FROM users.{_ttbl}
+                            WHERE status IN ('active', 'pending', 'closing')
+                            """
+                        )
+                        tracked_left = int(_tc.fetchone()[0])
+                        _tconn.close()
+                    except Exception:
+                        tracked_left = 0
+
+                if tracked_left == 0:
+                    log(
+                        "📊 MONITORING: No active, pending, or closing trades; stopping monitoring loop"
+                    )
                     break
                 # Sleep for 1 second
                 time.sleep(1)
@@ -3334,13 +3365,19 @@ def start_monitoring_loop():
                     conn = get_db_connection()
                     cursor = conn.cursor()
                     cursor.execute(
-                        f"SELECT COUNT(*) FROM users.active_trades_{ctx_user()}_{ctx_mid()} WHERE status = 'active'"
+                        f"""
+                        SELECT COUNT(*) FROM users.active_trades_{ctx_user()}_{ctx_mid()}
+                        WHERE status IN ('active', 'pending', 'closing')
+                        """
                     )
                     active_count = cursor.fetchone()[0]
                     conn.close()
-                
+
                 if active_count > 0:
-                    log(f"🚨 CRITICAL: Monitoring loop crashed but {active_count} active trades still need monitoring!")
+                    log(
+                        f"🚨 CRITICAL: Monitoring loop crashed but {active_count} tracked trade row(s) "
+                        f"(active/pending/closing) still need monitoring"
+                    )
                     log("🔄 AUTO-RESTART: Attempting to restart monitoring loop in 5 seconds...")
                     
                     # Clear the thread reference so we can restart
@@ -3512,6 +3549,123 @@ def _sync_with_trades_db_for_current_monitor():
         )
     else:
         log(f"Sync complete ({ctx_ident()}): no changes needed")
+
+
+def reconcile_active_trades_with_trade_log_each_tick() -> None:
+    """
+    Per monitoring tick: align users.<active_trades> with users.trades_* for the bound monitor.
+
+    - Enrolls missing pending / open rows from the trade log (same monitor tag as sync).
+    - Promotes pool pending → active when the log shows open.
+    - Marks pool active/pending → closing when the log shows closing.
+    - Drops pool rows when the canonical trade is terminal or gone (same monitor only).
+
+    Uses existing add_pending_trade / add_new_active_trade / confirm_pending_trade /
+    update_trade_status_to_closing / remove_closed_trade (no pricing-path changes).
+    """
+    u = ctx_user()
+    mid = ctx_mid()
+    mon_tag = f"mon_{u}_{mid}"
+    tbl = get_monitor_active_trades_table()
+    scope_sql, scope_params = _active_trades_monitor_scope_sql()
+
+    conn_tr = get_trades_db_connection()
+    if not conn_tr:
+        return
+    try:
+        cur = conn_tr.cursor()
+        cur.execute(
+            f"""
+            SELECT id, ticket_id, status FROM users.trades_{u}
+            WHERE monitor = %s AND LOWER(TRIM(status)) IN ('pending', 'open', 'closing')
+            """,
+            (mon_tag,),
+        )
+        trade_rows = cur.fetchall()
+    except Exception as e:
+        log_debug(f"TICK RECONCILE: trades read failed ({ctx_ident()}): {e}")
+        return
+    finally:
+        conn_tr.close()
+
+    trade_by_id: Dict[int, Tuple[str, str]] = {}
+    for tid, ticket_id, st in trade_rows:
+        st_l = str(st or "").strip().lower()
+        trade_by_id[int(tid)] = (
+            str(ticket_id).strip() if ticket_id is not None else "",
+            st_l,
+        )
+
+    conn_at = get_db_connection()
+    if not conn_at:
+        return
+    try:
+        cur = conn_at.cursor()
+        cur.execute(
+            f"""
+            SELECT trade_id, status FROM users.{tbl}
+            WHERE status IN ('pending', 'active', 'closing'){scope_sql}
+            """,
+            scope_params,
+        )
+        pool_rows = {int(r[0]): str(r[1] or "").strip().lower() for r in cur.fetchall()}
+    except Exception as e:
+        log_debug(f"TICK RECONCILE: pool read failed ({ctx_ident()}): {e}")
+        return
+    finally:
+        conn_at.close()
+
+    for tid, (ticket_id, st) in trade_by_id.items():
+        ps = pool_rows.get(tid)
+        if ps is None:
+            if st == "pending":
+                add_pending_trade(tid, ticket_id or "")
+            elif st == "open":
+                add_new_active_trade(tid, ticket_id or "RECONCILE_OPEN")
+            elif st == "closing":
+                log_debug(
+                    f"TICK RECONCILE: trade {tid} closing in log but no pool row ({ctx_ident()}); "
+                    "skipping insert (needs open snapshot)"
+                )
+            continue
+        if ps == "pending" and st == "open":
+            confirm_pending_trade(tid, ticket_id or "")
+        elif ps in ("pending", "active") and st == "closing":
+            update_trade_status_to_closing(tid)
+
+    stale_tids = [t for t in pool_rows if t not in trade_by_id]
+    if not stale_tids:
+        return
+
+    conn_tr2 = get_trades_db_connection()
+    if not conn_tr2:
+        return
+    try:
+        cur2 = conn_tr2.cursor()
+        cur2.execute(
+            f"SELECT id, monitor, status FROM users.trades_{u} WHERE id = ANY(%s)",
+            (stale_tids,),
+        )
+        meta_rows = cur2.fetchall()
+    except Exception as e:
+        log_debug(f"TICK RECONCILE: stale lookup failed ({ctx_ident()}): {e}")
+        return
+    finally:
+        conn_tr2.close()
+
+    meta = {
+        int(r[0]): (r[1], str(r[2] or "").strip().lower()) for r in meta_rows
+    }
+    for tid in stale_tids:
+        m = meta.get(tid)
+        if m is None:
+            remove_closed_trade(tid)
+            continue
+        mon_db, st = m[0], m[1]
+        if str(mon_db or "").strip() != mon_tag:
+            continue
+        if st in ("closed", "expired", "error", "deleted"):
+            remove_closed_trade(tid)
 
 
 def _purge_unified_active_trades_wrong_market() -> int:
@@ -3721,7 +3875,8 @@ def start_event_driven_supervisor():
         if active_count > 0:
             pool_n = "15m" if ATS_UNIFIED_15M else "hourly"
             log(
-                f"📊 MONITORING: Found {active_count} existing active trade(s) in {pool_n} pool, starting monitoring"
+                f"📊 MONITORING: Found {active_count} existing tracked row(s) in {pool_n} pool "
+                f"(active/pending/closing), starting monitoring"
             )
             start_monitoring_loop()
     else:
@@ -3731,12 +3886,20 @@ def start_event_driven_supervisor():
             sys.exit(1)
         cursor = conn.cursor()
         active_trades_table = get_monitor_active_trades_table()
-        cursor.execute(f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE status = 'active'")
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) FROM users.{active_trades_table}
+            WHERE status IN ('active', 'pending', 'closing')
+            """
+        )
         active_count = cursor.fetchone()[0]
         conn.close()
 
         if active_count > 0:
-            log(f"📊 MONITORING: Found {active_count} existing active trades, starting monitoring")
+            log(
+                f"📊 MONITORING: Found {active_count} existing trade row(s) "
+                f"(active/pending/closing), starting monitoring"
+            )
             start_monitoring_loop()
     
     # Start HTTP server in a separate thread
@@ -3765,8 +3928,8 @@ def start_event_driven_supervisor():
     # Keep the process alive with brute force failsafe
     try:
         while True:
-            # BRUTE FORCE FAILSAFE: Check database every 10 seconds for active trades
-            # If there are active trades but no monitoring thread, restart it
+            # BRUTE FORCE FAILSAFE: Check database every 10 seconds for tracked trades
+            # If there are active/pending/closing rows but no monitoring thread, restart it
             if ATS_UNIFIED_POOL:
                 active_count = _count_active_trades_across_unified_pool_monitors()
             else:
@@ -3774,20 +3937,26 @@ def start_event_driven_supervisor():
                 cursor = conn.cursor()
                 active_trades_table = get_monitor_active_trades_table()
                 cursor.execute(
-                    f"SELECT COUNT(*) FROM users.{active_trades_table} WHERE status = 'active'"
+                    f"""
+                    SELECT COUNT(*) FROM users.{active_trades_table}
+                    WHERE status IN ('active', 'pending', 'closing')
+                    """
                 )
                 active_count = cursor.fetchone()[0]
                 conn.close()
-            
+
             # Check if monitoring thread is alive
             monitoring_thread_alive = False
             with monitoring_thread_lock:
                 if monitoring_thread is not None and monitoring_thread.is_alive():
                     monitoring_thread_alive = True
-            
-            # If there are active trades but no monitoring thread, restart it
+
+            # If there are tracked trades but no monitoring thread, restart it
             if active_count > 0 and not monitoring_thread_alive:
-                log(f"🚨 BRUTE FORCE FAILSAFE: Found {active_count} active trades but monitoring thread is dead!")
+                log(
+                    f"🚨 BRUTE FORCE FAILSAFE: Found {active_count} tracked trade row(s) "
+                    f"but monitoring thread is dead"
+                )
                 
                 # Try thread restart first
                 thread_restart_succeeded = False

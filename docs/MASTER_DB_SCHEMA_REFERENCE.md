@@ -10340,7 +10340,7 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `no_ask_range_15m` | `numeric(18,4)` | YES | - | Same snapshot: NO ask range. |
 | `paper_trade` | `boolean` | YES | false | |
 | `cooldown_timer` | `integer(32)` | YES | - | |
-| `monitor_confirmed` | `boolean` | YES | false | |
+| `monitor_confirmed` | `boolean` | YES | **NULL** | Default **NULL** on insert; app sets true/false when the trade is finalized. Migration `20260410_1000_trades_monitor_confirmed_default_null`. |
 | `cycle_win_loss` | `text` | YES | - | |
 | `cycle_pnl` | `real(24)` | YES | - | |
 | `cycle_ret_pct` | `real(24)` | YES | - | |

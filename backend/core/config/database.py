@@ -156,7 +156,7 @@ def init_database():
                 no_ask_range_15m NUMERIC(18,4),
                 paper_trade BOOLEAN DEFAULT FALSE,
                 cooldown_timer INTEGER,
-                monitor_confirmed BOOLEAN DEFAULT FALSE,
+                monitor_confirmed BOOLEAN DEFAULT NULL,
                 cycle_win_loss TEXT,
                 cycle_pnl REAL,
                 cycle_ret_pct REAL,
@@ -240,7 +240,7 @@ def init_database():
                 no_ask_range_15m NUMERIC(18,4),
                 paper_trade BOOLEAN DEFAULT FALSE,
                 cooldown_timer INTEGER,
-                monitor_confirmed BOOLEAN DEFAULT FALSE,
+                monitor_confirmed BOOLEAN DEFAULT NULL,
                 cycle_win_loss TEXT,
                 cycle_pnl REAL,
                 cycle_ret_pct REAL
@@ -474,7 +474,7 @@ def init_database():
                       AND table_name = 'trades_0001'
                       AND column_name = 'monitor_confirmed'
                 ) THEN
-                    ALTER TABLE users.trades_0001 ADD COLUMN monitor_confirmed BOOLEAN DEFAULT FALSE;
+                    ALTER TABLE users.trades_0001 ADD COLUMN monitor_confirmed BOOLEAN DEFAULT NULL;
                 END IF;
 
                 -- Add cycle_win_loss column if it doesn't exist
