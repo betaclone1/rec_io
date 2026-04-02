@@ -6,6 +6,33 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-02 — Trade archival tables + Mobile Stop Loss Price UI parity
+
+**Summary**
+- **DB:** Create `archive.trades_archive_live_0001` / `archive.trades_archive_paper_0001` tables and archive trades from `users.trades_0001` when their monitors are archived/missing (split by `paper_trade`).
+- **API:** `main.py`, `read_api.py`, and `trade_manager.py` now surface archived trades via `UNION` across master + archive; `/api/monitor/archive` archives trades in the same transaction as monitor status updates; add per-trade lookup by id across master + archive.
+- **Data ops:** Add `backend/util/trade_log_archivist.py` and `scripts/db/backfill_archive_trades_for_archived_monitors.py` to backfill/archive existing archived/missing-monitor trades.
+- **Frontend:** Desktop + mobile dashboard and trade monitor now include the Stop Loss Price slider/bubble behavior in parity.
+
+**Plans:** `db-prod-schema-alignment`, `monitor-activate-deactivate-and-dashboard-ui`, `frontend-mobile-parity-rule`
+
+**DB migrations (required on production, in timestamp order — runner skips already-applied ids)**
+1. `20260327_2200_archive_trades_live_paper_0001`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations (from project root on server):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260327_2200_archive_trades_live_paper_0001`
+- [ ] Run archive backfill sweep (from project root on server):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/backfill_archive_trades_for_archived_monitors.py --user-number 0001`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows key programs RUNNING.
+
+---
+
 ## 2026-04-01 — Rising Devil min ask range, AES ladder/logging, trades NOTIFY trigger
 
 **Summary**

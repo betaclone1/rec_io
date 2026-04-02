@@ -255,6 +255,124 @@ def _strike_cooldown_key(strike_value, active_side: str) -> str:
     return base
 
 
+def _strike_diff_for_traded_side(strike: Optional[dict], traded_side: str) -> Optional[float]:
+    """yes_diff / no_diff for the contract side we are buying (matches Hourly HTC / Rising Devil semantics)."""
+    if not strike:
+        return None
+    bucket = _aes_side_bucket_for_dedupe(traded_side)
+    key = "yes_diff" if bucket == "yes" else "no_diff" if bucket == "no" else None
+    if not key:
+        return None
+    raw = strike.get(key)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _auto_entry_differential_allowed(settings: dict, traded_side: str, strike: dict) -> Tuple[bool, str]:
+    """
+    When min_differential and/or max_differential are set in auto-trade settings, enforce the same
+    rules as Hourly HTC / Rising Devil: min uses a -0.5 cushion; max blocks absurd edge (too good to be true).
+    If neither bound is configured, returns (True, 'unbounded').
+    """
+    min_differential = settings.get("min_differential")
+    max_differential = settings.get("max_differential")
+    if min_differential is None and max_differential is None:
+        return True, "unbounded"
+    diff = _strike_diff_for_traded_side(strike, traded_side)
+    if min_differential is not None:
+        try:
+            floor = float(min_differential) - 0.5
+        except (TypeError, ValueError):
+            floor = None
+        if floor is not None and (diff is None or diff < floor):
+            return False, f"diff_below_min diff={diff} floor={floor}"
+    if max_differential is not None:
+        try:
+            cap = float(max_differential)
+        except (TypeError, ValueError):
+            cap = None
+        if cap is not None and (diff is None or diff > cap):
+            return False, f"diff_above_max diff={diff} cap={cap}"
+    return True, "ok"
+
+
+def _log_aes_trigger_feed_snapshot(strike_data: dict, strike_table_data: Optional[dict]) -> None:
+    """Structured INFO line at auto-trigger time: ladder snapshot + live_symbol_status for incident forensics."""
+    try:
+        strategy = get_trade_strategy()
+    except Exception:
+        strategy = None
+    try:
+        sym, mkt = get_current_monitor_symbol_and_market()
+    except Exception:
+        sym, mkt = "BTC", "hourly"
+    row = None
+    conn = None
+    try:
+        conn = get_db_connection()
+        if conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT symbol, "timestamp", price, one_minute_avg, momentum_30s_avg
+                    FROM live_data.live_symbol_status
+                    WHERE symbol = %s
+                    """,
+                    (str(sym).upper(),),
+                )
+                row = cur.fetchone()
+    except Exception:
+        row = None
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+    status_payload = None
+    if row:
+        try:
+            status_payload = {
+                "timestamp": row[1],
+                "price": float(row[2]) if row[2] is not None else None,
+                "one_minute_avg": float(row[3]) if len(row) > 3 and row[3] is not None else None,
+                "momentum_30s_avg": float(row[4]) if len(row) > 4 and row[4] is not None else None,
+            }
+        except (TypeError, ValueError):
+            status_payload = {"timestamp": row[1], "price": row[2], "one_minute_avg": row[3], "momentum_30s_avg": row[4] if len(row) > 4 else None}
+    std = strike_table_data or {}
+    payload = {
+        "aes": "trigger_ctx",
+        "user": ctx_user(),
+        "monitor_id": ctx_mid(),
+        "strategy": strategy,
+        "symbol": sym,
+        "market": mkt,
+        "strike": {
+            "label": strike_data.get("strike"),
+            "side": strike_data.get("side"),
+            "ticker": strike_data.get("ticker"),
+            "buy_price": strike_data.get("buy_price"),
+            "probability": strike_data.get("probability"),
+            "diff": strike_data.get("diff"),
+        },
+        "ladder": {
+            "current_price": std.get("current_price"),
+            "ttc": std.get("ttc"),
+            "event_ticker": std.get("event_ticker"),
+        },
+        "live_symbol_status": status_payload,
+    }
+    try:
+        log(f"[AES_TRIGGER_CTX] {json.dumps(payload, default=str)}")
+    except Exception:
+        log(f"[AES_TRIGGER_CTX] {payload!r}")
+
+
 def _rising_devil_ratelimit() -> Dict[str, float]:
     """Per-monitor throttles for Rising Devil INFO logs (unified pool safe)."""
     return _RISING_DEVIL_RATELIMIT.setdefault(
@@ -2713,6 +2831,8 @@ def trigger_auto_entry_trade(strike_data):
             log(f"[AUTO ENTRY] ❌ Cannot trigger trade - no valid bankroll allotment found")
             return False
         
+        _log_aes_trigger_feed_snapshot(strike_data, strike_table_data)
+        
         # Create the exact same payload that trade_initiator would create
         # Generate unique ticket ID (same format as trade_initiator)
         ticket_id = f"TICKET-{uuid.uuid4().hex[:9]}-{int(est_now().timestamp() * 1000)}"
@@ -4096,18 +4216,13 @@ def check_auto_entry_conditions_reverse_htc():
                 if prob is None or prob < min_probability or prob > max_probability:
                     continue
                 
-                # STEP 4: Check differential threshold (EXACT SAME AS HOURLY HTC)
-                if min_differential is not None:
-                    diff = strike.get('yes_diff') if active_side == 'yes' else strike.get('no_diff')
-                    if diff is None or diff < (min_differential - 0.5):
-                        continue
-                
-                # STEP 4.5: Check max differential threshold (EXACT SAME AS HOURLY HTC)
-                max_differential = settings.get("max_differential")
-                if max_differential is not None:
-                    diff = strike.get('yes_diff') if active_side == 'yes' else strike.get('no_diff')
-                    if diff is None or diff > max_differential:
-                        continue
+                # STEP 4: Differential gates on the executed leg (opposite_side), not the signal side
+                _diff_ok, _diff_reason = _auto_entry_differential_allowed(settings, opposite_side, strike)
+                if not _diff_ok:
+                    log_debug(
+                        f"[AUTO ENTRY REVERSE HTC] skip {strike_key} executed={opposite_side} {_diff_reason}"
+                    )
+                    continue
                 
                 # STEP 5: Check volume threshold (EXACT SAME AS HOURLY HTC)
                 min_volume = settings.get("min_volume", 1000)
@@ -4408,20 +4523,27 @@ def check_auto_entry_conditions_momentum_breakout():
         if strike_above_data:
             yes_ask_dollars = strike_above_data.get('yes_ask_dollars')
             if yes_ask_dollars:
-                strike_data = {
-                    'strike': format_trade_strike_label(strike_above_data.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike_above_data.get("ticker")),
-                    'side': 'yes',
-                    'ticker': strike_above_data.get('ticker'),
-                    'buy_price': float(yes_ask_dollars),
-                    'probability': strike_above_data.get('probability'),
-                    'diff': strike_above_data.get('yes_diff')
-                }
-                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] 🚀 TRIGGERING YES TRADE | Strike: ${strike_above_data.get('strike'):,.0f} | Buy Price: ${float(yes_ask_dollars):.2f} | Ticker: {strike_above_data.get('ticker')}")
-                if trigger_auto_entry_trade(strike_data):
-                    log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ✅ YES TRADE SUCCESSFUL | Strike: ${strike_above_data.get('strike'):,.0f}")
-                    trades_entered += 1
+                _diff_ok, _diff_reason = _auto_entry_differential_allowed(settings, "yes", strike_above_data)
+                if not _diff_ok:
+                    log(
+                        f"[AUTO ENTRY MOMENTUM BREAKOUT] ⏸️ YES leg blocked by differential gate ({_diff_reason}) "
+                        f"strike=${strike_above_data.get('strike'):,.0f}"
+                    )
                 else:
-                    log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ❌ YES TRADE FAILED | Strike: ${strike_above_data.get('strike'):,.0f}")
+                    strike_data = {
+                        'strike': format_trade_strike_label(strike_above_data.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike_above_data.get("ticker")),
+                        'side': 'yes',
+                        'ticker': strike_above_data.get('ticker'),
+                        'buy_price': float(yes_ask_dollars),
+                        'probability': strike_above_data.get('probability'),
+                        'diff': strike_above_data.get('yes_diff')
+                    }
+                    log(f"[AUTO ENTRY MOMENTUM BREAKOUT] 🚀 TRIGGERING YES TRADE | Strike: ${strike_above_data.get('strike'):,.0f} | Buy Price: ${float(yes_ask_dollars):.2f} | Ticker: {strike_above_data.get('ticker')}")
+                    if trigger_auto_entry_trade(strike_data):
+                        log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ✅ YES TRADE SUCCESSFUL | Strike: ${strike_above_data.get('strike'):,.0f}")
+                        trades_entered += 1
+                    else:
+                        log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ❌ YES TRADE FAILED | Strike: ${strike_above_data.get('strike'):,.0f}")
             else:
                 log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Missing yes_ask_dollars for strike above ${strike_above_data.get('strike'):,.0f}")
         else:
@@ -4431,20 +4553,27 @@ def check_auto_entry_conditions_momentum_breakout():
         if strike_below_data:
             no_ask_dollars = strike_below_data.get('no_ask_dollars')
             if no_ask_dollars:
-                strike_data = {
-                    'strike': format_trade_strike_label(strike_below_data.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike_below_data.get("ticker")),
-                    'side': 'no',
-                    'ticker': strike_below_data.get('ticker'),
-                    'buy_price': float(no_ask_dollars),
-                    'probability': strike_below_data.get('probability'),
-                    'diff': strike_below_data.get('no_diff')
-                }
-                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] 🚀 TRIGGERING NO TRADE | Strike: ${strike_below_data.get('strike'):,.0f} | Buy Price: ${float(no_ask_dollars):.2f} | Ticker: {strike_below_data.get('ticker')}")
-                if trigger_auto_entry_trade(strike_data):
-                    log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ✅ NO TRADE SUCCESSFUL | Strike: ${strike_below_data.get('strike'):,.0f}")
-                    trades_entered += 1
+                _diff_ok, _diff_reason = _auto_entry_differential_allowed(settings, "no", strike_below_data)
+                if not _diff_ok:
+                    log(
+                        f"[AUTO ENTRY MOMENTUM BREAKOUT] ⏸️ NO leg blocked by differential gate ({_diff_reason}) "
+                        f"strike=${strike_below_data.get('strike'):,.0f}"
+                    )
                 else:
-                    log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ❌ NO TRADE FAILED | Strike: ${strike_below_data.get('strike'):,.0f}")
+                    strike_data = {
+                        'strike': format_trade_strike_label(strike_below_data.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike_below_data.get("ticker")),
+                        'side': 'no',
+                        'ticker': strike_below_data.get('ticker'),
+                        'buy_price': float(no_ask_dollars),
+                        'probability': strike_below_data.get('probability'),
+                        'diff': strike_below_data.get('no_diff')
+                    }
+                    log(f"[AUTO ENTRY MOMENTUM BREAKOUT] 🚀 TRIGGERING NO TRADE | Strike: ${strike_below_data.get('strike'):,.0f} | Buy Price: ${float(no_ask_dollars):.2f} | Ticker: {strike_below_data.get('ticker')}")
+                    if trigger_auto_entry_trade(strike_data):
+                        log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ✅ NO TRADE SUCCESSFUL | Strike: ${strike_below_data.get('strike'):,.0f}")
+                        trades_entered += 1
+                    else:
+                        log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ❌ NO TRADE FAILED | Strike: ${strike_below_data.get('strike'):,.0f}")
             else:
                 log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Missing no_ask_dollars for strike below ${strike_below_data.get('strike'):,.0f}")
         else:
@@ -4859,20 +4988,27 @@ def check_auto_entry_conditions_momentum_contain():
         if strike_above_data:
             no_ask_dollars = strike_above_data.get('no_ask_dollars')
             if no_ask_dollars:
-                strike_data = {
-                    'strike': format_trade_strike_label(strike_above_data.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike_above_data.get("ticker")),
-                    'side': 'no',  # FLIPPED: Breakout uses 'yes' here
-                    'ticker': strike_above_data.get('ticker'),
-                    'buy_price': float(no_ask_dollars),
-                    'probability': strike_above_data.get('probability'),
-                    'diff': strike_above_data.get('no_diff')
-                }
-                log(f"[AUTO ENTRY MOMENTUM CONTAIN] 🚀 TRIGGERING NO TRADE | Strike: ${strike_above_data.get('strike'):,.0f} | Buy Price: ${float(no_ask_dollars):.2f} | Ticker: {strike_above_data.get('ticker')}")
-                if trigger_auto_entry_trade(strike_data):
-                    log(f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ NO TRADE SUCCESSFUL | Strike: ${strike_above_data.get('strike'):,.0f}")
-                    trades_entered += 1
+                _diff_ok, _diff_reason = _auto_entry_differential_allowed(settings, "no", strike_above_data)
+                if not _diff_ok:
+                    log(
+                        f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ NO leg blocked by differential gate ({_diff_reason}) "
+                        f"strike=${strike_above_data.get('strike'):,.0f}"
+                    )
                 else:
-                    log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ NO TRADE FAILED | Strike: ${strike_above_data.get('strike'):,.0f}")
+                    strike_data = {
+                        'strike': format_trade_strike_label(strike_above_data.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike_above_data.get("ticker")),
+                        'side': 'no',  # FLIPPED: Breakout uses 'yes' here
+                        'ticker': strike_above_data.get('ticker'),
+                        'buy_price': float(no_ask_dollars),
+                        'probability': strike_above_data.get('probability'),
+                        'diff': strike_above_data.get('no_diff')
+                    }
+                    log(f"[AUTO ENTRY MOMENTUM CONTAIN] 🚀 TRIGGERING NO TRADE | Strike: ${strike_above_data.get('strike'):,.0f} | Buy Price: ${float(no_ask_dollars):.2f} | Ticker: {strike_above_data.get('ticker')}")
+                    if trigger_auto_entry_trade(strike_data):
+                        log(f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ NO TRADE SUCCESSFUL | Strike: ${strike_above_data.get('strike'):,.0f}")
+                        trades_entered += 1
+                    else:
+                        log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ NO TRADE FAILED | Strike: ${strike_above_data.get('strike'):,.0f}")
             else:
                 log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Missing no_ask_dollars for strike above ${strike_above_data.get('strike'):,.0f}")
         else:
@@ -4882,20 +5018,27 @@ def check_auto_entry_conditions_momentum_contain():
         if strike_below_data:
             yes_ask_dollars = strike_below_data.get('yes_ask_dollars')
             if yes_ask_dollars:
-                strike_data = {
-                    'strike': format_trade_strike_label(strike_below_data.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike_below_data.get("ticker")),
-                    'side': 'yes',  # FLIPPED: Breakout uses 'no' here
-                    'ticker': strike_below_data.get('ticker'),
-                    'buy_price': float(yes_ask_dollars),
-                    'probability': strike_below_data.get('probability'),
-                    'diff': strike_below_data.get('yes_diff')
-                }
-                log(f"[AUTO ENTRY MOMENTUM CONTAIN] 🚀 TRIGGERING YES TRADE | Strike: ${strike_below_data.get('strike'):,.0f} | Buy Price: ${float(yes_ask_dollars):.2f} | Ticker: {strike_below_data.get('ticker')}")
-                if trigger_auto_entry_trade(strike_data):
-                    log(f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ YES TRADE SUCCESSFUL | Strike: ${strike_below_data.get('strike'):,.0f}")
-                    trades_entered += 1
+                _diff_ok, _diff_reason = _auto_entry_differential_allowed(settings, "yes", strike_below_data)
+                if not _diff_ok:
+                    log(
+                        f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ YES leg blocked by differential gate ({_diff_reason}) "
+                        f"strike=${strike_below_data.get('strike'):,.0f}"
+                    )
                 else:
-                    log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ YES TRADE FAILED | Strike: ${strike_below_data.get('strike'):,.0f}")
+                    strike_data = {
+                        'strike': format_trade_strike_label(strike_below_data.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike_below_data.get("ticker")),
+                        'side': 'yes',  # FLIPPED: Breakout uses 'no' here
+                        'ticker': strike_below_data.get('ticker'),
+                        'buy_price': float(yes_ask_dollars),
+                        'probability': strike_below_data.get('probability'),
+                        'diff': strike_below_data.get('yes_diff')
+                    }
+                    log(f"[AUTO ENTRY MOMENTUM CONTAIN] 🚀 TRIGGERING YES TRADE | Strike: ${strike_below_data.get('strike'):,.0f} | Buy Price: ${float(yes_ask_dollars):.2f} | Ticker: {strike_below_data.get('ticker')}")
+                    if trigger_auto_entry_trade(strike_data):
+                        log(f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ YES TRADE SUCCESSFUL | Strike: ${strike_below_data.get('strike'):,.0f}")
+                        trades_entered += 1
+                    else:
+                        log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ YES TRADE FAILED | Strike: ${strike_below_data.get('strike'):,.0f}")
             else:
                 log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Missing yes_ask_dollars for strike below ${strike_below_data.get('strike'):,.0f}")
         else:
@@ -5132,12 +5275,18 @@ def check_auto_entry_conditions_momentum_scalp():
                 else:
                     continue
                 
+                _diff_ok, _diff_reason = _auto_entry_differential_allowed(settings, side, strike)
+                if not _diff_ok:
+                    log(f"[AUTO ENTRY MS] ⏸️ Skipping {strike_key} differential gate ({_diff_reason})")
+                    continue
+
                 strike_data = {
                     'strike': format_trade_strike_label(strike.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike.get("ticker")),
                     'side': side,
                     'ticker': strike.get('ticker'),
                     'buy_price': buy_price,
-                    'probability': prob
+                    'probability': prob,
+                    'diff': strike.get('yes_diff') if side == 'yes' else strike.get('no_diff'),
                 }
                 
                 # Check if strike is already traded
@@ -5380,13 +5529,19 @@ def check_auto_entry_conditions_momentum_reversal():
                     buy_price = float(yes_ask_dollars)
                 else:
                     continue
+
+                _diff_ok, _diff_reason = _auto_entry_differential_allowed(settings, side, strike)
+                if not _diff_ok:
+                    log(f"[AUTO ENTRY MR] ⏸️ Skipping {strike_key} -> {side.upper()} differential gate ({_diff_reason})")
+                    continue
                 
                 strike_data = {
                     'strike': format_trade_strike_label(strike.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike.get("ticker")),
                     'side': side,
                     'ticker': strike.get('ticker'),
                     'buy_price': buy_price,
-                    'probability': prob
+                    'probability': prob,
+                    'diff': strike.get('yes_diff') if side == 'yes' else strike.get('no_diff'),
                 }
                 
                 # Check if strike is already traded (check with swapped side)

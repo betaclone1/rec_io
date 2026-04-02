@@ -48,6 +48,7 @@ from backend.core.unified_config import UnifiedConfigManager
 from backend.core.config.database import get_postgresql_connection, get_database_config
 from backend.core.exchange_ids import normalize_exchange
 from backend.core.time_eastern import EST, now_est
+from backend.util.trade_log_archivist import archive_trades_for_monitor, union_trades_with_archives_select
 
 unified_config = UnifiedConfigManager()
 
@@ -1709,7 +1710,14 @@ async def get_core_data(symbol: str = "BTC"):
         try:
             conn = get_postgresql_connection()
             with conn.cursor() as cursor:
-                cursor.execute("SELECT buy_price FROM users.trades_0001 WHERE test_filter IS NULL OR test_filter = FALSE ORDER BY date DESC, time DESC LIMIT 1")
+                union_sql, _ = union_trades_with_archives_select(cursor, "0001")
+                cursor.execute(
+                    f"""
+                    SELECT buy_price FROM ({union_sql}) AS all_trades
+                    WHERE test_filter IS NULL OR test_filter = FALSE
+                    ORDER BY date DESC, time DESC LIMIT 1
+                    """
+                )
                 result = cursor.fetchone()
                 if result:
                     latest_db_price = result[0]
@@ -1825,18 +1833,24 @@ async def get_trades(status: Optional[str] = None):
         conn = get_postgresql_connection()
         
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            # Build query based on status filter
+            union_sql, _ = union_trades_with_archives_select(cursor, "0001")
+            # Build query based on status filter (master + archive live + archive paper)
             if status:
-                cursor.execute("""
-                    SELECT * FROM users.trades_0001 
-                    WHERE status = %s 
+                cursor.execute(
+                    f"""
+                    SELECT * FROM ({union_sql}) AS all_trades
+                    WHERE status = %s
                     ORDER BY id DESC
-                """, (status,))
+                    """,
+                    (status,),
+                )
             else:
-                cursor.execute("""
-                    SELECT * FROM users.trades_0001 
+                cursor.execute(
+                    f"""
+                    SELECT * FROM ({union_sql}) AS all_trades
                     ORDER BY id DESC
-                """)
+                    """
+                )
             
             trades = cursor.fetchall()
             
@@ -2610,11 +2624,13 @@ def get_trades_from_postgresql():
         conn = get_postgresql_connection()
         
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            # Get all trades from PostgreSQL
-            cursor.execute("""
-                SELECT * FROM users.trades_0001 
+            union_sql, _ = union_trades_with_archives_select(cursor, "0001")
+            cursor.execute(
+                f"""
+                SELECT * FROM ({union_sql}) AS all_trades
                 ORDER BY id DESC
-            """)
+                """
+            )
             trades = cursor.fetchall()
             
             # Convert RealDictRow objects to regular dictionaries
@@ -6447,7 +6463,24 @@ async def archive_monitor(request: dict):
                     sql.SQL("ALTER TABLE {}.{} SET SCHEMA archive")
                     .format(sql.Identifier("users"), sql.Identifier(performance_table))
                 )
-            
+
+            try:
+                trade_arch = archive_trades_for_monitor(
+                    cursor, user_number, db_monitor_id, dry_run=False
+                )
+                _main_logger.debug("[ARCHIVE] trade log archival: %s", trade_arch)
+            except Exception as trade_arch_exc:
+                conn.rollback()
+                conn.close()
+                _main_logger.warning(
+                    "[ARCHIVE] trade log archival failed (rolled back monitor archive): %s",
+                    trade_arch_exc,
+                )
+                return {
+                    "status": "error",
+                    "message": f"Trade archive failed: {trade_arch_exc!s}",
+                }
+
         conn.commit()
         conn.close()
         

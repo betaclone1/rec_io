@@ -70,6 +70,7 @@ def init_database():
         cursor.execute("CREATE SCHEMA IF NOT EXISTS live_data;")
         cursor.execute("CREATE SCHEMA IF NOT EXISTS system;")
         cursor.execute("CREATE SCHEMA IF NOT EXISTS testing;")
+        cursor.execute("CREATE SCHEMA IF NOT EXISTS archive;")
 
         # Redis switchboard pilot: minimal testing table for DB -> NOTIFY -> Redis -> WS.
         cursor.execute("""
@@ -2022,6 +2023,7 @@ def init_database():
         cursor.execute("GRANT ALL PRIVILEGES ON SCHEMA live_data TO rec_io_user;")
         cursor.execute("GRANT ALL PRIVILEGES ON SCHEMA system TO rec_io_user;")
         cursor.execute("GRANT ALL PRIVILEGES ON SCHEMA historical_data TO rec_io_user;")
+        cursor.execute("GRANT ALL PRIVILEGES ON SCHEMA archive TO rec_io_user;")
         cursor.execute("GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA users TO rec_io_user;")
         cursor.execute("GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA live_data TO rec_io_user;")
         cursor.execute("GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA system TO rec_io_user;")
@@ -2030,6 +2032,8 @@ def init_database():
         cursor.execute("GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA live_data TO rec_io_user;")
         cursor.execute("GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA system TO rec_io_user;")
         cursor.execute("GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA historical_data TO rec_io_user;")
+        cursor.execute("GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA archive TO rec_io_user;")
+        cursor.execute("GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA archive TO rec_io_user;")
         
         conn.commit()
         cursor.close()

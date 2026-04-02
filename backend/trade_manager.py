@@ -25,6 +25,7 @@ from backend.core.exchange_ids import normalize_exchange
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from backend.util.paths import get_project_root, get_trade_history_dir, get_logs_dir, get_host, get_data_dir
+from backend.util.trade_log_archivist import union_trades_with_archives_select
 from backend.account_mode import get_account_mode
 from backend.util.paths import get_accounts_data_dir
 EST_ZONE = ZoneInfo("America/New_York")
@@ -3699,28 +3700,48 @@ def get_trades(status: str = None, recent_hours: int = None):
     
     try:
         with pg_conn.cursor() as cursor:
+            union_sql, _ = union_trades_with_archives_select(cursor, "0001")
             if status == "open":
-                cursor.execute("SELECT id, date, time, strike, side, buy_price, position, status, contract FROM users.trades_0001 WHERE status = 'open'")
+                cursor.execute(
+                    f"""
+                    SELECT id, date, time, strike, side, buy_price, position, status, contract
+                    FROM ({union_sql}) AS all_trades
+                    WHERE status = 'open'
+                    """
+                )
                 rows = cursor.fetchall()
                 result = [dict(zip(["id","date","time","strike","side","buy_price","position","status","contract"], row)) for row in rows]
             elif status == "closed" and recent_hours:
                 cutoff = datetime.utcnow() - timedelta(hours=recent_hours)
                 cutoff_iso = cutoff.isoformat()
-                cursor.execute("""
+                cursor.execute(
+                    f"""
                     SELECT id, date, time, strike, side, buy_price, position, status, closed_at, contract, sell_price, pnl, win_loss
-                    FROM users.trades_0001
+                    FROM ({union_sql}) AS all_trades
                     WHERE status = 'closed' AND closed_at >= %s
                     ORDER BY closed_at DESC
-                """, (cutoff_iso,))
+                    """,
+                    (cutoff_iso,),
+                )
                 rows = cursor.fetchall()
                 result = [dict(zip(["id","date","time","strike","side","buy_price","position","status","closed_at","contract","sell_price","pnl","win_loss"], row)) for row in rows]
             elif status == "closed":
-                cursor.execute("SELECT * FROM users.trades_0001 WHERE status = 'closed' ORDER BY id DESC")
+                cursor.execute(
+                    f"""
+                    SELECT * FROM ({union_sql}) AS all_trades
+                    WHERE status = 'closed' ORDER BY id DESC
+                    """
+                )
                 rows = cursor.fetchall()
                 columns = [desc[0] for desc in cursor.description]
                 result = [dict(zip(columns, row)) for row in rows]
             else:
-                cursor.execute("SELECT * FROM users.trades_0001 ORDER BY id DESC")
+                cursor.execute(
+                    f"""
+                    SELECT * FROM ({union_sql}) AS all_trades
+                    ORDER BY id DESC
+                    """
+                )
                 rows = cursor.fetchall()
                 columns = [desc[0] for desc in cursor.description]
                 result = [dict(zip(columns, row)) for row in rows]
@@ -3729,6 +3750,32 @@ def get_trades(status: str = None, recent_hours: int = None):
     except Exception as e:
         log(f"❌ Error reading trades from PostgreSQL: {e}")
         return []
+    finally:
+        pg_conn.close()
+
+
+@router.get("/trades/{trade_id}")
+def get_trade_by_id(trade_id: int):
+    """Single trade row from master log or archive (after monitor archival)."""
+    pg_conn = get_postgresql_connection()
+    if not pg_conn:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        with pg_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            union_sql, _ = union_trades_with_archives_select(cursor, "0001")
+            cursor.execute(
+                f"SELECT * FROM ({union_sql}) AS all_trades WHERE id = %s LIMIT 1",
+                (trade_id,),
+            )
+            row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Trade not found")
+        return dict(row)
+    except HTTPException:
+        raise
+    except Exception as e:
+        log(f"❌ Error reading trade {trade_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         pg_conn.close()
 

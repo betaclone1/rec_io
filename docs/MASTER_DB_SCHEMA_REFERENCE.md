@@ -8052,6 +8052,24 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 ---
 
+### Table: `archive.trades_archive_live_0001`
+
+**Purpose:** Rows moved from `users.trades_0001` when a monitor is archived (`POST /api/monitor/archive` or backfill script). Contains only trades that had `paper_trade = false` (or null treated as live at archive time) for that monitor. Same column set as `users.trades_0001` at migration time, **plus** `archived_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`. **No** `rec_io_db_notify` trigger.
+
+**Creation:** Migration `20260327_2200_archive_trades_live_paper_0001` (`CREATE TABLE ... (LIKE users.trades_0001 INCLUDING CONSTRAINTS INCLUDING INDEXES EXCLUDING DEFAULTS)` then `archived_at` and dedicated `id` sequence in schema `archive`).
+
+**Application:** `backend.util.trade_log_archivist.archive_trades_for_monitor`; read paths union this table with the master log and `archive.trades_archive_paper_0001`.
+
+---
+
+### Table: `archive.trades_archive_paper_0001`
+
+**Purpose:** Same as `archive.trades_archive_live_0001`, but for rows where `COALESCE(paper_trade, FALSE)` was true when archived.
+
+**Creation / usage:** Same migration and archivist as live table; separate table so reporting can stay split by paper vs live.
+
+---
+
 ## Schema: `historical_data`
 
 ### Ephemeral: `historical_data.kalshi_candles_1m_*_*` (scratch)

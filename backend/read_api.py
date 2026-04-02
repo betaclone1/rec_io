@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from backend.core.config.database import get_postgresql_connection
+from backend.util.trade_log_archivist import union_trades_with_archives_select
 
 app = FastAPI(title="read_api")
 
@@ -244,13 +245,16 @@ async def get_pnl_history(period: str = "1m") -> Dict[str, Any]:
         start_date_sql = start_time.strftime("%Y-%m-%d")
 
         with conn.cursor() as cursor:
+            union_sql, _ = union_trades_with_archives_select(cursor, "0001")
             cursor.execute(
                 """
                 SELECT COALESCE(
                     CASE WHEN closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE NULL END,
                     created_at
                 ) AS ts, pnl
-                FROM users.trades_0001
+                FROM ("""
+                + union_sql
+                + """) AS trades_all
                 WHERE (test_filter IS NULL OR test_filter = FALSE)
                   AND (paper_trade IS NULL OR paper_trade = FALSE)
                   AND LOWER(TRIM(status)) IN ('closed', 'settled')
@@ -337,12 +341,15 @@ async def get_performance_realized() -> Dict[str, Any]:
 
         result: Dict[str, Any] = {}
         with conn.cursor() as cursor:
+            union_sql, _ = union_trades_with_archives_select(cursor, "0001")
             for key, period_start, prev_start in periods_spec:
                 period_end = now
                 cursor.execute(
                     """
                     SELECT COALESCE(SUM(pnl), 0), COALESCE(SUM(ret_pct), 0), COALESCE(SUM(ret_pct_base), 0)
-                    FROM users.trades_0001
+                    FROM ("""
+                    + union_sql
+                    + """) AS trades_all
                     WHERE (test_filter IS NULL OR test_filter = FALSE)
                       AND (paper_trade IS NULL OR paper_trade = FALSE)
                       AND LOWER(TRIM(status)) IN ('closed', 'settled')
@@ -362,7 +369,9 @@ async def get_performance_realized() -> Dict[str, Any]:
                 cursor.execute(
                     """
                     SELECT COALESCE(SUM(pnl), 0)
-                    FROM users.trades_0001
+                    FROM ("""
+                    + union_sql
+                    + """) AS trades_all
                     WHERE (test_filter IS NULL OR test_filter = FALSE)
                       AND (paper_trade IS NULL OR paper_trade = FALSE)
                       AND LOWER(TRIM(status)) IN ('closed', 'settled')
