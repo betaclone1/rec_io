@@ -7300,7 +7300,7 @@
         const allowReEntryContainer = allowReEntryLabel ? allowReEntryLabel.nextElementSibling : null;
         const probLabel = document.querySelector('label[for="m_probabilityWindowSlider"]');
         
-        if (isMomentumBreakout || isMomentumContain || isRisingDevil) {
+        if (isMomentumBreakout || isMomentumContain) {
           if (minDiffLabel) minDiffLabel.style.display = 'none';
           if (minDiffContainer) minDiffContainer.style.display = 'none';
           if (maxDiffLabel) maxDiffLabel.style.display = 'none';
@@ -7328,12 +7328,10 @@
             }
           }
         } else {
-          if (!isRisingDevil) {
-            if (minDiffLabel) minDiffLabel.style.display = '';
-            if (minDiffContainer) minDiffContainer.style.display = '';
-            if (maxDiffLabel) maxDiffLabel.style.display = '';
-            if (maxDiffContainer) maxDiffContainer.style.display = '';
-          }
+          if (minDiffLabel) minDiffLabel.style.display = '';
+          if (minDiffContainer) minDiffContainer.style.display = '';
+          if (maxDiffLabel) maxDiffLabel.style.display = '';
+          if (maxDiffContainer) maxDiffContainer.style.display = '';
           if (allowReEntryLabel) allowReEntryLabel.style.display = '';
           if (allowReEntryContainer) allowReEntryContainer.style.display = '';
           if (probLabel) probLabel.textContent = 'Win Probability Window:';
@@ -7680,6 +7678,11 @@
               payload.min_volume = parseInt(document.getElementById('m_autoEntryMinVolume').value, 10);
               payload.min_probability = parseFloat(parseFloat(window.dashboardMobileMinProbability || 95.00).toFixed(1));
               payload.max_probability = parseFloat(parseFloat(window.dashboardMobileMaxProbability || 100.00).toFixed(1));
+              payload.min_differential = parseFloat(document.getElementById('m_autoEntryDiff').value);
+              payload.max_differential = (function() {
+                const v = parseFloat(document.getElementById('m_autoEntryMaxDiff').value);
+                return isNaN(v) || v <= 0 ? null : v;
+              })();
               const rdEl = document.getElementById('m_risingDevilMinAskRange');
               payload.min_ask_range = rdEl ? parseInt(rdEl.value, 10) / 100 : 0.7;
               payload.allow_re_entry = document.getElementById('m_allowRe').checked;

@@ -564,6 +564,16 @@ def _contract_expiration_est(trade_date, contract, fallback_now_est):
     return expiration_est
 
 
+def _trade_eligible_for_quarter_hour_expiry(trade_market: Optional[str]) -> bool:
+    """True if this row is processed at :15/:30/:45 (not only at :00).
+
+    Cadence is **only** ``users.trades_0001.market`` (same meaning as monitor market):
+    ``15m`` → quarter-hour sweeps; ``hourly`` or NULL → top-of-hour only.
+    Applies to every strategy.
+    """
+    return bool(trade_market and str(trade_market).strip().lower() == "15m")
+
+
 def _live_price_log_timestamp_cutoff_str(expiration_est: datetime) -> str:
     """ISO wall time string matching symbol_price_watchdog rows (America/New_York, no TZ suffix)."""
     if expiration_est.tzinfo is None:
@@ -4674,11 +4684,11 @@ def check_expired_simulated_trades():
 
 def check_expired_trades():
     """Check for expired trades.
-    
-    Runs on a 15-minute schedule. At minute 0 (top of the hour) it processes all
-    eligible trades (backwards-compatible hourly behavior). At minutes 15, 30,
-    and 45 it processes only 15m strategies (e.g. '15m HTC') so 15m markets are
-    expired on their own cadence without affecting hourly contracts.
+
+    Runs on a 15-minute schedule. At minute 0 it processes all active trades.
+    At minutes 15, 30, and 45 it processes only rows whose ``market`` column is
+    ``15m`` (aligned with the monitor's market). Hourly or NULL ``market`` is
+    expired only at :00, for every strategy.
     """
     try:
         now_est = datetime.now(ZoneInfo("America/New_York"))
@@ -4709,7 +4719,7 @@ def check_expired_trades():
         if pg_conn:
             with pg_conn.cursor() as cursor:
                 cursor.execute(
-                    "SELECT id, ticker, symbol, trade_strategy, contract, date "
+                    "SELECT id, ticker, symbol, trade_strategy, contract, date, market "
                     "FROM users.trades_0001 "
                     "WHERE status IN ('open', 'closing', 'close_failed')"
                 )
@@ -4722,19 +4732,12 @@ def check_expired_trades():
 
         # Decide which trades to process on this run.
         # - At minute 0: process all active trades (original hourly behavior).
-        # - At minutes 15/30/45: process only trades whose strategy clearly
-        #   indicates a 15m cadence (e.g. '15m HTC').
-        def _is_15m_strategy(strategy: Optional[str]) -> bool:
-            if not strategy:
-                return False
-            return "15m" in strategy.lower()
-
+        # - At minutes 15/30/45: process trades with market = 15m only.
         if current_minute == 0:
             trades_to_process = active_trades
         else:
             trades_to_process = [
-                row for row in active_trades
-                if _is_15m_strategy(row[3])  # trade_strategy column
+                row for row in active_trades if _trade_eligible_for_quarter_hour_expiry(row[6])
             ]
 
         log(
@@ -4748,7 +4751,7 @@ def check_expired_trades():
         
         # Closing prices: one_minute_avg at or before each trade's contract expiration tick.
         expiration_price_cache = {}
-        for trade_id, ticker, symbol, trade_strategy, contract, trade_date in trades_to_process:
+        for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
             expiration_est = _contract_expiration_est(trade_date, contract, now_est)
             cache_key = (symbol, expiration_est.replace(tzinfo=None))
             if cache_key not in expiration_price_cache:
@@ -4764,7 +4767,7 @@ def check_expired_trades():
             pg_conn = get_postgresql_connection()
             if pg_conn:
                 with pg_conn.cursor() as cursor:
-                    for trade_id, ticker, symbol, trade_strategy, contract, trade_date in trades_to_process:
+                    for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
                         expiration_est = _contract_expiration_est(trade_date, contract, now_est)
                         cache_key = (symbol, expiration_est.replace(tzinfo=None))
                         symbol_close = expiration_price_cache.get(cache_key)
@@ -4822,7 +4825,7 @@ def check_expired_trades():
                             WHERE id = %s AND status IN ('open', 'closing', 'close_failed')
                         """, (closed_at, symbol_close, high_price, low_price, monitor_confirmed, trade_id))
                     markets_applied = set()
-                    for _tid, _ticker, _symbol, _strategy, _contract, _trade_date in trades_to_process:
+                    for _tid, _ticker, _symbol, _strategy, _contract, _trade_date, _m in trades_to_process:
                         k = (str(_symbol).strip(), str(_contract).strip(), str(_trade_date))
                         if k in markets_applied:
                             continue
@@ -4851,7 +4854,7 @@ def check_expired_trades():
             pg_conn_check = get_postgresql_connection()
             if pg_conn_check:
                 with pg_conn_check.cursor() as cursor:
-                    for trade_id, ticker, symbol, trade_strategy, contract, trade_date in trades_to_process:
+                    for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
                         cursor.execute("SELECT paper_trade FROM users.trades_0001 WHERE id = %s", (trade_id,))
                         result = cursor.fetchone()
                         if result and result[0] is True:
@@ -4861,15 +4864,15 @@ def check_expired_trades():
                 pg_conn_check.close()
             else:
                 # If we can't check, treat all as live trades
-                for trade_id, ticker, symbol, trade_strategy, contract, trade_date in trades_to_process:
+                for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
                     live_trade_tickers.append(ticker)
         except Exception as e:
             log(f"⚠️ Error separating paper/live trades: {e}, treating all as live")
-            for trade_id, ticker, symbol, trade_strategy, contract, trade_date in trades_to_process:
+            for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
                 live_trade_tickers.append(ticker)
         
         # Notify active_trade_supervisor for all expired trades (both paper and live)
-        for trade_id, ticker, symbol, trade_strategy, contract, trade_date in trades_to_process:
+        for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
             notify_active_trade_supervisor_direct(trade_id, str(ticker), "expired")
         
         # Paper: repair symbol_close; finalize when ``market_result`` exists (same as live).
@@ -4879,7 +4882,7 @@ def check_expired_trades():
                 _settle_one_expired_paper_trade(now_est, trade_id, ticker, symbol)
 
         paper_ids_set = {pid for pid, _, _ in paper_trade_ids}
-        for trade_id, ticker, symbol, trade_strategy, contract, trade_date in trades_to_process:
+        for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
             if trade_id not in paper_ids_set:
                 finalize_expired_trade_from_market_result(trade_id)
 

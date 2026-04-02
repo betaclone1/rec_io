@@ -897,7 +897,7 @@ async function showMobileUnifiedAutoTradeSettings() {
   const allowReEntryContainer = allowReEntryLabel ? allowReEntryLabel.nextElementSibling : null;
   const probLabel = document.querySelector('label[for="probabilityWindowSlider"]');
   
-  if (isMomentumBreakout || isMomentumContain || isRisingDevil) {
+  if (isMomentumBreakout || isMomentumContain) {
     if (minDiffLabel) minDiffLabel.style.display = 'none';
     if (minDiffContainer) minDiffContainer.style.display = 'none';
     if (maxDiffLabel) maxDiffLabel.style.display = 'none';
@@ -929,12 +929,10 @@ async function showMobileUnifiedAutoTradeSettings() {
       }
     }
   } else {
-    if (!isRisingDevil) {
-      if (minDiffLabel) minDiffLabel.style.display = '';
-      if (minDiffContainer) minDiffContainer.style.display = '';
-      if (maxDiffLabel) maxDiffLabel.style.display = '';
-      if (maxDiffContainer) maxDiffContainer.style.display = '';
-    }
+    if (minDiffLabel) minDiffLabel.style.display = '';
+    if (minDiffContainer) minDiffContainer.style.display = '';
+    if (maxDiffLabel) maxDiffLabel.style.display = '';
+    if (maxDiffContainer) maxDiffContainer.style.display = '';
     if (allowReEntryLabel) allowReEntryLabel.style.display = '';
     if (allowReEntryContainer) allowReEntryContainer.style.display = '';
     if (probLabel) probLabel.textContent = 'Win Probability Window:';
@@ -1331,6 +1329,8 @@ async function showMobileUnifiedAutoTradeSettings() {
           payload.min_volume = parseInt(document.getElementById('autoEntryMinVolumeSlider').value, 10);
           payload.min_probability = parseFloat(parseFloat(window.tradeMonitorMobileMinProbability || 95.00).toFixed(1));
           payload.max_probability = parseFloat(parseFloat(window.tradeMonitorMobileMaxProbability || 100.00).toFixed(1));
+          payload.min_differential = parseFloat(document.getElementById('autoEntryDifferentialSlider').value);
+          payload.max_differential = (function() { const v = parseFloat(document.getElementById('autoEntryMaxDifferentialSlider').value); return isNaN(v) || v <= 0 ? null : v; })();
           const rdSlM = document.getElementById('risingDevilMinAskRangeSlider');
           payload.min_ask_range = rdSlM ? parseInt(rdSlM.value, 10) / 100 : 0.7;
           payload.allow_re_entry = document.getElementById('autoEntryAllowReEntry').checked;

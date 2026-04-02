@@ -3621,7 +3621,7 @@ def check_auto_entry_conditions_hourly_htc():
 
 
 def check_auto_entry_conditions_rising_devil():
-    """Rising Devil: HTC gates (TTC, prob, volume, max_ask, spike/prob_adj) without min/max differential; trigger when active-side ask range >= min_ask_range."""
+    """Rising Devil: same differential gates as Hourly HTC (min with -0.5 cushion, optional max), plus min_ask_range on the active side."""
     try:
         check_spike_alert_conditions()
 
@@ -3647,11 +3647,21 @@ def check_auto_entry_conditions_rising_devil():
             return
 
         settings = get_auto_entry_settings()
-        required_settings = ["min_time", "max_time", "min_probability", "max_probability", "min_ask_range"]
+        required_settings = [
+            "min_time",
+            "max_time",
+            "min_probability",
+            "max_probability",
+            "min_differential",
+            "min_ask_range",
+        ]
         missing_settings = [setting for setting in required_settings if setting not in settings]
         if missing_settings:
             log(f"[AUTO ENTRY RISING DEVIL] ❌ monitor={ctx_mid()} missing required settings: {missing_settings}")
             return
+
+        min_differential = settings["min_differential"]
+        max_differential = settings.get("max_differential")
 
         min_ask_range = settings.get("min_ask_range")
         if min_ask_range is None or (isinstance(min_ask_range, (int, float)) and float(min_ask_range) <= 0):
@@ -3739,10 +3749,15 @@ def check_auto_entry_conditions_rising_devil():
         now_scan = _t.time()
         if now_scan - rl_scan["scan"] >= 60:
             sym = get_current_monitor_symbol() or "?"
+            max_part = (
+                f" max_diff<={max_differential:.2f}"
+                if max_differential is not None
+                else ""
+            )
             log(
                 f"[AUTO ENTRY RISING DEVIL] 🔍 monitor={ctx_mid()} scanning | symbol={sym} "
                 f"strikes={strike_count} ttc={current_ttc}s window={min_time}-{max_time}s "
-                f"min_ask_range>={min_ask_range:.4f}"
+                f"min_ask_range>={min_ask_range:.4f} min_diff>={float(min_differential) - 0.5:.2f}{max_part}"
             )
             rl_scan["scan"] = now_scan
 
@@ -3782,6 +3797,14 @@ def check_auto_entry_conditions_rising_devil():
                 prob = strike.get('probability')
                 if prob is None or prob < min_probability or prob > max_probability:
                     continue
+
+                diff = strike.get('yes_diff') if active_side == 'yes' else strike.get('no_diff')
+                if min_differential is not None:
+                    if diff is None or diff < (min_differential - 0.5):
+                        continue
+                if max_differential is not None:
+                    if diff is None or diff > max_differential:
+                        continue
 
                 min_volume = settings.get("min_volume", 1000)
                 volume = _kalshi_fp_volume_number(strike.get("volume_fp")) or 0
@@ -3824,8 +3847,6 @@ def check_auto_entry_conditions_rising_devil():
                     continue
                 if rng_f < min_ask_range:
                     continue
-
-                diff = strike.get('yes_diff') if active_side == 'yes' else strike.get('no_diff')
 
                 strike_data = {
                     'strike': format_trade_strike_label(strike.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike.get("ticker")),
