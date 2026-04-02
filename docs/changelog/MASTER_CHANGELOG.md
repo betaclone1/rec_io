@@ -15,10 +15,10 @@ This changelog is used when pushing updates to production. Each entry is timesta
 **DB migrations:** None.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows key programs RUNNING.
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows key programs RUNNING.
 
 ---
 
