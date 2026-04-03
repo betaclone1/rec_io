@@ -4,7 +4,7 @@ Uses the single centralized port configuration system.
 """
 
 import logging
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,7 +41,12 @@ sys.path.insert(0, project_root)
 from backend.util.paths import get_project_root
 
 # Use relative imports to avoid ModuleNotFoundError
-from backend.core.port_config import get_port, get_port_info
+from backend.core.port_config import (
+    get_port,
+    get_port_info,
+    unified_active_trade_supervisor_service_name,
+    user_scoped_service_name,
+)
 
 # Import unified configuration system for database connections
 from backend.core.unified_config import UnifiedConfigManager
@@ -63,7 +68,8 @@ def _auth_expiry_utc(iso_str: str) -> datetime:
 
 # Get port from centralized system
 MAIN_APP_PORT = get_port("main_app")
-ACTIVE_TRADE_SUPERVISOR_PORT = get_port("active_trade_supervisor")
+# Aggregate /api/active_trades is served by pool ATS (8034), not legacy key active_trade_supervisor (6000).
+ACTIVE_TRADE_SUPERVISOR_PORT = get_port(unified_active_trade_supervisor_service_name())
 
 # Logging: EST, flush, single handler to stdout (supervisor captures)
 from zoneinfo import ZoneInfo as _main_tz
@@ -966,7 +972,12 @@ async def get_system_health():
             issues.append("Supervisor not running")
         
         # Check critical services
-        critical_services = ["main_app", "trade_manager", "trade_executor", "active_trade_supervisor"]
+        critical_services = [
+            "main_app",
+            user_scoped_service_name("trade_manager"),
+            user_scoped_service_name("trade_executor"),
+            unified_active_trade_supervisor_service_name(),
+        ]
         unhealthy_services = []
         
         for service in critical_services:
@@ -1873,9 +1884,14 @@ async def get_trades(status: Optional[str] = None):
             conn.close()
             return result
 
+    except HTTPException:
+        raise
     except Exception as e:
         _main_logger.warning(f"Error getting trades from PostgreSQL: {e}")
-        return []
+        raise HTTPException(
+            status_code=503,
+            detail="Trade list temporarily unavailable (database busy or error)",
+        )
 
 @app.get("/trades/{trade_id}")
 async def get_trade(trade_id: int):

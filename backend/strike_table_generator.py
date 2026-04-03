@@ -614,6 +614,10 @@ class StrikeTableGenerator:
                 buffer_pct NUMERIC(12,6),
                 probability_hourly DECIMAL(5,2),
                 probability_15m DECIMAL(5,2),
+                yes_prob_hourly DECIMAL(5,2),
+                no_prob_hourly DECIMAL(5,2),
+                yes_prob_15m DECIMAL(5,2),
+                no_prob_15m DECIMAL(5,2),
                 yes_ask_dollars TEXT,
                 no_ask_dollars TEXT,
                 yes_bid_dollars TEXT,
@@ -771,6 +775,10 @@ class StrikeTableGenerator:
                 buffer_pct NUMERIC(12,6),
                 probability_hourly DECIMAL(5,2),
                 probability_15m DECIMAL(5,2),
+                yes_prob_hourly DECIMAL(5,2),
+                no_prob_hourly DECIMAL(5,2),
+                yes_prob_15m DECIMAL(5,2),
+                no_prob_15m DECIMAL(5,2),
                 yes_ask_dollars TEXT,
                 no_ask_dollars TEXT,
                 yes_bid_dollars TEXT,
@@ -853,6 +861,10 @@ class StrikeTableGenerator:
                 buffer_pct {buffer_pct_t},
                 probability_hourly DECIMAL(5,2),
                 probability_15m DECIMAL(5,2),
+                yes_prob_hourly DECIMAL(5,2),
+                no_prob_hourly DECIMAL(5,2),
+                yes_prob_15m DECIMAL(5,2),
+                no_prob_15m DECIMAL(5,2),
                 yes_ask_dollars TEXT,
                 no_ask_dollars TEXT,
                 yes_bid_dollars TEXT,
@@ -1357,6 +1369,12 @@ class StrikeTableGenerator:
                         probability_15m = neg_prob_15m if neg_prob_15m is not None else None
                     if self.interval == "15m":
                         probability = probability_15m or probability  # 15m row uses 15m probability for diff calc
+
+                    # Literal lookup legs for ATS / consumers (both analytics columns, no strike-vs-spot pick).
+                    yes_prob_hourly_store = pos_prob if self.interval == "hourly" else None
+                    no_prob_hourly_store = neg_prob if self.interval == "hourly" else None
+                    yes_prob_15m_store = pos_prob_15m if pos_prob_15m is not None else None
+                    no_prob_15m_store = neg_prob_15m if neg_prob_15m is not None else None
                     
                     # Get market data for this strike (Kalshi _dollars + fp-derived depth only)
                     yes_ask_dollars = None
@@ -1462,12 +1480,13 @@ class StrikeTableGenerator:
                             INSERT INTO live_data.{table_name}
                             (symbol, exchange, market, current_price, ttc_hourly, ttc_15m, event_ticker, market_title,
                              strike_tier, market_status, strike, buffer, buffer_pct, probability_hourly, probability_15m,
+                             yes_prob_hourly, no_prob_hourly, yes_prob_15m, no_prob_15m,
                              yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
                              yes_price_spread, no_price_spread, yes_diff, no_diff, volume_fp, open_interest_fp, ticker, active_side,
                              momentum_weighted_score, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile,
                              yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m, yes_ask_range_15m, no_ask_range_15m,
                              timestamp, created_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             (
                                 self.symbol.upper(),
@@ -1485,6 +1504,10 @@ class StrikeTableGenerator:
                                 buffer_pct,
                                 prob_hourly_val,
                                 probability_15m,
+                                yes_prob_hourly_store,
+                                no_prob_hourly_store,
+                                yes_prob_15m_store,
+                                no_prob_15m_store,
                                 yes_ask_dollars,
                                 no_ask_dollars,
                                 yes_bid_dollars,
@@ -1519,12 +1542,13 @@ class StrikeTableGenerator:
                             INSERT INTO live_data.{table_name}
                             (symbol, market, current_price, ttc_hourly, ttc_15m, broker, event_ticker, market_title,
                              strike_tier, market_status, strike, buffer, buffer_pct, probability_hourly, probability_15m,
+                             yes_prob_hourly, no_prob_hourly, yes_prob_15m, no_prob_15m,
                              yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
                              yes_price_spread, no_price_spread, yes_diff, no_diff, volume_fp, open_interest_fp, ticker, active_side,
                              momentum_weighted_score, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile,
                              yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m, yes_ask_range_15m, no_ask_range_15m,
                              timestamp, created_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             (
                                 self.symbol.upper(),
@@ -1542,6 +1566,10 @@ class StrikeTableGenerator:
                                 buffer_pct,
                                 prob_hourly_val,
                                 probability_15m,
+                                yes_prob_hourly_store,
+                                no_prob_hourly_store,
+                                yes_prob_15m_store,
+                                no_prob_15m_store,
                                 yes_ask_dollars,
                                 no_ask_dollars,
                                 yes_bid_dollars,
@@ -1650,6 +1678,7 @@ class StrikeTableGenerator:
                     f"""
                     SELECT symbol, current_price, {ttc_col}, {venue_col}, event_ticker, market_title,
                            strike_tier, market_status, strike, buffer, buffer_pct, {prob_col},
+                           yes_prob_hourly, no_prob_hourly, yes_prob_15m, no_prob_15m,
                            yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume_fp, open_interest_fp, ticker, active_side,
                            yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
                            yes_ask_range_15m, no_ask_range_15m,
@@ -1665,6 +1694,7 @@ class StrikeTableGenerator:
                     f"""
                     SELECT symbol, current_price, {ttc_col}, {venue_col}, event_ticker, market_title,
                            strike_tier, market_status, strike, buffer, buffer_pct, {prob_col},
+                           yes_prob_hourly, no_prob_hourly, yes_prob_15m, no_prob_15m,
                            yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume_fp, open_interest_fp, ticker, active_side,
                            yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
                            yes_ask_range_15m, no_ask_range_15m,
@@ -1715,22 +1745,26 @@ class StrikeTableGenerator:
                     "buffer": float(row[9]),
                     "buffer_pct": float(row[10]),
                     "probability": float(row[11]),
-                    "yes_ask_dollars": row[12],
-                    "no_ask_dollars": row[13],
-                    "yes_diff": float(row[14]) if row[14] is not None else None,
-                    "no_diff": float(row[15]) if row[15] is not None else None,
-                    "volume_fp": row[16] if row[16] is None else str(row[16]).strip(),
-                    "open_interest_fp": row[17] if row[17] is None else str(row[17]).strip(),
-                    "ticker": row[18],
-                    "active_side": row[19],
-                    "yes_ask_min_15m": float(row[20]) if row[20] is not None else None,
-                    "yes_ask_max_15m": float(row[21]) if row[21] is not None else None,
-                    "no_ask_min_15m": float(row[22]) if row[22] is not None else None,
-                    "no_ask_max_15m": float(row[23]) if row[23] is not None else None,
-                    "yes_ask_range_15m": float(row[24]) if row[24] is not None else None,
-                    "no_ask_range_15m": float(row[25]) if row[25] is not None else None,
+                    "yes_prob_hourly": float(row[12]) if row[12] is not None else None,
+                    "no_prob_hourly": float(row[13]) if row[13] is not None else None,
+                    "yes_prob_15m": float(row[14]) if row[14] is not None else None,
+                    "no_prob_15m": float(row[15]) if row[15] is not None else None,
+                    "yes_ask_dollars": row[16],
+                    "no_ask_dollars": row[17],
+                    "yes_diff": float(row[18]) if row[18] is not None else None,
+                    "no_diff": float(row[19]) if row[19] is not None else None,
+                    "volume_fp": row[20] if row[20] is None else str(row[20]).strip(),
+                    "open_interest_fp": row[21] if row[21] is None else str(row[21]).strip(),
+                    "ticker": row[22],
+                    "active_side": row[23],
+                    "yes_ask_min_15m": float(row[24]) if row[24] is not None else None,
+                    "yes_ask_max_15m": float(row[25]) if row[25] is not None else None,
+                    "no_ask_min_15m": float(row[26]) if row[26] is not None else None,
+                    "no_ask_max_15m": float(row[27]) if row[27] is not None else None,
+                    "yes_ask_range_15m": float(row[28]) if row[28] is not None else None,
+                    "no_ask_range_15m": float(row[29]) if row[29] is not None else None,
                 }
-                mo = 26
+                mo = 30
                 result["strikes"].append(strike_entry)
 
             # Momentum / IV context from first row (same for all strikes at this timestamp)

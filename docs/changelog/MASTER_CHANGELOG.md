@@ -6,6 +6,48 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-03 — Strike yes/no probs, trades ats_updated, AES/ATS strike-driven pool loop
+
+**Summary**
+- **Strike tables:** Add **yes_prob_hourly** / **no_prob_hourly** / **yes_prob_15m** / **no_prob_15m** (literal lookup legs). **`strike_table_generator`** (and shared insert paths) populate and read them; **`MASTER_DB_SCHEMA_REFERENCE`** updated.
+- **Trades:** Add **`ats_updated`** on **`users.trades_0001`** / **`users.trades_simulated_0001`** and matching archive columns; **`init_database()`** / **`database.py`** aligned.
+- **Pool AES/ATS:** **`backend/core/unified_all_monitors.py`** merges active 15m + hourly monitor rows for unified supervisors; **AES** / **ATS** refactors (strike-driven binding, lifecycle / telemetry). **`kalshi_lifecycle_trade_outcome`** updates.
+- **Migrations:** Ordered list below includes a **create + drop** pair for **`ats_monitoring_events`** (net no lasting table); strike + trades + archive + active_trades telemetry + **`monitor_confirm_detail`** + in-flight **`monitor_confirmed`** NULL cleanup.
+- **Ops / UI:** Trade history desktop + mobile tweaks; **`install.sh`** / **`config/logrotate.conf`** / supervisor generator and health paths aligned with **user-suffixed** supervisor program names where applicable.
+
+**Plans:** `unified-aes-ats-strike-driven-refactor` (direction; partial implementation in this batch)
+
+**DB migrations (required on production, in timestamp order — runner skips already-applied ids)**
+1. `20260402_2000_ats_monitoring_events`
+2. `20260402_2100_drop_ats_monitoring_events`
+3. `20260402_2300_strike_table_yes_no_prob_columns`
+4. `20260402_2310_trades_ats_updated`
+5. `20260402_2320_archive_trades_ats_updated`
+6. `20260409_1000_active_trades_monitor_confirm_telemetry`
+7. `20260409_1200_trades_monitor_confirmed_null_until_closed`
+8. `20260409_1310_trades_monitor_confirm_detail`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations (from project root on server, in order above):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260402_2000_ats_monitoring_events`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260402_2100_drop_ats_monitoring_events`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260402_2300_strike_table_yes_no_prob_columns`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260402_2310_trades_ats_updated`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260402_2320_archive_trades_ats_updated`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260409_1000_active_trades_monitor_confirm_telemetry`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260409_1200_trades_monitor_confirmed_null_until_closed`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260409_1310_trades_monitor_confirm_detail`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Regenerate supervisor config (picks pool user + ports):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/config/generate_unified_supervisor_config.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows **`trade_manager_*`**, **`trade_executor_*`**, **`active_trade_supervisor_*`**, **`auto_entry_supervisor_*`**, **`main_app`** RUNNING.
+
+---
+
 ## 2026-04-02 — ATS trade-log tick reconcile; trades monitor_confirmed default NULL
 
 **Summary**

@@ -705,11 +705,12 @@ test_service_startup() {
     supervisorctl -c backend/supervisord.conf status main_app | grep -q "RUNNING" || handle_error "Service Test" "main_app is not running"
     supervisorctl -c backend/supervisord.conf stop main_app
     
-    # Test trade_manager
-    supervisorctl -c backend/supervisord.conf start trade_manager || handle_error "Service Test" "trade_manager failed to start"
+    # Test trade_manager (program name is pool-suffixed; default REC_POOL_USER_NUMBER=0001)
+    _pu="${REC_POOL_USER_NUMBER:-0001}"
+    supervisorctl -c backend/supervisord.conf start "trade_manager_${_pu}" || handle_error "Service Test" "trade_manager failed to start"
     sleep 2
-    supervisorctl -c backend/supervisord.conf status trade_manager | grep -q "RUNNING" || handle_error "Service Test" "trade_manager is not running"
-    supervisorctl -c backend/supervisord.conf stop trade_manager
+    supervisorctl -c backend/supervisord.conf status "trade_manager_${_pu}" | grep -q "RUNNING" || handle_error "Service Test" "trade_manager is not running"
+    supervisorctl -c backend/supervisord.conf stop "trade_manager_${_pu}"
     
     # Stop supervisor
     kill $SUPERVISOR_PID

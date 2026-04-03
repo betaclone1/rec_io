@@ -4,8 +4,98 @@ Single source of truth for all port assignments.
 """
 
 import json
+import logging
 import os
-from typing import Dict, Optional
+from typing import Dict, List, Optional
+
+_port_cfg_logger = logging.getLogger(__name__)
+
+
+def default_pool_user_number() -> str:
+    """Default trading user id for pool AES/ATS manifest keys (e.g. 0001). Set REC_POOL_USER_NUMBER to override."""
+    u = os.environ.get("REC_POOL_USER_NUMBER", "0001").strip()
+    return u if u else "0001"
+
+
+def pool_user_for_unified_aes_ats(active_monitors: Optional[List] = None) -> str:
+    """
+    Supervisor program suffix for pool AES/ATS: auto_entry_supervisor_<id> / active_trade_supervisor_<id>.
+    Prefer distinct user_number values from monitor rows; align REC_POOL_USER_NUMBER with this on the host.
+    """
+    if not active_monitors:
+        return default_pool_user_number()
+    ids = sorted(
+        set(
+            str(m.get("user_number") or "").strip() or "0001"
+            for m in active_monitors
+        )
+    )
+    if not ids:
+        return default_pool_user_number()
+    if len(ids) > 1:
+        _port_cfg_logger.warning(
+            "Multiple user_numbers among active monitors (%s); using %s for pool AES/ATS supervisor names",
+            ids,
+            ids[0],
+        )
+    return ids[0]
+
+
+def unified_auto_entry_supervisor_service_name() -> str:
+    return f"auto_entry_supervisor_{default_pool_user_number()}"
+
+
+def unified_active_trade_supervisor_service_name() -> str:
+    return f"active_trade_supervisor_{default_pool_user_number()}"
+
+
+# Supervisord program names use REC_POOL_USER_NUMBER; get_port("trade_manager") still works via resolution.
+_USER_SCOPED_PORT_BASES = frozenset(
+    {"trade_manager", "trade_executor", "kalshi_account_sync", "monitor_manager"}
+)
+
+
+def user_scoped_service_name(base: str) -> str:
+    """Supervisor + manifest key suffix for user-level trading services (e.g. trade_manager_0001)."""
+    return f"{base}_{default_pool_user_number()}"
+
+
+def _resolve_user_scoped_port_key(service_name: str) -> str:
+    if service_name in _USER_SCOPED_PORT_BASES:
+        return user_scoped_service_name(service_name)
+    return service_name
+
+
+# Map supervisord program name → script file under backend/ (for duplicate-process detection).
+_USER_SCOPED_SCRIPT = {
+    "trade_manager": "trade_manager.py",
+    "trade_executor": "trade_executor.py",
+    "monitor_manager": "monitor_manager.py",
+    "kalshi_account_sync": "kalshi_account_sync_ws.py",
+}
+
+
+def supervisor_program_script_filename(supervisor_program_name: str) -> str:
+    """Resolve backend script filename for a supervisord program name."""
+    import re
+
+    m = re.match(
+        r"^(trade_manager|trade_executor|monitor_manager|kalshi_account_sync)_(\d+)$",
+        supervisor_program_name,
+    )
+    if m:
+        base = m.group(1)
+        return _USER_SCOPED_SCRIPT.get(base, f"{base}.py")
+    return f"{supervisor_program_name}.py"
+
+
+def _resolve_legacy_unified_port_key(service_name: str) -> str:
+    """Map old *_unified manifest keys to user-suffixed names."""
+    if service_name == "auto_entry_supervisor_unified":
+        return unified_auto_entry_supervisor_service_name()
+    if service_name == "active_trade_supervisor_unified":
+        return unified_active_trade_supervisor_service_name()
+    return service_name
 
 # Import the universal host system
 try:
@@ -60,8 +150,14 @@ DEFAULT_PORTS = {
     "strike_table_generator_ws_15m": 8036,
     "auto_entry_supervisor_15m": 8033,
     "active_trade_supervisor_15m": 8034,
+    "auto_entry_supervisor_0001": 8033,
+    "active_trade_supervisor_0001": 8034,
     "auto_entry_supervisor_hourly": 8037,
     "active_trade_supervisor_hourly": 8038,
+    "trade_manager_0001": 4000,
+    "trade_executor_0001": 8001,
+    "kalshi_account_sync_0001": 8004,
+    "monitor_manager_0001": 8012,
 }
 
 def ensure_port_config_exists():
@@ -78,14 +174,14 @@ def ensure_port_config_exists():
                     "description": "Main web application",
                     "status": "RUNNING"
                 },
-                "trade_manager": {
+                "trade_manager_0001": {
                     "port": 4000,
-                    "description": "Trade management service",
+                    "description": "Trade management service (user 0001)",
                     "status": "RUNNING"
                 },
-                "trade_executor": {
+                "trade_executor_0001": {
                     "port": 8001,
-                    "description": "Trade execution service",
+                    "description": "Trade execution service (user 0001)",
                     "status": "RUNNING"
                 },
                 "active_trade_supervisor": {
@@ -95,9 +191,9 @@ def ensure_port_config_exists():
                 }
             },
             "watchdog_services": {
-                "kalshi_account_sync": {
+                "kalshi_account_sync_0001": {
                     "port": 8004,
-                    "description": "Kalshi account synchronization",
+                    "description": "Kalshi account synchronization (user 0001)",
                     "status": "RUNNING"
                 },
                 "market_watchdog_ws_kalshi_hourly": {
@@ -140,6 +236,16 @@ def ensure_port_config_exists():
                     "description": "Unified active trade supervisor for all active 15m monitors",
                     "status": "RUNNING"
                 },
+                "auto_entry_supervisor_0001": {
+                    "port": 8033,
+                    "description": "Pool auto entry supervisor for user 0001 (all active 15m and hourly-pool monitors, single process)",
+                    "status": "RUNNING"
+                },
+                "active_trade_supervisor_0001": {
+                    "port": 8034,
+                    "description": "Pool active trade supervisor for user 0001 (all active 15m and hourly-pool monitors, single process)",
+                    "status": "RUNNING"
+                },
                 "auto_entry_supervisor_hourly": {
                     "port": 8037,
                     "description": "Unified auto entry supervisor for all active hourly monitors",
@@ -150,9 +256,9 @@ def ensure_port_config_exists():
                     "description": "Unified active trade supervisor for all active hourly monitors",
                     "status": "RUNNING"
                 },
-                "monitor_manager": {
+                "monitor_manager_0001": {
                     "port": 8012,
-                    "description": "Core monitor management system",
+                    "description": "Core monitor management system (user 0001)",
                     "status": "RUNNING"
                 }
             },
@@ -185,7 +291,9 @@ def ensure_port_config_exists():
 def get_port(service_name: str) -> int:
     """Get the port for a specific service from master manifest."""
     ensure_port_config_exists()
-    
+    service_name = _resolve_legacy_unified_port_key(service_name)
+    service_name = _resolve_user_scoped_port_key(service_name)
+
     try:
         with open(PORT_CONFIG_FILE, 'r') as f:
             manifest = json.load(f)
@@ -471,7 +579,7 @@ def monitor_suffix_uses_unified_15m_pool(monitor_suffix: str) -> bool:
 
 
 def monitor_suffix_uses_unified_hourly_pool(monitor_suffix: str) -> bool:
-    """True when this monitor should use the unified hourly AES/ATS ports (market = hourly)."""
+    """True when this monitor uses the hourly unified ladder (normalized market is not 15m)."""
     if "_" not in monitor_suffix:
         return False
     user_number, monitor_id = monitor_suffix.split("_", 1)
@@ -494,7 +602,7 @@ def monitor_suffix_uses_unified_hourly_pool(monitor_suffix: str) -> bool:
             row = cursor.fetchone()
             if not row or row[0] is None:
                 return False
-            return str(row[0]).strip() == "hourly"
+            return str(row[0]).strip() != "15m"
     except Exception:
         return False
     finally:
@@ -505,19 +613,22 @@ def monitor_suffix_uses_unified_hourly_pool(monitor_suffix: str) -> bool:
                 pass
 
 
+def monitor_suffix_uses_unified_aes_ats_pool(monitor_suffix: str) -> bool:
+    """True when this monitor is served by the single unified AES/ATS processes (15m or non-15m ladder)."""
+    return monitor_suffix_uses_unified_15m_pool(monitor_suffix) or monitor_suffix_uses_unified_hourly_pool(
+        monitor_suffix
+    )
+
+
 def get_active_trade_supervisor_http_port_for_monitor_suffix(monitor_suffix: str) -> int:
-    if monitor_suffix_uses_unified_15m_pool(monitor_suffix):
-        return get_port("active_trade_supervisor_15m")
-    if monitor_suffix_uses_unified_hourly_pool(monitor_suffix):
-        return get_port("active_trade_supervisor_hourly")
+    if monitor_suffix_uses_unified_aes_ats_pool(monitor_suffix):
+        return get_port(unified_active_trade_supervisor_service_name())
     return get_monitor_port("active_trade_supervisor", monitor_suffix)
 
 
 def get_auto_entry_supervisor_http_port_for_monitor_suffix(monitor_suffix: str) -> int:
-    if monitor_suffix_uses_unified_15m_pool(monitor_suffix):
-        return get_port("auto_entry_supervisor_15m")
-    if monitor_suffix_uses_unified_hourly_pool(monitor_suffix):
-        return get_port("auto_entry_supervisor_hourly")
+    if monitor_suffix_uses_unified_aes_ats_pool(monitor_suffix):
+        return get_port(unified_auto_entry_supervisor_service_name())
     return get_monitor_port("auto_entry_supervisor", monitor_suffix)
 
 

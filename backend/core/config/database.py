@@ -170,7 +170,8 @@ def init_database():
                 momentum_5s_avg NUMERIC,
                 volatility NUMERIC(10,4),
                 movement NUMERIC(10,4),
-                movement_percentile NUMERIC(5,1)
+                movement_percentile NUMERIC(5,1),
+                ats_updated TIMESTAMPTZ
             );
         """)
 
@@ -243,7 +244,8 @@ def init_database():
                 monitor_confirmed BOOLEAN DEFAULT NULL,
                 cycle_win_loss TEXT,
                 cycle_pnl REAL,
-                cycle_ret_pct REAL
+                cycle_ret_pct REAL,
+                ats_updated TIMESTAMPTZ
             );
         """)
 
@@ -369,6 +371,19 @@ def init_database():
                       AND column_name = 'market'
                 ) THEN
                     ALTER TABLE users.trades_simulated_0001 ADD COLUMN market VARCHAR(10) DEFAULT 'hourly';
+                END IF;
+
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users' AND table_name = 'trades_0001' AND column_name = 'ats_updated'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN ats_updated TIMESTAMPTZ;
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users' AND table_name = 'trades_simulated_0001' AND column_name = 'ats_updated'
+                ) THEN
+                    ALTER TABLE users.trades_simulated_0001 ADD COLUMN ats_updated TIMESTAMPTZ;
                 END IF;
 
                 -- Strike-table final-window ask snapshot at trade insert (migration 20260330_2200_trades_strike_final_quarter_asks)

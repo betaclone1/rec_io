@@ -18,6 +18,7 @@ from backend.core.unified_config import unified_config
 from backend.core.config.database import get_database_config, get_postgresql_connection
 from backend.core.path_manager import PathManager
 from backend.core.host_detector import HostDetector
+from backend.core.port_config import pool_user_for_unified_aes_ats
 import logging
 
 # Configure logging
@@ -157,8 +158,8 @@ class SupervisorConfigGenerator:
             # Fallback to default ports
             default_ports = {
                 "main_app": 3000,
-                "trade_manager": 4000,
-                "trade_executor": 8001,
+                "trade_manager_0001": 4000,
+                "trade_executor_0001": 8001,
                 "active_trade_supervisor": 6000,
                 "auto_entry_supervisor": 8002,
                 "symbol_price_watchdog_btc": 8008,
@@ -167,17 +168,19 @@ class SupervisorConfigGenerator:
                 "symbol_price_watchdog_xrp": 8026,
                 "symbol_price_watchdog_spx": 8017,
                 "symbol_price_watchdog_ndx": 8019,
-                "kalshi_account_sync": 8004,
+                "kalshi_account_sync_0001": 8004,
                 "market_watchdog_ws_kalshi_hourly": 8005,
                 "market_watchdog_ws_kalshi_15m": 8035,
                 "strike_table_generator_ws_hourly": 8014,
                 "strike_table_generator_ws_15m": 8036,
                 "auto_entry_supervisor_15m": 8033,
                 "active_trade_supervisor_15m": 8034,
+                "auto_entry_supervisor_0001": 8033,
+                "active_trade_supervisor_0001": 8034,
                 "auto_entry_supervisor_hourly": 8037,
                 "active_trade_supervisor_hourly": 8038,
                 "system_monitor": 8006,
-                "monitor_manager": 8012,
+                "monitor_manager_0001": 8012,
                 "cascading_failure_detector": 8007
             }
             
@@ -195,15 +198,20 @@ class SupervisorConfigGenerator:
         # Get database configuration
         db_config = get_database_config()
         
-        # Create environment variables string
-        env_vars = self._create_environment_variables(db_config, system_host)
+        # Create environment variables string (REC_POOL_USER_NUMBER for main_app / port_config alignment)
+        active_monitors = self._get_active_monitors()
+        pool_user = pool_user_for_unified_aes_ats(active_monitors)
+        env_vars = self._create_environment_variables(db_config, system_host, pool_user)
         
         # Log directory for supervisord and all program logs (durable; see docs/CRITICAL_ASSET_LOGGING.md)
         log_dir = self.path_manager.get_log_directory()
         
-        # Get active monitors from database
-        active_monitors = self._get_active_monitors()
         logger.info(f"Found {len(active_monitors)} active monitors: {active_monitors}")
+        
+        tm = f"trade_manager_{pool_user}"
+        te = f"trade_executor_{pool_user}"
+        kas = f"kalshi_account_sync_{pool_user}"
+        mm = f"monitor_manager_{pool_user}"
         
         # Define core services to configure
         services = [
@@ -213,14 +221,14 @@ class SupervisorConfigGenerator:
                 "port": ports.get("main_app", 3000)
             },
             {
-                "name": "trade_manager",
+                "name": tm,
                 "script": "trade_manager.py",
-                "port": ports.get("trade_manager", 4000)
+                "port": ports.get(tm, 4000)
             },
             {
-                "name": "trade_executor",
+                "name": te,
                 "script": "trade_executor.py",
-                "port": ports.get("trade_executor", 8001)
+                "port": ports.get(te, 8001)
             },
             {
                 "name": "read_api",
@@ -264,9 +272,9 @@ class SupervisorConfigGenerator:
             #     "port": ports.get("symbol_price_watchdog_ndx", 8019)
             # },
             {
-                "name": "kalshi_account_sync",
+                "name": kas,
                 "script": "kalshi_account_sync_ws.py",
-                "port": ports.get("kalshi_account_sync", 8004)
+                "port": ports.get(kas, 8004)
             },
             {
                 "name": "market_watchdog_ws_kalshi_hourly",
@@ -284,9 +292,9 @@ class SupervisorConfigGenerator:
                 "port": ports.get("system_monitor", 8006)
             },
             {
-                "name": "monitor_manager",
+                "name": mm,
                 "script": "monitor_manager.py",
-                "port": ports.get("monitor_manager", 8012)
+                "port": ports.get(mm, 8012)
             },
             {
                 "name": "cascading_failure_detector",
@@ -295,32 +303,22 @@ class SupervisorConfigGenerator:
             }
         ]
         
-        # Unified AES/ATS: one pair for all active 15m monitors; one pair for all active hourly monitors.
+        # Unified AES/ATS: one process pair serves all active 15m and hourly-pool monitors (argv unified).
         has_15m = any(m.get("market", "hourly") == "15m" for m in active_monitors)
         has_hourly = any(m.get("market", "hourly") != "15m" for m in active_monitors)
 
-        if has_15m:
+        if has_15m or has_hourly:
+            aes_name = f"auto_entry_supervisor_{pool_user}"
+            ats_name = f"active_trade_supervisor_{pool_user}"
             services.append({
-                "name": "auto_entry_supervisor_15m",
-                "script": "auto_entry_supervisor.py unified_15m",
-                "port": ports.get("auto_entry_supervisor_15m", 8033),
+                "name": aes_name,
+                "script": "auto_entry_supervisor.py unified",
+                "port": ports.get(aes_name, ports.get("auto_entry_supervisor_0001", 8033)),
             })
             services.append({
-                "name": "active_trade_supervisor_15m",
-                "script": "active_trade_supervisor.py unified_15m",
-                "port": ports.get("active_trade_supervisor_15m", 8034),
-            })
-
-        if has_hourly:
-            services.append({
-                "name": "auto_entry_supervisor_hourly",
-                "script": "auto_entry_supervisor.py unified_hourly",
-                "port": ports.get("auto_entry_supervisor_hourly", 8037),
-            })
-            services.append({
-                "name": "active_trade_supervisor_hourly",
-                "script": "active_trade_supervisor.py unified_hourly",
-                "port": ports.get("active_trade_supervisor_hourly", 8038),
+                "name": ats_name,
+                "script": "active_trade_supervisor.py unified",
+                "port": ports.get(ats_name, ports.get("active_trade_supervisor_0001", 8034)),
             })
         
         services.append({
@@ -360,7 +358,7 @@ supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
         
         # Long settlement polling can run many minutes; allow graceful stop before SIGKILL.
         PROGRAM_EXTRA_DIRECTIVES = {
-            "trade_manager": ["stopwaitsecs=120"],
+            tm: ["stopwaitsecs=120"],
         }
         # Critical assets get higher log retention (see docs/CRITICAL_ASSET_LOGGING.md)
         CRITICAL_LOG_SERVICES = {"system_monitor", "cascading_failure_detector"}
@@ -408,7 +406,9 @@ environment={env_vars}
         
         return config_content
     
-    def _create_environment_variables(self, db_config: dict, system_host: str) -> str:
+    def _create_environment_variables(
+        self, db_config: dict, system_host: str, rec_pool_user: str = "0001"
+    ) -> str:
         """Create environment variables string for supervisor"""
         try:
             env_vars = [
@@ -419,6 +419,7 @@ environment={env_vars}
                 'PYTHONDONTWRITEBYTECODE=1',
                 f'TRADING_SYSTEM_HOST="{system_host}"',
                 f'REC_SYSTEM_HOST="{system_host}"',
+                f'REC_POOL_USER_NUMBER="{rec_pool_user}"',
                 f'REC_PROJECT_ROOT="{self.config.project_root}"',
                 f'REC_ENVIRONMENT="{self.config.get("system.environment", "development")}"',
                 f'DB_HOST="{db_config.get("host", "localhost")}"',

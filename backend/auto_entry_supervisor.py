@@ -94,7 +94,12 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 # Import the universal centralized port system
-from backend.core.port_config import get_port, get_monitor_port, register_monitor_ports
+from backend.core.port_config import (
+    get_monitor_port,
+    get_port,
+    register_monitor_ports,
+    unified_auto_entry_supervisor_service_name,
+)
 from backend.core.config.database import get_postgresql_connection as get_db_connection
 from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
 from backend.util.paths import get_host, get_data_dir, get_service_url, get_trade_history_dir, get_logs_dir
@@ -192,6 +197,8 @@ def get_monitor_identifier():
             return "unified_15m"
         if sys.argv[1] == "unified_hourly":
             return "unified_hourly"
+        if sys.argv[1] == "unified":
+            return "unified"
         return sys.argv[1]  # Use first argument as monitor identifier
     
     # Default to first active monitor if no identifier provided
@@ -201,7 +208,8 @@ def get_monitor_identifier():
 MONITOR_IDENTIFIER = get_monitor_identifier()
 AES_UNIFIED_15M = MONITOR_IDENTIFIER == "unified_15m"
 AES_UNIFIED_HOURLY = MONITOR_IDENTIFIER == "unified_hourly"
-AES_UNIFIED_POOL = AES_UNIFIED_15M or AES_UNIFIED_HOURLY
+AES_UNIFIED_ALL = MONITOR_IDENTIFIER == "unified"
+AES_UNIFIED_POOL = AES_UNIFIED_15M or AES_UNIFIED_HOURLY or AES_UNIFIED_ALL
 if AES_UNIFIED_POOL:
     USER_NUMBER = "0001"
     MONITOR_ID = "0"
@@ -838,6 +846,15 @@ def get_monitor_symbol():
                 os._exit(0)
             uid0 = rows[0]["user_number"]
             mid0 = rows[0]["monitor_id"]
+        elif AES_UNIFIED_ALL:
+            from backend.core.unified_all_monitors import list_active_unified_monitor_rows
+
+            rows = list_active_unified_monitor_rows()
+            if not rows:
+                log("[AUTO_ENTRY_SUPERVISOR] ❌ unified: no active 15m or hourly-pool monitors in DB; exiting")
+                os._exit(0)
+            uid0 = rows[0]["user_number"]
+            mid0 = rows[0]["monitor_id"]
         else:
             uid0, mid0 = ctx_user(), ctx_mid()
 
@@ -935,6 +952,9 @@ if AES_UNIFIED_15M:
 elif AES_UNIFIED_HOURLY:
     AUTO_ENTRY_SUPERVISOR_PORT = get_port("auto_entry_supervisor_hourly")
     _aes_logger.info("Using unified hourly AES port: %s", AUTO_ENTRY_SUPERVISOR_PORT)
+elif AES_UNIFIED_ALL:
+    AUTO_ENTRY_SUPERVISOR_PORT = get_port(unified_auto_entry_supervisor_service_name())
+    _aes_logger.info("Using pool AES port (15m+hourly): %s", AUTO_ENTRY_SUPERVISOR_PORT)
 else:
     register_monitor_ports(MONITOR_IDENTIFIER)
     AUTO_ENTRY_SUPERVISOR_PORT = get_monitor_port("auto_entry_supervisor", MONITOR_IDENTIFIER)
@@ -1926,10 +1946,14 @@ def periodic_status_sync():
                 from backend.core.unified_15m_monitors import iter_active_15m_monitor_bindings
 
                 iter_bindings = iter_active_15m_monitor_bindings()
-            else:
+            elif AES_UNIFIED_HOURLY:
                 from backend.core.unified_hourly_monitors import iter_active_hourly_monitor_bindings
 
                 iter_bindings = iter_active_hourly_monitor_bindings()
+            else:
+                from backend.core.unified_all_monitors import iter_active_unified_monitor_bindings
+
+                iter_bindings = iter_active_unified_monitor_bindings()
             for u, m in iter_bindings:
                 with aes_monitor_bind(u, m):
                     if is_auto_trade_enabled():
@@ -3334,16 +3358,25 @@ def check_auto_entry_conditions():
                 from backend.core.unified_15m_monitors import list_active_15m_monitor_rows
 
                 rows = list_active_15m_monitor_rows()
-            else:
+            elif AES_UNIFIED_HOURLY:
                 from backend.core.unified_hourly_monitors import list_active_hourly_monitor_rows
 
                 rows = list_active_hourly_monitor_rows()
+            else:
+                from backend.core.unified_all_monitors import list_active_unified_monitor_rows
+
+                rows = list_active_unified_monitor_rows()
             by_ladder: Dict[Tuple[str, str], List[Tuple[str, str]]] = defaultdict(list)
             for row in rows:
                 sym = (row.get("symbol") or "BTC").strip().upper() or "BTC"
                 mkt = (row.get("market") or "").strip().lower()
                 if mkt not in ("hourly", "15m"):
-                    mkt = "15m" if AES_UNIFIED_15M else "hourly"
+                    if AES_UNIFIED_15M:
+                        mkt = "15m"
+                    elif AES_UNIFIED_HOURLY:
+                        mkt = "hourly"
+                    else:
+                        mkt = "hourly"
                 by_ladder[(sym, mkt)].append((row["user_number"], row["monitor_id"]))
             for (sym, mkt) in sorted(by_ladder.keys()):
                 bindings = by_ladder[(sym, mkt)]
@@ -3398,7 +3431,10 @@ def check_auto_entry_conditions():
         except Exception as e:
             import traceback
 
-            pool_n = "15m" if AES_UNIFIED_15M else "hourly"
+            if AES_UNIFIED_ALL:
+                pool_n = "unified"
+            else:
+                pool_n = "15m" if AES_UNIFIED_15M else "hourly"
             log(f"[AUTO ENTRY] ❌ Error checking entry conditions ({pool_n} pool): {e}")
             log(f"[AUTO ENTRY] ❌ Traceback: {traceback.format_exc()}")
         return

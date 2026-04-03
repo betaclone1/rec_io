@@ -483,6 +483,7 @@
     <div id="results-content" style="height: 0; overflow: hidden; transition: height 0.1s ease;">
       <div style="height: 10px; background-color: #323c4e;"></div>
       <div style="background-color: #1f2530; height: calc(100% - 10px); overflow-y: auto;">
+      <div id="trade-history-fetch-banner" style="display:none; padding:8px 10px; background:#4a3728; color:#f6e05e; font-size:12px; border-bottom:1px solid #744210;" role="status" aria-live="polite"></div>
       <table id="trade-log-table" aria-label="Trade Log Table">
         <thead>
           <tr class="th">
@@ -1208,20 +1209,69 @@
       updateAnalysis();
     }
 
+    let _thTradesFetchInFlight = false;
+    let _thTradesFetchQueued = false;
+    let _thTradesFetchQueuedReason = null;
+    let _thLastTradesFetchErrorLogMs = 0;
+
+    function _thSetFetchBanner(text, show) {
+      const el = document.getElementById('trade-history-fetch-banner');
+      if (!el) return;
+      if (show && text) {
+        el.textContent = text;
+        el.style.display = 'block';
+      } else {
+        el.style.display = 'none';
+        el.textContent = '';
+      }
+    }
+
     async function fetchAllTrades(reason) {
       const r = reason || 'unspecified';
-      console.log('[trade_history] GET /trades — reason:', r, '(not on a timer; only load, tab focus, or ws db_change/trades)');
+      if (_thTradesFetchInFlight) {
+        _thTradesFetchQueued = true;
+        _thTradesFetchQueuedReason = r;
+        return;
+      }
+      _thTradesFetchInFlight = true;
+      if (localStorage.getItem('trade_history_debug') === '1') {
+        console.log('[trade_history] GET /trades — reason:', r);
+      }
       try {
         const res = await fetch(window.location.origin + '/trades', { cache: 'no-store' });
-        if (!res.ok) throw new Error('Network response was not ok');
-        trades = await res.json();
+        if (!res.ok) throw new Error(res.status === 503 ? 'Service unavailable' : 'Network response was not ok');
+        const data = await res.json();
+        trades = data;
+        _thSetFetchBanner('', false);
         applyFilters();
-        // Initial analysis update
         updateAnalysis();
       } catch (error) {
-        const tbody = document.querySelector('#trade-log-table tbody');
-        tbody.innerHTML = `<tr><td colspan="22" style="color:red;">Failed to load trades: ${error.message}</td></tr>`;
-        console.error('Error fetching trades:', error);
+        const hadRows = Array.isArray(trades) && trades.length > 0;
+        const now = Date.now();
+        if (now - _thLastTradesFetchErrorLogMs > 8000) {
+          _thLastTradesFetchErrorLogMs = now;
+          console.warn('[trade_history] /trades failed:', error.message || error, hadRows ? '(keeping last loaded rows)' : '');
+        }
+        if (hadRows) {
+          _thSetFetchBanner(
+            'Could not refresh the trade list (database may be busy). Showing last loaded data.',
+            true
+          );
+        } else {
+          _thSetFetchBanner('', false);
+          const tbody = document.querySelector('#trade-log-table tbody');
+          if (tbody) {
+            tbody.innerHTML = `<tr><td colspan="22" style="color:red;">Failed to load trades: ${error.message}</td></tr>`;
+          }
+        }
+      } finally {
+        _thTradesFetchInFlight = false;
+        if (_thTradesFetchQueued) {
+          _thTradesFetchQueued = false;
+          const nextReason = _thTradesFetchQueuedReason || 'queued-follow-up';
+          _thTradesFetchQueuedReason = null;
+          setTimeout(() => fetchAllTrades(nextReason), 0);
+        }
       }
     }
 
@@ -1377,15 +1427,16 @@
       if (endDate) endDateInput.value = endDate;
     }
 
-    // Debounced refetch when /ws/db_changes signals trades (collapses PG NOTIFY + app publish)
+    // Debounced refetch when /ws/db_changes signals trades (many NOTIFYs possible under DB contention)
     let _tradeHistoryDbRefreshTimer = null;
+    const _TH_WS_TRADES_DEBOUNCE_MS = 800;
     function scheduleTradesRefetchFromDbChange() {
       if (window.TRADE_HISTORY_PAUSED) return;
       if (_tradeHistoryDbRefreshTimer) clearTimeout(_tradeHistoryDbRefreshTimer);
       _tradeHistoryDbRefreshTimer = setTimeout(() => {
         _tradeHistoryDbRefreshTimer = null;
         fetchAllTrades('ws-db_change-trades');
-      }, 250);
+      }, _TH_WS_TRADES_DEBOUNCE_MS);
     }
 
     // WebSocket: same-origin /ws/db_changes (see docs/REALTIME_BACKBONE.md). Paused when History iframe is hidden.
@@ -1410,8 +1461,8 @@
         }
       };
 
-      ws.onerror = function(error) {
-        console.error('WebSocket error (trade history):', error);
+      ws.onerror = function() {
+        // Browsers give little detail; onclose handles reconnect. Avoid spamming the console.
       };
 
       ws.onclose = function() {

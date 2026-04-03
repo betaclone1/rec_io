@@ -57,6 +57,10 @@ sys.path.insert(0, os.path.join(get_project_root(), 'scripts'))
 
 from backend.core.unified_config import unified_config
 from backend.core.time_eastern import merge_psycopg2_connect_kwargs, now_est
+from backend.core.port_config import (
+    unified_active_trade_supervisor_service_name,
+    user_scoped_service_name,
+)
 
 class FailureLevel:
     NONE = "none"
@@ -82,8 +86,8 @@ class CascadingFailureDetector:
         # Core services that are always critical
         self.core_critical_services = [
             "main_app",           # Core web interface
-            "trade_manager",       # Trade management
-            "trade_executor",      # Trade execution
+            user_scoped_service_name("trade_manager"),       # Trade management
+            user_scoped_service_name("trade_executor"),      # Trade execution
             "symbol_price_watchdog_btc", # BTC price data
             "symbol_price_watchdog_eth", # ETH price data
             "symbol_price_watchdog_sol", # SOL price data
@@ -91,7 +95,7 @@ class CascadingFailureDetector:
             # SPX/NDX not currently traded; uncomment to re-enable later.
             # "symbol_price_watchdog_spx", # SPX price data
             "strike_table_generator_ws_hourly",  # WS hourly strikes → live_data.strike_table_hourly
-            "kalshi_account_sync", # Kalshi API sync
+            user_scoped_service_name("kalshi_account_sync"), # Kalshi API sync
             "market_watchdog_ws_kalshi_hourly",  # Kalshi hourly WS ticker → live_data.market_kalshi_hourly
             "market_watchdog_ws_kalshi_15m", # Kalshi 15m WS ticker → live_data.market_kalshi_ws_15m
             "strike_table_generator_ws_15m", # WS 15m strikes → live_data.strike_table_15m
@@ -152,18 +156,14 @@ class CascadingFailureDetector:
             
             has_15m = any(m.get("market", "hourly") == "15m" for m in active_monitors)
             has_hourly = any(m.get("market", "hourly") != "15m" for m in active_monitors)
-            if has_15m:
+            if has_15m or has_hourly:
+                from backend.core.port_config import pool_user_for_unified_aes_ats
+
+                pu = pool_user_for_unified_aes_ats(active_monitors)
                 discovered_services.extend(
                     [
-                        "auto_entry_supervisor_15m",
-                        "active_trade_supervisor_15m",
-                    ]
-                )
-            if has_hourly:
-                discovered_services.extend(
-                    [
-                        "auto_entry_supervisor_hourly",
-                        "active_trade_supervisor_hourly",
+                        f"auto_entry_supervisor_{pu}",
+                        f"active_trade_supervisor_{pu}",
                     ]
                 )
             
@@ -438,8 +438,10 @@ class CascadingFailureDetector:
             
             # Check supervisor status for all critical services
             critical_services = [
-                "main_app", "trade_manager", "trade_executor", 
-                "active_trade_supervisor"
+                "main_app",
+                user_scoped_service_name("trade_manager"),
+                user_scoped_service_name("trade_executor"),
+                unified_active_trade_supervisor_service_name(),
             ]
             
             all_running = True

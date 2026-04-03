@@ -5,6 +5,10 @@ Apply Kalshi ``market_lifecycle_v2`` outcomes to ``users.trades_0001``.
 messages with a ``result`` field. Expired trades are finalized in ``trade_manager`` from
 ``market_result`` and ``side`` (not from settlement polling).
 
+Concurrent updates (e.g. unified ATS / trade_manager on the same rows) can cause Postgres
+deadlocks; ``apply_lifecycle_market_result_for_ticker`` uses stable lock order
+(``ORDER BY id`` + ``FOR UPDATE``) and bounded retries on ``DeadlockDetected``.
+
 See https://docs.kalshi.com/websockets/market-&-event-lifecycle
 """
 
@@ -12,12 +16,27 @@ from __future__ import annotations
 
 import json
 import logging
+import random
+import time
 from decimal import Decimal
 from typing import Any, Optional
+
+from psycopg2 import errors as pg_errors
 
 from backend.core.kalshi_event_market_fetch import normalize_market_result_field
 
 logger = logging.getLogger(__name__)
+
+# Lifecycle WS and ATS / trade_manager can touch the same trades_0001 rows concurrently; Postgres may
+# pick a deadlock victim. Retries + deterministic lock order (ORDER BY id FOR UPDATE) reduce noise.
+_LIFECYCLE_DEADLOCK_MAX_ATTEMPTS = 5
+_LIFECYCLE_DEADLOCK_BASE_SLEEP_SEC = 0.02
+
+
+def _is_deadlock_exception(exc: BaseException) -> bool:
+    if isinstance(exc, pg_errors.DeadlockDetected):
+        return True
+    return getattr(exc, "pgcode", None) == "40P01"
 
 
 def strike_display_from_floor_strike(floor_strike: Any) -> str:
@@ -101,6 +120,9 @@ def apply_lifecycle_market_result_for_ticker(market_ticker: str, result_raw: Any
     When ``win_loss`` is already recorded, sets ``win_loss_confirmed`` from venue ``market_result``
     + ``side`` vs ``win_loss`` (not from ``symbol_expiration``). Mismatch is logged.
     Returns number of trade rows updated for ``market_result``.
+
+    Uses ``ORDER BY id`` + ``FOR UPDATE`` on the initial select so row locks are taken in a stable
+    order, and retries a few times on ``DeadlockDetected`` (contention with ATS / trade_manager).
     """
     bin_out = normalize_market_result_field(result_raw)
     if bin_out is None:
@@ -111,83 +133,116 @@ def apply_lifecycle_market_result_for_ticker(market_ticker: str, result_raw: Any
 
     from backend.core.config.database import get_postgresql_connection
 
-    conn = get_postgresql_connection()
-    if not conn:
-        logger.warning("lifecycle outcome: no DB connection for ticker=%s", mt)
-        return 0
     n = 0
     trade_log_targets: list[tuple[str, int]] = []
     expired_to_finalize: list[int] = []
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, ticket_id, side, win_loss, win_loss_confirmed, status
-                FROM users.trades_0001
-                WHERE ticker = %s
-                  AND status IN ('open', 'closing', 'close_failed', 'expired', 'closed')
-                """,
-                (mt,),
-            )
-            rows = cur.fetchall()
-            for trade_id, ticket_id, side, wl, wlc, status in rows:
+    committed = False
+
+    for attempt in range(1, _LIFECYCLE_DEADLOCK_MAX_ATTEMPTS + 1):
+        conn = get_postgresql_connection()
+        if not conn:
+            logger.warning("lifecycle outcome: no DB connection for ticker=%s", mt)
+            return 0
+        trade_log_targets.clear()
+        expired_to_finalize.clear()
+        n = 0
+        try:
+            with conn.cursor() as cur:
                 cur.execute(
                     """
-                    UPDATE users.trades_0001
-                    SET market_result = %s
-                    WHERE id = %s
+                    SELECT id, ticket_id, side, win_loss, win_loss_confirmed, status
+                    FROM users.trades_0001
+                    WHERE ticker = %s
                       AND status IN ('open', 'closing', 'close_failed', 'expired', 'closed')
+                    ORDER BY id
+                    FOR UPDATE
                     """,
-                    (bin_out, trade_id),
+                    (mt,),
                 )
-                if cur.rowcount:
-                    n += 1
-                    tid_key = str(ticket_id).strip() if ticket_id else ""
-                    if not tid_key:
-                        tid_key = f"trade_{trade_id}"
-                    trade_log_targets.append((tid_key, trade_id))
-                    if status == "expired":
-                        expired_to_finalize.append(int(trade_id))
-                wlc_new = compute_win_loss_confirmed_from_venue(side, bin_out, wl)
-                if wlc_new is not None:
+                rows = cur.fetchall()
+                for trade_id, ticket_id, side, wl, wlc, status in rows:
                     cur.execute(
                         """
                         UPDATE users.trades_0001
-                        SET win_loss_confirmed = %s
+                        SET market_result = %s
                         WHERE id = %s
+                          AND status IN ('open', 'closing', 'close_failed', 'expired', 'closed')
                         """,
-                        (wlc_new, trade_id),
+                        (bin_out, trade_id),
                     )
-                    if not wlc_new:
-                        logger.warning(
-                            "[OUTCOME_MISMATCH] %s",
-                            json.dumps(
-                                {
-                                    "trade_id": trade_id,
-                                    "ticker": mt,
-                                    "source": "lifecycle_ws",
-                                    "outcome": bin_out,
-                                    "side": side,
-                                    "win_loss": wl,
-                                    "win_loss_confirmed_before": wlc,
-                                },
-                                default=str,
-                            ),
+                    if cur.rowcount:
+                        n += 1
+                        tid_key = str(ticket_id).strip() if ticket_id else ""
+                        if not tid_key:
+                            tid_key = f"trade_{trade_id}"
+                        trade_log_targets.append((tid_key, trade_id))
+                        if status == "expired":
+                            expired_to_finalize.append(int(trade_id))
+                    wlc_new = compute_win_loss_confirmed_from_venue(side, bin_out, wl)
+                    if wlc_new is not None:
+                        cur.execute(
+                            """
+                            UPDATE users.trades_0001
+                            SET win_loss_confirmed = %s
+                            WHERE id = %s
+                            """,
+                            (wlc_new, trade_id),
                         )
-        conn.commit()
-    except Exception as e:
-        logger.exception("lifecycle outcome apply failed ticker=%s: %s", mt, e)
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        trade_log_targets.clear()
-        expired_to_finalize.clear()
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+                        if not wlc_new:
+                            logger.warning(
+                                "[OUTCOME_MISMATCH] %s",
+                                json.dumps(
+                                    {
+                                        "trade_id": trade_id,
+                                        "ticker": mt,
+                                        "source": "lifecycle_ws",
+                                        "outcome": bin_out,
+                                        "side": side,
+                                        "win_loss": wl,
+                                        "win_loss_confirmed_before": wlc,
+                                    },
+                                    default=str,
+                                ),
+                            )
+            conn.commit()
+            committed = True
+            break
+        except Exception as e:
+            if _is_deadlock_exception(e):
+                logger.warning(
+                    "lifecycle_ws: DeadlockDetected ticker=%s attempt=%s/%s service=market_watchdog_ws",
+                    mt,
+                    attempt,
+                    _LIFECYCLE_DEADLOCK_MAX_ATTEMPTS,
+                )
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                if attempt >= _LIFECYCLE_DEADLOCK_MAX_ATTEMPTS:
+                    logger.exception(
+                        "lifecycle outcome apply failed after deadlock retries ticker=%s: %s", mt, e
+                    )
+                    break
+                delay = _LIFECYCLE_DEADLOCK_BASE_SLEEP_SEC * (2 ** (attempt - 1))
+                delay += random.uniform(0, _LIFECYCLE_DEADLOCK_BASE_SLEEP_SEC)
+                time.sleep(delay)
+            else:
+                logger.exception("lifecycle outcome apply failed ticker=%s: %s", mt, e)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return 0
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    if not committed:
+        return 0
+
     for eid in expired_to_finalize:
         try:
             import backend.trade_manager as tm

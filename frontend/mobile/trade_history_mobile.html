@@ -538,6 +538,7 @@
 
         <!-- Results Section -->
         <div class="results-section">
+            <div id="trade-history-fetch-banner" style="display:none; padding:8px 10px; background:#4a3728; color:#f6e05e; font-size:12px; margin-bottom:6px; border-radius:4px;" role="status" aria-live="polite"></div>
             <table id="trade-log-table" class="results-table">
                 <thead>
                     <tr>
@@ -1392,42 +1393,87 @@
             console.log('All filters reset completed');
         }
 
+        let _thmTradesFetchInFlight = false;
+        let _thmTradesFetchQueued = false;
+        let _thmTradesFetchQueuedReason = null;
+        let _thmLastTradesFetchErrorLogMs = 0;
+
+        function _thmSetFetchBanner(text, show) {
+            const el = document.getElementById('trade-history-fetch-banner');
+            if (!el) return;
+            if (show && text) {
+                el.textContent = text;
+                el.style.display = 'block';
+            } else {
+                el.style.display = 'none';
+                el.textContent = '';
+            }
+        }
+
         async function fetchAllTrades(reason) {
             const r = reason || 'unspecified';
-            console.log('[trade_history_mobile] GET /trades — reason:', r, '(not on a timer; load, tab visible, ws db_change/trades, or parent refresh)');
+            if (_thmTradesFetchInFlight) {
+                _thmTradesFetchQueued = true;
+                _thmTradesFetchQueuedReason = r;
+                return;
+            }
+            _thmTradesFetchInFlight = true;
+            if (localStorage.getItem('trade_history_debug') === '1') {
+                console.log('[trade_history_mobile] GET /trades — reason:', r);
+            }
             try {
-                // Wait for port configuration to be loaded
                 let retries = 0;
                 const maxRetries = 10;
                 while (retries < maxRetries) {
                     try {
-                        // Use the centralized port system
                         const apiBaseUrl = getMainAppUrl();
-                        
                         const res = await fetch(`${apiBaseUrl}/trades`, { cache: 'no-store' });
-                        if (!res.ok) throw new Error('Network response was not ok');
+                        if (!res.ok) throw new Error(res.status === 503 ? 'Service unavailable' : 'Network response was not ok');
                         trades = await res.json();
+                        _thmSetFetchBanner('', false);
                         applyFilters();
-                        return; // Success, exit the function
+                        return;
                     } catch (portError) {
                         if (portError.message.includes('Port configuration not loaded')) {
-                            console.log(`Waiting for port configuration... (attempt ${retries + 1}/${maxRetries})`);
                             retries++;
                             if (retries < maxRetries) {
-                                await new Promise(resolve => setTimeout(resolve, 500)); // Wait 500ms before retry
+                                await new Promise(resolve => setTimeout(resolve, 500));
                                 continue;
                             }
                         }
-                        throw portError; // Re-throw if it's not a port config error or we've exhausted retries
+                        throw portError;
                     }
                 }
                 throw new Error('Port configuration failed to load after multiple attempts');
             } catch (error) {
+                const hadRows = Array.isArray(trades) && trades.length > 0;
+                const now = Date.now();
+                if (now - _thmLastTradesFetchErrorLogMs > 8000) {
+                    _thmLastTradesFetchErrorLogMs = now;
+                    console.warn('[trade_history_mobile] /trades failed:', error.message || error, hadRows ? '(keeping last loaded rows)' : '');
+                }
                 const tbody = document.querySelector('#trade-log-table tbody');
                 const isPercentMode = document.body.classList.contains('percent-mode');
-                const colSpan = isPercentMode ? 20 : 23; // 3 fewer columns when % Mode is ON
-                tbody.innerHTML = `<tr><td colspan="${colSpan}" style="color:red;">Failed to load trades: ${error.message}</td></tr>`;
-                console.error('Error fetching trades:', error);
+                const colSpan = isPercentMode ? 20 : 23;
+                if (hadRows) {
+                    _thmSetFetchBanner(
+                        'Could not refresh (database may be busy). Showing last loaded data.',
+                        true
+                    );
+                } else {
+                    _thmSetFetchBanner('', false);
+                    if (tbody) {
+                        tbody.innerHTML = `<tr><td colspan="${colSpan}" style="color:red;">Failed to load trades: ${error.message}</td></tr>`;
+                    }
+                }
+            } finally {
+                _thmTradesFetchInFlight = false;
+                if (_thmTradesFetchQueued) {
+                    _thmTradesFetchQueued = false;
+                    const nextReason = _thmTradesFetchQueuedReason || 'queued-follow-up';
+                    _thmTradesFetchQueuedReason = null;
+                    setTimeout(() => fetchAllTrades(nextReason), 0);
+                }
             }
         }
 
@@ -2025,7 +2071,7 @@
             _thmTradeDbRefreshTimer = setTimeout(() => {
                 _thmTradeDbRefreshTimer = null;
                 fetchAllTrades('ws-db_change-trades');
-            }, 250);
+            }, 800);
         }
 
         // /ws/db_changes: stream "trades" for users.trades_0001 (no interval polling)
@@ -2050,9 +2096,7 @@
                 }
             };
 
-            ws.onerror = function(error) {
-                console.error('WebSocket error (trade history mobile):', error);
-            };
+            ws.onerror = function() {};
 
             ws.onclose = function() {
                 window._thmDbChangesWs = null;

@@ -8056,7 +8056,7 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 **Purpose:** Rows moved from `users.trades_0001` when a monitor is archived (`POST /api/monitor/archive` or backfill script). Contains only trades that had `paper_trade = false` (or null treated as live at archive time) for that monitor. Same column set as `users.trades_0001` at migration time, **plus** `archived_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`. **No** `rec_io_db_notify` trigger.
 
-**Creation:** Migration `20260327_2200_archive_trades_live_paper_0001` (`CREATE TABLE ... (LIKE users.trades_0001 INCLUDING CONSTRAINTS INCLUDING INDEXES EXCLUDING DEFAULTS)` then `archived_at` and dedicated `id` sequence in schema `archive`).
+**Creation:** Migration `20260327_2200_archive_trades_live_paper_0001` (`CREATE TABLE ... (LIKE users.trades_0001 INCLUDING CONSTRAINTS INCLUDING INDEXES EXCLUDING DEFAULTS)` then `archived_at` and dedicated `id` sequence in schema `archive`). Follow-on: `20260402_2320_archive_trades_ats_updated` adds **`ats_updated`** when `users.trades_0001` gains that column so `union_trades_with_archives_select` stays valid.
 
 **Application:** `backend.util.trade_log_archivist.archive_trades_for_monitor`; read paths union this table with the master log and `archive.trades_archive_paper_0001`.
 
@@ -8677,7 +8677,7 @@ Parallel 15-minute Kalshi market rows fed only by **`backend/market_watchdog_ws.
 
 Unified hourly strike snapshots for **BTC**, **ETH**, and any future symbols in one table; filter by **`exchange`** + **`symbol`**. **Column set, types, and physical order match `live_data.strike_table_15m`** (see that section for the full column list).
 
-**Migrations:** `20260329_2359_unified_hourly_pipeline_health` (merge + drop `strike_table_hourly_btc` / `strike_table_hourly_eth`); `20260330_1000_hourly_tables_match_15m_shape` rebuilds from `LIKE` 15m where applied.
+**Migrations:** `20260402_2300_strike_table_yes_no_prob_columns`, `20260329_2359_unified_hourly_pipeline_health` (merge + drop `strike_table_hourly_btc` / `strike_table_hourly_eth`); `20260330_1000_hourly_tables_match_15m_shape` rebuilds from `LIKE` 15m where applied.
 
 #### Indexes
 
@@ -8691,7 +8691,7 @@ Unified hourly strike snapshots for **BTC**, **ETH**, and any future symbols in 
 
 Unified 15-minute strike table for all Kalshi 15m symbols (**BTC**, **ETH**, **SOL**, **XRP**). Rows are scoped by **`exchange`** (data-source key, e.g. `kalshi`, aligned with `live_data.market_kalshi_15m.exchange`). Populated by `backend/strike_table_generator.py --master-15m` and `backend/strike_table_generator_ws.py` (same table unless `STRIKE_TABLE_15M_TARGET` overrides). Legacy split-symbol `strike_table_15m_*` tables and **`strike_table_ws_15m`** were dropped in migration `20260331_1200_live_data_drop_legacy_split_and_equity_tables`.
 
-Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_table_15m_drop_exchange_display`, `20260326_1000_venue_exchange_column_names` (renames **`broker` → `exchange`** on this table), `20260326_2000_strike_table_15m_db_notify` (trigger `strike_table_15m_rec_io_db_notify` → `public.rec_io_db_notify()` for real-time backbone / pilot UIs), `20260327_2030_strike_table_15m_open_interest_and_dollars_only` (drop legacy cents asks, widen volume precision, add open_interest), `20260328_2115_strike_table_final_quarter_ask_tracking` (final-window YES/NO ask min/max/range in dollars for full 15m cycles), `20260330_2130_strike_final_quarter_asks_numeric_4dp` (store those six columns as `NUMERIC(18,4)`), `20260331_1200_live_data_drop_legacy_split_and_equity_tables` (drops `strike_table_ws_15m` and split-symbol `strike_table_15m_*`), `20260329_1800_strike_tables_volume_open_interest_fp_text` (Kalshi depth columns **`volume_fp` / `open_interest_fp` TEXT** only; drops `volume` / `open_interest`).
+Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_table_15m_drop_exchange_display`, `20260326_1000_venue_exchange_column_names` (renames **`broker` → `exchange`** on this table), `20260326_2000_strike_table_15m_db_notify` (trigger `strike_table_15m_rec_io_db_notify` → `public.rec_io_db_notify()` for real-time backbone / pilot UIs), `20260327_2030_strike_table_15m_open_interest_and_dollars_only` (drop legacy cents asks, widen volume precision, add open_interest), `20260328_2115_strike_table_final_quarter_ask_tracking` (final-window YES/NO ask min/max/range in dollars for full 15m cycles), `20260330_2130_strike_final_quarter_asks_numeric_4dp` (store those six columns as `NUMERIC(18,4)`), `20260331_1200_live_data_drop_legacy_split_and_equity_tables` (drops `strike_table_ws_15m` and split-symbol `strike_table_15m_*`), `20260329_1800_strike_tables_volume_open_interest_fp_text` (Kalshi depth columns **`volume_fp` / `open_interest_fp` TEXT** only; drops `volume` / `open_interest`), `20260402_2300_strike_table_yes_no_prob_columns` (literal **yes_prob_hourly** / **no_prob_hourly** / **yes_prob_15m** / **no_prob_15m** lookup legs).
 
 #### Columns
 
@@ -8714,6 +8714,10 @@ Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_tabl
 | `buffer_pct` | `numeric(12,6)` | YES | - | |
 | `probability_hourly` | `decimal(5,2)` | YES | - | NULL for 15m |
 | `probability_15m` | `decimal(5,2)` | YES | - | Model probability |
+| `yes_prob_hourly` | `decimal(5,2)` | YES | - | Lookup positive leg (hourly TTC); NULL on 15m rows. Migration `20260402_2300_strike_table_yes_no_prob_columns`. |
+| `no_prob_hourly` | `decimal(5,2)` | YES | - | Lookup negative leg (hourly TTC); NULL on 15m rows. |
+| `yes_prob_15m` | `decimal(5,2)` | YES | - | Lookup positive leg for 15m TTC. |
+| `no_prob_15m` | `decimal(5,2)` | YES | - | Lookup negative leg for 15m TTC. |
 | `yes_ask_dollars` / `no_ask_dollars` | `text` | YES | - | |
 | `yes_bid_dollars` / `no_bid_dollars` | `text` | YES | - | |
 | `yes_price_spread` / `no_price_spread` | `numeric(6,4)` | YES | - | |
@@ -10341,6 +10345,7 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `paper_trade` | `boolean` | YES | false | |
 | `cooldown_timer` | `integer(32)` | YES | - | |
 | `monitor_confirmed` | `boolean` | YES | **NULL** | Default **NULL** on insert; app sets true/false when the trade is finalized. Migration `20260410_1000_trades_monitor_confirmed_default_null`. |
+| `ats_updated` | `timestamptz` | YES | - | Last successful ATS strike-join telemetry refresh while **open**. Migration `20260402_2310_trades_ats_updated`. |
 | `cycle_win_loss` | `text` | YES | - | |
 | `cycle_pnl` | `real(24)` | YES | - | |
 | `cycle_ret_pct` | `real(24)` | YES | - | |

@@ -41,7 +41,6 @@ def list_active_15m_monitor_rows() -> List[dict]:
                     parts = str(name).split("_")
                     if len(parts) >= 3:
                         user_number = parts[1]
-                        monitor_id = parts[2]
                 sym_u = str(symbol or "BTC").strip().upper() or "BTC"
                 mkt = str(market or "15m").strip().lower()
                 if mkt != "15m":

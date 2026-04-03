@@ -30,7 +30,12 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from backend.core.port_config import get_port, get_monitor_port, register_monitor_ports
+from backend.core.port_config import (
+    get_monitor_port,
+    get_port,
+    register_monitor_ports,
+    unified_active_trade_supervisor_service_name,
+)
 from backend.core.exchange_ids import DEFAULT_EXCHANGE
 from backend.core.config.database import get_postgresql_connection
 from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
@@ -268,6 +273,10 @@ def create_unified_hourly_active_trades_pool_table():
 
 def create_monitor_active_trades_table():
     """Create per-monitor table (legacy hourly) or unified pool table (15m or hourly; monitor_id column)."""
+    if ATS_UNIFIED_ALL:
+        create_unified_15m_active_trades_pool_table()
+        create_unified_hourly_active_trades_pool_table()
+        return
     if ATS_UNIFIED_15M:
         create_unified_15m_active_trades_pool_table()
         return
@@ -343,6 +352,13 @@ def get_monitor_active_trades_table():
         return f"active_trades_15m_{ctx_user()}"
     if ATS_UNIFIED_HOURLY:
         return f"active_trades_hourly_{ctx_user()}"
+    if ATS_UNIFIED_ALL:
+        from backend.core.port_config import monitor_suffix_uses_unified_15m_pool
+
+        suffix = f"{ctx_user()}_{ctx_mid()}"
+        if monitor_suffix_uses_unified_15m_pool(suffix):
+            return f"active_trades_15m_{ctx_user()}"
+        return f"active_trades_hourly_{ctx_user()}"
     return f"active_trades_{ctx_user()}_{ctx_mid()}"
 
 
@@ -371,6 +387,8 @@ def get_monitor_identifier():
             return "unified_15m"
         if sys.argv[1] == "unified_hourly":
             return "unified_hourly"
+        if sys.argv[1] == "unified":
+            return "unified"
         return sys.argv[1]  # Use first argument as monitor identifier
     
     # Default to first active monitor if no identifier provided
@@ -380,7 +398,8 @@ def get_monitor_identifier():
 MONITOR_IDENTIFIER = get_monitor_identifier()
 ATS_UNIFIED_15M = MONITOR_IDENTIFIER == "unified_15m"
 ATS_UNIFIED_HOURLY = MONITOR_IDENTIFIER == "unified_hourly"
-ATS_UNIFIED_POOL = ATS_UNIFIED_15M or ATS_UNIFIED_HOURLY
+ATS_UNIFIED_ALL = MONITOR_IDENTIFIER == "unified"
+ATS_UNIFIED_POOL = ATS_UNIFIED_15M or ATS_UNIFIED_HOURLY or ATS_UNIFIED_ALL
 
 
 def _unified_pool_accepts_monitor_suffix(monitor_suffix: str) -> bool:
@@ -396,8 +415,11 @@ def _unified_pool_accepts_monitor_suffix(monitor_suffix: str) -> bool:
     from backend.core.port_config import (
         monitor_suffix_uses_unified_15m_pool,
         monitor_suffix_uses_unified_hourly_pool,
+        monitor_suffix_uses_unified_aes_ats_pool,
     )
 
+    if ATS_UNIFIED_ALL:
+        return monitor_suffix_uses_unified_aes_ats_pool(s)
     if ATS_UNIFIED_15M:
         return monitor_suffix_uses_unified_15m_pool(s)
     if ATS_UNIFIED_HOURLY:
@@ -504,11 +526,12 @@ def log_debug(message: str):
 
 
 _ats_logger.info(
-    "Monitor-aware supervisor starting user=%s monitor=%s unified_15m=%s unified_hourly=%s",
+    "Monitor-aware supervisor starting user=%s monitor=%s unified_15m=%s unified_hourly=%s unified_all=%s",
     ctx_user(),
     ctx_mid(),
     ATS_UNIFIED_15M,
     ATS_UNIFIED_HOURLY,
+    ATS_UNIFIED_ALL,
 )
 try:
     from backend.core.trading_redis_comms import redis_client_optional, use_trading_redis_comms
@@ -553,6 +576,15 @@ def get_monitor_symbol():
             rows = list_active_hourly_monitor_rows()
             if not rows:
                 log("[ACTIVE_TRADE_SUPERVISOR] ❌ unified_hourly: no active hourly monitors in DB; exiting")
+                os._exit(0)
+            uid0 = rows[0]["user_number"]
+            mid0 = rows[0]["monitor_id"]
+        elif ATS_UNIFIED_ALL:
+            from backend.core.unified_all_monitors import list_active_unified_monitor_rows
+
+            rows = list_active_unified_monitor_rows()
+            if not rows:
+                log("[ACTIVE_TRADE_SUPERVISOR] ❌ unified: no active 15m or hourly-pool monitors in DB; exiting")
                 os._exit(0)
             uid0 = rows[0]["user_number"]
             mid0 = rows[0]["monitor_id"]
@@ -650,6 +682,9 @@ if ATS_UNIFIED_15M:
 elif ATS_UNIFIED_HOURLY:
     ACTIVE_TRADE_SUPERVISOR_PORT = get_port("active_trade_supervisor_hourly")
     _ats_logger.info("Using unified hourly ATS port: %s", ACTIVE_TRADE_SUPERVISOR_PORT)
+elif ATS_UNIFIED_ALL:
+    ACTIVE_TRADE_SUPERVISOR_PORT = get_port(unified_active_trade_supervisor_service_name())
+    _ats_logger.info("Using pool ATS port (15m+hourly): %s", ACTIVE_TRADE_SUPERVISOR_PORT)
 else:
     register_monitor_ports(MONITOR_IDENTIFIER)
     ACTIVE_TRADE_SUPERVISOR_PORT = get_monitor_port("active_trade_supervisor", MONITOR_IDENTIFIER)
@@ -663,6 +698,18 @@ def _count_active_trades_across_unified_pool_monitors() -> int:
         return 0
     try:
         cur = conn.cursor()
+        if ATS_UNIFIED_ALL:
+            u = USER_NUMBER
+            total = 0
+            for tbl in (f"active_trades_15m_{u}", f"active_trades_hourly_{u}"):
+                cur.execute(
+                    f"""
+                    SELECT COUNT(*) FROM users.{tbl}
+                    WHERE status IN ('active', 'pending', 'closing')
+                    """
+                )
+                total += int(cur.fetchone()[0])
+            return total
         tbl = get_monitor_active_trades_table()
         cur.execute(
             f"""
@@ -2577,7 +2624,11 @@ def _iter_unified_pool_monitor_bindings_for_monitoring():
     """
     seen = set()
     out: List[Tuple[str, str]] = []
-    if ATS_UNIFIED_15M:
+    if ATS_UNIFIED_ALL:
+        from backend.core.unified_all_monitors import iter_active_unified_monitor_bindings
+
+        iter_bindings = iter_active_unified_monitor_bindings()
+    elif ATS_UNIFIED_15M:
         from backend.core.unified_15m_monitors import iter_active_15m_monitor_bindings
 
         iter_bindings = iter_active_15m_monitor_bindings()
@@ -2593,25 +2644,30 @@ def _iter_unified_pool_monitor_bindings_for_monitoring():
             seen.add(t)
             out.append(t)
     u = USER_NUMBER
-    tbl = get_monitor_active_trades_table()
+    pool_tables: List[str]
+    if ATS_UNIFIED_ALL:
+        pool_tables = [f"active_trades_15m_{u}", f"active_trades_hourly_{u}"]
+    else:
+        pool_tables = [get_monitor_active_trades_table()]
     conn = get_postgresql_connection()
     if conn:
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    SELECT DISTINCT monitor_id FROM users.{tbl}
-                    WHERE status IN ('active', 'pending', 'closing')
-                    """
-                )
-                for (mid,) in cur.fetchall():
-                    if mid is None:
-                        continue
-                    m = str(mid).strip()
-                    t = (u, m)
-                    if t not in seen:
-                        seen.add(t)
-                        out.append(t)
+                for tbl in pool_tables:
+                    cur.execute(
+                        f"""
+                        SELECT DISTINCT monitor_id FROM users.{tbl}
+                        WHERE status IN ('active', 'pending', 'closing')
+                        """
+                    )
+                    for (mid,) in cur.fetchall():
+                        if mid is None:
+                            continue
+                        m = str(mid).strip()
+                        t = (u, m)
+                        if t not in seen:
+                            seen.add(t)
+                            out.append(t)
         except Exception as e:
             log_debug(f"monitor bindings from pool: {e}")
         finally:
@@ -2784,6 +2840,50 @@ def update_active_trade_monitoring_data():
                 # Update the monitoring data
                 conn = get_db_connection()
                 cursor = conn.cursor()
+                trades_tbl = f"trades_{ctx_user()}"
+                # Trade log: mirror unrealized pnl to users.trades_* so NOTIFY refetches /trades.
+                # Lock order: touch trades_* before active_trades_* to match lifecycle_ws
+                # (kalshi_lifecycle_trade_outcome: FOR UPDATE on trades_0001 first), reducing deadlocks.
+                # SAVEPOINT so deadlock / errors on the mirror do not abort the active_trades UPDATE.
+                try:
+                    pnl_val = float(pnl_formatted)
+                    tid_int = int(trade_id)
+                except (TypeError, ValueError):
+                    pnl_val = tid_int = None
+                if pnl_val is not None and tid_int is not None:
+                    cursor.execute("SAVEPOINT ats_pnl_mirror")
+                    try:
+                        try:
+                            cursor.execute(
+                                f"""
+                                UPDATE users.{trades_tbl}
+                                SET pnl = %s,
+                                    ats_updated = NOW()
+                                WHERE id = %s AND LOWER(TRIM(status)) = 'open'
+                                """,
+                                (pnl_val, tid_int),
+                            )
+                        except Exception as e2:
+                            if "ats_updated" in str(e2).lower() or getattr(e2, "pgcode", None) == "42703":
+                                cursor.execute(
+                                    f"""
+                                    UPDATE users.{trades_tbl}
+                                    SET pnl = %s
+                                    WHERE id = %s AND LOWER(TRIM(status)) = 'open'
+                                    """,
+                                    (pnl_val, tid_int),
+                                )
+                            else:
+                                raise
+                        cursor.execute("RELEASE SAVEPOINT ats_pnl_mirror")
+                    except Exception as sync_e:
+                        try:
+                            cursor.execute("ROLLBACK TO SAVEPOINT ats_pnl_mirror")
+                        except Exception:
+                            pass
+                        log_debug(
+                            f"Open-trade pnl mirror to users.trades skipped trade_id={trade_id}: {sync_e}"
+                        )
                 cursor.execute(f"""
                     UPDATE users.{active_trades_table} 
                     SET current_symbol_price = %s, 
@@ -2936,6 +3036,8 @@ def restart_active_trade_supervisor_process():
             service_name = "active_trade_supervisor_15m"
         elif ATS_UNIFIED_HOURLY:
             service_name = "active_trade_supervisor_hourly"
+        elif ATS_UNIFIED_ALL:
+            service_name = unified_active_trade_supervisor_service_name()
         else:
             service_name = f"active_trade_supervisor_{MONITOR_IDENTIFIER}"
         
@@ -3477,10 +3579,32 @@ def _get_all_active_trades_for_current_monitor() -> List[Dict[str, Any]]:
 
 
 def _get_all_active_trades_unified_pool_unbound() -> List[Dict[str, Any]]:
-    """All monitors' rows from users.active_trades_<user>_{15m|hourly} (no ContextVar bind)."""
+    """All monitors' rows from pool table(s) (no ContextVar bind). unified_all = 15m + hourly tables."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        if ATS_UNIFIED_ALL:
+            u = USER_NUMBER
+            combined: List[Dict[str, Any]] = []
+            for tbl in (f"active_trades_15m_{u}", f"active_trades_hourly_{u}"):
+                cursor.execute(
+                    f"""
+                    SELECT * FROM users.{tbl}
+                    WHERE status IN ('active', 'pending', 'closing')
+                    """
+                )
+                columns = [desc[0] for desc in cursor.description]
+                rows = cursor.fetchall()
+                combined.extend(_active_trades_result_dicts(columns, rows))
+            conn.close()
+
+            def _created_sort_key(d: Dict[str, Any]) -> str:
+                v = d.get("created_at")
+                return str(v) if v is not None else ""
+
+            combined.sort(key=_created_sort_key, reverse=True)
+            return combined
+
         tbl = get_monitor_active_trades_table()
         cursor.execute(
             f"""
@@ -3679,73 +3803,72 @@ def _purge_unified_active_trades_wrong_market() -> int:
     )
 
     user = USER_NUMBER
-    if ATS_UNIFIED_15M:
-        tbl = f"active_trades_15m_{user}"
-
-        def belongs(suffix: str) -> bool:
-            return monitor_suffix_uses_unified_15m_pool(suffix)
-
-        pool_label = "15m"
+    specs: List[Tuple[str, Any, str]] = []
+    if ATS_UNIFIED_ALL:
+        specs = [
+            (f"active_trades_15m_{user}", monitor_suffix_uses_unified_15m_pool, "15m"),
+            (f"active_trades_hourly_{user}", monitor_suffix_uses_unified_hourly_pool, "hourly"),
+        ]
+    elif ATS_UNIFIED_15M:
+        specs = [(f"active_trades_15m_{user}", monitor_suffix_uses_unified_15m_pool, "15m")]
     elif ATS_UNIFIED_HOURLY:
-        tbl = f"active_trades_hourly_{user}"
-
-        def belongs(suffix: str) -> bool:
-            return monitor_suffix_uses_unified_hourly_pool(suffix)
-
-        pool_label = "hourly"
+        specs = [(f"active_trades_hourly_{user}", monitor_suffix_uses_unified_hourly_pool, "hourly")]
     else:
         return 0
 
-    conn = get_db_connection()
-    if not conn:
-        return 0
-    removed = 0
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT DISTINCT monitor_id FROM users.{tbl}
-                WHERE status IN ('active', 'pending', 'closing')
-                """
-            )
-            mismatched: List[str] = []
-            for (mid,) in cur.fetchall():
-                if mid is None:
-                    continue
-                sm = str(mid).strip()
-                if not sm:
-                    continue
-                suffix = f"{user}_{sm}"
-                if not belongs(suffix):
-                    mismatched.append(sm)
-            for sm in mismatched:
+    total_removed = 0
+    for tbl, belongs, pool_label in specs:
+        conn = get_db_connection()
+        if not conn:
+            continue
+        removed = 0
+        try:
+            with conn.cursor() as cur:
                 cur.execute(
                     f"""
-                    DELETE FROM users.{tbl}
-                    WHERE monitor_id::text = %s
-                      AND status IN ('active', 'pending', 'closing')
-                    """,
-                    (sm,),
+                    SELECT DISTINCT monitor_id FROM users.{tbl}
+                    WHERE status IN ('active', 'pending', 'closing')
+                    """
                 )
-                removed += cur.rowcount
-        conn.commit()
-    except Exception as e:
-        log(f"🧹 Purge wrong-pool rows failed ({pool_label}): {e}")
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    if removed:
-        log(
-            f"🧹 Removed {removed} row(s) from {tbl} — monitors not in {pool_label} pool "
-            f"(repair stray Redis/HTTP enrollments)"
-        )
-    return removed
+                mismatched: List[str] = []
+                for (mid,) in cur.fetchall():
+                    if mid is None:
+                        continue
+                    sm = str(mid).strip()
+                    if not sm:
+                        continue
+                    suffix = f"{user}_{sm}"
+                    if not belongs(suffix):
+                        mismatched.append(sm)
+                for sm in mismatched:
+                    cur.execute(
+                        f"""
+                        DELETE FROM users.{tbl}
+                        WHERE monitor_id::text = %s
+                          AND status IN ('active', 'pending', 'closing')
+                        """,
+                        (sm,),
+                    )
+                    removed += cur.rowcount
+            conn.commit()
+        except Exception as e:
+            log(f"🧹 Purge wrong-pool rows failed ({pool_label}): {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        if removed:
+            log(
+                f"🧹 Removed {removed} row(s) from {tbl} — monitors not in {pool_label} pool "
+                f"(repair stray Redis/HTTP enrollments)"
+            )
+        total_removed += removed
+    return total_removed
 
 
 def _reconcile_unified_pool_open_trades_full_scan() -> None:
@@ -3759,6 +3882,78 @@ def _reconcile_unified_pool_open_trades_full_scan() -> None:
     )
 
     user = USER_NUMBER
+
+    if ATS_UNIFIED_ALL:
+        tbl_15 = f"active_trades_15m_{user}"
+        tbl_h = f"active_trades_hourly_{user}"
+        conn = get_postgresql_connection()
+        if not conn:
+            log("🔄 RECONCILE: no DB connection; skipping unified open-trade scan")
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT trade_id FROM users.{tbl_15}
+                    WHERE status IN ('active', 'pending', 'closing')
+                    """
+                )
+                tracked_15m = {int(r[0]) for r in cur.fetchall()}
+                cur.execute(
+                    f"""
+                    SELECT trade_id FROM users.{tbl_h}
+                    WHERE status IN ('active', 'pending', 'closing')
+                    """
+                )
+                tracked_h = {int(r[0]) for r in cur.fetchall()}
+        finally:
+            conn.close()
+
+        conn_tr = get_trades_db_connection()
+        if not conn_tr:
+            return
+        try:
+            c2 = conn_tr.cursor()
+            c2.execute(
+                f"""
+                SELECT id, monitor FROM users.trades_{user}
+                WHERE status = 'open' AND monitor IS NOT NULL AND monitor LIKE 'mon_%%'
+                """
+            )
+            candidates = c2.fetchall()
+        finally:
+            conn_tr.close()
+
+        added = 0
+        for trade_id, monitor in candidates:
+            tid = int(trade_id)
+            mon = str(monitor).strip()
+            if not mon.startswith("mon_"):
+                continue
+            suffix = mon[4:]
+            parts = suffix.split("_", 1)
+            if len(parts) != 2:
+                continue
+            nu, mid = parts[0], parts[1]
+            if monitor_suffix_uses_unified_15m_pool(suffix):
+                if tid in tracked_15m:
+                    continue
+                with ats_monitor_bind(nu, mid):
+                    if add_new_active_trade(tid, "RECONCILE"):
+                        added += 1
+                        tracked_15m.add(tid)
+            elif monitor_suffix_uses_unified_hourly_pool(suffix):
+                if tid in tracked_h:
+                    continue
+                with ats_monitor_bind(nu, mid):
+                    if add_new_active_trade(tid, "RECONCILE"):
+                        added += 1
+                        tracked_h.add(tid)
+        if added:
+            log(f"🔄 RECONCILE (full scan): added {added} open unified trade(s) to pool")
+        _purge_unified_active_trades_wrong_market()
+        return
+
     if ATS_UNIFIED_15M:
         tbl = f"active_trades_15m_{user}"
 
@@ -3841,10 +4036,14 @@ def sync_with_trades_db():
                 from backend.core.unified_15m_monitors import iter_active_15m_monitor_bindings
 
                 iter_bindings = iter_active_15m_monitor_bindings()
-            else:
+            elif ATS_UNIFIED_HOURLY:
                 from backend.core.unified_hourly_monitors import iter_active_hourly_monitor_bindings
 
                 iter_bindings = iter_active_hourly_monitor_bindings()
+            else:
+                from backend.core.unified_all_monitors import iter_active_unified_monitor_bindings
+
+                iter_bindings = iter_active_unified_monitor_bindings()
             for u, m in iter_bindings:
                 with ats_monitor_bind(u, m):
                     _sync_with_trades_db_for_current_monitor()
@@ -3873,7 +4072,10 @@ def start_event_driven_supervisor():
     if ATS_UNIFIED_POOL:
         active_count = _count_active_trades_across_unified_pool_monitors()
         if active_count > 0:
-            pool_n = "15m" if ATS_UNIFIED_15M else "hourly"
+            if ATS_UNIFIED_ALL:
+                pool_n = "unified"
+            else:
+                pool_n = "15m" if ATS_UNIFIED_15M else "hourly"
             log(
                 f"📊 MONITORING: Found {active_count} existing tracked row(s) in {pool_n} pool "
                 f"(active/pending/closing), starting monitoring"

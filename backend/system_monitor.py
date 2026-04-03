@@ -62,7 +62,15 @@ from backend.util.paths import get_project_root
 # Add scripts directory for user_notifications
 sys.path.insert(0, os.path.join(get_project_root(), 'scripts'))
 
-from backend.core.port_config import get_port, get_port_info, list_all_ports
+from backend.core.port_config import (
+    get_port,
+    get_port_info,
+    list_all_ports,
+    pool_user_for_unified_aes_ats,
+    supervisor_program_script_filename,
+    unified_active_trade_supervisor_service_name,
+    user_scoped_service_name,
+)
 from backend.util.paths import get_data_dir, get_trade_history_dir, get_price_history_dir
 from backend.core.unified_config import unified_config
 from backend.core.time_eastern import merge_psycopg2_connect_kwargs, now_est
@@ -85,18 +93,18 @@ class SystemMonitor:
         # Get service URLs using bulletproof port manager (updated to match current configuration)
         self.service_urls = {
             "main_app": get_port("main_app"),
-            "trade_manager": get_port("trade_manager"),
-            "trade_executor": get_port("trade_executor"),
+            user_scoped_service_name("trade_manager"): get_port("trade_manager"),
+            user_scoped_service_name("trade_executor"): get_port("trade_executor"),
             "symbol_price_watchdog_btc": get_port("symbol_price_watchdog_btc"),
             "symbol_price_watchdog_eth": get_port("symbol_price_watchdog_eth"),
             "symbol_price_watchdog_sol": get_port("symbol_price_watchdog_sol"),
             "symbol_price_watchdog_xrp": get_port("symbol_price_watchdog_xrp"),
             "strike_table_generator_ws_hourly": get_port("strike_table_generator_ws_hourly"),
             "strike_table_generator_ws_15m": get_port("strike_table_generator_ws_15m"),
-            "kalshi_account_sync": get_port("kalshi_account_sync"),
+            user_scoped_service_name("kalshi_account_sync"): get_port("kalshi_account_sync"),
             "market_watchdog_ws_kalshi_hourly": get_port("market_watchdog_ws_kalshi_hourly"),
             "market_watchdog_ws_kalshi_15m": get_port("market_watchdog_ws_kalshi_15m"),
-            "monitor_manager": get_port("monitor_manager"),
+            user_scoped_service_name("monitor_manager"): get_port("monitor_manager"),
             "cascading_failure_detector": get_port("cascading_failure_detector"),
             "system_monitor": get_port("system_monitor")
         }
@@ -104,9 +112,9 @@ class SystemMonitor:
         # Critical services that should never have duplicates running outside supervisor
         # Note: auto_entry_supervisor and active_trade_supervisor are now managed by monitor_spawner
         self.critical_services = [
-            "trade_manager", 
-            "trade_executor",
-            "monitor_manager"
+            user_scoped_service_name("trade_manager"),
+            user_scoped_service_name("trade_executor"),
+            user_scoped_service_name("monitor_manager"),
         ]
         
         # Initialize dynamic service discovery
@@ -126,6 +134,11 @@ class SystemMonitor:
             
             # Get active monitors
             active_monitors = generator._get_active_monitors()
+            pu = pool_user_for_unified_aes_ats(active_monitors)
+            tm = f"trade_manager_{pu}"
+            te = f"trade_executor_{pu}"
+            kas = f"kalshi_account_sync_{pu}"
+            mm = f"monitor_manager_{pu}"
             
             # Build the complete service list dynamically
             discovered_services = {}
@@ -133,8 +146,8 @@ class SystemMonitor:
             # Core services from the generator (updated to match current configuration)
             core_services = [
                 {"name": "main_app", "script": "main.py"},
-                {"name": "trade_manager", "script": "trade_manager.py"},
-                {"name": "trade_executor", "script": "trade_executor.py"},
+                {"name": tm, "script": "trade_manager.py"},
+                {"name": te, "script": "trade_executor.py"},
                 {"name": "symbol_price_watchdog_btc", "script": "symbol_price_watchdog.py BTC"},
                 {"name": "symbol_price_watchdog_eth", "script": "symbol_price_watchdog.py ETH"},
                 {"name": "symbol_price_watchdog_sol", "script": "symbol_price_watchdog.py SOL"},
@@ -142,7 +155,7 @@ class SystemMonitor:
                 # SPX/NDX not currently traded; uncomment to re-enable later.
                 # {"name": "symbol_price_watchdog_ndx", "script": "symbol_price_watchdog.py NDX"},
                 # {"name": "symbol_price_watchdog_spx", "script": "symbol_price_watchdog.py SPX"},
-                {"name": "kalshi_account_sync", "script": "kalshi_account_sync_ws.py"},
+                {"name": kas, "script": "kalshi_account_sync_ws.py"},
                 {
                     "name": "market_watchdog_ws_kalshi_hourly",
                     "script": "market_watchdog_ws.py --exchange kalshi --market hourly",
@@ -152,7 +165,7 @@ class SystemMonitor:
                     "script": "market_watchdog_ws.py --exchange kalshi --market 15m",
                 },
                 {"name": "system_monitor", "script": "system_monitor.py"},
-                {"name": "monitor_manager", "script": "monitor_manager.py"},
+                {"name": mm, "script": "monitor_manager.py"},
                 {"name": "cascading_failure_detector", "script": "cascading_failure_detector.py"}
             ]
             
@@ -163,20 +176,11 @@ class SystemMonitor:
             
             has_15m = any(m.get("market", "hourly") == "15m" for m in active_monitors)
             has_hourly = any(m.get("market", "hourly") != "15m" for m in active_monitors)
-            if has_15m:
-                discovered_services["auto_entry_supervisor_15m"] = ports.get(
-                    "auto_entry_supervisor_15m", 8033
-                )
-                discovered_services["active_trade_supervisor_15m"] = ports.get(
-                    "active_trade_supervisor_15m", 8034
-                )
-            if has_hourly:
-                discovered_services["auto_entry_supervisor_hourly"] = ports.get(
-                    "auto_entry_supervisor_hourly", 8037
-                )
-                discovered_services["active_trade_supervisor_hourly"] = ports.get(
-                    "active_trade_supervisor_hourly", 8038
-                )
+            if has_15m or has_hourly:
+                aes_n = f"auto_entry_supervisor_{pu}"
+                ats_n = f"active_trade_supervisor_{pu}"
+                discovered_services[aes_n] = ports.get(aes_n, ports.get("auto_entry_supervisor_0001", 8033))
+                discovered_services[ats_n] = ports.get(ats_n, ports.get("active_trade_supervisor_0001", 8034))
             
             discovered_services["strike_table_generator_ws_hourly"] = ports.get(
                 "strike_table_generator_ws_hourly", 8014
@@ -187,6 +191,7 @@ class SystemMonitor:
 
             # Update the service URLs with discovered services
             self.service_urls = discovered_services
+            self.critical_services = [tm, te, mm]
             
             _sm_logger.debug("Discovered %s services from universal config", len(discovered_services))
             
@@ -259,13 +264,17 @@ class SystemMonitor:
             
             # Check for duplicates of critical services
             for service_name in self.critical_services:
-                service_script = f"{service_name}.py"
+                script_file = supervisor_program_script_filename(service_name)
                 matching_processes = []
                 
                 for proc in python_processes:
-                    # Only match exact script names, not monitor-specific variants
-                    if service_script in proc['cmdline'] and not any(f"{service_name}_" in cmd_part for cmd_part in proc['cmdline']):
-                        matching_processes.append(proc)
+                    cmd_joined = proc["cmdline"]
+                    if not cmd_joined:
+                        continue
+                    cmd_joined = " ".join(cmd_joined)
+                    if script_file not in cmd_joined:
+                        continue
+                    matching_processes.append(proc)
                 
                 # If we have more than one process for this service, we have duplicates
                 if len(matching_processes) > 1:
@@ -802,7 +811,10 @@ class SystemMonitor:
             
             # Check supervisor status for all critical services
             critical_services = [
-                "main_app", "trade_manager", "trade_executor"
+                "main_app",
+                user_scoped_service_name("trade_manager"),
+                user_scoped_service_name("trade_executor"),
+                unified_active_trade_supervisor_service_name(),
             ]
             
             all_running = True

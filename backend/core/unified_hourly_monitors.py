@@ -1,7 +1,7 @@
 """
-Active hourly monitors for the unified AES/ATS supervisor pool (users.monitor_list_0001).
+Active non-15m monitors for the unified AES/ATS hourly strike pool (users.monitor_list_0001).
 
-Normalized market is `hourly` when `market` is blank or explicitly hourly (same convention as 15m discovery).
+Matches supervisor ``has_hourly``: any active row whose normalized market is not ``15m``.
 """
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from backend.core.config.database import get_postgresql_connection
 
 _log = logging.getLogger(__name__)
 
-_MARKET_HOURLY_SQL = (
-    "LOWER(TRIM(COALESCE(NULLIF(TRIM(market), ''), 'hourly'))) = 'hourly'"
+_MARKET_NOT_15M_SQL = (
+    "LOWER(TRIM(COALESCE(NULLIF(TRIM(market), ''), 'hourly'))) <> '15m'"
 )
 
 
@@ -36,22 +36,18 @@ def list_active_hourly_monitor_rows() -> List[dict]:
                 SELECT id, name, symbol, COALESCE(NULLIF(TRIM(market), ''), 'hourly') AS market
                 FROM users.monitor_list_0001
                 WHERE status = 'active'
-                  AND {_MARKET_HOURLY_SQL}
+                  AND {_MARKET_NOT_15M_SQL}
                 ORDER BY id
                 """
             )
-            for mid, name, symbol, market in cursor.fetchall():
+            for mid, name, symbol, _market in cursor.fetchall():
                 user_number = "0001"
                 monitor_id = str(mid)
                 if name and str(name).startswith("mon_"):
                     parts = str(name).split("_")
                     if len(parts) >= 3:
                         user_number = parts[1]
-                        monitor_id = parts[2]
                 sym_u = str(symbol or "BTC").strip().upper() or "BTC"
-                mkt = str(market or "hourly").strip().lower()
-                if mkt not in ("hourly", "15m"):
-                    mkt = "hourly"
                 out.append(
                     {
                         "user_number": user_number,
@@ -59,7 +55,7 @@ def list_active_hourly_monitor_rows() -> List[dict]:
                         "db_id": str(mid),
                         "name": name,
                         "symbol": sym_u,
-                        "market": mkt,
+                        "market": "hourly",
                     }
                 )
         conn.close()
