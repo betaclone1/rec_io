@@ -6,6 +6,21 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-03 — Hotfix: archive `monitor_confirm_detail` for trades UNION
+
+**Summary**
+- **`union_trades_with_archives_select`** builds the UNION from **`users.trades_0001`** column names. Migration **`20260409_1310_trades_monitor_confirm_detail`** added the column on master (and simulated) but not on **`archive.trades_archive_*_0001`**, causing PostgreSQL errors when listing trades.
+
+**DB migrations (required on production)**
+1. `20260403_2330_archive_trades_monitor_confirm_detail`
+
+**Production checklist**
+- [ ] Confirm codebase (pull): `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260403_2330_archive_trades_monitor_confirm_detail`
+- [ ] Verify: `curl -sSf http://localhost:3000/health`; tail `logs/main_app.err.log` — no repeating `monitor_confirm_detail` / UNION errors.
+
+---
+
 ## 2026-04-03 — Strike yes/no probs, trades ats_updated, AES/ATS strike-driven pool loop
 
 **Summary**
@@ -28,9 +43,9 @@ This changelog is used when pushing updates to production. Each entry is timesta
 8. `20260409_1310_trades_monitor_confirm_detail`
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations (from project root on server, in order above):  
+- [x] Apply migrations (from project root on server, in order above):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260402_2000_ats_monitoring_events`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260402_2100_drop_ats_monitoring_events`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260402_2300_strike_table_yes_no_prob_columns`  
@@ -39,12 +54,12 @@ This changelog is used when pushing updates to production. Each entry is timesta
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260409_1000_active_trades_monitor_confirm_telemetry`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260409_1200_trades_monitor_confirmed_null_until_closed`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260409_1310_trades_monitor_confirm_detail`
-- [ ] Schema drift check (recommended):  
+- [x] Schema drift check (recommended):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Regenerate supervisor config (picks pool user + ports):  
+- [x] Regenerate supervisor config (picks pool user + ports):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/config/generate_unified_supervisor_config.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows **`trade_manager_*`**, **`trade_executor_*`**, **`active_trade_supervisor_*`**, **`auto_entry_supervisor_*`**, **`main_app`** RUNNING.
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows **`trade_manager_*`**, **`trade_executor_*`**, **`active_trade_supervisor_*`**, **`auto_entry_supervisor_*`**, **`main_app`** RUNNING.
 
 ---
 
