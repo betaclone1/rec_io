@@ -5945,28 +5945,22 @@
           if (data.type === 'auto_trade_status_change') {
             console.log('Auto trade status change received:', data);
             console.log('Available monitor IDs:', monitors.map(m => m.id));
-            console.log('Looking for monitor ID:', data.data.monitor_id);
-            
-            // Find the monitor in local data and update its auto_trade_status
-            const monitor = monitors.find(m => m.id === data.data.monitor_id);
-            if (monitor) {
-              monitor.auto_trade_status = data.data.auto_trade_status;
-              
-              // Don't clear cooldown timer on status change - let cooldown_timer_change messages handle it
-              // Cooldown can exist during ACTIVE status (for Hourly HTC during spike cooldown)
-              
-              // Update the visual status indicator
-              const frontendId = (data.data.monitor_id || '').replace('MON_', 'mon_');
-              const monitor = monitors.find(m => String(m.id) === String(frontendId) || String(m.id) === String(data.data.monitor_id));
-              const statusElement = document.querySelector(`[data-monitor-id="${(monitor && monitor.id) || frontendId}"] .monitor-status`);
+            const rawId = data.data.monitor_id;
+            console.log('Looking for monitor ID:', rawId);
+            const frontendId = (rawId || '').toString().replace(/^MON_/i, 'mon_');
+            const stMonitor = monitors.find(m =>
+              String(m.id) === String(rawId) || String(m.id) === String(frontendId)
+            );
+            if (stMonitor) {
+              stMonitor.auto_trade_status = data.data.auto_trade_status;
+              const statusElement = document.querySelector(`[data-monitor-id="${stMonitor.id}"] .monitor-status`);
               if (statusElement) {
-                statusElement.className = `monitor-status ${getMonitorStatusClass(data.data.auto_trade_status, monitor)}`;
-                statusElement.textContent = getStatusText(data.data.auto_trade_status, data.data.monitor_id);
+                statusElement.className = `monitor-status ${getMonitorStatusClass(data.data.auto_trade_status, stMonitor)}`;
+                statusElement.textContent = getStatusText(data.data.auto_trade_status, stMonitor.id);
               }
-              
-              console.log(`Updated monitor ${data.data.monitor_id} auto trade status to: ${data.data.auto_trade_status}`);
+              console.log(`Updated monitor ${rawId} auto trade status to: ${data.data.auto_trade_status}`);
             } else {
-              console.warn(`Monitor ${data.data.monitor_id} not found for status update`);
+              console.warn(`Monitor ${rawId} not found for status update`);
             }
           }
         } catch (error) {

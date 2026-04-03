@@ -1239,8 +1239,17 @@
       }
       try {
         const res = await fetch(window.location.origin + '/trades', { cache: 'no-store' });
-        if (!res.ok) throw new Error(res.status === 503 ? 'Service unavailable' : 'Network response was not ok');
-        const data = await res.json();
+        const raw = await res.text();
+        if (!res.ok) {
+          let msg = res.status === 503 ? 'Service unavailable' : ('HTTP ' + res.status);
+          try {
+            const err = JSON.parse(raw);
+            if (err && typeof err.detail === 'string') msg = err.detail;
+          } catch (_) { /* ignore */ }
+          throw new Error(msg);
+        }
+        const data = JSON.parse(raw);
+        if (!Array.isArray(data)) throw new Error('Invalid trades response');
         trades = data;
         _thSetFetchBanner('', false);
         applyFilters();
