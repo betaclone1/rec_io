@@ -15,9 +15,9 @@ This changelog is used when pushing updates to production. Each entry is timesta
 1. `20260403_2330_archive_trades_monitor_confirm_detail`
 
 **Production checklist**
-- [ ] Confirm codebase (pull): `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260403_2330_archive_trades_monitor_confirm_detail`
-- [ ] Verify: `curl -sSf http://localhost:3000/health`; tail `logs/main_app.err.log` — no repeating `monitor_confirm_detail` / UNION errors.
+- [x] Confirm codebase (pull): `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [x] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260403_2330_archive_trades_monitor_confirm_detail`
+- [x] Verify: `curl -sSf http://localhost:3000/health`; tail `logs/main_app.err.log` — no repeating `monitor_confirm_detail` / UNION errors.
 
 ---
 
