@@ -88,6 +88,8 @@ body {
   vertical-align: middle;
 }
 .trading-mode-select-wrap .trading-mode-select-visual {
+  position: relative;
+  z-index: 1;
   color: transparent !important;
   -webkit-text-fill-color: transparent;
   caret-color: transparent;
@@ -98,6 +100,7 @@ body {
   right: 28px;
   top: 0;
   bottom: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   pointer-events: none;

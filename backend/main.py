@@ -1835,28 +1835,37 @@ async def get_account_mode_endpoint():
     """Get current account mode."""
     return {"mode": get_account_mode()}
 
+def _read_kalshi_email_from_auth_file() -> Optional[str]:
+    """Return email from prod kalshi-auth.txt, or None if missing or unreadable."""
+    try:
+        from backend.util.paths import get_kalshi_credentials_dir
+
+        cred_dir = os.path.join(get_kalshi_credentials_dir(), "prod")
+        auth_file = os.path.join(cred_dir, "kalshi-auth.txt")
+        if not os.path.exists(auth_file):
+            return None
+        with open(auth_file, "r") as f:
+            for line in f:
+                if line.startswith("email:"):
+                    val = line.split("email:", 1)[1].strip()
+                    return val or None
+    except Exception as e:
+        _main_logger.warning(f"Error reading Kalshi auth email: {e}")
+    return None
+
+
 @app.get("/api/get_kalshi_email")
 async def get_kalshi_email_endpoint():
     """Get Kalshi email from prod credentials (Kalshi env is always prod)."""
     try:
+        email = _read_kalshi_email_from_auth_file()
+        if email:
+            return {"email": email}
         from backend.util.paths import get_kalshi_credentials_dir
-        import os
 
         cred_dir = os.path.join(get_kalshi_credentials_dir(), "prod")
         auth_file = os.path.join(cred_dir, "kalshi-auth.txt")
-
         if os.path.exists(auth_file):
-            with open(auth_file, "r") as f:
-                lines = f.readlines()
-
-            email = None
-            for line in lines:
-                if line.startswith("email:"):
-                    email = line.split("email:")[1].strip()
-                    break
-
-            if email:
-                return {"email": email}
             return {"email": "No email found in credentials"}
         return {"email": "No credentials found"}
 
@@ -1874,8 +1883,7 @@ async def get_trading_mode_endpoint(response: Response):
     live_label = "LIVE"
     paper_label = "PAPER"
     try:
-        em = await get_kalshi_email_endpoint()
-        e = em.get("email") if isinstance(em, dict) else None
+        e = _read_kalshi_email_from_auth_file()
         bad = (
             "no email",
             "no credentials",

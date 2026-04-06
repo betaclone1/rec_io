@@ -60,7 +60,7 @@
 
     /* Match trade_monitor dropdown-picker (global.css) + monitor-picker sizing */
     .portfolio-panel .trading-mode-select-wrap {
-      max-width: min(240px, 100%);
+      max-width: min(400px, 100%);
     }
     .portfolio-panel .trading-mode-select-wrap .dropdown-picker {
       font-size: 12px;
@@ -1621,9 +1621,14 @@
       const modeEl = wrap.querySelector('.trading-mode-mode');
       const sepEl = wrap.querySelector('.trading-mode-sep');
       const nameEl = wrap.querySelector('.trading-mode-name');
-      if (!modeEl || !sepEl || !nameEl) return;
       const isLive = sel.value === 'live';
       const label = isLive ? (tradingModeLiveLabel || 'LIVE') : (tradingModePaperLabel || 'PAPER');
+      if (!modeEl) return;
+      if (!sepEl || !nameEl) {
+        modeEl.textContent = label;
+        modeEl.className = 'trading-mode-mode ' + (isLive ? 'trading-mode-mode--live' : 'trading-mode-mode--paper');
+        return;
+      }
       const parts = splitTradingModeLabel(label);
       modeEl.textContent = parts.mode;
       if (parts.name) {
@@ -1648,7 +1653,13 @@
 
     async function fetchTradingModeFromServer() {
       try {
-        const r = await fetch(window.location.origin + '/api/trading_mode');
+        const r = await fetch(window.location.origin + '/api/trading_mode', {
+          cache: 'no-store',
+        });
+        if (!r.ok) {
+          console.warn('fetchTradingModeFromServer: HTTP', r.status);
+          return;
+        }
         const j = await r.json();
         if (j.trading_mode === 'live' || j.trading_mode === 'paper') {
           window.__recTradingMode = j.trading_mode;
