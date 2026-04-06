@@ -45,14 +45,14 @@ def _fetch_latest_strike_row(
 
 def _closing_price_from_strike_row(
     side: str,
-    yes_ask: Optional[str],
-    no_ask: Optional[str],
+    yes_ask_dollars: Optional[str],
+    no_ask_dollars: Optional[str],
 ) -> Optional[float]:
     su = (side or "").strip().upper()
     if su in ("YES", "Y"):
-        raw = no_ask
+        raw = no_ask_dollars
     elif su in ("NO", "N"):
-        raw = yes_ask
+        raw = yes_ask_dollars
     else:
         return None
     if raw is None or str(raw).strip() == "":
@@ -108,8 +108,10 @@ def refresh_open_trades_telemetry_for_user(user_number: str) -> int:
                 srow = _fetch_latest_strike_row(cur, tbl, ex, sym, tt)
                 if not srow:
                     continue
-                yes_ask, no_ask, ymn, ymx, nmn, nmx, yrg, nrg = srow
-                close_px = _closing_price_from_strike_row(side, yes_ask, no_ask)
+                yes_ask_dollars, no_ask_dollars, ymn, ymx, nmn, nmx, yrg, nrg = srow
+                close_px = _closing_price_from_strike_row(
+                    side, yes_ask_dollars, no_ask_dollars
+                )
                 if close_px is None:
                     continue
                 try:
