@@ -23,19 +23,19 @@ This changelog is used when pushing updates to production. Each entry is timesta
 4. `20260411_1100_transfers_paper_0001`
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations (from project root on server, in order above):  
+- [x] Apply migrations (from project root on server, in order above):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260404_1200_paper_account_balance_tables`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260404_1210_paper_subaccounts_disable_auto_transfer`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260404_2000_account_balance_balance_integer`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1100_transfers_paper_0001`
-- [ ] Schema drift check (recommended):  
+- [x] Schema drift check (recommended):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Regenerate supervisor config if your deploy relies on it:  
+- [x] Regenerate supervisor config if your deploy relies on it:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/config/generate_unified_supervisor_config.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows key programs RUNNING; spot-check trading mode and account manager in UI.
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows key programs RUNNING; spot-check trading mode and account manager in UI.
 
 ---
 
