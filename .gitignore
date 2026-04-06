@@ -70,6 +70,9 @@ backend/api/kalshi-api/kalshi-credentials/
 # Local configuration overrides
 backend/core/config/config.local.json
 
+# Runtime state (per machine): trading_mode, paper monitor snapshot, etc. Created by trading_mode/account_mode code.
+backend/data/account_mode_state.json
+
 # Log and debug files
 *.sqlite3
 backend/api/coinbase-api/coinbase-btc/data/btc_logger_heartbeat.txt
