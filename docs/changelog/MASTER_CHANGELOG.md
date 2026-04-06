@@ -23,17 +23,17 @@ This changelog is used when pushing updates to production. Each entry is timesta
 2. `20260411_1200_trades_close_method_auto_to_auto_probability`
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations (from project root on server, in order above):  
+- [x] Apply migrations (from project root on server, in order above):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260406_1400_monitor_flip_sell`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1200_trades_close_method_auto_to_auto_probability`
-- [ ] Schema drift check (recommended):  
+- [x] Schema drift check (recommended):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Regenerate supervisor config if your deploy relies on it:  
+- [x] Regenerate supervisor config if your deploy relies on it:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/config/generate_unified_supervisor_config.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows key programs RUNNING; spot-check unified modal position Save/Cancel and trade history monitor filter.
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows key programs RUNNING; spot-check unified modal position Save/Cancel and trade history monitor filter.
 
 ---
 
