@@ -54,7 +54,10 @@ from backend.core.unified_config import UnifiedConfigManager
 from backend.core.config.database import get_postgresql_connection, get_database_config
 from backend.core.exchange_ids import normalize_exchange
 from backend.core.time_eastern import EST, now_est
-from backend.util.trade_log_archivist import archive_trades_for_monitor, union_trades_with_archives_select
+from backend.util.trade_log_archivist import (
+    archive_trades_for_monitor,
+    union_trades_with_archives_select,
+)
 
 unified_config = UnifiedConfigManager()
 
@@ -3386,28 +3389,35 @@ async def get_auto_entry_settings(monitor_id: str = None):
         return {"status": "error", "message": "Monitor ID required"}
     
     try:
+        from backend.core.auto_entry_settings_store import monitor_list_flip_columns_available
+
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            # Get settings directly from monitor_list table
-            cursor.execute("""
+            has_flip = monitor_list_flip_columns_available(cursor)
+            sel_flip = """
+                       , flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult
+            """
+            q = """
                 SELECT min_probability, max_probability, min_differential, max_differential, min_time, max_time, allow_re_entry,
-                       spike_alert_enabled, spike_alert_momentum_threshold, 
+                       spike_alert_enabled, spike_alert_momentum_threshold,
                        spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
-                       current_probability, min_ttc_seconds, momentum_spike_enabled, 
+                       current_probability, min_ttc_seconds, momentum_spike_enabled,
                        momentum_spike_threshold, verification_period_enabled, verification_period_seconds,
                        min_volume, win_streak_threshold, performance_based_allocation,
                        momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target,
                        min_ask, max_ask, loss_prevention_toggle, max_price_spread, prob_adj,
                        min_cooldown_timer, max_cooldown_timer,
                        regime_monitor_enabled, regime_window, stop_loss_price, min_ask_range
+            """ + (sel_flip if has_flip else "") + """
                 FROM users.monitor_list_0001 WHERE id = %s
-            """, (monitor_id,))
+            """
+            cursor.execute(q, (monitor_id,))
             result = cursor.fetchone()
             
             conn.close()
             
             if result:
-                return {
+                row = {
                     "min_probability": float(result[0]) if result[0] is not None else 95.00,
                     "max_probability": float(result[1]) if result[1] is not None else 100.00,
                     "min_differential": float(result[2]) if result[2] else 0.25,
@@ -3443,6 +3453,17 @@ async def get_auto_entry_settings(monitor_id: str = None):
                     "stop_loss_price": float(result[32]) if result[32] is not None else 0.0,
                     "min_ask_range": float(result[33]) if result[33] is not None else None,
                 }
+                if has_flip:
+                    row["flip_sell_prob"] = bool(result[34]) if result[34] is not None else False
+                    row["flip_sell_prob_mult"] = str(result[35]) if result[35] is not None else None
+                    row["flip_sell_floor"] = bool(result[36]) if result[36] is not None else False
+                    row["flip_sell_floor_mult"] = str(result[37]) if result[37] is not None else None
+                else:
+                    row["flip_sell_prob"] = False
+                    row["flip_sell_prob_mult"] = None
+                    row["flip_sell_floor"] = False
+                    row["flip_sell_floor_mult"] = None
+                return row
             else:
                 return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
                 
@@ -3450,251 +3471,74 @@ async def get_auto_entry_settings(monitor_id: str = None):
         _main_logger.debug(f"[Auto Entry Settings] ❌ Error getting monitor settings: {e}")
         return {"status": "error", "message": str(e)}
 
+
+@app.get("/api/monitor_auto_stop_accuracy")
+async def get_monitor_auto_stop_accuracy(monitor_id: str = None):
+    """Proxy: delegate auto-stop accuracy aggregates to read_api service."""
+    try:
+        resp = requests.get(
+            "http://localhost:3050/api/monitor_auto_stop_accuracy",
+            params={"monitor_id": monitor_id} if monitor_id else {},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        _main_logger.warning(f"[read_api proxy] Error getting monitor_auto_stop_accuracy from read_api: {e}")
+        return {"status": "error", "message": "read_api proxy failed for /api/monitor_auto_stop_accuracy"}
+
+
 @app.post("/api/set_auto_entry_settings")
 async def set_auto_entry_settings(request: Request):
     data = await request.json()
-    
+
     monitor_id = data.get("monitor_id")
     if not monitor_id:
         return {"status": "error", "message": "Monitor ID required"}
-    
+
     try:
+        from backend.core.auto_entry_settings_store import (
+            apply_auto_entry_settings,
+            trigger_regime_reconcile_after_auto_entry_save,
+        )
+        from backend.core.trading_redis_comms import (
+            publish_auto_entry_settings_job,
+            redis_client_optional,
+            use_trading_redis_comms,
+            wait_auto_entry_settings_ack,
+        )
+
+        # Prefer trading-plane Redis: monitor_manager applies UPDATE and returns ack (same response shape).
+        if use_trading_redis_comms() and redis_client_optional():
+            import uuid
+
+            cid = str(uuid.uuid4())
+            if publish_auto_entry_settings_job(str(monitor_id), data, cid):
+                ack = wait_auto_entry_settings_ack(cid)
+                if ack is not None:
+                    return ack
+            _main_logger.debug(
+                "[Auto Entry Settings] Redis path unavailable or timed out; applying in main"
+            )
+
         conn = get_postgresql_connection()
-        with conn.cursor() as cursor:
-            # Check if monitor exists
-            cursor.execute("""
-                SELECT id FROM users.monitor_list_0001 WHERE id = %s
-            """, (monitor_id,))
-            monitor_result = cursor.fetchone()
-            
-            if not monitor_result:
-                return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
-            
-            # Build update fields and values
-            update_fields = []
-            update_values = []
-            
-            # Auto entry parameters
-            if "regime_monitor_enabled" in data:
-                reg_enabled = data["regime_monitor_enabled"]
-                if isinstance(reg_enabled, str):
-                    reg_enabled = reg_enabled.lower() in ("true", "1", "yes")
-                update_fields.append("regime_monitor_enabled = %s")
-                update_values.append(bool(reg_enabled))
-
-            if "regime_window" in data:
-                regime_window = data["regime_window"]
-                if regime_window is not None:
-                    regime_window = str(regime_window).strip()
-                    allowed = {"30d", "7d", "1d", "12h"}
-                    if regime_window not in allowed:
-                        return {
-                            "status": "error",
-                            "message": f"Invalid regime_window: {regime_window}. Allowed: {sorted(list(allowed))}"
-                        }
-                    update_fields.append("regime_window = %s")
-                    update_values.append(regime_window)
-
-            if "min_probability" in data:
-                update_fields.append("min_probability = %s")
-                update_values.append(float(data["min_probability"]))
-            if "max_probability" in data:
-                update_fields.append("max_probability = %s")
-                update_values.append(float(data["max_probability"]))
-            if "min_differential" in data:
-                update_fields.append("min_differential = %s")
-                update_values.append(float(data["min_differential"]))
-            if "max_differential" in data:
-                update_fields.append("max_differential = %s")
-                update_values.append(float(data["max_differential"]) if data["max_differential"] is not None else None)
-            if "min_volume" in data:
-                update_fields.append("min_volume = %s")
-                update_values.append(int(data["min_volume"]))
-            if "min_time" in data:
-                update_fields.append("min_time = %s")
-                update_values.append(int(data["min_time"]))
-            if "max_time" in data:
-                update_fields.append("max_time = %s")
-                update_values.append(int(data["max_time"]))
-            if "allow_re_entry" in data:
-                update_fields.append("allow_re_entry = %s")
-                update_values.append(bool(data["allow_re_entry"]))
-            if "win_streak_threshold" in data:
-                update_fields.append("win_streak_threshold = %s")
-                update_values.append(int(data["win_streak_threshold"]))
-            if "spike_alert_enabled" in data:
-                update_fields.append("spike_alert_enabled = %s")
-                update_values.append(bool(data["spike_alert_enabled"]))
-            if "spike_alert_momentum_threshold" in data:
-                update_fields.append("spike_alert_momentum_threshold = %s")
-                update_values.append(int(data["spike_alert_momentum_threshold"]))
-            if "spike_alert_cooldown_threshold" in data:
-                update_fields.append("spike_alert_cooldown_threshold = %s")
-                update_values.append(int(data["spike_alert_cooldown_threshold"]))
-            if "spike_alert_cooldown_minutes" in data:
-                update_fields.append("spike_alert_cooldown_minutes = %s")
-                update_values.append(int(data["spike_alert_cooldown_minutes"]))
-            
-            # Auto stop parameters
-            if "current_probability" in data:
-                update_fields.append("current_probability = %s")
-                update_values.append(int(data["current_probability"]))
-            if "min_ttc_seconds" in data:
-                update_fields.append("min_ttc_seconds = %s")
-                update_values.append(int(data["min_ttc_seconds"]))
-            if "momentum_spike_enabled" in data:
-                update_fields.append("momentum_spike_enabled = %s")
-                update_values.append(bool(data["momentum_spike_enabled"]))
-            if "momentum_spike_threshold" in data:
-                update_fields.append("momentum_spike_threshold = %s")
-                update_values.append(int(data["momentum_spike_threshold"]))
-            if "verification_period_enabled" in data:
-                update_fields.append("verification_period_enabled = %s")
-                update_values.append(bool(data["verification_period_enabled"]))
-            if "verification_period_seconds" in data:
-                update_fields.append("verification_period_seconds = %s")
-                update_values.append(int(data["verification_period_seconds"]))
-            if "performance_based_allocation" in data:
-                update_fields.append("performance_based_allocation = %s")
-                update_values.append(bool(data["performance_based_allocation"]))
-            
-            # Momentum Scalp specific parameters
-            if "momentum_scalp_entry_threshold" in data:
-                update_fields.append("momentum_scalp_entry_threshold = %s")
-                update_values.append(float(data["momentum_scalp_entry_threshold"]))
-            if "momentum_scalp_trailing_stop_amount" in data:
-                update_fields.append("momentum_scalp_trailing_stop_amount = %s")
-                update_values.append(float(data["momentum_scalp_trailing_stop_amount"]))
-            if "momentum_scalp_profit_target" in data:
-                update_fields.append("momentum_scalp_profit_target = %s")
-                update_values.append(float(data["momentum_scalp_profit_target"]))
-            if "min_ask" in data:
-                update_fields.append("min_ask = %s")
-                update_values.append(float(data["min_ask"]))
-            if "max_ask" in data:
-                update_fields.append("max_ask = %s")
-                update_values.append(float(data["max_ask"]))
-            if "loss_prevention_toggle" in data:
-                update_fields.append("loss_prevention_toggle = %s")
-                update_values.append(bool(data["loss_prevention_toggle"]))
-            if "max_price_spread" in data:
-                update_fields.append("max_price_spread = %s")
-                update_values.append(float(data["max_price_spread"]))
-            if "prob_adj" in data:
-                update_fields.append("prob_adj = %s")
-                update_values.append(float(data["prob_adj"]))
-            if "min_cooldown_timer" in data:
-                update_fields.append("min_cooldown_timer = %s")
-                update_values.append(int(data["min_cooldown_timer"]) if data["min_cooldown_timer"] is not None else None)
-            if "max_cooldown_timer" in data:
-                update_fields.append("max_cooldown_timer = %s")
-                update_values.append(int(data["max_cooldown_timer"]) if data["max_cooldown_timer"] is not None else None)
-            if "stop_loss_price" in data:
-                slp = float(data["stop_loss_price"])
-                if slp < 0 or round(slp, 4) > 0.99:
-                    conn.close()
-                    return {
-                        "status": "error",
-                        "message": "stop_loss_price must be between 0.0000 and 0.9900 (0 disables)",
-                    }
-                update_fields.append("stop_loss_price = %s")
-                update_values.append(round(slp, 4))
-
-            if "min_ask_range" in data:
-                mar = data["min_ask_range"]
-                if mar is None:
-                    update_fields.append("min_ask_range = %s")
-                    update_values.append(None)
-                else:
-                    marf = float(mar)
-                    if marf < 0 or marf > 1.0:
-                        conn.close()
-                        return {
-                            "status": "error",
-                            "message": "min_ask_range must be between 0 and 1.0 (null or 0 disables)",
-                        }
-                    update_fields.append("min_ask_range = %s")
-                    update_values.append(round(marf, 4))
-            
-            if update_fields:
-                # Update the monitor in monitor_list table
-                query = f"UPDATE users.monitor_list_0001 SET {', '.join(update_fields)} WHERE id = %s"
-                update_values.append(monitor_id)
-                cursor.execute(query, update_values)
-                
-                _main_logger.debug(f"[Auto Entry & Auto Stop Settings] ✅ Updated monitor {monitor_id}: {list(data.keys())}")
-                
-                # Return the updated settings
-                cursor.execute("""
-                    SELECT min_probability, min_differential, min_time, max_time, allow_re_entry,
-                           spike_alert_enabled, spike_alert_momentum_threshold, 
-                           spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
-                           current_probability, min_ttc_seconds, momentum_spike_enabled, 
-                           momentum_spike_threshold, verification_period_enabled, verification_period_seconds,
-                           min_volume, win_streak_threshold, performance_based_allocation,
-                           momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target,
-                           regime_monitor_enabled, regime_window, stop_loss_price
-                    FROM users.monitor_list_0001 WHERE id = %s
-                """, (monitor_id,))
-                updated_result = cursor.fetchone()
-                
-                if updated_result:
-                    updated_settings = {
-                        "min_probability": updated_result[0],
-                        "min_differential": float(updated_result[1]),
-                        "min_time": updated_result[2],
-                        "max_time": updated_result[3],
-                        "allow_re_entry": updated_result[4],
-                        "spike_alert_enabled": updated_result[5],
-                        "spike_alert_momentum_threshold": updated_result[6],
-                        "spike_alert_cooldown_threshold": updated_result[7],
-                        "spike_alert_cooldown_minutes": updated_result[8],
-                        "current_probability": updated_result[9],
-                        "min_ttc_seconds": updated_result[10],
-                        "momentum_spike_enabled": updated_result[11],
-                        "momentum_spike_threshold": updated_result[12],
-                        "verification_period_enabled": updated_result[13],
-                        "verification_period_seconds": updated_result[14],
-                        "min_volume": updated_result[15],
-                        "win_streak_threshold": updated_result[16],
-                        "performance_based_allocation": updated_result[17],
-                        "momentum_scalp_entry_threshold": float(updated_result[18]) if updated_result[18] is not None else None,
-                        "momentum_scalp_trailing_stop_amount": float(updated_result[19]) if updated_result[19] is not None else None,
-                        "momentum_scalp_profit_target": float(updated_result[20]) if updated_result[20] is not None else None,
-                        "regime_monitor_enabled": bool(updated_result[21]) if updated_result[21] is not None else False,
-                        "regime_window": str(updated_result[22]) if updated_result[22] is not None else "30d",
-                        "stop_loss_price": float(updated_result[23]) if updated_result[23] is not None else 0.0,
-                    }
-                    conn.commit()
-                    conn.close()
-
-                    # Immediately reconcile regime mode after any monitor settings save.
-                    # Full sweep keeps the monitor list coherent when related settings interact.
-                    try:
-                        import requests
-                        monitor_manager_port = get_port("monitor_manager")
-                        requests.post(
-                            f"http://localhost:{monitor_manager_port}/api/regime/reconcile",
-                            json={
-                                "monitor_id": int(monitor_id),
-                                "user_number": "0001",
-                                "full_sweep": False,
-                                "force_immediate": True,
-                                "source": "set_auto_entry_settings",
-                            },
-                            timeout=3,
-                        )
-                    except Exception as reconcile_err:
-                        _main_logger.debug(
-                            f"[Auto Entry Settings] ⚠️ Regime reconcile call failed after save: {reconcile_err}"
-                        )
-
-                    return {"status": "ok", **updated_settings}
-                else:
-                    return {"status": "error", "message": "Failed to retrieve updated settings"}
+        try:
+            with conn.cursor() as cursor:
+                result = apply_auto_entry_settings(cursor, str(monitor_id), data)
+            if result.get("status") == "ok":
+                conn.commit()
+                trigger_regime_reconcile_after_auto_entry_save(str(monitor_id), source="set_auto_entry_settings")
+                _main_logger.debug(
+                    "[Auto Entry & Auto Stop Settings] Updated monitor %s: %s",
+                    monitor_id,
+                    list(data.keys()),
+                )
             else:
-                return {"status": "error", "message": "No valid fields to update"}
-                
+                conn.rollback()
+            return result
+        finally:
+            conn.close()
+
     except Exception as e:
         _main_logger.debug(f"[Auto Entry Settings] ❌ Error updating strategy: {e}")
         return {"status": "error", "message": str(e)}
@@ -6081,21 +5925,32 @@ async def get_trade_monitors(user_id: str = "user_0001"):
         
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT DISTINCT monitor
-            FROM users.trades_{user_number}
-            WHERE monitor IS NOT NULL AND monitor != ''
-            ORDER BY monitor
+            SELECT DISTINCT t.monitor AS monitor_key,
+                   m.id,
+                   m.symbol,
+                   m.strategy,
+                   m.market
+            FROM users.trades_{user_number} t
+            LEFT JOIN users.monitor_list_{user_number} m
+              ON split_part(t.monitor, '_', 2) = BTRIM(m.user_id_strategy)
+             AND split_part(t.monitor, '_', 3) ~ '^[0-9]+$'
+             AND m.id = CAST(split_part(t.monitor, '_', 3) AS INTEGER)
+            WHERE t.monitor IS NOT NULL AND BTRIM(t.monitor) <> ''
+            ORDER BY t.monitor
         """)
         
         results = cursor.fetchall()
         conn.close()
         
-        # Transform to simple format for dropdown
         monitors = []
         for row in results:
-            monitor_name = row[0]
+            monitor_key, mid, symbol, strategy, market = row[0], row[1], row[2], row[3], row[4]
             monitors.append({
-                "name": monitor_name
+                "name": monitor_key,
+                "id": mid,
+                "symbol": symbol,
+                "strategy": strategy,
+                "market": market,
             })
         
         return {

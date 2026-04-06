@@ -6,6 +6,37 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-06 — Flip-sell monitor flags, UAT modal position save, trade history monitor labels, analysis chart, trades close_method backfill
+
+**Summary**
+- **Monitor list / auto-entry:** `flip_sell_prob`, `flip_sell_floor`, `flip_sell_prob_mult`, `flip_sell_floor_mult` on `users.monitor_list_0001` (migration `20260406_1400_monitor_flip_sell`); shared **`backend/core/auto_entry_settings_store.py`**; API and **`auto_entry_supervisor`** / **`monitor_manager`** wiring; docs **`TRADING_REDIS_COMMS`** / schema reference updates.
+- **Redis / read API:** `trading_redis_comms` extensions and **`read_api`** adjustments as in repo (preferences / strike-driven paths).
+- **Unified auto-trade modals:** **`frontend/js/uat_unified_modal_position_size.js`** — deferred position persistence until Save; dashboard, trade monitor, and mobile surfaces wired; cancel restores snapshot.
+- **Trade history:** Monitor dropdown labels **`{id} - {symbol} {strategy}, {market}`** via **`GET /api/trades/monitors`** join to `monitor_list`; desktop + mobile; **`SELECT_MONITOR`** postMessage matches `data-monitor-id`.
+- **Trade history analysis:** Bar chart redraw gated by rounded period fingerprint + **`animation: false`**; resize uses **`chart.resize()`**; fewer duplicate listeners.
+- **Trades log backfill:** Migration **`20260411_1200_trades_close_method_auto_to_auto_probability`** sets `close_method` from `auto` → `auto_probability` on live, simulated, and archive trade tables (legacy archive table if present).
+
+**Plans:** (mixed session work; no single `.cursor/plans` file for the full batch)
+
+**DB migrations (required on production, in timestamp order — runner skips already-applied ids)**
+1. `20260406_1400_monitor_flip_sell`
+2. `20260411_1200_trades_close_method_auto_to_auto_probability`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations (from project root on server, in order above):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260406_1400_monitor_flip_sell`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1200_trades_close_method_auto_to_auto_probability`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Regenerate supervisor config if your deploy relies on it:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/config/generate_unified_supervisor_config.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows key programs RUNNING; spot-check unified modal position Save/Cancel and trade history monitor filter.
+
+---
+
 ## 2026-04-06 — Global paper trading mode, paper balance tables, dashboard and account manager UI
 
 **Summary**

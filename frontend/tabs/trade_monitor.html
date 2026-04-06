@@ -12,6 +12,7 @@
 <script src="/js/db_changes_prefilter.js"></script>
 <script src="/js/strike-table.js"></script>
 <script src="/js/watchlist-table.js"></script>
+<script src="/js/uat_unified_modal_position_size.js"></script>
 
         <script src="/js/ny-timezone.js"></script>
         <script src="/js/globals.js"></script>
@@ -774,6 +775,98 @@ async function loadAutoEntrySettings(retryCount = 0) {
   }
 }
 
+function _tmFormatAutoStopAccuracyLine(bucket) {
+  if (!bucket || bucket.total === 0) {
+    return '— (no losing trades in window)';
+  }
+  var p = bucket.accuracy_pct;
+  return (p != null ? p + '%' : '—') + ' · Stops: ' + bucket.total;
+}
+
+function _tmSetAutoStopAccuracyRow(row, bucket) {
+  var val = row && row.querySelector ? row.querySelector('.uat-acc-value') : null;
+  if (val) val.textContent = _tmFormatAutoStopAccuracyLine(bucket);
+}
+
+function _tmSetAutoStopAccuracyHosts(modalRoot, selector, block) {
+  var hosts = modalRoot ? modalRoot.querySelectorAll(selector) : [];
+  hosts.forEach(function (host) {
+    _tmSetAutoStopAccuracyRow(host.querySelector('[data-uat-acc="7d"]'), block && block['7d'] ? block['7d'] : null);
+    _tmSetAutoStopAccuracyRow(host.querySelector('[data-uat-acc="30d"]'), block && block['30d'] ? block['30d'] : null);
+  });
+}
+
+async function fetchAndRenderTradeMonitorAutoStopAccuracy(monitorId) {
+  var modal = document.getElementById('unifiedAutoTradeModal');
+  if (!modal || monitorId == null || monitorId === '') return;
+  modal.querySelectorAll('.uat-auto-stop-accuracy [data-uat-acc] .uat-acc-value').forEach(function (el) {
+    el.textContent = '…';
+  });
+  try {
+    var r = await fetch('/api/monitor_auto_stop_accuracy?monitor_id=' + encodeURIComponent(String(monitorId)));
+    var j = await r.json();
+    if (!j || j.status !== 'ok') throw new Error((j && j.message) || 'request failed');
+    _tmSetAutoStopAccuracyHosts(modal, '.uat-acc-probability-stop', j.probability_stop);
+    _tmSetAutoStopAccuracyHosts(modal, '.uat-acc-stop-loss-floor', j.stop_loss_floor);
+  } catch (e) {
+    console.warn('monitor_auto_stop_accuracy', e);
+    modal.querySelectorAll('.uat-auto-stop-accuracy [data-uat-acc] .uat-acc-value').forEach(function (el) {
+      el.textContent = 'unavailable';
+    });
+  }
+}
+
+(function wireUnifiedModalFlipSellTradeMonitor() {
+  function wire() {
+    var modal = document.getElementById('unifiedAutoTradeModal');
+    if (!modal || modal.dataset.uatFlipSellWired === '1') return;
+    modal.dataset.uatFlipSellWired = '1';
+    modal.addEventListener('change', function (e) {
+      var t = e.target;
+      if (!t || !t.matches || !t.matches('input.uat-flip-sell-input[type=checkbox]')) return;
+      var row = t.closest('.uat-auto-stop-accuracy-row');
+      if (!row) return;
+      var mult = row.querySelector('.uat-flip-multipliers');
+      if (mult) mult.classList.toggle('uat-flip-multipliers--disabled', !t.checked);
+    });
+    modal.addEventListener('click', function (e) {
+      var btn = e.target.closest('.uat-flip-multiplier-btn');
+      if (!btn || !modal.contains(btn)) return;
+      var mult = btn.closest('.uat-flip-multipliers');
+      if (!mult || mult.classList.contains('uat-flip-multipliers--disabled')) return;
+      mult.querySelectorAll('.uat-flip-multiplier-btn').forEach(function (b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wire);
+  } else {
+    wire();
+  }
+})();
+
+function updateTradeMonitorSpikeAlertSliderGroupVisibility() {
+  const cb = document.getElementById('spikeAlertEnabled');
+  const spikeOn = !!(cb && cb.checked);
+  const g = document.getElementById('spikeAlertSliderGroup');
+  if (g) g.style.display = spikeOn ? 'contents' : 'none';
+  let showProb = false;
+  const probWrap = document.getElementById('probAdjSpikeGroup');
+  if (probWrap) {
+    const stratOk = probWrap.getAttribute('data-strategy-shows-prob-adj') === '1';
+    showProb = spikeOn && stratOk;
+    probWrap.style.display = showProb ? 'contents' : 'none';
+    probWrap.setAttribute('aria-hidden', showProb ? 'false' : 'true');
+  }
+  requestAnimationFrame(function () {
+    requestAnimationFrame(function () {
+      if (typeof window._tmUatRefreshSpikeProbBubbles === 'function') {
+        window._tmUatRefreshSpikeProbBubbles(spikeOn, showProb);
+      }
+    });
+  });
+}
+
 async function showUnifiedAutoTradeSettingsModal() {
   console.log('showUnifiedAutoTradeSettingsModal called');
   
@@ -784,16 +877,22 @@ async function showUnifiedAutoTradeSettingsModal() {
   }
   
   const modal = document.getElementById('unifiedAutoTradeModal');
-  const dim = document.getElementById('unifiedAutoTradeDim');
   
   if (!modal) {
     console.log('unifiedAutoTradeModal not found');
     return;
   }
   
-  modal.style.display = 'block';
+  modal.style.display = 'flex';
   document.body.style.overflow = 'hidden';
-  
+  if (modal._uatSyncModalFromSidebar) {
+    modal._uatSyncModalFromSidebar();
+  }
+  if (window.UatUnifiedModalPositionSize) {
+    window.UatUnifiedModalPositionSize.captureOpenSnapshot(modal);
+  }
+  void fetchAndRenderTradeMonitorAutoStopAccuracy(window.currentMonitorId);
+
   // Update modal title with strategy name and show/hide strategy sections (strategy is read-only from monitor)
   var stratEl = document.getElementById('monitor-strategy-display');
   const currentStrategy = stratEl && stratEl.textContent ? stratEl.textContent.trim() : '';
@@ -805,20 +904,32 @@ async function showUnifiedAutoTradeSettingsModal() {
   const is15mHTC = currentStrategy && currentStrategy.toUpperCase().includes('15M HTC');
   const isRisingDevil = currentStrategy && currentStrategy.toUpperCase().includes('RISING DEVIL');
   
+  function formatTradeMonitorMarketLabelForModal() {
+    const m = window.currentMarket;
+    if (m == null || String(m).trim() === '') return '';
+    const s = String(m).trim().toLowerCase();
+    if (s === 'hourly') return 'Hourly';
+    if (s === '15m') return '15m';
+    return String(m).charAt(0).toUpperCase() + String(m).slice(1).toLowerCase();
+  }
+  function formatTradeMonitorUnifiedAutoTradeModalTitle() {
+    const num = window.currentMonitorId != null ? String(window.currentMonitorId).trim() : '';
+    const strat = currentStrategy || '';
+    const mkt = formatTradeMonitorMarketLabelForModal();
+    const tail = [strat, mkt].filter(Boolean).join(', ');
+    if (num && tail) return 'Monitor ' + num + ' - ' + tail;
+    if (num) return 'Monitor ' + num;
+    return tail ? 'Monitor - ' + tail : 'Monitor';
+  }
   const modalTitle = document.getElementById('unifiedAutoTradeModalTitle');
   if (modalTitle) {
-    if (currentStrategy) {
-      modalTitle.textContent = `Auto Trade Settings - ${currentStrategy}`;
-    } else {
-      modalTitle.textContent = 'Auto Trade Settings';
-    }
+    modalTitle.textContent = formatTradeMonitorUnifiedAutoTradeModalTitle();
   }
   
   // Show/hide strategy sections
   const htcSection = document.getElementById('htcStrategySection');
   const msSection = document.getElementById('msStrategySection');
-  const probAdjContainer = document.getElementById('probAdjContainer');
-  const probAdjLabel = document.getElementById('probAdjLabel');
+  const probAdjSpikeGroup = document.getElementById('probAdjSpikeGroup');
   
   if (htcSection && msSection) {
     if (isMomentumScalp) {
@@ -829,11 +940,8 @@ async function showUnifiedAutoTradeSettingsModal() {
       msSection.style.display = 'none';
     }
   }
-  // Show/hide Probability Adjustment slider (Hourly HTC and 15m HTC — same strategy, different strike table)
-  if (probAdjContainer && probAdjLabel) {
-    const displayValue = (isHourlyHTC || is15mHTC || isRisingDevil) ? 'block' : 'none';
-    probAdjContainer.style.display = displayValue;
-    probAdjLabel.style.display = displayValue;
+  if (probAdjSpikeGroup) {
+    probAdjSpikeGroup.setAttribute('data-strategy-shows-prob-adj', (isHourlyHTC || is15mHTC || isRisingDevil) ? '1' : '0');
   }
   
   // Hide Min Differential, Max Differential for Momentum Breakout and Momentum Contain
@@ -843,9 +951,6 @@ async function showUnifiedAutoTradeSettingsModal() {
   const maxDiffLabel = document.querySelector('label[for="autoEntryMaxDifferentialSlider"]');
   const maxDiffSlider = document.getElementById('autoEntryMaxDifferentialSlider');
   const maxDiffContainer = maxDiffSlider ? maxDiffSlider.closest('.value-bubble-container') : null;
-  // Hide Allow Re-Entry for Momentum Contain only
-  const allowReEntryLabel = document.querySelector('label[for="autoEntryAllowReEntry"]');
-  const allowReEntryContainer = allowReEntryLabel ? allowReEntryLabel.nextElementSibling : null;
   
   if (isMomentumBreakout || isMomentumContain) {
     if (minDiffLabel) minDiffLabel.style.display = 'none';
@@ -857,15 +962,6 @@ async function showUnifiedAutoTradeSettingsModal() {
     if (minDiffContainer) minDiffContainer.style.display = '';
     if (maxDiffLabel) maxDiffLabel.style.display = '';
     if (maxDiffContainer) maxDiffContainer.style.display = '';
-  }
-  
-  // Hide Allow Re-Entry label and container for Momentum Contain only
-  if (isMomentumContain) {
-    if (allowReEntryLabel) allowReEntryLabel.style.display = 'none';
-    if (allowReEntryContainer) allowReEntryContainer.style.display = 'none';
-  } else {
-    if (allowReEntryLabel) allowReEntryLabel.style.display = '';
-    if (allowReEntryContainer) allowReEntryContainer.style.display = '';
   }
   
   // Change "Win Probability Window" label to "Price Window" for Momentum Breakout/Contain
@@ -978,7 +1074,6 @@ async function showUnifiedAutoTradeSettingsModal() {
     setVal('autoEntryMinVolumeSlider', data.min_volume ?? 1000);
     setVal('autoEntryDifferentialSlider', data.min_differential ?? 0);
     setVal('autoEntryMaxDifferentialSlider', data.max_differential ?? 0);
-    setChk('autoEntryAllowReEntry', data.allow_re_entry ?? false);
     setVal('autoEntryWinStreakThresholdSlider', data.win_streak_threshold ?? 22);
     
     // Loss Prevention Toggle
@@ -1012,6 +1107,12 @@ async function showUnifiedAutoTradeSettingsModal() {
     setVal('spikeAlertMomentumSlider', data.spike_alert_momentum_threshold ?? 60);
     setVal('spikeAlertCooldownSlider', data.spike_alert_cooldown_threshold ?? 55);
     setVal('spikeAlertTimeSlider', data.spike_alert_cooldown_minutes ?? 15);
+    updateTradeMonitorSpikeAlertSliderGroupVisibility();
+    const tmSpikeVisCb = document.getElementById('spikeAlertEnabled');
+    if (tmSpikeVisCb && !tmSpikeVisCb._tmSpikeDetailVisWired) {
+      tmSpikeVisCb._tmSpikeDetailVisWired = true;
+      tmSpikeVisCb.addEventListener('change', updateTradeMonitorSpikeAlertSliderGroupVisibility);
+    }
     setVal('probAdjSlider', data.prob_adj ?? 5.00);
     if (currentStrategy && currentStrategy.toUpperCase().includes('RISING DEVIL')) {
       const raw = data.min_ask_range;
@@ -1152,7 +1253,7 @@ async function showUnifiedAutoTradeSettingsModal() {
             display.textContent = parseFloat(msMaxPriceSpreadSlider.value).toFixed(1);
             const min = parseFloat(msMaxPriceSpreadSlider.min), max = parseFloat(msMaxPriceSpreadSlider.max);
             const percent = (parseFloat(msMaxPriceSpreadSlider.value) - min) / (max - min);
-            display.style.left = (percent * (msMaxPriceSpreadSlider.offsetWidth - 16) + 8) + 'px';
+            display.style.left = uatRangeBubbleLeftPx(msMaxPriceSpreadSlider, percent) + 'px';
           }
         }
         
@@ -1301,7 +1402,7 @@ async function showUnifiedAutoTradeSettingsModal() {
   
   // Keyboard shortcuts: ENTER saves, ESC closes
   const unifiedKeyHandler = function(e) {
-    if (modal.style.display !== 'block') return;
+    if (modal.style.display === 'none') return;
     if (e.key === 'Enter') {
       e.preventDefault();
       const btn = document.getElementById('unifiedAutoTradeSave');
@@ -1427,7 +1528,6 @@ async function showUnifiedAutoTradeSettingsModal() {
         payload.max_differential = (function() { const v = parseFloat(document.getElementById('autoEntryMaxDifferentialSlider').value); return isNaN(v) || v <= 0 ? null : v; })();
         const rdSl = document.getElementById('risingDevilMinAskRangeSlider');
         payload.min_ask_range = rdSl ? parseInt(rdSl.value, 10) / 100 : 0.7;
-        payload.allow_re_entry = document.getElementById('autoEntryAllowReEntry').checked;
         payload.win_streak_threshold = parseInt(document.getElementById('autoEntryWinStreakThresholdSlider').value, 10);
         const lossPreventionToggleRD = document.getElementById('autoEntryLossPreventionToggle');
         if (lossPreventionToggleRD) {
@@ -1456,7 +1556,6 @@ async function showUnifiedAutoTradeSettingsModal() {
         payload.max_probability = parseFloat(parseFloat(window.tradeMonitorMaxProbability || 100.00).toFixed(1));
         payload.min_differential = parseFloat(document.getElementById('autoEntryDifferentialSlider').value);
         payload.max_differential = (function() { const v = parseFloat(document.getElementById('autoEntryMaxDifferentialSlider').value); return isNaN(v) || v <= 0 ? null : v; })();
-        payload.allow_re_entry = document.getElementById('autoEntryAllowReEntry').checked;
         payload.win_streak_threshold = parseInt(document.getElementById('autoEntryWinStreakThresholdSlider').value, 10);
         const lossPreventionToggle = document.getElementById('autoEntryLossPreventionToggle');
         if (lossPreventionToggle) {
@@ -1493,6 +1592,9 @@ async function showUnifiedAutoTradeSettingsModal() {
         if (j && j.status !== 'error') {
           // Update pre-loaded settings with the saved values so they're current when modal reopens
           window.preloadedAutoTradeSettings = { ...window.preloadedAutoTradeSettings, ...payload };
+          if (window.UatUnifiedModalPositionSize) {
+            await window.UatUnifiedModalPositionSize.persistModalPosition(modal, window.currentMonitorId, { mirrorSidebar: true });
+          }
           closeUnifiedAutoTradeSettings();
         } else {
           console.error('Error saving auto trade settings:', j.message);
@@ -1510,15 +1612,20 @@ async function showUnifiedAutoTradeSettingsModal() {
     cancelBtn.onclick = closeUnifiedAutoTradeSettings;
   }
   
-  if (dim && !dim._wired) {
-    dim._wired = true;
-    dim.onclick = closeUnifiedAutoTradeSettings;
+  if (!modal._uatBackdropWired) {
+    modal._uatBackdropWired = true;
+    modal.addEventListener('click', function (e) {
+      if (e.target === modal) closeUnifiedAutoTradeSettings();
+    });
   }
 }
 
 function closeUnifiedAutoTradeSettings() {
   const modal = document.getElementById('unifiedAutoTradeModal');
   if (modal) {
+    if (window.UatUnifiedModalPositionSize) {
+      window.UatUnifiedModalPositionSize.restoreOpenSnapshot(modal);
+    }
     modal.style.display = 'none';
     document.body.style.overflow = 'auto';
     if (modal._keydownHandler) {
@@ -1828,7 +1935,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const autoTradeToggle = document.getElementById('autoTradeToggle');
   const positionInput = document.getElementById('position-size');
-  const multiplierButtons = document.querySelectorAll('.multiplier-btn');
+  const multiplierButtons = document.querySelectorAll('#positionSizeSelector .multiplier-btn');
   const diffModeToggle = document.getElementById('diffModeToggle');
   
 
@@ -1838,7 +1945,7 @@ document.addEventListener('DOMContentLoaded', () => {
   
   function applyMultiplierSelection(multiplierValue) {
     const parsed = multiplierValue !== undefined && multiplierValue !== null ? parseFloat(multiplierValue) : NaN;
-    multiplierButtons.forEach(btn => {
+    document.querySelectorAll('#positionSizeSelector .multiplier-btn').forEach(btn => {
       btn.classList.remove('active');
       if (!Number.isNaN(parsed) && parseFloat(btn.dataset.multiplier) === parsed) {
         btn.classList.add('active');
@@ -1898,6 +2005,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // Position display is updated by monitor_manager WebSocket notifications
   function updatePositionDisplay(totalPosition) {
     console.log('updatePositionDisplay called with:', totalPosition, new Date().toISOString());
+    if (totalPosition !== undefined && window.UatUnifiedModalPositionSize) {
+      window.UatUnifiedModalPositionSize.refreshAllPositionDisplays(totalPosition);
+      console.log('Position display updated to:', totalPosition, new Date().toISOString());
+      return;
+    }
     const positionDisplay = document.getElementById('position-display');
     if (positionDisplay && totalPosition !== undefined) {
       const label = totalPosition === 1 ? 'contract' : 'contracts';
@@ -1914,39 +2026,10 @@ document.addEventListener('DOMContentLoaded', () => {
         console.log('No monitor selected. Please select a monitor first.');
         return;
       }
-      
-      const positionSize = parseInt(document.getElementById('position-size').value || 1);
-      const positionType = document.getElementById('toggle-percent')?.style.backgroundColor === 'rgb(0, 123, 255)' ? 'percent' : 'contracts';
-      const multiplier = parseFloat(document.querySelector('.multiplier-btn.active')?.dataset.multiplier || 1);
-      
-      console.log('Sending to monitor_manager via proxy:', {
-        monitor_id: currentMonitorId,
-        position_size: positionSize,
-        position_type: positionType,
-        multiplier: multiplier
-      });
-      
-      // Send to main app which will proxy to monitor_manager
-      fetch('/api/update_monitor_position', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          monitor_id: currentMonitorId,
-          position_size: positionSize,
-          position_type: positionType,
-          multiplier: multiplier
-        })
-      }).then(response => {
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        return response.json();
-      }).then(data => {
-        console.log('Monitor position updated successfully:', data, new Date().toISOString());
-        // Position display will be updated by monitor_manager WebSocket notification
-      }).catch(error => {
-        console.error('Error updating monitor position:', error);
-      });
+      const els = window.UatUnifiedModalPositionSize && window.UatUnifiedModalPositionSize.elsFromTmSidebar();
+      if (window.UatUnifiedModalPositionSize && els) {
+        window.UatUnifiedModalPositionSize.sendUpdate(currentMonitorId, els);
+      }
     }
 
   // Test function to manually trigger monitor_manager update
@@ -2455,18 +2538,320 @@ document.addEventListener('DOMContentLoaded', () => {
         </table>
       </div>
       <!-- Unified Auto Trade Settings Modal -->
-      <div id="unifiedAutoTradeModal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:10000; overflow-y:auto;">
+      <div id="unifiedAutoTradeModal" class="uat-modal-overlay" style="display:none;">
         <style>
-          /* Prevent overflow and enforce uniform slider widths */
-          #unifiedAutoTradeModal .value-bubble-container { padding-right: 48px; padding-left: 8px; box-sizing: border-box; width: 100%; min-width: 0; }
+          #unifiedAutoTradeModal.uat-modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 10000;
+            overflow-y: auto;
+            box-sizing: border-box;
+            padding: 24px 20px;
+            align-items: flex-start;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.5);
+          }
+          #unifiedAutoTradeModal .value-bubble-container {
+            padding-left: 40px;
+            padding-right: 40px;
+            box-sizing: border-box;
+            width: 100%;
+            min-width: 0;
+          }
           #unifiedAutoTradeModal .value-bubble-container input[type="range"] { width: 100%; box-sizing: border-box; display:block; margin: 0; }
+          #unifiedAutoTradeModal .unified-auto-trade-modal-box {
+            background: #1f2633;
+            border: 1px solid #4a5568;
+            border-radius: 8px;
+            padding: 20px;
+            min-width: min(567px, calc(100vw - 40px));
+            max-width: min(720px, 100vw - 40px);
+            max-height: calc(100vh - 48px);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            box-sizing: border-box;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+          }
+          #unifiedAutoTradeModal .uat-modal-title {
+            font-size: 14px;
+            font-weight: bold;
+            margin-bottom: 16px;
+            color: #c4c4c4;
+          }
+          #unifiedAutoTradeModal .uat-modal-body {
+            flex: 1 1 auto;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            align-items: stretch;
+            overflow-x: hidden;
+            overflow-y: auto;
+            min-height: 0;
+            box-sizing: border-box;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+          }
+          #unifiedAutoTradeModal .uat-modal-body::-webkit-scrollbar {
+            display: none;
+          }
+          #unifiedAutoTradeModal label { color: #c4c4c4 !important; }
+          #unifiedAutoTradeModal .uat-section-title {
+            font-size: 12px;
+            font-weight: bold;
+            margin: 4px 0 8px 0;
+            color: #c4c4c4;
+          }
+          #unifiedAutoTradeModal .uat-modal-hr {
+            border: none;
+            border-top: 1px solid #4a5568;
+            width: auto;
+            box-sizing: border-box;
+          }
+          #unifiedAutoTradeModal .uat-modal-hr--24 { margin: 24px 0; }
+          #unifiedAutoTradeModal .uat-modal-hr--24-16 { margin: 24px 0 16px 0; }
+          #unifiedAutoTradeModal .uat-modal-hr--16-24 { margin: 16px 0 24px 0; }
+          #unifiedAutoTradeModal .uat-modal-hr--16 { margin: 16px 0; }
+          #unifiedAutoTradeModal .uat-modal-hr--8-16 { margin: 8px 0 16px 0; }
+          #unifiedAutoTradeModal .uat-modal-actions {
+            margin-top: 16px;
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            flex-shrink: 0;
+          }
+          #unifiedAutoTradeModal .uat-modal-btn-primary {
+            background: var(--accent-color, #3b82f6);
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: background-color 0.2s;
+          }
+          #unifiedAutoTradeModal .uat-modal-btn-primary:hover { background: var(--accent-hover, #2563eb); }
+          #unifiedAutoTradeModal .uat-modal-btn-secondary {
+            background: #4a5568;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+          }
+          #unifiedAutoTradeModal .uat-modal-btn-secondary:hover { background: #5a6578; }
+          #unifiedAutoTradeModal [id$="SliderContainer"] { background: #3c495e !important; }
+          #unifiedAutoTradeModal [id$="Range"] { background: #3b82f6 !important; }
+          #unifiedAutoTradeModal [id$="Handle"] { background: #3b82f6 !important; }
+          #unifiedAutoTradeModal [id$="MinDisplay"],
+          #unifiedAutoTradeModal [id$="MaxDisplay"],
+          #unifiedAutoTradeModal [id$="ValueDisplay"],
+          #unifiedAutoTradeModal #sliderValueDisplay {
+            background: #2a3441 !important;
+            color: #e2e8f0 !important;
+            border: 1px solid #4a5568 !important;
+            box-shadow: none !important;
+          }
+          #unifiedAutoTradeModal input[type="checkbox"] { accent-color: #3b82f6; }
+          #unifiedAutoTradeModal input[type="checkbox"] + span { color: #9ca3af !important; }
+          #unifiedAutoTradeModal .uat-performance-label { color: #e2e8f0 !important; font-size: 14px; font-weight: 500; }
+          #unifiedAutoTradeModal input[type="range"] { accent-color: #3b82f6; background: #3c495e !important; }
+          #unifiedAutoTradeModal .uat-stepper {
+            display: flex;
+            align-items: center;
+            border: 1px solid #4a5568;
+            border-radius: 4px;
+            background: #2a3441;
+          }
+          #unifiedAutoTradeModal .uat-stepper-btn {
+            padding: 8px 12px;
+            border: none;
+            background: #3c495e;
+            color: #e2e8f0;
+            cursor: pointer;
+            font-size: 12px;
+          }
+          #unifiedAutoTradeModal .uat-stepper-btn:hover { background: #4a5568; }
+          #unifiedAutoTradeModal .uat-stepper-btn-down { border-right: 1px solid #4a5568; border-radius: 4px 0 0 4px; }
+          #unifiedAutoTradeModal .uat-stepper-btn-up { border-left: 1px solid #4a5568; border-radius: 0 4px 4px 0; }
+          #unifiedAutoTradeModal .uat-stepper-display {
+            padding: 8px 16px;
+            font-size: 13px;
+            color: #e2e8f0;
+            min-width: 60px;
+            text-align: center;
+            font-weight: 500;
+          }
+          #unifiedAutoTradeModal .uat-muted-hint {
+            font-size: 12px;
+            color: #9ca3af;
+            margin: -8px 0 10px 0;
+          }
+          #unifiedAutoTradeModal .uat-auto-stop-accuracy-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 24px;
+            width: 100%;
+            margin: 6px 0 14px 0;
+          }
+          #unifiedAutoTradeModal .uat-auto-stop-accuracy-row .uat-auto-stop-accuracy {
+            flex: 0 1 auto;
+            min-width: 0;
+            margin: 0;
+          }
+          #unifiedAutoTradeModal .uat-flip-sell-side {
+            flex: 0 0 auto;
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            padding-top: 2px;
+          }
+          #unifiedAutoTradeModal .uat-flip-sell-check {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: #9ca3af;
+            cursor: pointer;
+            user-select: none;
+            margin: 0;
+          }
+          #unifiedAutoTradeModal .uat-flip-sell-check input {
+            width: 14px;
+            height: 14px;
+            accent-color: var(--accent-color, #3b82f6);
+            margin: 0;
+          }
+          #unifiedAutoTradeModal .uat-flip-multipliers {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+          }
+          #unifiedAutoTradeModal .uat-flip-multipliers--disabled {
+            opacity: 0.42;
+            pointer-events: none;
+            filter: grayscale(0.25);
+          }
+          #unifiedAutoTradeModal .uat-flip-multiplier-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background-color: transparent;
+            border: 1px solid #4a5568;
+            color: #e2e8f0;
+            padding: 2px 7px;
+            border-radius: 3px;
+            cursor: pointer;
+            transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+            min-width: 31px;
+            height: 20px;
+            box-sizing: border-box;
+            font-size: calc(12px * 0.7);
+            line-height: 1;
+            text-align: center;
+          }
+          #unifiedAutoTradeModal .uat-flip-multiplier-btn.active {
+            background-color: #3b82f6;
+            border-color: #2563eb;
+            color: #fff;
+            font-weight: 600;
+            box-shadow: 0 0 6px rgba(59, 130, 246, 0.5);
+          }
+          #unifiedAutoTradeModal .uat-flip-multipliers--disabled .uat-flip-multiplier-btn.active {
+            background-color: transparent;
+            border-color: #4a5568;
+            color: #e2e8f0;
+            font-weight: normal;
+            box-shadow: none;
+          }
+          #unifiedAutoTradeModal .uat-flip-multiplier-btn:hover:not(.active) {
+            background-color: rgba(255, 255, 255, 0.08);
+          }
+          #unifiedAutoTradeModal .uat-flip-multipliers--disabled .uat-flip-multiplier-btn:hover {
+            background-color: transparent;
+          }
+          #unifiedAutoTradeModal .uat-auto-stop-accuracy {
+            font-size: 12px;
+            color: #9ca3af;
+            margin: 0;
+            line-height: 1.55;
+          }
+          #unifiedAutoTradeModal .uat-auto-stop-accuracy [data-uat-acc] {
+            display: flex;
+            align-items: baseline;
+            gap: 0.5em;
+            margin: 0;
+          }
+          #unifiedAutoTradeModal .uat-auto-stop-accuracy .uat-acc-label {
+            flex: 0 0 6.75rem;
+            text-align: right;
+            color: inherit;
+          }
+          #unifiedAutoTradeModal .uat-auto-stop-accuracy .uat-acc-value {
+            flex: 1 1 auto;
+            min-width: 0;
+            text-align: left;
+            font-variant-numeric: tabular-nums;
+          }
+          #unifiedAutoTradeModal .uat-pos-mult-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+          }
+          #unifiedAutoTradeModal .uat-pos-mult-btn {
+            background-color: transparent;
+            border: 1px solid #9ca3af;
+            color: #e2e8f0;
+            padding: 4px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.3s ease, color 0.3s ease;
+            min-width: 48px;
+            text-align: center;
+            font-size: 12px;
+          }
+          #unifiedAutoTradeModal .uat-pos-mult-btn.active {
+            background-color: #3b82f6;
+            border-color: #2563eb;
+            color: white;
+            font-weight: bold;
+            box-shadow: 0 0 6px rgba(59, 130, 246, 0.7);
+          }
+          #unifiedAutoTradeModal .uat-pos-mult-btn:hover:not(.active) {
+            background-color: rgba(255, 255, 255, 0.08);
+          }
         </style>
-        <div id="unifiedAutoTradeDim" style="position:absolute; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.4);"></div>
-        <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border-radius:8px; min-width:567px; box-shadow:0 4px 32px rgba(0,0,0,0.25); padding:20px; display:flex; flex-direction:column; max-height:80vh; overflow:auto;">
-          <div id="unifiedAutoTradeModalTitle" style="font-size:16px; font-weight:600; margin-bottom:16px; color:#222;">Auto Trade Settings</div>
-          <div style="flex:1 1 auto; display:flex; flex-direction:column; justify-content:flex-start; align-items:stretch; overflow-y:auto; min-height:0;">
+        <div class="unified-auto-trade-modal-box" onclick="event.stopPropagation();">
+          <div id="unifiedAutoTradeModalTitle" class="uat-modal-title">Monitor</div>
+          <div class="uat-position-size-block" style="margin-bottom:16px;">
+            <div style="font-weight:bold; margin-bottom:6px; font-size:0.9rem; color:#e2e8f0;">Position Size: <span class="uat-pos-display" style="margin-left:10px; font-weight:normal; color:#9ca3af;">100 contracts</span></div>
+            <div class="uat-position-size-row" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+              <input type="number" class="uat-pos-input" min="1" value="20" style="width:60px; padding:4px 6px; text-align:right; font-size:1rem; border-radius:4px; border:1px solid #4a5568; background:#2a3441; color:#e2e8f0; height:28px; box-sizing:border-box;" />
+              <div style="display:flex; flex-direction:column; gap:2px;">
+                <button type="button" class="uat-pos-toggle-percent" style="height:15px; padding:2px 6px; box-sizing:border-box; font-size:9px; background-color:#007bff; border:1px solid #0056b3; color:white; border-radius:4px; cursor:pointer;">%</button>
+                <button type="button" class="uat-pos-toggle-contracts" style="height:15px; padding:2px 6px; box-sizing:border-box; font-size:9px; background-color:transparent; border:1px solid #9ca3af; color:#e2e8f0; border-radius:4px; cursor:pointer;">C</button>
+              </div>
+              <div class="uat-pos-mult-group">
+                <button type="button" class="uat-pos-mult-btn" data-multiplier="0" style="height:28px; box-sizing:border-box;">1c</button>
+                <button type="button" class="uat-pos-mult-btn" data-multiplier="0.5" style="height:28px; box-sizing:border-box;">½</button>
+                <button type="button" class="uat-pos-mult-btn active" data-multiplier="1" style="height:28px; box-sizing:border-box;">1</button>
+                <button type="button" class="uat-pos-mult-btn" data-multiplier="1.5" style="height:28px; box-sizing:border-box;">1.5</button>
+                <button type="button" class="uat-pos-mult-btn" data-multiplier="2" style="height:28px; box-sizing:border-box;">2</button>
+              </div>
+            </div>
+          </div>
+          <div class="uat-modal-body">
             <div id="htcStrategySection" style="display: contents;">
-            <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Auto Entry</div>
+            <div class="uat-section-title">Auto Entry</div>
             <!-- Auto Entry -->
             <label for="timeWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Time Window:</label>
             <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
@@ -2545,26 +2930,21 @@ document.addEventListener('DOMContentLoaded', () => {
               <div id="autoEntryMaxDifferentialValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
             </div>
             
-            <label for="autoEntryAllowReEntry" style="font-size:14px; color:#333;margin-top:12px; margin-bottom:12px; font-weight:500;">Allow Re-Entry:</label>
-            <div style="position:relative; margin-bottom:24px; width:100%;">
-              <input type="checkbox" id="autoEntryAllowReEntry" style=" width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
-              <span style="font-size:13px; color:#666;">Allow re-entry on the same strike</span>
-            </div>
-            
             <label for="autoEntryWinStreakThresholdSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Loss Prevention Win Streak Threshold: <input type="checkbox" id="autoEntryLossPreventionToggle" style="margin-left:8px; vertical-align:middle;" /></label>
             <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
               <input type="range" id="autoEntryWinStreakThresholdSlider" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
               <div id="autoEntryWinStreakThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
             </div>
             
-            <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0;">
+            <hr class="uat-modal-hr uat-modal-hr--24" aria-hidden="true" />
             
             <!-- Spike Alert Settings (Entry) -->
-            <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
-                <input type="checkbox" id="spikeAlertEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
-                <span style="font-size:13px; color:#666;">Monitor for momentum spikes</span>
+            <div style="position:relative; margin:0; width:100%; display:flex; align-items:center;">
+                <input type="checkbox" id="spikeAlertEnabled" style="width:16px; height:16px; margin-right:8px; flex-shrink:0; accent-color:#007bff;" />
+                <span class="uat-performance-label">Monitor for momentum spikes</span>
               </div>
               
+              <div id="spikeAlertSliderGroup" style="display:none;">
               <label for="spikeAlertMomentumSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Spike Level (±):</label>
             <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
                 <input type="range" id="spikeAlertMomentumSlider" min="50" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
@@ -2582,43 +2962,81 @@ document.addEventListener('DOMContentLoaded', () => {
                 <input type="range" id="spikeAlertTimeSlider" min="0" max="180" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
                 <div id="spikeAlertTimeValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
               </div>
+              </div>
 
+            <div id="probAdjSpikeGroup" style="display:none;" data-strategy-shows-prob-adj="0" aria-hidden="true">
             <label id="probAdjLabel" for="probAdjSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Probability Adjustment (%):</label>
             <div id="probAdjContainer" class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
               <input type="range" id="probAdjSlider" min="0" max="20" step="0.5" value="5" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
               <div id="probAdjValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
             </div>
+            </div>
 
-              <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0 16px 0;">
+              <hr class="uat-modal-hr uat-modal-hr--24-16" aria-hidden="true" />
 
               <div style="position:relative; margin:0; width:100%; display:flex; align-items:center;">
                 <input type="checkbox" id="autoEntryPerformanceBasedAllocation" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
-                <span style="font-size:14px; color:#111; font-weight:500;">Enable performance-based allocation</span>
+                <span class="uat-performance-label">Enable performance-based allocation</span>
               </div>
 
-              <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 16px 0 24px 0;">
-            <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Auto Stop</div>
+              <hr class="uat-modal-hr uat-modal-hr--16-24" aria-hidden="true" />
+            <div class="uat-section-title">Auto Stop</div>
             
             <!-- Auto Stop -->
-            <label for="autoStopProbabilitySlider" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Current Win Probability:</label>
+            <label for="autoStopProbabilitySlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Current Win Probability:</label>
             <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
               <input type="range" id="autoStopProbabilitySlider" min="0" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
               <div id="sliderValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
           </div>
+            <div class="uat-auto-stop-accuracy-row">
+              <div class="uat-auto-stop-accuracy uat-acc-probability-stop" aria-live="polite">
+                <div data-uat-acc="7d"><span class="uat-acc-label">7d Accuracy:</span><span class="uat-acc-value">…</span></div>
+                <div data-uat-acc="30d"><span class="uat-acc-label">30d Accuracy:</span><span class="uat-acc-value">…</span></div>
+              </div>
+              <div class="uat-flip-sell-side">
+                <label class="uat-flip-sell-check">
+                  <input type="checkbox" class="uat-flip-sell-input" id="uatFlipSellProbabilityStop" />
+                  <span>Flip Sell</span>
+                </label>
+                <div class="uat-flip-multipliers uat-flip-multipliers--disabled" role="group" aria-label="Flip sell size">
+                  <button type="button" class="uat-flip-multiplier-btn active" data-uat-mult="1">1x</button>
+                  <button type="button" class="uat-flip-multiplier-btn" data-uat-mult="2">2x</button>
+                  <button type="button" class="uat-flip-multiplier-btn" data-uat-mult="3">3x</button>
+                </div>
+              </div>
+            </div>
 
-            <label for="stopLossPriceSlider" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Stop Loss Price:</label>
-            <div style="font-size:12px; color:#666; margin:-8px 0 10px 0;">0.0000 disables. When opposite ask exceeds (1 − this), immediate auto-close (no verification).</div>
+            <label for="stopLossPriceSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Stop Loss Price:</label>
+            <div class="uat-muted-hint">0.0000 disables. When opposite ask exceeds (1 − this), immediate auto-close (no verification).</div>
             <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
               <input type="range" id="stopLossPriceSlider" min="0" max="990" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
               <div id="stopLossPriceValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.0000</div>
           </div>
+            <div class="uat-auto-stop-accuracy-row">
+              <div class="uat-auto-stop-accuracy uat-acc-stop-loss-floor" aria-live="polite">
+                <div data-uat-acc="7d"><span class="uat-acc-label">7d Accuracy:</span><span class="uat-acc-value">…</span></div>
+                <div data-uat-acc="30d"><span class="uat-acc-label">30d Accuracy:</span><span class="uat-acc-value">…</span></div>
+              </div>
+              <div class="uat-flip-sell-side">
+                <label class="uat-flip-sell-check">
+                  <input type="checkbox" class="uat-flip-sell-input" id="uatFlipSellStopLossFloor" />
+                  <span>Flip Sell</span>
+                </label>
+                <div class="uat-flip-multipliers uat-flip-multipliers--disabled" role="group" aria-label="Flip sell size">
+                  <button type="button" class="uat-flip-multiplier-btn active" data-uat-mult="1">1x</button>
+                  <button type="button" class="uat-flip-multiplier-btn" data-uat-mult="2">2x</button>
+                  <button type="button" class="uat-flip-multiplier-btn" data-uat-mult="3">3x</button>
+                </div>
+              </div>
+            </div>
 
+            <hr class="uat-modal-hr uat-modal-hr--16" aria-hidden="true" />
             <label for="autoStopMinTTCInput" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Minimum Time to Close:</label>
             <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 24px;">
-              <div style="display: flex; align-items: center; border: 1px solid #ddd; border-radius: 4px; background: white;">
-                <button id="autoStopMinTTCDown" style="padding: 8px 12px; border: none; background: #f8f9fa; cursor: pointer; border-right: 1px solid #ddd; border-radius: 4px 0 0 4px; font-size:12px;" onmouseover="this.style.background='#e9ecef'" onmouseout="this.style.background='#f8f9fa'">▼</button>
-                <span id="autoStopMinTTCDisplay" style="padding: 8px 16px; font-size: 13px; color: #333; min-width: 60px; text-align: center; font-weight:500;">Loading...</span>
-                <button id="autoStopMinTTCUp" style="padding: 8px 12px; border: none; background: #f8f9fa; cursor: pointer; border-left: 1px solid #ddd; border-radius: 0 4px 4px 0; font-size:12px;" onmouseover="this.style.background='#e9ecef'" onmouseout="this.style.background='#f8f9fa'">▲</button>
+              <div class="uat-stepper">
+                <button type="button" id="autoStopMinTTCDown" class="uat-stepper-btn uat-stepper-btn-down">▼</button>
+                <span id="autoStopMinTTCDisplay" class="uat-stepper-display">Loading...</span>
+                <button type="button" id="autoStopMinTTCUp" class="uat-stepper-btn uat-stepper-btn-up">▲</button>
           </div>
               <input type="hidden" id="autoStopMinTTCInput" value="60" />
         </div>
@@ -2648,7 +3066,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             <!-- MOMENTUM SCALP Strategy Section -->
             <div id="msStrategySection" style="display: none;">
-            <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Auto Entry</div>
+            <div class="uat-section-title">Auto Entry</div>
             <!-- Auto Entry -->
             <label for="msTimeWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Scalp Time Window:</label>
             <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
@@ -2708,16 +3126,17 @@ document.addEventListener('DOMContentLoaded', () => {
               <div id="msAutoEntryWinStreakThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
             </div>
             
-            <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0;">
-            <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Auto Stop</div>
+            <hr class="uat-modal-hr uat-modal-hr--24" aria-hidden="true" />
+            <div class="uat-section-title">Auto Stop</div>
             
             <!-- Auto Stop -->
+            <hr class="uat-modal-hr uat-modal-hr--16" aria-hidden="true" />
             <label for="msAutoStopMinTTCInput" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Minimum Time to Close:</label>
             <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 24px;">
-              <div style="display: flex; align-items: center; border: 1px solid #ddd; border-radius: 4px; background: white;">
-                <button id="msAutoStopMinTTCDown" style="padding: 8px 12px; border: none; background: #f8f9fa; cursor: pointer; border-right: 1px solid #ddd; border-radius: 4px 0 0 4px; font-size:12px;" onmouseover="this.style.background='#e9ecef'" onmouseout="this.style.background='#f8f9fa'">▼</button>
-                <span id="msAutoStopMinTTCDisplay" style="padding: 8px 16px; font-size: 13px; color: #333; min-width: 60px; text-align: center; font-weight:500;">Loading...</span>
-                <button id="msAutoStopMinTTCUp" style="padding: 8px 12px; border: none; background: #f8f9fa; cursor: pointer; border-left: 1px solid #ddd; border-radius: 0 4px 4px 0; font-size:12px;" onmouseover="this.style.background='#e9ecef'" onmouseout="this.style.background='#f8f9fa'">▲</button>
+              <div class="uat-stepper">
+                <button type="button" id="msAutoStopMinTTCDown" class="uat-stepper-btn uat-stepper-btn-down">▼</button>
+                <span id="msAutoStopMinTTCDisplay" class="uat-stepper-display">Loading...</span>
+                <button type="button" id="msAutoStopMinTTCUp" class="uat-stepper-btn uat-stepper-btn-up">▲</button>
               </div>
               <input type="hidden" id="msAutoStopMinTTCInput" value="60" />
             </div>
@@ -2737,9 +3156,9 @@ document.addEventListener('DOMContentLoaded', () => {
             <!-- End MOMENTUM SCALP Strategy Section -->
             
           </div>
-          <div style="display:flex; gap:12px; justify-content:flex-end; align-items:center; margin-top:16px;">
-            <button id="unifiedAutoTradeCancel" style="padding:8px 16px; border-radius:4px; border:1px solid #ddd; background:#f8f9fa; color:#333; font-size:13px; cursor:pointer; font-weight:500;" onmouseover="this.style.background='#e9ecef'" onmouseout="this.style.background='#f8f9fa'">Cancel</button>
-            <button id="unifiedAutoTradeSave" style="padding:8px 16px; border-radius:4px; border:none; background:#007bff; color:white; font-size:13px; cursor:pointer; font-weight:500;" onmouseover="this.style.background='#0056b3'" onmouseout="this.style.background='#007bff'">Save</button>
+          <div class="uat-modal-actions">
+            <button type="button" id="unifiedAutoTradeCancel" class="uat-modal-btn-secondary">Cancel</button>
+            <button type="button" id="unifiedAutoTradeSave" class="uat-modal-btn-primary">Save</button>
           </div>
         </div>
       </div>
@@ -4590,6 +5009,19 @@ function setupDatabaseChangeListener() {
   </script>
 
 <script>
+function uatRangeBubbleLeftPx(slider, percent) {
+  const thumbW = 16;
+  const w = slider.offsetWidth;
+  const along = percent * Math.max(0, w - thumbW) + thumbW / 2;
+  const container = slider.closest('.value-bubble-container');
+  if (!container) {
+    return slider.offsetLeft + along;
+  }
+  const sr = slider.getBoundingClientRect();
+  const cr = container.getBoundingClientRect();
+  return sr.left - cr.left + along;
+}
+
 document.addEventListener('DOMContentLoaded', function() {
   const autoStopSettingsIcon = document.getElementById('autoStopSettingsIcon');
   const autoStopSettingsModal = document.getElementById('autoStopSettingsModal');
@@ -4614,11 +5046,7 @@ document.addEventListener('DOMContentLoaded', function() {
       const min = parseInt(autoStopProbabilitySlider.min, 10);
       const max = parseInt(autoStopProbabilitySlider.max, 10);
       const percent = (value - min) / (max - min);
-      const sliderWidth = autoStopProbabilitySlider.offsetWidth;
-      // 16px is approx thumb width, adjust as needed
-      const thumbWidth = 16;
-      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-      sliderValueDisplay.style.left = `${offset}px`;
+      sliderValueDisplay.style.left = `${uatRangeBubbleLeftPx(autoStopProbabilitySlider, percent)}px`;
     }
   }
   
@@ -4631,10 +5059,7 @@ document.addEventListener('DOMContentLoaded', function() {
       const min = parseInt(slider.min, 10);
       const max = parseInt(slider.max, 10);
       const percent = (value - min) / (max - min);
-      const sliderWidth = slider.offsetWidth;
-      const thumbWidth = 16;
-      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-      display.style.left = `${offset}px`;
+      display.style.left = `${uatRangeBubbleLeftPx(slider, percent)}px`;
     }
   }
 
@@ -4647,10 +5072,7 @@ document.addEventListener('DOMContentLoaded', function() {
       const min = parseInt(slider.min, 10);
       const max = parseInt(slider.max, 10);
       const percent = (value - min) / (max - min);
-      const sliderWidth = slider.offsetWidth;
-      const thumbWidth = 16;
-      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-      display.style.left = `${offset}px`;
+      display.style.left = `${uatRangeBubbleLeftPx(slider, percent)}px`;
     }
   }
 
@@ -4958,10 +5380,7 @@ function updateStopLossPriceDisplay(rawValue) {
   const min = parseInt(slider.min, 10);
   const max = parseInt(slider.max, 10);
   const percent = (v - min) / (max - min);
-  const sliderWidth = slider.offsetWidth;
-  const thumbWidth = 16;
-  const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-  display.style.left = `${offset}px`;
+  display.style.left = `${uatRangeBubbleLeftPx(slider, percent)}px`;
 }
 
 // Update display and hidden input when buttons are clicked
@@ -5023,11 +5442,7 @@ document.addEventListener('DOMContentLoaded', function() {
       const min = parseInt(autoEntryProbabilitySlider.min, 10);
       const max = parseInt(autoEntryProbabilitySlider.max, 10);
       const percent = (value - min) / (max - min);
-      const sliderWidth = autoEntryProbabilitySlider.offsetWidth;
-      // 16px is approx thumb width, adjust as needed
-      const thumbWidth = 16;
-      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-      autoEntrySliderValueDisplay.style.left = `${offset}px`;
+      autoEntrySliderValueDisplay.style.left = `${uatRangeBubbleLeftPx(autoEntryProbabilitySlider, percent)}px`;
     }
   }
 
@@ -5042,11 +5457,7 @@ document.addEventListener('DOMContentLoaded', function() {
       const min = parseFloat(autoEntryDifferentialSlider.min);
       const max = parseFloat(autoEntryDifferentialSlider.max);
       const percent = (floatValue - min) / (max - min);
-      const sliderWidth = autoEntryDifferentialSlider.offsetWidth;
-      // 16px is approx thumb width, adjust as needed
-      const thumbWidth = 16;
-      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-      autoEntryDifferentialValueDisplay.style.left = `${offset}px`;
+      autoEntryDifferentialValueDisplay.style.left = `${uatRangeBubbleLeftPx(autoEntryDifferentialSlider, percent)}px`;
     }
   }
 
@@ -5060,28 +5471,19 @@ document.addEventListener('DOMContentLoaded', function() {
       const min = parseFloat(autoEntryMaxDifferentialSlider.min);
       const max = parseFloat(autoEntryMaxDifferentialSlider.max);
       const percent = (floatValue - min) / (max - min);
-      const sliderWidth = autoEntryMaxDifferentialSlider.offsetWidth;
-      // 16px is approx thumb width, adjust as needed
-      const thumbWidth = 16;
-      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-      autoEntryMaxDifferentialValueDisplay.style.left = `${offset}px`;
+      autoEntryMaxDifferentialValueDisplay.style.left = `${uatRangeBubbleLeftPx(autoEntryMaxDifferentialSlider, percent)}px`;
     }
   }
 
   function updateAutoEntryMinVolumeDisplay(value) {
     if (autoEntryMinVolumeValueDisplay && autoEntryMinVolumeSlider) {
-      // Enforce minimum of 25 for display
-      const displayValue = Math.max(25, parseInt(value, 10));
-      autoEntryMinVolumeValueDisplay.textContent = displayValue;
-      // Calculate thumb position in px
+      const raw = parseInt(value, 10);
+      const num = Number.isFinite(raw) ? raw : 0;
+      autoEntryMinVolumeValueDisplay.textContent = Math.max(25, num);
       const min = parseInt(autoEntryMinVolumeSlider.min, 10);
       const max = parseInt(autoEntryMinVolumeSlider.max, 10);
-      const percent = (value - min) / (max - min);
-      const sliderWidth = autoEntryMinVolumeSlider.offsetWidth;
-      // 16px is approx thumb width, adjust as needed
-      const thumbWidth = 16;
-      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-      autoEntryMinVolumeValueDisplay.style.left = `${offset}px`;
+      const percent = (num - min) / (max - min);
+      autoEntryMinVolumeValueDisplay.style.left = `${uatRangeBubbleLeftPx(autoEntryMinVolumeSlider, percent)}px`;
     }
   }
 
@@ -5092,11 +5494,7 @@ document.addEventListener('DOMContentLoaded', function() {
       const min = parseInt(autoEntryWinStreakThresholdSlider.min, 10);
       const max = parseInt(autoEntryWinStreakThresholdSlider.max, 10);
       const percent = (value - min) / (max - min);
-      const sliderWidth = autoEntryWinStreakThresholdSlider.offsetWidth;
-      // 16px is approx thumb width, adjust as needed
-      const thumbWidth = 16;
-      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-      autoEntryWinStreakThresholdValueDisplay.style.left = `${offset}px`;
+      autoEntryWinStreakThresholdValueDisplay.style.left = `${uatRangeBubbleLeftPx(autoEntryWinStreakThresholdSlider, percent)}px`;
     }
   }
 
@@ -5109,10 +5507,7 @@ document.addEventListener('DOMContentLoaded', function() {
       const min = parseInt(slider.min, 10);
       const max = parseInt(slider.max, 10);
       const percent = (value - min) / (max - min);
-      const sliderWidth = slider.offsetWidth;
-      const thumbWidth = 16;
-      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-      display.style.left = `${offset}px`;
+      display.style.left = `${uatRangeBubbleLeftPx(slider, percent)}px`;
     }
   }
 
@@ -5125,10 +5520,7 @@ document.addEventListener('DOMContentLoaded', function() {
       const min = parseInt(slider.min, 10);
       const max = parseInt(slider.max, 10);
       const percent = (value - min) / (max - min);
-      const sliderWidth = slider.offsetWidth;
-      const thumbWidth = 16;
-      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-      display.style.left = `${offset}px`;
+      display.style.left = `${uatRangeBubbleLeftPx(slider, percent)}px`;
     }
   }
 
@@ -5141,10 +5533,7 @@ document.addEventListener('DOMContentLoaded', function() {
       const min = parseInt(slider.min, 10);
       const max = parseInt(slider.max, 10);
       const percent = (value - min) / (max - min);
-      const sliderWidth = slider.offsetWidth;
-      const thumbWidth = 16;
-      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-      display.style.left = `${offset}px`;
+      display.style.left = `${uatRangeBubbleLeftPx(slider, percent)}px`;
     }
   }
   
@@ -5157,18 +5546,30 @@ document.addEventListener('DOMContentLoaded', function() {
       const min = parseFloat(slider.min);
       const max = parseFloat(slider.max);
       const percent = (parseFloat(value) - min) / (max - min);
-      const sliderWidth = slider.offsetWidth;
-      const thumbWidth = 16;
-      const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-      display.style.left = `${offset}px`;
+      display.style.left = `${uatRangeBubbleLeftPx(slider, percent)}px`;
     }
   }
+
+  window._tmUatRefreshSpikeProbBubbles = function (spikeOn, showProb) {
+    if (spikeOn) {
+      const sm = document.getElementById('spikeAlertMomentumSlider');
+      if (sm) updateSpikeAlertMomentumDisplay(sm.value);
+      const sc = document.getElementById('spikeAlertCooldownSlider');
+      if (sc) updateSpikeAlertCooldownDisplay(sc.value);
+      const st = document.getElementById('spikeAlertTimeSlider');
+      if (st) updateSpikeAlertTimeDisplay(st.value);
+    }
+    if (showProb) {
+      const ps = document.getElementById('probAdjSlider');
+      if (ps) updateProbAdjDisplay(ps.value);
+    }
+  };
 
   async function fetchAutoEntrySettings() {
     try {
       if (!currentMonitorId) {
         console.log('⚠️ No monitor selected, cannot fetch auto entry settings');
-        return { min_probability: 25, min_differential: 0, allow_re_entry: false, win_streak_threshold: 22 };
+        return { min_probability: 25, min_differential: 0, win_streak_threshold: 22 };
       }
       
       const resp = await fetch(window.location.origin + '/api/get_auto_entry_settings?monitor_id=' + currentMonitorId);
@@ -5176,13 +5577,12 @@ document.addEventListener('DOMContentLoaded', function() {
         const data = await resp.json();
         if (data.status === 'error') {
           console.error('Error fetching auto entry settings:', data.message);
-          return { min_probability: 25, min_differential: 0, max_differential: null, allow_re_entry: false, win_streak_threshold: 22 };
+          return { min_probability: 25, min_differential: 0, max_differential: null, win_streak_threshold: 22 };
         }
         return {
           min_probability: data.min_probability ?? 25,
           min_differential: data.min_differential ?? 0,
           max_differential: data.max_differential ?? null,
-          allow_re_entry: data.allow_re_entry ?? false,
           win_streak_threshold: data.win_streak_threshold ?? 22,
           performance_based_allocation: data.performance_based_allocation ?? false
         };
@@ -5190,7 +5590,7 @@ document.addEventListener('DOMContentLoaded', function() {
     } catch (error) {
       console.error('Error in fetchAutoEntrySettings:', error);
     }
-    return { min_probability: 25, min_differential: 0, max_differential: null, allow_re_entry: false, win_streak_threshold: 22, performance_based_allocation: false };
+    return { min_probability: 25, min_differential: 0, max_differential: null, win_streak_threshold: 22, performance_based_allocation: false };
   }
 
   function showAutoEntrySettingsModal() {
@@ -5223,13 +5623,6 @@ document.addEventListener('DOMContentLoaded', function() {
         updateAutoEntryDifferentialDisplay(settings.min_differential);
         updateAutoEntryMaxDifferentialDisplay(settings.max_differential || 0);
         updateAutoEntryWinStreakThresholdDisplay(settings.win_streak_threshold);
-        
-        // Set the allow re-entry checkbox
-        const allowReEntryCheckbox = document.getElementById('autoEntryAllowReEntry');
-        if (allowReEntryCheckbox) {
-          allowReEntryCheckbox.checked = settings.allow_re_entry;
-          window.lastSavedAutoEntryAllowReEntry = settings.allow_re_entry;
-        }
 
         const perfAllocCheckbox = document.getElementById('autoEntryPerformanceBasedAllocation');
         if (perfAllocCheckbox) {
@@ -5300,6 +5693,7 @@ document.addEventListener('DOMContentLoaded', function() {
           updateSpikeAlertTimeDisplay(spikeAlertTime);
           window.lastSavedSpikeAlertTime = spikeAlertTime;
         }
+        updateTradeMonitorSpikeAlertSliderGroupVisibility();
 
         const perfAllocCheckbox = document.getElementById('autoEntryPerformanceBasedAllocation');
         if (perfAllocCheckbox) {
@@ -5347,12 +5741,6 @@ document.addEventListener('DOMContentLoaded', function() {
         updateTimeWindowSlider();
       }
       
-      // Reset allow re-entry checkbox to last saved value
-      const allowReEntryCheckbox = document.getElementById('autoEntryAllowReEntry');
-      if (allowReEntryCheckbox && window.lastSavedAutoEntryAllowReEntry !== undefined) {
-        allowReEntryCheckbox.checked = window.lastSavedAutoEntryAllowReEntry;
-      }
-      
       const perfAllocCheckbox = document.getElementById('autoEntryPerformanceBasedAllocation');
       if (perfAllocCheckbox && window.lastSavedPerformanceBasedAllocation !== undefined) {
         perfAllocCheckbox.checked = window.lastSavedPerformanceBasedAllocation;
@@ -5382,6 +5770,7 @@ document.addEventListener('DOMContentLoaded', function() {
         spikeAlertTimeSlider.value = window.lastSavedSpikeAlertTime;
         updateSpikeAlertTimeDisplay(window.lastSavedSpikeAlertTime);
       }
+      updateTradeMonitorSpikeAlertSliderGroupVisibility();
       
       hideAutoEntrySettingsModal();
     });
@@ -5396,8 +5785,6 @@ document.addEventListener('DOMContentLoaded', function() {
       
       if (!isNaN(newProb) && !isNaN(newDifferential) && !isNaN(newMinVolume)) {
         try {
-          const allowReEntryCheckbox = document.getElementById('autoEntryAllowReEntry');
-          const allowReEntry = allowReEntryCheckbox ? allowReEntryCheckbox.checked : false;
           const perfAllocCheckbox = document.getElementById('autoEntryPerformanceBasedAllocation');
           const performanceBasedAllocation = perfAllocCheckbox ? perfAllocCheckbox.checked : false;
           
@@ -5429,7 +5816,6 @@ document.addEventListener('DOMContentLoaded', function() {
               min_ttc_seconds: 60, // Keep default TTC for now
               min_time: minTimeSeconds,
               max_time: maxTimeSeconds,
-              allow_re_entry: allowReEntry,
               win_streak_threshold: newWinStreakThreshold,
               spike_alert_enabled: spikeAlertEnabled,
               spike_alert_momentum_threshold: spikeAlertMomentum,
@@ -5456,7 +5842,6 @@ document.addEventListener('DOMContentLoaded', function() {
             window.currentMonitorMinVolume = newMinVolume;
             window.lastSavedAutoEntryMinTime = minTimeSeconds;
             window.lastSavedAutoEntryMaxTime = maxTimeSeconds;
-            window.lastSavedAutoEntryAllowReEntry = allowReEntry;
             window.lastSavedPerformanceBasedAllocation = performanceBasedAllocation;
             window.lastSavedSpikeAlertEnabled = spikeAlertEnabled;
             window.lastSavedSpikeAlertMomentum = spikeAlertMomentum;
@@ -6276,11 +6661,12 @@ function updateMSAutoEntryMinVolumeDisplay(value) {
   const display = document.getElementById('msAutoEntryMinVolumeValueDisplay');
   const slider = document.getElementById('msAutoEntryMinVolumeSlider');
   if (!display || !slider) return;
-  const v = Math.max(25, parseInt(value, 10));
-  display.textContent = v;
+  const raw = parseInt(value, 10);
+  const num = Number.isFinite(raw) ? raw : 0;
+  display.textContent = Math.max(25, num);
   const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
-  const percent = (value - min) / (max - min);
-  display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
+  const percent = (num - min) / (max - min);
+  display.style.left = `${uatRangeBubbleLeftPx(slider, percent)}px`;
 }
 
 function updateMSAutoEntryWinStreakThresholdDisplay(value) {
@@ -6290,7 +6676,7 @@ function updateMSAutoEntryWinStreakThresholdDisplay(value) {
   display.textContent = value;
   const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
   const percent = (value - min) / (max - min);
-  display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
+  display.style.left = `${uatRangeBubbleLeftPx(slider, percent)}px`;
 }
 
 function updateMSMomentumThresholdDisplay(value) {
@@ -6300,7 +6686,7 @@ function updateMSMomentumThresholdDisplay(value) {
   display.textContent = `±${value}`;
   const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
   const percent = (value - min) / (max - min);
-  display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
+  display.style.left = `${uatRangeBubbleLeftPx(slider, percent)}px`;
 }
 
 function updateMSTrailingStopDisplay(value) {
@@ -6311,7 +6697,7 @@ function updateMSTrailingStopDisplay(value) {
   display.textContent = dollars;
   const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
   const percent = (value - min) / (max - min);
-  display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
+  display.style.left = `${uatRangeBubbleLeftPx(slider, percent)}px`;
 }
 
 function updateMSProfitTargetDisplay(value) {
@@ -6322,7 +6708,7 @@ function updateMSProfitTargetDisplay(value) {
   display.textContent = dollars;
   const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
   const percent = (value - min) / (max - min);
-  display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
+  display.style.left = `${uatRangeBubbleLeftPx(slider, percent)}px`;
 }
 
 // === AUTO ENTRY INDICATOR FUNCTIONS ===
@@ -6944,12 +7330,6 @@ document.addEventListener('DOMContentLoaded', () => {
         diffDisplay.textContent = data.min_differential || 0.25;
       }
       
-      // Update re-entry checkbox
-      const reEntryCheckbox = document.getElementById('autoEntryAllowReEntry');
-      if (reEntryCheckbox) {
-        reEntryCheckbox.checked = data.allow_re_entry || false;
-      }
-      
       // Update spike alert settings
       const spikeEnabled = document.getElementById('spikeAlertEnabled');
       const spikeMomentumSlider = document.getElementById('spikeAlertMomentumSlider');
@@ -6971,10 +7351,10 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       
       if (spikeTimeSlider && spikeTimeDisplay) {
-        spikeTimeSlider.value = settings.spike_alert_cooldown_time || 0;
-        spikeTimeDisplay.textContent = (settings.spike_alert_cooldown_time || 0) + ' min';
+        spikeTimeSlider.value = data.spike_alert_cooldown_minutes || 0;
+        spikeTimeDisplay.textContent = (data.spike_alert_cooldown_minutes || 0) + ' min';
       }
-      
+      updateTradeMonitorSpikeAlertSliderGroupVisibility();
 
     }
     
@@ -7129,7 +7509,7 @@ document.addEventListener('DOMContentLoaded', () => {
           if (window.applyMultiplierSelection) {
             window.applyMultiplierSelection(monitor.multiplier);
           } else {
-            const multiplierButtons = document.querySelectorAll('.multiplier-btn');
+            const multiplierButtons = document.querySelectorAll('#positionSizeSelector .multiplier-btn');
             multiplierButtons.forEach(btn => {
               btn.classList.remove('active');
               if (parseFloat(btn.dataset.multiplier) === monitor.multiplier) {
@@ -7484,6 +7864,18 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   })();
+  </script>
+  <script>
+  document.addEventListener('DOMContentLoaded', function () {
+    var modal = document.getElementById('unifiedAutoTradeModal');
+    if (modal && window.UatUnifiedModalPositionSize) {
+      window.UatUnifiedModalPositionSize.bindModal(modal, {
+        persist: 'deferred',
+        mirrorSidebar: true,
+        getMonitorId: function () { return window.currentMonitorId; }
+      });
+    }
+  });
   </script>
 </body>
 </html>

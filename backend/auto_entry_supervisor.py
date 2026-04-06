@@ -2012,15 +2012,27 @@ def get_auto_entry_settings():
             if monitor_result:
                 strategy_name = monitor_result[0]
                 
+                from backend.core.auto_entry_settings_store import monitor_list_flip_columns_available
+
+                has_flip = monitor_list_flip_columns_available(cursor)
+                sel_flip = """
+                           , flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult
+                """
                 # Get monitor parameters
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT min_probability, max_probability, min_differential, max_differential, min_time, max_time, allow_re_entry,
-                           spike_alert_enabled, spike_alert_momentum_threshold, 
+                           spike_alert_enabled, spike_alert_momentum_threshold,
                            spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
                            min_volume, momentum_scalp_entry_threshold, min_ask, max_ask, max_price_spread, prob_adj,
                            min_cooldown_timer, max_cooldown_timer, min_ask_range
+                    """
+                    + (sel_flip if has_flip else "")
+                    + """
                     FROM users.monitor_list_0001 WHERE id = %s
-                """, (ctx_mid(),))
+                    """,
+                    (ctx_mid(),),
+                )
                 strategy_result = cursor.fetchone()
                 
                 if strategy_result:
@@ -2046,6 +2058,16 @@ def get_auto_entry_settings():
                         "max_cooldown_timer": strategy_result[18] if strategy_result[18] is not None else None,
                         "min_ask_range": float(strategy_result[19]) if strategy_result[19] is not None else None,
                     }
+                    if has_flip:
+                        settings["flip_sell_prob"] = bool(strategy_result[20]) if strategy_result[20] is not None else False
+                        settings["flip_sell_prob_mult"] = strategy_result[21] if strategy_result[21] is not None else None
+                        settings["flip_sell_floor"] = bool(strategy_result[22]) if strategy_result[22] is not None else False
+                        settings["flip_sell_floor_mult"] = strategy_result[23] if strategy_result[23] is not None else None
+                    else:
+                        settings["flip_sell_prob"] = False
+                        settings["flip_sell_prob_mult"] = None
+                        settings["flip_sell_floor"] = False
+                        settings["flip_sell_floor_mult"] = None
                     
                     # Check for settings changes
                     if previous_settings is not None:

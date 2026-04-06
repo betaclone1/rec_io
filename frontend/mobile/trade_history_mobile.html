@@ -1298,8 +1298,9 @@
             } else if (checked.length === cbs.length) {
                 btn.textContent = 'All Monitors';
             } else if (checked.length === 1) {
-                const label = checked[0].closest('label');
-                btn.textContent = label ? label.textContent.trim() : 'Multiple Monitors';
+                const labelEl = checked[0].closest('label');
+                const span = labelEl && labelEl.querySelector('.trade-history-monitor-label');
+                btn.textContent = span ? span.textContent.trim() : (labelEl ? labelEl.textContent.trim() : 'Multiple Monitors');
             } else {
                 btn.textContent = 'Multiple Monitors';
             }
@@ -1799,6 +1800,25 @@
         // Initialize dropdowns
         setupDropdowns();
 
+        function formatTradeHistoryMonitorLabel(monitor) {
+            const key = monitor.name || '';
+            let idPart = monitor.id != null && monitor.id !== '' ? String(monitor.id) : '';
+            if (!idPart && key) {
+                const parts = key.split('_');
+                const last = parts[parts.length - 1];
+                if (/^[0-9]+$/.test(last)) idPart = last;
+            }
+            if (!idPart) idPart = key || '?';
+            const sym = (monitor.symbol || '').trim();
+            const strat = (monitor.strategy || '').trim();
+            const mktRaw = (monitor.market || '').toString().trim().toLowerCase();
+            const mkt = mktRaw === '15m' ? '15m' : (mktRaw === 'hourly' ? 'Hourly' : (monitor.market || '').toString().trim());
+            if (sym && strat) {
+                return mkt ? (idPart + ' - ' + sym + ' ' + strat + ', ' + mkt) : (idPart + ' - ' + sym + ' ' + strat);
+            }
+            return key || idPart;
+        }
+
         // Load monitor options from API
         async function loadMonitorOptions() {
             try {
@@ -1822,7 +1842,8 @@
                         checkbox.setAttribute('data-monitor-id', monitor.name);
                         
                         const text = document.createElement('span');
-                        text.textContent = monitor.name;
+                        text.className = 'trade-history-monitor-label';
+                        text.textContent = formatTradeHistoryMonitorLabel(monitor);
                         
                         label.appendChild(checkbox);
                         label.appendChild(text);

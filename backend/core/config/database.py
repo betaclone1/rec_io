@@ -2029,6 +2029,42 @@ def init_database():
                         EXECUTE format('ALTER TABLE users.%I ADD COLUMN stop_loss_price NUMERIC(6,4) DEFAULT 0.0000', '{table_name}');
                         EXECUTE format('UPDATE users.%I SET stop_loss_price = 0.0000 WHERE stop_loss_price IS NULL', '{table_name}');
                     END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'users'
+                          AND table_name = '{table_name}'
+                          AND column_name = 'flip_sell_prob'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN flip_sell_prob BOOLEAN NOT NULL DEFAULT FALSE', '{table_name}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'users'
+                          AND table_name = '{table_name}'
+                          AND column_name = 'flip_sell_floor'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN flip_sell_floor BOOLEAN NOT NULL DEFAULT FALSE', '{table_name}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'users'
+                          AND table_name = '{table_name}'
+                          AND column_name = 'flip_sell_prob_mult'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN flip_sell_prob_mult VARCHAR(32)', '{table_name}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'users'
+                          AND table_name = '{table_name}'
+                          AND column_name = 'flip_sell_floor_mult'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN flip_sell_floor_mult VARCHAR(32)', '{table_name}');
+                    END IF;
                 END
                 $$;
             """)

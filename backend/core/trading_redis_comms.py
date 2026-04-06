@@ -8,6 +8,7 @@ Streams (defaults):
   TRADING_REDIS_STREAM_EXECUTOR — trade_manager → trade_executor (trigger_trade payloads)
   TRADING_REDIS_STREAM_TM_STATUS — trade_executor → trade_manager (update_trade_status payloads)
   TRADING_REDIS_STREAM_TM_COMMANDS — AES / ATS → trade_manager (add_trade / close bodies)
+  TRADING_REDIS_STREAM_MM_MONITOR_SETTINGS — main_app → monitor_manager (set_auto_entry_settings JSON body)
   TRADING_REDIS_STREAM_MAXLEN — approximate max stream length per XADD (default 8000)
 
 Consumer groups (fixed names):
@@ -55,6 +56,17 @@ def stream_tm_status() -> str:
 
 def stream_tm_commands() -> str:
     return os.getenv("TRADING_REDIS_STREAM_TM_COMMANDS", "trading:tm:commands")
+
+
+def stream_mm_monitor_settings() -> str:
+    return os.getenv(
+        "TRADING_REDIS_STREAM_MM_MONITOR_SETTINGS",
+        "trading:mm:monitor_settings",
+    )
+
+
+def mm_monitor_settings_ack_key(correlation_id: str) -> str:
+    return f"trading:mm:monitor_settings:ack:{correlation_id}"
 
 
 def stream_maxlen() -> int:
@@ -365,6 +377,64 @@ def publish_positions_updated_notification(payload: Dict[str, Any], r=None) -> b
     except Exception as e:
         logger.warning("publish_positions_updated_notification failed: %s", e)
         return False
+
+
+def publish_auto_entry_settings_job(
+    monitor_id: str,
+    body: Dict[str, Any],
+    correlation_id: str,
+    *,
+    source: str = "main_app",
+    r=None,
+) -> bool:
+    """
+    Queue monitor_list auto-entry/auto-stop field updates for monitor_manager.
+    consumer writes JSON result to mm_monitor_settings_ack_key(cor_uuid).
+    """
+    client = r if r is not None else redis_client_optional()
+    if not client:
+        return False
+    payload = {
+        "correlation_id": correlation_id,
+        "monitor_id": str(monitor_id),
+        "body": body,
+    }
+    return bool(
+        xadd_trading_json(
+            client,
+            stream_mm_monitor_settings(),
+            msg_type="set_auto_entry_settings",
+            payload=payload,
+            source=source,
+            correlation_id=correlation_id,
+        )
+    )
+
+
+def wait_auto_entry_settings_ack(
+    correlation_id: str,
+    *,
+    timeout_sec: float = 12.0,
+    poll_sec: float = 0.05,
+) -> Optional[Dict[str, Any]]:
+    """Poll Redis for monitor_manager result JSON. Returns None on timeout."""
+    deadline = time.time() + timeout_sec
+    key = mm_monitor_settings_ack_key(correlation_id)
+    while time.time() < deadline:
+        client = redis_client_optional()
+        if not client:
+            return None
+        try:
+            raw = client.get(key)
+            if raw:
+                try:
+                    return json.loads(raw)
+                except Exception:
+                    return {"status": "error", "message": "invalid ack payload"}
+        except Exception:
+            pass
+        time.sleep(poll_sec)
+    return None
 
 
 def publish_db_change_json(db_name: str, change_data: Optional[Dict[str, Any]] = None, r=None) -> bool:

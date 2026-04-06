@@ -14,6 +14,7 @@ Set `USE_TRADING_REDIS_COMMS=1` (or `true`/`yes`/`on`). When unset or false, cal
 | `TRADING_REDIS_STREAM_EXECUTOR` | `trading:executor:trigger` | trade_manager → trade_executor (`trigger_trade`) |
 | `TRADING_REDIS_STREAM_TM_STATUS` | `trading:tm:executor_status` | trade_executor → trade_manager (`update_trade_status`) |
 | `TRADING_REDIS_STREAM_TM_COMMANDS` | `trading:tm:commands` | AES / ATS → trade_manager (`add_trade` body) |
+| `TRADING_REDIS_STREAM_MM_MONITOR_SETTINGS` | `trading:mm:monitor_settings` | main_app → **monitor_manager**: unified auto entry/auto stop saves (`set_auto_entry_settings` body); result key `trading:mm:monitor_settings:ack:{correlation_id}` |
 | `TRADING_REDIS_STREAM_MAXLEN` | `8000` | Approximate `XADD` maxlen |
 | `REDIS_CHANNEL_ATS_TM_NOTIFICATIONS` | `rec_io:ats_tm_notifications` | trade_manager → ATS (non-`open` statuses) |
 | `REDIS_CHANNEL_TRADING_PREFERENCES` | `rec_io:preferences` | UI-shaped events; main forwards to `/ws/preferences` |
@@ -25,7 +26,7 @@ Redis connection: `REDIS_URL` or `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` 
 
 ## Streams
 
-- **Consumer groups:** `executor` (executor), `tm_status` (trade_manager), `tm_commands` (trade_manager).
+- **Consumer groups:** `executor` (executor), `tm_status` (trade_manager), `tm_commands` (trade_manager), `mm_monitor_settings` (monitor_manager for auto trade menu saves).
 - **Fields:** `type`, `correlation_id`, `source`, `ts`, `payload_json` (JSON string).
 - **Idempotency:** handlers use Redis `SET NX` keys `trading:dedupe:*` with short TTL where duplicates are harmful.
 

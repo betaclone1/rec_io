@@ -17,7 +17,36 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="/js/db_changes_prefilter.js"></script>
   <script src="../js/monitor_history_display.js"></script>
+  <script src="/js/uat_unified_modal_position_size.js"></script>
   <style>
+    #mobileUnifiedAutoTradeModal .uat-pos-mult-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+    #mobileUnifiedAutoTradeModal .uat-pos-mult-btn {
+      background: transparent;
+      border: 1px solid #ccc;
+      color: #333;
+      padding: 4px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      min-width: 48px;
+      font-size: 12px;
+      text-align: center;
+    }
+    #mobileUnifiedAutoTradeModal .uat-pos-mult-btn.active {
+      background: #007bff;
+      border-color: #0056b3;
+      color: #fff;
+      font-weight: bold;
+      box-shadow: 0 0 6px rgba(0, 123, 255, 0.5);
+    }
+    #mobileUnifiedAutoTradeModal .uat-pos-mult-btn:hover:not(.active) {
+      background: rgba(0, 0, 0, 0.05);
+    }
+
     /* Dashboard Container */
     .dashboard-container {
       display: flex;
@@ -6343,6 +6372,88 @@
       return monitorId;
     }
 
+    function mobileDashUatLoadMonitorPositionIntoModal(apiId) {
+      if (!apiId || !window.UatUnifiedModalPositionSize) return;
+      fetch('/api/monitor/' + apiId + '?user_id=user_0001')
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          if (!j || j.status !== 'ok' || !j.monitor) return;
+          var modal = document.getElementById('mobileUnifiedAutoTradeModal');
+          var els = window.UatUnifiedModalPositionSize.getElsFromModal(modal);
+          window.UatUnifiedModalPositionSize.applyMonitorToEls(els, j.monitor);
+          if (j.monitor.total_position != null) {
+            modal._uatLastTotalPosition = j.monitor.total_position;
+            window.UatUnifiedModalPositionSize.refreshAllPositionDisplays(j.monitor.total_position);
+          }
+          window.UatUnifiedModalPositionSize.captureOpenSnapshot(modal);
+        })
+        .catch(function () {});
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+      var mm = document.getElementById('mobileUnifiedAutoTradeModal');
+      if (mm && window.UatUnifiedModalPositionSize) {
+        window.UatUnifiedModalPositionSize.bindModal(mm, {
+          persist: 'deferred',
+          mirrorSidebar: false,
+          getMonitorId: function () {
+            return mobileNormalizeMonitorId(mm.getAttribute('data-uat-tile-id'));
+          }
+        });
+      }
+    });
+
+    function formatMobileDashboardUnifiedAutoTradeModalTitle(tileId, monitor) {
+      const raw = mobileNormalizeMonitorId(tileId);
+      let num = raw != null && String(raw).trim() !== '' ? String(raw).trim() : '';
+      if (!num && tileId != null) {
+        const s = String(tileId);
+        const m = s.match(/mon_\d+_(.+)$/i);
+        num = m ? m[1] : s;
+      }
+      if (!num) num = '?';
+      const strat = monitor && monitor.strategy ? String(monitor.strategy).trim() : '';
+      const mkt = monitor ? formatMonitorMarketLabel(monitor.market) : '';
+      const tail = [strat, mkt].filter(Boolean).join(', ');
+      return tail ? ('Monitor ' + num + ' - ' + tail) : ('Monitor ' + num);
+    }
+
+    function mobileDashUatUpdateRegimeWindowPickerVisibility() {
+      const row = document.getElementById('m_regimeWindowPickerRow');
+      const cb = document.getElementById('m_regimeMonitorEnabled');
+      const sel = document.getElementById('m_regimeWindowSelect');
+      if (!row || !cb) return;
+      const on = !!cb.checked;
+      row.style.display = on ? 'flex' : 'none';
+      if (sel) {
+        sel.disabled = !on;
+        sel.style.opacity = '';
+        sel.style.cursor = '';
+      }
+    }
+
+    function mobileDashUatUpdateSpikeAlertSliderGroupVisibility() {
+      const cb = document.getElementById('m_spikeEnabled');
+      const spikeOn = !!(cb && cb.checked);
+      const g = document.getElementById('mobileSpikeAlertSliderGroup');
+      if (g) g.style.display = spikeOn ? 'contents' : 'none';
+      let showProb = false;
+      const probWrap = document.getElementById('m_probAdjSpikeGroup');
+      if (probWrap) {
+        const stratOk = probWrap.getAttribute('data-strategy-shows-prob-adj') === '1';
+        showProb = spikeOn && stratOk;
+        probWrap.style.display = showProb ? 'contents' : 'none';
+        probWrap.setAttribute('aria-hidden', showProb ? 'false' : 'true');
+      }
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          if (typeof window.mobileDashboardUatRefreshSpikeProbSliders === 'function') {
+            window.mobileDashboardUatRefreshSpikeProbSliders(spikeOn, showProb);
+          }
+        });
+      });
+    }
+
     async function mobileFetchSettings(apiId){
       try{
         const r = await fetch('/api/get_auto_entry_settings?monitor_id=' + apiId);
@@ -6385,7 +6496,24 @@
   <div id="mobileUnifiedAutoTradeModal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:10000; overflow-y:auto;">
     <div id="mobileUnifiedAutoTradeDim" style="position:absolute; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.4);"></div>
     <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border-radius:8px; min-width:360px; width:92%; max-width:440px; box-shadow:0 4px 32px rgba(0,0,0,0.25); padding:20px; display:flex; flex-direction:column; max-height:80vh; overflow:auto;">
-      <div id="mobileUnifiedAutoTradeModalTitle" style="font-size:16px; font-weight:600; margin-bottom:16px; color:#222;">Auto Trade Settings</div>
+      <div id="mobileUnifiedAutoTradeModalTitle" style="font-size:16px; font-weight:600; margin-bottom:16px; color:#222;">Monitor</div>
+      <div class="uat-position-size-block uat-pos-theme-light" style="margin-bottom:12px;">
+        <div style="font-weight:bold; margin-bottom:6px; font-size:0.9rem; color:#222;">Position Size: <span class="uat-pos-display" style="margin-left:10px; font-weight:normal; color:#666;">100 contracts</span></div>
+        <div class="uat-position-size-row" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <input type="number" class="uat-pos-input" min="1" value="20" style="width:60px; padding:4px 6px; text-align:right; font-size:1rem; border-radius:4px; border:1px solid #ccc; background:#fff; color:#111; height:28px; box-sizing:border-box;" />
+          <div style="display:flex; flex-direction:column; gap:2px;">
+            <button type="button" class="uat-pos-toggle-percent" style="height:15px; padding:2px 6px; box-sizing:border-box; font-size:9px; background-color:#007bff; border:1px solid #0056b3; color:white; border-radius:4px; cursor:pointer;">%</button>
+            <button type="button" class="uat-pos-toggle-contracts" style="height:15px; padding:2px 6px; box-sizing:border-box; font-size:9px; background-color:transparent; border:1px solid #ccc; color:#333; border-radius:4px; cursor:pointer;">C</button>
+          </div>
+          <div class="uat-pos-mult-group">
+            <button type="button" class="uat-pos-mult-btn" data-multiplier="0" style="height:28px; box-sizing:border-box;">1c</button>
+            <button type="button" class="uat-pos-mult-btn" data-multiplier="0.5" style="height:28px; box-sizing:border-box;">½</button>
+            <button type="button" class="uat-pos-mult-btn active" data-multiplier="1" style="height:28px; box-sizing:border-box;">1</button>
+            <button type="button" class="uat-pos-mult-btn" data-multiplier="1.5" style="height:28px; box-sizing:border-box;">1.5</button>
+            <button type="button" class="uat-pos-mult-btn" data-multiplier="2" style="height:28px; box-sizing:border-box;">2</button>
+          </div>
+        </div>
+      </div>
       <div style="flex:1 1 auto; display:flex; flex-direction:column; justify-content:flex-start; align-items:stretch; overflow-y:auto; min-height:0;">
         <!-- Regime Monitor Settings (LIVE<->PAPER auto-switch) -->
         <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Regime Monitor</div>
@@ -6393,9 +6521,9 @@
           <input type="checkbox" id="m_regimeMonitorEnabled" style="width:16px; height:16px; accent-color:#007bff;">
           <span style="font-size:13px; color:#666;">Auto-switch LIVE/PAPER based on rolling performance</span>
         </div>
-        <label for="m_regimeWindowSelect" style="font-size:14px; color:#333; margin-bottom:8px; font-weight:500;">Regime Window:</label>
-        <div style="position:relative; margin-bottom:24px; width:100%;">
-          <select id="m_regimeWindowSelect" style="width:100%; padding:10px 12px; border-radius:6px; border:1px solid #ddd; background:#fff; font-size:14px;">
+        <div id="m_regimeWindowPickerRow" style="display:none; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:24px;">
+          <label for="m_regimeWindowSelect" style="font-size:14px; color:#333; font-weight:500; margin:0;">Regime Window:</label>
+          <select id="m_regimeWindowSelect" aria-label="Regime window" style="width:auto; min-width:7.5rem; max-width:100%; padding:8px 10px; border-radius:6px; border:1px solid #ddd; background:#fff; font-size:14px;">
             <option value="30d">30 Days</option>
             <option value="7d">7 Days</option>
             <option value="1d">1 Day</option>
@@ -6480,12 +6608,6 @@
           <div id="m_maxDiffVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.00</div>
         </div>
 
-        <label for="m_allowRe" style="font-size:14px; color:#333; margin-top:12px; margin-bottom:12px; font-weight:500;">Allow Re-Entry:</label>
-        <div style="position:relative; margin-bottom:24px; width:100%;">
-          <input type="checkbox" id="m_allowRe" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;">
-          <span style="font-size:13px; color:#666;">Allow re-entry on the same strike</span>
-        </div>
-
         <label for="m_winStreak" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Loss Prevention Win Streak Threshold: <input type="checkbox" id="m_lossPreventionToggle" style="margin-left:8px; vertical-align:middle;" /></label>
         <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
           <input type="range" id="m_winStreak" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
@@ -6494,11 +6616,12 @@
 
         <hr style="border:none; border-top:1px solid #e0e0e0; margin:24px 0;">
 
-        <div style="position:relative; margin-bottom:24px; width:100%;">
-          <input type="checkbox" id="m_spikeEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;">
-          <span style="font-size:13px; color:#666;">Monitor for momentum spikes</span>
+        <div style="position:relative; margin:0; width:100%; display:flex; align-items:center;">
+          <input type="checkbox" id="m_spikeEnabled" style="width:16px; height:16px; margin-right:8px; flex-shrink:0; accent-color:#007bff;">
+          <span style="font-size:14px; color:#111; font-weight:500;">Monitor for momentum spikes</span>
         </div>
 
+        <div id="mobileSpikeAlertSliderGroup" style="display:none;">
         <label for="m_spikeMomentum" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Spike Level (±):</label>
         <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
           <input type="range" id="m_spikeMomentum" min="50" max="100" value="60" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
@@ -6516,11 +6639,14 @@
           <input type="range" id="m_spikeTime" min="0" max="180" value="15" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_spikeTimeVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">15 min</div>
         </div>
+        </div>
 
+        <div id="m_probAdjSpikeGroup" style="display:none;" data-strategy-shows-prob-adj="0" aria-hidden="true">
         <label id="m_probAdjLabel" for="m_probAdjSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Probability Adjustment (%):</label>
         <div id="m_probAdjContainer" class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
           <input type="range" id="m_probAdjSlider" min="0" max="20" step="0.5" value="5" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
           <div id="m_probAdjValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
         </div>
 
         <hr style="border:none; border-top:1px solid #e0e0e0; margin:24px 0 16px 0;">
@@ -7293,6 +7419,17 @@
         updateMSTimeWindowSlider();
       });
 
+      function mobileUatRangeBubbleLeftPx(slider, percent) {
+        const thumbW = 16;
+        const w = slider.offsetWidth;
+        const along = percent * Math.max(0, w - thumbW) + thumbW / 2;
+        const container = slider.closest('.value-bubble-container');
+        if (!container) return slider.offsetLeft + along;
+        const sr = slider.getBoundingClientRect();
+        const cr = container.getBoundingClientRect();
+        return sr.left - cr.left + along;
+      }
+
       function positionBubble(input, bubble, formatter) {
         if (!input || !bubble) return;
         const min = parseFloat(input.min ?? 0);
@@ -7301,8 +7438,8 @@
         if (!Number.isFinite(value)) value = min;
         const clamped = Math.min(max, Math.max(min, value));
         bubble.textContent = formatter(clamped, input);
-        const offset = max === min ? 0 : ((clamped - min) / (max - min)) * (input.offsetWidth - 16) + 8;
-        bubble.style.left = `${offset}px`;
+        const p = max === min ? 0 : (clamped - min) / (max - min);
+        bubble.style.left = `${mobileUatRangeBubbleLeftPx(input, p)}px`;
       }
 
       function bindSlider(inputId, bubbleId, formatter) {
@@ -7329,10 +7466,7 @@
           const min = parseFloat(slider.min);
           const max = parseFloat(slider.max);
           const percent = (parseFloat(value) - min) / (max - min);
-          const sliderWidth = slider.offsetWidth;
-          const thumbWidth = 16;
-          const offset = percent * (sliderWidth - thumbWidth) + thumbWidth / 2;
-          display.style.left = `${offset}px`;
+          display.style.left = `${mobileUatRangeBubbleLeftPx(slider, percent)}px`;
         }
       }
 
@@ -7346,7 +7480,7 @@
           display.textContent = text;
           const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
           const percent = (n - min) / (max - min);
-          display.style.left = (percent * (slider.offsetWidth - 16) + 8) + 'px';
+          display.style.left = `${mobileUatRangeBubbleLeftPx(slider, percent)}px`;
         });
       }
       function syncMobileStopLossPair(changedSlider) {
@@ -7395,6 +7529,18 @@
         bindSlider('m_msTrailingStop', 'm_msTrailingStopVal', (value) => (parseFloat(value || 0) / 100).toFixed(2));
         bindSlider('m_msProfitTarget', 'm_msProfitTargetVal', (value) => (parseFloat(value || 0) / 100).toFixed(2));
       }
+
+      window.mobileDashboardUatRefreshSpikeProbSliders = function (spikeOn, showProb) {
+        if (spikeOn) {
+          bindSlider('m_spikeMomentum', 'm_spikeMomentumVal', (value) => `±${Math.round(value)}`);
+          bindSlider('m_spikeCooldown', 'm_spikeCooldownVal', (value) => `±${Math.round(value)}`);
+          bindSlider('m_spikeTime', 'm_spikeTimeVal', (value) => `${Math.round(value)} min`);
+        }
+        if (showProb) {
+          const probAdjSlider = document.getElementById('m_probAdjSlider');
+          if (probAdjSlider) updateProbAdjDisplay(probAdjSlider.value);
+        }
+      };
 
       function ensureSliderBindings() {
         if (state.sliderBindingsInitialized) return;
@@ -7485,6 +7631,8 @@
         modal.style.display = 'block';
         if (dim) dim.style.display = 'block';
         document.body.style.overflow = 'hidden';
+        modal.setAttribute('data-uat-tile-id', tileId);
+        mobileDashUatLoadMonitorPositionIntoModal(apiId);
         
         // Set up cancel button and dim click handlers immediately
         const cancelBtn = document.getElementById('m_unifiedCancel');
@@ -7514,11 +7662,7 @@
         // Update modal title with strategy name and show/hide strategy sections
         const modalTitle = document.getElementById('mobileUnifiedAutoTradeModalTitle');
         if (modalTitle) {
-          if (currentStrategy) {
-            modalTitle.textContent = `Auto Trade Settings - ${currentStrategy}`;
-          } else {
-            modalTitle.textContent = 'Auto Trade Settings';
-          }
+          modalTitle.textContent = formatMobileDashboardUnifiedAutoTradeModalTitle(tileId, monitor);
         }
         
         // Show/hide strategy sections
@@ -7539,8 +7683,6 @@
         const minDiffContainer = document.getElementById('m_autoEntryDiff') ? document.getElementById('m_autoEntryDiff').closest('.value-bubble-container') : null;
         const maxDiffLabel = document.querySelector('label[for="m_autoEntryMaxDiff"]');
         const maxDiffContainer = document.getElementById('m_autoEntryMaxDiff') ? document.getElementById('m_autoEntryMaxDiff').closest('.value-bubble-container') : null;
-        const allowReEntryLabel = document.querySelector('label[for="m_allowRe"]');
-        const allowReEntryContainer = allowReEntryLabel ? allowReEntryLabel.nextElementSibling : null;
         const probLabel = document.querySelector('label[for="m_probabilityWindowSlider"]');
         
         if (isMomentumBreakout || isMomentumContain) {
@@ -7551,13 +7693,6 @@
         }
         
         if (isMomentumBreakout || isMomentumContain) {
-          if (isMomentumContain) {
-            if (allowReEntryLabel) allowReEntryLabel.style.display = 'none';
-            if (allowReEntryContainer) allowReEntryContainer.style.display = 'none';
-          } else {
-            if (allowReEntryLabel) allowReEntryLabel.style.display = '';
-            if (allowReEntryContainer) allowReEntryContainer.style.display = '';
-          }
           if (probLabel) probLabel.textContent = 'Price Window:';
           const cooldownWindowLabel = document.querySelector('label[for="m_cooldownWindowSlider"]');
           const cooldownWindowValueContainer = document.querySelector('label[for="m_cooldownWindowSlider"]')?.nextElementSibling;
@@ -7575,8 +7710,6 @@
           if (minDiffContainer) minDiffContainer.style.display = '';
           if (maxDiffLabel) maxDiffLabel.style.display = '';
           if (maxDiffContainer) maxDiffContainer.style.display = '';
-          if (allowReEntryLabel) allowReEntryLabel.style.display = '';
-          if (allowReEntryContainer) allowReEntryContainer.style.display = '';
           if (probLabel) probLabel.textContent = 'Win Probability Window:';
           const cooldownWindowLabel2 = document.querySelector('label[for="m_cooldownWindowSlider"]');
           const cooldownWindowValueContainer2 = document.querySelector('label[for="m_cooldownWindowSlider"]')?.nextElementSibling;
@@ -7587,12 +7720,9 @@
         }
         
         // Show/hide Probability Adjustment slider (Hourly HTC and 15m HTC — same strategy, different strike table)
-        const probAdjContainer = document.getElementById('m_probAdjContainer');
-        const probAdjLabel = document.getElementById('m_probAdjLabel');
-        if (probAdjContainer && probAdjLabel) {
-          const displayValue = (isHourlyHTC || is15mHTC || isRisingDevil) ? 'block' : 'none';
-          probAdjContainer.style.display = displayValue;
-          probAdjLabel.style.display = displayValue;
+        const probAdjSpikeGroup = document.getElementById('m_probAdjSpikeGroup');
+        if (probAdjSpikeGroup) {
+          probAdjSpikeGroup.setAttribute('data-strategy-shows-prob-adj', (isHourlyHTC || is15mHTC || isRisingDevil) ? '1' : '0');
         }
 
         const mrdSec = document.getElementById('m_risingDevilMinAskRangeSection');
@@ -7614,20 +7744,11 @@
         setChk('m_regimeMonitorEnabled', data.regime_monitor_enabled ?? false);
         setVal('m_regimeWindowSelect', data.regime_window ?? '30d');
 
-        // Grey out/disable dropdown when autoswitch is off.
         const regimeCb = document.getElementById('m_regimeMonitorEnabled');
-        const regimeSel = document.getElementById('m_regimeWindowSelect');
-        const updateRegimeWindowDisabled = () => {
-          if (!regimeCb || !regimeSel) return;
-          const disabled = !regimeCb.checked;
-          regimeSel.disabled = disabled;
-          regimeSel.style.opacity = disabled ? '0.55' : '';
-          regimeSel.style.cursor = disabled ? 'not-allowed' : '';
-        };
-        updateRegimeWindowDisabled();
+        mobileDashUatUpdateRegimeWindowPickerVisibility();
         if (regimeCb && !regimeCb._regimeWindowWired) {
           regimeCb._regimeWindowWired = true;
-          regimeCb.addEventListener('change', updateRegimeWindowDisabled);
+          regimeCb.addEventListener('change', mobileDashUatUpdateRegimeWindowPickerVisibility);
         }
 
         // Common settings (both strategies) — 15m HTC uses 0:00–15:00 (900s)
@@ -7715,7 +7836,6 @@
           setVal('m_autoEntryMinVolume', data.min_volume ?? 1000);
           setVal('m_autoEntryDiff', data.min_differential ?? 0);
           setVal('m_autoEntryMaxDiff', data.max_differential ?? 0);
-          setChk('m_allowRe', data.allow_re_entry ?? false);
           setVal('m_winStreak', data.win_streak_threshold ?? 22);
           
           // Loss Prevention Toggle
@@ -7744,10 +7864,6 @@
             });
           }
 
-          setChk('m_spikeEnabled', data.spike_alert_enabled ?? true);
-          setVal('m_spikeMomentum', data.spike_alert_momentum_threshold ?? 60);
-          setVal('m_spikeCooldown', data.spike_alert_cooldown_threshold ?? 55);
-          setVal('m_spikeTime', data.spike_alert_cooldown_minutes ?? 15);
           setVal('m_probAdjSlider', data.prob_adj ?? 5.00);
         if (isRisingDevil) {
           const raw = data.min_ask_range;
@@ -7779,6 +7895,17 @@
           // Initialize HTC time window slider
           state.minTimeSeconds = minTimeRounded;
           state.maxTimeSeconds = finalMaxTime;
+        }
+
+        setChk('m_spikeEnabled', data.spike_alert_enabled ?? true);
+        setVal('m_spikeMomentum', data.spike_alert_momentum_threshold ?? 60);
+        setVal('m_spikeCooldown', data.spike_alert_cooldown_threshold ?? 55);
+        setVal('m_spikeTime', data.spike_alert_cooldown_minutes ?? 15);
+        mobileDashUatUpdateSpikeAlertSliderGroupVisibility();
+        const mSpikeVisCbAll = document.getElementById('m_spikeEnabled');
+        if (mSpikeVisCbAll && !mSpikeVisCbAll._mobileDashSpikeDetailVisWired) {
+          mSpikeVisCbAll._mobileDashSpikeDetailVisWired = true;
+          mSpikeVisCbAll.addEventListener('change', mobileDashUatUpdateSpikeAlertSliderGroupVisibility);
         }
 
         const slpRaw = data.stop_loss_price !== undefined && data.stop_loss_price !== null
@@ -7928,7 +8055,6 @@
               })();
               const rdEl = document.getElementById('m_risingDevilMinAskRange');
               payload.min_ask_range = rdEl ? parseInt(rdEl.value, 10) / 100 : 0.7;
-              payload.allow_re_entry = document.getElementById('m_allowRe').checked;
               payload.win_streak_threshold = parseInt(document.getElementById('m_winStreak').value, 10);
               const lossPreventionToggleRD = document.getElementById('m_lossPreventionToggle');
               if (lossPreventionToggleRD) {
@@ -7957,7 +8083,6 @@
                 const v = parseFloat(document.getElementById('m_autoEntryMaxDiff').value);
                 return Number.isFinite(v) && v > 0 ? v : null;
               })();
-              payload.allow_re_entry = document.getElementById('m_allowRe').checked;
               payload.win_streak_threshold = parseInt(document.getElementById('m_winStreak').value, 10);
               const lossPreventionToggle = document.getElementById('m_lossPreventionToggle');
               if (lossPreventionToggle) {
@@ -8006,6 +8131,11 @@
                     toggleEl.title = regimePaperToggleTooltipText(monitorObj) || 'Click to toggle between LIVE and PAPER trading';
                   }
                 }
+                const uatModal = document.getElementById('mobileUnifiedAutoTradeModal');
+                const apiIdForPos = mobileNormalizeMonitorId(tileId);
+                if (uatModal && window.UatUnifiedModalPositionSize && apiIdForPos) {
+                  await window.UatUnifiedModalPositionSize.persistModalPosition(uatModal, apiIdForPos, { mirrorSidebar: false });
+                }
                 hideModal();
               }
             } catch (error) {
@@ -8035,6 +8165,9 @@
       function hideModal() {
         const modal = document.getElementById('mobileUnifiedAutoTradeModal');
         const dim = document.getElementById('mobileUnifiedAutoTradeDim');
+        if (modal && window.UatUnifiedModalPositionSize) {
+          window.UatUnifiedModalPositionSize.restoreOpenSnapshot(modal);
+        }
         modal.style.display = 'none';
         if (dim) dim.style.display = 'none';
         document.body.style.overflow = 'auto';

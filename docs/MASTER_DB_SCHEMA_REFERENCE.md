@@ -10000,6 +10000,10 @@ Unified Kalshi **hourly** active-trade tracking: **one table per user** (`active
 | `regime_monitor_enabled` | `boolean` | YES | false | Enable regime monitor auto-switch between LIVE/PAPER for this monitor. |
 | `regime_window` | `text` | YES | 30d | Rolling lookback window for regime evaluation (allowed: 30d, 7d, 1d, 12h). |
 | `prob_adj` | `numeric(5,2)` | YES | 5.00 | |
+| `flip_sell_prob` | `boolean` | NO | false | Flip-sell for **probability** auto stops. Migration `20260406_1400_monitor_flip_sell`. |
+| `flip_sell_floor` | `boolean` | NO | false | Flip-sell for **floor price** stops. Migration `20260406_1400_monitor_flip_sell`. |
+| `flip_sell_prob_mult` | `character varying(32)` | YES | - | Size token (e.g. `1x`, future `max`); NULL until first enable (API sets `1x`) or user sets. |
+| `flip_sell_floor_mult` | `character varying(32)` | YES | - | Same for floor stops. |
 
 #### Constraints
 
@@ -10389,7 +10393,7 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `market_id` | `text` | YES | - | |
 | `momentum_percentile` | `real(24)` | YES | - | |
 | `entry_method` | `text` | YES | 'manual'::text | |
-| `close_method` | `text` | YES | - | |
+| `close_method` | `text` | YES | - | How the trade was closed (e.g. `manual`, `expired`, `auto_probability`, `auto_stop_loss_floor`, …). **Backfill:** migration `20260411_1200_trades_close_method_auto_to_auto_probability` sets legacy `auto` → `auto_probability` on `users.trades_0001`, `users.trades_simulated_0001`, and archive trade tables (same predicate on `close_method`). |
 | `created_at` | `timestamp with time zone` | YES | CURRENT_TIMESTAMP | |
 | `updated_at` | `timestamp with time zone` | YES | CURRENT_TIMESTAMP | |
 | `test_filter` | `boolean` | YES | false | |

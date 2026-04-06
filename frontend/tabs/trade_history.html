@@ -1850,6 +1850,25 @@
       const monitorDropdownBtn = document.getElementById('monitor-dropdown-btn');
       const monitorDropdownContent = document.getElementById('monitor-dropdown-content');
 
+      function formatTradeHistoryMonitorLabel(monitor) {
+        const key = monitor.name || '';
+        let idPart = monitor.id != null && monitor.id !== '' ? String(monitor.id) : '';
+        if (!idPart && key) {
+          const parts = key.split('_');
+          const last = parts[parts.length - 1];
+          if (/^[0-9]+$/.test(last)) idPart = last;
+        }
+        if (!idPart) idPart = key || '?';
+        const sym = (monitor.symbol || '').trim();
+        const strat = (monitor.strategy || '').trim();
+        const mktRaw = (monitor.market || '').toString().trim().toLowerCase();
+        const mkt = mktRaw === '15m' ? '15m' : (mktRaw === 'hourly' ? 'Hourly' : (monitor.market || '').toString().trim());
+        if (sym && strat) {
+          return mkt ? (idPart + ' - ' + sym + ' ' + strat + ', ' + mkt) : (idPart + ' - ' + sym + ' ' + strat);
+        }
+        return key || idPart;
+      }
+
       // Load monitor options from API
       async function loadMonitorOptions() {
         try {
@@ -1874,18 +1893,11 @@
               
               // Add data-monitor-id attribute for matching with dashboard monitor IDs
               checkbox.setAttribute('data-monitor-id', monitor.name);
-              
-              // Create text node and append it - format as "Monitor " + last 5 digits
-              let displayName = "Monitor ";
-              if (monitor.name && monitor.name.length >= 5) {
-                displayName += monitor.name.slice(-5);
-              } else {
-                displayName += monitor.name || "";
-              }
-              const textNode = document.createTextNode(displayName);
-              
+              const textSpan = document.createElement('span');
+              textSpan.className = 'trade-history-monitor-label';
+              textSpan.textContent = formatTradeHistoryMonitorLabel(monitor);
               label.appendChild(checkbox);
-              label.appendChild(textNode);
+              label.appendChild(textSpan);
               monitorDropdownContent.appendChild(label);
               
 
@@ -1946,9 +1958,9 @@
           } else if (checkedMonitors.length === currentCheckboxes.length) {
             monitorDropdownBtn.textContent = 'All Monitors';
           } else if (checkedMonitors.length === 1) {
-            const label = checkedMonitors[0].parentElement;
-            const monitorName = label ? label.textContent : checkedMonitors[0].id.replace('monitor-', '').replace(/-/g, ' ');
-            monitorDropdownBtn.textContent = monitorName;
+            const labelEl = checkedMonitors[0].parentElement;
+            const span = labelEl && labelEl.querySelector('.trade-history-monitor-label');
+            monitorDropdownBtn.textContent = span ? span.textContent.trim() : (labelEl ? labelEl.textContent.trim() : '');
           } else {
             monitorDropdownBtn.textContent = 'Multiple';
           }
@@ -2202,10 +2214,11 @@
         }
       });
       
-      // Handle window resize for responsive chart
+      // Resize chart canvas only; do not rebuild analysis (avoids flicker + duplicate work on every resize tick).
       window.addEventListener('resize', () => {
-        if (document.getElementById('analysis-content').style.height !== '0px') {
-          updateAnalysis();
+        const ac = document.getElementById('analysis-content');
+        if (ac && ac.style.height !== '0px' && pnlChart && typeof pnlChart.resize === 'function') {
+          pnlChart.resize();
         }
       });
     });
@@ -2623,6 +2636,21 @@
       return stats;
     }
 
+    // Stable key for bar chart redraws: live open-trade PnL ticks change floats every refresh but rarely
+    // move totals by a full cent; avoid destroy/recreate + animation unless shape or rounded values change.
+    function fingerprintAnalysisChartData(periodData) {
+      return JSON.stringify(
+        periodData.map(function (p) {
+          return {
+            period: p.period,
+            trades: p.trades,
+            pnl: Math.round((Number(p.pnl) || 0) * 100) / 100,
+            retPct: Math.round((Number(p.retPct) || 0) * 100) / 100
+          };
+        })
+      );
+    }
+
     // Function to update analysis display
     function updateAnalysisDisplay(interval) {
       const groups = groupTradesByInterval(filteredTrades, interval);
@@ -2689,10 +2717,10 @@
       avgPnLElement.textContent = `$${avgPnL.toFixed(2)}`;
       avgPnLElement.style.color = avgPnL >= 0 ? '#28a745' : '#dc3545';
       
-      // Check if data has actually changed before updating chart
-      const currentData = JSON.stringify(stats.periodData);
-      if (currentData !== previousAnalysisData || interval !== previousAnalysisInterval || currentChartView !== previousChartView) {
-        previousAnalysisData = currentData;
+      // Bar chart: redraw only when interval/view changes or rounded period totals change (not every PnL tick).
+      const chartFingerprint = fingerprintAnalysisChartData(stats.periodData);
+      if (chartFingerprint !== previousAnalysisData || interval !== previousAnalysisInterval || currentChartView !== previousChartView) {
+        previousAnalysisData = chartFingerprint;
         previousAnalysisInterval = interval;
         previousChartView = currentChartView;
         renderAnalysisChart(stats.periodData, interval, currentChartView);
@@ -2838,6 +2866,7 @@
         },
         plugins: [customPlugin, hoverPlugin, yAxisLabelsPlugin],
         options: {
+          animation: false,
           responsive: true,
           maintainAspectRatio: false,
           interaction: {
@@ -2959,35 +2988,47 @@
       // Create the chart
       pnlChart = new Chart(canvas, config);
       
-      // Add mouse leave event listener to ensure background disappears
-      canvas.addEventListener('mouseleave', function() {
-        pnlChart.hoveredIndex = -1;
-        pnlChart.update('none');
-      });
-      
-      // Also add to the chart container to catch all edge cases
-      const chartContainer = document.getElementById('analysis-chart');
-      if (chartContainer) {
-        chartContainer.addEventListener('mouseleave', function() {
+      // Replace listeners on re-render so we do not stack duplicates after each chart rebuild.
+      if (canvas._thAnalysisLeave) {
+        canvas.removeEventListener('mouseleave', canvas._thAnalysisLeave);
+      }
+      canvas._thAnalysisLeave = function () {
+        if (pnlChart) {
           pnlChart.hoveredIndex = -1;
           pnlChart.update('none');
-        });
+        }
+      };
+      canvas.addEventListener('mouseleave', canvas._thAnalysisLeave);
+
+      const chartContainer = document.getElementById('analysis-chart');
+      if (chartContainer) {
+        if (chartContainer._thAnalysisLeave) {
+          chartContainer.removeEventListener('mouseleave', chartContainer._thAnalysisLeave);
+        }
+        chartContainer._thAnalysisLeave = function () {
+          if (pnlChart) {
+            pnlChart.hoveredIndex = -1;
+            pnlChart.update('none');
+          }
+        };
+        chartContainer.addEventListener('mouseleave', chartContainer._thAnalysisLeave);
       }
-      
-      // Add global mouse move listener to check if mouse is over chart
-      document.addEventListener('mousemove', function(event) {
+
+      if (document._thAnalysisMouseMove) {
+        document.removeEventListener('mousemove', document._thAnalysisMouseMove);
+      }
+      document._thAnalysisMouseMove = function (event) {
         if (pnlChart && pnlChart.hoveredIndex >= 0) {
           const rect = canvas.getBoundingClientRect();
           const mouseX = event.clientX;
           const mouseY = event.clientY;
-          
-          // Check if mouse is outside chart bounds
           if (mouseX < rect.left || mouseX > rect.right || mouseY < rect.top || mouseY > rect.bottom) {
             pnlChart.hoveredIndex = -1;
             pnlChart.update('none');
           }
         }
-      });
+      };
+      document.addEventListener('mousemove', document._thAnalysisMouseMove);
     }
 
     // Function to handle analysis interval change
@@ -3167,8 +3208,11 @@
             
             if (monitorCheckboxes.length > 0) {
               const targetCheckbox = monitorCheckboxes.find(cb => {
-                const label = cb.parentElement;
-                return label && label.textContent === monitorName;
+                const mid = cb.getAttribute('data-monitor-id');
+                if (!mid || !monitorName) return false;
+                if (mid === monitorName || mid.toLowerCase() === String(monitorName).toLowerCase()) return true;
+                const tail = mid.split('_').pop();
+                return tail === String(monitorName);
               });
               
               if (targetCheckbox) {

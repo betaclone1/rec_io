@@ -2768,6 +2768,88 @@ def start_monitor_manager_redis_subscriber() -> None:
 
 start_monitor_manager_redis_subscriber()
 
+
+def _handle_auto_entry_settings_stream(decoded: Dict[str, Any], msg_id: str, raw_fields: Dict[str, str]) -> bool:
+    """Redis stream consumer: apply unified auto trade settings to monitor_list."""
+    cid = ""
+    try:
+        from backend.core.auto_entry_settings_store import (
+            apply_auto_entry_settings,
+            trigger_regime_reconcile_after_auto_entry_save,
+        )
+        from backend.core.trading_redis_comms import (
+            mm_monitor_settings_ack_key,
+            redis_client_optional,
+        )
+
+        inner = decoded.get("payload") or {}
+        if not isinstance(inner, dict):
+            return True
+        cid = str(decoded.get("correlation_id") or inner.get("correlation_id") or "")
+        body = inner.get("body") or {}
+        mid = str(inner.get("monitor_id") or body.get("monitor_id") or "")
+        conn = monitor_manager.get_database_connection()
+        try:
+            with conn.cursor() as cursor:
+                result = apply_auto_entry_settings(cursor, mid, body)
+            if result.get("status") == "ok":
+                conn.commit()
+                trigger_regime_reconcile_after_auto_entry_save(
+                    mid, source="set_auto_entry_settings_redis"
+                )
+                monitor_manager._notify_frontend_monitor_list_updated(
+                    "Auto trade settings updated (Redis)"
+                )
+            else:
+                conn.rollback()
+        finally:
+            conn.close()
+
+        r = redis_client_optional()
+        if r and cid:
+            r.set(mm_monitor_settings_ack_key(cid), json.dumps(result, default=str), ex=90)
+        return True
+    except Exception as e:
+        _logger.warning("auto_entry_settings stream handler: %s", e)
+        try:
+            from backend.core.trading_redis_comms import mm_monitor_settings_ack_key, redis_client_optional
+
+            r = redis_client_optional()
+            if r and cid:
+                r.set(
+                    mm_monitor_settings_ack_key(cid),
+                    json.dumps({"status": "error", "message": str(e)}, default=str),
+                    ex=90,
+                )
+        except Exception:
+            pass
+        return True
+
+
+def start_monitor_manager_auto_entry_settings_consumer() -> None:
+    from backend.core.trading_redis_comms import (
+        default_consumer_name,
+        start_consumer_daemon,
+        stream_mm_monitor_settings,
+        use_trading_redis_comms,
+    )
+
+    if not use_trading_redis_comms():
+        return
+    stream = stream_mm_monitor_settings()
+    group = "mm_monitor_settings"
+    consumer = default_consumer_name("mm-settings")
+    start_consumer_daemon(stream, group, consumer, _handle_auto_entry_settings_stream)
+    _logger.info(
+        "monitor_manager stream consumer started: %s group=%s",
+        stream,
+        group,
+    )
+
+
+start_monitor_manager_auto_entry_settings_consumer()
+
+
 def _heartbeat_loop():
     while True:
         time.sleep(HEARTBEAT_INTERVAL_SEC)

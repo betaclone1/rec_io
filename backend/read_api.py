@@ -16,7 +16,7 @@ from psycopg2 import sql as psql
 
 from backend.core.config.database import get_postgresql_connection
 from backend.trading_mode import account_balance_table_for_user, is_paper_trading, sql_ident_qualified_table
-from backend.util.trade_log_archivist import union_trades_with_archives_select
+from backend.util.trade_log_archivist import canonical_monitor_key, union_trades_with_archives_select
 
 app = FastAPI(title="read_api")
 
@@ -434,6 +434,87 @@ async def get_performance_realized() -> Dict[str, Any]:
         conn.close()
         return {"status": "ok", "periods": result}
 
+    except Exception as e:  # pragma: no cover - defensive
+        return {"status": "error", "message": str(e)}
+
+
+def _monitor_auto_stop_accuracy_bucket(
+    cursor: Any, union_sql: str, monitor_key: str, close_method: str, days: int
+) -> Dict[str, Any]:
+    """
+    Losing closed trades for this monitor and close_method, closed in the last ``days`` days.
+    Accuracy = share where win_loss_confirmed IS TRUE.
+    Uses the same closed_at-as-text fallback as /api/pnl/history and /api/performance/realized.
+    """
+    cursor.execute(
+        """
+        SELECT
+            COUNT(*) FILTER (WHERE t.win_loss_confirmed IS TRUE),
+            COUNT(*)
+        FROM ("""
+        + union_sql
+        + """) AS t
+        WHERE (t.test_filter IS NULL OR t.test_filter = FALSE)
+          AND t.status = 'closed'
+          AND t.win_loss = 'L'
+          AND LOWER(TRIM(COALESCE(t.close_method, ''))) = %s
+          AND LOWER(TRIM(COALESCE(t.monitor, ''))) = LOWER(TRIM(%s))
+          AND (CASE
+            WHEN t.closed_at IS NOT NULL AND t.closed_at ~ '^\\d{4}-\\d{2}-\\d{2}'
+            THEN t.closed_at::timestamptz
+            ELSE t.created_at
+          END) >= (CURRENT_TIMESTAMP - (%s::integer * INTERVAL '1 day'))
+        """,
+        (close_method.lower(), monitor_key, days),
+    )
+    row = cursor.fetchone()
+    confirmed = int(row[0] or 0)
+    total = int(row[1] or 0)
+    pct = None
+    if total > 0:
+        pct = round(100.0 * confirmed / total, 1)
+    return {"confirmed": confirmed, "total": total, "accuracy_pct": pct}
+
+
+@app.get("/api/monitor_auto_stop_accuracy")
+async def get_monitor_auto_stop_accuracy(monitor_id: str | None = None) -> Dict[str, Any]:
+    """
+    Auto-stop accuracy from trade log: losing closes via auto_probability or
+    auto_stop_loss_floor; percentage with win_loss_confirmed = TRUE (7d and 30d).
+    Includes users.trades_0001 and archive tables.
+    """
+    if not monitor_id:
+        return {"status": "error", "message": "monitor_id required"}
+    mid = str(monitor_id).strip()
+    if not mid.isdigit():
+        return {"status": "error", "message": "monitor_id must be numeric"}
+
+    try:
+        conn = get_postgresql_connection()
+        if not conn:
+            return {"status": "error", "message": "No DB connection"}
+        monitor_key = canonical_monitor_key("0001", mid)
+        with conn.cursor() as cursor:
+            union_sql, _ = union_trades_with_archives_select(cursor, "0001")
+            prob_30 = _monitor_auto_stop_accuracy_bucket(
+                cursor, union_sql, monitor_key, "auto_probability", 30
+            )
+            prob_7 = _monitor_auto_stop_accuracy_bucket(
+                cursor, union_sql, monitor_key, "auto_probability", 7
+            )
+            sl_30 = _monitor_auto_stop_accuracy_bucket(
+                cursor, union_sql, monitor_key, "auto_stop_loss_floor", 30
+            )
+            sl_7 = _monitor_auto_stop_accuracy_bucket(
+                cursor, union_sql, monitor_key, "auto_stop_loss_floor", 7
+            )
+        conn.close()
+        return {
+            "status": "ok",
+            "monitor_key": monitor_key,
+            "probability_stop": {"30d": prob_30, "7d": prob_7},
+            "stop_loss_floor": {"30d": sl_30, "7d": sl_7},
+        }
     except Exception as e:  # pragma: no cover - defensive
         return {"status": "error", "message": str(e)}
 
