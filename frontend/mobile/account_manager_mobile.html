@@ -166,7 +166,8 @@
 
         /* Modals */
         #initiate-transfer-modal,
-        #manage-transfers-modal {
+        #manage-transfers-modal,
+        #paper-balance-modal {
             display: none;
             position: fixed;
             top: 0;
@@ -179,7 +180,8 @@
             justify-content: center;
         }
         #initiate-transfer-modal .modal-box,
-        #manage-transfers-modal .modal-box {
+        #manage-transfers-modal .modal-box,
+        #paper-balance-modal .modal-box {
             background: #1f2633;
             border: 1px solid #4a5568;
             border-radius: 8px;
@@ -191,7 +193,8 @@
         #initiate-transfer-modal .modal-box input[type="number"],
         #manage-transfers-modal .modal-box select,
         #manage-transfers-modal .modal-box input[type="number"],
-        #manage-transfers-modal .modal-box input[type="text"] {
+        #manage-transfers-modal .modal-box input[type="text"],
+        #paper-balance-modal .modal-box input.paper-balance-amount-input {
             background: #2a3441;
             color: #fff;
             border: 1px solid #4a5568;
@@ -207,11 +210,14 @@
             text-align: right;
         }
         #initiate-transfer-modal .modal-box .row,
-        #manage-transfers-modal .modal-box .row { margin-bottom: 12px; }
+        #manage-transfers-modal .modal-box .row,
+        #paper-balance-modal .modal-box .row { margin-bottom: 12px; }
         #initiate-transfer-modal .modal-box .row label,
-        #manage-transfers-modal .modal-box .row label { display: block; margin-bottom: 4px; font-size: 12px; color: #c4c4c4; }
+        #manage-transfers-modal .modal-box .row label,
+        #paper-balance-modal .modal-box .row label { display: block; margin-bottom: 4px; font-size: 12px; color: #c4c4c4; }
         #initiate-transfer-modal .modal-box .modal-buttons,
-        #manage-transfers-modal .modal-box .modal-buttons { margin-top: 16px; display: flex; gap: 10px; justify-content: flex-end; }
+        #manage-transfers-modal .modal-box .modal-buttons,
+        #paper-balance-modal .modal-box .modal-buttons { margin-top: 16px; display: flex; gap: 10px; justify-content: flex-end; }
         #manage-transfers-modal .modal-box #manage-transfers-fields.manage-transfers-fields-disabled {
             opacity: 0.5;
             pointer-events: none;
@@ -224,6 +230,22 @@
             border-radius: 4px;
             cursor: pointer;
             font-size: 12px;
+            font-weight: 500;
+            transition: background-color 0.2s;
+        }
+        .refresh-button:hover {
+            background: var(--accent-hover, #2563eb);
+        }
+        .refresh-button:disabled {
+            background: #6b7280;
+            color: #9ca3af;
+            cursor: not-allowed;
+        }
+        #paper-balance-modal .paper-balance-error {
+            font-size: 12px;
+            color: #f87171;
+            margin-top: 8px;
+            min-height: 1em;
         }
         .pct-number-input { width: 52px; }
         .account-sync-wrap {
@@ -283,8 +305,12 @@
             <div class="panel">
                 <div class="panel-header">Account Information</div>
                 <div class="panel-body">
-                    <div style="margin-top: 5px; margin-bottom: 15px; font-size: 14px; display: flex; align-items: center; gap: 15px;">
-                        <span id="brokerage-info">Loading...</span>
+                    <div style="margin-top: 5px; margin-bottom: 15px; font-size: 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                        <label for="account-manager-trading-mode-select-mobile" class="visually-hidden" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);">Trading account</label>
+                        <select id="account-manager-trading-mode-select-mobile" class="dropdown-picker" style="font-size:14px;padding:4px 28px 4px 8px;max-width:min(320px,100%);" title="Live vs internal paper">
+                            <option value="live">LIVE</option>
+                            <option value="paper">PAPER</option>
+                        </select>
                         <a href="https://kalshi.com/account/profile" target="_blank" style="color: #4a9eff; text-decoration: none; font-size: 12px;">Account</a>
                         <a href="https://kalshi.com/portfolio" target="_blank" style="color: #4a9eff; text-decoration: none; font-size: 12px;">Portfolio</a>
                         <span class="account-sync-wrap">
@@ -311,17 +337,18 @@
                                 <tbody id="transfers-body"><tr><td colspan="5">Loading...</td></tr></tbody>
                             </table>
                         </div>
-                        <div style="display: flex; gap: 8px;">
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
                             <button type="button" class="refresh-button" id="manage-transfers-btn">Manage</button>
                             <button type="button" class="refresh-button" id="initiate-transfer-btn">Initiate Transfer</button>
+                            <button type="button" class="refresh-button" id="paper-balance-btn" style="display: none;" title="Set simulated paper portfolio total">Paper Balance</button>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- Tab Container -->
-        <div class="tab-container">
+        <!-- Tab Container (hidden in paper mode) -->
+        <div id="account-manager-mobile-market-panels" class="tab-container">
             <div class="tab-buttons">
                 <button class="tab-button active" onclick="showTab('positions')">Open Positions</button>
                 <button class="tab-button" onclick="showTab('fills')">Fills</button>
@@ -458,10 +485,158 @@
                 </div>
             </div>
         </div>
+
+        <div id="paper-balance-modal">
+            <div class="modal-box">
+                <div style="font-size: 14px; font-weight: bold; margin-bottom: 16px; color: #c4c4c4;">Paper Balance</div>
+                <div class="row">
+                    <label for="paper-balance-amount">Reset paper balance to:</label>
+                    <input type="text" class="paper-balance-amount-input" id="paper-balance-amount" inputmode="decimal" placeholder="$1000.00" autocomplete="off" />
+                </div>
+                <div id="paper-balance-error" class="paper-balance-error" aria-live="polite"></div>
+                <div class="modal-buttons">
+                    <button type="button" class="refresh-button" id="paper-balance-submit">Apply</button>
+                    <button type="button" id="paper-balance-cancel" style="background: #4a5568; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;">Cancel</button>
+                </div>
+            </div>
+        </div>
     </div>
 
+    <script src="/js/db_changes_prefilter.js"></script>
     <script>
-        let GLOBAL_ACCOUNT_MODE = "prod";  // Will be updated by backend
+        let REC_TRADING_MODE = "live";
+        window.__recTradingModeAmMobile = "live";
+        let accountManagerTradingLiveLabelMobile = "LIVE";
+        let accountManagerTradingPaperLabelMobile = "PAPER";
+
+        function updateAccountManagerTradingSelectLabelsMobile() {
+            const sel = document.getElementById("account-manager-trading-mode-select-mobile");
+            if (!sel) return;
+            const oLive = sel.querySelector('option[value="live"]');
+            const oPaper = sel.querySelector('option[value="paper"]');
+            if (oLive) oLive.textContent = accountManagerTradingLiveLabelMobile || "LIVE";
+            if (oPaper) oPaper.textContent = accountManagerTradingPaperLabelMobile || "PAPER";
+        }
+
+        /** Whole units are dollars (1000 → 100000 cents). Optional $ / commas stripped. */
+        function parseUsdInputToCentsMobile(raw) {
+            const s = String(raw ?? "").trim().replace(/^\$/, "").replace(/,/g, "");
+            if (s === "") return null;
+            const n = parseFloat(s);
+            if (!Number.isFinite(n) || n < 0) return null;
+            return Math.round(n * 100);
+        }
+
+        function updatePaperBalanceButtonVisibilityMobile() {
+            const btn = document.getElementById("paper-balance-btn");
+            if (!btn) return;
+            btn.style.display = REC_TRADING_MODE === "paper" ? "inline-block" : "none";
+            if (REC_TRADING_MODE !== "paper") closePaperBalanceModalMobile();
+        }
+
+        function updateAccountManagerMarketPanelsVisibilityMobile() {
+            const wrap = document.getElementById("account-manager-mobile-market-panels");
+            if (!wrap) return;
+            wrap.style.display = REC_TRADING_MODE === "paper" ? "none" : "";
+        }
+
+        function openPaperBalanceModalMobile() {
+            if (REC_TRADING_MODE !== "paper") return;
+            const err = document.getElementById("paper-balance-error");
+            const amt = document.getElementById("paper-balance-amount");
+            if (err) err.textContent = "";
+            if (amt) amt.value = "";
+            const modal = document.getElementById("paper-balance-modal");
+            if (!modal) return;
+            modal.style.display = "flex";
+            const escHandler = function (e) {
+                if (e.key === "Escape") closePaperBalanceModalMobile();
+                else if (e.key === "Enter" && e.target && e.target.id !== "paper-balance-cancel") {
+                    e.preventDefault();
+                    document.getElementById("paper-balance-submit")?.click();
+                }
+            };
+            document.addEventListener("keydown", escHandler);
+            modal._paperBalanceEsc = escHandler;
+            amt?.focus();
+        }
+
+        function closePaperBalanceModalMobile() {
+            const modal = document.getElementById("paper-balance-modal");
+            if (!modal) return;
+            modal.style.display = "none";
+            if (modal._paperBalanceEsc) {
+                document.removeEventListener("keydown", modal._paperBalanceEsc);
+                delete modal._paperBalanceEsc;
+            }
+            document.getElementById("paper-balance-btn")?.blur();
+        }
+
+        async function fetchTradingModeForAccountManagerMobile() {
+            try {
+                const r = await fetch(window.location.origin + "/api/trading_mode");
+                if (!r.ok) throw new Error("trading_mode HTTP " + r.status);
+                const j = await r.json();
+                if (j.trading_mode === "live" || j.trading_mode === "paper") {
+                    REC_TRADING_MODE = j.trading_mode;
+                    window.REC_TRADING_MODE = REC_TRADING_MODE;
+                    window.__recTradingModeAmMobile = j.trading_mode;
+                    if (j.live_label) accountManagerTradingLiveLabelMobile = j.live_label;
+                    if (j.paper_label) accountManagerTradingPaperLabelMobile = j.paper_label;
+                    localStorage.setItem("rec_trading_mode", j.trading_mode);
+                    const sel = document.getElementById("account-manager-trading-mode-select-mobile");
+                    if (sel) sel.value = j.trading_mode;
+                    updateAccountManagerTradingSelectLabelsMobile();
+                }
+            } finally {
+                updatePaperBalanceButtonVisibilityMobile();
+                updateAccountManagerMarketPanelsVisibilityMobile();
+            }
+        }
+
+        async function applyAccountManagerTradingModeSwitchMobile(mode) {
+            const r = await fetch(window.location.origin + "/api/set_trading_mode", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ trading_mode: mode }),
+            });
+            const j = await r.json();
+            if (j.status !== "ok") throw new Error(j.message || "set_trading_mode failed");
+            await fetchTradingModeForAccountManagerMobile();
+            await loadAccountData();
+        }
+
+        function wireAccountManagerTradingSelectMobile() {
+            const sel = document.getElementById("account-manager-trading-mode-select-mobile");
+            if (!sel || sel.dataset.amMobileWired === "1") return;
+            sel.dataset.amMobileWired = "1";
+            sel.addEventListener("change", async function () {
+                const v = sel.value;
+                const prev = window.__recTradingModeAmMobile || "live";
+                try {
+                    await applyAccountManagerTradingModeSwitchMobile(v);
+                } catch (e) {
+                    console.error(e);
+                    sel.value = prev;
+                }
+            });
+        }
+
+        function setupAccountManagerPreferencesWsMobile() {
+            const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+            const ws = new WebSocket(`${protocol}//${window.location.host}/ws/preferences`);
+            ws.onmessage = function (event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.trading_mode === "live" || data.trading_mode === "paper") {
+                        void fetchTradingModeForAccountManagerMobile().then(function () { return loadAccountData(); });
+                    }
+                } catch (_) {}
+            };
+            ws.onclose = function () {
+                setTimeout(setupAccountManagerPreferencesWsMobile, 5000);
+            };
+        }
 
         // Tab switching function
         function showTab(tabName) {
@@ -480,23 +655,15 @@
             event.target.classList.add('active');
         }
 
-        fetch(window.location.origin + '/api/get_account_mode')
-            .then(res => {
-                if (!res.ok) {
-                    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-                }
-                return res.json();
-            })
-            .then(data => {
-                GLOBAL_ACCOUNT_MODE = data.mode;
-                window.GLOBAL_ACCOUNT_MODE = GLOBAL_ACCOUNT_MODE;
-
+        fetchTradingModeForAccountManagerMobile()
+            .then(function () { return loadAccountData(); })
+            .catch(function (error) {
+                console.error("Failed to get trading mode:", error);
                 loadAccountData();
-            })
-            .catch(error => {
-                console.error('Failed to get account mode:', error);
-                alert(`Failed to get account mode: ${error.message}`);
             });
+
+        wireAccountManagerTradingSelectMobile();
+        setupAccountManagerPreferencesWsMobile();
 
         function clearAccountPanelToSyncing() {
             const accountBalanceEl = document.getElementById("account-balance");
@@ -509,38 +676,48 @@
 
         async function loadAccountData() {
             try {
-                const [balanceRes, subaccountsRes, settlementsRes, fillsRes, positionsRes, emailRes, transfersRes] = await Promise.all([
-                    fetch(`${window.location.origin}/api/account/balance?mode=${GLOBAL_ACCOUNT_MODE}`),
-                    fetch(window.location.origin + "/api/subaccounts"),
-                    fetch(window.location.origin + "/api/db/settlements"),
-                    fetch(window.location.origin + "/api/db/fills"),
-                    fetch(window.location.origin + "/api/db/positions"),
-                    fetch(window.location.origin + "/api/get_kalshi_email"),
-                    fetch(window.location.origin + "/api/db/transfers"),
+                const fetchOpts = { cache: "no-store" };
+                const isPaper = REC_TRADING_MODE === "paper";
+                const [balanceRes, subaccountsRes, transfersRes] = await Promise.all([
+                    fetch(`${window.location.origin}/api/account/balance`, fetchOpts),
+                    fetch(window.location.origin + "/api/subaccounts", fetchOpts),
+                    fetch(window.location.origin + "/api/db/transfers", fetchOpts),
                 ]);
+
+                let settlementsRes;
+                let fillsRes;
+                let positionsRes;
+                if (!isPaper) {
+                    [settlementsRes, fillsRes, positionsRes] = await Promise.all([
+                        fetch(window.location.origin + "/api/db/settlements", fetchOpts),
+                        fetch(window.location.origin + "/api/db/fills", fetchOpts),
+                        fetch(window.location.origin + "/api/db/positions", fetchOpts),
+                    ]);
+                }
 
                 // Check for errors
                 if (!balanceRes.ok) throw new Error(`Balance API: ${balanceRes.status} ${balanceRes.statusText}`);
                 if (!subaccountsRes.ok) throw new Error(`Subaccounts API: ${subaccountsRes.status}`);
-                if (!settlementsRes.ok) throw new Error(`Settlements API: ${settlementsRes.status} ${settlementsRes.statusText}`);
-                if (!fillsRes.ok) throw new Error(`Fills API: ${fillsRes.status} ${fillsRes.statusText}`);
-                if (!positionsRes.ok) throw new Error(`Positions API: ${positionsRes.status} ${positionsRes.statusText}`);
-                if (!emailRes.ok) throw new Error(`Email API: ${emailRes.status} ${emailRes.statusText}`);
                 if (!transfersRes.ok) throw new Error(`Transfers API: ${transfersRes.status}`);
+                if (!isPaper) {
+                    if (!settlementsRes.ok) throw new Error(`Settlements API: ${settlementsRes.status} ${settlementsRes.statusText}`);
+                    if (!fillsRes.ok) throw new Error(`Fills API: ${fillsRes.status} ${fillsRes.statusText}`);
+                    if (!positionsRes.ok) throw new Error(`Positions API: ${positionsRes.status} ${positionsRes.statusText}`);
+                }
 
+            const activeBal = await balanceRes.json();
             const subaccountsJson = await subaccountsRes.json();
-            const settlementsJson = await settlementsRes.json();
-            const fillsJson = await fillsRes.json();
-            const positionsJson = await positionsRes.json();
-            const emailJson = await emailRes.json();
             const transfersJson = await transfersRes.json();
+            const settlementsJson = isPaper ? { settlements: [] } : await settlementsRes.json();
+            const fillsJson = isPaper ? { fills: [] } : await fillsRes.json();
+            const positionsJson = isPaper ? { positions: [] } : await positionsRes.json();
             const subaccounts = subaccountsJson.subaccounts || [];
             const transfers = transfersJson.transfers || [];
 
             window.subaccountsForTransfer = (subaccounts || []).filter(s => s.subaccount !== "PRIMARY");
 
-            const settlements = settlementsJson.settlements;
-            const fills = fillsJson.fills;
+            const settlements = settlementsJson.settlements || [];
+            const fills = fillsJson.fills || [];
             const positions = positionsJson.positions || [];
 
             window.fills = fills;
@@ -570,36 +747,17 @@
                     }).join("");
             }
 
-                const [prodBalRes, demoBalRes] = await Promise.all([
-                    fetch(window.location.origin + "/api/account/balance?mode=prod"),
-                    fetch(window.location.origin + "/api/account/balance?mode=demo"),
-                ]);
-
-                // Check for errors
-                if (!prodBalRes.ok) throw new Error(`Prod Balance API: ${prodBalRes.status} ${prodBalRes.statusText}`);
-                if (!demoBalRes.ok) throw new Error(`Demo Balance API: ${demoBalRes.status} ${demoBalRes.statusText}`);
-
-            const prodBalJson = await prodBalRes.json();
-            const demoBalJson = await demoBalRes.json();
-
-            const activeBal = GLOBAL_ACCOUNT_MODE === "prod" ? prodBalJson : demoBalJson;
             const balanceVal = activeBal.portfolio ?? activeBal.balance ?? activeBal.total_balance ?? activeBal.available_balance ?? 0;
             const balanceInDollars = balanceVal / 100; // Convert cents to dollars
             document.getElementById("account-balance").textContent =
                 `$${Number(balanceInDollars).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
 
-            // Update brokerage info with email
-            const brokerageInfoEl = document.getElementById("brokerage-info");
-            if (brokerageInfoEl) {
-                const email = emailJson.email || "No email found";
-                brokerageInfoEl.textContent = `${email}`;
-            }
-
             const settlementsBody = document.getElementById("settlements-body");
-            // Sort settlements by settled_time in descending order (newest first)
-            const sortedSettlements = settlements.sort((a, b) => new Date(b.settled_time) - new Date(a.settled_time));
+            const sortedSettlements = [...settlements].sort((a, b) => new Date(b.settled_time) - new Date(a.settled_time));
             
-            settlementsBody.innerHTML = sortedSettlements.map(s => {
+            settlementsBody.innerHTML = sortedSettlements.length === 0
+                ? "<tr><td colspan=\"6\">No settlements</td></tr>"
+                : sortedSettlements.map(s => {
                 // Revenue is already in whole dollars, display as is
                 const revenue = s.revenue != null ? s.revenue : 0;
                 const formattedRevenue = revenue.toLocaleString(undefined, { 
@@ -620,7 +778,9 @@
             }).join("");
 
             const fillsBody = document.getElementById("fills-body");
-            fillsBody.innerHTML = fills.map(f => {
+            fillsBody.innerHTML = fills.length === 0
+                ? "<tr><td colspan=\"6\">No fills</td></tr>"
+                : fills.map(f => {
                 // Get price based on side with no formatting - use _fixed columns
                 const price = f.side === "yes" ? f.yes_price_dollars : f.no_price_dollars;
                 
@@ -637,9 +797,10 @@
             }).join("");
 
             const positionsBody = document.getElementById("positions-body");
-            positionsBody.innerHTML = positions
-                .filter(p => p.position !== 0)
-                .map(p => `
+            const posRows = positions.filter(p => p.position !== 0);
+            positionsBody.innerHTML = posRows.length === 0
+                ? "<tr><td colspan=\"5\">No positions</td></tr>"
+                : posRows.map(p => `
                     <tr>
                         <td>${p.ticker}</td>
                         <td>${p.market_exposure && p.position !== 0 ? (p.market_exposure / p.position / 100).toFixed(2) : "0.00"}</td>
@@ -654,9 +815,6 @@
             }
         }
 
-        // Respect backend-set mode only
-        loadAccountData();
-        
         function startAccountManagerMobilePolling() {
             if (window._ammRefreshInterval) clearInterval(window._ammRefreshInterval);
             window._ammRefreshInterval = setInterval(() => {
@@ -830,6 +988,40 @@
             }
         });
 
+        document.getElementById("paper-balance-btn")?.addEventListener("click", openPaperBalanceModalMobile);
+        document.getElementById("paper-balance-cancel")?.addEventListener("click", closePaperBalanceModalMobile);
+        document.getElementById("paper-balance-submit")?.addEventListener("click", async function () {
+            const errEl = document.getElementById("paper-balance-error");
+            const raw = document.getElementById("paper-balance-amount")?.value;
+            const cents = parseUsdInputToCentsMobile(raw);
+            if (cents === null) {
+                if (errEl) errEl.textContent = "Enter a non-negative amount in dollars (e.g. 1000).";
+                return;
+            }
+            if (errEl) errEl.textContent = "";
+            const submitBtn = document.getElementById("paper-balance-submit");
+            if (submitBtn) submitBtn.disabled = true;
+            try {
+                const r = await fetch(window.location.origin + "/api/paper/bankroll/seed", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ bankroll_cents: cents }),
+                });
+                const j = await r.json();
+                if (j.status !== "ok") {
+                    if (errEl) errEl.textContent = j.message || "Could not update paper balance.";
+                    return;
+                }
+                closePaperBalanceModalMobile();
+                await loadAccountData();
+            } catch (e) {
+                console.error(e);
+                if (errEl) errEl.textContent = String(e.message || e);
+            } finally {
+                if (submitBtn) submitBtn.disabled = false;
+            }
+        });
+
         document.getElementById("initiate-transfer-from")?.addEventListener("change", updateInitiateTransferAvailable);
         document.getElementById("initiate-transfer-btn")?.addEventListener("click", openInitiateTransferModal);
         document.getElementById("initiate-transfer-cancel")?.addEventListener("click", closeInitiateTransferModal);
@@ -855,7 +1047,24 @@
                 alert("Request failed.");
             }
         });
-        
+
+        let accountSyncFallbackTimer = null;
+        let _ammDbChangeDebounceTimer = null;
+        const _AMM_DB_CHANGE_DEBOUNCE_MS = 500;
+        function _ammScheduleLoadAccountDataFromWs() {
+            if (_ammDbChangeDebounceTimer) clearTimeout(_ammDbChangeDebounceTimer);
+            _ammDbChangeDebounceTimer = setTimeout(function() {
+                _ammDbChangeDebounceTimer = null;
+                loadAccountData();
+                const syncIcon = document.getElementById('account-sync-icon');
+                if (syncIcon && syncIcon.classList.contains('syncing')) {
+                    if (accountSyncFallbackTimer) clearTimeout(accountSyncFallbackTimer);
+                    accountSyncFallbackTimer = null;
+                    syncIcon.classList.remove('syncing');
+                }
+            }, _AMM_DB_CHANGE_DEBOUNCE_MS);
+        }
+
         // WebSocket connection for database change notifications (paused when tab hidden)
         function setupDatabaseChangeListener() {
             if (window.ACCOUNT_MOBILE_PAUSED) return;
@@ -864,29 +1073,25 @@
             window._ammDbChangesWs = ws;
             
             ws.onopen = function() {
-                console.log('🔗 Connected to database change notifications (account manager mobile)');
+                console.log('Connected to database change notifications (account manager mobile)');
             };
             
             ws.onmessage = function(event) {
                 try {
-                    const data = JSON.parse(event.data);
-                    if (['fills', 'positions', 'settlements', 'subaccounts', 'transfers', 'account_balance'].includes(data.database)) {
-                        loadAccountData();
-                        const syncIcon = document.getElementById('account-sync-icon');
-                        if (syncIcon && syncIcon.classList.contains('syncing')) {
-                            if (accountSyncFallbackTimer) clearTimeout(accountSyncFallbackTimer);
-                            accountSyncFallbackTimer = null;
-                            syncIcon.classList.remove('syncing');
-                        }
+                    const raw = event.data;
+                    const streams = ['fills', 'positions', 'settlements', 'subaccounts', 'transfers', 'transfers_paper', 'account_balance', 'account_balance_paper'];
+                    if (!recDbChangeRawMentionsAny(raw, streams)) return;
+                    const data = JSON.parse(raw);
+                    if (data.type !== 'db_change') return;
+                    if (streams.indexOf(data.database) !== -1) {
+                        _ammScheduleLoadAccountDataFromWs();
                     }
                 } catch (error) {
-                    console.error('❌ Error parsing database change notification (account manager mobile):', error);
+                    console.error('Error parsing database change notification (account manager mobile):', error);
                 }
             };
             
-            ws.onerror = function(error) {
-                console.error('❌ WebSocket error (account manager mobile):', error);
-            };
+            ws.onerror = function() {};
             
             ws.onclose = function() {
                 window._ammDbChangesWs = null;
@@ -898,7 +1103,6 @@
         
         setupDatabaseChangeListener();
 
-        let accountSyncFallbackTimer = null;
         document.getElementById('account-sync-icon') && document.getElementById('account-sync-icon').addEventListener('click', async function() {
             const icon = document.getElementById('account-sync-icon');
             if (!icon || icon.classList.contains('syncing')) return;

@@ -37,7 +37,7 @@ TRADE_EXECUTOR_PORT = get_port("trade_executor")
 
 # Import centralized path utilities
 from backend.util.paths import get_accounts_data_dir, get_host, get_logs_dir
-from backend.account_mode import get_account_mode
+from backend.trading_mode import get_trading_mode
 from backend.core.config.database import get_postgresql_connection
 from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
 from backend.core.time_eastern import now_est
@@ -46,19 +46,13 @@ from backend.core.time_eastern import now_est
 app = Flask(__name__)
 
 def get_base_url():
-    BASE_URLS = {
-        "prod": "https://api.elections.kalshi.com/trade-api/v2",
-        "demo": "https://demo-api.kalshi.co/trade-api/v2"
-    }
-    return BASE_URLS.get(get_account_mode(), BASE_URLS["prod"])
+    return "https://api.elections.kalshi.com/trade-api/v2"
 
-# print(f"Using base URL: {get_base_url()} for mode: {get_account_mode()}")
 
 # --- Credentials loading ---
 def load_credentials():
-    mode = get_account_mode()
     from backend.util.paths import get_kalshi_credentials_dir
-    cred_dir = Path(get_kalshi_credentials_dir()) / mode
+    cred_dir = Path(get_kalshi_credentials_dir()) / "prod"
     env_vars = dotenv_values(cred_dir / ".env")
     return {
         "KEY_ID": env_vars.get("KALSHI_API_KEY_ID"),
@@ -286,6 +280,12 @@ def process_trigger_trade_request(data: dict):
     Run Kalshi order path (same as /trigger_trade). Returns (response_dict, http_code).
     Side effect: notifies trade_manager via Redis or HTTP.
     """
+    if get_trading_mode() == "paper":
+        ticket_id = data.get("ticket_id", "UNKNOWN")
+        trade_id = data.get("id")
+        log_event(ticket_id, "REJECTED global paper mode — no Kalshi orders", trade_id=trade_id)
+        return {"status": "rejected", "error": "global_paper_mode"}, 403
+
     ticket_id = data.get("ticket_id", "UNKNOWN")
     trade_id = data.get("id")
     if ticket_id.count("TICKET-") > 1:

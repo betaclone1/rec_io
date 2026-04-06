@@ -29,6 +29,7 @@ from flask import Flask, request, jsonify
 from backend.core.unified_config import UnifiedConfigManager
 from backend.core.time_eastern import merge_psycopg2_connect_kwargs, now_est, today_est
 from backend.core.port_config import get_port
+from backend.trading_mode import account_balance_table_for_user, sql_ident_qualified_table
 import threading
 import time
 
@@ -508,8 +509,9 @@ environment={env_vars}
     
     def handle_bankroll_update(self, bankroll_stepped_down: bool = False) -> Dict[str, Any]:
         """
-        Handle bankroll update notification from kalshi_account_sync.
-        Preserve drawdown/bankroll sync behavior, but do not disable monitor auto-trading.
+        Handle bankroll update from Kalshi sync_balance, paper apply_balance_snapshot, or trading_mode ripple.
+        Reads latest row from account_balance_0001 or account_balance_paper_0001 (trading_mode). Updates
+        bankroll_allotment_total and total_position for active monitors.
         """
         try:
             self.log_event("BANKROLL_UPDATE", "Processing bankroll update notification")
@@ -550,14 +552,27 @@ environment={env_vars}
             conn = self.get_database_connection()
 
             with conn.cursor() as cursor:
+                ab_ident = sql_ident_qualified_table(account_balance_table_for_user("0001"))
                 cursor.execute(
-                    "SELECT bankroll_current FROM users.account_balance_0001 ORDER BY timestamp DESC LIMIT 1"
+                    sql.SQL(
+                        """
+                        SELECT bankroll_current, portfolio
+                        FROM {}
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """
+                    ).format(ab_ident)
                 )
                 bankroll_result = cursor.fetchone()
                 if not bankroll_result:
                     return {"status": "error", "message": "No bankroll data found"}
 
-                bankroll_cents = bankroll_result[0]
+                bc = bankroll_result[0]
+                pf = bankroll_result[1]
+                bankroll_value = int(bc) if bc is not None else 0
+                portfolio_value = int(pf) if pf is not None else 0
+                # Same basis as create_monitor: MTB ratchet when set; else total equity (live or paper).
+                bankroll_cents = bankroll_value if bankroll_value > 0 else portfolio_value
 
                 cursor.execute(
                     """
@@ -2248,14 +2263,19 @@ def create_monitor():
             return jsonify({"status": "error", "message": "Database connection failed"}), 500
         
         with conn.cursor() as cursor:
-            # Get current bankroll to calculate allotment_total
-            cursor.execute(f"""
-                SELECT bankroll_current, portfolio
-                FROM users.account_balance_{user_number}
-                ORDER BY timestamp DESC 
-                LIMIT 1
-            """)
-            
+            # Get current bankroll to calculate allotment_total (paper vs live for 0001)
+            ab_ident = sql_ident_qualified_table(account_balance_table_for_user(user_number))
+            cursor.execute(
+                sql.SQL(
+                    """
+                    SELECT bankroll_current, portfolio
+                    FROM {}
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).format(ab_ident)
+            )
+
             balance_result = cursor.fetchone()
             bankroll_value = balance_result[0] if balance_result and balance_result[0] else 0
             portfolio_value = balance_result[1] if balance_result and balance_result[1] else 0

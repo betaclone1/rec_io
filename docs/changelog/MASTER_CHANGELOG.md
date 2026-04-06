@@ -6,6 +6,39 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-06 — Global paper trading mode, paper balance tables, dashboard and account manager UI
+
+**Summary**
+- **Trading mode:** Persisted `live` | `paper` in `backend/trading_mode.py` (same JSON path as account mode); API `GET/POST /api/trading_mode`, `GET /api/set_trading_mode`; WebSocket broadcast for mode; read paths switch `account_balance` / `subaccounts` / `transfers` / fills-positions-settlements where applicable; executor and sync guarded for paper; `balance_snapshot` / Kalshi sync refactored for shared apply path; `paper_bankroll` seed endpoint and NOTIFY stream `account_balance_paper`.
+- **Database:** New paper mirror tables (`account_balance_paper_0001`, `subaccounts_paper_0001`, etc.), `transfers_paper_0001`, balance integer alignment migration; `stream_registry` and `MASTER_DB_SCHEMA_REFERENCE` updated.
+- **Frontend:** Dashboard and mobile trading mode picker (LIVE/PAPER styling), paper-aware fetches and panels; account manager Paper balance modal and transfers stream; trade monitor labels; trading mode overlay separator CSS fix (flex shrink); assorted parity and db_changes streams.
+- **Ops:** `MASTER_RESTART` / watchdog hooks as changed in repo; mode-sensitive APIs use `Cache-Control: no-store` where applicable.
+
+**Plans:** (paper feature work; related direction in `unified-aes-ats-strike-driven-refactor` where overlapping)
+
+**DB migrations (required on production, in timestamp order — runner skips already-applied ids)**
+1. `20260404_1200_paper_account_balance_tables`
+2. `20260404_1210_paper_subaccounts_disable_auto_transfer`
+3. `20260404_2000_account_balance_balance_integer`
+4. `20260411_1100_transfers_paper_0001`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations (from project root on server, in order above):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260404_1200_paper_account_balance_tables`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260404_1210_paper_subaccounts_disable_auto_transfer`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260404_2000_account_balance_balance_integer`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1100_transfers_paper_0001`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Regenerate supervisor config if your deploy relies on it:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/config/generate_unified_supervisor_config.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows key programs RUNNING; spot-check trading mode and account manager in UI.
+
+---
+
 ## 2026-04-03 — Hotfix: archive `monitor_confirm_detail` for trades UNION
 
 **Summary**

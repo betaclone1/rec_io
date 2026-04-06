@@ -1168,6 +1168,8 @@ if (typeof window !== 'undefined') {
 // WebSocket connection for real-time database change notifications
 let dbChangeWebSocket = null;
 let strikeTableTabPaused = false;
+let strikeTableTradesWsDebounceTimer = null;
+const STRIKE_TABLE_TRADES_WS_DEBOUNCE_MS = 500;
 
 function connectDbChangeWebSocket() {
   if (strikeTableTabPaused) return;
@@ -1188,15 +1190,20 @@ function connectDbChangeWebSocket() {
   
   dbChangeWebSocket.onmessage = function(event) {
     try {
-
-      const data = JSON.parse(event.data);
+      const raw = event.data;
+      if (typeof recDbChangeRawMentionsStream === 'function' && !recDbChangeRawMentionsStream(raw, 'trades')) {
+        return;
+      }
+      const data = JSON.parse(raw);
       if (data.type === 'db_change' && data.database === 'trades') {
-        
-        fetchAndRenderStrikeTable();
-        // Also update active trades when trades table changes
-        if (typeof window.fetchAndRenderTrades === 'function') {
-          window.fetchAndRenderTrades();
-        }
+        if (strikeTableTradesWsDebounceTimer) clearTimeout(strikeTableTradesWsDebounceTimer);
+        strikeTableTradesWsDebounceTimer = setTimeout(function() {
+          strikeTableTradesWsDebounceTimer = null;
+          fetchAndRenderStrikeTable();
+          if (typeof window.fetchAndRenderTrades === 'function') {
+            window.fetchAndRenderTrades();
+          }
+        }, STRIKE_TABLE_TRADES_WS_DEBOUNCE_MS);
       }
     } catch (error) {
       console.error("[WEBSOCKET] Error processing message:", error);

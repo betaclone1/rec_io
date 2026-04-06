@@ -3,9 +3,8 @@
 // This file centralizes ALL trade execution to prevent multiple functions
 // and add proper safety controls for live money trading
 
-// Global configuration
+// Global configuration (Kalshi is always prod; internal paper uses trading_mode + paper_trade rows.)
 window.TRADE_CONFIG = {
-  DEMO_MODE: false,  // Set to false for live trading
   MAX_POSITION_SIZE: 1000,
   ENABLE_SOUNDS: function() { return window.isSoundEnabled ? window.isSoundEnabled() : true; },
   ENABLE_POPUPS: true
@@ -119,19 +118,6 @@ window.closeTrade = async function(tradeId, sellPrice, event) {
       close_method:     'manual'
     };
 
-    // === DEMO MODE CHECK ===
-    if (window.TRADE_CONFIG.DEMO_MODE) {
-      // Audio alert already played in trade_monitor.html when button was clicked
-      window.TRADE_STATE.executedTrades.add(ticket_id);
-      window.TRADE_STATE.lastTradeId = ticket_id;
-      return { 
-        success: true, 
-        ticket_id: ticket_id, 
-        demo: true,
-        message: 'Demo close trade created successfully'
-      };
-    }
-
     // Execute the actual close trade
     const response = await fetch(window.location.origin + '/trades', {
       method: 'POST',
@@ -154,7 +140,6 @@ window.closeTrade = async function(tradeId, sellPrice, event) {
     return { 
       success: true, 
       ticket_id: ticket_id, 
-      demo: false,
       result: result
     };
 
@@ -388,16 +373,14 @@ window.prepareTradeData = async function(target) {
 
 // === SAFETY CONTROLS ===
 
-// Function to toggle demo mode
 window.toggleDemoMode = function() {
-  window.TRADE_CONFIG.DEMO_MODE = !window.TRADE_CONFIG.DEMO_MODE;
-  return window.TRADE_CONFIG.DEMO_MODE;
+  console.warn('toggleDemoMode is deprecated; use dashboard trading account (LIVE / PAPER).');
+  return false;
 };
 
-// Function to get current trade state
 window.getTradeState = function() {
   return {
-    demoMode: window.TRADE_CONFIG.DEMO_MODE,
+    tradingMode: (typeof localStorage !== 'undefined' && localStorage.getItem('rec_trading_mode')) || 'live',
     isExecuting: window.TRADE_STATE.isExecuting,
     pendingTrades: Array.from(window.TRADE_STATE.pendingTrades),
     executedTrades: Array.from(window.TRADE_STATE.executedTrades),

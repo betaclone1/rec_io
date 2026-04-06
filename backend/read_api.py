@@ -12,7 +12,10 @@ from typing import List, Dict, Any
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from psycopg2 import sql as psql
+
 from backend.core.config.database import get_postgresql_connection
+from backend.trading_mode import account_balance_table_for_user, is_paper_trading, sql_ident_qualified_table
 from backend.util.trade_log_archivist import union_trades_with_archives_select
 
 app = FastAPI(title="read_api")
@@ -51,6 +54,8 @@ async def get_portfolio_history(period: str = "1m") -> Dict[str, Any]:
         if not conn:
             return {"status": "error", "message": "No DB connection"}
 
+        ab_ident = sql_ident_qualified_table(account_balance_table_for_user("0001"))
+
         # Use a timezone-aware reference for consistent timestamptz filtering.
         from zoneinfo import ZoneInfo  # local import to keep startup fast
         eastern = ZoneInfo("America/New_York")
@@ -61,25 +66,29 @@ async def get_portfolio_history(period: str = "1m") -> Dict[str, Any]:
             today_5am = now.replace(hour=5, minute=0, second=0, microsecond=0)
             with conn.cursor() as cursor:
                 cursor.execute(
-                    """
+                    psql.SQL(
+                        """
                     SELECT updated_at, portfolio
-                    FROM users.account_balance_0001 
+                    FROM {}
                     WHERE updated_at < %s
                     ORDER BY updated_at DESC, id DESC
                     LIMIT 1
-                """,
+                """
+                    ).format(ab_ident),
                     (today_5am,),
                 )
                 last_before_5am = cursor.fetchone()
 
             with conn.cursor() as cursor:
                 cursor.execute(
-                    """
+                    psql.SQL(
+                        """
                     SELECT updated_at, portfolio
-                    FROM users.account_balance_0001 
+                    FROM {}
                     WHERE updated_at >= %s
                     ORDER BY updated_at ASC, id ASC
-                """,
+                """
+                    ).format(ab_ident),
                     (today_5am,),
                 )
                 results = cursor.fetchall()
@@ -99,12 +108,14 @@ async def get_portfolio_history(period: str = "1m") -> Dict[str, Any]:
 
             with conn.cursor() as cursor:
                 cursor.execute(
-                    """
+                    psql.SQL(
+                        """
                     SELECT updated_at, portfolio
-                    FROM users.account_balance_0001 
+                    FROM {}
                     WHERE updated_at >= %s
                     ORDER BY updated_at ASC, id ASC
-                """,
+                """
+                    ).format(ab_ident),
                     (start_time,),
                 )
                 results = cursor.fetchall()
@@ -121,7 +132,13 @@ async def get_portfolio_history(period: str = "1m") -> Dict[str, Any]:
                 }
             )
 
-        return {"status": "ok", "period": period, "count": len(data), "data": data}
+        return {
+            "status": "ok",
+            "period": period,
+            "count": len(data),
+            "data": data,
+            "trading_mode": "paper" if is_paper_trading() else "live",
+        }
 
     except Exception as e:  # pragma: no cover - defensive
         return {"status": "error", "message": str(e)}
@@ -140,7 +157,7 @@ async def get_bankroll_history(period: str = "1m") -> Dict[str, Any]:
         if not conn:
             return {"status": "error", "message": "No DB connection"}
 
-        select_val = "COALESCE(mtb_base_value, bankroll_current)"
+        ab_ident = sql_ident_qualified_table(account_balance_table_for_user("0001"))
         # Use a timezone-aware reference for consistent timestamptz filtering.
         from zoneinfo import ZoneInfo  # local import to keep startup fast
         eastern = ZoneInfo("America/New_York")
@@ -151,25 +168,29 @@ async def get_bankroll_history(period: str = "1m") -> Dict[str, Any]:
             today_5am = now.replace(hour=5, minute=0, second=0, microsecond=0)
             with conn.cursor() as cursor:
                 cursor.execute(
-                    f"""
-                    SELECT updated_at, {select_val}
-                    FROM users.account_balance_0001
+                    psql.SQL(
+                        """
+                    SELECT updated_at, COALESCE(mtb_base_value, bankroll_current)
+                    FROM {}
                     WHERE updated_at < %s
                     ORDER BY updated_at DESC, id DESC
                     LIMIT 1
-                """,
+                """
+                    ).format(ab_ident),
                     (today_5am,),
                 )
                 last_before_5am = cursor.fetchone()
 
             with conn.cursor() as cursor:
                 cursor.execute(
-                    f"""
-                    SELECT updated_at, {select_val}
-                    FROM users.account_balance_0001
+                    psql.SQL(
+                        """
+                    SELECT updated_at, COALESCE(mtb_base_value, bankroll_current)
+                    FROM {}
                     WHERE updated_at >= %s
                     ORDER BY updated_at ASC, id ASC
-                """,
+                """
+                    ).format(ab_ident),
                     (today_5am,),
                 )
                 results = cursor.fetchall()
@@ -189,12 +210,14 @@ async def get_bankroll_history(period: str = "1m") -> Dict[str, Any]:
 
             with conn.cursor() as cursor:
                 cursor.execute(
-                    f"""
-                    SELECT updated_at, {select_val}
-                    FROM users.account_balance_0001
+                    psql.SQL(
+                        """
+                    SELECT updated_at, COALESCE(mtb_base_value, bankroll_current)
+                    FROM {}
                     WHERE updated_at >= %s
                     ORDER BY updated_at ASC, id ASC
-                """,
+                """
+                    ).format(ab_ident),
                     (start_time,),
                 )
                 results = cursor.fetchall()
@@ -211,7 +234,13 @@ async def get_bankroll_history(period: str = "1m") -> Dict[str, Any]:
                 }
             )
 
-        return {"status": "ok", "period": period, "count": len(data), "data": data}
+        return {
+            "status": "ok",
+            "period": period,
+            "count": len(data),
+            "data": data,
+            "trading_mode": "paper" if is_paper_trading() else "live",
+        }
 
     except Exception as e:  # pragma: no cover - defensive
         return {"status": "error", "message": str(e)}
@@ -244,6 +273,12 @@ async def get_pnl_history(period: str = "1m") -> Dict[str, Any]:
 
         start_date_sql = start_time.strftime("%Y-%m-%d")
 
+        paper_clause = (
+            "AND paper_trade IS TRUE"
+            if is_paper_trading()
+            else "AND (paper_trade IS NULL OR paper_trade = FALSE)"
+        )
+
         with conn.cursor() as cursor:
             union_sql, _ = union_trades_with_archives_select(cursor, "0001")
             cursor.execute(
@@ -256,7 +291,9 @@ async def get_pnl_history(period: str = "1m") -> Dict[str, Any]:
                 + union_sql
                 + """) AS trades_all
                 WHERE (test_filter IS NULL OR test_filter = FALSE)
-                  AND (paper_trade IS NULL OR paper_trade = FALSE)
+                """
+                + paper_clause
+                + """
                   AND LOWER(TRIM(status)) IN ('closed', 'settled')
                   AND pnl IS NOT NULL
                   AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN (closed_at::timestamptz)::date ELSE created_at::date END) >= %s::date
@@ -285,6 +322,7 @@ async def get_pnl_history(period: str = "1m") -> Dict[str, Any]:
             "count": len(data),
             "data": data,
             "total_pnl": round(cumulative, 2),
+            "trading_mode": "paper" if is_paper_trading() else "live",
         }
 
     except Exception as e:  # pragma: no cover - defensive

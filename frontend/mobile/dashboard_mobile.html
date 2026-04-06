@@ -15,6 +15,7 @@
   
   <script src="https://d3js.org/d3.v7.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="/js/db_changes_prefilter.js"></script>
   <script src="../js/monitor_history_display.js"></script>
   <style>
     /* Dashboard Container */
@@ -63,6 +64,22 @@
     /* Portfolio panel tabs - Mobile */
     .portfolio-panel .panel-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
     .portfolio-panel .panel-header .portfolio-controls { flex: 1 1 100%; }
+    .portfolio-panel .panel-header .trading-mode-select-wrap {
+      flex: 1 1 100%;
+      width: 100%;
+      max-width: 100%;
+      margin-top: 4px;
+      box-sizing: border-box;
+    }
+    .portfolio-panel .panel-header .trading-mode-select-wrap .mobile-trading-mode-select.dropdown-picker {
+      width: 100%;
+      padding: 6px 28px 6px 8px;
+      box-sizing: border-box;
+    }
+    .portfolio-panel .panel-header .trading-mode-select-face {
+      left: 8px;
+      right: 28px;
+    }
     .portfolio-panel .panel-tab { color: #fff; cursor: pointer; opacity: 0.3; transition: opacity 0.2s; }
     .portfolio-panel .panel-tab.active { opacity: 1; }
     .portfolio-tabs-body { flex: 1; min-height: 0; position: relative; }
@@ -1300,10 +1317,20 @@
     <div class="panels-row">
       <div class="panel-container portfolio-panel">
         <div class="panel-header">
-          <div style="display: flex; gap: 12px; align-items: center;">
+          <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap; width: 100%;">
             <span id="bankroll-tab" class="panel-tab" style="opacity: 0.3;">Bankroll</span>
             <span id="portfolio-tab" class="panel-tab" style="opacity: 0.3;">Portfolio</span>
             <span id="pnl-tab" class="panel-tab" style="opacity: 0.3;">PNL</span>
+          </div>
+          <label for="trading-mode-select-mobile" class="visually-hidden" style="position:absolute;width:1px;height:1px;overflow:hidden;">Trading account</label>
+          <div class="trading-mode-select-wrap">
+            <select id="trading-mode-select-mobile" class="dropdown-picker mobile-trading-mode-select trading-mode-select-visual" title="LIVE vs paper (internal)">
+              <option value="live">LIVE</option>
+              <option value="paper">PAPER</option>
+            </select>
+            <div class="trading-mode-select-face" aria-hidden="true">
+              <span class="trading-mode-mode trading-mode-mode--live">LIVE</span><span class="trading-mode-sep"></span><span class="trading-mode-name"></span>
+            </div>
           </div>
           <div class="portfolio-controls">
             <div class="portfolio-info">
@@ -1411,19 +1438,145 @@
     const DB_CHANGES_WS_BACKOFF_CAP_MS = 30000;
     let monitorHealthRefreshTimer = null;
     let monitorListRefreshDebounceTimer = null;
+    let dbChangesBankrollDebounceTimer = null;
+    let dbChangesBankrollPendingStreams = null;
+    let dbChangesBankrollRefreshInFlight = false;
+    let dbChangesBankrollQueuedStreams = null;
+    const DB_CHANGES_BANKROLL_DEBOUNCE_MS = 500;
 
     let accountBalanceSnapshot = null;
 
-    // Load account mode from localStorage or default to prod
-    document.addEventListener('DOMContentLoaded', async function() {
-      const savedMode = localStorage.getItem('rec_account_mode');
-      if (savedMode) {
-        GLOBAL_ACCOUNT_MODE = savedMode;
+    window.globalPaperMode = false;
+    window.__recTradingMode = 'live';
+    let tradingModeLiveLabel = 'LIVE';
+    let tradingModePaperLabel = 'PAPER';
+
+    function mobileSplitTradingModeLabel(label) {
+      const s = String(label || '').trim();
+      let idx = s.indexOf(' - ');
+      if (idx !== -1) {
+        return { mode: s.slice(0, idx).trim(), name: s.slice(idx + 3).trim() };
       }
-      
+      idx = s.indexOf('-');
+      if (idx !== -1) {
+        return {
+          mode: s.slice(0, idx).trim(),
+          name: s.slice(idx + 1).replace(/^\s*/, '').trim(),
+        };
+      }
+      return { mode: s, name: '' };
+    }
+
+    function mobileUpdateTradingModeSelectFace(sel) {
+      if (!sel) return;
+      const wrap = sel.closest('.trading-mode-select-wrap');
+      if (!wrap) return;
+      const modeEl = wrap.querySelector('.trading-mode-mode');
+      const sepEl = wrap.querySelector('.trading-mode-sep');
+      const nameEl = wrap.querySelector('.trading-mode-name');
+      if (!modeEl || !sepEl || !nameEl) return;
+      const isLive = sel.value === 'live';
+      const label = isLive ? (tradingModeLiveLabel || 'LIVE') : (tradingModePaperLabel || 'PAPER');
+      const parts = mobileSplitTradingModeLabel(label);
+      modeEl.textContent = parts.mode;
+      if (parts.name) {
+        sepEl.textContent = ' - ';
+        nameEl.textContent = parts.name;
+      } else {
+        sepEl.textContent = '';
+        nameEl.textContent = '';
+      }
+      modeEl.className = 'trading-mode-mode ' + (isLive ? 'trading-mode-mode--live' : 'trading-mode-mode--paper');
+    }
+
+    function mobileUpdateTradingModeSelectLabels() {
+      const sel = document.getElementById('trading-mode-select-mobile');
+      if (!sel) return;
+      const oLive = sel.querySelector('option[value="live"]');
+      const oPaper = sel.querySelector('option[value="paper"]');
+      if (oLive) oLive.textContent = tradingModeLiveLabel || 'LIVE';
+      if (oPaper) oPaper.textContent = tradingModePaperLabel || 'PAPER';
+      mobileUpdateTradingModeSelectFace(sel);
+    }
+
+    async function mobileFetchTradingModeFromServer() {
+      try {
+        const r = await fetch(window.location.origin + '/api/trading_mode');
+        const j = await r.json();
+        if (j.trading_mode === 'live' || j.trading_mode === 'paper') {
+          window.__recTradingMode = j.trading_mode;
+          window.globalPaperMode = j.global_paper_mode === true;
+          if (j.live_label) tradingModeLiveLabel = j.live_label;
+          if (j.paper_label) tradingModePaperLabel = j.paper_label;
+          localStorage.setItem('rec_trading_mode', j.trading_mode);
+          const sel = document.getElementById('trading-mode-select-mobile');
+          if (sel) sel.value = j.trading_mode;
+          mobileUpdateTradingModeSelectLabels();
+        }
+      } catch (e) {
+        console.warn('mobileFetchTradingModeFromServer:', e);
+      }
+    }
+
+    async function mobileApplyTradingModeSwitch(mode) {
+      const r = await fetch(window.location.origin + '/api/set_trading_mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trading_mode: mode }),
+      });
+      const j = await r.json();
+      if (j.status !== 'ok') throw new Error(j.message || 'set_trading_mode failed');
+      window.__recTradingMode = j.trading_mode;
+      window.globalPaperMode = j.global_paper_mode === true;
+      localStorage.setItem('rec_trading_mode', j.trading_mode);
+      await mobileFetchTradingModeFromServer();
+      await fetchAccountBalanceSnapshot();
+      await refreshPortfolioPanelAllTabsData({
+        rerenderActive: true,
+        rerenderAllCharts: true,
+        skipBalanceSnapshotFetch: true,
+      });
+      await loadMonitors();
+      applyCurrentSort();
+      initializeMonitors();
+    }
+
+    function wireMobileTradingModeControls() {
+      const sel = document.getElementById('trading-mode-select-mobile');
+      if (sel) {
+        sel.addEventListener('change', async function() {
+          const v = sel.value;
+          const prev = window.__recTradingMode || 'live';
+          try {
+            await mobileApplyTradingModeSwitch(v);
+          } catch (e) {
+            console.error(e);
+            sel.value = prev;
+            mobileUpdateTradingModeSelectFace(sel);
+          }
+        });
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', async function() {
+      const legacy = localStorage.getItem('rec_account_mode');
+      if (legacy === 'demo') {
+        localStorage.setItem('rec_trading_mode', 'paper');
+        localStorage.removeItem('rec_account_mode');
+      } else if (legacy === 'prod') {
+        if (!localStorage.getItem('rec_trading_mode')) localStorage.setItem('rec_trading_mode', 'live');
+        localStorage.removeItem('rec_account_mode');
+      }
+      const savedTm = localStorage.getItem('rec_trading_mode');
+      if (savedTm === 'paper' || savedTm === 'live') {
+        window.__recTradingMode = savedTm;
+      }
+
       // STEP 1: Load dashboard preferences FIRST - this sets currentView and portfolioPanelActiveTab
       await loadDashboardPreferences();
       console.log('Dashboard: Preferences loaded, currentView is:', currentView);
+
+      await mobileFetchTradingModeFromServer();
       
       // STEP 2: Preload charts + latest account_balance row in parallel.
       await Promise.all([
@@ -1462,6 +1615,8 @@
       });
       
       initializePortfolioPanelTabs();
+
+      wireMobileTradingModeControls();
       
       // Connect to WebSockets after everything is loaded
       connectWebSocket();
@@ -1572,8 +1727,10 @@
           const paperTogglePoll = tile.querySelector('.paper-trading-toggle');
           if (paperTogglePoll) {
             const rePoll = newMonitor.regime_monitor_enabled === true || newMonitor.regime_monitor_enabled === 'true' || newMonitor.regime_monitor_enabled === 1;
-            paperTogglePoll.style.pointerEvents = rePoll ? 'none' : '';
-            paperTogglePoll.style.opacity = rePoll ? '0.55' : '';
+            const gpPoll = window.globalPaperMode === true;
+            const lockedPoll = gpPoll || rePoll;
+            paperTogglePoll.style.pointerEvents = lockedPoll ? 'none' : '';
+            paperTogglePoll.style.opacity = lockedPoll ? '0.55' : '';
             paperTogglePoll.title = regimePaperToggleTooltipText(newMonitor) || 'Click to toggle between LIVE and PAPER trading';
           }
         }
@@ -1715,8 +1872,9 @@
       return map[key] || key;
     }
 
-    /** Native title for LIVE/PAPER when regime is on; empty when off (use default tap hint). */
+    /** Native title for LIVE/PAPER when global paper or regime locks the toggle. */
     function regimePaperToggleTooltipText(monitor) {
+      if (window.globalPaperMode === true) return 'Global Paper Trading Mode';
       if (!monitor) return '';
       const re = monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1;
       if (!re) return '';
@@ -1779,6 +1937,9 @@
       if (isListView) {
         // List view layout - horizontal data arrangement
         const isPaperTrading = monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1;
+        const reList = monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1;
+        const gpList = window.globalPaperMode === true;
+        const lockList = gpList || reList;
         return `
           <div class="monitor-tile list-view ${monitor.status === 'inactive' ? 'inactive' : ''} ${isPaperTrading ? 'paper-mode' : 'live-mode'}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
             <!-- Column 1: Status Light -->
@@ -1821,7 +1982,7 @@
               <div class="paper-trading-toggle ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}"
                 onclick="togglePaperTrade('${monitor.id}')"
                 title="${regimePaperToggleTitleAttr(monitor)}"
-                style="${(monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1) ? 'pointer-events:none; opacity:0.55;' : ''}">
+                style="${lockList ? 'pointer-events:none; opacity:0.55;' : ''}">
                 <div class="paper-trading-toggle-slider"></div>
                 <div class="paper-trading-toggle-option">LIVE</div>
                 <div class="paper-trading-toggle-option">PAPER</div>
@@ -1846,6 +2007,9 @@
       } else {
         // Tile view layout - original vertical arrangement
         const isPaperTrading = monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1;
+        const reTile = monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1;
+        const gpTile = window.globalPaperMode === true;
+        const lockTile = gpTile || reTile;
         return `
           <div class="monitor-tile tile-view ${monitor.status === 'inactive' ? 'inactive' : ''} ${isPaperTrading ? 'paper-mode' : 'live-mode'}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
             <div style="display: flex; align-items: flex-start; margin-bottom: 10px;">
@@ -1907,7 +2071,7 @@
               <div class="paper-trading-toggle ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}"
                 onclick="togglePaperTrade('${monitor.id}')"
                 title="${regimePaperToggleTitleAttr(monitor)}"
-                style="${(monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1) ? 'pointer-events:none; opacity:0.55;' : ''}">
+                style="${lockTile ? 'pointer-events:none; opacity:0.55;' : ''}">
                 <div class="paper-trading-toggle-slider"></div>
                 <div class="paper-trading-toggle-option">LIVE</div>
                 <div class="paper-trading-toggle-option">PAPER</div>
@@ -1927,7 +2091,10 @@
         
         if (data.status === 'ok') {
           monitors = data.monitors;
-          
+          if (typeof data.global_paper_mode === 'boolean') {
+            window.globalPaperMode = data.global_paper_mode;
+          }
+
           // Sync cooldown timers from API so badge reverts when cooldown ends (no stale map entries)
           cooldownTimers.clear();
           monitors.forEach(monitor => {
@@ -2762,6 +2929,10 @@
       
       // Get current paper_trade value (handle various formats)
       const currentPaperTrade = monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1;
+      if (window.globalPaperMode === true) {
+        console.log(`Ignoring manual paper toggle for ${monitorId} (global paper mode)`);
+        return;
+      }
       const regimeEnabled = monitor && (monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1);
       if (regimeEnabled) {
         console.log(`Ignoring manual paper toggle for ${monitorId} because regime monitor is enabled`);
@@ -3306,7 +3477,7 @@
 
     async function fetchAccountBalanceSnapshot() {
       try {
-        const response = await fetch(`${window.location.origin}/api/account/balance?mode=${GLOBAL_ACCOUNT_MODE}`);
+        const response = await fetch(`${window.location.origin}/api/account/balance`);
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
@@ -5805,6 +5976,32 @@
         try {
           const data = JSON.parse(event.data);
           console.log('WebSocket message received:', data);
+
+          if (data.trading_mode === 'live' || data.trading_mode === 'paper') {
+            window.__recTradingMode = data.trading_mode;
+            window.globalPaperMode =
+              data.global_paper_mode === true || data.trading_mode === 'paper';
+            localStorage.setItem('rec_trading_mode', data.trading_mode);
+            const sel = document.getElementById('trading-mode-select-mobile');
+            if (sel) sel.value = data.trading_mode;
+            void mobileFetchTradingModeFromServer();
+            void (async function() {
+              try {
+                await fetchAccountBalanceSnapshot();
+                await refreshPortfolioPanelAllTabsData({
+                  rerenderActive: true,
+                  rerenderAllCharts: true,
+                  skipBalanceSnapshotFetch: true,
+                });
+                await loadMonitors();
+                applyCurrentSort();
+                initializeMonitors();
+              } catch (err) {
+                console.error(err);
+              }
+            })();
+            return;
+          }
           
           // Handle auto trade toggle updates
           if (data.type === 'auto_trade_toggled') {
@@ -5977,6 +6174,70 @@
       };
     }
 
+    async function runDashboardBankrollRefreshAggregated(streamsSet) {
+      if (!streamsSet || streamsSet.size === 0) return;
+      if (dbChangesBankrollRefreshInFlight) {
+        if (!dbChangesBankrollQueuedStreams) dbChangesBankrollQueuedStreams = new Set();
+        streamsSet.forEach(function(s) { dbChangesBankrollQueuedStreams.add(s); });
+        return;
+      }
+      dbChangesBankrollRefreshInFlight = true;
+      try {
+        const isAccountBalance =
+          streamsSet.has('account_balance') || streamsSet.has('account_balance_paper');
+        if (localStorage.getItem('dashboard_db_change_debug') === '1') {
+          console.log('Dashboard mobile db_changes: coalesced refresh for streams:', Array.from(streamsSet).join(','));
+        }
+        if (isAccountBalance) {
+          try {
+            await fetchAccountBalanceSnapshot();
+          } catch (e) {
+            console.error('Dashboard mobile: account balance snapshot after db_change failed:', e);
+          }
+        }
+        try {
+          await refreshPortfolioPanelAllTabsData({
+            rerenderActive: false,
+            rerenderAllCharts: true,
+            skipBalanceSnapshotFetch: isAccountBalance,
+          });
+        } catch (e) {
+          console.error('Dashboard mobile: error refreshing portfolio panel after db_change:', e);
+        }
+        try {
+          await loadPerformanceData();
+        } catch (e) {
+          console.error('Dashboard mobile: error refreshing performance data after db_change:', e);
+        }
+        try {
+          await loadPerformancePanelCashBalance();
+        } catch (e) {
+          console.error('Dashboard mobile: error refreshing performance cash balance after db_change:', e);
+        }
+      } finally {
+        dbChangesBankrollRefreshInFlight = false;
+        if (dbChangesBankrollQueuedStreams && dbChangesBankrollQueuedStreams.size > 0) {
+          const q = dbChangesBankrollQueuedStreams;
+          dbChangesBankrollQueuedStreams = null;
+          void runDashboardBankrollRefreshAggregated(q);
+        }
+      }
+    }
+
+    function queueDashboardBankrollRefreshForStream(stream) {
+      if (!dbChangesBankrollPendingStreams) dbChangesBankrollPendingStreams = new Set();
+      dbChangesBankrollPendingStreams.add(stream);
+      if (dbChangesBankrollDebounceTimer) clearTimeout(dbChangesBankrollDebounceTimer);
+      dbChangesBankrollDebounceTimer = setTimeout(function() {
+        dbChangesBankrollDebounceTimer = null;
+        const batch = dbChangesBankrollPendingStreams;
+        dbChangesBankrollPendingStreams = null;
+        if (batch && batch.size > 0) {
+          void runDashboardBankrollRefreshAggregated(batch);
+        }
+      }, DB_CHANGES_BANKROLL_DEBOUNCE_MS);
+    }
+
     function connectDbChangesWebSocket() {
       if (dbChangesWsReconnectTimer) {
         clearTimeout(dbChangesWsReconnectTimer);
@@ -6019,26 +6280,30 @@
         console.error('Dashboard mobile db_changes WebSocket error:', err);
       };
 
-      sock.onmessage = async function(event) {
+      sock.onmessage = function(event) {
         try {
-          const msg = JSON.parse(event.data);
+          const raw = event.data;
+          const bankrollNames = [
+            'trades', 'fills', 'positions', 'settlements', 'account_balance',
+            'account_balance_paper', 'subaccounts',
+          ];
+          const monitorHealthNames = ['market_kalshi_15m', 'live_symbol_status'];
+          const careBankroll = typeof recDbChangeRawMentionsAny === 'function'
+            ? recDbChangeRawMentionsAny(raw, bankrollNames) : true;
+          const careHealth = typeof recDbChangeRawMentionsAny === 'function'
+            ? recDbChangeRawMentionsAny(raw, monitorHealthNames) : true;
+          if (typeof recDbChangeRawMentionsAny === 'function' && !careBankroll && !careHealth) {
+            return;
+          }
+
+          const msg = JSON.parse(raw);
           if (msg.type !== 'db_change') {
             return;
           }
 
           const stream = msg.database;
-          const bankrollRelatedStreams = new Set([
-            'trades',
-            'fills',
-            'positions',
-            'settlements',
-            'account_balance',
-            'subaccounts',
-          ]);
-          const monitorHealthStreams = new Set([
-            'market_kalshi_15m',
-            'live_symbol_status',
-          ]);
+          const bankrollRelatedStreams = new Set(bankrollNames);
+          const monitorHealthStreams = new Set(monitorHealthNames);
 
           if (monitorHealthStreams.has(stream)) {
             scheduleMonitorHealthRefresh();
@@ -6048,38 +6313,7 @@
             return;
           }
 
-          console.log('Dashboard mobile db_changes: refreshing bankroll/portfolio/performance for stream:', stream);
-
-          const isAccountBalance = stream === 'account_balance';
-          if (isAccountBalance) {
-            try {
-              await fetchAccountBalanceSnapshot();
-            } catch (e) {
-              console.error('Dashboard mobile: account balance snapshot after db_change failed:', e);
-            }
-          }
-
-          try {
-            await refreshPortfolioPanelAllTabsData({
-              rerenderActive: false,
-              rerenderAllCharts: true,
-              skipBalanceSnapshotFetch: isAccountBalance,
-            });
-          } catch (e) {
-            console.error('Dashboard mobile: error refreshing portfolio panel after db_change:', e);
-          }
-
-          try {
-            await loadPerformanceData();
-          } catch (e) {
-            console.error('Dashboard mobile: error refreshing performance data after db_change:', e);
-          }
-
-          try {
-            await loadPerformancePanelCashBalance();
-          } catch (e) {
-            console.error('Dashboard mobile: error refreshing performance cash balance after db_change:', e);
-          }
+          queueDashboardBankrollRefreshForStream(stream);
         } catch (e) {
           console.error('Dashboard mobile: error handling db_changes WebSocket message:', e);
         }

@@ -21,7 +21,6 @@ import base64
 
 # Import from backend modules
 from backend.util.paths import get_kalshi_data_dir, ensure_data_dirs
-from backend.account_mode import get_account_mode
 from backend.core.config.feature_flags import (
     websocket_timeout, websocket_max_retries, 
     websocket_fallback_to_http, websocket_debug
@@ -71,12 +70,11 @@ class KalshiWebSocketWatchdog:
         
     def load_kalshi_credentials(self):
         """Load Kalshi API credentials"""
-        account_mode = get_account_mode()
         from backend.util.paths import get_kalshi_credentials_dir
-        cred_dir = Path(get_kalshi_credentials_dir()) / account_mode
-        
+        cred_dir = Path(get_kalshi_credentials_dir()) / "prod"
+
         if not cred_dir.exists():
-            print(f"❌ No {account_mode} credentials found at {cred_dir}")
+            print(f"❌ No prod credentials found at {cred_dir}")
             return None
         
         env_vars = dotenv_values(cred_dir / ".env")

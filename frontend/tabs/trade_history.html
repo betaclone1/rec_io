@@ -7,6 +7,7 @@
   <title>Trade History</title>
   <link rel="stylesheet" href="/styles/global.css" />
   <script src="/js/globals.js"></script>
+  <script src="/js/db_changes_prefilter.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
 
@@ -1461,7 +1462,11 @@
 
       ws.onmessage = function(event) {
         try {
-          const data = JSON.parse(event.data);
+          const raw = event.data;
+          if (typeof recDbChangeRawMentionsStream === 'function' && !recDbChangeRawMentionsStream(raw, 'trades')) {
+            return;
+          }
+          const data = JSON.parse(raw);
           if (data.type === 'db_change' && data.database === 'trades') {
             scheduleTradesRefetchFromDbChange();
           }

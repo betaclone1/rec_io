@@ -82,6 +82,8 @@ This stack is **one repo, any host**: you develop on a local dev machine and dep
 
 5. **Resilience (required for long-lived tabs):** Proxies and idle timers close WebSockets; Redis pubsub can stall without timeouts. You still use **one** same-origin `/ws/db_changes` per page (or per app shell), carrying **all** logical streams; handlers filter by `database`. **One reconnect sequence** restores that pipe for every stream — not a timer per metric. **Main’s Redis forwarder** uses timed `get_message` + `PING` instead of an unbounded `listen()` loop. **Do not** default to interval polling per widget; that defeats event-driven refetch. If a feature truly needs a poll, document it as an explicit exception.
 
+6. **UI coalescing (required for high fan-out):** A single `db_change` channel carries every stream; NOTIFY bursts (e.g. many `trades_0001` updates) can deliver messages faster than the browser can run chart reflows and HTTP refetches. **`WebSocket.onmessage` must not start unbounded concurrent work** (e.g. an `async` handler that fires a full dashboard refresh per message). Use **debounce** plus **single-flight** (or a queued follow-up) for heavy handlers so the renderer does not run out of memory (Chromium tab crash / “Aw, Snap”, error code 5).
+
 Violating (1) or (4) breaks the “build local, run anywhere” model.
 
 ---
@@ -107,6 +109,7 @@ Every message on `rec_io:db_changes` (Redis and WebSocket) has this shape:
 ```
 
 - **`database`** is the **stream name** from the registry. Use this to "watch" a set of values: subscribe and filter `msg.database === "trades"` (or equivalent).
+- **Wire JSON spacing:** Python `json.dumps` emits a space after `:` (e.g. `"database": "trades"`). If you use a substring prefilter before `JSON.parse` (see `frontend/js/db_changes_prefilter.js`), it must match both that form and compact `"database":"trades"` so refetches are not skipped.
 - **`data.change_data`** identifies the physical table and operation. For high-volume streams, future extensions may add e.g. `symbol`, `strike_id`, or `keys` for targeted updates; the top-level shape stays the same.
 
 Frontend and backend code must rely only on this contract. No backend-specific or frontend-specific variants.

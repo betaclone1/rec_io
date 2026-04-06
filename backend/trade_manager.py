@@ -26,7 +26,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from backend.util.paths import get_project_root, get_trade_history_dir, get_logs_dir, get_host, get_data_dir
 from backend.util.trade_log_archivist import union_trades_with_archives_select
-from backend.account_mode import get_account_mode
 from backend.util.paths import get_accounts_data_dir
 EST_ZONE = ZoneInfo("America/New_York")
 # Hourly: "BTC 2pm" -> hour 2, pm
@@ -1104,6 +1103,32 @@ def estimate_kalshi_taker_fee(position: int, price: float) -> float:
     return math.ceil(raw * 100) / 100
 
 
+def _paper_ledger_on_open(buy_price: float, position: int, open_fee_dollars: float) -> None:
+    """
+    Mimic live Kalshi balance feed: ``portfolio_value`` from OPEN paper trades in DB;
+    cash = total equity minus that; total equity decreases by open fees only (premium is neutral).
+    """
+    try:
+        from backend.balance_snapshot import paper_open_cost_and_fee_cents, sync_paper_balance_feed_after_open
+
+        _cost_cents, fee_cents = paper_open_cost_and_fee_cents(
+            float(buy_price), int(position), float(open_fee_dollars or 0.0)
+        )
+        sync_paper_balance_feed_after_open(fee_cents)
+    except Exception as e:
+        log(f"⚠️ paper ledger open: {e}")
+
+
+def _paper_ledger_on_close(buy_price: float, position: int, pnl_dollars: float) -> None:
+    try:
+        from backend.balance_snapshot import sync_paper_balance_feed_after_close
+
+        pnl_cents = int(round(float(pnl_dollars) * 100.0))
+        sync_paper_balance_feed_after_close(pnl_cents)
+    except Exception as e:
+        log(f"⚠️ paper ledger close: {e}")
+
+
 def _format_count_fp(payload: dict, for_close: bool = False) -> str:
     """Format contract count as Kalshi fixed-point string (e.g. '100.00'). For open use position/count; for close use count/position."""
     fp = payload.get("count_fp")
@@ -1440,11 +1465,20 @@ def insert_trade(trade):
                 master_trading_bankroll_for_db = None
                 mtb_base_value_for_db = None
                 try:
-                    cursor.execute("""
+                    from backend.trading_mode import get_trading_mode
+
+                    _ab = (
+                        "users.account_balance_paper_0001"
+                        if get_trading_mode() == "paper"
+                        else "users.account_balance_0001"
+                    )
+                    cursor.execute(
+                        f"""
                         SELECT master_trading_bankroll, mtb_base_value
-                        FROM users.account_balance_0001
+                        FROM {_ab}
                         ORDER BY id DESC LIMIT 1
-                    """)
+                        """
+                    )
                     mtb_row = cursor.fetchone()
                     if mtb_row:
                         master_trading_bankroll_for_db = mtb_row[0]
@@ -3128,6 +3162,7 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                 roi_value = roi_pct
 
     # Update PostgreSQL only
+    close_ledger_paper: Optional[tuple] = None
     try:
         pg_conn = get_postgresql_connection()
         if pg_conn:
@@ -3145,6 +3180,7 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                         (trade_id,),
                     )
                     existing_row = cursor.fetchone()
+                    existing_status = None
                     
                     # Preserve existing values if trade is already closed and provided values are None
                     final_high_price = high_price
@@ -3189,6 +3225,23 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                                 cursor, trade_symbol, trade_date, trade_contract
                             )
                         _finalize_closed_trade_win_loss_confirmed(cursor, trade_id)
+                        if existing_status != 'closed' and calculated_pnl is not None:
+                            cursor.execute(
+                                "SELECT paper_trade, buy_price, position FROM users.trades_0001 WHERE id = %s",
+                                (trade_id,),
+                            )
+                            pr = cursor.fetchone()
+                            if (
+                                pr
+                                and pr[0] is True
+                                and pr[1] is not None
+                                and pr[2] is not None
+                            ):
+                                close_ledger_paper = (
+                                    float(pr[1]),
+                                    int(pr[2]),
+                                    float(calculated_pnl),
+                                )
                 else:
                     cursor.execute("""
                         UPDATE users.trades_0001 
@@ -3235,6 +3288,13 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
         update_monitor_win_streak(trade_id)
         # Check and update cycle metrics if all trades in cycle are closed
         check_and_update_cycle_metrics(trade_id)
+
+    if close_ledger_paper is not None:
+        bp, pos, pnl_v = close_ledger_paper
+        try:
+            _paper_ledger_on_close(bp, pos, pnl_v)
+        except Exception as e:
+            log(f"⚠️ paper ledger after close (update_trade_status_with_ret_pct): {e}")
 
 def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbol_close=None, win_loss=None, pnl=None, close_method=None, fees=None):
     """Update trade status in PostgreSQL database only."""
@@ -4099,6 +4159,12 @@ async def add_trade(request: Request):
                 pg_conn.close()
         except Exception as e:
             log(f"⚠️ Failed to update paper trade to open: {e}")
+
+        try:
+            if buy_price is not None and position is not None:
+                _paper_ledger_on_open(float(buy_price), int(position), float(open_fee or 0.0))
+        except Exception as e:
+            log(f"⚠️ paper ledger after open: {e}")
         
         log_event(data.get("ticket_id", "UNKNOWN"), "MANAGER: PAPER TRADE — OPENED IMMEDIATELY")
         

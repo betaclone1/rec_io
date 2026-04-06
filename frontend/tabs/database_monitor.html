@@ -44,6 +44,7 @@
 
   <div class="diag mono" id="diag">—</div>
 
+  <script src="/js/db_changes_prefilter.js"></script>
   <script>
     /*
       Database Monitor template notes:
@@ -217,8 +218,14 @@
         document.getElementById("ws").textContent = "error";
       };
       ws.onmessage = (ev) => {
+        const raw = ev.data;
+        const names = Array.from(WATCH_DATABASES);
+        if (typeof recDbChangeRawMentionsAny === 'function' && names.length > 0 &&
+            !recDbChangeRawMentionsAny(raw, names)) {
+          return;
+        }
         let d = null;
-        try { d = JSON.parse(ev.data); } catch { return; }
+        try { d = JSON.parse(raw); } catch { return; }
         if (!d || d.type !== "db_change") return;
         if (!WATCH_DATABASES.has(d.database)) return;
         fetchAll();

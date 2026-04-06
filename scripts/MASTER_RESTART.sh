@@ -122,6 +122,92 @@ flush_all_ports() {
     print_success "All ports flushed"
 }
 
+# Redis: stack expects a real redis-server on REDIS_HOST:REDIS_PORT (supervisor only runs redis_switchboard).
+# Defaults match supervisord env (localhost:6379).
+_redis_ping_ok() {
+    local h="${1:-localhost}"
+    local p="${2:-6379}"
+    if command -v redis-cli >/dev/null 2>&1; then
+        redis-cli -h "$h" -p "$p" ping 2>/dev/null | grep -q PONG
+        return $?
+    fi
+    # No redis-cli: best-effort TCP check (local only)
+    if [ "$h" = "localhost" ] || [ "$h" = "127.0.0.1" ]; then
+        nc -z 127.0.0.1 "$p" >/dev/null 2>&1
+        return $?
+    fi
+    return 1
+}
+
+_redis_host_is_local() {
+    local h="${1:-localhost}"
+    case "$h" in
+        localhost|127.0.0.1|"") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Try to start redis-server on this machine (macOS Homebrew, systemd Linux, or redis-server in PATH).
+_start_redis_local() {
+    local started=0
+    if [ "$(uname -s 2>/dev/null)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+        if brew services start redis >/dev/null 2>&1; then
+            started=1
+        fi
+    fi
+    if [ "$started" != "1" ] && command -v systemctl >/dev/null 2>&1; then
+        if systemctl start redis-server >/dev/null 2>&1 || systemctl start redis >/dev/null 2>&1; then
+            started=1
+        fi
+    fi
+    if [ "$started" != "1" ] && command -v redis-server >/dev/null 2>&1; then
+        local conf=""
+        for c in /opt/homebrew/etc/redis.conf /usr/local/etc/redis.conf /etc/redis/redis.conf; do
+            if [ -f "$c" ]; then
+                conf="$c"
+                break
+            fi
+        done
+        if [ -n "$conf" ]; then
+            redis-server "$conf" --daemonize yes >/dev/null 2>&1 && started=1
+        else
+            redis-server --daemonize yes >/dev/null 2>&1 && started=1
+        fi
+    fi
+    [ "$started" = "1" ]
+}
+
+# Ensure Redis responds before processes that use it (switchboard, main forwarders, ATS, etc.).
+ensure_redis_available() {
+    local rh="${REDIS_HOST:-localhost}"
+    local rp="${REDIS_PORT:-6379}"
+    print_status "Checking Redis (${rh}:${rp})..."
+    if _redis_ping_ok "$rh" "$rp"; then
+        print_success "Redis is responding"
+        return 0
+    fi
+    if ! _redis_host_is_local "$rh"; then
+        print_warning "Redis at ${rh}:${rp} is not responding (non-local host; not auto-starting). Install redis-cli to verify, or start Redis on that host."
+        return 0
+    fi
+    print_warning "Redis is not responding; attempting to start a local redis-server..."
+    if ! _start_redis_local; then
+        print_warning "Could not start Redis automatically (install: brew install redis, or apt install redis-server). Continuing; services may log Connection refused until Redis runs."
+        return 0
+    fi
+    local n=0
+    while [ $n -lt 20 ]; do
+        if _redis_ping_ok "$rh" "$rp"; then
+            print_success "Redis is responding after start"
+            return 0
+        fi
+        /bin/sleep 0.5
+        n=$((n + 1))
+    done
+    print_warning "Redis start was attempted but PING still fails after 10s. Check logs: brew services info redis (macOS) or journalctl -u redis (Linux)."
+    return 0
+}
+
 # Function to stop supervisor
 stop_supervisor() {
     print_status "Stopping supervisor..."
@@ -438,6 +524,9 @@ master_restart() {
     mkdir -p "$PROJECT_ROOT/logs"
     print_success "Logs directory ready"
     echo ""
+
+    ensure_redis_available
+    echo ""
     
     # Check for external connections first
     check_external_connections
@@ -576,6 +665,9 @@ quick_restart() {
     print_header
     print_status "Initiating QUICK RESTART (supervisor only)..."
     echo ""
+
+    ensure_redis_available
+    echo ""
     
     # Stop and start supervisor
     stop_supervisor
@@ -648,6 +740,9 @@ emergency_restart() {
     
     # Wait a moment
     /bin/sleep 2
+
+    ensure_redis_available
+    echo ""
     
     # Start fresh
     start_supervisor
@@ -679,7 +774,7 @@ main() {
             echo "Usage: $0 [COMMAND]"
             echo ""
             echo "Commands:"
-            echo "  master, full    - Complete MASTER RESTART with process cleanup (default)"
+            echo "  master, full    - Complete MASTER RESTART with process cleanup (default); ensures local Redis if REDIS_HOST is localhost"
             echo "  quick           - Quick supervisor restart only (no process cleanup)"
             echo "  emergency, force - Same as master restart (legacy alias)"
             echo "  status          - Show current system status"

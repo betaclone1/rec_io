@@ -10,7 +10,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirna
 
 from backend.util.paths import get_project_root, get_kalshi_credentials_dir
 from backend.core.config.settings import config
-from backend.account_mode import get_account_mode
 import requests
 import json
 import asyncio
@@ -36,28 +35,18 @@ from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
 EST = ZoneInfo("America/New_York")
 
-# Dynamically select API base URL and credentials directory based on account mode
-BASE_URLS = {
-    "prod": "https://api.elections.kalshi.com/trade-api/v2",
-    "demo": "https://demo-api.kalshi.co/trade-api/v2"
-}
-
 def get_base_url():
-    BASE_URLS = {
-        "prod": "https://api.elections.kalshi.com/trade-api/v2",
-        "demo": "https://demo-api.kalshi.co/trade-api/v2"
-    }
-    return BASE_URLS.get(get_account_mode(), BASE_URLS["prod"])
+    return "https://api.elections.kalshi.com/trade-api/v2"
 
-print(f"Using base URL: {get_base_url()} for mode: {get_account_mode()}")
+
+print(f"Using base URL: {get_base_url()} (prod)")
 
 def load_kalshi_credentials():
     """Load Kalshi API credentials"""
-    account_mode = get_account_mode()
-    cred_dir = Path(get_kalshi_credentials_dir()) / account_mode
-    
+    cred_dir = Path(get_kalshi_credentials_dir()) / "prod"
+
     if not cred_dir.exists():
-        print(f"❌ No {account_mode} credentials found at {cred_dir}")
+        print(f"❌ No prod credentials found at {cred_dir}")
         return None
     
     env_vars = dotenv_values(cred_dir / ".env")
@@ -526,7 +515,7 @@ class KalshiOrderbookWatchdog:
             }
             
             print(f"[{datetime.now(EST)}] 🔐 Attempting Market Ticker WebSocket connection...")
-            print(f"[{datetime.now(EST)}] 📊 Account Mode: {get_account_mode()}")
+            print(f"[{datetime.now(EST)}] 📊 Kalshi: prod")
             print(f"[{datetime.now(EST)}] 🔑 Using API Key: {credentials['KEY_ID'][:8]}...")
             
             # Connect with authentication headers

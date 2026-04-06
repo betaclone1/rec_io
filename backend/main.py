@@ -6,6 +6,7 @@ Uses the single centralized port configuration system.
 import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
+from starlette.responses import Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -106,6 +107,16 @@ _main_logger.info("Using centralized port %s (ATS port %s)", MAIN_APP_PORT, ACTI
 # Import centralized path utilities
 from backend.util.paths import get_data_dir, get_trade_history_dir, get_accounts_data_dir
 from backend.account_mode import get_account_mode
+from backend.trading_mode import (
+    account_balance_table_for_user,
+    get_trading_mode,
+    is_paper_trading,
+    migrate_legacy_state_file,
+    set_trading_mode as persist_trading_mode,
+    sql_ident_qualified_table,
+    subaccounts_table_for_user,
+    transfers_table_for_user,
+)
 
 # Global set of connected websocket clients for preferences
 connected_clients = set()
@@ -596,6 +607,40 @@ async def broadcast_account_mode(mode: str):
             to_remove.add(client)
     connected_clients.difference_update(to_remove)
 
+
+async def broadcast_trading_mode(mode: str):
+    """Notify preferences WebSocket clients of live vs paper (global paper trading)."""
+    message = json.dumps(
+        {
+            "trading_mode": mode,
+            "global_paper_mode": mode == "paper",
+        }
+    )
+    to_remove = set()
+    for client in connected_clients:
+        try:
+            await client.send_text(message)
+        except Exception:
+            to_remove.add(client)
+    connected_clients.difference_update(to_remove)
+
+
+async def ripple_bankroll_to_monitors():
+    """
+    After balance source changes (e.g. live vs paper), recompute monitor allotments from
+    the active account_balance table via monitor_manager (same path as Kalshi sync_balance).
+    """
+    def _run():
+        try:
+            from backend.kalshi_account_sync_ws import notify_monitor_manager
+
+            notify_monitor_manager(False)
+        except Exception as e:
+            _main_logger.warning("ripple_bankroll_to_monitors: %s", e)
+
+    await asyncio.to_thread(_run)
+
+
 # Broadcast helper function for database changes
 async def _broadcast_db_change_message_text(message: str) -> None:
     """Send a pre-built db_change JSON string to all /ws/db_changes subscribers."""
@@ -817,6 +862,10 @@ async def _redis_trading_preferences_consume_loop(queue: asyncio.Queue) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown; use instead of on_event for FastAPI compatibility."""
+    try:
+        migrate_legacy_state_file()
+    except Exception as e:
+        _main_logger.warning("migrate_legacy_state_file: %s", e)
     _main_logger.info("Main app started on port %s", MAIN_APP_PORT)
     redis_queue: asyncio.Queue = asyncio.Queue()
     pref_queue: asyncio.Queue = asyncio.Queue()
@@ -1788,48 +1837,114 @@ async def get_account_mode_endpoint():
 
 @app.get("/api/get_kalshi_email")
 async def get_kalshi_email_endpoint():
-    """Get Kalshi email from credentials file for current account mode."""
+    """Get Kalshi email from prod credentials (Kalshi env is always prod)."""
     try:
-        from backend.account_mode import get_account_mode
         from backend.util.paths import get_kalshi_credentials_dir
         import os
-        
-        mode = get_account_mode()
-        cred_dir = os.path.join(get_kalshi_credentials_dir(), mode)
+
+        cred_dir = os.path.join(get_kalshi_credentials_dir(), "prod")
         auth_file = os.path.join(cred_dir, "kalshi-auth.txt")
-        
+
         if os.path.exists(auth_file):
-            # Read the credentials file directly
             with open(auth_file, "r") as f:
                 lines = f.readlines()
-            
+
             email = None
             for line in lines:
                 if line.startswith("email:"):
                     email = line.split("email:")[1].strip()
                     break
-            
+
             if email:
-                # Add "DEMO" suffix for demo mode
-                display_email = email if mode == "prod" else f"{email} DEMO"
-                return {"email": display_email}
-            else:
-                return {"email": "No email found in credentials"}
-        else:
-            return {"email": "No credentials found"}
-            
+                return {"email": email}
+            return {"email": "No email found in credentials"}
+        return {"email": "No credentials found"}
+
     except Exception as e:
         _main_logger.warning(f"Error reading Kalshi credentials: {e}")
         return {"email": "Error reading credentials"}
 
+
+@app.get("/api/trading_mode")
+async def get_trading_mode_endpoint(response: Response):
+    """Global live vs paper; labels for dashboard switcher."""
+    _api_no_store_headers(response)
+    tm = get_trading_mode()
+    gp = is_paper_trading()
+    live_label = "LIVE"
+    paper_label = "PAPER"
+    try:
+        em = await get_kalshi_email_endpoint()
+        e = em.get("email") if isinstance(em, dict) else None
+        bad = (
+            "no email",
+            "no credentials",
+            "error reading",
+        )
+        if e and not any(b in str(e).lower() for b in bad):
+            live_label = f"LIVE - {e}"
+    except Exception:
+        pass
+    try:
+        creds = get_user_credentials()
+        name = (creds or {}).get("name")
+        if name:
+            paper_label = f"PAPER - {name}"
+    except Exception:
+        pass
+    return {
+        "trading_mode": tm,
+        "global_paper_mode": gp,
+        "live_label": live_label,
+        "paper_label": paper_label,
+    }
+
+
+@app.post("/api/set_trading_mode")
+async def set_trading_mode_endpoint(payload: dict):
+    """Persist live|paper, bulk monitor paper flags, broadcast to clients."""
+    mode = (payload or {}).get("trading_mode")
+    norm, err = persist_trading_mode(mode)
+    if err:
+        return {"status": "error", "message": err}
+    await broadcast_trading_mode(norm)
+    await ripple_bankroll_to_monitors()
+    return {"status": "ok", "trading_mode": norm, "global_paper_mode": norm == "paper"}
+
+
+@app.post("/api/paper/bankroll/seed")
+async def seed_paper_bankroll_endpoint(payload: dict):
+    """Set initial paper bankroll (cents). User-configured only."""
+    try:
+        cents = (payload or {}).get("bankroll_cents")
+        if cents is None:
+            return {"status": "error", "message": "bankroll_cents required"}
+        c = int(cents)
+        if c < 0:
+            return {"status": "error", "message": "bankroll_cents must be non-negative"}
+        from backend.paper_bankroll import seed_paper_bankroll_cents
+
+        if not seed_paper_bankroll_cents(c):
+            return {"status": "error", "message": "database unavailable"}
+        await broadcast_db_change("account_balance_paper", {"source": "seed"})
+        await broadcast_db_change("subaccounts", {"source": "paper_seed"})
+        return {"status": "ok", "bankroll_cents": c}
+    except (TypeError, ValueError):
+        return {"status": "error", "message": "bankroll_cents must be an integer"}
+    except Exception as e:
+        _main_logger.warning("paper bankroll seed: %s", e)
+        return {"status": "error", "message": str(e)}
+
+
 @app.post("/api/set_account_mode")
 async def set_account_mode(mode_data: dict):
-    """Set account mode."""
-    from backend.account_mode import set_account_mode
+    """Legacy: Kalshi env is prod only; demo requests are coerced to prod."""
+    from backend.account_mode import set_account_mode as _set_am
+
     mode = mode_data.get("mode")
-    if mode in ["prod", "demo"]:
-        set_account_mode(mode)
-        return {"status": "success", "mode": mode}
+    if mode in ("prod", "demo"):
+        _set_am("prod")
+        return {"status": "success", "mode": "prod"}
     return {"status": "error", "message": "Invalid mode"}
 
 # Trade data endpoints
@@ -2101,9 +2216,16 @@ async def trigger_account_sync():
     threading.Thread(target=_run_sync, daemon=True).start()
     return {"ok": True}
 
+def _api_no_store_headers(response: Response) -> None:
+    """Avoid stale browser/CDN cache of JSON that differs by trading_mode."""
+    response.headers["Cache-Control"] = "private, no-store, max-age=0, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+
+
 @app.get("/api/account/balance")
-async def get_account_balance(mode: str = "prod"):
+async def get_account_balance(response: Response, mode: str = "prod"):
     """Get account balance from PostgreSQL database."""
+    _api_no_store_headers(response)
     try:
         import psycopg2
         from psycopg2.extras import RealDictCursor
@@ -2112,13 +2234,17 @@ async def get_account_balance(mode: str = "prod"):
         conn = get_postgresql_connection()
         
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            # Get the latest account balance
-            cursor.execute("""
+            ab_ident = sql_ident_qualified_table(account_balance_table_for_user("0001"))
+            cursor.execute(
+                sql.SQL(
+                    """
                 SELECT portfolio, positions, bankroll_current, mtb_base_value
-                FROM users.account_balance_0001 
-                ORDER BY id DESC 
+                FROM {}
+                ORDER BY id DESC
                 LIMIT 1
-            """)
+                """
+                ).format(ab_ident)
+            )
             balance_result = cursor.fetchone()
             
             
@@ -2148,19 +2274,25 @@ async def get_account_balance(mode: str = "prod"):
         return {"portfolio": 0, "positions": 0, "bankroll_current": 0, "mtb_base_value": None}
 
 @app.get("/api/subaccounts")
-async def get_subaccounts():
-    """Get subaccounts (users.subaccounts_0001) for display. Balances in cents."""
+async def get_subaccounts(response: Response):
+    """Get subaccounts for display (live or paper table). Balances in cents."""
+    _api_no_store_headers(response)
     try:
         import psycopg2
         from psycopg2.extras import RealDictCursor
         conn = get_postgresql_connection()
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute("""
+            sa_ident = sql_ident_qualified_table(subaccounts_table_for_user("0001"))
+            cursor.execute(
+                sql.SQL(
+                    """
                 SELECT id, subaccount, balance, base_value, realized_pnl, realized_pnl_pct,
                        target_pnl__pct, transfer_amt, automatic_transfers
-                FROM users.subaccounts_0001
+                FROM {}
                 ORDER BY id
-            """)
+                """
+                ).format(sa_ident)
+            )
             rows = cursor.fetchall()
         conn.close()
         return {"subaccounts": [dict(r) for r in rows]}
@@ -2179,9 +2311,10 @@ async def update_subaccount_automatic_transfers(request: Request):
             return {"ok": False, "error": "subaccount and automatic_transfers required"}
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
+            sa_ident = sql_ident_qualified_table(subaccounts_table_for_user("0001"))
             cursor.execute(
-                "UPDATE users.subaccounts_0001 SET automatic_transfers = %s WHERE subaccount = %s",
-                (bool(automatic), subaccount_name)
+                sql.SQL("UPDATE {} SET automatic_transfers = %s WHERE subaccount = %s").format(sa_ident),
+                (bool(automatic), subaccount_name),
             )
             conn.commit()
             if cursor.rowcount == 0:
@@ -2207,20 +2340,23 @@ async def update_subaccount_transfer_settings(request: Request):
             return {"ok": False, "error": "at least one of target_pnl__pct or transfer_amt required"}
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
+            sa_ident = sql_ident_qualified_table(subaccounts_table_for_user("0001"))
             if target_pct is not None and transfer_amt is not None:
                 cursor.execute(
-                    "UPDATE users.subaccounts_0001 SET target_pnl__pct = %s, transfer_amt = %s WHERE subaccount = %s",
-                    (float(target_pct), float(transfer_amt), subaccount_name)
+                    sql.SQL(
+                        "UPDATE {} SET target_pnl__pct = %s, transfer_amt = %s WHERE subaccount = %s"
+                    ).format(sa_ident),
+                    (float(target_pct), float(transfer_amt), subaccount_name),
                 )
             elif target_pct is not None:
                 cursor.execute(
-                    "UPDATE users.subaccounts_0001 SET target_pnl__pct = %s WHERE subaccount = %s",
-                    (float(target_pct), subaccount_name)
+                    sql.SQL("UPDATE {} SET target_pnl__pct = %s WHERE subaccount = %s").format(sa_ident),
+                    (float(target_pct), subaccount_name),
                 )
             else:
                 cursor.execute(
-                    "UPDATE users.subaccounts_0001 SET transfer_amt = %s WHERE subaccount = %s",
-                    (float(transfer_amt), subaccount_name)
+                    sql.SQL("UPDATE {} SET transfer_amt = %s WHERE subaccount = %s").format(sa_ident),
+                    (float(transfer_amt), subaccount_name),
                 )
             conn.commit()
             if cursor.rowcount == 0:
@@ -2252,9 +2388,10 @@ async def update_subaccount_base_value(request: Request):
             return {"ok": False, "error": "base_value must be non-negative"}
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
+            sa_ident = sql_ident_qualified_table(subaccounts_table_for_user("0001"))
             cursor.execute(
-                "UPDATE users.subaccounts_0001 SET base_value = %s WHERE subaccount = %s",
-                (base_value_int, subaccount_name)
+                sql.SQL("UPDATE {} SET base_value = %s WHERE subaccount = %s").format(sa_ident),
+                (base_value_int, subaccount_name),
             )
             conn.commit()
             if cursor.rowcount == 0:
@@ -2272,8 +2409,8 @@ async def initiate_transfer(request: Request):
     """
     Manual internal transfer between subaccounts (e.g. MTB → Cash Transfer).
     Body: { "from": "Master Trading Bankroll", "to": "Cash Transfer", "amount": 100 } (amount in dollars).
-    Inserts into users.transfers_0001 (initiated=manual), updates subaccounts balances, then triggers
-    kalshi_account_sync (sync_balance) to poll Kalshi and update account_balance.
+    Inserts into users.transfers_0001 or users.transfers_paper_0001 (initiated=manual), updates
+    subaccounts (live or paper), then in live mode triggers kalshi_account_sync (sync_balance).
     """
     try:
         payload = await request.json()
@@ -2305,9 +2442,10 @@ async def initiate_transfer(request: Request):
         conn = get_postgresql_connection()
         try:
             with conn.cursor() as cursor:
+                sa_ident = sql_ident_qualified_table(subaccounts_table_for_user("0001"))
                 cursor.execute(
-                    "SELECT balance FROM users.subaccounts_0001 WHERE subaccount = %s",
-                    (from_name,)
+                    sql.SQL("SELECT balance FROM {} WHERE subaccount = %s").format(sa_ident),
+                    (from_name,),
                 )
                 row = cursor.fetchone()
                 if not row:
@@ -2316,23 +2454,30 @@ async def initiate_transfer(request: Request):
                 if from_balance < amount_cents:
                     return {"ok": False, "error": f"insufficient balance in {from_name}"}
                 cursor.execute(
-                    "SELECT 1 FROM users.subaccounts_0001 WHERE subaccount = %s",
-                    (to_name,)
+                    sql.SQL("SELECT 1 FROM {} WHERE subaccount = %s").format(sa_ident),
+                    (to_name,),
                 )
                 if not cursor.fetchone():
                     return {"ok": False, "error": f"subaccount not found: {to_name}"}
 
-                cursor.execute("""
-                    INSERT INTO users.transfers_0001 (timestamp, type, "from", "to", amount, initiated)
+                xfer_ident = sql_ident_qualified_table(transfers_table_for_user("0001"))
+                insert_xfer = sql.SQL(
+                    """
+                    INSERT INTO {} (timestamp, type, "from", "to", amount, initiated)
                     VALUES (%s, %s, %s, %s, %s, %s)
-                """, (transfer_timestamp_est, "internal", from_name, to_name, amount_cents, "manual"))
+                    """
+                ).format(xfer_ident)
                 cursor.execute(
-                    "UPDATE users.subaccounts_0001 SET balance = balance - %s WHERE subaccount = %s",
-                    (amount_cents, from_name)
+                    insert_xfer,
+                    (transfer_timestamp_est, "internal", from_name, to_name, amount_cents, "manual"),
                 )
                 cursor.execute(
-                    "UPDATE users.subaccounts_0001 SET balance = balance + %s WHERE subaccount = %s",
-                    (amount_cents, to_name)
+                    sql.SQL("UPDATE {} SET balance = balance - %s WHERE subaccount = %s").format(sa_ident),
+                    (amount_cents, from_name),
+                )
+                cursor.execute(
+                    sql.SQL("UPDATE {} SET balance = balance + %s WHERE subaccount = %s").format(sa_ident),
+                    (amount_cents, to_name),
                 )
                 conn.commit()
         finally:
@@ -2340,18 +2485,22 @@ async def initiate_transfer(request: Request):
 
         # Notify frontend so Account Information panel refreshes immediately (subaccounts + transfers table)
         await broadcast_db_change("subaccounts", {"source": "initiate_transfer"})
-        await broadcast_db_change("transfers", {"source": "initiate_transfer"})
+        if is_paper_trading():
+            await broadcast_db_change("transfers_paper", {"source": "initiate_transfer"})
+        else:
+            await broadcast_db_change("transfers", {"source": "initiate_transfer"})
 
-        # Trigger kalshi_account_sync (sync_balance) in background: poll Kalshi, update subaccounts/account_balance, notify
-        def _run_sync():
-            try:
-                from backend.kalshi_account_sync_ws import sync_balance
-                sync_balance()
-            except Exception as e:
-                _main_logger.warning(f"initiate-transfer: sync_balance failed: {e}")
+        if not is_paper_trading():
+            # Live: poll Kalshi, update subaccounts/account_balance, notify
+            def _run_sync():
+                try:
+                    from backend.kalshi_account_sync_ws import sync_balance
+                    sync_balance()
+                except Exception as e:
+                    _main_logger.warning(f"initiate-transfer: sync_balance failed: {e}")
 
-        import threading
-        threading.Thread(target=_run_sync, daemon=True).start()
+            import threading
+            threading.Thread(target=_run_sync, daemon=True).start()
 
         return {"ok": True}
     except Exception as e:
@@ -2406,13 +2555,18 @@ async def get_account_balance_history(mode: str = "prod", limit: int = 1000):
         conn = get_postgresql_connection()
         
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            # Get historical account balance data
-            cursor.execute("""
-                SELECT portfolio, positions, updated_at 
-                FROM users.account_balance_0001 
+            ab_ident = sql_ident_qualified_table(account_balance_table_for_user("0001"))
+            cursor.execute(
+                sql.SQL(
+                    """
+                SELECT portfolio, positions, updated_at
+                FROM {}
                 ORDER BY updated_at ASC
                 LIMIT %s
-            """, (limit,))
+                """
+                ).format(ab_ident),
+                (limit,),
+            )
             balance_results = cursor.fetchall()
             
             conn.close()
@@ -2433,8 +2587,11 @@ async def get_account_balance_history(mode: str = "prod", limit: int = 1000):
         return {"history": []}
 
 @app.get("/api/db/fills")
-def get_fills():
+def get_fills(response: Response):
     """Get fills data from PostgreSQL database."""
+    _api_no_store_headers(response)
+    if is_paper_trading():
+        return {"fills": []}
     try:
         import psycopg2
         from psycopg2.extras import RealDictCursor
@@ -2469,8 +2626,11 @@ def get_fills():
         return {"fills": []}
 
 @app.get("/api/db/positions")
-def get_positions():
+def get_positions(response: Response):
     """Get positions data from PostgreSQL database."""
+    _api_no_store_headers(response)
+    if is_paper_trading():
+        return {"positions": []}
     try:
         import psycopg2
         from psycopg2.extras import RealDictCursor
@@ -2510,8 +2670,11 @@ def get_positions():
         return {"positions": []}
 
 @app.get("/api/db/settlements")
-def get_settlements():
+def get_settlements(response: Response):
     """Get settlements data from PostgreSQL database."""
+    _api_no_store_headers(response)
+    if is_paper_trading():
+        return {"settlements": []}
     try:
         import psycopg2
         from psycopg2.extras import RealDictCursor
@@ -2552,21 +2715,25 @@ def get_settlements():
 
 
 @app.get("/api/db/transfers")
-def get_transfers():
-    """Get transfer history from users.transfers_0001 (internal/external transfer log)."""
+def get_transfers(response: Response):
+    """Transfer history: live users.transfers_0001; paper users.transfers_paper_0001."""
+    _api_no_store_headers(response)
     try:
-        import psycopg2
         from psycopg2.extras import RealDictCursor
 
         conn = get_postgresql_connection()
-
+        t_ident = sql_ident_qualified_table(transfers_table_for_user("0001"))
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute("""
+            cursor.execute(
+                sql.SQL(
+                    """
                 SELECT id, timestamp, type, "from", "to", amount, initiated, status
-                FROM users.transfers_0001
+                FROM {}
                 ORDER BY id DESC
                 LIMIT 100
-            """)
+                """
+                ).format(t_ident),
+            )
             rows = cursor.fetchall()
 
         transfers_list = [dict(r) for r in rows]
@@ -5149,12 +5316,17 @@ async def get_current_portfolio():
         conn = get_postgresql_connection()
         
         with conn.cursor() as cursor:
-            cursor.execute("""
+            ab_ident = sql_ident_qualified_table(account_balance_table_for_user("0001"))
+            cursor.execute(
+                sql.SQL(
+                    """
                 SELECT portfolio
-                FROM users.account_balance_0001 
+                FROM {}
                 ORDER BY timestamp DESC
                 LIMIT 1
-            """)
+                """
+                ).format(ab_ident)
+            )
             
             result = cursor.fetchone()
             
@@ -5482,7 +5654,11 @@ async def get_monitors(user_id: str = "user_0001"):
                 "current_performance_modifier": current_performance_modifier,
                 "current_max_pct_exposure": current_max_pct_exposure,
                 "performance_based_allocation": performance_based_allocation,
-                "paper_trade": paper_trade or False,
+                "paper_trade": (
+                    True
+                    if (is_paper_trading() and status == "active")
+                    else (paper_trade or False)
+                ),
                 "regime_monitor_enabled": regime_monitor_enabled or False,
                 "regime_window": regime_window or "30d",
                 "market": (market or "").strip().lower() if market else None,
@@ -5537,7 +5713,8 @@ async def get_monitors(user_id: str = "user_0001"):
             "status": "ok",
             "user_id": user_id,
             "count": len(monitors) - 1,  # Exclude NEW_MONITOR from count
-            "monitors": monitors
+            "monitors": monitors,
+            "global_paper_mode": is_paper_trading(),
         }
     except Exception as e:
         return {
@@ -5960,12 +6137,17 @@ async def get_monitors_allocation(user_id: str = "user_0001"):
             monitor_results = cursor.fetchall()
             
             # Get total bankroll from account_balance (stored in cents)
-            cursor.execute(f"""
+            ab_ident = sql_ident_qualified_table(account_balance_table_for_user(user_number))
+            cursor.execute(
+                sql.SQL(
+                    """
                 SELECT bankroll_current, portfolio
-                FROM users.account_balance_{user_number}
-                ORDER BY timestamp DESC 
+                FROM {}
+                ORDER BY timestamp DESC
                 LIMIT 1
-            """)
+                """
+                ).format(ab_ident)
+            )
             
             balance_result = cursor.fetchone()
             bankroll_value = balance_result[0] if balance_result and balance_result[0] else 0
@@ -6034,20 +6216,25 @@ async def update_monitors_allocation(request: dict):
         
         with conn.cursor() as cursor:
             # Get current total bankroll to calculate new dollar amounts
-            cursor.execute(f"""
+            ab_ident = sql_ident_qualified_table(account_balance_table_for_user(user_number))
+            cursor.execute(
+                sql.SQL(
+                    """
                 SELECT bankroll_current, portfolio
-                FROM users.account_balance_{user_number}
-                ORDER BY timestamp DESC 
+                FROM {}
+                ORDER BY timestamp DESC
                 LIMIT 1
-            """)
-            
+                """
+                ).format(ab_ident)
+            )
+
             balance_result = cursor.fetchone()
             bankroll_value = balance_result[0] if balance_result and balance_result[0] else 0
             portfolio_value = balance_result[1] if balance_result and balance_result[1] else 0
-            
+
             # Use bankroll_current if available, otherwise portfolio (both in cents)
             total_bankroll_cents = bankroll_value if bankroll_value > 0 else portfolio_value
-            
+
             # Update each monitor's allocation
             for update in updates:
                 monitor_id = update.get("id", "").replace(f"mon_{user_number}_", "")
@@ -6297,6 +6484,13 @@ async def toggle_auto_trade(request: dict):
 async def toggle_paper_trade(request: Request):
     """Toggle paper_trade boolean value for a specific monitor"""
     try:
+        if is_paper_trading():
+            return {
+                "status": "error",
+                "message": "global_paper_mode",
+                "code": "global_paper_mode",
+            }
+
         # Extract parameters from request body
         data = await request.json()
         monitor_id = data.get("monitor_id")

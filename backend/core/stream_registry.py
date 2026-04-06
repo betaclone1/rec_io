@@ -18,6 +18,8 @@ TABLE_TO_STREAM: Dict[Tuple[str, str], str] = {
     ("testing", "redis_basic_test"): "redis_basic_test",
     # Account / bankroll / portfolio top-level values (dashboard, account_manager, etc.)
     ("users", "account_balance_0001"): "account_balance",
+    ("users", "account_balance_paper_0001"): "account_balance_paper",
+    ("users", "transfers_paper_0001"): "transfers_paper",
     # Trade log (GET /trades, trade_history UIs); NOTIFY → switchboard stream name "trades"
     ("users", "trades_0001"): "trades",
     # Live price feed snapshot table (used by the standalone live UI)

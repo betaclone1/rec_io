@@ -9366,7 +9366,7 @@ Same as `testing.candlesticks_1m_KXBTCD-26JAN1320-T95499.99` except `market_tick
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
 | `id` | `integer(32)` | NO | nextval('users.account_balance_0001_final_id_se... | |
-| `balance` | `real(24)` | NO | - | |
+| `balance` | `integer(32)` | NO | - | Cash in cents |
 | `exposure` | `integer(32)` | YES | - | |
 | `positions` | `integer(32)` | YES | - | |
 | `portfolio` | `integer(32)` | YES | - | |
@@ -9389,6 +9389,82 @@ Same as `testing.candlesticks_1m_KXBTCD-26JAN1320-T95499.99` except `market_tick
   ```sql
   CREATE UNIQUE INDEX account_balance_0001_final_pkey ON users.account_balance_0001 USING btree (id)
   ```
+
+---
+
+### Table: `users.account_balance_paper_0001`
+
+Parallel balance history when **`trading_mode=paper`**. Same column shape as `users.account_balance_0001`. Rows are written from paper trade open/close (and seed), not from Kalshi. NOTIFY trigger `account_balance_paper_0001_db_notify` → `rec_io_db_notify`; stream key **`account_balance_paper`**.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | nextval | |
+| `balance` | `integer(32)` | NO | - | Cash in cents |
+| `exposure` | `integer(32)` | YES | - | |
+| `positions` | `integer(32)` | YES | - | |
+| `portfolio` | `integer(32)` | YES | - | |
+| `timestamp` | `text` | NO | - | |
+| `created_at` | `timestamp with time zone` | YES | CURRENT_TIMESTAMP | |
+| `updated_at` | `timestamp with time zone` | YES | CURRENT_TIMESTAMP | |
+| `bankroll_current` | `integer(32)` | YES | - | |
+| `bankroll_prev` | `integer(32)` | YES | - | |
+| `portfolio_value` | `integer(32)` | YES | - | |
+| `master_trading_bankroll` | `integer(32)` | YES | - | |
+| `mtb_base_value` | `integer(32)` | YES | - | |
+
+#### Constraints
+
+- **Primary Key:** on `id`
+
+---
+
+### Table: `users.subaccounts_paper_0001`
+
+Paper subaccounts mirror (PRIMARY, Master Trading Bankroll, Cash Transfer). **`automatic_transfers`** forced false for paper. Unique index on **`subaccount`**.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | nextval | |
+| `subaccount` | `text` | NO | - | |
+| `balance` | `integer(32)` | NO | 0 | |
+| `base_value` | `integer(32)` | YES | - | |
+| `realized_pnl` | `integer(32)` | YES | - | |
+| `realized_pnl_pct` | `real(24)` | YES | - | |
+| `target_pnl__pct` | `real(24)` | YES | - | |
+| `transfer_amt` | `real(24)` | YES | - | |
+| `automatic_transfers` | `boolean` | NO | false | |
+
+#### Indexes
+
+- `subaccounts_paper_0001_subaccount_key` UNIQUE on `subaccount`
+
+---
+
+### Table: `users.transfers_paper_0001`
+
+Paper-mode transfer log when **`trading_mode=paper`** (internal moves between paper subaccounts only; no Kalshi external rows). Same column shape as `users.transfers_0001`. Rows are created by `POST /api/subaccounts/initiate-transfer` in paper mode. NOTIFY trigger `transfers_paper_0001_db_notify` → `rec_io_db_notify`; stream key **`transfers_paper`**.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | nextval | |
+| `timestamp` | `text` | NO | - | EST wall time string (e.g. YYYY-MM-DD HH:MM:SS) |
+| `type` | `text` | YES | - | e.g. `internal` |
+| `from` | `text` | YES | - | Source subaccount |
+| `to` | `text` | YES | - | Destination subaccount |
+| `amount` | `integer(32)` | YES | - | Cents |
+| `initiated` | `text` | YES | - | e.g. `manual` |
+| `status` | `character varying(50)` | YES | - | Optional; unused for typical paper internal rows |
+| `external_transfer_id` | `integer` | YES | - | Reserved; paper rows typically NULL |
+
+#### Constraints
+
+- **Primary Key:** on `id`
 
 ---
 

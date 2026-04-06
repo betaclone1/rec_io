@@ -9,6 +9,7 @@
 <link rel="preload" href="/images/icons/panel_settings.png" as="image" type="image/png">
 <link rel="stylesheet" href="/styles/strike-table.css">
 <script src="/js/live-data.js"></script>
+<script src="/js/db_changes_prefilter.js"></script>
 <script src="/js/strike-table.js"></script>
 <script src="/js/watchlist-table.js"></script>
 
@@ -607,7 +608,7 @@
     <div class="top-half">
       <div class="column" id="col1">
       <div class="panel-container" style="height: 50px; min-height: 50px; max-height: 50px; margin-bottom: 10px; display: flex; align-items: center; justify-content: flex-start; gap: 6px; flex-wrap: nowrap; min-width: 0;">
-        <select id="monitor-picker" class="dropdown-picker" name="monitor" style="font-size: 12px; padding: 4px 6px; max-width: 140px;">
+        <select id="monitor-picker" class="dropdown-picker" name="monitor" style="font-size: 12px; padding: 4px 24px 4px 6px; max-width: 140px;">
           <option value="">Select Monitor</option>
         </select>
         <span id="monitor-symbol-display" class="monitor-setting-display">—</span>
@@ -2086,21 +2087,12 @@ function hideAutoEntrySettingsModal() {
   </script>
   <script>
     document.addEventListener('DOMContentLoaded', () => {
-      // Fetch account mode and update balance (no selector in mobile trade monitor)
-      fetch(window.location.origin + '/api/get_account_mode')
-        .then(res => res.json())
-        .then(data => {
-          const mode = data.mode;
-          
-          // Fetch and update account balance
-          updateAccountBalance(mode);
-        });
+      updateAccountBalance();
     });
     
-    // Function to fetch and update account balance
-    async function updateAccountBalance(mode) {
+    async function updateAccountBalance() {
       try {
-        const response = await fetch(`${window.location.origin}/api/account/balance?mode=${mode}`);
+        const response = await fetch(`${window.location.origin}/api/account/balance`);
         const data = await response.json();
         
         // Update portfolio balance (first display)
@@ -2153,10 +2145,7 @@ function hideAutoEntrySettingsModal() {
       if (window._tmAccountInterval) clearInterval(window._tmAccountInterval);
       if (window._tmBankrollInterval) clearInterval(window._tmBankrollInterval);
       window._tmAccountInterval = setInterval(() => {
-        fetch(window.location.origin + '/api/get_account_mode')
-          .then(res => res.json())
-          .then(data => { updateAccountBalance(data.mode); })
-          .catch(console.error);
+        updateAccountBalance();
       }, 30000);
       window._tmBankrollInterval = setInterval(() => updateMonitorBankrollDisplay(), 15000);
     }
@@ -2412,12 +2401,8 @@ document.addEventListener('DOMContentLoaded', () => {
         return; // Don't process other WebSocket messages for this type
       }
 
-      // === Account Mode Sync ===
-      if (data.account_mode) {
-        // Account mode sync - no selector in mobile trade monitor, just update balance if needed
-        if (data.account_mode) {
-          updateAccountBalance(data.account_mode);
-        }
+      if (data.trading_mode === 'live' || data.trading_mode === 'paper') {
+        if (typeof updateAccountBalance === 'function') updateAccountBalance();
       }
       
       // === Paper Trade Toggled ===
@@ -4628,6 +4613,23 @@ document.addEventListener('DOMContentLoaded', () => {
   setupDatabaseChangeListener();
 });
 
+let _tmDbChangeDebounceTimer = null;
+const _TM_DB_CHANGE_DEBOUNCE_MS = 450;
+let _tmDbChangePending = { fills: false, positions: false, settlements: false, trades: false };
+
+function _tmScheduleDbChangeRefreshes() {
+  if (_tmDbChangeDebounceTimer) clearTimeout(_tmDbChangeDebounceTimer);
+  _tmDbChangeDebounceTimer = setTimeout(function() {
+    _tmDbChangeDebounceTimer = null;
+    const p = _tmDbChangePending;
+    _tmDbChangePending = { fills: false, positions: false, settlements: false, trades: false };
+    if (p.fills) fetchAndRenderRecentTrades();
+    if (p.positions) fetchAndRenderPositions();
+    if (p.settlements) fetchAndRenderSettlements();
+    if (p.trades) fetchAndRenderTradeHistory();
+  }, _TM_DB_CHANGE_DEBOUNCE_MS);
+}
+
 // WebSocket connection for database change notifications (paused when tab hidden)
 function setupDatabaseChangeListener() {
   if (window.TRADE_MONITOR_PAUSED) return;
@@ -4641,31 +4643,25 @@ function setupDatabaseChangeListener() {
   
   ws.onmessage = function(event) {
     try {
-      const data = JSON.parse(event.data);
-      // Removed console.log
-      
-      // Handle different database change types and refresh immediately
-      if (data.database === 'fills') {
-        // Removed console.log
-        fetchAndRenderRecentTrades();
-      } else if (data.database === 'positions') {
-        // Removed console.log
-        fetchAndRenderPositions();
-      } else if (data.database === 'settlements') {
-        // Removed console.log
-        fetchAndRenderSettlements();
-      } else if (data.database === 'trades') {
-        // Removed console.log
-        fetchAndRenderTradeHistory();
+      const raw = event.data;
+      if (typeof recDbChangeRawMentionsAny === 'function' &&
+          !recDbChangeRawMentionsAny(raw, ['fills', 'positions', 'settlements', 'trades'])) {
+        return;
       }
+      const data = JSON.parse(raw);
+      if (data.type !== 'db_change') return;
+      if (data.database === 'fills') _tmDbChangePending.fills = true;
+      else if (data.database === 'positions') _tmDbChangePending.positions = true;
+      else if (data.database === 'settlements') _tmDbChangePending.settlements = true;
+      else if (data.database === 'trades') _tmDbChangePending.trades = true;
+      else return;
+      _tmScheduleDbChangeRefreshes();
     } catch (error) {
-      console.error('❌ Error parsing database change notification:', error);
+      console.error('Error parsing database change notification:', error);
     }
   };
   
-  ws.onerror = function(error) {
-    console.error('❌ WebSocket error:', error);
-  };
+  ws.onerror = function() {};
   
   ws.onclose = function() {
     window._tmDbChangesWs = null;

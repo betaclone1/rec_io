@@ -34,7 +34,7 @@ project_root = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, project_root)
 os.environ['PYTHONPATH'] = project_root
 from backend.util.paths import get_project_root
-from backend.account_mode import get_account_mode
+from backend.account_mode import get_account_mode  # always prod; kept for logging compatibility
 import requests
 import json
 import threading
@@ -278,23 +278,18 @@ LAST_POSITIONS_HASH = None
 LATEST_WEBSOCKET_POSITION_DATA = None
 LATEST_WEBSOCKET_TIMESTAMP = None
 
-# Dynamically select API base URL and credentials directory based on account mode
-BASE_URLS = {
-    "prod": "https://api.elections.kalshi.com/trade-api/v2",
-    "demo": "https://demo-api.kalshi.co/trade-api/v2"
-}
+KALSHI_TRADE_API_V2 = "https://api.elections.kalshi.com/trade-api/v2"
+
 
 def get_base_url():
-    BASE_URLS = {
-        "prod": "https://api.elections.kalshi.com/trade-api/v2",
-        "demo": "https://demo-api.kalshi.co/trade-api/v2"
-    }
-    return BASE_URLS.get(get_account_mode(), BASE_URLS["prod"])
+    return KALSHI_TRADE_API_V2
 
-logger.info("Started kalshi_account_sync (base_url=%s, mode=%s)", get_base_url(), get_account_mode())
+
+logger.info("Started kalshi_account_sync (base_url=%s)", get_base_url())
 
 from backend.util.paths import get_kalshi_credentials_dir
-CREDENTIALS_DIR = Path(get_kalshi_credentials_dir()) / get_account_mode()
+
+CREDENTIALS_DIR = Path(get_kalshi_credentials_dir()) / "prod"
 ENV_VARS = dotenv_values(CREDENTIALS_DIR / ".env")
 
 KEY_ID = ENV_VARS.get("KALSHI_API_KEY_ID")
@@ -888,104 +883,6 @@ def fetch_event_json(event_ticker):
         return None
 
 
-def subaccounts_update(cursor, portfolio_value):
-    """
-    Update users.subaccounts_0001: PRIMARY, Master Trading Bankroll balance and PnLs,
-    then check target_pnl_pct and run internal transfer to Cash Transfer if triggered.
-    Returns (master_bankroll_balance, transfer_triggered).
-    """
-    # PRIMARY = total portfolio
-    cursor.execute("""
-        UPDATE users.subaccounts_0001 SET balance = %s WHERE subaccount = 'PRIMARY'
-    """, (portfolio_value,))
-    # Cash Transfer balance (unchanged until/unless we trigger a transfer)
-    cursor.execute("""
-        SELECT COALESCE(balance, 0) FROM users.subaccounts_0001 WHERE subaccount = 'Cash Transfer'
-    """)
-    cash_transfer_row = cursor.fetchone()
-    cash_transfer_balance = int(cash_transfer_row[0]) if cash_transfer_row else 0
-    master_bankroll_balance = portfolio_value - cash_transfer_balance
-    # MTB base_value, target/transfer settings, and automatic_transfers (user setting)
-    cursor.execute("""
-        SELECT base_value, target_pnl__pct, transfer_amt, automatic_transfers FROM users.subaccounts_0001 WHERE subaccount = 'Master Trading Bankroll'
-    """)
-    mtb_row = cursor.fetchone()
-    base_value = int(mtb_row[0]) if mtb_row and mtb_row[0] is not None else None
-    target_pnl_pct = float(mtb_row[1]) if mtb_row and mtb_row[1] is not None else None
-    transfer_amt = float(mtb_row[2]) if mtb_row and mtb_row[2] is not None else None
-    automatic_transfers = bool(mtb_row[3]) if mtb_row and mtb_row[3] is not None else False
-    if base_value is not None and base_value != 0:
-        realized_pnl = master_bankroll_balance - base_value
-        ratio = (master_bankroll_balance - base_value) / base_value
-        realized_pnl_pct = float(int(ratio * 10000)) / 10000.0
-    else:
-        realized_pnl = None
-        realized_pnl_pct = None
-    cursor.execute("""
-        UPDATE users.subaccounts_0001
-        SET balance = %s, realized_pnl = %s, realized_pnl_pct = %s
-        WHERE subaccount = 'Master Trading Bankroll'
-    """, (master_bankroll_balance, realized_pnl, realized_pnl_pct))
-    transfer_triggered = False
-    # Internal transfer: only if automatic_transfers is TRUE and realized_pnl_pct >= target_pnl_pct
-    if (
-        automatic_transfers
-        and base_value is not None and base_value != 0
-        and target_pnl_pct is not None
-        and transfer_amt is not None
-        and realized_pnl_pct is not None
-        and realized_pnl_pct >= target_pnl_pct
-    ):
-        transfer_amount = int(round(transfer_amt * base_value))
-        new_cash_transfer_balance = cash_transfer_balance + transfer_amount
-        cursor.execute("""
-            UPDATE users.subaccounts_0001 SET balance = %s WHERE subaccount = 'Cash Transfer'
-        """, (new_cash_transfer_balance,))
-        new_mtb_balance = portfolio_value - new_cash_transfer_balance
-        # New base_value = old base_value raised by (target_pnl_pct - transfer_amt), not set to new_mtb_balance
-        base_step_pct = target_pnl_pct - transfer_amt
-        new_base_value = int(round(base_value * (1 + base_step_pct)))
-        post_transfer_realized_pnl = new_mtb_balance - new_base_value
-        post_transfer_ratio = (new_mtb_balance - new_base_value) / new_base_value if new_base_value else 0
-        post_transfer_realized_pnl_pct = float(int(post_transfer_ratio * 10000)) / 10000.0
-        cursor.execute("""
-            UPDATE users.subaccounts_0001
-            SET balance = %s, base_value = %s, realized_pnl = %s, realized_pnl_pct = %s
-            WHERE subaccount = 'Master Trading Bankroll'
-        """, (new_mtb_balance, new_base_value, post_transfer_realized_pnl, post_transfer_realized_pnl_pct))
-        master_bankroll_balance = new_mtb_balance
-        transfer_triggered = True
-        # Record the transfer in users.transfers_0001
-        transfer_timestamp_est = now_est().strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("""
-            INSERT INTO users.transfers_0001 (timestamp, type, "from", "to", amount, initiated)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (transfer_timestamp_est, "internal", "Master Trading Bankroll", "Cash Transfer", transfer_amount, "automatic"))
-        logger.debug("Internal transfer: %s to Cash Transfer (target_pnl_pct reached). Recorded in users.transfers_0001", transfer_amount)
-    _pnl = post_transfer_realized_pnl if transfer_triggered else realized_pnl
-    _pnl_pct = post_transfer_realized_pnl_pct if transfer_triggered else realized_pnl_pct
-    logger.debug("PRIMARY=%s, Master Trading Bankroll=%s, realized_pnl=%s (users.subaccounts_0001)", portfolio_value, master_bankroll_balance, _pnl)
-    return (master_bankroll_balance, transfer_triggered)
-
-
-def _get_mtb_snapshot_from_subaccounts(cur):
-    """
-    Return (master_trading_bankroll, mtb_base_value) in cents from users.subaccounts_0001
-    for the 'Master Trading Bankroll' subaccount, or (None, None) if not present.
-    """
-    cur.execute("""
-        SELECT balance, base_value
-        FROM users.subaccounts_0001
-        WHERE subaccount = 'Master Trading Bankroll'
-    """)
-    row = cur.fetchone()
-    if not row:
-        return None, None
-    balance, base_value = row
-    return (int(balance) if balance is not None else None,
-            int(base_value) if base_value is not None else None)
-
-
 def sync_balance():
     logger.debug("Sync attempt...")
     method = "GET"
@@ -1024,106 +921,32 @@ def sync_balance():
                 with pg_conn.cursor() as cursor:
                     current_timestamp = now_est().isoformat()
 
-                    # Get previous bankroll for ratchet (and for hold when positions != 0)
-                    cursor.execute("""
-                        SELECT portfolio, bankroll_current FROM users.account_balance_0001 
-                        ORDER BY id DESC LIMIT 1
-                    """)
-                    prev_result = cursor.fetchone()
-                    prev_bankroll = prev_result[1] if prev_result else None
-                    
-                    # PORTFOLIO = total at Kalshi (cash + positions). Feeds PRIMARY in subaccounts; written to account_balance.portfolio.
+                    from backend.balance_snapshot import apply_balance_snapshot
+
                     portfolio_value = int(total_portfolio_value)
                     positions_value = int(portfolio_value_raw)
-                    # Use positions_value as our exposure metric in the fixed-point world.
                     total_exposure = positions_value
-                    
-                    # Only update subaccounts and derive bankroll_current from Master Trading Bankroll when flat (positions=0).
-                    # When positions != 0, skip subaccounts and hold bankroll_current to avoid noisy API during open/close.
-                    bankroll_stepped_down = False
-                    if positions_value == 0:
-                        # Update subaccounts (PRIMARY, MTB, PnLs; internal transfer if target hit). Returns (mtb_balance, transfer_triggered).
-                        master_bankroll_balance, transfer_triggered = subaccounts_update(cursor, portfolio_value)
-                        if transfer_triggered:
-                            # After internal transfer, use new MTB balance directly as bankroll_current (bypass ratchet).
-                            bankroll_current = master_bankroll_balance
-                        else:
-                            # Ratchet: bankroll_current from Master Trading Bankroll. Drawdown threshold pegged to prior bankroll_current (70%); step up when MTB > prev, else hold unless drawdown.
-                            drawdown_threshold = (prev_bankroll * 0.7) if prev_bankroll else None
-                            if prev_bankroll is None:
-                                # First bankroll initialization: no drawdown edge to detect yet.
-                                bankroll_current = master_bankroll_balance
-                            elif master_bankroll_balance > prev_bankroll:
-                                # Normal ratchet up when MTB makes a new high.
-                                bankroll_current = master_bankroll_balance
-                            elif drawdown_threshold is not None and master_bankroll_balance <= drawdown_threshold:
-                                # Drawdown branch: only trigger the one-time safety valve when we CROSS the threshold
-                                # from above to below (edge detector), not on every poll while below it.
-                                bankroll_current = master_bankroll_balance
-                                if prev_bankroll > drawdown_threshold:
-                                    bankroll_stepped_down = True
-                            else:
-                                # Hold previous bankroll when neither stepping up nor crossing the drawdown threshold.
-                                bankroll_current = prev_bankroll
-                    else:
-                        # Hold bankroll_current; do not update subaccounts
-                        bankroll_current = prev_bankroll if prev_bankroll is not None else portfolio_value
 
-                    # Throttle: skip INSERT and notifies if last row is recent and unchanged (reduces table churn from WS + 5-min polling)
-                    skip_balance_write = False
-                    cursor.execute("""
-                        SELECT balance, exposure, positions, portfolio, bankroll_current,
-                               EXTRACT(EPOCH FROM (NOW() - created_at)) AS age_seconds
-                        FROM users.account_balance_0001 ORDER BY id DESC LIMIT 1
-                    """)
-                    last_row = cursor.fetchone()
-                    if last_row:
-                        last_balance, last_exposure, last_positions, last_portfolio, last_bankroll, age_seconds = last_row
-                        if age_seconds is not None and age_seconds < 120 and (
-                            int(last_balance or 0) == int(balance_amount or 0)
-                            and int(last_exposure or 0) == int(total_exposure or 0)
-                            and int(last_positions or 0) == positions_value
-                            and int(last_portfolio or 0) == portfolio_value
-                            and int(last_bankroll or 0) == bankroll_current
-                        ):
-                            skip_balance_write = True
-                            logger.debug("Balance unchanged, last write %.0fs ago; skipping duplicate row", age_seconds)
-
-                    if skip_balance_write:
-                        # Subaccounts may have been updated; commit those, but no new balance row or notifies
-                        pg_conn.commit()
-                    if not skip_balance_write:
-                        # Snapshot MTB state at the same time we write account_balance_0001
-                        mtb_balance, mtb_base = _get_mtb_snapshot_from_subaccounts(cursor)
-                        cursor.execute("""
-                            INSERT INTO users.account_balance_0001 (
-                                balance, exposure, positions, portfolio, bankroll_current,
-                                portfolio_value, timestamp, master_trading_bankroll, mtb_base_value
-                            )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """, (
-                            balance_amount, total_exposure, positions_value, portfolio_value,
-                            bankroll_current, portfolio_value_raw, current_timestamp,
-                            mtb_balance, mtb_base
-                        ))
-                        pg_conn.commit()
+                    inserted, _ = apply_balance_snapshot(
+                        cursor,
+                        balance_amount=balance_amount,
+                        portfolio_value_raw=portfolio_value_raw,
+                        positions_value=positions_value,
+                        total_exposure=total_exposure,
+                        portfolio_value=portfolio_value,
+                        account_balance_table="users.account_balance_0001",
+                        subaccounts_table="users.subaccounts_0001",
+                        current_timestamp=current_timestamp,
+                        throttle=True,
+                        notify_db_name="account_balance",
+                        record_internal_transfers=True,
+                    )
+                    pg_conn.commit()
+                    if inserted:
                         logger.debug(
-                            "Balance written to users.account_balance_0001 (portfolio=%s, bankroll_current=%s, mtb=%s, mtb_base_value=%s)",
-                            portfolio_value, bankroll_current, mtb_balance, mtb_base
+                            "Balance written to users.account_balance_0001 (portfolio=%s)",
+                            portfolio_value,
                         )
-
-                        # Notify frontend of account balance change
-                        notify_frontend_db_change("account_balance", {
-                            "balance": balance_amount,
-                            "exposure": total_exposure,
-                            "positions": positions_value,
-                            "portfolio": portfolio_value,
-                            "portfolio_value_raw": portfolio_value_raw,
-                            "total_portfolio": total_portfolio_value
-                        })
-
-                        # Notify monitor_manager of bankroll update (pass drawdown flag for allotment refresh / logging)
-                        notify_monitor_manager(bankroll_stepped_down=bankroll_stepped_down)
                     # Sync Kalshi v1 account/history into users.account_history_0001 (simple UPDATE-then-INSERT, no ON CONFLICT)
                     cursor.execute("SELECT kalshi_user_id FROM users.user_info_0001 WHERE user_no = '0001'")
                     kalshi_user_row = cursor.fetchone()
@@ -2005,11 +1828,10 @@ class KalshiWebSocketSync:
         
     def load_kalshi_credentials(self):
         """Load Kalshi API credentials"""
-        account_mode = get_account_mode()
-        cred_dir = Path(get_kalshi_credentials_dir()) / account_mode
-        
+        cred_dir = Path(get_kalshi_credentials_dir()) / "prod"
+
         if not cred_dir.exists():
-            logger.error("No %s credentials found at %s", account_mode, cred_dir)
+            logger.error("No prod credentials found at %s", cred_dir)
             return None
         
         env_vars = dotenv_values(cred_dir / ".env")
@@ -2065,7 +1887,7 @@ class KalshiWebSocketSync:
                 "KALSHI-ACCESS-SIGNATURE": signature_b64
             }
             
-            logger.info("Connecting to Kalshi User Fills WebSocket (mode=%s)", get_account_mode())
+            logger.info("Connecting to Kalshi User Fills WebSocket (prod)")
 
             # Connect with authentication headers
             self.websocket = await websockets.connect(

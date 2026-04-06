@@ -44,14 +44,95 @@ body {
   padding-bottom: 8px;
 }
 
-/* Dropdown Picker Styles */
+/* Dropdown Picker Styles — strip native select chrome so dark theme paints consistently (macOS/Safari/WebKit). */
 .dropdown-picker {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  box-sizing: border-box;
   background-color: #3c495e;
-  color: white;
+  color: #ffffff;
   border: none;
   border-radius: 4px;
-  padding: 6px;
+  padding: 6px 28px 6px 8px;
   text-align: left;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.25;
+  cursor: pointer;
+  color-scheme: dark;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23ffffff' d='M2 2l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 10px 6px;
+}
+
+.dropdown-picker::-ms-expand {
+  display: none;
+}
+
+.dropdown-picker:focus-visible {
+  outline: 2px solid #4a9eff;
+  outline-offset: 1px;
+}
+
+.dropdown-picker option {
+  background-color: #2d3748;
+  color: #ffffff;
+}
+
+/* Trading mode (dashboard): native select cannot color part of the label; overlay shows LIVE green / PAPER yellow. */
+.trading-mode-select-wrap {
+  position: relative;
+  display: inline-block;
+  vertical-align: middle;
+}
+.trading-mode-select-wrap .trading-mode-select-visual {
+  color: transparent !important;
+  -webkit-text-fill-color: transparent;
+  caret-color: transparent;
+}
+.trading-mode-select-face {
+  position: absolute;
+  left: 8px;
+  right: 28px;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+  font-size: 12px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trading-mode-mode--live {
+  color: #22c55e;
+  font-weight: 600;
+}
+.trading-mode-mode--paper {
+  color: #eab308;
+  font-weight: 600;
+}
+.trading-mode-sep,
+.trading-mode-name {
+  color: #ffffff;
+}
+.trading-mode-mode {
+  flex-shrink: 0;
+}
+/* Separator must not shrink: otherwise overflow clips spaces and reads as PAPER-Eric */
+.trading-mode-sep {
+  flex: 0 0 auto;
+  white-space: pre;
+  min-width: min-content;
+}
+.trading-mode-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Read-only monitor settings (symbol, market, strategy) — compact, don't push AUTO TRADE out */

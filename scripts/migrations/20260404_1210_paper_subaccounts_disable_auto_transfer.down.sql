@@ -1,0 +1,1 @@
+-- No-op: we do not restore prior automatic_transfers flags on rollback.

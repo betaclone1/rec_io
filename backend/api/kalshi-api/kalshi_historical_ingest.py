@@ -13,8 +13,6 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import hashes
 
-# Add: import account_mode
-import backend.account_mode as account_mode
 from backend.util.paths import get_project_root, get_accounts_data_dir
 sys.path.insert(0, get_project_root())
 from backend.core.config.settings import config
@@ -34,10 +32,9 @@ def _pg_connect():
         )
     )
 
-# mode = sys.argv[1] if len(sys.argv) > 1 else "prod"
-mode = account_mode.get_account_mode()
+mode = "prod"
 from backend.util.paths import get_kalshi_credentials_dir
-CREDENTIALS_DIR = Path(get_kalshi_credentials_dir()) / mode
+CREDENTIALS_DIR = Path(get_kalshi_credentials_dir()) / "prod"
 ENV_VARS = dotenv_values(CREDENTIALS_DIR / ".env")
 
 KEY_ID = ENV_VARS.get("KALSHI_API_KEY_ID")
@@ -100,14 +97,8 @@ def generate_kalshi_signature(method, full_path, timestamp, key_path):
 
     return base64.b64encode(signature).decode("utf-8")
 
-# Config
-BASE_URLS = {
-    "prod": "https://api.elections.kalshi.com/trade-api/v2",
-    "demo": "https://demo-api.kalshi.co/trade-api/v2"
-}
-
-BASE_URL = BASE_URLS.get(mode, BASE_URLS["prod"])
-print(f"Using base URL: {BASE_URL} for mode: {mode}")
+BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+print(f"Using base URL: {BASE_URL} (prod)")
 
 def sync_settlements():
     print("⏱ Syncing all settlements...")

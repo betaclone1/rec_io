@@ -22,7 +22,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirna
 
 from backend.util.paths import get_project_root, get_kalshi_credentials_dir, get_logs_dir
 from backend.core.config.settings import config
-from backend.account_mode import get_account_mode
 from pathlib import Path
 from dotenv import dotenv_values
 
@@ -55,11 +54,10 @@ def _contracts_fp_text(n):
 
 def load_kalshi_credentials():
     """Load Kalshi API credentials"""
-    account_mode = get_account_mode()
-    cred_dir = Path(get_kalshi_credentials_dir()) / account_mode
-    
+    cred_dir = Path(get_kalshi_credentials_dir()) / "prod"
+
     if not cred_dir.exists():
-        print(f"❌ No {account_mode} credentials found at {cred_dir}")
+        print(f"❌ No prod credentials found at {cred_dir}")
         return None
     
     env_vars = dotenv_values(cred_dir / ".env")
