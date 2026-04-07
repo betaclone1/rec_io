@@ -82,8 +82,19 @@
     #trade-log-table tbody tr.paper-trade-row td {
       font-style: italic !important;
     }
-    tbody tr:hover {
+    #trade-log-table tbody tr.test-filter-trade-row,
+    #trade-log-table tbody tr.test-filter-trade-row td {
+      background-color: #3d1418 !important;
+    }
+    #trade-log-table tbody tr.test-filter-trade-row:hover,
+    #trade-log-table tbody tr.test-filter-trade-row:hover td {
+      background-color: #4f1a20 !important;
+    }
+    tbody tr:hover:not(.test-filter-trade-row) {
       background-color: #4d586f !important;
+      cursor: pointer;
+    }
+    tbody tr.test-filter-trade-row:hover {
       cursor: pointer;
     }
 
@@ -368,6 +379,12 @@
               <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
                 <input type="checkbox" id="filter-paper" style="width: 14px; height: 14px;">
                 PAPER
+              </label>
+            </div>
+            <div style="display: flex; gap: 15px; margin-top: 8px;">
+              <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
+                <input type="checkbox" id="include-test-trades" style="width: 14px; height: 14px;">
+                TEST
               </label>
             </div>
           </div>
@@ -1147,6 +1164,10 @@
         if (pt === true || pt === 1 || pt === 'true' || pt === '1' || pt === 'True') {
           tr.classList.add('paper-trade-row');
         }
+        const tfRow = trade.test_filter === true || trade.test_filter === 1 || trade.test_filter === 'true' || trade.test_filter === '1';
+        if (tfRow) {
+          tr.classList.add('test-filter-trade-row');
+        }
         // Helper to format numbers with + sign for positive values, no decimals
         function plusSign(val) {
           if (val === null || val === undefined || val === '') return '';
@@ -1189,8 +1210,12 @@
     function applyFilters() {
       const dateFilterPicker = document.getElementById('date-filter-picker');
       
-      // Filter out test trades (where test_filter is TRUE)
-      let filtered = trades.filter(trade => !trade.test_filter);
+      const includeTestEl = document.getElementById('include-test-trades');
+      const includeTestTrades = includeTestEl && includeTestEl.checked;
+      let filtered = trades;
+      if (!includeTestTrades) {
+        filtered = filtered.filter(trade => !trade.test_filter);
+      }
       
       filtered = filterTradesByDate(filtered, dateFilterPicker ? dateFilterPicker.value : 'TODAY');
       filtered = filterTradesByWinLoss(filtered);
@@ -1555,6 +1580,11 @@
           filterPaper.checked = data.paper_filter;
         }
         
+        const includeTestTrades = document.getElementById('include-test-trades');
+        if (includeTestTrades && data.include_test_trades !== undefined) {
+          includeTestTrades.checked = data.include_test_trades;
+        }
+        
         // Apply contract filters
         const contract12am = document.getElementById('contract-12am');
         const contract1am = document.getElementById('contract-1am');
@@ -1748,6 +1778,14 @@
       }
       if (filterPaper) {
         filterPaper.addEventListener('change', () => {
+          applyFilters();
+          savePreferences();
+        });
+      }
+
+      const includeTestTradesCb = document.getElementById('include-test-trades');
+      if (includeTestTradesCb) {
+        includeTestTradesCb.addEventListener('change', () => {
           applyFilters();
           savePreferences();
         });
@@ -2230,6 +2268,7 @@
       const filterLoss = document.getElementById('filter-loss');
       const filterLive = document.getElementById('filter-live');
       const filterPaper = document.getElementById('filter-paper');
+      const includeTestTradesPref = document.getElementById('include-test-trades');
       const startDateInput = document.getElementById('start-date');
       const endDateInput = document.getElementById('end-date');
       const contract12am = document.getElementById('contract-12am');
@@ -2273,6 +2312,7 @@
         loss_filter: filterLoss ? filterLoss.checked : true,
         live_filter: filterLive ? filterLive.checked : true,
         paper_filter: filterPaper ? filterPaper.checked : false,
+        include_test_trades: includeTestTradesPref ? includeTestTradesPref.checked : false,
         contract_12am: contract12am ? contract12am.checked : true,
         contract_1am: contract1am ? contract1am.checked : true,
         contract_2am: contract2am ? contract2am.checked : true,
@@ -2468,15 +2508,19 @@
       }
 
       // Reset win/loss checkboxes
-      const winFilterCheckbox = document.getElementById('win-filter');
+      const winFilterCheckbox = document.getElementById('filter-win');
       if (winFilterCheckbox) {
         winFilterCheckbox.checked = true;
         winFilterCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
       }
-      const lossFilterCheckbox = document.getElementById('loss-filter');
+      const lossFilterCheckbox = document.getElementById('filter-loss');
       if (lossFilterCheckbox) {
         lossFilterCheckbox.checked = true;
         lossFilterCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      const includeTestReset = document.getElementById('include-test-trades');
+      if (includeTestReset) {
+        includeTestReset.checked = false;
       }
 
       applyFilters(); // Re-apply filters after reset

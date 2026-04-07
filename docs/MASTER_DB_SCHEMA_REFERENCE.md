@@ -9997,6 +9997,7 @@ Unified Kalshi **hourly** active-trade tracking: **one table per user** (`active
 | `performance_based_allocation` | `boolean` | NO | false | |
 | `max_price_spread` | `numeric(6,4)` | YES | 0.0300 | |
 | `paper_trade` | `boolean` | YES | false | |
+| `test_filter` | `boolean` | YES | false | When true, monitor is **paper-only** (`paper_trade` forced true in API/UI), opens use the paper path in `trade_manager`, and fills do not update the paper account balance feed. Migration `20260412_1000_monitor_test_filter_trade_history_include_test`. |
 | `regime_monitor_enabled` | `boolean` | YES | false | Enable regime monitor auto-switch between LIVE/PAPER for this monitor. |
 | `regime_window` | `text` | YES | 30d | Rolling lookback window for regime evaluation (allowed: 30d, 7d, 1d, 12h). |
 | `prob_adj` | `numeric(5,2)` | YES | 5.00 | |
@@ -10308,6 +10309,7 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `pct_mode` | `boolean` | YES | false | |
 | `live_filter` | `boolean` | YES | true | |
 | `paper_filter` | `boolean` | YES | false | |
+| `include_test_trades` | `boolean` | YES | false | Trade history UI: when true, rows with `test_filter = TRUE` are shown. Migration `20260412_1000_monitor_test_filter_trade_history_include_test`. |
 | `strategy_selection` | `jsonb` | YES | '{}' | Strategy filter state (name -> checked) for trade history UI. |
 | `symbol_selection` | `jsonb` | YES | '{}' | Symbol filter state (symbol -> checked) for trade history UI (from symbols_list). |
 

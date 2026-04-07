@@ -207,6 +207,17 @@ def apply_auto_entry_settings(cursor, monitor_id: str, data: Dict[str, Any]) -> 
             update_fields.append("min_ask_range = %s")
             update_values.append(round(marf, 4))
 
+    if "test_filter" in data:
+        tf = data["test_filter"]
+        if isinstance(tf, str):
+            tf = tf.lower() in ("true", "1", "yes")
+        tf = bool(tf)
+        update_fields.append("test_filter = %s")
+        update_values.append(tf)
+        if tf:
+            update_fields.append("paper_trade = %s")
+            update_values.append(True)
+
     flip_cur = None
     if has_flip_cols and any(
         k in data

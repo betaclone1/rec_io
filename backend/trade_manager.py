@@ -299,7 +299,7 @@ def _fetch_monitor_state(pg_conn, monitor_key):
         
         with pg_conn.cursor() as cursor:
             cursor.execute(f"""
-                SELECT loss_prevention, multiplier
+                SELECT loss_prevention, multiplier, test_filter
                 FROM users.monitor_list_{user_number}
                 WHERE id = %s
             """, (monitor_id,))
@@ -308,7 +308,8 @@ def _fetch_monitor_state(pg_conn, monitor_key):
             if row:
                 return {
                     'loss_prevention': row[0],
-                    'multiplier': row[1]
+                    'multiplier': row[1],
+                    'test_filter': row[2],
                 }
         return None
     except Exception as e:
@@ -1461,6 +1462,17 @@ def insert_trade(trade):
                 elif paper_trade is None:
                     paper_trade = False
 
+                tf_raw = trade.get("test_filter")
+                if tf_raw is not None:
+                    test_filter_for_db = _normalize_boolean_flag(tf_raw)
+                elif monitor_state and monitor_state.get("test_filter") is not None:
+                    test_filter_for_db = _normalize_boolean_flag(monitor_state.get("test_filter"))
+                else:
+                    test_filter_for_db = False
+
+                if test_filter_for_db:
+                    paper_trade = True
+
                 # Snapshot MTB from account_balance at insert time (single source of truth)
                 master_trading_bankroll_for_db = None
                 mtb_base_value_for_db = None
@@ -1524,8 +1536,8 @@ def insert_trade(trade):
                         hour_idx, weekly_cycle, loss_prevention, multiplier, price_spread,
                         yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
                         yes_ask_range_15m, no_ask_range_15m,
-                        paper_trade, cooldown_timer
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        paper_trade, cooldown_timer, test_filter
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """, (
                     trade.get('status', 'pending'), trade['date'], trade['time'],
@@ -1550,11 +1562,16 @@ def insert_trade(trade):
                     yes_ask_range_15m_for_db,
                     no_ask_range_15m_for_db,
                     paper_trade,
-                    cooldown_timer
+                    cooldown_timer,
+                    test_filter_for_db,
                 ))
                 last_id = cursor.fetchone()[0]
                 pg_conn.commit()
                 log_debug(f"💾 Trade written to PostgreSQL users.trades_0001 with ID {last_id}")
+                log_event(
+                    trade.get("ticket_id") or str(last_id),
+                    f"INSERT trade id={last_id} test_filter={test_filter_for_db}",
+                )
             pg_conn.close()
         else:
             log(f"⚠️ Skipping PostgreSQL write - no connection available")
@@ -3227,19 +3244,23 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                         _finalize_closed_trade_win_loss_confirmed(cursor, trade_id)
                         if existing_status != 'closed' and calculated_pnl is not None:
                             cursor.execute(
-                                "SELECT paper_trade, buy_price, position FROM users.trades_0001 WHERE id = %s",
+                                """
+                                SELECT paper_trade, COALESCE(test_filter, FALSE), buy_price, position
+                                FROM users.trades_0001 WHERE id = %s
+                                """,
                                 (trade_id,),
                             )
                             pr = cursor.fetchone()
                             if (
                                 pr
                                 and pr[0] is True
-                                and pr[1] is not None
+                                and pr[1] is not True
                                 and pr[2] is not None
+                                and pr[3] is not None
                             ):
                                 close_ledger_paper = (
-                                    float(pr[1]),
-                                    int(pr[2]),
+                                    float(pr[2]),
+                                    int(pr[3]),
                                     float(calculated_pnl),
                                 )
                 else:
@@ -4120,6 +4141,25 @@ async def add_trade(request: Request):
     elif paper_trade is None:
         paper_trade = False
 
+    monitor_key_open = data.get("monitor")
+    if monitor_key_open:
+        pg_mon = None
+        try:
+            pg_mon = get_postgresql_connection()
+            if pg_mon:
+                mst = _fetch_monitor_state(pg_mon, monitor_key_open)
+                if mst and _normalize_boolean_flag(mst.get("test_filter")):
+                    paper_trade = True
+                    data["paper_trade"] = True
+        except Exception as e:
+            log_debug(f"add_trade test_filter monitor check: {e}")
+        finally:
+            if pg_mon:
+                try:
+                    pg_mon.close()
+                except Exception:
+                    pass
+
     if paper_trade:
         # PAPER TRADE: Skip executor, create pending trade, then immediately mark as open.
         # Return HTTP response as soon as DB work is done so the client (e.g. auto_entry_supervisor)
@@ -4161,7 +4201,25 @@ async def add_trade(request: Request):
             log(f"⚠️ Failed to update paper trade to open: {e}")
 
         try:
-            if buy_price is not None and position is not None:
+            skip_paper_ledger = False
+            try:
+                pg_chk = get_postgresql_connection()
+                if pg_chk:
+                    with pg_chk.cursor() as cur_chk:
+                        cur_chk.execute(
+                            "SELECT COALESCE(test_filter, FALSE) FROM users.trades_0001 WHERE id = %s",
+                            (trade_id,),
+                        )
+                        rchk = cur_chk.fetchone()
+                        skip_paper_ledger = bool(rchk and rchk[0] is True)
+                    pg_chk.close()
+            except Exception as e:
+                log_debug(f"paper ledger skip check trade_id={trade_id}: {e}")
+            if (
+                buy_price is not None
+                and position is not None
+                and not skip_paper_ledger
+            ):
                 _paper_ledger_on_open(float(buy_price), int(position), float(open_fee or 0.0))
         except Exception as e:
             log(f"⚠️ paper ledger after open: {e}")

@@ -6,6 +6,35 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-07 — Monitor test_filter, trade history TEST filter and styling, paper-only test monitors
+
+**Summary**
+- **Database:** `test_filter BOOLEAN` on all `users.monitor_list_*` tables; `include_test_trades` on `users.trade_history_preferences_0001`; backfill sets `paper_trade = TRUE` where `test_filter` is true (migrations below).
+- **Trading / API:** New and closed trades carry `test_filter`; paper balance ledger skips test-filter trades; `insert_trade` / monitor paths force paper for test-filter monitors; monitor APIs expose effective paper mode and block LIVE when test filter is on; preferences API for `include_test_trades`.
+- **Auto-entry:** Enabling test filter forces paper trading in `auto_entry_settings_store` / apply paths.
+- **Frontend:** Dashboard monitor tiles use a **red border** for test-filter monitors (desktop + mobile); trade history **TEST** toggle with preference persistence; `test_filter` trade rows use dark red background (desktop + mobile).
+
+**Plans:** (session work; no single `.cursor/plans` file for the full batch)
+
+**DB migrations (required on production, in timestamp order — runner skips already-applied ids)**
+1. `20260412_1000_monitor_test_filter_trade_history_include_test`
+2. `20260413_1000_backfill_paper_trade_for_test_filter_monitors`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations (from project root on server, in order above):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260412_1000_monitor_test_filter_trade_history_include_test`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260413_1000_backfill_paper_trade_for_test_filter_monitors`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Regenerate supervisor config if your deploy relies on it:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/config/generate_unified_supervisor_config.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows key programs RUNNING; spot-check test-filter monitor settings, trade history TEST filter, and dashboard tile border.
+
+---
+
 ## 2026-04-06 — Flip-sell monitor flags, UAT modal position save, trade history monitor labels, analysis chart, trades close_method backfill
 
 **Summary**

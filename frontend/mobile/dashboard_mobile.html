@@ -418,6 +418,18 @@
       box-shadow: 0 0 0 0 #fbbf24;
     }
 
+    .monitor-tile.test-filter-monitor {
+      border: 2px solid #c53030;
+      box-shadow: 0 0 0 0 #c53030;
+    }
+
+    .monitor-tile.test-filter-monitor.live-mode:hover,
+    .monitor-tile.test-filter-monitor.live-mode:active,
+    .monitor-tile.test-filter-monitor.paper-mode:hover,
+    .monitor-tile.test-filter-monitor.paper-mode:active {
+      border-color: #c53030 !important;
+    }
+
 
     /* Monitor Name */
     .monitor-name {
@@ -1798,6 +1810,14 @@
         const newMonitor = newMonitors.find(m => m.id === monitorId);
         
         if (newMonitor) {
+          const isTfTilePoll =
+            newMonitor.test_filter === true ||
+            newMonitor.test_filter === 'true' ||
+            newMonitor.test_filter === 1 ||
+            newMonitor.test_filter === '1';
+          if (isTfTilePoll) tile.classList.add('test-filter-monitor');
+          else tile.classList.remove('test-filter-monitor');
+
           const winStreakValue = getMonitorStatValue(newMonitor, 'win_streak', newMonitor.win_streak);
           const winLossValue = getMonitorStatValue(newMonitor, 'win_loss', newMonitor.winRate);
           const retPctValue = getMonitorStatValue(newMonitor, 'ret_pct', newMonitor.return);
@@ -1899,7 +1919,12 @@
           if (paperTogglePoll) {
             const rePoll = newMonitor.regime_monitor_enabled === true || newMonitor.regime_monitor_enabled === 'true' || newMonitor.regime_monitor_enabled === 1;
             const gpPoll = window.globalPaperMode === true;
-            const lockedPoll = gpPoll || rePoll;
+            const tfPoll =
+              newMonitor.test_filter === true ||
+              newMonitor.test_filter === 'true' ||
+              newMonitor.test_filter === 1 ||
+              newMonitor.test_filter === '1';
+            const lockedPoll = gpPoll || rePoll || tfPoll;
             paperTogglePoll.style.pointerEvents = lockedPoll ? 'none' : '';
             paperTogglePoll.style.opacity = lockedPoll ? '0.55' : '';
             paperTogglePoll.title = regimePaperToggleTooltipText(newMonitor) || 'Click to toggle between LIVE and PAPER trading';
@@ -2047,6 +2072,8 @@
     function regimePaperToggleTooltipText(monitor) {
       if (window.globalPaperMode === true) return 'Global Paper Trading Mode';
       if (!monitor) return '';
+      const tf = monitor.test_filter === true || monitor.test_filter === 'true' || monitor.test_filter === 1;
+      if (tf) return 'Test filter monitor — paper only (trades do not affect paper balance)';
       const re = monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1;
       if (!re) return '';
       return 'Regime Monitoring ON — ' + formatRegimeWindowLabel(monitor.regime_window);
@@ -2112,15 +2139,23 @@
           </div>
         `;
       }
+
+      const isTestFilterMonitor =
+        monitor.test_filter === true ||
+        monitor.test_filter === 'true' ||
+        monitor.test_filter === 1 ||
+        monitor.test_filter === '1';
+      const testFilterMonitorClass = isTestFilterMonitor ? ' test-filter-monitor' : '';
       
       if (isListView) {
         // List view layout - horizontal data arrangement
         const isPaperTrading = monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1;
         const reList = monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1;
         const gpList = window.globalPaperMode === true;
-        const lockList = gpList || reList;
+        const tfList = isTestFilterMonitor;
+        const lockList = gpList || reList || tfList;
         return `
-          <div class="monitor-tile list-view ${monitor.status === 'inactive' ? 'inactive' : ''} ${isPaperTrading ? 'paper-mode' : 'live-mode'}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
+          <div class="monitor-tile list-view ${monitor.status === 'inactive' ? 'inactive' : ''} ${isPaperTrading ? 'paper-mode' : 'live-mode'}${testFilterMonitorClass}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
             <!-- Column 1: Status Light -->
             <div class="status-light list-status-light ${getMonitorPowerLightClass(monitor)}" onclick="toggleMonitorStatus('${monitor.id}', '${monitor.name}', '${monitor.status}')" style="cursor: pointer;" title="${getMonitorPowerLightTitle(monitor)}"></div>
             
@@ -2188,9 +2223,10 @@
         const isPaperTrading = monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1;
         const reTile = monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1;
         const gpTile = window.globalPaperMode === true;
-        const lockTile = gpTile || reTile;
+        const tfTile = isTestFilterMonitor;
+        const lockTile = gpTile || reTile || tfTile;
         return `
-          <div class="monitor-tile tile-view ${monitor.status === 'inactive' ? 'inactive' : ''} ${isPaperTrading ? 'paper-mode' : 'live-mode'}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
+          <div class="monitor-tile tile-view ${monitor.status === 'inactive' ? 'inactive' : ''} ${isPaperTrading ? 'paper-mode' : 'live-mode'}${testFilterMonitorClass}" data-monitor-id="${monitor.id}" data-monitor-name="${monitor.id}" data-index="${index}">
             <div style="display: flex; align-items: flex-start; margin-bottom: 10px;">
               <!-- Column 1: Status Light -->
               <div class="status-light ${getMonitorPowerLightClass(monitor)}" onclick="toggleMonitorStatus('${monitor.id}', '${monitor.name}', '${monitor.status}')" style="cursor: pointer;" title="${getMonitorPowerLightTitle(monitor)}"></div>
@@ -3115,6 +3151,11 @@
       const regimeEnabled = monitor && (monitor.regime_monitor_enabled === true || monitor.regime_monitor_enabled === 'true' || monitor.regime_monitor_enabled === 1);
       if (regimeEnabled) {
         console.log(`Ignoring manual paper toggle for ${monitorId} because regime monitor is enabled`);
+        return;
+      }
+      const testFilterMon = monitor && (monitor.test_filter === true || monitor.test_filter === 'true' || monitor.test_filter === 1);
+      if (testFilterMon) {
+        console.log(`Ignoring manual paper toggle for ${monitorId} (test filter monitor is paper-only)`);
         return;
       }
       const newPaperTrade = !currentPaperTrade;
@@ -6635,7 +6676,13 @@
   <div id="mobileUnifiedAutoTradeModal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:10000; overflow-y:auto;">
     <div id="mobileUnifiedAutoTradeDim" style="position:absolute; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.4);"></div>
     <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border-radius:8px; min-width:360px; width:92%; max-width:440px; box-shadow:0 4px 32px rgba(0,0,0,0.25); padding:20px; display:flex; flex-direction:column; max-height:80vh; overflow:auto;">
-      <div id="mobileUnifiedAutoTradeModalTitle" style="font-size:16px; font-weight:600; margin-bottom:16px; color:#222;">Monitor</div>
+      <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:16px;">
+        <div id="mobileUnifiedAutoTradeModalTitle" style="font-size:16px; font-weight:600; margin:0; flex:1; color:#222;">Monitor</div>
+        <label style="display:flex; align-items:center; gap:6px; font-size:12px; font-weight:500; color:#555; white-space:nowrap; flex-shrink:0;">
+          <input type="checkbox" id="m_uatMonitorTestFilter" />
+          Test filter
+        </label>
+      </div>
       <div class="uat-position-size-block uat-pos-theme-light" style="margin-bottom:12px;">
         <div style="font-weight:bold; margin-bottom:6px; font-size:0.9rem; color:#222;">Position Size: <span class="uat-pos-display" style="margin-left:10px; font-weight:normal; color:#666;">100 contracts</span></div>
         <div class="uat-position-size-row" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
@@ -7954,6 +8001,11 @@
         if (modalTitle) {
           modalTitle.textContent = formatMobileDashboardUnifiedAutoTradeModalTitle(tileId, monitor);
         }
+        const mTf0 = document.getElementById('m_uatMonitorTestFilter');
+        if (mTf0 && monitor) {
+          const mtf = monitor.test_filter;
+          mTf0.checked = !!(mtf === true || mtf === 'true' || mtf === 1);
+        }
         
         // Show/hide strategy sections
         const htcSection = document.getElementById('m_htcStrategySection');
@@ -8033,6 +8085,10 @@
         // Regime Monitor settings (common across strategies)
         setChk('m_regimeMonitorEnabled', data.regime_monitor_enabled ?? false);
         setVal('m_regimeWindowSelect', data.regime_window ?? '30d');
+        {
+          const v = data.test_filter;
+          setChk('m_uatMonitorTestFilter', v !== undefined && v !== null ? !!v : !!(monitor && (monitor.test_filter === true || monitor.test_filter === 'true' || monitor.test_filter === 1)));
+        }
 
         const regimeCb = document.getElementById('m_regimeMonitorEnabled');
         mobileDashUatUpdateRegimeWindowPickerVisibility();
@@ -8274,6 +8330,8 @@
             const regimeWindowEl = document.getElementById('m_regimeWindowSelect');
             payload.regime_monitor_enabled = regimeMonitorEnabledEl ? regimeMonitorEnabledEl.checked : false;
             payload.regime_window = regimeWindowEl ? regimeWindowEl.value : '30d';
+            const mTfEl = document.getElementById('m_uatMonitorTestFilter');
+            payload.test_filter = mTfEl ? mTfEl.checked : false;
             
             // Determine strategy for save (reuse variables from outer scope, but need local copies for Breakout/Contain)
             const saveIsMB = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');
@@ -8437,12 +8495,24 @@
                 if (monitorObj) {
                   monitorObj.regime_monitor_enabled = payload.regime_monitor_enabled;
                   monitorObj.regime_window = payload.regime_window;
+                  monitorObj.test_filter = !!payload.test_filter;
+                  if (payload.test_filter) {
+                    monitorObj.paper_trade = true;
+                  }
                   const toggleEl = document.querySelector(`[data-monitor-id="${tileId}"] .paper-trading-toggle`);
                   if (toggleEl) {
                     const regimeEnabled = monitorObj.regime_monitor_enabled === true || monitorObj.regime_monitor_enabled === 'true' || monitorObj.regime_monitor_enabled === 1;
-                    toggleEl.style.pointerEvents = regimeEnabled ? 'none' : '';
-                    toggleEl.style.opacity = regimeEnabled ? '0.55' : '';
+                    const tfLock = monitorObj.test_filter === true || monitorObj.test_filter === 'true' || monitorObj.test_filter === 1;
+                    const gp = window.globalPaperMode === true;
+                    const locked = gp || regimeEnabled || tfLock;
+                    toggleEl.style.pointerEvents = locked ? 'none' : '';
+                    toggleEl.style.opacity = locked ? '0.55' : '';
                     toggleEl.title = regimePaperToggleTooltipText(monitorObj) || 'Click to toggle between LIVE and PAPER trading';
+                  }
+                  const tileEl = document.querySelector(`[data-monitor-id="${tileId}"]`);
+                  if (tileEl && monitorObj.paper_trade) {
+                    tileEl.classList.remove('live-mode');
+                    tileEl.classList.add('paper-mode');
                   }
                 }
                 const uatModal = document.getElementById('mobileUnifiedAutoTradeModal');

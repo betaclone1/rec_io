@@ -793,6 +793,7 @@ def init_database():
                 performance_based_allocation BOOLEAN NOT NULL DEFAULT FALSE,
                 max_price_spread NUMERIC(6,4) DEFAULT 0.0300,
                 paper_trade BOOLEAN DEFAULT FALSE,
+                test_filter BOOLEAN DEFAULT FALSE,
                 prob_adj NUMERIC(5,2) DEFAULT 5.00,
                 created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -1988,6 +1989,16 @@ def init_database():
                     ) THEN
                         EXECUTE format('ALTER TABLE users.%I ADD COLUMN paper_trade BOOLEAN DEFAULT FALSE', '{table_name}');
                         EXECUTE format('UPDATE users.%I SET paper_trade = FALSE WHERE paper_trade IS NULL', '{table_name}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'users'
+                          AND table_name = '{table_name}'
+                          AND column_name = 'test_filter'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN test_filter BOOLEAN DEFAULT FALSE', '{table_name}');
+                        EXECUTE format('UPDATE users.%I SET test_filter = FALSE WHERE test_filter IS NULL', '{table_name}');
                     END IF;
 
                     IF NOT EXISTS (

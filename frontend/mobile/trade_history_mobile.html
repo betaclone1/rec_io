@@ -182,8 +182,12 @@
             background-color: transparent;
         }
 
-        .results-table tbody tr:hover {
+        .results-table tbody tr:hover:not(.test-filter-trade-row) {
             background-color: #4d586f !important;
+            cursor: pointer;
+        }
+
+        .results-table tbody tr.test-filter-trade-row:hover {
             cursor: pointer;
         }
 
@@ -198,6 +202,16 @@
 
         .results-table tbody tr.paper-trade-row {
             font-style: italic;
+        }
+
+        .results-table tbody tr.test-filter-trade-row,
+        .results-table tbody tr.test-filter-trade-row td {
+            background-color: #3d1418 !important;
+        }
+
+        .results-table tbody tr.test-filter-trade-row:hover,
+        .results-table tbody tr.test-filter-trade-row:hover td {
+            background-color: #4f1a20 !important;
         }
 
         .no-results {
@@ -229,7 +243,8 @@
         <div class="search-section">
             <!-- Date and Win/Loss Filters -->
             <div style="margin-bottom: 15px;">
-                <div style="display: flex; gap: 15px; align-items: center; margin-bottom: 10px;">
+                <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px;">
+                <div style="display: flex; gap: 15px; align-items: center;">
                     <select id="date-filter-picker" class="filter-select" style="width: 110px;">
                         <option value="ALL">All</option>
                         <option value="TODAY">Today</option>
@@ -248,7 +263,7 @@
                         <option value="PREV_YEAR">Prev Year</option>
                         <option value="CUSTOM">Custom</option>
                     </select>
-                    <div style="display: flex; gap: 15px;">
+                    <div style="display: flex; gap: 15px; flex-wrap: wrap;">
                         <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
                             <input type="checkbox" id="filter-win" checked style="width: 14px; height: 14px;">
                             Win
@@ -269,6 +284,13 @@
                     <div style="flex: 1; display: flex; justify-content: flex-end;">
                         <a href="#" onclick="resetAllFilters(); return false;" style="color: #ccc; text-decoration: none; font-size: 12px; opacity: 0.6; transition: opacity 0.2s ease;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">Reset</a>
                     </div>
+                </div>
+                <div style="display: flex; gap: 15px; align-items: center;">
+                    <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
+                        <input type="checkbox" id="include-test-trades" style="width: 14px; height: 14px;">
+                        TEST
+                    </label>
+                </div>
                 </div>
                 <div style="display: flex; gap: 10px; align-items: center;">
                     <div style="display: flex; align-items: center; gap: 5px;">
@@ -970,6 +992,9 @@
                 if (trade.paper_trade === true || trade.paper_trade === 1 || trade.paper_trade === 'true' || trade.paper_trade === '1' || trade.paper_trade === 'True') {
                     tr.classList.add('paper-trade-row');
                 }
+                if (trade.test_filter === true || trade.test_filter === 1 || trade.test_filter === 'true' || trade.test_filter === '1') {
+                    tr.classList.add('test-filter-trade-row');
+                }
                 // Helper to format numbers with + sign for positive values, no decimals
                 function plusSign(val) {
                     if (val === null || val === undefined || val === '') return '';
@@ -1330,8 +1355,12 @@
         function applyFilters() {
             const dateFilterPicker = document.getElementById('date-filter-picker');
             
-            // Filter out test trades (where test_filter is TRUE)
-            let filtered = trades.filter(trade => !trade.test_filter);
+            const includeTestEl = document.getElementById('include-test-trades');
+            const includeTestTrades = includeTestEl && includeTestEl.checked;
+            let filtered = trades;
+            if (!includeTestTrades) {
+                filtered = filtered.filter(trade => !trade.test_filter);
+            }
             
             filtered = filterTradesByDate(filtered, dateFilterPicker ? dateFilterPicker.value : 'TODAY');
             filtered = filterTradesByWinLoss(filtered);
@@ -1388,6 +1417,10 @@
             if (lossFilterCheckbox) {
                 lossFilterCheckbox.checked = true;
                 lossFilterCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            const includeTestReset = document.getElementById('include-test-trades');
+            if (includeTestReset) {
+                includeTestReset.checked = false;
             }
 
             applyFilters(); // Re-apply filters after reset
@@ -1960,6 +1993,7 @@
                 document.querySelectorAll('#symbol-checkboxes-container input[type="checkbox"][data-symbol]').forEach(cb => {
                     symbolSelection[cb.getAttribute('data-symbol')] = cb.checked;
                 });
+                const includeTestTrades = document.getElementById('include-test-trades');
                 const response = await fetch('/api/set_trade_history_preferences', {
                     method: 'POST',
                     headers: {
@@ -1968,6 +2002,7 @@
                     body: JSON.stringify({
                         live_filter: filterLive.checked,
                         paper_filter: filterPaper.checked,
+                        include_test_trades: includeTestTrades ? includeTestTrades.checked : false,
                         strategy_selection: strategySelection,
                         symbol_selection: symbolSelection
                     })
@@ -1998,6 +2033,10 @@
                     }
                     if (filterPaper && preferences.paper_filter !== undefined) {
                         filterPaper.checked = preferences.paper_filter;
+                    }
+                    const includeTestTrades = document.getElementById('include-test-trades');
+                    if (includeTestTrades && preferences.include_test_trades !== undefined) {
+                        includeTestTrades.checked = preferences.include_test_trades;
                     }
                     if (preferences.strategy_selection && typeof preferences.strategy_selection === 'object') {
                         document.querySelectorAll('#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]').forEach(cb => {
@@ -2069,6 +2108,14 @@
             }
             if (filterPaper) {
                 filterPaper.addEventListener('change', () => {
+                    applyFilters();
+                    savePaperTradePreferences();
+                });
+            }
+            
+            const includeTestTradesCb = document.getElementById('include-test-trades');
+            if (includeTestTradesCb) {
+                includeTestTradesCb.addEventListener('change', () => {
                     applyFilters();
                     savePaperTradePreferences();
                 });

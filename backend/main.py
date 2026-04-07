@@ -166,7 +166,7 @@ def get_trade_history_preferences_postgresql():
                        strategy_hourly_htc, strategy_momentum_scalp, strategy_test,
                        day_sunday, day_monday, day_tuesday, day_wednesday, day_thursday, day_friday, day_saturday,
                        analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp, chart_view, pct_mode,
-                       live_filter, paper_filter,
+                       live_filter, paper_filter, include_test_trades,
                        COALESCE(strategy_selection, '{}'::jsonb),
                        COALESCE(symbol_selection, '{}'::jsonb)
                 FROM users.trade_history_preferences_0001 WHERE id = 1
@@ -181,7 +181,7 @@ def get_trade_history_preferences_postgresql():
                        strategy_hourly_htc, strategy_momentum_scalp, strategy_test,
                        day_sunday, day_monday, day_tuesday, day_wednesday, day_thursday, day_friday, day_saturday,
                        analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp, chart_view, pct_mode,
-                       live_filter, paper_filter,
+                       live_filter, paper_filter, include_test_trades,
                        COALESCE(strategy_selection, '{}'::jsonb)
                 FROM users.trade_history_preferences_0001 WHERE id = 1
             """
@@ -195,7 +195,7 @@ def get_trade_history_preferences_postgresql():
                        strategy_hourly_htc, strategy_momentum_scalp, strategy_test,
                        day_sunday, day_monday, day_tuesday, day_wednesday, day_thursday, day_friday, day_saturday,
                        analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp, chart_view, pct_mode,
-                       live_filter, paper_filter
+                       live_filter, paper_filter, include_test_trades
                 FROM users.trade_history_preferences_0001 WHERE id = 1
             """
             result = None
@@ -204,13 +204,13 @@ def get_trade_history_preferences_postgresql():
             try:
                 cursor.execute(select_full)
                 result = cursor.fetchone()
-                has_strategy_col = result is not None and len(result) > 44
-                has_symbol_col = result is not None and len(result) > 45
+                has_strategy_col = result is not None and len(result) > 45
+                has_symbol_col = result is not None and len(result) > 46
             except psycopg2.ProgrammingError:
                 try:
                     cursor.execute(select_with_strategy)
                     result = cursor.fetchone()
-                    has_strategy_col = result is not None and len(result) > 44
+                    has_strategy_col = result is not None and len(result) > 45
                 except psycopg2.ProgrammingError:
                     cursor.execute(select_without_strategy)
                     result = cursor.fetchone()
@@ -262,8 +262,9 @@ def get_trade_history_preferences_postgresql():
                     "pct_mode": result[41],
                     "live_filter": result[42] if len(result) > 42 else True,
                     "paper_filter": result[43] if len(result) > 43 else False,
-                    "strategy_selection": result[44] if has_strategy_col else {},
-                    "symbol_selection": result[45] if has_symbol_col else {}
+                    "include_test_trades": result[44] if len(result) > 44 else False,
+                    "strategy_selection": result[45] if has_strategy_col else {},
+                    "symbol_selection": result[46] if has_symbol_col else {}
                 }
             else:
                 return {
@@ -310,6 +311,7 @@ def get_trade_history_preferences_postgresql():
                     "chart_view": "pnl",
                     "live_filter": True,
                     "paper_filter": False,
+                    "include_test_trades": False,
                     "strategy_selection": {},
                     "symbol_selection": {}
                 }
@@ -352,6 +354,7 @@ def get_trade_history_preferences_postgresql():
             "chart_view": "pnl",
             "live_filter": True,
             "paper_filter": False,
+            "include_test_trades": False,
             "strategy_selection": {},
             "symbol_selection": {}
         }
@@ -3245,7 +3248,12 @@ def load_trade_history_preferences():
             "sort_asc": True,
             "page_size": 50,
             "last_search_timestamp": time.time(),
-            "pct_mode": False
+            "pct_mode": False,
+            "live_filter": True,
+            "paper_filter": False,
+            "include_test_trades": False,
+            "strategy_selection": {},
+            "symbol_selection": {},
         }
 
 def save_trade_history_preferences(preferences):
@@ -3267,6 +3275,8 @@ def save_trade_history_preferences(preferences):
             update_data["live_filter"] = bool(preferences["live_filter"])
         if "paper_filter" in preferences:
             update_data["paper_filter"] = bool(preferences["paper_filter"])
+        if "include_test_trades" in preferences:
+            update_data["include_test_trades"] = bool(preferences["include_test_trades"])
         
         # Contract filters
         contract_fields = [
@@ -3407,7 +3417,8 @@ async def get_auto_entry_settings(monitor_id: str = None):
                        momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target,
                        min_ask, max_ask, loss_prevention_toggle, max_price_spread, prob_adj,
                        min_cooldown_timer, max_cooldown_timer,
-                       regime_monitor_enabled, regime_window, stop_loss_price, min_ask_range
+                       regime_monitor_enabled, regime_window, stop_loss_price, min_ask_range,
+                       test_filter
             """ + (sel_flip if has_flip else "") + """
                 FROM users.monitor_list_0001 WHERE id = %s
             """
@@ -3452,12 +3463,13 @@ async def get_auto_entry_settings(monitor_id: str = None):
                     "regime_window": str(result[31]) if result[31] is not None else "30d",
                     "stop_loss_price": float(result[32]) if result[32] is not None else 0.0,
                     "min_ask_range": float(result[33]) if result[33] is not None else None,
+                    "test_filter": bool(result[34]) if result[34] is not None else False,
                 }
                 if has_flip:
-                    row["flip_sell_prob"] = bool(result[34]) if result[34] is not None else False
-                    row["flip_sell_prob_mult"] = str(result[35]) if result[35] is not None else None
-                    row["flip_sell_floor"] = bool(result[36]) if result[36] is not None else False
-                    row["flip_sell_floor_mult"] = str(result[37]) if result[37] is not None else None
+                    row["flip_sell_prob"] = bool(result[35]) if result[35] is not None else False
+                    row["flip_sell_prob_mult"] = str(result[36]) if result[36] is not None else None
+                    row["flip_sell_floor"] = bool(result[37]) if result[37] is not None else False
+                    row["flip_sell_floor_mult"] = str(result[38]) if result[38] is not None else None
                 else:
                     row["flip_sell_prob"] = False
                     row["flip_sell_prob_mult"] = None
@@ -5391,6 +5403,7 @@ async def get_monitors(user_id: str = "user_0001"):
                     current_max_pct_exposure,
                     performance_based_allocation,
                     paper_trade,
+                    test_filter,
                     regime_monitor_enabled,
                     regime_window,
                     market
@@ -5456,6 +5469,7 @@ async def get_monitors(user_id: str = "user_0001"):
                 current_max_pct_exposure,
                 performance_based_allocation,
                 paper_trade,
+                test_filter,
                 regime_monitor_enabled,
                 regime_window,
                 market,
@@ -5509,8 +5523,9 @@ async def get_monitors(user_id: str = "user_0001"):
                 "paper_trade": (
                     True
                     if (is_paper_trading() and status == "active")
-                    else (paper_trade or False)
+                    else bool((paper_trade or False) or (test_filter or False))
                 ),
+                "test_filter": bool(test_filter) if test_filter is not None else False,
                 "regime_monitor_enabled": regime_monitor_enabled or False,
                 "regime_window": regime_window or "30d",
                 "market": (market or "").strip().lower() if market else None,
@@ -5726,14 +5741,14 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
         
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade, paper_trade, market
+            SELECT id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade, paper_trade, test_filter, market
             FROM users.monitor_list_{user_number}
             WHERE id = %s AND status = 'active'
         """, (monitor_id,))
         result = cursor.fetchone()
         conn.close()
         if result:
-            monitor_id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade, paper_trade, market = result
+            monitor_id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade, paper_trade, test_filter, market = result
             mkt = (market or "").strip().lower()
             if mkt not in ("hourly", "15m"):
                 mkt = None
@@ -5750,7 +5765,8 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
                     "position_type": position_type,
                     "bankroll_allotment_total": bankroll_allotment_total,
                     "auto_trade": auto_trade,
-                    "paper_trade": paper_trade or False,
+                    "paper_trade": bool((paper_trade or False) or (test_filter or False)),
+                    "test_filter": bool(test_filter) if test_filter is not None else False,
                     "market": mkt,
                 }
             }
@@ -6385,6 +6401,24 @@ async def toggle_paper_trade(request: Request):
             conn = get_postgresql_connection()
             
             with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT COALESCE(test_filter, FALSE)
+                    FROM users.monitor_list_{user_number}
+                    WHERE id = %s
+                    """,
+                    (db_monitor_id,),
+                )
+                tf_row = cursor.fetchone()
+                test_filter_monitor = bool(tf_row and tf_row[0] is True)
+                if test_filter_monitor and not paper_trade:
+                    conn.close()
+                    return {
+                        "status": "error",
+                        "message": "Test filter monitors must use PAPER mode",
+                        "code": "test_filter_paper_only",
+                    }
+
                 # Update paper_trade boolean
                 cursor.execute(f"""
                     UPDATE users.monitor_list_{user_number}
