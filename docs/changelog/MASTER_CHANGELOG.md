@@ -21,17 +21,17 @@ This changelog is used when pushing updates to production. Each entry is timesta
 2. `20260413_1000_backfill_paper_trade_for_test_filter_monitors`
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations (from project root on server, in order above):  
+- [x] Apply migrations (from project root on server, in order above):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260412_1000_monitor_test_filter_trade_history_include_test`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260413_1000_backfill_paper_trade_for_test_filter_monitors`
-- [ ] Schema drift check (recommended):  
+- [x] Schema drift check (recommended):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Regenerate supervisor config if your deploy relies on it:  
+- [x] Regenerate supervisor config if your deploy relies on it:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/config/generate_unified_supervisor_config.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows key programs RUNNING; spot-check test-filter monitor settings, trade history TEST filter, and dashboard tile border.
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` shows key programs RUNNING; spot-check test-filter monitor settings, trade history TEST filter, and dashboard tile border.
 
 ---
 
