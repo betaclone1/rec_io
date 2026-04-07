@@ -47,6 +47,116 @@
       background: rgba(0, 0, 0, 0.05);
     }
 
+    #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+      width: 100%;
+      margin: 6px 0 14px 0;
+      flex-wrap: wrap;
+    }
+    #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy-row .uat-auto-stop-accuracy {
+      flex: 1 1 200px;
+      min-width: 0;
+      margin: 0;
+    }
+    #mobileUnifiedAutoTradeModal .uat-flip-sell-side {
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding-top: 2px;
+    }
+    #mobileUnifiedAutoTradeModal .uat-flip-sell-check {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #666;
+      cursor: pointer;
+      user-select: none;
+      margin: 0;
+    }
+    #mobileUnifiedAutoTradeModal .uat-flip-sell-check input {
+      width: 14px;
+      height: 14px;
+      accent-color: #007bff;
+      margin: 0;
+    }
+    #mobileUnifiedAutoTradeModal .uat-flip-multipliers {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    #mobileUnifiedAutoTradeModal .uat-flip-multipliers--disabled {
+      opacity: 0.42;
+      pointer-events: none;
+      filter: grayscale(0.25);
+    }
+    #mobileUnifiedAutoTradeModal .uat-flip-multiplier-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: 1px solid #ccc;
+      color: #333;
+      padding: 2px 7px;
+      border-radius: 3px;
+      cursor: pointer;
+      transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+      min-width: 31px;
+      height: 20px;
+      box-sizing: border-box;
+      font-size: calc(12px * 0.7);
+      line-height: 1;
+      text-align: center;
+    }
+    #mobileUnifiedAutoTradeModal .uat-flip-multiplier-btn.active {
+      background: #007bff;
+      border-color: #0056b3;
+      color: #fff;
+      font-weight: 600;
+      box-shadow: 0 0 6px rgba(0, 123, 255, 0.45);
+    }
+    #mobileUnifiedAutoTradeModal .uat-flip-multipliers--disabled .uat-flip-multiplier-btn.active {
+      background: transparent;
+      border-color: #ccc;
+      color: #333;
+      font-weight: normal;
+      box-shadow: none;
+    }
+    #mobileUnifiedAutoTradeModal .uat-flip-multiplier-btn:hover:not(.active) {
+      background: rgba(0, 0, 0, 0.06);
+    }
+    #mobileUnifiedAutoTradeModal .uat-flip-multipliers--disabled .uat-flip-multiplier-btn:hover {
+      background: transparent;
+    }
+    #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy {
+      font-size: 12px;
+      color: #666;
+      margin: 0;
+      line-height: 1.55;
+    }
+    #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy [data-uat-acc] {
+      display: flex;
+      align-items: baseline;
+      gap: 0.5em;
+      margin: 0;
+    }
+    #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy .uat-acc-label {
+      flex: 0 0 6.75rem;
+      text-align: right;
+      color: inherit;
+    }
+    #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy .uat-acc-value {
+      flex: 1 1 auto;
+      min-width: 0;
+      text-align: left;
+      font-variant-numeric: tabular-nums;
+    }
+
     /* Dashboard Container */
     .dashboard-container {
       display: flex;
@@ -379,6 +489,14 @@
       line-height: 1.3;
     }
 
+    .monitor-strategy-row--stacked {
+      flex-direction: column;
+      align-items: flex-start;
+      flex-wrap: nowrap;
+      gap: 0;
+      line-height: 1.18;
+    }
+
     .monitor-strategy {
       font-size: 12px;
       color: #a0aec0;
@@ -392,7 +510,11 @@
       font-size: 11px;
     }
 
-    .tile-view .monitor-strategy-row {
+    .tile-view .monitor-strategy-row--stacked {
+      margin-bottom: 6px;
+    }
+
+    .tile-view .monitor-strategy-row:not(.monitor-strategy-row--stacked) {
       margin-bottom: 10px;
     }
 
@@ -1715,15 +1837,24 @@
           if (stratRow) {
             const nameEl = stratRow.querySelector('.monitor-strategy');
             if (nameEl) nameEl.textContent = newMonitor.strategy;
-            const suffix = stratRow.querySelector('.monitor-strategy-suffix');
             const mktEl = stratRow.querySelector('.monitor-market');
             const mktLabel = formatMonitorMarketLabel(newMonitor.market);
+            const suffix = stratRow.querySelector('.monitor-strategy-suffix');
+            const marketLine = stratRow.querySelector('.monitor-market-line');
             if (suffix && mktEl) {
               if (mktLabel) {
                 suffix.style.display = '';
                 mktEl.textContent = mktLabel;
               } else {
                 suffix.style.display = 'none';
+                mktEl.textContent = '';
+              }
+            } else if (marketLine && mktEl) {
+              if (mktLabel) {
+                marketLine.style.display = '';
+                mktEl.textContent = mktLabel;
+              } else {
+                marketLine.style.display = 'none';
                 mktEl.textContent = '';
               }
             }
@@ -1952,8 +2083,16 @@
       return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
     }
 
-    function htmlMonitorStrategyMarketRow(monitor) {
+    function htmlMonitorStrategyMarketRow(monitor, opts) {
+      opts = opts || {};
+      const stacked = opts.stacked === true;
       const label = formatMonitorMarketLabel(monitor.market);
+      if (stacked) {
+        const marketLine = label
+          ? `<span class="monitor-market-line"><span class="monitor-market">${label}</span></span>`
+          : `<span class="monitor-market-line" style="display:none"><span class="monitor-market"></span></span>`;
+        return `<div class="monitor-strategy-row monitor-strategy-row--stacked"><span class="monitor-strategy">${monitor.strategy}</span>${marketLine}</div>`;
+      }
       const suffix = label
         ? `<span class="monitor-strategy-suffix"><span class="monitor-strategy-sep"> - </span><span class="monitor-market">${label}</span></span>`
         : `<span class="monitor-strategy-suffix" style="display:none"><span class="monitor-strategy-sep"> - </span><span class="monitor-market"></span></span>`;
@@ -2066,7 +2205,7 @@
                     <img src="/images/icons/trash_icon.png" alt="Archive" title="Archive" class="monitor-icon trash-icon" onclick="showArchiveConfirmation('${monitor.id}', '${monitor.name}')">
                   </div>
                 </div>
-                ${htmlMonitorStrategyMarketRow(monitor)}
+                ${htmlMonitorStrategyMarketRow(monitor, { stacked: true })}
               </div>
               
               <!-- Column 3: Auto Trade Controls and Status -->
@@ -6665,12 +6804,46 @@
           <input type="range" id="m_stopProb" min="0" max="100" value="40" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_stopProbVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">40%</div>
         </div>
+        <div class="uat-auto-stop-accuracy-row">
+          <div class="uat-auto-stop-accuracy uat-acc-probability-stop" aria-live="polite">
+            <div data-uat-acc="7d"><span class="uat-acc-label">7d Accuracy:</span><span class="uat-acc-value">…</span></div>
+            <div data-uat-acc="30d"><span class="uat-acc-label">30d Accuracy:</span><span class="uat-acc-value">…</span></div>
+          </div>
+          <div class="uat-flip-sell-side">
+            <label class="uat-flip-sell-check">
+              <input type="checkbox" class="uat-flip-sell-input" id="m_flipSellProbStop" />
+              <span>Flip Sell</span>
+            </label>
+            <div class="uat-flip-multipliers uat-flip-multipliers--disabled" role="group" aria-label="Flip sell size">
+              <button type="button" class="uat-flip-multiplier-btn active" data-uat-mult="1">1x</button>
+              <button type="button" class="uat-flip-multiplier-btn" data-uat-mult="2">2x</button>
+              <button type="button" class="uat-flip-multiplier-btn" data-uat-mult="3">3x</button>
+            </div>
+          </div>
+        </div>
 
         <hr style="border:none; border-top:1px solid #e0e0e0; margin:8px 0 16px 0;">
         <label for="m_stopLossPriceSlider" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Stop Loss Price:</label>
         <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
           <input type="range" id="m_stopLossPriceSlider" min="0" max="99" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_stopLossPriceValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.00</div>
+        </div>
+        <div class="uat-auto-stop-accuracy-row">
+          <div class="uat-auto-stop-accuracy uat-acc-stop-loss-floor" aria-live="polite">
+            <div data-uat-acc="7d"><span class="uat-acc-label">7d Accuracy:</span><span class="uat-acc-value">…</span></div>
+            <div data-uat-acc="30d"><span class="uat-acc-label">30d Accuracy:</span><span class="uat-acc-value">…</span></div>
+          </div>
+          <div class="uat-flip-sell-side">
+            <label class="uat-flip-sell-check">
+              <input type="checkbox" class="uat-flip-sell-input" id="m_flipSellStopLossFloor" />
+              <span>Flip Sell</span>
+            </label>
+            <div class="uat-flip-multipliers uat-flip-multipliers--disabled" role="group" aria-label="Flip sell size">
+              <button type="button" class="uat-flip-multiplier-btn active" data-uat-mult="1">1x</button>
+              <button type="button" class="uat-flip-multiplier-btn" data-uat-mult="2">2x</button>
+              <button type="button" class="uat-flip-multiplier-btn" data-uat-mult="3">3x</button>
+            </div>
+          </div>
         </div>
 
         <label for="m_minTTC" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Minimum Time to Close:</label>
@@ -6749,6 +6922,23 @@
         <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
           <input type="range" id="m_stopLossPriceSliderMs" min="0" max="99" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_stopLossPriceValueDisplayMs" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.00</div>
+        </div>
+        <div class="uat-auto-stop-accuracy-row">
+          <div class="uat-auto-stop-accuracy uat-acc-stop-loss-floor" aria-live="polite">
+            <div data-uat-acc="7d"><span class="uat-acc-label">7d Accuracy:</span><span class="uat-acc-value">…</span></div>
+            <div data-uat-acc="30d"><span class="uat-acc-label">30d Accuracy:</span><span class="uat-acc-value">…</span></div>
+          </div>
+          <div class="uat-flip-sell-side">
+            <label class="uat-flip-sell-check">
+              <input type="checkbox" class="uat-flip-sell-input" id="m_flipSellStopLossFloorMs" />
+              <span>Flip Sell</span>
+            </label>
+            <div class="uat-flip-multipliers uat-flip-multipliers--disabled" role="group" aria-label="Flip sell size">
+              <button type="button" class="uat-flip-multiplier-btn active" data-uat-mult="1">1x</button>
+              <button type="button" class="uat-flip-multiplier-btn" data-uat-mult="2">2x</button>
+              <button type="button" class="uat-flip-multiplier-btn" data-uat-mult="3">3x</button>
+            </div>
+          </div>
         </div>
 
         <label for="m_msAutoStopMinTTC" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Minimum Time to Close:</label>
@@ -6854,6 +7044,106 @@
         const secs = total % 60;
         return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
       }
+
+      function mobileDashUatFormatAutoStopAccuracyLine(bucket) {
+        if (!bucket || bucket.total === 0) {
+          return '— (no losing trades in window)';
+        }
+        const p = bucket.accuracy_pct;
+        return (p != null ? p + '%' : '—') + ' · Stops: ' + bucket.total;
+      }
+
+      function mobileDashUatSetAutoStopAccuracyRow(row, bucket) {
+        const val = row && row.querySelector ? row.querySelector('.uat-acc-value') : null;
+        if (val) val.textContent = mobileDashUatFormatAutoStopAccuracyLine(bucket);
+      }
+
+      function mobileDashUatSetAutoStopAccuracyHosts(modalRoot, selector, block) {
+        if (!modalRoot) return;
+        modalRoot.querySelectorAll(selector).forEach(function (host) {
+          mobileDashUatSetAutoStopAccuracyRow(
+            host.querySelector('[data-uat-acc="7d"]'),
+            block && block['7d'] ? block['7d'] : null
+          );
+          mobileDashUatSetAutoStopAccuracyRow(
+            host.querySelector('[data-uat-acc="30d"]'),
+            block && block['30d'] ? block['30d'] : null
+          );
+        });
+      }
+
+      async function mobileDashUatFetchAndRenderAutoStopAccuracy(apiMonitorId) {
+        const modal = document.getElementById('mobileUnifiedAutoTradeModal');
+        if (!modal || !apiMonitorId) return;
+        modal.querySelectorAll('.uat-auto-stop-accuracy [data-uat-acc] .uat-acc-value').forEach(function (el) {
+          el.textContent = '…';
+        });
+        try {
+          const r = await fetch('/api/monitor_auto_stop_accuracy?monitor_id=' + encodeURIComponent(apiMonitorId));
+          const j = await r.json();
+          if (!j || j.status !== 'ok') throw new Error((j && j.message) || 'request failed');
+          mobileDashUatSetAutoStopAccuracyHosts(modal, '.uat-acc-probability-stop', j.probability_stop);
+          mobileDashUatSetAutoStopAccuracyHosts(modal, '.uat-acc-stop-loss-floor', j.stop_loss_floor);
+        } catch (e) {
+          console.warn('monitor_auto_stop_accuracy', e);
+          modal.querySelectorAll('.uat-auto-stop-accuracy [data-uat-acc] .uat-acc-value').forEach(function (el) {
+            el.textContent = 'unavailable';
+          });
+        }
+      }
+
+      function mobileDashUatReadFlipMult(checkboxId) {
+        const cb = document.getElementById(checkboxId);
+        if (!cb) return '1';
+        const row = cb.closest('.uat-auto-stop-accuracy-row');
+        const active = row && row.querySelector('.uat-flip-multiplier-btn.active');
+        const m = active && active.getAttribute('data-uat-mult');
+        return m ? String(m) : '1';
+      }
+
+      function mobileDashUatApplyFlipRow(checkboxId, enabled, multRaw) {
+        const cb = document.getElementById(checkboxId);
+        if (!cb) return;
+        cb.checked = !!enabled;
+        const row = cb.closest('.uat-auto-stop-accuracy-row');
+        const multEl = row && row.querySelector('.uat-flip-multipliers');
+        if (multEl) {
+          multEl.classList.toggle('uat-flip-multipliers--disabled', !cb.checked);
+          const target = multRaw != null && multRaw !== '' ? String(multRaw) : '1';
+          multEl.querySelectorAll('.uat-flip-multiplier-btn').forEach(function (b) {
+            b.classList.toggle('active', b.getAttribute('data-uat-mult') === target);
+          });
+        }
+      }
+
+      (function wireMobileUnifiedModalFlipSell() {
+        function wire() {
+          const modal = document.getElementById('mobileUnifiedAutoTradeModal');
+          if (!modal || modal.dataset.mobileUatFlipSellWired === '1') return;
+          modal.dataset.mobileUatFlipSellWired = '1';
+          modal.addEventListener('change', function (e) {
+            const t = e.target;
+            if (!t || !t.matches || !t.matches('input.uat-flip-sell-input[type=checkbox]')) return;
+            const row = t.closest('.uat-auto-stop-accuracy-row');
+            if (!row) return;
+            const mult = row.querySelector('.uat-flip-multipliers');
+            if (mult) mult.classList.toggle('uat-flip-multipliers--disabled', !t.checked);
+          });
+          modal.addEventListener('click', function (e) {
+            const btn = e.target.closest('.uat-flip-multiplier-btn');
+            if (!btn || !modal.contains(btn)) return;
+            const mult = btn.closest('.uat-flip-multipliers');
+            if (!mult || mult.classList.contains('uat-flip-multipliers--disabled')) return;
+            mult.querySelectorAll('.uat-flip-multiplier-btn').forEach(function (b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+          });
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', wire);
+        } else {
+          wire();
+        }
+      })();
 
       // DASHBOARD MOBILE PROBABILITY/PRICE WINDOW SLIDER (for Hourly HTC and Momentum Breakout/Contain)
       let dashboardMobileProbSliderWidth = 0;
@@ -7908,6 +8198,10 @@
           mSpikeVisCbAll.addEventListener('change', mobileDashUatUpdateSpikeAlertSliderGroupVisibility);
         }
 
+        mobileDashUatApplyFlipRow('m_flipSellProbStop', data.flip_sell_prob, data.flip_sell_prob_mult);
+        mobileDashUatApplyFlipRow('m_flipSellStopLossFloor', data.flip_sell_floor, data.flip_sell_floor_mult);
+        mobileDashUatApplyFlipRow('m_flipSellStopLossFloorMs', data.flip_sell_floor, data.flip_sell_floor_mult);
+
         const slpRaw = data.stop_loss_price !== undefined && data.stop_loss_price !== null
           ? parseFloat(data.stop_loss_price) : 0;
         const slpCents = Math.min(99, Math.max(0, Math.round(slpRaw * 100)));
@@ -7918,6 +8212,7 @@
 
         ensureSliderBindings();
         refreshSliderDisplays();
+        void mobileDashUatFetchAndRenderAutoStopAccuracy(apiId);
         if (isMomentumScalp) {
           updateMSTimeWindowSlider();
           requestAnimationFrame(ensureMSTimeSliderHandlers);
@@ -8109,6 +8404,25 @@
               || document.getElementById('m_stopLossPriceSlider');
             if (stopLossSliderEl) {
               payload.stop_loss_price = parseInt(stopLossSliderEl.value, 10) / 100;
+            }
+
+            if (saveIsMS) {
+              const msFloorCb = document.getElementById('m_flipSellStopLossFloorMs');
+              if (msFloorCb) {
+                payload.flip_sell_floor = msFloorCb.checked;
+                payload.flip_sell_floor_mult = mobileDashUatReadFlipMult('m_flipSellStopLossFloorMs');
+              }
+            } else {
+              const probCb = document.getElementById('m_flipSellProbStop');
+              const htcFloorCb = document.getElementById('m_flipSellStopLossFloor');
+              if (probCb) {
+                payload.flip_sell_prob = probCb.checked;
+                payload.flip_sell_prob_mult = mobileDashUatReadFlipMult('m_flipSellProbStop');
+              }
+              if (htcFloorCb) {
+                payload.flip_sell_floor = htcFloorCb.checked;
+                payload.flip_sell_floor_mult = mobileDashUatReadFlipMult('m_flipSellStopLossFloor');
+              }
             }
 
             try {

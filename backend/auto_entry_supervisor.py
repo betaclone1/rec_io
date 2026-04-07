@@ -3201,6 +3201,52 @@ def is_strike_already_traded(strike_data):
         return False
 
 
+def _momentum_breakout_legs_in_db(strike_above_data, strike_below_data) -> Tuple[bool, bool]:
+    """YES-above / NO-below: return (yes_leg_exists, no_leg_exists) for in-flight trades."""
+    yes_e = False
+    no_e = False
+    if strike_above_data and strike_above_data.get("ticker"):
+        yes_e = is_strike_already_traded(
+            {
+                "strike": strike_above_data.get("strike"),
+                "side": "yes",
+                "ticker": strike_above_data.get("ticker"),
+            }
+        )
+    if strike_below_data and strike_below_data.get("ticker"):
+        no_e = is_strike_already_traded(
+            {
+                "strike": strike_below_data.get("strike"),
+                "side": "no",
+                "ticker": strike_below_data.get("ticker"),
+            }
+        )
+    return yes_e, no_e
+
+
+def _momentum_contain_legs_in_db(strike_above_data, strike_below_data) -> Tuple[bool, bool]:
+    """NO-above / YES-below: return (no_leg_exists, yes_leg_exists) for in-flight trades."""
+    no_e = False
+    yes_e = False
+    if strike_above_data and strike_above_data.get("ticker"):
+        no_e = is_strike_already_traded(
+            {
+                "strike": strike_above_data.get("strike"),
+                "side": "no",
+                "ticker": strike_above_data.get("ticker"),
+            }
+        )
+    if strike_below_data and strike_below_data.get("ticker"):
+        yes_e = is_strike_already_traded(
+            {
+                "strike": strike_below_data.get("strike"),
+                "side": "yes",
+                "ticker": strike_below_data.get("ticker"),
+            }
+        )
+    return no_e, yes_e
+
+
 def is_strike_already_simulated_traded(strike_data):
     """True if we already have any simulated trade (open, pending, or closed) for this monitor+date+contract+strike+side.
     Prevents re-insert after the 15m expiration job closes a trade. Uses same DB as trade_manager (DB_* / REC_DB_*)."""
@@ -4549,36 +4595,20 @@ def check_auto_entry_conditions_momentum_breakout():
         above_str = f"${above_strike:,.0f}" if above_strike else "N/A"
         log(f"[AUTO ENTRY MOMENTUM BREAKOUT] 🎯 Current price: ${current_price:,.2f}, Strike tier: ${strike_tier:,}, Found below: {below_str}, Found above: {above_str}")
         
-        # Check if we already have active trades on these strikes
-        if strike_above_data:
-            strike_above_key = f"{strike_above_data.get('strike')}-yes"
-            strike_data_for_check = {
-                'strike': strike_above_data.get('strike'),
-                'side': 'yes',
-                'ticker': strike_above_data.get('ticker')
-            }
-            if is_strike_already_traded(strike_data_for_check):
-                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⏸️ YES trade already exists at strike ${strike_above_data.get('strike'):,.0f}")
-                state["entered"] = True
-                return
-        
-        if strike_below_data:
-            strike_below_key = f"{strike_below_data.get('strike')}-no"
-            strike_data_for_check = {
-                'strike': strike_below_data.get('strike'),
-                'side': 'no',
-                'ticker': strike_below_data.get('ticker')
-            }
-            if is_strike_already_traded(strike_data_for_check):
-                log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⏸️ NO trade already exists at strike ${strike_below_data.get('strike'):,.0f}")
-                state["entered"] = True
-                return
+        yes_exists, no_exists = _momentum_breakout_legs_in_db(strike_above_data, strike_below_data)
+        if yes_exists and no_exists:
+            log(
+                f"[AUTO ENTRY MOMENTUM BREAKOUT] ⏸️ Both legs already in flight (YES @ ${strike_above_data.get('strike') if strike_above_data else 0:,.0f}, "
+                f"NO @ ${strike_below_data.get('strike') if strike_below_data else 0:,.0f}) — bracket complete"
+            )
+            state["entered"] = True
+            return
         
         # Enter the two trades
         trades_entered = 0
         
         # Enter YES trade at strike above
-        if strike_above_data:
+        if strike_above_data and not yes_exists:
             yes_ask_dollars = strike_above_data.get('yes_ask_dollars')
             if yes_ask_dollars:
                 _diff_ok, _diff_reason = _auto_entry_differential_allowed(settings, "yes", strike_above_data)
@@ -4604,11 +4634,15 @@ def check_auto_entry_conditions_momentum_breakout():
                         log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ❌ YES TRADE FAILED | Strike: ${strike_above_data.get('strike'):,.0f}")
             else:
                 log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Missing yes_ask_dollars for strike above ${strike_above_data.get('strike'):,.0f}")
+        elif strike_above_data and yes_exists:
+            log(
+                f"[AUTO ENTRY MOMENTUM BREAKOUT] ⏭️ Skipping YES (already in flight) at ${strike_above_data.get('strike'):,.0f} — will try other leg if needed"
+            )
         else:
             log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Could not find strike above money line (current price: ${current_price:,.2f})")
         
         # Enter NO trade at strike below
-        if strike_below_data:
+        if strike_below_data and not no_exists:
             no_ask_dollars = strike_below_data.get('no_ask_dollars')
             if no_ask_dollars:
                 _diff_ok, _diff_reason = _auto_entry_differential_allowed(settings, "no", strike_below_data)
@@ -4634,16 +4668,27 @@ def check_auto_entry_conditions_momentum_breakout():
                         log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ❌ NO TRADE FAILED | Strike: ${strike_below_data.get('strike'):,.0f}")
             else:
                 log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Missing no_ask_dollars for strike below ${strike_below_data.get('strike'):,.0f}")
+        elif strike_below_data and no_exists:
+            log(
+                f"[AUTO ENTRY MOMENTUM BREAKOUT] ⏭️ Skipping NO (already in flight) at ${strike_below_data.get('strike'):,.0f} — will try other leg if needed"
+            )
         else:
             log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Could not find strike below money line (current price: ${current_price:,.2f})")
         
-        # Mark trades as entered if at least one trade was successful
-        if trades_entered > 0:
+        yes_done, no_done = _momentum_breakout_legs_in_db(strike_above_data, strike_below_data)
+        if yes_done and no_done:
             state["entered"] = True
-            # Update last contract to current contract to track which cycle we entered trades for
             if current_contract:
                 state["contract"] = current_contract
-            log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ✅ Entered {trades_entered} trade(s) for cycle {current_contract} - will hold until expiration")
+            log(
+                f"[AUTO ENTRY MOMENTUM BREAKOUT] ✅ Two-leg bracket complete for cycle {current_contract} "
+                f"(this_tick_new={trades_entered}) — will hold until expiration"
+            )
+        elif trades_entered > 0 or yes_done or no_done:
+            log(
+                f"[AUTO ENTRY MOMENTUM BREAKOUT] ⚠️ Partial bracket (yes_in_db={yes_done} no_in_db={no_done} "
+                f"new_this_tick={trades_entered}) cycle {current_contract} — will retry missing leg on next scan"
+            )
         
     except Exception as e:
         import traceback
@@ -4933,29 +4978,13 @@ def check_auto_entry_conditions_momentum_contain():
             f"Selected width: {selected_width_str} | Midpoint: {midpoint_str} | Center offset: {center_offset_str}"
         )
         
-        # Check if we already have active trades on these strikes (FLIPPED SIDES from Breakout)
-        # Momentum Contain: NO at strike above, YES at strike below
-        if strike_above_data:
-            strike_data_for_check = {
-                'strike': strike_above_data.get('strike'),
-                'side': 'no',  # FLIPPED: Breakout uses 'yes' here
-                'ticker': strike_above_data.get('ticker')
-            }
-            if is_strike_already_traded(strike_data_for_check):
-                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ NO trade already exists at strike ${strike_above_data.get('strike'):,.0f}")
-                state["entered"] = True
-                return
-        
-        if strike_below_data:
-            strike_data_for_check = {
-                'strike': strike_below_data.get('strike'),
-                'side': 'yes',  # FLIPPED: Breakout uses 'no' here
-                'ticker': strike_below_data.get('ticker')
-            }
-            if is_strike_already_traded(strike_data_for_check):
-                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ YES trade already exists at strike ${strike_below_data.get('strike'):,.0f}")
-                state["entered"] = True
-                return
+        no_exists, yes_exists = _momentum_contain_legs_in_db(strike_above_data, strike_below_data)
+        if no_exists and yes_exists:
+            log(
+                f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ Both legs already in flight (NO @ {above_str}, YES @ {below_str}) — bracket complete"
+            )
+            state["entered"] = True
+            return
         
         # VALIDATION CHECKS: Volume, Momentum, and Ask Price checks before entering trades
         # Get required settings
@@ -5042,73 +5071,75 @@ def check_auto_entry_conditions_momentum_contain():
         # Enter the two trades (FLIPPED SIDES from Momentum Breakout)
         trades_entered = 0
         
-        # Enter NO trade at strike above (FLIPPED: Breakout enters YES here)
-        if strike_above_data:
+        # Enter NO trade at strike above (FLIPPED: Breakout enters YES here).
+        # No differential gate for Momentum Contain (strategy is two fixed legs; differential is for Hourly HTC-style filters).
+        if strike_above_data and not no_exists:
             no_ask_dollars = strike_above_data.get('no_ask_dollars')
             if no_ask_dollars:
-                _diff_ok, _diff_reason = _auto_entry_differential_allowed(settings, "no", strike_above_data)
-                if not _diff_ok:
-                    log(
-                        f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ NO leg blocked by differential gate ({_diff_reason}) "
-                        f"strike=${strike_above_data.get('strike'):,.0f}"
-                    )
+                strike_data = {
+                    'strike': format_trade_strike_label(strike_above_data.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike_above_data.get("ticker")),
+                    'side': 'no',  # FLIPPED: Breakout uses 'yes' here
+                    'ticker': strike_above_data.get('ticker'),
+                    'buy_price': float(no_ask_dollars),
+                    'probability': strike_above_data.get('probability'),
+                    'diff': strike_above_data.get('no_diff')
+                }
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] 🚀 TRIGGERING NO TRADE | Strike: ${strike_above_data.get('strike'):,.0f} | Buy Price: ${float(no_ask_dollars):.2f} | Ticker: {strike_above_data.get('ticker')}")
+                if trigger_auto_entry_trade(strike_data):
+                    log(f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ NO TRADE SUCCESSFUL | Strike: ${strike_above_data.get('strike'):,.0f}")
+                    trades_entered += 1
                 else:
-                    strike_data = {
-                        'strike': format_trade_strike_label(strike_above_data.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike_above_data.get("ticker")),
-                        'side': 'no',  # FLIPPED: Breakout uses 'yes' here
-                        'ticker': strike_above_data.get('ticker'),
-                        'buy_price': float(no_ask_dollars),
-                        'probability': strike_above_data.get('probability'),
-                        'diff': strike_above_data.get('no_diff')
-                    }
-                    log(f"[AUTO ENTRY MOMENTUM CONTAIN] 🚀 TRIGGERING NO TRADE | Strike: ${strike_above_data.get('strike'):,.0f} | Buy Price: ${float(no_ask_dollars):.2f} | Ticker: {strike_above_data.get('ticker')}")
-                    if trigger_auto_entry_trade(strike_data):
-                        log(f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ NO TRADE SUCCESSFUL | Strike: ${strike_above_data.get('strike'):,.0f}")
-                        trades_entered += 1
-                    else:
-                        log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ NO TRADE FAILED | Strike: ${strike_above_data.get('strike'):,.0f}")
+                    log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ NO TRADE FAILED | Strike: ${strike_above_data.get('strike'):,.0f}")
             else:
                 log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Missing no_ask_dollars for strike above ${strike_above_data.get('strike'):,.0f}")
+        elif strike_above_data and no_exists:
+            log(
+                f"[AUTO ENTRY MOMENTUM CONTAIN] ⏭️ Skipping NO (already in flight) at ${strike_above_data.get('strike'):,.0f} — will try YES leg if needed"
+            )
         else:
             log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Could not find strike above money line (current price: ${current_price:,.2f})")
         
-        # Enter YES trade at strike below (FLIPPED: Breakout enters NO here)
-        if strike_below_data:
+        # Enter YES trade at strike below (FLIPPED: Breakout enters NO here). No differential gate (see NO leg above).
+        if strike_below_data and not yes_exists:
             yes_ask_dollars = strike_below_data.get('yes_ask_dollars')
             if yes_ask_dollars:
-                _diff_ok, _diff_reason = _auto_entry_differential_allowed(settings, "yes", strike_below_data)
-                if not _diff_ok:
-                    log(
-                        f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ YES leg blocked by differential gate ({_diff_reason}) "
-                        f"strike=${strike_below_data.get('strike'):,.0f}"
-                    )
+                strike_data = {
+                    'strike': format_trade_strike_label(strike_below_data.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike_below_data.get("ticker")),
+                    'side': 'yes',  # FLIPPED: Breakout uses 'no' here
+                    'ticker': strike_below_data.get('ticker'),
+                    'buy_price': float(yes_ask_dollars),
+                    'probability': strike_below_data.get('probability'),
+                    'diff': strike_below_data.get('yes_diff')
+                }
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] 🚀 TRIGGERING YES TRADE | Strike: ${strike_below_data.get('strike'):,.0f} | Buy Price: ${float(yes_ask_dollars):.2f} | Ticker: {strike_below_data.get('ticker')}")
+                if trigger_auto_entry_trade(strike_data):
+                    log(f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ YES TRADE SUCCESSFUL | Strike: ${strike_below_data.get('strike'):,.0f}")
+                    trades_entered += 1
                 else:
-                    strike_data = {
-                        'strike': format_trade_strike_label(strike_below_data.get("strike"), symbol=get_current_monitor_symbol(), ticker=strike_below_data.get("ticker")),
-                        'side': 'yes',  # FLIPPED: Breakout uses 'no' here
-                        'ticker': strike_below_data.get('ticker'),
-                        'buy_price': float(yes_ask_dollars),
-                        'probability': strike_below_data.get('probability'),
-                        'diff': strike_below_data.get('yes_diff')
-                    }
-                    log(f"[AUTO ENTRY MOMENTUM CONTAIN] 🚀 TRIGGERING YES TRADE | Strike: ${strike_below_data.get('strike'):,.0f} | Buy Price: ${float(yes_ask_dollars):.2f} | Ticker: {strike_below_data.get('ticker')}")
-                    if trigger_auto_entry_trade(strike_data):
-                        log(f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ YES TRADE SUCCESSFUL | Strike: ${strike_below_data.get('strike'):,.0f}")
-                        trades_entered += 1
-                    else:
-                        log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ YES TRADE FAILED | Strike: ${strike_below_data.get('strike'):,.0f}")
+                    log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ YES TRADE FAILED | Strike: ${strike_below_data.get('strike'):,.0f}")
             else:
                 log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Missing yes_ask_dollars for strike below ${strike_below_data.get('strike'):,.0f}")
+        elif strike_below_data and yes_exists:
+            log(
+                f"[AUTO ENTRY MOMENTUM CONTAIN] ⏭️ Skipping YES (already in flight) at ${strike_below_data.get('strike'):,.0f} — will try NO leg if needed"
+            )
         else:
             log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Could not find strike below money line (current price: ${current_price:,.2f})")
         
-        # Mark trades as entered if at least one trade was successful
-        if trades_entered > 0:
+        no_done, yes_done = _momentum_contain_legs_in_db(strike_above_data, strike_below_data)
+        if no_done and yes_done:
             state["entered"] = True
-            # Update last contract to current contract to track which cycle we entered trades for
             if current_contract:
                 state["contract"] = current_contract
-            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ Entered {trades_entered} trade(s) for cycle {current_contract} - will hold until expiration")
+            log(
+                f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ Two-leg bracket complete for cycle {current_contract} "
+                f"(this_tick_new={trades_entered}) — will hold until expiration"
+            )
+        elif trades_entered > 0 or no_done or yes_done:
+            log(
+                f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Partial bracket (no_in_db={no_done} yes_in_db={yes_done} "
+                f"new_this_tick={trades_entered}) cycle {current_contract} — will retry missing leg on next scan"
+            )
         
     except Exception as e:
         import traceback

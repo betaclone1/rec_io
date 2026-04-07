@@ -432,12 +432,20 @@
       font-size: 18px;
     }
 
-    /* Strategy + market on one line: "Rising Devil - Hourly" */
+    /* Strategy + market: list = one line; tile = market below strategy */
     .monitor-strategy-row {
       display: flex;
       flex-wrap: wrap;
       align-items: baseline;
       line-height: 1.3;
+    }
+
+    .monitor-strategy-row--stacked {
+      flex-direction: column;
+      align-items: flex-start;
+      flex-wrap: nowrap;
+      gap: 0;
+      line-height: 1.18;
     }
 
     .monitor-strategy {
@@ -453,7 +461,11 @@
       font-size: 11px;
     }
 
-    .tile-view .monitor-strategy-row {
+    .tile-view .monitor-strategy-row--stacked {
+      margin-bottom: 6px;
+    }
+
+    .tile-view .monitor-strategy-row:not(.monitor-strategy-row--stacked) {
       margin-bottom: 10px;
     }
 
@@ -1887,15 +1899,24 @@
           if (stratRow) {
             const nameEl = stratRow.querySelector('.monitor-strategy');
             if (nameEl) nameEl.textContent = newMonitor.strategy;
-            const suffix = stratRow.querySelector('.monitor-strategy-suffix');
             const mktEl = stratRow.querySelector('.monitor-market');
             const mktLabel = formatMonitorMarketLabel(newMonitor.market);
+            const suffix = stratRow.querySelector('.monitor-strategy-suffix');
+            const marketLine = stratRow.querySelector('.monitor-market-line');
             if (suffix && mktEl) {
               if (mktLabel) {
                 suffix.style.display = '';
                 mktEl.textContent = mktLabel;
               } else {
                 suffix.style.display = 'none';
+                mktEl.textContent = '';
+              }
+            } else if (marketLine && mktEl) {
+              if (mktLabel) {
+                marketLine.style.display = '';
+                mktEl.textContent = mktLabel;
+              } else {
+                marketLine.style.display = 'none';
                 mktEl.textContent = '';
               }
             }
@@ -2117,8 +2138,16 @@
       return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
     }
 
-    function htmlMonitorStrategyMarketRow(monitor) {
+    function htmlMonitorStrategyMarketRow(monitor, opts) {
+      opts = opts || {};
+      const stacked = opts.stacked === true;
       const label = formatMonitorMarketLabel(monitor.market);
+      if (stacked) {
+        const marketLine = label
+          ? `<span class="monitor-market-line"><span class="monitor-market">${label}</span></span>`
+          : `<span class="monitor-market-line" style="display:none"><span class="monitor-market"></span></span>`;
+        return `<div class="monitor-strategy-row monitor-strategy-row--stacked"><span class="monitor-strategy">${monitor.strategy}</span>${marketLine}</div>`;
+      }
       const suffix = label
         ? `<span class="monitor-strategy-suffix"><span class="monitor-strategy-sep"> - </span><span class="monitor-market">${label}</span></span>`
         : `<span class="monitor-strategy-suffix" style="display:none"><span class="monitor-strategy-sep"> - </span><span class="monitor-market"></span></span>`;
@@ -2218,7 +2247,7 @@
                     <img src="/images/icons/trash_icon.png" alt="Archive" title="Archive" class="monitor-icon trash-icon" onclick="showArchiveConfirmation('${monitor.id}', '${monitor.name}')">
                   </div>
                 </div>
-                ${htmlMonitorStrategyMarketRow(monitor)}
+                ${htmlMonitorStrategyMarketRow(monitor, { stacked: true })}
               </div>
               
               <!-- Column 3: Auto Trade Controls and Status -->
@@ -8934,7 +8963,10 @@
 
       // Save
       const saveBtn = document.getElementById('unifiedAutoTradeSave');
-      saveBtn.onclick = async function(){
+      if (!saveBtn) {
+        console.warn('openUnifiedAutoTradeSettings: unifiedAutoTradeSave button missing');
+      } else saveBtn.onclick = async function(){
+        if (modal.dataset.uatSaveInFlight === '1') return;
         // Determine which strategy is active (use the strategy from monitor data)
         const isMomentumScalp = currentStrategy && (currentStrategy.toUpperCase().includes('MOMENTUM SCALP') || currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL'));
       const isMomentumReversal = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL');
@@ -9088,9 +9120,20 @@
         if (stopLossPriceSliderEl) {
           payload.stop_loss_price = parseInt(stopLossPriceSliderEl.value, 10) / 100;
         }
-        try{
+        try {
+          modal.dataset.uatSaveInFlight = '1';
+          saveBtn.disabled = true;
           const resp = await fetch('/api/set_auto_entry_settings', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-          const j = await resp.json();
+          const text = await resp.text();
+          let j = {};
+          try {
+            j = text ? JSON.parse(text) : {};
+          } catch (parseErr) {
+            j = { status: 'error', message: 'Invalid response from server' };
+          }
+          if (!resp.ok && j.status !== 'error') {
+            j = { status: 'error', message: text ? text.slice(0, 200) : ('HTTP ' + resp.status) };
+          }
           if (j && j.status !== 'error') {
             dashboardSettingsCache[tileId] = { ...dashboardSettingsCache[tileId], ...payload };
             const monitorObj = monitors.find(m => m.id === tileId);
@@ -9100,12 +9143,27 @@
               // Apply UI disablement state immediately (paper_trade itself only changes on regime evaluation).
               updatePaperTradingUI(tileId, monitorObj.paper_trade || false);
             }
+            // Do not await position persist: readFromEls runs synchronously first; a slow/hanging
+            // /api/update_monitor_position must not block closing the modal.
             if (window.UatUnifiedModalPositionSize) {
-              await window.UatUnifiedModalPositionSize.persistModalPosition(modal, apiId, { mirrorSidebar: false });
+              window.UatUnifiedModalPositionSize.persistModalPosition(modal, apiId, { mirrorSidebar: false })
+                .catch(function (err) {
+                  console.warn('persistModalPosition after save', err);
+                });
             }
             closeUnifiedAutoTradeSettings();
+          } else {
+            const msg = (j && j.message) ? String(j.message) : 'Could not save monitor settings.';
+            console.error('set_auto_entry_settings', j);
+            alert('Save failed: ' + msg);
           }
-        }catch(e){ console.error('Save failed', e); }
+        } catch (e) {
+          console.error('Save failed', e);
+          alert('Save failed: ' + (e && e.message ? e.message : 'Network error'));
+        } finally {
+          delete modal.dataset.uatSaveInFlight;
+          saveBtn.disabled = false;
+        }
       };
 
       // Close handlers
