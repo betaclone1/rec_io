@@ -1710,6 +1710,8 @@
         rerenderAllCharts: true,
         skipBalanceSnapshotFetch: true,
       });
+      await loadPerformanceData();
+      await loadPerformancePanelCashBalance();
       await loadMonitors();
       applyCurrentSort();
       initializeMonitors();

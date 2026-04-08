@@ -377,6 +377,12 @@ async def get_performance_realized() -> Dict[str, Any]:
             ("year", year_start, prev_year_start),
         ]
 
+        paper_clause = (
+            "AND paper_trade IS TRUE"
+            if is_paper_trading()
+            else "AND (paper_trade IS NULL OR paper_trade = FALSE)"
+        )
+
         result: Dict[str, Any] = {}
         with conn.cursor() as cursor:
             union_sql, _ = union_trades_with_archives_select(cursor, "0001")
@@ -389,7 +395,9 @@ async def get_performance_realized() -> Dict[str, Any]:
                     + union_sql
                     + """) AS trades_all
                     WHERE (test_filter IS NULL OR test_filter = FALSE)
-                      AND (paper_trade IS NULL OR paper_trade = FALSE)
+                    """
+                    + paper_clause
+                    + """
                       AND LOWER(TRIM(status)) IN ('closed', 'settled')
                       AND pnl IS NOT NULL
                       AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) >= %s
@@ -411,7 +419,9 @@ async def get_performance_realized() -> Dict[str, Any]:
                     + union_sql
                     + """) AS trades_all
                     WHERE (test_filter IS NULL OR test_filter = FALSE)
-                      AND (paper_trade IS NULL OR paper_trade = FALSE)
+                    """
+                    + paper_clause
+                    + """
                       AND LOWER(TRIM(status)) IN ('closed', 'settled')
                       AND pnl IS NOT NULL
                       AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) >= %s
@@ -432,7 +442,11 @@ async def get_performance_realized() -> Dict[str, Any]:
                 }
 
         conn.close()
-        return {"status": "ok", "periods": result}
+        return {
+            "status": "ok",
+            "periods": result,
+            "trading_mode": "paper" if is_paper_trading() else "live",
+        }
 
     except Exception as e:  # pragma: no cover - defensive
         return {"status": "error", "message": str(e)}
