@@ -6,6 +6,33 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-08 — Paper subaccounts id parity + automatic MTB rake in paper mode
+
+**Summary**
+- **DB:** Rebuild **`users.subaccounts_paper_0001`** so each row’s **`id`** matches **`users.subaccounts_0001`** for the same **`subaccount`** (preserves paper balances). Migration **`20260407_1200_subaccounts_paper_id_match_live_0001`**.
+- **DB:** Restore paper **`automatic_transfers`** from legacy “all false” where appropriate without clobbering paper-only TRUE (**`p OR live`**). Migration **`20260407_1210_paper_subaccounts_mirror_automatic_transfers`**.
+- **Backend:** **`balance_snapshot`:** paper snapshots use **`record_internal_transfers=True`**; automatic rake rows insert into **`users.transfers_paper_0001`** (parity with live **`transfers_0001`**).
+- **Docs:** **`MASTER_DB_SCHEMA_REFERENCE`** — paper subaccount ids and **`automatic_transfers`** behavior.
+
+**Plans:** (session work; paper parity)
+
+**DB migrations (required on production, in timestamp order — runner skips already-applied ids)**
+1. `20260407_1200_subaccounts_paper_id_match_live_0001`
+2. `20260407_1210_paper_subaccounts_mirror_automatic_transfers`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations (from project root on server, in order above):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260407_1200_subaccounts_paper_id_match_live_0001`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260407_1210_paper_subaccounts_mirror_automatic_transfers`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; spot-check paper MTB target-rake and **`transfers_paper`** when `automatic_transfers` is true.
+
+---
+
 ## 2026-04-07 — Monitor test_filter, trade history TEST filter and styling, paper-only test monitors
 
 **Summary**

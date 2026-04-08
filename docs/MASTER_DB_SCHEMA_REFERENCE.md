@@ -9422,13 +9422,15 @@ Parallel balance history when **`trading_mode=paper`**. Same column shape as `us
 
 ### Table: `users.subaccounts_paper_0001`
 
-Paper subaccounts mirror (PRIMARY, Master Trading Bankroll, Cash Transfer). **`automatic_transfers`** forced false for paper. Unique index on **`subaccount`**.
+Paper subaccounts mirror (PRIMARY, Master Trading Bankroll, Cash Transfer). **`automatic_transfers`** may mirror live (migration **`20260407_1210_paper_subaccounts_mirror_automatic_transfers`**) or be set per row; when true on MTB, simulated balance ticks rake to Cash Transfer and log **`transfers_paper_0001`**. Unique index on **`subaccount`**.
+
+**Id parity:** Each row’s **`id`** must equal the **`id`** of the same **`subaccount`** in **`users.subaccounts_0001`** (migration **`20260407_1200_subaccounts_paper_id_match_live_0001`** realigns if drifted). New live subaccount rows should be mirrored into paper with the **same** primary key if inserts are ever added for live.
 
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
-| `id` | `integer(32)` | NO | nextval | |
+| `id` | `integer(32)` | NO | nextval | Must match live `users.subaccounts_0001.id` for the same `subaccount`. |
 | `subaccount` | `text` | NO | - | |
 | `balance` | `integer(32)` | NO | 0 | |
 | `base_value` | `integer(32)` | YES | - | |
@@ -9436,7 +9438,7 @@ Paper subaccounts mirror (PRIMARY, Master Trading Bankroll, Cash Transfer). **`a
 | `realized_pnl_pct` | `real(24)` | YES | - | |
 | `target_pnl__pct` | `real(24)` | YES | - | |
 | `transfer_amt` | `real(24)` | YES | - | |
-| `automatic_transfers` | `boolean` | NO | false | |
+| `automatic_transfers` | `boolean` | NO | false | When true (typically mirrored from live MTB), **paper** balance ticks run the same internal rake as live (`target_pnl__pct` / `transfer_amt`); rows go to **`transfers_paper_0001`**. |
 
 #### Indexes
 

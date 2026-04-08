@@ -119,23 +119,32 @@ def subaccounts_update(
         )
         master_bankroll_balance = new_mtb_balance
         transfer_triggered = True
-        if subaccounts_table == "users.subaccounts_0001":
-            from backend.core.time_eastern import now_est
+        from backend.core.time_eastern import now_est
 
-            transfer_timestamp_est = now_est().strftime("%Y-%m-%d %H:%M:%S")
+        transfer_timestamp_est = now_est().strftime("%Y-%m-%d %H:%M:%S")
+        xfer_row = (
+            transfer_timestamp_est,
+            "internal",
+            "Master Trading Bankroll",
+            "Cash Transfer",
+            transfer_amount,
+            "automatic",
+        )
+        if subaccounts_table == "users.subaccounts_0001":
             cursor.execute(
                 """
                 INSERT INTO users.transfers_0001 (timestamp, type, "from", "to", amount, initiated)
                 VALUES (%s, %s, %s, %s, %s, %s)
                 """,
-                (
-                    transfer_timestamp_est,
-                    "internal",
-                    "Master Trading Bankroll",
-                    "Cash Transfer",
-                    transfer_amount,
-                    "automatic",
-                ),
+                xfer_row,
+            )
+        elif subaccounts_table == "users.subaccounts_paper_0001":
+            cursor.execute(
+                """
+                INSERT INTO users.transfers_paper_0001 (timestamp, type, "from", "to", amount, initiated)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                xfer_row,
             )
 
     return (master_bankroll_balance, transfer_triggered)
@@ -523,7 +532,7 @@ def apply_paper_aggregate_snapshot(
                 current_timestamp=ts,
                 throttle=throttle,
                 notify_db_name="account_balance_paper",
-                record_internal_transfers=False,
+                record_internal_transfers=True,
             )
             inserted = ins
         conn.commit()
