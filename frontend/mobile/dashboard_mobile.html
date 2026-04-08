@@ -6562,6 +6562,19 @@
         width: 100%;
         min-width: 0;
       }
+      /* Override legacy inline 8px/48px padding so sliders match desktop and sit centered in the panel */
+      #mobileUnifiedAutoTradeModal .uat-modal-body .value-bubble-container {
+        padding-left: 40px !important;
+        padding-right: 40px !important;
+        margin-left: auto;
+        margin-right: auto;
+      }
+      #mobileUnifiedAutoTradeModal .uat-modal-body label[for^="m_"] {
+        display: block;
+        width: 100%;
+        box-sizing: border-box;
+        text-align: center;
+      }
       #mobileUnifiedAutoTradeModal .value-bubble-container input[type="range"] { width: 100%; box-sizing: border-box; display:block; margin: 0; }
       #mobileUnifiedAutoTradeModal .unified-auto-trade-modal-box {
         background: #1f2633;
@@ -6703,7 +6716,52 @@
       #mobileUnifiedAutoTradeModal input[type="checkbox"] { accent-color: #3b82f6; }
       #mobileUnifiedAutoTradeModal input[type="checkbox"] + span { color: #9ca3af !important; }
       #mobileUnifiedAutoTradeModal .uat-performance-label { color: #e2e8f0 !important; font-size: 14px; font-weight: 500; }
-      #mobileUnifiedAutoTradeModal input[type="range"] { accent-color: #3b82f6; background: #3c495e !important; }
+      /* Single-thumb ranges: same track/thumb feel as custom dual-handle bars (WebKit + Firefox) */
+      #mobileUnifiedAutoTradeModal .uat-modal-single-range,
+      #mobileUnifiedAutoTradeModal .value-bubble-container input[type="range"] {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 100%;
+        height: 6px;
+        background: transparent !important;
+        border-radius: 3px;
+        accent-color: #3b82f6;
+        cursor: pointer;
+      }
+      #mobileUnifiedAutoTradeModal .uat-modal-single-range::-webkit-slider-runnable-track,
+      #mobileUnifiedAutoTradeModal .value-bubble-container input[type="range"]::-webkit-slider-runnable-track {
+        height: 6px;
+        border-radius: 3px;
+        background: #3c495e;
+      }
+      #mobileUnifiedAutoTradeModal .uat-modal-single-range::-webkit-slider-thumb,
+      #mobileUnifiedAutoTradeModal .value-bubble-container input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 15px;
+        height: 15px;
+        margin-top: -4.5px;
+        border-radius: 50%;
+        background: #3b82f6;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        cursor: pointer;
+      }
+      #mobileUnifiedAutoTradeModal .uat-modal-single-range::-moz-range-track,
+      #mobileUnifiedAutoTradeModal .value-bubble-container input[type="range"]::-moz-range-track {
+        height: 6px;
+        border-radius: 3px;
+        background: #3c495e;
+      }
+      #mobileUnifiedAutoTradeModal .uat-modal-single-range::-moz-range-thumb,
+      #mobileUnifiedAutoTradeModal .value-bubble-container input[type="range"]::-moz-range-thumb {
+        width: 15px;
+        height: 15px;
+        border: none;
+        border-radius: 50%;
+        background: #3b82f6;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        cursor: pointer;
+      }
       #mobileUnifiedAutoTradeModal .uat-stepper {
         display: flex;
         align-items: center;
@@ -6838,23 +6896,34 @@
         text-align: left;
         font-variant-numeric: tabular-nums;
       }
+      #mobileUnifiedAutoTradeModal .uat-pos-side-cluster {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        min-width: 0;
+      }
       #mobileUnifiedAutoTradeModal .uat-pos-mult-group {
         display: flex;
         flex-wrap: wrap;
-        gap: 6px;
+        gap: 5px;
         align-items: center;
       }
+      /* ~20% smaller than previous 48px / 12px / 28px tall */
       #mobileUnifiedAutoTradeModal .uat-pos-mult-btn {
         background-color: transparent;
         border: 1px solid #9ca3af;
         color: #e2e8f0;
-        padding: 4px 10px;
-        border-radius: 4px;
+        padding: 3px 8px;
+        border-radius: 3px;
         cursor: pointer;
         transition: background-color 0.3s ease, color 0.3s ease;
-        min-width: 48px;
+        min-width: 38px;
+        height: 22px;
+        box-sizing: border-box;
         text-align: center;
-        font-size: 12px;
+        font-size: 9.6px;
+        line-height: 1;
       }
       #mobileUnifiedAutoTradeModal .uat-pos-mult-btn.active {
         background-color: #3b82f6;
@@ -6953,16 +7022,18 @@
         <div style="font-weight:bold; margin-bottom:6px; font-size:0.9rem; color:#e2e8f0;">Position Size: <span class="uat-pos-display" style="margin-left:10px; font-weight:normal; color:#9ca3af;">100 contracts</span></div>
         <div class="uat-position-size-row" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
           <input type="number" class="uat-pos-input" min="1" value="20" style="width:60px; padding:4px 6px; text-align:right; font-size:1rem; border-radius:4px; border:1px solid #4a5568; background:#2a3441; color:#e2e8f0; height:28px; box-sizing:border-box;" />
-          <div style="display:flex; flex-direction:column; gap:2px;">
-            <button type="button" class="uat-pos-toggle-percent" style="height:15px; padding:2px 6px; box-sizing:border-box; font-size:9px; background-color:#3b82f6; border:1px solid #2563eb; color:white; border-radius:4px; cursor:pointer;">%</button>
-            <button type="button" class="uat-pos-toggle-contracts" style="height:15px; padding:2px 6px; box-sizing:border-box; font-size:9px; background-color:transparent; border:1px solid #9ca3af; color:#e2e8f0; border-radius:4px; cursor:pointer;">C</button>
-          </div>
-          <div class="uat-pos-mult-group">
-            <button type="button" class="uat-pos-mult-btn" data-multiplier="0" style="height:28px; box-sizing:border-box;">1c</button>
-            <button type="button" class="uat-pos-mult-btn" data-multiplier="0.5" style="height:28px; box-sizing:border-box;">½</button>
-            <button type="button" class="uat-pos-mult-btn active" data-multiplier="1" style="height:28px; box-sizing:border-box;">1</button>
-            <button type="button" class="uat-pos-mult-btn" data-multiplier="1.5" style="height:28px; box-sizing:border-box;">1.5</button>
-            <button type="button" class="uat-pos-mult-btn" data-multiplier="2" style="height:28px; box-sizing:border-box;">2</button>
+          <div class="uat-pos-side-cluster">
+            <div style="display:flex; flex-direction:column; gap:2px; flex-shrink:0;">
+              <button type="button" class="uat-pos-toggle-percent" style="height:15px; padding:2px 6px; box-sizing:border-box; font-size:9px; background-color:#3b82f6; border:1px solid #2563eb; color:white; border-radius:4px; cursor:pointer;">%</button>
+              <button type="button" class="uat-pos-toggle-contracts" style="height:15px; padding:2px 6px; box-sizing:border-box; font-size:9px; background-color:transparent; border:1px solid #9ca3af; color:#e2e8f0; border-radius:4px; cursor:pointer;">C</button>
+            </div>
+            <div class="uat-pos-mult-group">
+              <button type="button" class="uat-pos-mult-btn" data-multiplier="0">1c</button>
+              <button type="button" class="uat-pos-mult-btn" data-multiplier="0.5">½</button>
+              <button type="button" class="uat-pos-mult-btn active" data-multiplier="1">1</button>
+              <button type="button" class="uat-pos-mult-btn" data-multiplier="1.5">1.5</button>
+              <button type="button" class="uat-pos-mult-btn" data-multiplier="2">2</button>
+            </div>
           </div>
         </div>
       </div>
@@ -6988,7 +7059,7 @@
         <div id="m_htcStrategySection" style="display: contents;">
         <div class="uat-section-title">Auto Entry</div>
         <label for="m_timeWindowSliderContainer" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Time Window:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
           <div id="m_timeWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:8px; box-sizing:border-box;">
             <div id="m_minTimeHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
             <div id="m_maxTimeHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
@@ -6999,8 +7070,8 @@
         </div>
 
         <label for="m_autoEntryMinVolume" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Volume:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_autoEntryMinVolume" min="0" max="2000" step="25" value="1000" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_autoEntryMinVolume" min="0" max="2000" step="25" value="1000" class="uat-modal-single-range" style="width:100%; z-index:1; position:relative;">
           <div id="m_minVolVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">1000</div>
         </div>
 
@@ -7023,8 +7094,8 @@
 
         <div id="m_risingDevilMinAskRangeSection" style="display:none; margin-top:8px;">
         <label for="m_risingDevilMinAskRange" style="display:block; font-size:14px; color:#333; margin:12px 0 8px 0; font-weight:500;">Minimum Ask Range</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-top:8px; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_risingDevilMinAskRange" min="0" max="100" step="1" value="70" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-top:8px; box-sizing:border-box;">
+          <input type="range" id="m_risingDevilMinAskRange" min="0" max="100" step="1" value="70" class="uat-modal-single-range" style="width:100%; z-index:1; position:relative;">
           <div id="m_risingDevilMinAskRangeVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.7000</div>
         </div>
         </div>
@@ -7050,20 +7121,20 @@
 
 
         <label for="m_autoEntryDiff" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Differential:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_autoEntryDiff" min="-50" max="50" step="0.25" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_autoEntryDiff" min="-50" max="50" step="0.25" value="0" class="uat-modal-single-range" style="width:100%; z-index:1; position:relative;">
           <div id="m_diffVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">+0.00</div>
         </div>
 
         <label for="m_autoEntryMaxDiff" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Maximum Differential:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_autoEntryMaxDiff" min="-50" max="50" step="0.25" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_autoEntryMaxDiff" min="-50" max="50" step="0.25" value="0" class="uat-modal-single-range" style="width:100%; z-index:1; position:relative;">
           <div id="m_maxDiffVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.00</div>
         </div>
 
         <label for="m_winStreak" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Loss Prevention Win Streak Threshold: <input type="checkbox" id="m_lossPreventionToggle" style="margin-left:8px; vertical-align:middle;" /></label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_winStreak" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_winStreak" min="0" max="30" step="1" value="22" class="uat-modal-single-range" style="width:100%; z-index:1; position:relative;">
           <div id="m_winStreakVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">22</div>
         </div>
 
@@ -7076,28 +7147,28 @@
 
         <div id="mobileSpikeAlertSliderGroup" style="display:none;">
         <label for="m_spikeMomentum" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Spike Level (±):</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_spikeMomentum" min="50" max="100" value="60" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_spikeMomentum" min="50" max="100" value="60" class="uat-modal-single-range" style="width:100%; z-index:1; position:relative;">
           <div id="m_spikeMomentumVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">±60</div>
         </div>
 
         <label for="m_spikeCooldown" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Level (±):</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_spikeCooldown" min="50" max="100" value="55" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_spikeCooldown" min="50" max="100" value="55" class="uat-modal-single-range" style="width:100%; z-index:1; position:relative;">
           <div id="m_spikeCooldownVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">±55</div>
         </div>
 
         <label for="m_spikeTime" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Time (minutes):</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_spikeTime" min="0" max="180" value="15" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_spikeTime" min="0" max="180" value="15" class="uat-modal-single-range" style="width:100%; z-index:1; position:relative;">
           <div id="m_spikeTimeVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">15 min</div>
         </div>
         </div>
 
         <div id="m_probAdjSpikeGroup" style="display:none;" data-strategy-shows-prob-adj="0" aria-hidden="true">
         <label id="m_probAdjLabel" for="m_probAdjSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Probability Adjustment (%):</label>
-        <div id="m_probAdjContainer" class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_probAdjSlider" min="0" max="20" step="0.5" value="5" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+        <div id="m_probAdjContainer" class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_probAdjSlider" min="0" max="20" step="0.5" value="5" class="uat-modal-single-range" style="width:100%; z-index:1; position:relative;" />
           <div id="m_probAdjValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
         </div>
         </div>
@@ -7114,8 +7185,8 @@
         <div class="uat-section-title">Auto Stop</div>
 
         <label for="m_stopProb" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Current Win Probability:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_stopProb" min="0" max="100" value="40" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_stopProb" min="0" max="100" value="40" class="uat-modal-single-range" style="width:100%; z-index:1; position:relative;">
           <div id="m_stopProbVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">40%</div>
         </div>
         <div class="uat-auto-stop-accuracy-row">
@@ -7138,8 +7209,8 @@
 
         <hr style="border:none; border-top:1px solid #4a5568; margin:8px 0 16px 0;">
         <label for="m_stopLossPriceSlider" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Stop Loss Price:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_stopLossPriceSlider" min="0" max="99" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_stopLossPriceSlider" min="0" max="99" step="1" value="0" class="uat-modal-single-range" style="width:100%; z-index:1; position:relative;">
           <div id="m_stopLossPriceValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.00</div>
         </div>
         <div class="uat-auto-stop-accuracy-row">
@@ -7176,8 +7247,8 @@
         </div>
 
         <label for="m_momentumThreshold" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Spike Threshold (±):</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_momentumThreshold" min="10" max="100" value="35" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_momentumThreshold" min="10" max="100" value="35" class="uat-modal-single-range" style="width:100%; z-index:1; position:relative;">
           <div id="m_momentumThresholdVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">±35</div>
         </div>
 
@@ -7187,8 +7258,8 @@
         </div>
 
         <label for="m_verifySeconds" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Verification Duration (seconds):</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_verifySeconds" min="5" max="60" value="15" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_verifySeconds" min="5" max="60" value="15" class="uat-modal-single-range" style="width:100%; z-index:1; position:relative;">
           <div id="m_verifySecondsVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">15s</div>
         </div>
         </div>
@@ -7199,7 +7270,7 @@
         <div class="uat-section-title">Auto Entry</div>
         <!-- Auto Entry -->
         <label for="m_msTimeWindowSliderContainer" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Scalp Time Window:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
           <div id="m_msTimeWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:8px; box-sizing:border-box;">
             <div id="m_msMinTimeHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
             <div id="m_msMaxTimeHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
@@ -7210,20 +7281,20 @@
         </div>
         
         <label for="m_msMomentumScalpEntryThreshold" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Threshold (±):</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_msMomentumScalpEntryThreshold" min="0" max="100" step="1" value="35" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_msMomentumScalpEntryThreshold" min="0" max="100" step="1" value="35" class="uat-modal-single-range" style="width:100%; z-index:1; position:relative;">
           <div id="m_msMomentumThresholdVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">±35</div>
         </div>
         
         <label for="m_msAutoEntryMinVolume" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Volume:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_msAutoEntryMinVolume" min="0" max="2000" step="25" value="1000" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_msAutoEntryMinVolume" min="0" max="2000" step="25" value="1000" class="uat-modal-single-range" style="width:100%; z-index:1; position:relative;">
           <div id="m_msMinVolVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">1000</div>
         </div>
         
         <label for="m_msAutoEntryProb" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Win Probability:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_msAutoEntryProb" min="0" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_msAutoEntryProb" min="0" max="100" value="0" class="uat-modal-single-range" style="width:100%; z-index:1; position:relative;">
           <div id="m_msProbVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0%</div>
         </div>
         
@@ -7233,8 +7304,8 @@
         <!-- Auto Stop -->
         <hr style="border:none; border-top:1px solid #4a5568; margin:8px 0 16px 0;">
         <label for="m_stopLossPriceSliderMs" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Stop Loss Price:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_stopLossPriceSliderMs" min="0" max="99" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_stopLossPriceSliderMs" min="0" max="99" step="1" value="0" class="uat-modal-single-range" style="width:100%; z-index:1; position:relative;">
           <div id="m_stopLossPriceValueDisplayMs" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.00</div>
         </div>
         <div class="uat-auto-stop-accuracy-row">
@@ -7266,14 +7337,14 @@
         </div>
         
         <label for="m_msTrailingStop" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Trailing Stop Amount:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_msTrailingStop" min="0" max="100" step="1" value="10" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_msTrailingStop" min="0" max="100" step="1" value="10" class="uat-modal-single-range" style="width:100%; z-index:1; position:relative;">
           <div id="m_msTrailingStopVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.10</div>
         </div>
         
         <label for="m_msProfitTarget" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Profit Target:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
-          <input type="range" id="m_msProfitTarget" min="50" max="100" step="1" value="99" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_msProfitTarget" min="50" max="100" step="1" value="99" class="uat-modal-single-range" style="width:100%; z-index:1; position:relative;">
           <div id="m_msProfitTargetVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.99</div>
         </div>
         </div>
