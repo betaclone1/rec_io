@@ -21,15 +21,15 @@ This changelog is used when pushing updates to production. Each entry is timesta
 2. `20260407_1210_paper_subaccounts_mirror_automatic_transfers`
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations (from project root on server, in order above):  
+- [x] Apply migrations (from project root on server, in order above):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260407_1200_subaccounts_paper_id_match_live_0001`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260407_1210_paper_subaccounts_mirror_automatic_transfers`
-- [ ] Schema drift check (recommended):  
+- [x] Schema drift check (recommended):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; spot-check paper MTB target-rake and **`transfers_paper`** when `automatic_transfers` is true.
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; spot-check paper MTB target-rake and **`transfers_paper`** when `automatic_transfers` is true.
 
 ---
 
