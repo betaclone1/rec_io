@@ -19,144 +19,6 @@
   <script src="../js/monitor_history_display.js"></script>
   <script src="/js/uat_unified_modal_position_size.js"></script>
   <style>
-    #mobileUnifiedAutoTradeModal .uat-pos-mult-group {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      align-items: center;
-    }
-    #mobileUnifiedAutoTradeModal .uat-pos-mult-btn {
-      background: transparent;
-      border: 1px solid #ccc;
-      color: #333;
-      padding: 4px 10px;
-      border-radius: 4px;
-      cursor: pointer;
-      min-width: 48px;
-      font-size: 12px;
-      text-align: center;
-    }
-    #mobileUnifiedAutoTradeModal .uat-pos-mult-btn.active {
-      background: #007bff;
-      border-color: #0056b3;
-      color: #fff;
-      font-weight: bold;
-      box-shadow: 0 0 6px rgba(0, 123, 255, 0.5);
-    }
-    #mobileUnifiedAutoTradeModal .uat-pos-mult-btn:hover:not(.active) {
-      background: rgba(0, 0, 0, 0.05);
-    }
-
-    #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy-row {
-      display: flex;
-      align-items: flex-start;
-      gap: 16px;
-      width: 100%;
-      margin: 6px 0 14px 0;
-      flex-wrap: wrap;
-    }
-    #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy-row .uat-auto-stop-accuracy {
-      flex: 1 1 200px;
-      min-width: 0;
-      margin: 0;
-    }
-    #mobileUnifiedAutoTradeModal .uat-flip-sell-side {
-      flex: 0 0 auto;
-      display: flex;
-      flex-direction: row;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 10px;
-      padding-top: 2px;
-    }
-    #mobileUnifiedAutoTradeModal .uat-flip-sell-check {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 12px;
-      color: #666;
-      cursor: pointer;
-      user-select: none;
-      margin: 0;
-    }
-    #mobileUnifiedAutoTradeModal .uat-flip-sell-check input {
-      width: 14px;
-      height: 14px;
-      accent-color: #007bff;
-      margin: 0;
-    }
-    #mobileUnifiedAutoTradeModal .uat-flip-multipliers {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-    }
-    #mobileUnifiedAutoTradeModal .uat-flip-multipliers--disabled {
-      opacity: 0.42;
-      pointer-events: none;
-      filter: grayscale(0.25);
-    }
-    #mobileUnifiedAutoTradeModal .uat-flip-multiplier-btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      background: transparent;
-      border: 1px solid #ccc;
-      color: #333;
-      padding: 2px 7px;
-      border-radius: 3px;
-      cursor: pointer;
-      transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
-      min-width: 31px;
-      height: 20px;
-      box-sizing: border-box;
-      font-size: calc(12px * 0.7);
-      line-height: 1;
-      text-align: center;
-    }
-    #mobileUnifiedAutoTradeModal .uat-flip-multiplier-btn.active {
-      background: #007bff;
-      border-color: #0056b3;
-      color: #fff;
-      font-weight: 600;
-      box-shadow: 0 0 6px rgba(0, 123, 255, 0.45);
-    }
-    #mobileUnifiedAutoTradeModal .uat-flip-multipliers--disabled .uat-flip-multiplier-btn.active {
-      background: transparent;
-      border-color: #ccc;
-      color: #333;
-      font-weight: normal;
-      box-shadow: none;
-    }
-    #mobileUnifiedAutoTradeModal .uat-flip-multiplier-btn:hover:not(.active) {
-      background: rgba(0, 0, 0, 0.06);
-    }
-    #mobileUnifiedAutoTradeModal .uat-flip-multipliers--disabled .uat-flip-multiplier-btn:hover {
-      background: transparent;
-    }
-    #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy {
-      font-size: 12px;
-      color: #666;
-      margin: 0;
-      line-height: 1.55;
-    }
-    #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy [data-uat-acc] {
-      display: flex;
-      align-items: baseline;
-      gap: 0.5em;
-      margin: 0;
-    }
-    #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy .uat-acc-label {
-      flex: 0 0 6.75rem;
-      text-align: right;
-      color: inherit;
-    }
-    #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy .uat-acc-value {
-      flex: 1 1 auto;
-      min-width: 0;
-      text-align: left;
-      font-variant-numeric: tabular-nums;
-    }
-
     /* Dashboard Container */
     .dashboard-container {
       display: flex;
@@ -184,7 +46,7 @@
     .performance-periods { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; width: fit-content; align-self: center; transform: translateX(-20px); }
     .performance-row { display: flex; align-items: center; gap: 10px; }
     .performance-label { font-size: 13px; font-weight: 600; color: #a0aec0; width: 48px; text-align: right; }
-    .performance-box { display: inline-block; background-color: #1a1d24; border-radius: 8px; border: 1px solid #3d4552; padding: 9px 14px; min-width: 72px; text-align: center; }
+    .performance-box { display: inline-block; background-color: #1a1d24; border-radius: 8px; border: 1px solid #3d4552; padding: 9px 17.5px; min-width: 90px; text-align: center; }
     .performance-pnl { font-size: 14px; font-weight: 600; color: #ffffff; }
     .performance-pnl.positive { color: #48bb78; }
     .performance-pnl.negative { color: #e53e3e; }
@@ -6674,24 +6536,426 @@
 
   </script>
 
-  <!-- Mobile Unified Auto Trade Settings Modal -->
-  <div id="mobileUnifiedAutoTradeModal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:10000; overflow-y:auto;">
-    <div id="mobileUnifiedAutoTradeDim" style="position:absolute; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.4);"></div>
-    <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border-radius:8px; min-width:360px; width:92%; max-width:440px; box-shadow:0 4px 32px rgba(0,0,0,0.25); padding:20px; display:flex; flex-direction:column; max-height:80vh; overflow:auto;">
-      <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:16px;">
-        <div id="mobileUnifiedAutoTradeModalTitle" style="font-size:16px; font-weight:600; margin:0; flex:1; color:#222;">Monitor</div>
-        <label style="display:flex; align-items:center; gap:6px; font-size:12px; font-weight:500; color:#555; white-space:nowrap; flex-shrink:0;">
+  <!-- Mobile Unified Auto Trade Settings Modal (dark theme; matches desktop unifiedAutoTradeModal) -->
+  <div id="mobileUnifiedAutoTradeModal" class="uat-modal-overlay" style="display:none;" onclick="if (window.hideMobileUnifiedAutoTradeSettings) window.hideMobileUnifiedAutoTradeSettings();">
+    <style>
+
+      /* Auto Trade modal — align with account_manager transfer modals (dark panel, muted chrome) */
+      #mobileUnifiedAutoTradeModal.uat-modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        z-index: 10000;
+        overflow-y: auto;
+        box-sizing: border-box;
+        padding: 24px 20px;
+        align-items: flex-start;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.5);
+      }
+      #mobileUnifiedAutoTradeModal .value-bubble-container {
+        padding-left: 40px;
+        padding-right: 40px;
+        box-sizing: border-box;
+        width: 100%;
+        min-width: 0;
+      }
+      #mobileUnifiedAutoTradeModal .value-bubble-container input[type="range"] { width: 100%; box-sizing: border-box; display:block; margin: 0; }
+      #mobileUnifiedAutoTradeModal .unified-auto-trade-modal-box {
+        background: #1f2633;
+        border: 1px solid #4a5568;
+        border-radius: 8px;
+        padding: 20px;
+        min-width: min(567px, calc(100vw - 40px));
+        max-width: min(720px, 100vw - 40px);
+        max-height: calc(100vh - 48px);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        box-sizing: border-box;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+      }
+      #mobileUnifiedAutoTradeModal .uat-modal-title-row {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+      #mobileUnifiedAutoTradeModal .uat-modal-title {
+        font-size: 14px;
+        font-weight: bold;
+        margin: 0;
+        flex: 1;
+        color: #c4c4c4;
+      }
+      #mobileUnifiedAutoTradeModal .uat-test-filter-label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        font-weight: 500;
+        color: #9ca3af;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      #mobileUnifiedAutoTradeModal .uat-modal-body {
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+        align-items: stretch;
+        overflow-x: hidden;
+        overflow-y: auto;
+        min-height: 0;
+        box-sizing: border-box;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      #mobileUnifiedAutoTradeModal .uat-modal-body::-webkit-scrollbar {
+        display: none;
+      }
+      #mobileUnifiedAutoTradeModal label { color: #c4c4c4 !important; }
+      #mobileUnifiedAutoTradeModal .uat-section-title {
+        font-size: 12px;
+        font-weight: bold;
+        margin: 4px 0 8px 0;
+        color: #c4c4c4;
+      }
+      #mobileUnifiedAutoTradeModal .uat-modal-hr {
+        border: none;
+        border-top: 1px solid #4a5568;
+        width: auto;
+        box-sizing: border-box;
+      }
+      #mobileUnifiedAutoTradeModal .uat-modal-hr--24 { margin: 24px 0; }
+      #mobileUnifiedAutoTradeModal .uat-modal-hr--24-16 { margin: 24px 0 16px 0; }
+      #mobileUnifiedAutoTradeModal .uat-modal-hr--16-24 { margin: 16px 0 24px 0; }
+      #mobileUnifiedAutoTradeModal .uat-modal-hr--16 { margin: 16px 0; }
+      #mobileUnifiedAutoTradeModal .uat-modal-hr--8-16 { margin: 8px 0 16px 0; }
+      #mobileUnifiedAutoTradeModal .uat-modal-actions {
+        margin-top: 16px;
+        display: flex;
+        gap: 10px;
+        justify-content: flex-end;
+        flex-shrink: 0;
+      }
+      #mobileUnifiedAutoTradeModal .uat-modal-btn-primary {
+        background: var(--accent-color, #3b82f6);
+        color: white;
+        border: none;
+        padding: 6px 12px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 500;
+        transition: background-color 0.2s;
+      }
+      #mobileUnifiedAutoTradeModal .uat-modal-btn-primary:hover { background: var(--accent-hover, #2563eb); }
+      #mobileUnifiedAutoTradeModal .uat-modal-btn-secondary {
+        background: #4a5568;
+        color: white;
+        border: none;
+        padding: 6px 12px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 500;
+      }
+      #mobileUnifiedAutoTradeModal .uat-modal-btn-secondary:hover { background: #5a6578; }
+      #mobileUnifiedAutoTradeModal #m_regimeWindowPickerRow {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-bottom: 24px;
+      }
+      #mobileUnifiedAutoTradeModal #m_regimeWindowPickerRow label {
+        margin-bottom: 0 !important;
+        flex: 0 0 auto;
+      }
+      #mobileUnifiedAutoTradeModal #m_regimeWindowSelect {
+        width: auto;
+        min-width: 7.5rem;
+        max-width: 100%;
+        padding: 6px 10px;
+        border-radius: 4px;
+        border: 1px solid #4a5568;
+        background: #2a3441;
+        color: #fff;
+        font-size: 12px;
+        box-sizing: border-box;
+      }
+      #mobileUnifiedAutoTradeModal [id$="SliderContainer"] { background: #3c495e !important; }
+      #mobileUnifiedAutoTradeModal [id$="Range"] { background: #3b82f6 !important; }
+      #mobileUnifiedAutoTradeModal [id$="Handle"] { background: #3b82f6 !important; }
+      #mobileUnifiedAutoTradeModal [id$="MinDisplay"],
+      #mobileUnifiedAutoTradeModal [id$="MaxDisplay"],
+      #mobileUnifiedAutoTradeModal [id$="ValueDisplay"],
+      #mobileUnifiedAutoTradeModal #sliderValueDisplay {
+        background: #2a3441 !important;
+        color: #e2e8f0 !important;
+        border: 1px solid #4a5568 !important;
+        box-shadow: none !important;
+      }
+      #mobileUnifiedAutoTradeModal input[type="checkbox"] { accent-color: #3b82f6; }
+      #mobileUnifiedAutoTradeModal input[type="checkbox"] + span { color: #9ca3af !important; }
+      #mobileUnifiedAutoTradeModal .uat-performance-label { color: #e2e8f0 !important; font-size: 14px; font-weight: 500; }
+      #mobileUnifiedAutoTradeModal input[type="range"] { accent-color: #3b82f6; background: #3c495e !important; }
+      #mobileUnifiedAutoTradeModal .uat-stepper {
+        display: flex;
+        align-items: center;
+        border: 1px solid #4a5568;
+        border-radius: 4px;
+        background: #2a3441;
+      }
+      #mobileUnifiedAutoTradeModal .uat-stepper-btn {
+        padding: 8px 12px;
+        border: none;
+        background: #3c495e;
+        color: #e2e8f0;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      #mobileUnifiedAutoTradeModal .uat-stepper-btn:hover { background: #4a5568; }
+      #mobileUnifiedAutoTradeModal .uat-stepper-btn-down { border-right: 1px solid #4a5568; border-radius: 4px 0 0 4px; }
+      #mobileUnifiedAutoTradeModal .uat-stepper-btn-up { border-left: 1px solid #4a5568; border-radius: 0 4px 4px 0; }
+      #mobileUnifiedAutoTradeModal .uat-stepper-display {
+        padding: 8px 16px;
+        font-size: 13px;
+        color: #e2e8f0;
+        min-width: 60px;
+        text-align: center;
+        font-weight: 500;
+      }
+      #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 24px;
+        width: 100%;
+        margin: 6px 0 14px 0;
+      }
+      #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy-row .uat-auto-stop-accuracy {
+        flex: 0 1 auto;
+        min-width: 0;
+        margin: 0;
+      }
+      #mobileUnifiedAutoTradeModal .uat-flip-sell-side {
+        flex: 0 0 auto;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 10px;
+        padding-top: 2px;
+      }
+      #mobileUnifiedAutoTradeModal .uat-flip-sell-check {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: #9ca3af;
+        cursor: pointer;
+        user-select: none;
+        margin: 0;
+      }
+      #mobileUnifiedAutoTradeModal .uat-flip-sell-check input {
+        width: 14px;
+        height: 14px;
+        accent-color: var(--accent-color, #3b82f6);
+        margin: 0;
+      }
+      #mobileUnifiedAutoTradeModal .uat-flip-multipliers {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      #mobileUnifiedAutoTradeModal .uat-flip-multipliers--disabled {
+        opacity: 0.42;
+        pointer-events: none;
+        filter: grayscale(0.25);
+      }
+      #mobileUnifiedAutoTradeModal .uat-flip-multiplier-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background-color: transparent;
+        border: 1px solid #4a5568;
+        color: #e2e8f0;
+        padding: 2px 7px;
+        border-radius: 3px;
+        cursor: pointer;
+        transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+        min-width: 31px;
+        height: 20px;
+        box-sizing: border-box;
+        font-size: calc(12px * 0.7);
+        line-height: 1;
+        text-align: center;
+      }
+      #mobileUnifiedAutoTradeModal .uat-flip-multiplier-btn.active {
+        background-color: #3b82f6;
+        border-color: #2563eb;
+        color: #fff;
+        font-weight: 600;
+        box-shadow: 0 0 6px rgba(59, 130, 246, 0.5);
+      }
+      #mobileUnifiedAutoTradeModal .uat-flip-multipliers--disabled .uat-flip-multiplier-btn.active {
+        background-color: transparent;
+        border-color: #4a5568;
+        color: #e2e8f0;
+        font-weight: normal;
+        box-shadow: none;
+      }
+      #mobileUnifiedAutoTradeModal .uat-flip-multiplier-btn:hover:not(.active) {
+        background-color: rgba(255, 255, 255, 0.08);
+      }
+      #mobileUnifiedAutoTradeModal .uat-flip-multipliers--disabled .uat-flip-multiplier-btn:hover {
+        background-color: transparent;
+      }
+      #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy {
+        font-size: 12px;
+        color: #9ca3af;
+        margin: 0;
+        line-height: 1.55;
+      }
+      #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy [data-uat-acc] {
+        display: flex;
+        align-items: baseline;
+        gap: 0.5em;
+        margin: 0;
+      }
+      #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy .uat-acc-label {
+        flex: 0 0 6.75rem;
+        text-align: right;
+        color: inherit;
+      }
+      #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy .uat-acc-value {
+        flex: 1 1 auto;
+        min-width: 0;
+        text-align: left;
+        font-variant-numeric: tabular-nums;
+      }
+      #mobileUnifiedAutoTradeModal .uat-pos-mult-group {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
+      #mobileUnifiedAutoTradeModal .uat-pos-mult-btn {
+        background-color: transparent;
+        border: 1px solid #9ca3af;
+        color: #e2e8f0;
+        padding: 4px 10px;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: background-color 0.3s ease, color 0.3s ease;
+        min-width: 48px;
+        text-align: center;
+        font-size: 12px;
+      }
+      #mobileUnifiedAutoTradeModal .uat-pos-mult-btn.active {
+        background-color: #3b82f6;
+        border-color: #2563eb;
+        color: white;
+        font-weight: bold;
+        box-shadow: 0 0 6px rgba(59, 130, 246, 0.7);
+      }
+      #mobileUnifiedAutoTradeModal .uat-pos-mult-btn:hover:not(.active) {
+        background-color: rgba(255, 255, 255, 0.08);
+      }
+
+      #mobileUnifiedAutoTradeModal .unified-auto-trade-modal-box {
+        min-width: min(320px, calc(100vw - 40px));
+        max-width: min(440px, calc(100vw - 40px));
+      }
+      #mobileUnifiedAutoTradeModal [id$="Val"] {
+        background: #2a3441 !important;
+        color: #e2e8f0 !important;
+        border: 1px solid #4a5568 !important;
+        box-shadow: none !important;
+      }
+      #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy-row {
+        flex-wrap: wrap;
+        gap: 16px;
+      }
+      #mobileUnifiedAutoTradeModal .uat-auto-stop-accuracy-row .uat-auto-stop-accuracy {
+        flex: 1 1 200px;
+        min-width: 0;
+      }
+      #mobileUnifiedAutoTradeModal #m_msMinTTCDown {
+        border-right: 1px solid #4a5568 !important;
+        border-radius: 4px 0 0 4px !important;
+      }
+      #mobileUnifiedAutoTradeModal #m_msMinTTCUp {
+        border-left: 1px solid #4a5568 !important;
+        border-radius: 0 4px 4px 0 !important;
+      }
+      #mobileUnifiedAutoTradeModal #m_msMinTTCDisplay {
+        padding: 8px 16px !important;
+        font-size: 13px !important;
+        color: #e2e8f0 !important;
+        min-width: 60px !important;
+        text-align: center !important;
+        font-weight: 500 !important;
+        background: transparent !important;
+      }
+
+
+      #mobileUnifiedAutoTradeModal #m_minTTCDown,
+      #mobileUnifiedAutoTradeModal #m_minTTCUp,
+      #mobileUnifiedAutoTradeModal #m_msMinTTCDown,
+      #mobileUnifiedAutoTradeModal #m_msMinTTCUp {
+        background: #3c495e !important;
+        color: #e2e8f0 !important;
+        border: none !important;
+      }
+      #mobileUnifiedAutoTradeModal #m_minTTCDown:hover,
+      #mobileUnifiedAutoTradeModal #m_minTTCUp:hover,
+      #mobileUnifiedAutoTradeModal #m_msMinTTCDown:hover,
+      #mobileUnifiedAutoTradeModal #m_msMinTTCUp:hover {
+        background: #4a5568 !important;
+      }
+      #mobileUnifiedAutoTradeModal #m_minTTCDown {
+        border-right: 1px solid #4a5568 !important;
+        border-radius: 4px 0 0 4px !important;
+      }
+      #mobileUnifiedAutoTradeModal #m_minTTCUp {
+        border-left: 1px solid #4a5568 !important;
+        border-radius: 0 4px 4px 0 !important;
+      }
+      #mobileUnifiedAutoTradeModal #m_minTTCDisplay {
+        padding: 8px 16px !important;
+        font-size: 13px !important;
+        color: #e2e8f0 !important;
+        min-width: 60px !important;
+        text-align: center !important;
+        font-weight: 500 !important;
+        background: transparent !important;
+      }
+      #mobileUnifiedAutoTradeModal .uat-modal-body span[style*="#666"],
+      #mobileUnifiedAutoTradeModal .uat-modal-body span[style*="#111"] {
+        color: #9ca3af !important;
+      }
+
+    </style>
+    <div class="unified-auto-trade-modal-box" onclick="event.stopPropagation();">
+      <div class="uat-modal-title-row">
+        <div id="mobileUnifiedAutoTradeModalTitle" class="uat-modal-title">Monitor</div>
+        <label class="uat-test-filter-label" for="m_uatMonitorTestFilter">
           <input type="checkbox" id="m_uatMonitorTestFilter" />
           Test filter
         </label>
       </div>
-      <div class="uat-position-size-block uat-pos-theme-light" style="margin-bottom:12px;">
-        <div style="font-weight:bold; margin-bottom:6px; font-size:0.9rem; color:#222;">Position Size: <span class="uat-pos-display" style="margin-left:10px; font-weight:normal; color:#666;">100 contracts</span></div>
+      <div class="uat-position-size-block" style="margin-bottom:16px;">
+        <div style="font-weight:bold; margin-bottom:6px; font-size:0.9rem; color:#e2e8f0;">Position Size: <span class="uat-pos-display" style="margin-left:10px; font-weight:normal; color:#9ca3af;">100 contracts</span></div>
         <div class="uat-position-size-row" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-          <input type="number" class="uat-pos-input" min="1" value="20" style="width:60px; padding:4px 6px; text-align:right; font-size:1rem; border-radius:4px; border:1px solid #ccc; background:#fff; color:#111; height:28px; box-sizing:border-box;" />
+          <input type="number" class="uat-pos-input" min="1" value="20" style="width:60px; padding:4px 6px; text-align:right; font-size:1rem; border-radius:4px; border:1px solid #4a5568; background:#2a3441; color:#e2e8f0; height:28px; box-sizing:border-box;" />
           <div style="display:flex; flex-direction:column; gap:2px;">
-            <button type="button" class="uat-pos-toggle-percent" style="height:15px; padding:2px 6px; box-sizing:border-box; font-size:9px; background-color:#007bff; border:1px solid #0056b3; color:white; border-radius:4px; cursor:pointer;">%</button>
-            <button type="button" class="uat-pos-toggle-contracts" style="height:15px; padding:2px 6px; box-sizing:border-box; font-size:9px; background-color:transparent; border:1px solid #ccc; color:#333; border-radius:4px; cursor:pointer;">C</button>
+            <button type="button" class="uat-pos-toggle-percent" style="height:15px; padding:2px 6px; box-sizing:border-box; font-size:9px; background-color:#3b82f6; border:1px solid #2563eb; color:white; border-radius:4px; cursor:pointer;">%</button>
+            <button type="button" class="uat-pos-toggle-contracts" style="height:15px; padding:2px 6px; box-sizing:border-box; font-size:9px; background-color:transparent; border:1px solid #9ca3af; color:#e2e8f0; border-radius:4px; cursor:pointer;">C</button>
           </div>
           <div class="uat-pos-mult-group">
             <button type="button" class="uat-pos-mult-btn" data-multiplier="0" style="height:28px; box-sizing:border-box;">1c</button>
@@ -6702,16 +6966,17 @@
           </div>
         </div>
       </div>
-      <div style="flex:1 1 auto; display:flex; flex-direction:column; justify-content:flex-start; align-items:stretch; overflow-y:auto; min-height:0;">
+      <div class="uat-modal-body">
+
         <!-- Regime Monitor Settings (LIVE<->PAPER auto-switch) -->
-        <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Regime Monitor</div>
+        <div class="uat-section-title">Regime Monitor</div>
         <div style="position:relative; margin-bottom:16px; width:100%; display:flex; align-items:center; gap:10px;">
           <input type="checkbox" id="m_regimeMonitorEnabled" style="width:16px; height:16px; accent-color:#007bff;">
           <span style="font-size:13px; color:#666;">Auto-switch LIVE/PAPER based on rolling performance</span>
         </div>
         <div id="m_regimeWindowPickerRow" style="display:none; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:24px;">
           <label for="m_regimeWindowSelect" style="font-size:14px; color:#333; font-weight:500; margin:0;">Regime Window:</label>
-          <select id="m_regimeWindowSelect" aria-label="Regime window" style="width:auto; min-width:7.5rem; max-width:100%; padding:8px 10px; border-radius:6px; border:1px solid #ddd; background:#fff; font-size:14px;">
+          <select id="m_regimeWindowSelect" aria-label="Regime window">
             <option value="30d">30 Days</option>
             <option value="7d">7 Days</option>
             <option value="1d">1 Day</option>
@@ -6721,7 +6986,7 @@
 
         <!-- HOURLY HTC Strategy Section -->
         <div id="m_htcStrategySection" style="display: contents;">
-        <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Auto Entry</div>
+        <div class="uat-section-title">Auto Entry</div>
         <label for="m_timeWindowSliderContainer" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Time Window:</label>
         <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
           <div id="m_timeWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:8px; box-sizing:border-box;">
@@ -6802,7 +7067,7 @@
           <div id="m_winStreakVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">22</div>
         </div>
 
-        <hr style="border:none; border-top:1px solid #e0e0e0; margin:24px 0;">
+        <hr style="border:none; border-top:1px solid #4a5568; margin:24px 0;">
 
         <div style="position:relative; margin:0; width:100%; display:flex; align-items:center;">
           <input type="checkbox" id="m_spikeEnabled" style="width:16px; height:16px; margin-right:8px; flex-shrink:0; accent-color:#007bff;">
@@ -6837,16 +7102,16 @@
         </div>
         </div>
 
-        <hr style="border:none; border-top:1px solid #e0e0e0; margin:24px 0 16px 0;">
+        <hr style="border:none; border-top:1px solid #4a5568; margin:24px 0 16px 0;">
 
         <div style="position:relative; margin:0; width:100%; display:flex; align-items:center;">
           <input type="checkbox" id="m_perfAlloc" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;">
           <span style="font-size:14px; color:#111; font-weight:500;">Enable performance-based allocation</span>
         </div>
 
-        <hr style="border:none; border-top:1px solid #e0e0e0; margin:16px 0 24px 0;">
+        <hr style="border:none; border-top:1px solid #4a5568; margin:16px 0 24px 0;">
 
-        <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Auto Stop</div>
+        <div class="uat-section-title">Auto Stop</div>
 
         <label for="m_stopProb" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Current Win Probability:</label>
         <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
@@ -6871,7 +7136,7 @@
           </div>
         </div>
 
-        <hr style="border:none; border-top:1px solid #e0e0e0; margin:8px 0 16px 0;">
+        <hr style="border:none; border-top:1px solid #4a5568; margin:8px 0 16px 0;">
         <label for="m_stopLossPriceSlider" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Stop Loss Price:</label>
         <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
           <input type="range" id="m_stopLossPriceSlider" min="0" max="99" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
@@ -6897,10 +7162,10 @@
 
         <label for="m_minTTC" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Minimum Time to Close:</label>
         <div style="display:flex; align-items:center; gap:10px; margin-bottom:24px;">
-          <div style="display:flex; align-items:center; border:1px solid #ddd; border-radius:4px; background:#f8f9fa;">
-            <button id="m_minTTCDown" style="padding:8px 12px; border:none; background:#f8f9fa; cursor:pointer; border-right:1px solid #ddd; border-radius:4px 0 0 4px; font-size:12px; color:#333;">▼</button>
-            <span id="m_minTTCDisplay" style="padding:8px 16px; font-size:13px; color:#333; min-width:60px; text-align:center; font-weight:500;">01:00</span>
-            <button id="m_minTTCUp" style="padding:8px 12px; border:none; background:#f8f9fa; cursor:pointer; border-left:1px solid #ddd; border-radius:0 4px 4px 0; font-size:12px; color:#333;">▲</button>
+          <div class="uat-min-ttc-shell" style="display:flex; align-items:center; border:1px solid #4a5568; border-radius:4px; background:#2a3441;">
+            <button type="button" id="m_minTTCDown" style="padding:8px 12px; border:none; background:transparent; cursor:pointer; border-right:1px solid #4a5568; border-radius:4px 0 0 4px; font-size:12px;">▼</button>
+            <span id="m_minTTCDisplay" style="padding:8px 16px; font-size:13px; min-width:60px; text-align:center; font-weight:500;">01:00</span>
+            <button type="button" id="m_minTTCUp" style="padding:8px 12px; border:none; background:transparent; cursor:pointer; border-left:1px solid #4a5568; border-radius:0 4px 4px 0; font-size:12px;">▲</button>
           </div>
           <input type="hidden" id="m_minTTC" value="60">
         </div>
@@ -6931,7 +7196,7 @@
         
         <!-- MOMENTUM SCALP Strategy Section -->
         <div id="m_msStrategySection" style="display: none;">
-        <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Auto Entry</div>
+        <div class="uat-section-title">Auto Entry</div>
         <!-- Auto Entry -->
         <label for="m_msTimeWindowSliderContainer" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Scalp Time Window:</label>
         <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
@@ -6962,11 +7227,11 @@
           <div id="m_msProbVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0%</div>
         </div>
         
-        <hr style="border:none; border-top:1px solid #e0e0e0; margin:24px 0;">
-        <div style="font-size:13px; color:#555; font-weight:600; margin:4px 0 8px 0;">Auto Stop</div>
+        <hr style="border:none; border-top:1px solid #4a5568; margin:24px 0;">
+        <div class="uat-section-title">Auto Stop</div>
         
         <!-- Auto Stop -->
-        <hr style="border:none; border-top:1px solid #e0e0e0; margin:8px 0 16px 0;">
+        <hr style="border:none; border-top:1px solid #4a5568; margin:8px 0 16px 0;">
         <label for="m_stopLossPriceSliderMs" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Stop Loss Price:</label>
         <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-right:48px; padding-left:8px; box-sizing:border-box;">
           <input type="range" id="m_stopLossPriceSliderMs" min="0" max="99" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
@@ -6992,10 +7257,10 @@
 
         <label for="m_msAutoStopMinTTC" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Minimum Time to Close:</label>
         <div style="display:flex; align-items:center; gap:10px; margin-bottom:24px;">
-          <div style="display:flex; align-items:center; border:1px solid #ddd; border-radius:4px; background:#f8f9fa;">
-            <button id="m_msMinTTCDown" style="padding:8px 12px; border:none; background:#f8f9fa; cursor:pointer; border-right:1px solid #ddd; border-radius:4px 0 0 4px; font-size:12px; color:#333;">▼</button>
-            <span id="m_msMinTTCDisplay" style="padding:8px 16px; font-size:13px; color:#333; min-width:60px; text-align:center; font-weight:500;">01:00</span>
-            <button id="m_msMinTTCUp" style="padding:8px 12px; border:none; background:#f8f9fa; cursor:pointer; border-left:1px solid #ddd; border-radius:0 4px 4px 0; font-size:12px; color:#333;">▲</button>
+          <div class="uat-min-ttc-shell" style="display:flex; align-items:center; border:1px solid #4a5568; border-radius:4px; background:#2a3441;">
+            <button type="button" id="m_msMinTTCDown" style="padding:8px 12px; border:none; background:transparent; cursor:pointer; border-right:1px solid #4a5568; border-radius:4px 0 0 4px; font-size:12px;">▼</button>
+            <span id="m_msMinTTCDisplay" style="padding:8px 16px; font-size:13px; min-width:60px; text-align:center; font-weight:500;">01:00</span>
+            <button type="button" id="m_msMinTTCUp" style="padding:8px 12px; border:none; background:transparent; cursor:pointer; border-left:1px solid #4a5568; border-radius:0 4px 4px 0; font-size:12px;">▲</button>
           </div>
           <input type="hidden" id="m_msAutoStopMinTTC" value="60">
         </div>
@@ -7014,9 +7279,9 @@
         </div>
         <!-- End MOMENTUM SCALP Strategy Section -->
       </div>
-      <div style="display:flex; gap:12px; justify-content:flex-end; align-items:center; margin-top:16px;">
-        <button id="m_unifiedCancel" style="padding:8px 16px; border-radius:4px; border:1px solid #ddd; background:#f8f9fa; color:#333; font-size:13px; cursor:pointer; font-weight:500;" onmouseover="this.style.background='#e9ecef'" onmouseout="this.style.background='#f8f9fa'">Cancel</button>
-        <button id="m_unifiedSave" style="padding:8px 16px; border-radius:4px; border:none; background:#007bff; color:white; font-size:13px; cursor:pointer; font-weight:500;" onmouseover="this.style.background='#0056b3'" onmouseout="this.style.background='#007bff'">Save</button>
+      <div class="uat-modal-actions">
+        <button type="button" id="m_unifiedCancel" class="uat-modal-btn-secondary">Cancel</button>
+        <button type="button" id="m_unifiedSave" class="uat-modal-btn-primary">Save</button>
       </div>
     </div>
   </div>
@@ -7965,22 +8230,15 @@
       async function openModal(tileId) {
         const apiId = mobileNormalizeMonitorId(tileId);
         const modal = document.getElementById('mobileUnifiedAutoTradeModal');
-        const dim = document.getElementById('mobileUnifiedAutoTradeDim');
 
-        modal.style.display = 'block';
-        if (dim) dim.style.display = 'block';
+        modal.style.display = 'flex';
         document.body.style.overflow = 'hidden';
         modal.setAttribute('data-uat-tile-id', tileId);
         mobileDashUatLoadMonitorPositionIntoModal(apiId);
         
-        // Set up cancel button and dim click handlers immediately
         const cancelBtn = document.getElementById('m_unifiedCancel');
         if (cancelBtn) {
           cancelBtn.onclick = hideModal;
-        }
-        
-        if (dim) {
-          dim.onclick = hideModal;
         }
         
         // Get monitor strategy from monitors array
@@ -8550,12 +8808,10 @@
 
       function hideModal() {
         const modal = document.getElementById('mobileUnifiedAutoTradeModal');
-        const dim = document.getElementById('mobileUnifiedAutoTradeDim');
         if (modal && window.UatUnifiedModalPositionSize) {
           window.UatUnifiedModalPositionSize.restoreOpenSnapshot(modal);
         }
         modal.style.display = 'none';
-        if (dim) dim.style.display = 'none';
         document.body.style.overflow = 'auto';
         if (modal._keyHandler) {
           document.removeEventListener('keydown', modal._keyHandler);
