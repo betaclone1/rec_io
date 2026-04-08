@@ -68,6 +68,57 @@ Uses ``created_at`` (timestamptz) for the window. Default: exclude ``test_filter
 
 DB: ``scripts/backtest/helpers/db.py`` (SSH prod default, etc.).
 
+**Kalshi → backtest schema (any tickers):** ``--ingest-kalshi-tickers T1 T2 ...`` fetches 1m
+candlesticks plus ``floor_strike`` / ``market_result`` (historical markets API, then live market
+fallback) and upserts into ``backtest.backtest_1m_<slug>`` per ticker. For ``KXBTC*`` / ``KXETH*``
+tickers, joins ``historical_data.btc_price_history`` / ``eth_price_history`` on Eastern-naive
+``timestamp`` and copies price-history columns (``open``, ``high``, …). A ticker is **skipped**
+(no table create / upsert) if Kalshi returns no 1m candles for the window, or (with spot join on)
+if any bar minute is missing from the corresponding ``*_price_history`` table. Use ``--ingest-no-spot``
+to skip that join. Creates schema/tables as needed (no per-ticker SQL migrations). Does not require
+``--monitors`` / ``--start`` / ``--end``.
+**Series + close window:** ``--ingest-kalshi-series KXBTC15M --ingest-kalshi-close-start ... --ingest-kalshi-close-end ...``
+paginates Kalshi ``GET /markets`` (``series_ticker`` + close-time bounds), then ingests each
+discovered ticker (skips still apply per market).
+
+**Eastern trading day (preferred for 15m batches):** ``--ingest-kalshi-trading-day KXETH15M 2026-03-31``
+builds **96** tickers for that **US Eastern calendar date** (same ``YYYY-MM-DD`` convention as
+``trade.date`` / ``today_est``), matching ``kalshi_contract_settlement_end_est`` / settlement grid.
+No discovery API call; skips still apply if Kalshi has no market or data for a slot.
+**Hourly** daily contracts (strike in ``-T...``) are not synthesized (96×15m only).
+
+**HTTP:** ``REC_IO_KALSHI_HTTP_RETRIES`` (see ``kalshi_candles_1m._http_json``) retries transient timeouts.
+
+**Backtest row contract (``backtest.backtest_1m_<slug>``):** Each row is **one Kalshi 1m bar**
+aligned to Eastern-naive ``timestamp`` (bar end), intended as the artifact a future virtual
+``auto_entry_supervisor`` / trade replay can read without tick data. Design goal: **conservative**
+semantics: store **intervals** where the true live path is unknown, not optimistic point guesses.
+
+- **Facts (observed in that minute):** Kalshi ``yes_price_*_dollars`` from API ``price`` OHLC;
+  ``no_price_*`` = ``1 −`` YES (clamped); YES bid/ask OHLC; ``volume_fp`` / ``open_interest_fp``;
+  ``floor_strike`` / ``market_result`` for the cycle; joined symbol columns from
+  ``historical_data.*_price_history`` (``open``, ``high``, …, ``momentum_percentile``, …) when
+  the ticker maps to BTC/ETH.
+
+- **Derived bounds (compatible with the bar, not tick-truth):** ``ttc_15m_open_seconds`` /
+  ``ttc_15m_close_seconds`` (15m boundary TTC at bar open vs close); ``strike_buffer_min`` /
+  ``strike_buffer_max`` from symbol ``low``/``high`` vs ``floor_strike``; ``yes_prob_15m_min`` /
+  ``max`` and ``no_prob_15m_min`` / ``max`` from **four corners** of (TTC, buffer) over the minute,
+  using the same analytics lookup as live strike tables, then **active-side complements** on the
+  0–100 scale (``active_side`` = **yes**: no = ``100 − pos``; **no**: yes = ``100 − neg``;
+  **cross**: raw pos/neg). ``yes_diff_*`` / ``no_diff_*`` are **ranges** from two ``money_line``
+  corners (low spot / min active prob / low YES ask vs high / max / high YES ask). Code:
+  ``scripts/backtest/helpers/backtest_strike_span.py``.
+
+- **Gates for later replay:** ``active_side`` is **yes** / **no** if the whole minute's symbol
+  range is strictly on one side of strike; **cross** if ``low ≤ strike ≤ high``.
+  ``minute_tradeable`` is false when **cross** (no clean money-line side for that minute).
+
+- **Future virtual supervisors:** should map each live gate to a **pessimistic** choice among
+  stored ``*_min`` / ``*_max`` (e.g. minimum prob when checking a floor). Ingest does **not**
+  simulate trades; it only materializes the row contract. Full column list:
+  ``docs/MASTER_DB_SCHEMA_REFERENCE.md`` (schema ``backtest``).
+
 **Initiative (scope, supervisor parity, minutes vs seconds, UI roadmap):** ``docs/BACKTESTING.md``.
 
 Example:
@@ -98,7 +149,8 @@ import argparse
 import os
 import statistics
 import sys
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from typing import Any, Sequence
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -2030,16 +2082,426 @@ def _print_hypothetical_sweep_report(
     print("Window: created_at >= start AND created_at < end (half-open).")
 
 
+def _fmt_ingest_duration(seconds: float) -> str:
+    """Human-readable duration for ingest progress (non-negative seconds)."""
+    if seconds < 0 or seconds != seconds:  # NaN
+        return "?"
+    s = int(round(seconds))
+    if s >= 3600:
+        return f"{s // 3600}h{(s % 3600) // 60}m"
+    if s >= 60:
+        return f"{s // 60}m{s % 60}s"
+    return f"{max(0, s)}s"
+
+
+_KALSHI_INGEST_CALIBRATE_N = 5
+_KALSHI_INGEST_QUIET_SUCCESS_THRESHOLD = 12
+_KALSHI_INGEST_PROGRESS_INTERVAL_DEFAULT_S = 0.75
+_KALSHI_INGEST_PROGRESS_INTERVAL_MIN_S = 0.15
+_KALSHI_INGEST_PROGRESS_INTERVAL_MAX_S = 30.0
+
+
+def _kalshi_ingest_progress_interval_s() -> float:
+    """Wall-clock spacing between progress lines (fluid UI); override with ``REC_IO_KALSHI_INGEST_PROGRESS_INTERVAL_S``."""
+    raw = (os.getenv("REC_IO_KALSHI_INGEST_PROGRESS_INTERVAL_S") or "").strip()
+    if raw:
+        try:
+            v = float(raw)
+            return max(
+                _KALSHI_INGEST_PROGRESS_INTERVAL_MIN_S,
+                min(v, _KALSHI_INGEST_PROGRESS_INTERVAL_MAX_S),
+            )
+        except ValueError:
+            pass
+    return _KALSHI_INGEST_PROGRESS_INTERVAL_DEFAULT_S
+
+
+def _run_ingest_kalshi_tickers(
+    tickers: list[str],
+    *,
+    include_spot: bool = True,
+    print_contract_banner: bool = True,
+    pause_seconds: float = 0.0,
+    batch_label: str | None = None,
+    verbose: bool = False,
+) -> int:
+    """Fetch Kalshi candles + market metadata (+ optional spot history) into ``backtest``."""
+    from scripts.backtest.helpers.kalshi_candles_1m import (
+        qualified_backtest_candles_table,
+        run_fill_backtest_candles_with_meta,
+    )
+
+    if print_contract_banner:
+        print(
+            "Backtest row contract (facts vs bounds, conservative replay): "
+            "see **Backtest row contract** in this file's module docstring "
+            "(scripts/backtest/core_backtester.py)."
+        )
+    queue = [x.strip() for x in tickers if x.strip()]
+    n_total = len(queue)
+    if n_total == 0:
+        return 0
+    quiet_success = (not verbose) and n_total >= _KALSHI_INGEST_QUIET_SUCCESS_THRESHOLD
+    progress_interval_s = _kalshi_ingest_progress_interval_s()
+    cal_samples = min(_KALSHI_INGEST_CALIBRATE_N, n_total)
+    prefix = f"{batch_label} — " if batch_label else ""
+    if n_total > 1:
+        print(
+            f"Kalshi ingest: {prefix}{n_total} market(s). "
+            f"Projected **full run** from mean of first {cal_samples} table(s) (~{_KALSHI_INGEST_CALIBRATE_N} max); "
+            f"progress ~every {progress_interval_s:g}s (and on completion). "
+            f"Wall time = HTTP + DB + commit"
+            + (" + pause." if pause_seconds > 0 else ".")
+        )
+    conn = get_connection()
+    ingested_n = 0
+    skipped_n = 0
+    t_batch0 = time.monotonic()
+    last_progress_mono = t_batch0
+    per_market_seconds: list[float] = []
+    calibrated_s: float | None = None
+    try:
+        for idx, tt in enumerate(queue, start=1):
+            t0 = time.perf_counter()
+            fq = qualified_backtest_candles_table(tt)
+            res = run_fill_backtest_candles_with_meta(conn, tt, include_spot=include_spot)
+            conn.commit()
+            if res.skipped:
+                skipped_n += 1
+                print(f"{tt}: skipped — {res.skip_reason}")
+            else:
+                ingested_n += 1
+                if not quiet_success:
+                    spot_note = (
+                        f", price_history_minutes={res.price_history_hits}/{res.row_count}"
+                        if include_spot
+                        else ""
+                    )
+                    print(
+                        f"{tt}: ingested {res.row_count} rows -> {fq} "
+                        f"(metadata_source={res.metadata_source}, open_ts={res.open_ts}, close_ts={res.close_ts}"
+                        f"{spot_note})"
+                    )
+            if pause_seconds > 0:
+                time.sleep(pause_seconds)
+            dt = time.perf_counter() - t0
+            per_market_seconds.append(dt)
+
+            just_calibrated = False
+            if calibrated_s is None and len(per_market_seconds) >= cal_samples:
+                calibrated_s = sum(per_market_seconds[:cal_samples]) / float(cal_samples)
+                proj_full = n_total * calibrated_s
+                print(
+                    f"  Calibrated ~{calibrated_s:.1f}s/table (mean of first {cal_samples}) — "
+                    f"projected **entire run** ~{_fmt_ingest_duration(proj_full)} for all {n_total} tables."
+                )
+                just_calibrated = True
+
+            if n_total <= 1:
+                continue
+
+            elapsed = time.monotonic() - t_batch0
+            pct = 100.0 * idx / n_total
+            if calibrated_s is not None:
+                eta_rem = (n_total - idx) * calibrated_s
+                rate_label = f"~{calibrated_s:.1f}s/table (fixed est. from first {cal_samples})"
+            else:
+                run_avg = sum(per_market_seconds) / len(per_market_seconds)
+                eta_rem = (n_total - idx) * run_avg
+                rate_label = f"~{run_avg:.1f}s/table (provisional)"
+
+            now = time.monotonic()
+            due_by_time = (now - last_progress_mono) >= progress_interval_s
+            print_progress = just_calibrated or idx == n_total or due_by_time
+
+            if print_progress:
+                last_progress_mono = now
+                phase = "calibrated" if calibrated_s is not None else "provisional"
+                el_sec = int(round(max(0.0, elapsed)))
+                eta_sec = int(round(max(0.0, eta_rem)))
+                eta_total_s = el_sec + eta_sec
+                print(
+                    f"  Progress {idx}/{n_total} ({pct:.2f}%) — elapsed {_fmt_ingest_duration(elapsed)} — "
+                    f"ETA remaining ~{_fmt_ingest_duration(eta_rem)} — {rate_label} | "
+                    f"kalshi_ingest idx={idx} total={n_total} pct={pct:.3f} elapsed_s={el_sec} "
+                    f"eta_rem_s={eta_sec} eta_total_s={eta_total_s} phase={phase}"
+                )
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    batch_wall = time.monotonic() - t_batch0
+    if n_total >= 2 or skipped_n > 0:
+        print(
+            f"Ingest summary: {ingested_n} ingested, {skipped_n} skipped "
+            f"(of {n_total} candidate(s)); batch wall time {_fmt_ingest_duration(batch_wall)}."
+        )
+    elif n_total == 1:
+        print(f"Ingest complete (1 market); wall time {_fmt_ingest_duration(batch_wall)}.")
+    return 0
+
+
+def _run_ingest_kalshi_trading_day(
+    series_ticker: str,
+    trading_day_yyyy_mm_dd: str,
+    *,
+    include_spot: bool = True,
+    pause_seconds: float = 0.0,
+    verbose: bool = False,
+) -> int:
+    """
+    Ingest **96** synthetic ``KX*15M`` tickers for one Eastern calendar day (``trade.date`` label).
+
+    Does not call ``GET /markets`` for discovery; each ticker is still validated by Kalshi when
+    fetching candles and market metadata.
+    """
+    from scripts.backtest.helpers.kalshi_ticker_construct import (
+        kalshi_15m_market_tickers_for_eastern_date,
+        parse_eastern_trading_day_arg,
+    )
+
+    try:
+        d = parse_eastern_trading_day_arg(trading_day_yyyy_mm_dd)
+        tickers = kalshi_15m_market_tickers_for_eastern_date(series_ticker, d)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    print(
+        "Backtest row contract (facts vs bounds, conservative replay): "
+        "see **Backtest row contract** in this file's module docstring "
+        "(scripts/backtest/core_backtester.py)."
+    )
+    st = series_ticker.strip()
+    print(
+        f"{st}: synthetic Eastern trading day {trading_day_yyyy_mm_dd} — "
+        f"{len(tickers)} 15m slot(s) (America/New_York calendar; aligns with trade.date)."
+    )
+    return _run_ingest_kalshi_tickers(
+        tickers,
+        include_spot=include_spot,
+        print_contract_banner=False,
+        pause_seconds=pause_seconds,
+        batch_label=f"{st} {trading_day_yyyy_mm_dd}",
+        verbose=verbose,
+    )
+
+
+def _run_ingest_kalshi_trading_day_range(
+    series_ticker: str,
+    start_yyyy_mm_dd: str,
+    end_yyyy_mm_dd: str,
+    *,
+    include_spot: bool = True,
+    pause_seconds: float = 0.0,
+    verbose: bool = False,
+) -> int:
+    """
+    Ingest synthetic ``KX*15M`` tickers for each Eastern calendar day from start through end inclusive
+    (96 per day). One batch: single calibration and **full-run** ETA for all tables.
+    """
+    from scripts.backtest.helpers.kalshi_ticker_construct import (
+        kalshi_15m_market_tickers_for_eastern_date_range,
+        parse_eastern_trading_day_arg,
+    )
+
+    try:
+        d0 = parse_eastern_trading_day_arg(start_yyyy_mm_dd)
+        d1 = parse_eastern_trading_day_arg(end_yyyy_mm_dd)
+        tickers = kalshi_15m_market_tickers_for_eastern_date_range(series_ticker, d0, d1)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    st = series_ticker.strip()
+    n_days = (d1 - d0).days + 1
+    print(
+        "Backtest row contract (facts vs bounds, conservative replay): "
+        "see **Backtest row contract** in this file's module docstring "
+        "(scripts/backtest/core_backtester.py)."
+    )
+    print(
+        f"{st}: synthetic Eastern trading-day range {start_yyyy_mm_dd} .. {end_yyyy_mm_dd} "
+        f"({n_days} calendar day(s), America/New_York) — {len(tickers)} 15m market(s)."
+    )
+    return _run_ingest_kalshi_tickers(
+        tickers,
+        include_spot=include_spot,
+        print_contract_banner=False,
+        pause_seconds=pause_seconds,
+        batch_label=f"{st} {start_yyyy_mm_dd}..{end_yyyy_mm_dd} ({n_days}d)",
+        verbose=verbose,
+    )
+
+
+def _run_ingest_kalshi_series_close_window(
+    series_ticker: str,
+    close_start: datetime,
+    close_end: datetime,
+    *,
+    include_spot: bool = True,
+    pause_seconds: float = 0.0,
+    verbose: bool = False,
+) -> int:
+    """Discover markets via Kalshi GET /markets, then run the same ingest loop as explicit tickers."""
+    from scripts.backtest.helpers.kalshi_candles_1m import discover_market_tickers_by_series_close_window
+
+    min_u = int(close_start.astimezone(timezone.utc).timestamp())
+    max_u = int(close_end.astimezone(timezone.utc).timestamp())
+    if min_u >= max_u:
+        print(
+            "error: --ingest-kalshi-close-end must be after --ingest-kalshi-close-start",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        tickers = discover_market_tickers_by_series_close_window(series_ticker, min_u, max_u)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    st = series_ticker.strip()
+    print(
+        "Backtest row contract (facts vs bounds, conservative replay): "
+        "see **Backtest row contract** in this file's module docstring "
+        "(scripts/backtest/core_backtester.py)."
+    )
+    print(
+        f"{st}: discovered {len(tickers)} market(s) "
+        f"(GET /markets series_ticker + min_close_ts={min_u} max_close_ts={max_u})."
+    )
+    if not tickers:
+        return 0
+    return _run_ingest_kalshi_tickers(
+        tickers,
+        include_spot=include_spot,
+        print_contract_banner=False,
+        pause_seconds=pause_seconds,
+        batch_label=f"{st} close {min_u}..{max_u}",
+        verbose=verbose,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
+        "--ingest-kalshi-tickers",
+        nargs="+",
+        metavar="TICKER",
+        default=None,
+        help=(
+            "If set: for each Kalshi market ticker, upsert 1m candles + floor_strike/market_result "
+            "into backtest.backtest_1m_<slug> (creates table if needed); then exit. "
+            "Skips a ticker when Kalshi has no 1m candles for the window, or (unless --ingest-no-spot) "
+            "when KXBTC*/KXETH* is missing any matching minute in historical_data.*_price_history. "
+            "KXBTC* / KXETH* tickers also join price_history (open, high, …). "
+            "Omit --monitors / --start / --end when using this. For 15m full Eastern days, "
+            "prefer --ingest-kalshi-trading-day (96 synthetic tickers, no discovery). "
+            "Row semantics: see module docstring **Backtest row contract**."
+        ),
+    )
+    p.add_argument(
+        "--ingest-kalshi-series",
+        default=None,
+        metavar="SERIES",
+        help=(
+            "Kalshi series_ticker (e.g. KXBTC15M). With --ingest-kalshi-close-start and "
+            "--ingest-kalshi-close-end, lists markets via GET /markets (close-time window), "
+            "then ingests each. For full 15m Eastern days use --ingest-kalshi-trading-day or "
+            "--ingest-kalshi-trading-day-range instead. Mutually exclusive with other ingest modes."
+        ),
+    )
+    p.add_argument(
+        "--ingest-kalshi-close-start",
+        type=_parse_instant,
+        default=None,
+        help=(
+            "ISO-8601 (timezone required). Kalshi min_close_ts (UTC epoch) for --ingest-kalshi-series."
+        ),
+    )
+    p.add_argument(
+        "--ingest-kalshi-close-end",
+        type=_parse_instant,
+        default=None,
+        help=(
+            "ISO-8601 (timezone required). Kalshi max_close_ts (UTC epoch) for --ingest-kalshi-series."
+        ),
+    )
+    p.add_argument(
+        "--ingest-kalshi-trading-day",
+        nargs=2,
+        metavar=("SERIES", "YYYY-MM-DD"),
+        default=None,
+        help=(
+            "Synthetic **96** KX*15M tickers for Eastern calendar YYYY-MM-DD (trade.date / "
+            "America/New_York), then ingest each. No GET /markets discovery. Use "
+            "--ingest-kalshi-trading-day-range for many days in one batch. Mutually exclusive "
+            "with --ingest-kalshi-tickers, --ingest-kalshi-trading-day-range, and "
+            "--ingest-kalshi-series. Not for hourly -T markets."
+        ),
+    )
+    p.add_argument(
+        "--ingest-kalshi-trading-day-range",
+        nargs=3,
+        metavar=("SERIES", "START_YYYY-MM-DD", "END_YYYY-MM-DD"),
+        default=None,
+        help=(
+            "Synthetic KX*15M tickers for each Eastern calendar day from START through END inclusive "
+            "(**96 × number of days**). Single ingest batch: one calibrated **full-run** ETA. "
+            "Mutually exclusive with other ingest modes."
+        ),
+    )
+    p.add_argument(
+        "--ingest-kalshi-pause-seconds",
+        type=float,
+        default=0.0,
+        metavar="SEC",
+        help=(
+            "Sleep SEC after each market during Kalshi ingest (0 default). Use small values "
+            "if the API is throttling; accuracy unchanged (only pacing)."
+        ),
+    )
+    p.add_argument(
+        "--ingest-no-spot",
+        action="store_true",
+        help=(
+            "With Kalshi ingest: do not join btc/eth price_history (leave open/high/… NULL); "
+            "also skips the full-coverage spot preflight for KXBTC*/KXETH*."
+        ),
+    )
+    p.add_argument(
+        "--ingest-kalshi-verbose",
+        action="store_true",
+        help=(
+            "With Kalshi ingest: print every successful market line (default: quiet for large batches)."
+        ),
+    )
+    p.add_argument(
         "--monitors",
         type=_parse_monitors,
-        required=True,
-        help="Comma-separated monitor names (e.g. mon_0001_1,mon_0001_2)",
+        default=None,
+        help=(
+            "Comma-separated monitor names (e.g. mon_0001_1,mon_0001_2); required unless "
+            "Kalshi ingest (--ingest-kalshi-tickers, --ingest-kalshi-trading-day, "
+            "--ingest-kalshi-trading-day-range, or --ingest-kalshi-series + close range)"
+        ),
     )
-    p.add_argument("--start", type=_parse_instant, required=True, help="ISO-8601 start (inclusive)")
-    p.add_argument("--end", type=_parse_instant, required=True, help="ISO-8601 end (exclusive)")
+    p.add_argument(
+        "--start",
+        type=_parse_instant,
+        default=None,
+        help=(
+            "ISO-8601 start (inclusive); required unless using Kalshi ingest modes "
+            "(--ingest-kalshi-tickers / --ingest-kalshi-trading-day / --ingest-kalshi-series)"
+        ),
+    )
+    p.add_argument(
+        "--end",
+        type=_parse_instant,
+        default=None,
+        help=(
+            "ISO-8601 end (exclusive); required unless using Kalshi ingest modes "
+            "(--ingest-kalshi-tickers / --ingest-kalshi-trading-day / --ingest-kalshi-series)"
+        ),
+    )
     p.add_argument(
         "--include-test-filter",
         action="store_true",
@@ -2301,6 +2763,73 @@ def main(argv: list[str] | None = None) -> int:
         help="Print top N grid points per monitor (default 25).",
     )
     args = p.parse_args(argv)
+
+    ingest_mode_count = (
+        (1 if args.ingest_kalshi_tickers else 0)
+        + (1 if args.ingest_kalshi_series else 0)
+        + (1 if args.ingest_kalshi_trading_day else 0)
+        + (1 if args.ingest_kalshi_trading_day_range else 0)
+    )
+    if ingest_mode_count > 1:
+        p.error(
+            "choose at most one: --ingest-kalshi-tickers, --ingest-kalshi-trading-day, "
+            "--ingest-kalshi-trading-day-range, or --ingest-kalshi-series (with close range)"
+        )
+    if args.ingest_kalshi_pause_seconds < 0:
+        p.error("--ingest-kalshi-pause-seconds must be >= 0")
+    if (args.ingest_kalshi_close_start is not None or args.ingest_kalshi_close_end is not None) and (
+        not args.ingest_kalshi_series
+    ):
+        p.error("--ingest-kalshi-close-start / --ingest-kalshi-close-end require --ingest-kalshi-series")
+    if args.ingest_kalshi_series:
+        if args.ingest_kalshi_close_start is None or args.ingest_kalshi_close_end is None:
+            p.error(
+                "--ingest-kalshi-series requires --ingest-kalshi-close-start and --ingest-kalshi-close-end"
+            )
+        return _run_ingest_kalshi_series_close_window(
+            args.ingest_kalshi_series,
+            args.ingest_kalshi_close_start,
+            args.ingest_kalshi_close_end,
+            include_spot=not args.ingest_no_spot,
+            pause_seconds=args.ingest_kalshi_pause_seconds,
+            verbose=args.ingest_kalshi_verbose,
+        )
+
+    if args.ingest_kalshi_trading_day:
+        ser, ymd = args.ingest_kalshi_trading_day
+        return _run_ingest_kalshi_trading_day(
+            ser,
+            ymd,
+            include_spot=not args.ingest_no_spot,
+            pause_seconds=args.ingest_kalshi_pause_seconds,
+            verbose=args.ingest_kalshi_verbose,
+        )
+
+    if args.ingest_kalshi_trading_day_range:
+        ser, ymd0, ymd1 = args.ingest_kalshi_trading_day_range
+        return _run_ingest_kalshi_trading_day_range(
+            ser,
+            ymd0,
+            ymd1,
+            include_spot=not args.ingest_no_spot,
+            pause_seconds=args.ingest_kalshi_pause_seconds,
+            verbose=args.ingest_kalshi_verbose,
+        )
+
+    if args.ingest_kalshi_tickers:
+        return _run_ingest_kalshi_tickers(
+            args.ingest_kalshi_tickers,
+            include_spot=not args.ingest_no_spot,
+            pause_seconds=args.ingest_kalshi_pause_seconds,
+            verbose=args.ingest_kalshi_verbose,
+        )
+
+    if args.monitors is None or args.start is None or args.end is None:
+        p.error(
+            "the following arguments are required: --monitors, --start, --end "
+            "(unless using --ingest-kalshi-tickers, --ingest-kalshi-trading-day, "
+            "--ingest-kalshi-trading-day-range, or --ingest-kalshi-series)"
+        )
 
     if args.end <= args.start:
         print("error: --end must be after --start", file=sys.stderr)
