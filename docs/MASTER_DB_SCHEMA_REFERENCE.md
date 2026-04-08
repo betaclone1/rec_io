@@ -8070,6 +8070,100 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 ---
 
+## Schema: `backtest`
+
+**Purpose:** Durable working tables for offline backtests — ingested Kalshi series (and future joins to `historical_data` price history), distinct from ephemeral `historical_data.kalshi_candles_1m_*_*` scratch tables.
+
+**Bootstrap:** `CREATE SCHEMA IF NOT EXISTS backtest` is included in `backend/core.config.database.init_database` (grants to `rec_io_user`). The schema may already exist on developer databases before that runs.
+
+### Pattern: `backtest.backtest_1m_<slug>`
+
+**Naming:** `<slug>` = lowercased Kalshi market ticker with `-` and `.` replaced by `_` (see `scripts/backtest/helpers/kalshi_candles_1m.ticker_slug`). Example: `KXBTC15M-26MAR051345-45` → `backtest.backtest_1m_kxbtc15m_26mar051345_45`.
+
+**Creation:** **`CREATE TABLE IF NOT EXISTS`** from `ensure_backtest_candles_with_meta_table` in `scripts/backtest/helpers/kalshi_candles_1m.py` (called automatically by `run_fill_backtest_candles_with_meta`). **No per-ticker migrations** are required for new tickers.
+
+**Population:** `REC_IO_BACKTEST_DB=local .venv/bin/python3 scripts/backtest/core_backtester.py --ingest-kalshi-tickers TICKER [TICKER ...]` (or call `run_fill_backtest_candles_with_meta` from code).
+
+**Content:** One-minute Kalshi candlesticks for the market’s open→close window, plus **`floor_strike`** and **`market_result`** (Kalshi field **`result`**, e.g. `yes` / `no`) repeated on each row. Metadata from **`GET /trade-api/v2/historical/markets?tickers=...`** when the archive has the market; otherwise **`GET /trade-api/v2/markets/{ticker}`**. For **`KXBTC*`** / **`KXETH*`** tickers, ingest joins **`historical_data.btc_price_history`** / **`eth_price_history`** on **`timestamp`** (same Eastern-naive minute) and copies the same column names as those tables (**`open`**, **`high`**, …; see below). Other ticker prefixes leave those columns NULL.
+
+**Migrations:** **`20260416_1000_backtest_1m_add_spot_price_columns`** added initial joined columns (formerly `spot_*`); **`20260417_1000_backtest_1m_rename_spot_to_price_history_names`** renames them to **`open`**, **`high`**, etc.; **`20260418_1000_backtest_1m_running_ask_15m_columns`** introduced cumulative window min/max/range columns (initially `*_ask_*` names); **`20260419_1000_backtest_1m_rename_cycle_ask_to_price_15m`** renames them to **`yes_price_*_15m`** / **`no_price_*_15m`** (semantics: Kalshi **trade price** `price.*`, not order-book asks). Re-run **`core_backtester.py --ingest-kalshi-tickers`** to populate / refresh values.
+
+**Legacy name:** tables created before migration `20260415_1200_backtest_rename_kalshi_candles_tables_to_backtest_1m` used `backtest.kalshi_candles_1m_<slug>`; that migration renames them to `backtest.backtest_1m_<slug>`.
+
+**Example:** `backtest.backtest_1m_kxbtc15m_26mar051345_45` (initially may have been created by migration `20260414_1000_backtest_kalshi_candles_1m_kxbtc15m_26mar051345_45` then renamed).
+
+#### Columns (all `backtest.backtest_1m_*` tables)
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `timestamp` | `timestamp without time zone` | NO | - | Bar end instant as **US Eastern** wall time, no TZ (aligns with `historical_data.btc_price_history` convention). |
+| `end_period_ts` | `bigint` | NO | - | Unix end of bar (UTC); primary key. |
+| `market_ticker` | `text` | NO | ticker literal | Kalshi market ticker (`DEFAULT` set at table creation). |
+| `yes_price_open_dollars` | `numeric(20,6)` | YES | - | Kalshi candle **`price.*`** (trade / last): YES contract OHLC (~0–1 dollars). Legacy ingest used `price_*_dollars`; `ensure_backtest_kalshi_yes_no_price_columns` renames those to `yes_price_*` when present. |
+| `yes_price_high_dollars` | `numeric(20,6)` | YES | - | |
+| `yes_price_low_dollars` | `numeric(20,6)` | YES | - | |
+| `yes_price_close_dollars` | `numeric(20,6)` | YES | - | |
+| `yes_price_mean_dollars` | `numeric(20,6)` | YES | - | |
+| `yes_price_previous_dollars` | `numeric(20,6)` | YES | - | |
+| `no_price_open_dollars` | `numeric(20,6)` | YES | - | **`1 - yes_price_open_dollars`** (clamped ~`[0.001, 0.999]`). Open/close/mean/previous use the same YES slot. |
+| `no_price_high_dollars` | `numeric(20,6)` | YES | - | **`1 - yes_price_low_dollars`** — over the bar, implied NO is **high** when YES is **low**. |
+| `no_price_low_dollars` | `numeric(20,6)` | YES | - | **`1 - yes_price_high_dollars`** — implied NO is **low** when YES is **high**. |
+| `no_price_close_dollars` | `numeric(20,6)` | YES | - | |
+| `no_price_mean_dollars` | `numeric(20,6)` | YES | - | |
+| `no_price_previous_dollars` | `numeric(20,6)` | YES | - | |
+| `yes_bid_open_dollars` | `numeric(20,6)` | YES | - | Best YES bid OHLC. |
+| `yes_bid_high_dollars` | `numeric(20,6)` | YES | - | |
+| `yes_bid_low_dollars` | `numeric(20,6)` | YES | - | |
+| `yes_bid_close_dollars` | `numeric(20,6)` | YES | - | |
+| `yes_ask_open_dollars` | `numeric(20,6)` | YES | - | Best YES ask OHLC. |
+| `yes_ask_high_dollars` | `numeric(20,6)` | YES | - | |
+| `yes_ask_low_dollars` | `numeric(20,6)` | YES | - | |
+| `yes_ask_close_dollars` | `numeric(20,6)` | YES | - | |
+| `volume_fp` | `numeric(20,2)` | YES | - | Volume (fixed-point). |
+| `open_interest_fp` | `numeric(20,2)` | YES | - | Open interest (fixed-point). |
+| `floor_strike` | `numeric(24,8)` | YES | - | From historical or live market payload. |
+| `market_result` | `text` | YES | - | Settlement result (`result`); repeated per row. |
+| `open` | `numeric(20,8)` | YES | - | Copy from `historical_data.btc_price_history` / `eth_price_history` (same minute `timestamp`). |
+| `high` | `numeric(20,8)` | YES | - | |
+| `low` | `numeric(20,8)` | YES | - | |
+| `close` | `numeric(20,8)` | YES | - | |
+| `volume` | `numeric(20,8)` | YES | - | |
+| `momentum` | `numeric(10,4)` | YES | - | |
+| `momentum_percentile` | `numeric(5,1)` | YES | - | |
+| `volatility` | `numeric(15,6)` | YES | - | |
+| `volatility_percentile` | `numeric(5,1)` | YES | - | |
+| `movement` | `numeric(10,4)` | YES | - | |
+| `movement_percentile` | `numeric(5,1)` | YES | - | |
+| `active_side` | `text` | YES | - | **1m bar:** `yes` / `no` / `cross` — money-line side if the whole minute’s spot range is strictly on one side of `floor_strike`; `cross` if high/low bracket the strike (modeled non-tradeable for opening under this rule). |
+| `minute_tradeable` | `boolean` | YES | - | False when `active_side` = `cross`; else true. |
+| `ttc_15m_open_seconds` | `integer` | YES | - | Seconds to next :00/:15/:30/:45 Eastern at the **open** of the 1m bar. |
+| `ttc_15m_close_seconds` | `integer` | YES | - | Same at bar **close** (`timestamp`). |
+| `strike_buffer_min` | `numeric(24,8)` | YES | - | Min/max of `abs(spot − floor_strike)` at the bar’s joined `low` / `high`. |
+| `strike_buffer_max` | `numeric(24,8)` | YES | - | |
+| `yes_prob_15m_min` | `numeric(8,4)` | YES | - | Min/max over **four** `(TTC, buffer)` corners; at each corner yes/no are mapped from lookup legs with **active-side complement** (yes active: `no = 100 − pos`; no active: `yes = 100 − neg`; cross: raw pos/neg). |
+| `yes_prob_15m_max` | `numeric(8,4)` | YES | - | |
+| `no_prob_15m_min` | `numeric(8,4)` | YES | - | |
+| `no_prob_15m_max` | `numeric(8,4)` | YES | - | |
+| `yes_diff_min` | `numeric(8,4)` | YES | - | Min/max from two `money_line_diffs_and_active_side` corners (low spot / min active prob / low YES ask vs high / max / high YES ask; NO ask = `1 − yes_ask`). NULL when `cross` or inputs missing. |
+| `yes_diff_max` | `numeric(8,4)` | YES | - | |
+| `no_diff_min` | `numeric(8,4)` | YES | - | |
+| `no_diff_max` | `numeric(8,4)` | YES | - | |
+| `yes_price_min_15m` | `numeric(20,6)` | YES | - | **Cumulative** min YES **trade price** (`price.*` low, dollars) from **contract open through this bar**. Suffix `_15m` is naming parity with strike snapshots; applies to any session length. |
+| `yes_price_max_15m` | `numeric(20,6)` | YES | - | Cumulative max YES trade price (`price.*` high) over the same window. |
+| `no_price_min_15m` | `numeric(20,6)` | YES | - | Cumulative min implied NO from YES **price** bar extrema per minute (same complement as row `no_price_*` vs `yes_price_*` OHLC), then running min. Not the per-bar `no_price_low_dollars` column. |
+| `no_price_max_15m` | `numeric(20,6)` | YES | - | Cumulative max implied NO over the window. |
+| `yes_price_range_15m` | `numeric(20,6)` | YES | - | `yes_price_max_15m - yes_price_min_15m` at this row. |
+| `no_price_range_15m` | `numeric(20,6)` | YES | - | `no_price_max_15m - no_price_min_15m` at this row. |
+| `created_at` | `timestamptz` | NO | `now()` | Insert time. |
+
+**Kalshi YES/NO price columns** — `ensure_backtest_kalshi_yes_no_price_columns` renames legacy `price_*_dollars` → `yes_price_*_dollars` and adds `no_price_*` if missing. **Strike-span columns** — `ensure_backtest_strike_span_columns` (drops legacy envelope columns if present, then ALTER … IF NOT EXISTS). **Cumulative window trade-price extrema** — `ensure_backtest_cycle_running_price_15m_columns` (`yes_price_*_15m`, `no_price_*_15m`). All run from `ensure_backtest_candles_with_meta_table` / ingest. Re-run ingest to backfill. `LookupProbabilityCalculator` requires ticker prefix `KXBTC*` → `btc`, etc., and joined price history `high` / `low` / `momentum_percentile` for strike-span fields.
+
+#### Constraints
+
+- **Primary key:** `(end_period_ts)`
+
+---
+
 ## Schema: `historical_data`
 
 ### Ephemeral: `historical_data.kalshi_candles_1m_*_*` (scratch)

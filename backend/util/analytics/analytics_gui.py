@@ -4,19 +4,35 @@ Simple Analytics GUI
 Double-click to run - no terminal commands needed!
 """
 
+import os
+import sys
+
+_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+
+# Prefer repo venv so Finder / ad-hoc `python3 thisfile.py` match normal project runs.
+_venv_candidates = (
+    [os.path.join(_root, "venv", "bin", "python3"), os.path.join(_root, "venv", "bin", "python")]
+    if sys.platform != "win32"
+    else [os.path.join(_root, "venv", "Scripts", "python.exe")]
+)
+_venv_py = next((p for p in _venv_candidates if os.path.isfile(p)), None)
+if _venv_py:
+    try:
+        if os.path.realpath(sys.executable) != os.path.realpath(_venv_py):
+            os.execv(_venv_py, [_venv_py] + sys.argv)
+    except OSError:
+        pass
+
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 import subprocess
 import threading
 import time
-import os
-import sys
 import json
 from datetime import datetime
 import psycopg2
 import psutil
 
-_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 if _root not in sys.path:
     sys.path.insert(0, _root)
 

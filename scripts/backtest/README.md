@@ -13,6 +13,13 @@ Offline **auto-trade backtesting** against historical `trades` (+ `monitor_list`
 ```bash
 # From repo root — use project venv (required for psycopg2)
 .venv/bin/python3 scripts/backtest/core_backtester.py --help
+
+Load Kalshi 1m candles + strike/result + price-history columns (`open`, `high`, …) from `historical_data.btc_price_history` / `eth_price_history` (KXBTC/KXETH tickers) into `backtest.backtest_1m_<slug>` (any tickers; creates tables as needed):
+
+```bash
+REC_IO_BACKTEST_DB=local .venv/bin/python3 scripts/backtest/core_backtester.py \
+  --ingest-kalshi-tickers KXBTC15M-26MAR051345-45
+```
 .venv/bin/python3 scripts/backtest/price_estimator.py --help
 ```
 

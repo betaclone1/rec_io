@@ -196,13 +196,13 @@ Loaded in **`get_auto_entry_settings()`** (representative query on `users.monito
 
 | Path | Purpose |
 |------|---------|
-| `scripts/backtest/core_backtester.py` | CLI orchestration, reports. |
 | `scripts/backtest/helpers/db.py` | DB connectivity. |
 | `scripts/backtest/helpers/trade_filters.py` | TTC SQL, allowlisted column filters. |
 | `scripts/backtest/helpers/hypothetical_trades.py` | Fee + hypo PnL / ret%. |
 | `scripts/backtest/helpers/monitor_context.py` | `monitor_list` resolution, cycle strategy detection. |
 | `scripts/backtest/helpers/aggregates.py` | SQL aggregates for metrics. |
-| `scripts/backtest/helpers/kalshi_candles_1m.py` | Kalshi 1m fetch + upsert (testing or scratch table). |
+| `scripts/backtest/core_backtester.py` | CLI orchestration, reports; **`--ingest-kalshi-tickers`** loads Kalshi candles + metadata + price-history columns (`open`, `high`, …) from **`historical_data.*_price_history`** (KXBTC/KXETH tickers) into **`backtest.backtest_1m_<slug>`**. **`--ingest-no-spot`** skips the join. |
+| `scripts/backtest/helpers/kalshi_candles_1m.py` | Kalshi 1m fetch + upsert (testing, scratch, or **`backtest`** with `floor_strike` / `market_result`; `ensure_backtest_candles_with_meta_table`). |
 | `scripts/backtest/helpers/kalshi_market_candles_scratch.py` | CLI: ephemeral `historical_data.kalshi_candles_1m_*_YYYYMMDD` + cleanup. |
 | `backend/auto_entry_supervisor.py` | Live gates + `get_auto_entry_settings()`. |
 | `frontend/tabs/backtester.html` | UI placeholder. |
