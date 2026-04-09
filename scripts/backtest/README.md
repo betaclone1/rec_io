@@ -8,6 +8,20 @@ Offline **auto-trade backtesting** against historical `trades` (+ `monitor_list`
 
 **Hypothetical entry / peer fill pricing (methodology, holdouts, live vs paper, pipeline):** [`docs/BACKTEST_PRICE_ESTIMATOR.md`](../../docs/BACKTEST_PRICE_ESTIMATOR.md)
 
+## CI: Kalshi quote naming (run before you push)
+
+GitHub Actions runs [`scripts/dev/check_no_legacy_kalshi_quotes.sh`](../dev/check_no_legacy_kalshi_quotes.sh) on **`backend/`**, **`frontend/`**, and **`scripts/backtest/`** (`*.py`, `*.js`, `*.html`). It fails if **bare** Kalshi REST/WebSocket cent-field names appear: `yes_ask`, `no_ask`, `yes_bid`, `no_bid` (word boundaries).
+
+**Allowed:** dollar-style names such as `yes_ask_dollars` / `no_bid_dollars`, and a tiny allowlist of true wire parsers (see the script). **Not scanned:** this `README.md` and other non-matching paths.
+
+From repo root, after editing anything under `scripts/backtest/` (or the other trees above):
+
+```bash
+bash scripts/dev/check_no_legacy_kalshi_quotes.sh
+```
+
+If that prints `OK`, the Actions step will pass for this rule.
+
 ## Quick start
 
 ```bash

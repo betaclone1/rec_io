@@ -16,12 +16,15 @@ Min/max are taken over the four corner **yes** values and four **no** values (sk
 with missing lookup).
 
 **Diff ranges:** ``money_line_diffs_and_active_side`` at two correlated corners — **low spot** with
-**min** active prob and **low YES ask** (NO ask = ``1 - yes_ask``); **high spot** with **max**
-active prob and **high YES ask**. Same geometry as ``auto_entry_htc_gates``; spot is BTC
-``low`` / ``high`` (strike scale). Asks from Kalshi **yes_ask** candle OHLC.
+**min** active prob and **low YES offer** (NO offer = ``1 - yes_ask_dollars`` on a 0–1 scale); **high spot** with **max**
+active prob and **high YES offer**. Same geometry as ``auto_entry_htc_gates``; spot is BTC
+``low`` / ``high`` (strike scale). Offers from Kalshi **yes_ask_dollars** candle OHLC.
 
 **Momentum:** one bucket from ``momentum_percentile`` for the minute.
 """
+
+# Before push: run `bash scripts/dev/check_no_legacy_kalshi_quotes.sh` from repo root (CI scans
+# scripts/backtest/*.py for bare Kalshi cent-field tokens; see scripts/backtest/README.md).
 
 from __future__ import annotations
 
