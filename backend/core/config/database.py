@@ -755,7 +755,45 @@ def init_database():
                 END IF;
             END $$;
         """)
-        
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users.system_settings_0001 (
+                id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+                drawdown_trading_halt BOOLEAN NOT NULL DEFAULT TRUE,
+                drawdown_reset_threshold_pct NUMERIC(5, 2) NOT NULL DEFAULT 50.00
+                    CHECK (drawdown_reset_threshold_pct > 0 AND drawdown_reset_threshold_pct < 100),
+                trading_halt_active BOOLEAN NOT NULL DEFAULT FALSE,
+                drawdown_halt_monitor_snapshot JSONB,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        """)
+        cursor.execute("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users' AND table_name = 'system_settings_0001'
+                      AND column_name = 'trading_halt_active'
+                ) THEN
+                    ALTER TABLE users.system_settings_0001
+                        ADD COLUMN trading_halt_active BOOLEAN NOT NULL DEFAULT FALSE;
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users' AND table_name = 'system_settings_0001'
+                      AND column_name = 'drawdown_halt_monitor_snapshot'
+                ) THEN
+                    ALTER TABLE users.system_settings_0001
+                        ADD COLUMN drawdown_halt_monitor_snapshot JSONB;
+                END IF;
+            END $$;
+        """)
+        cursor.execute("""
+            INSERT INTO users.system_settings_0001 (id, drawdown_trading_halt, drawdown_reset_threshold_pct)
+            VALUES (1, TRUE, 50.00)
+            ON CONFLICT (id) DO NOTHING;
+        """)
+
         # Create sequence for 5-digit IDs starting with 10001
         cursor.execute("""
             CREATE SEQUENCE IF NOT EXISTS users.monitor_list_0001_id_seq

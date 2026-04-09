@@ -1926,6 +1926,81 @@ async def set_trading_mode_endpoint(payload: dict):
     return {"status": "ok", "trading_mode": norm, "global_paper_mode": norm == "paper"}
 
 
+@app.get("/api/system_settings")
+async def get_system_settings_endpoint(response: Response, user_id: str = "user_0001"):
+    """Global system settings (drawdown halt, threshold) for dashboard gear menu."""
+    _api_no_store_headers(response)
+    from backend.core.system_settings_store import fetch_system_settings_row
+
+    num = str(user_id or "user_0001").replace("user_", "").strip() or "0001"
+    row = fetch_system_settings_row(num)
+    if not row:
+        return {"status": "error", "message": "system_settings not available for user"}
+    return {"status": "ok", "user_number": num, **row}
+
+
+@app.post("/api/system_settings")
+async def post_system_settings_endpoint(payload: dict):
+    """Update system settings. Optional action: clear_trading_halt_alert | restore_trade_operations."""
+    from backend.core.system_settings_store import (
+        clear_trading_halt_alert,
+        fetch_system_settings_row,
+        restore_trade_operations_from_snapshot,
+        update_system_settings_drawdown,
+    )
+
+    body = payload or {}
+    num = str(body.get("user_id") or "user_0001").replace("user_", "").strip() or "0001"
+    action = str(body.get("action") or "").strip().lower()
+
+    if action == "clear_trading_halt_alert":
+        ok, msg = clear_trading_halt_alert(num)
+        if not ok:
+            return {"status": "error", "message": msg}
+        row = fetch_system_settings_row(num)
+        return {"status": "ok", "user_number": num, **(row or {}), "message": "trading_halt_active cleared"}
+
+    if action == "restore_trade_operations":
+        ok, msg, restored = restore_trade_operations_from_snapshot(num)
+        if not ok:
+            return {"status": "error", "message": msg}
+        row = fetch_system_settings_row(num)
+        return {
+            "status": "ok",
+            "user_number": num,
+            **(row or {}),
+            "monitors_restore_updates": restored,
+            "message": "monitors restored from system_settings snapshot; trading_halt_active cleared",
+        }
+
+    if action:
+        return {"status": "error", "message": f"unknown action: {action}"}
+
+    halt = body.get("drawdown_trading_halt")
+    pct = body.get("drawdown_reset_threshold_pct")
+    if halt is not None and not isinstance(halt, bool):
+        if str(halt).lower() in ("true", "1", "yes"):
+            halt = True
+        elif str(halt).lower() in ("false", "0", "no"):
+            halt = False
+        else:
+            return {"status": "error", "message": "drawdown_trading_halt must be boolean"}
+    if pct is not None:
+        try:
+            pct = float(pct)
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "drawdown_reset_threshold_pct must be a number"}
+    ok, msg = update_system_settings_drawdown(
+        num,
+        drawdown_trading_halt=halt,
+        drawdown_reset_threshold_pct=pct,
+    )
+    if not ok:
+        return {"status": "error", "message": msg}
+    row = fetch_system_settings_row(num)
+    return {"status": "ok", "user_number": num, **(row or {})}
+
+
 @app.post("/api/paper/bankroll/seed")
 async def seed_paper_bankroll_endpoint(payload: dict):
     """Set initial paper bankroll (cents). User-configured only."""
@@ -2252,7 +2327,7 @@ async def get_account_balance(response: Response, mode: str = "prod"):
             cursor.execute(
                 sql.SQL(
                     """
-                SELECT portfolio, positions, bankroll_current, mtb_base_value
+                SELECT portfolio, positions, bankroll_current, mtb_base_value, master_trading_bankroll
                 FROM {}
                 ORDER BY id DESC
                 LIMIT 1
@@ -2269,11 +2344,13 @@ async def get_account_balance(response: Response, mode: str = "prod"):
                 positions_value = balance_result['positions'] if balance_result else 0
                 bankroll_current = balance_result['bankroll_current'] if balance_result else 0
                 mtb_base_value = balance_result.get('mtb_base_value')
+                master_trading_bankroll = balance_result.get('master_trading_bankroll')
                 return {
                     "portfolio": portfolio_value,
                     "positions": positions_value,
                     "bankroll_current": bankroll_current,
                     "mtb_base_value": mtb_base_value,
+                    "master_trading_bankroll": master_trading_bankroll,
                 }
             else:
                 return {
@@ -2281,11 +2358,18 @@ async def get_account_balance(response: Response, mode: str = "prod"):
                     "positions": 0,
                     "bankroll_current": 0,
                     "mtb_base_value": None,
+                    "master_trading_bankroll": None,
                 }
             
     except Exception as e:
         _main_logger.warning(f"Error getting account balance from PostgreSQL: {e}")
-        return {"portfolio": 0, "positions": 0, "bankroll_current": 0, "mtb_base_value": None}
+        return {
+            "portfolio": 0,
+            "positions": 0,
+            "bankroll_current": 0,
+            "mtb_base_value": None,
+            "master_trading_bankroll": None,
+        }
 
 @app.get("/api/subaccounts")
 async def get_subaccounts(response: Response):

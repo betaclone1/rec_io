@@ -467,7 +467,14 @@ environment={env_vars}
 
     def _notify_frontend_monitor_list_updated(self, message: str = "Monitor list updated") -> None:
         """Whenever monitor_manager changes monitor_list, alert frontend so displays refresh."""
-        body = {"type": "monitor_list_updated", "message": message}
+        body: Dict[str, Any] = {"type": "monitor_list_updated", "message": message}
+        try:
+            from backend.core.system_settings_store import fetch_system_settings_row
+
+            row = fetch_system_settings_row("0001")
+            body["trading_halt_active"] = bool(row.get("trading_halt_active")) if row else False
+        except Exception:
+            body["trading_halt_active"] = False
         self._deliver_preferences_ws(
             body,
             http_path=None,
@@ -506,7 +513,96 @@ environment={env_vars}
         )
 
     # === CORE FUNCTIONALITY (Starting Point) ===
-    
+
+    def apply_drawdown_emergency_monitor_halt(self) -> Dict[str, Any]:
+        """
+        Persist all monitors' paper_trade / test_filter to users.system_settings_0001.drawdown_halt_monitor_snapshot,
+        then force every monitor row to paper_trade=TRUE and test_filter=TRUE and set trading_halt_active.
+        """
+        from backend.core.system_settings_store import (
+            set_drawdown_halt_monitor_snapshot_with_cursor,
+            set_trading_halt_active_with_cursor,
+        )
+
+        conn = None
+        try:
+            conn = self.get_database_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, name, status, paper_trade, test_filter
+                    FROM users.monitor_list_0001
+                    ORDER BY id
+                    """
+                )
+                rows = cursor.fetchall()
+
+                monitors: List[Dict[str, Any]] = []
+                for mid, name, status, paper_trade, test_filter in rows:
+                    monitors.append(
+                        {
+                            "id": int(mid),
+                            "name": str(name) if name is not None else "",
+                            "status": str(status) if status is not None else "",
+                            "paper_trade": bool(paper_trade) if paper_trade is not None else False,
+                            "test_filter": bool(test_filter) if test_filter is not None else False,
+                        }
+                    )
+
+                snapshot: Dict[str, Any] = {
+                    "schema_version": 1,
+                    "created_at_utc": datetime.now(timezone.utc).isoformat(),
+                    "reason": "bankroll_drawdown_step_down_50pct",
+                    "monitor_list_table": "users.monitor_list_0001",
+                    "user_number": "0001",
+                    "monitors": monitors,
+                }
+
+                cursor.execute(
+                    """
+                    UPDATE users.monitor_list_0001
+                    SET paper_trade = TRUE,
+                        test_filter = TRUE,
+                        updated_at = CURRENT_TIMESTAMP
+                    """
+                )
+                n_updated = cursor.rowcount
+                n_snap = set_drawdown_halt_monitor_snapshot_with_cursor(
+                    cursor, "0001", snapshot
+                )
+                if n_snap == 0:
+                    conn.rollback()
+                    return {
+                        "status": "error",
+                        "message": "system_settings row missing or snapshot not saved",
+                    }
+                set_trading_halt_active_with_cursor(cursor, "0001", True)
+            conn.commit()
+
+            out = {
+                "status": "success",
+                "snapshot_storage": "users.system_settings_0001.drawdown_halt_monitor_snapshot",
+                "monitors_snapshotted": len(monitors),
+                "monitors_updated": int(n_updated),
+            }
+            self.log_event(
+                "DRAWDOWN_EMERGENCY_HALT",
+                "Drawdown step-down: snapshot saved and all monitors forced to paper + test_filter.",
+                out,
+            )
+            return out
+        except Exception as e:
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            self.log_event("ERROR", f"Drawdown emergency monitor halt failed: {e}")
+            return {"status": "error", "message": str(e)}
+        finally:
+            if conn:
+                conn.close()
+
     def handle_bankroll_update(self, bankroll_stepped_down: bool = False) -> Dict[str, Any]:
         """
         Handle bankroll update from Kalshi sync_balance, paper apply_balance_snapshot, or trading_mode ripple.
@@ -516,22 +612,32 @@ environment={env_vars}
         try:
             self.log_event("BANKROLL_UPDATE", "Processing bankroll update notification")
 
+            emergency_halt_result: Optional[Dict[str, Any]] = None
+            if bankroll_stepped_down:
+                emergency_halt_result = self.apply_drawdown_emergency_monitor_halt()
+                if emergency_halt_result.get("status") != "success":
+                    self.log_event(
+                        "DRAWDOWN_EMERGENCY_HALT_FAILED",
+                        "Drawdown detected but emergency halt did not complete cleanly; check prior ERROR.",
+                        emergency_halt_result,
+                    )
+
             # Keep bankroll/allotment sync behavior.
             allotment_result = self.update_monitor_bankroll_allotments(0)  # bankroll parameter not used anymore
 
-            # Drawdown safety behavior preserved as an event only; auto_trade state is not modified.
-            if bankroll_stepped_down:
-                self.log_event(
-                    "DRAWDOWN_DETECTED_NO_AUTOTRADE_SHUTOFF",
-                    "Significant drawdown detected; auto_trade state left unchanged by policy."
-                )
-
-            combined_result = {
+            combined_result: Dict[str, Any] = {
                 "status": "success",
                 "allotment_update": allotment_result,
                 "bankroll_stepped_down": bankroll_stepped_down,
-                "message": "Bankroll update processed successfully"
+                "message": "Bankroll update processed successfully",
             }
+            if emergency_halt_result is not None:
+                combined_result["drawdown_emergency_halt"] = emergency_halt_result
+                if emergency_halt_result.get("status") != "success":
+                    combined_result["status"] = "error"
+                    combined_result["message"] = (
+                        "Drawdown emergency halt failed; see drawdown_emergency_halt in response."
+                    )
 
             self.log_event("BANKROLL_UPDATE", "Bankroll update processed successfully", combined_result)
             self._notify_frontend_monitor_list_updated("Bankroll / monitor list updated")
@@ -1783,7 +1889,7 @@ except Exception as e:
 
 @app.route('/api/bankroll_updated', methods=['POST'])
 def bankroll_updated():
-    """Endpoint called by kalshi_account_sync when bankroll changes. Body may include bankroll_stepped_down=True when bankroll was stepped down due to significant drawdown."""
+    """Endpoint called by kalshi_account_sync when bankroll changes. Body may include bankroll_stepped_down=True after a configured drawdown step-down; monitor_manager then snapshots monitors and forces paper + test_filter."""
     payload = request.get_json(silent=True) or {}
     bankroll_stepped_down = payload.get("bankroll_stepped_down", False)
     return jsonify(monitor_manager.handle_bankroll_update(bankroll_stepped_down=bankroll_stepped_down))

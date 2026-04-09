@@ -146,6 +146,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import statistics
 import sys
@@ -188,6 +189,12 @@ from scripts.backtest.helpers.aggregates import (
 from scripts.backtest.helpers.hypothetical_trades import (
     open_to_next_boundary_minutes,
     recompute_closed_trade_hypothetical,
+)
+from scripts.backtest.helpers.htc_backtest_replay import (
+    fetch_monitor_auto_entry_settings,
+    fetch_strategy_auto_entry_settings,
+    infer_strategy_list_name_for_kalshi_ticker,
+    run_htc_single_market_replay,
 )
 
 
@@ -242,6 +249,7 @@ def _parse_grid_step_seconds(s: str) -> float:
         raise argparse.ArgumentTypeError(
             "grid step seconds must be >= 1 (finest supported step is one second)"
         )
+    return x
 
 
 def _parse_lp_streak_sweep(s: str) -> tuple[int, int]:
@@ -260,7 +268,6 @@ def _parse_lp_streak_sweep(s: str) -> tuple[int, int]:
         raise argparse.ArgumentTypeError("LP streak sweep bounds must be >= 1")
     lo, hi = (a, b) if a <= b else (b, a)
     return (lo, hi)
-    return x
 
 
 def _max_ttc_sweep_ceiling_minutes(
@@ -2475,13 +2482,118 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     p.add_argument(
+        "--replay-htc-market",
+        default=None,
+        metavar="TICKER",
+        help=(
+            "Single-market HTC gate replay on ``backtest.backtest_1m_<slug>``: entry settings from "
+            "``users.strategy_list_<user>`` (default: strategy name ``15m HTC`` or ``Hourly HTC`` "
+            "from ticker per ``infer_contract_market_from_kalshi_ticker``), unless "
+            "``--replay-monitor-id`` is set (then ``users.monitor_list_<user>``). Bankroll sizing "
+            "from --replay-bankroll / --replay-allocation-pct; prints JSON and exits. "
+            "Omit --monitors / --start / --end. Mutually exclusive with Kalshi ingest modes."
+        ),
+    )
+    p.add_argument(
+        "--replay-htc-range",
+        action="store_true",
+        help=(
+            "Sequential HTC replay: every ``backtest.backtest_1m_*`` table overlapping "
+            "``[--start, --end)`` (Eastern-naive bar timestamps), ordered by first bar. "
+            "Settings from ``users.strategy_list_<user>`` (--replay-strategy, default ``15m HTC``); "
+            "``--replay-allocation-pct`` (default 20) sizes each entry as that percent of spendable "
+            "balance (same as --replay-htc-market). Loss prevention from strategy row. "
+            "Fresh in-memory bankroll (--replay-bankroll). "
+            "By default, runs Kalshi synthetic trading-day ingest for each overlapping Eastern "
+            "calendar day (``--replay-htc-ingest-series``, default KXBTC15M) so ``backtest`` tables "
+            "exist; use --replay-htc-skip-ingest if already filled. "
+            "Requires --start and --end. Mutually exclusive with --replay-htc-market and "
+            "top-level Kalshi ingest flags."
+        ),
+    )
+    p.add_argument(
+        "--replay-htc-skip-ingest",
+        action="store_true",
+        help=(
+            "With --replay-htc-range: skip pre-flight ``--ingest-kalshi-trading-day`` per overlapping "
+            "Eastern date (default is to create/fill tables first)."
+        ),
+    )
+    p.add_argument(
+        "--replay-htc-ingest-series",
+        default="KXBTC15M",
+        metavar="SERIES",
+        help=(
+            "With --replay-htc-range: Kalshi 15m series ticker for synthetic trading-day ingest "
+            "before replay (default KXBTC15M). No effect with --replay-htc-skip-ingest."
+        ),
+    )
+    p.add_argument(
+        "--replay-bankroll",
+        type=float,
+        default=10_000.0,
+        metavar="USD",
+        help="Starting bankroll for --replay-htc-market / --replay-htc-range (default 10000).",
+    )
+    p.add_argument(
+        "--replay-allocation-pct",
+        type=float,
+        default=20.0,
+        metavar="PCT",
+        help=(
+            "Percent of bankroll (single-market) or spend cap (range) per entry for "
+            "--replay-htc-market / --replay-htc-range (default 20)."
+        ),
+    )
+    p.add_argument(
+        "--replay-monitor-id",
+        type=int,
+        default=None,
+        metavar="ID",
+        help=(
+            "Optional: use ``users.monitor_list_<user>``.id for entry settings instead of "
+            "``strategy_list_<user>`` (mutually exclusive with --replay-strategy)."
+        ),
+    )
+    p.add_argument(
+        "--replay-strategy",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Optional: ``users.strategy_list_<user>``.name for entry settings (e.g. ``\"15m HTC\"``). "
+            "Default when --replay-monitor-id is omitted: inferred from ticker (15m vs hourly). "
+            "Mutually exclusive with --replay-monitor-id."
+        ),
+    )
+    p.add_argument(
+        "--replay-monitor-user",
+        default="0001",
+        metavar="USER",
+        help=(
+            "Digits-only user suffix for ``strategy_list_<USER>`` / ``monitor_list_<USER>`` "
+            "(default 0001)."
+        ),
+    )
+    p.add_argument(
+        "--replay-gate-profile",
+        choices=("full", "simulated_15m"),
+        default="full",
+        help="Gate profile passed to hourly HTC evaluator (default full).",
+    )
+    p.add_argument(
+        "--replay-spike-alert-active",
+        action="store_true",
+        help="Treat spike cooldown as active for min_probability adjustment in --replay-htc-market.",
+    )
+    p.add_argument(
         "--monitors",
         type=_parse_monitors,
         default=None,
         help=(
             "Comma-separated monitor names (e.g. mon_0001_1,mon_0001_2); required unless "
             "Kalshi ingest (--ingest-kalshi-tickers, --ingest-kalshi-trading-day, "
-            "--ingest-kalshi-trading-day-range, or --ingest-kalshi-series + close range)"
+            "--ingest-kalshi-trading-day-range, or --ingest-kalshi-series + close range) "
+            "or --replay-htc-market / --replay-htc-range"
         ),
     )
     p.add_argument(
@@ -2490,7 +2602,8 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "ISO-8601 start (inclusive); required unless using Kalshi ingest modes "
-            "(--ingest-kalshi-tickers / --ingest-kalshi-trading-day / --ingest-kalshi-series)"
+            "(--ingest-kalshi-tickers / --ingest-kalshi-trading-day / --ingest-kalshi-series) "
+            "or --replay-htc-market; required with --replay-htc-range"
         ),
     )
     p.add_argument(
@@ -2499,7 +2612,8 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "ISO-8601 end (exclusive); required unless using Kalshi ingest modes "
-            "(--ingest-kalshi-tickers / --ingest-kalshi-trading-day / --ingest-kalshi-series)"
+            "(--ingest-kalshi-tickers / --ingest-kalshi-trading-day / --ingest-kalshi-series) "
+            "or --replay-htc-market; required with --replay-htc-range"
         ),
     )
     p.add_argument(
@@ -2517,13 +2631,20 @@ def main(argv: list[str] | None = None) -> int:
         "--min-prob",
         type=float,
         default=None,
-        help="Minimum t.prob (DB scale, typically 0–100)",
+        help=(
+            "Minimum t.prob for trade SQL filters (DB scale, typically 0–100). "
+            "With --replay-htc-range / --replay-htc-market, also overrides strategy/monitor "
+            "min_probability when set."
+        ),
     )
     p.add_argument(
         "--max-prob",
         type=float,
         default=None,
-        help="Maximum t.prob (DB scale)",
+        help=(
+            "Maximum t.prob for trade SQL filters (DB scale). "
+            "With --replay-htc-range / --replay-htc-market, also overrides max_probability when set."
+        ),
     )
     p.add_argument(
         "--min-ttc-minutes",
@@ -2824,11 +2945,163 @@ def main(argv: list[str] | None = None) -> int:
             verbose=args.ingest_kalshi_verbose,
         )
 
+    if args.replay_htc_range:
+        if ingest_mode_count:
+            p.error("--replay-htc-range cannot be combined with Kalshi ingest modes")
+        if args.replay_htc_market:
+            p.error("use at most one of --replay-htc-range or --replay-htc-market")
+        if args.start is None or args.end is None:
+            p.error("--replay-htc-range requires --start and --end (timezone-aware ISO-8601)")
+        if args.end <= args.start:
+            print("error: --end must be after --start", file=sys.stderr)
+            return 2
+        if args.replay_bankroll <= 0:
+            p.error("--replay-bankroll must be positive")
+        if not (0.0 < args.replay_allocation_pct <= 100.0):
+            p.error("--replay-allocation-pct must be in (0, 100]")
+        mu = str(args.replay_monitor_user).strip()
+        if not mu.isdigit():
+            p.error("--replay-monitor-user must be digits only (e.g. 0001)")
+        sname = (args.replay_strategy or "15m HTC").strip()
+        if not sname:
+            p.error("--replay-strategy cannot be empty when set")
+
+        if not args.replay_htc_skip_ingest:
+            from scripts.backtest.helpers.htc_range_replay import eastern_calendar_days_overlapping_range
+
+            ser = (args.replay_htc_ingest_series or "").strip()
+            if not ser:
+                p.error("--replay-htc-ingest-series must be non-empty when ingest is enabled")
+            days = eastern_calendar_days_overlapping_range(args.start, args.end)
+            if not days:
+                print(
+                    "warning: no Eastern calendar days overlap [--start, --end); "
+                    "ingest skipped",
+                    file=sys.stderr,
+                )
+            for d in days:
+                ymd = d.strftime("%Y-%m-%d")
+                print(
+                    f"[replay-htc-range] ingest {ser} Eastern trading day {ymd} …",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                rc = _run_ingest_kalshi_trading_day(
+                    ser,
+                    ymd,
+                    include_spot=not args.ingest_no_spot,
+                    pause_seconds=args.ingest_kalshi_pause_seconds,
+                    verbose=args.ingest_kalshi_verbose,
+                )
+                if rc != 0:
+                    return rc
+
+        from scripts.backtest.helpers.htc_range_replay import run_htc_strategy_range_replay
+
+        conn = get_connection()
+        try:
+            out = run_htc_strategy_range_replay(
+                conn,
+                start=args.start,
+                end=args.end,
+                starting_bankroll=float(args.replay_bankroll),
+                strategy_name=sname,
+                strategy_table=f"strategy_list_{mu}",
+                replay_user=mu,
+                spike_alert_active=bool(args.replay_spike_alert_active),
+                gate_profile=str(args.replay_gate_profile),
+                allocation_pct=float(args.replay_allocation_pct),
+                min_probability_override=float(args.min_prob)
+                if args.min_prob is not None
+                else None,
+                max_probability_override=float(args.max_prob)
+                if args.max_prob is not None
+                else None,
+            )
+        finally:
+            conn.close()
+        print(json.dumps(out, indent=2, default=str))
+        return 0
+
+    if args.replay_htc_market:
+        if ingest_mode_count:
+            p.error("--replay-htc-market cannot be combined with Kalshi ingest modes")
+        if args.replay_bankroll <= 0:
+            p.error("--replay-bankroll must be positive")
+        if not (0.0 < args.replay_allocation_pct <= 100.0):
+            p.error("--replay-allocation-pct must be in (0, 100]")
+        ticker = args.replay_htc_market.strip()
+        if not ticker:
+            p.error("--replay-htc-market must be a non-empty ticker")
+        mu = str(args.replay_monitor_user).strip()
+        if not mu.isdigit():
+            p.error("--replay-monitor-user must be digits only (e.g. 0001)")
+        if args.replay_monitor_id is not None and args.replay_strategy:
+            p.error("use at most one of --replay-monitor-id or --replay-strategy")
+        conn = get_connection()
+        try:
+            if args.replay_monitor_id is not None:
+                stg = fetch_monitor_auto_entry_settings(
+                    conn,
+                    monitor_table=f"monitor_list_{mu}",
+                    monitor_id=int(args.replay_monitor_id),
+                )
+                if args.min_prob is not None or args.max_prob is not None:
+                    stg = dict(stg)
+                    if args.min_prob is not None:
+                        stg["min_probability"] = float(args.min_prob)
+                    if args.max_prob is not None:
+                        stg["max_probability"] = float(args.max_prob)
+                out = run_htc_single_market_replay(
+                    conn,
+                    market_ticker=ticker,
+                    bankroll=float(args.replay_bankroll),
+                    allocation_pct=float(args.replay_allocation_pct),
+                    entry_settings=stg,
+                    entry_settings_source="monitor_list",
+                    replay_user=mu,
+                    monitor_id=int(args.replay_monitor_id),
+                    spike_alert_active=bool(args.replay_spike_alert_active),
+                    gate_profile=str(args.replay_gate_profile),
+                )
+            else:
+                sname = (args.replay_strategy or infer_strategy_list_name_for_kalshi_ticker(ticker)).strip()
+                if not sname:
+                    p.error("--replay-strategy (or inferable ticker) is required without --replay-monitor-id")
+                stg = fetch_strategy_auto_entry_settings(
+                    conn,
+                    strategy_table=f"strategy_list_{mu}",
+                    strategy_name=sname,
+                )
+                if args.min_prob is not None or args.max_prob is not None:
+                    stg = dict(stg)
+                    if args.min_prob is not None:
+                        stg["min_probability"] = float(args.min_prob)
+                    if args.max_prob is not None:
+                        stg["max_probability"] = float(args.max_prob)
+                out = run_htc_single_market_replay(
+                    conn,
+                    market_ticker=ticker,
+                    bankroll=float(args.replay_bankroll),
+                    allocation_pct=float(args.replay_allocation_pct),
+                    entry_settings=stg,
+                    entry_settings_source="strategy_list",
+                    replay_user=mu,
+                    strategy_name=sname,
+                    spike_alert_active=bool(args.replay_spike_alert_active),
+                    gate_profile=str(args.replay_gate_profile),
+                )
+        finally:
+            conn.close()
+        print(json.dumps(out, indent=2, default=str))
+        return 0
+
     if args.monitors is None or args.start is None or args.end is None:
         p.error(
             "the following arguments are required: --monitors, --start, --end "
             "(unless using --ingest-kalshi-tickers, --ingest-kalshi-trading-day, "
-            "--ingest-kalshi-trading-day-range, or --ingest-kalshi-series)"
+            "--ingest-kalshi-trading-day-range, --ingest-kalshi-series, "
+            "--replay-htc-market, or --replay-htc-range)"
         )
 
     if args.end <= args.start:

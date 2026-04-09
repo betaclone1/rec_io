@@ -12,6 +12,11 @@ from typing import Any, Optional, Tuple
 
 from psycopg2 import sql
 
+from backend.core.system_settings_store import (
+    get_drawdown_trading_controls,
+    parse_user_number_from_account_balance_table,
+)
+
 _LOG = logging.getLogger("balance_snapshot")
 
 _SUBALLOW = frozenset({"users.subaccounts_0001", "users.subaccounts_paper_0001"})
@@ -224,6 +229,13 @@ def apply_balance_snapshot(
     prev_result = cursor.fetchone()
     prev_bankroll = prev_result[1] if prev_result else None
 
+    user_no = parse_user_number_from_account_balance_table(account_balance_table)
+    drawdown_halt_on, drawdown_pct = get_drawdown_trading_controls(cursor, user_number=user_no or "0001")
+    try:
+        _dd_ratio = float((100.0 - float(drawdown_pct)) / 100.0)
+    except (TypeError, ValueError):
+        _dd_ratio = 0.5
+
     bankroll_stepped_down = False
     # Live: only ripple subaccounts when flat (matches historical Kalshi sync behavior).
     # Paper: ripple every tick so PRIMARY/MTB match simulated total portfolio like a real balance payload.
@@ -237,12 +249,17 @@ def apply_balance_snapshot(
         if transfer_triggered:
             bankroll_current = master_bankroll_balance
         else:
-            drawdown_threshold = (prev_bankroll * 0.7) if prev_bankroll else None
+            # Step down when MTB <= (1 - drawdown_pct/100) * sticky bankroll (if drawdown_trading_halt on).
+            drawdown_threshold = (int(round(prev_bankroll * _dd_ratio)) if prev_bankroll else None)
             if prev_bankroll is None:
                 bankroll_current = master_bankroll_balance
             elif master_bankroll_balance > prev_bankroll:
                 bankroll_current = master_bankroll_balance
-            elif drawdown_threshold is not None and master_bankroll_balance <= drawdown_threshold:
+            elif (
+                drawdown_halt_on
+                and drawdown_threshold is not None
+                and master_bankroll_balance <= drawdown_threshold
+            ):
                 bankroll_current = master_bankroll_balance
                 if prev_bankroll > drawdown_threshold:
                     bankroll_stepped_down = True

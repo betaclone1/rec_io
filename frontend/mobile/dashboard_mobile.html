@@ -81,6 +81,252 @@
       left: 8px;
       right: 28px;
     }
+    .portfolio-panel .panel-header .portfolio-header-trading-wrap {
+      display: flex;
+      flex: 1 1 100%;
+      align-items: center;
+      gap: 8px;
+      margin-top: 4px;
+      width: 100%;
+      box-sizing: border-box;
+      position: relative;
+    }
+    .portfolio-panel .panel-header .portfolio-header-trading-wrap .trading-mode-select-wrap {
+      position: relative;
+      z-index: 1;
+      flex: 1 1 auto;
+      margin-top: 0;
+      width: auto;
+      max-width: none;
+      min-width: 0;
+    }
+    .portfolio-panel .panel-header .portfolio-header-halt-and-settings {
+      position: relative;
+      z-index: 4;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 1 1 auto;
+      min-width: 0;
+      max-width: 48%;
+      flex-shrink: 1;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+    .portfolio-panel .panel-header .portfolio-header-halt-and-settings .trading-halt-banner.trading-halt-banner--visible,
+    .portfolio-panel .panel-header .portfolio-header-halt-and-settings .portfolio-system-settings-icon {
+      cursor: pointer !important;
+    }
+    /* LP-style outlined pill; slightly smaller than desktop; may wrap on narrow phones */
+    .portfolio-panel .panel-header .portfolio-header-trading-wrap .trading-halt-banner {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 4px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      white-space: normal;
+      text-align: center;
+      line-height: 1.2;
+      border: 2px solid #e53e3e;
+      color: #fc8181;
+      background-color: rgba(229, 62, 62, 0.14);
+      box-shadow: 0 0 0 1px rgba(229, 62, 62, 0.35);
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .portfolio-panel .panel-header .portfolio-header-trading-wrap .trading-halt-banner.trading-halt-banner--visible {
+      display: inline-flex;
+      cursor: pointer;
+    }
+    .portfolio-panel .panel-header .portfolio-header-trading-wrap .trading-halt-banner.trading-halt-banner--visible:hover {
+      background-color: rgba(229, 62, 62, 0.22);
+      border-color: #fc8181;
+    }
+    .portfolio-panel .panel-header .portfolio-header-trading-wrap .trading-halt-banner.trading-halt-banner--visible:focus {
+      outline: 2px solid #fc8181;
+      outline-offset: 2px;
+    }
+    .portfolio-panel .panel-header .trading-mode-select-wrap .trading-mode-select-visual {
+      cursor: pointer;
+    }
+    .portfolio-panel .portfolio-system-settings-icon {
+      width: 14px;
+      height: 14px;
+      opacity: 0.35;
+      transition: opacity 0.2s;
+      cursor: pointer;
+      flex-shrink: 0;
+      -webkit-user-drag: none;
+    }
+    .portfolio-panel .portfolio-system-settings-icon:hover {
+      opacity: 1;
+    }
+    #systemSettingsPopoverRoot {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 10001;
+      overflow-y: auto;
+      box-sizing: border-box;
+      padding: 24px 20px;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.5);
+      pointer-events: none;
+    }
+    #systemSettingsPopoverRoot.system-settings-popover--open {
+      display: flex;
+      pointer-events: auto;
+    }
+    .system-settings-panel {
+      position: relative;
+      min-width: min(320px, calc(100vw - 40px));
+      max-width: min(480px, calc(100vw - 40px));
+      width: 100%;
+      background: #1f2633;
+      border: 1px solid #4a5568;
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+      box-sizing: border-box;
+    }
+    .system-settings-panel h3 {
+      margin: 0 0 12px 0;
+      font-size: 14px;
+      font-weight: bold;
+      color: #c4c4c4;
+    }
+    .system-settings-panel label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #c4c4c4;
+      margin-bottom: 12px;
+      cursor: pointer;
+    }
+    .system-settings-panel .system-settings-field {
+      margin-bottom: 14px;
+    }
+    .system-settings-panel .system-settings-field .row-label {
+      display: block;
+      margin-bottom: 12px;
+      font-size: 12px;
+      color: #c4c4c4;
+    }
+    .system-settings-panel select {
+      width: 100%;
+      font-size: 12px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid #4a5568;
+      background: #111923;
+      color: #e2e8f0;
+      box-sizing: border-box;
+    }
+    .system-settings-number-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .system-settings-panel input.system-settings-number-input[type="number"] {
+      width: 88px;
+      max-width: 100%;
+      font-size: 12px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid #4a5568;
+      background: #111923;
+      color: #e2e8f0;
+      box-sizing: border-box;
+      -moz-appearance: textfield;
+    }
+    .system-settings-panel input.system-settings-number-input[type="number"]::-webkit-outer-spin-button,
+    .system-settings-panel input.system-settings-number-input[type="number"]::-webkit-inner-spin-button {
+      -webkit-appearance: inner-spin-button;
+      opacity: 1;
+    }
+    .system-settings-pct-suffix {
+      font-size: 12px;
+      color: #9ca3af;
+      user-select: none;
+    }
+    .system-settings-panel .uat-modal-actions {
+      margin-top: 16px;
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      flex-shrink: 0;
+    }
+    .system-settings-panel .uat-modal-btn-primary {
+      background: var(--accent-color, #3b82f6);
+      color: white;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      transition: background-color 0.2s;
+    }
+    .system-settings-panel .uat-modal-btn-primary:hover {
+      background: var(--accent-hover, #2563eb);
+    }
+    .system-settings-panel .uat-modal-btn-primary:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .system-settings-panel .uat-modal-btn-secondary {
+      background: #4a5568;
+      color: white;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .system-settings-panel .uat-modal-btn-secondary:hover {
+      background: #5a6578;
+    }
+    .system-settings-halt-actions {
+      display: none;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 16px;
+      padding: 12px;
+      border-radius: 6px;
+      border: 1px solid rgba(245, 101, 101, 0.45);
+      background: rgba(245, 101, 101, 0.08);
+    }
+    .system-settings-halt-actions.system-settings-halt-actions--visible {
+      display: flex;
+    }
+    .system-settings-halt-actions .system-settings-halt-actions-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      color: #f56565;
+      text-transform: uppercase;
+      margin: 0;
+    }
+    .system-settings-halt-actions .system-settings-halt-actions-buttons {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .system-settings-halt-actions .system-settings-halt-actions-buttons .uat-modal-btn-primary,
+    .system-settings-halt-actions .system-settings-halt-actions-buttons .uat-modal-btn-secondary {
+      width: 100%;
+      box-sizing: border-box;
+    }
     .portfolio-panel .panel-tab { color: #fff; cursor: pointer; opacity: 0.3; transition: opacity 0.2s; }
     .portfolio-panel .panel-tab.active { opacity: 1; }
     .portfolio-tabs-body { flex: 1; min-height: 0; position: relative; }
@@ -784,6 +1030,10 @@
       margin-right: 6px;
     }
 
+    .list-view .monitor-settings-icon:hover,
+    .tile-view .monitor-settings-icon:hover {
+      opacity: 1;
+    }
 
     .monitor-symbol-container {
       display: flex;
@@ -804,8 +1054,13 @@
       opacity: 0.4;
       transition: opacity 0.2s ease;
       cursor: pointer;
+      -webkit-user-drag: none;
     }
 
+    .list-view .monitor-settings-icon,
+    .tile-view .monitor-settings-icon {
+      -webkit-user-drag: none;
+    }
 
     .status-light {
       width: 12px;
@@ -1347,14 +1602,41 @@
             <span id="portfolio-tab" class="panel-tab" style="opacity: 0.3;">Portfolio</span>
             <span id="pnl-tab" class="panel-tab" style="opacity: 0.3;">PNL</span>
           </div>
-          <label for="trading-mode-select-mobile" class="visually-hidden" style="position:absolute;width:1px;height:1px;overflow:hidden;">Trading account</label>
-          <div class="trading-mode-select-wrap">
-            <select id="trading-mode-select-mobile" class="dropdown-picker mobile-trading-mode-select trading-mode-select-visual" title="LIVE vs paper (internal)">
-              <option value="live">LIVE</option>
-              <option value="paper">PAPER</option>
-            </select>
-            <div class="trading-mode-select-face" aria-hidden="true">
-              <span class="trading-mode-mode trading-mode-mode--live">LIVE</span><span class="trading-mode-sep"></span><span class="trading-mode-name"></span>
+          <div class="portfolio-header-trading-wrap">
+            <div class="portfolio-header-halt-and-settings">
+              <span
+                id="trading-halt-active-badge"
+                class="trading-halt-banner"
+                aria-live="polite"
+                role="button"
+                tabindex="0"
+                title="Open system settings"
+                aria-label="Trading halt active. Open system settings."
+                onclick="void openSystemSettingsPopover(event)"
+                onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();void openSystemSettingsPopover(event);}"
+              >TRADING HALT ACTIVE</span>
+              <img
+                id="system-settings-gear"
+                class="portfolio-system-settings-icon"
+                src="/images/icons/panel_settings.png"
+                alt="System settings"
+                title="System settings"
+                role="button"
+                tabindex="0"
+                draggable="false"
+                onclick="void openSystemSettingsPopover(event)"
+                onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();void openSystemSettingsPopover(event);}"
+              />
+            </div>
+            <label for="trading-mode-select-mobile" class="visually-hidden" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;pointer-events:none;">Trading account</label>
+            <div class="trading-mode-select-wrap">
+              <select id="trading-mode-select-mobile" class="dropdown-picker mobile-trading-mode-select trading-mode-select-visual" title="LIVE vs paper (internal)" draggable="false">
+                <option value="live">LIVE</option>
+                <option value="paper">PAPER</option>
+              </select>
+              <div class="trading-mode-select-face" aria-hidden="true">
+                <span class="trading-mode-mode trading-mode-mode--live">LIVE</span><span class="trading-mode-sep"></span><span class="trading-mode-name"></span>
+              </div>
             </div>
           </div>
           <div class="portfolio-controls">
@@ -1400,8 +1682,8 @@
         <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
           <span>Monitors</span>
           <div style="display: flex; align-items: center; gap: 10px;">
-            <img id="compactViewIcon" src="../images/icons/list_view_icon.png" alt="Compact" title="Compact: hide Win Streak, W/L, Ret%, PnL" style="width: 17px; height: 17px; opacity: 0.2; transition: opacity 0.2s; cursor: pointer;" onclick="setCompactTiles(true)" />
-            <img id="fullViewIcon" src="../images/icons/tile_view_icon.png" alt="Full" title="Full: show all stats" style="width: 17px; height: 17px; opacity: 1; transition: opacity 0.2s; cursor: pointer;" onclick="setCompactTiles(false)" />
+            <img id="compactViewIcon" src="../images/icons/list_view_icon.png" alt="Compact" title="Compact: hide Win Streak, W/L, Ret%, PnL" draggable="false" style="width: 17px; height: 17px; opacity: 0.2; transition: opacity 0.2s; cursor: pointer;" onclick="setCompactTiles(true)" />
+            <img id="fullViewIcon" src="../images/icons/tile_view_icon.png" alt="Full" title="Full: show all stats" draggable="false" style="width: 17px; height: 17px; opacity: 1; transition: opacity 0.2s; cursor: pointer;" onclick="setCompactTiles(false)" />
           </div>
         </div>
         <div class="monitors-grid" id="monitors-grid">
@@ -1419,6 +1701,7 @@
               src="../images/icons/pie_chart_icon.png" 
               alt="Pie Chart" 
               title="Pie Chart" 
+              draggable="false"
               style="width: 12px; height: 12px; opacity: 1; transition: opacity 0.2s;"
             />
             <img 
@@ -1426,6 +1709,7 @@
               src="../images/icons/bar_chart_icon.png" 
               alt="Bar Chart" 
               title="Bar Chart" 
+              draggable="false"
               style="width: 12px; height: 12px; opacity: 0.2; transition: opacity 0.2s;"
             />
           </div>
@@ -1596,6 +1880,195 @@
       }
     }
 
+    function clampDrawdownPctInput(el) {
+      if (!el) return null;
+      let v = parseFloat(el.value);
+      if (!Number.isFinite(v)) return null;
+      v = Math.min(99, Math.max(1, Math.round(v)));
+      el.value = String(v);
+      return v;
+    }
+
+    function updateTradingHaltUiFromSettingsPayload(j) {
+      const active = j && j.trading_halt_active === true;
+      const badge = document.getElementById('trading-halt-active-badge');
+      if (badge) {
+        badge.classList.toggle('trading-halt-banner--visible', active);
+        badge.textContent = 'TRADING HALT ACTIVE';
+      }
+      const haltBox = document.getElementById('systemSettingsHaltActions');
+      if (haltBox) {
+        haltBox.classList.toggle('system-settings-halt-actions--visible', active);
+        haltBox.setAttribute('aria-hidden', active ? 'false' : 'true');
+      }
+    }
+
+    async function refreshTradingHaltIndicator() {
+      try {
+        const r = await fetch(window.location.origin + '/api/system_settings?user_id=user_0001', { cache: 'no-store' });
+        const j = await r.json();
+        if (j.status === 'ok') updateTradingHaltUiFromSettingsPayload(j);
+      } catch (e) {
+        console.warn('refreshTradingHaltIndicator:', e);
+      }
+    }
+
+    async function loadSystemSettingsIntoForm() {
+      const haltEl = document.getElementById('systemSettingsDrawdownHalt');
+      const pctEl = document.getElementById('systemSettingsDrawdownPct');
+      if (!haltEl || !pctEl) return;
+      try {
+        const r = await fetch(window.location.origin + '/api/system_settings?user_id=user_0001', { cache: 'no-store' });
+        const j = await r.json();
+        if (j.status !== 'ok') {
+          console.warn('system_settings load:', j.message || j);
+          return;
+        }
+        haltEl.checked = j.drawdown_trading_halt !== false;
+        const pct = Number(j.drawdown_reset_threshold_pct);
+        if (Number.isFinite(pct)) {
+          pctEl.value = String(Math.min(99, Math.max(1, Math.round(pct))));
+        }
+        updateTradingHaltUiFromSettingsPayload(j);
+      } catch (e) {
+        console.warn('loadSystemSettingsIntoForm:', e);
+      }
+    }
+
+    function ensureSystemSettingsKeyHandler(root) {
+      if (!root || root._systemSettingsKeyHandler) return;
+      const handler = function(e) {
+        if (!root.classList.contains('system-settings-popover--open')) return;
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const btn = document.getElementById('systemSettingsSave');
+          if (btn && !btn.disabled) btn.click();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          closeSystemSettingsPopover();
+        }
+      };
+      document.addEventListener('keydown', handler);
+      root._systemSettingsKeyHandler = handler;
+    }
+
+    function closeSystemSettingsPopover() {
+      const root = document.getElementById('systemSettingsPopoverRoot');
+      if (root) {
+        root.classList.remove('system-settings-popover--open');
+        root.setAttribute('aria-hidden', 'true');
+        if (root._systemSettingsKeyHandler) {
+          document.removeEventListener('keydown', root._systemSettingsKeyHandler);
+          delete root._systemSettingsKeyHandler;
+        }
+      }
+    }
+
+    async function openSystemSettingsPopover(ev) {
+      ev && ev.stopPropagation && ev.stopPropagation();
+      const root = document.getElementById('systemSettingsPopoverRoot');
+      if (!root) return;
+      await loadSystemSettingsIntoForm();
+      root.classList.add('system-settings-popover--open');
+      root.setAttribute('aria-hidden', 'false');
+      ensureSystemSettingsKeyHandler(root);
+    }
+
+    async function saveSystemSettingsPopover() {
+      const root = document.getElementById('systemSettingsPopoverRoot');
+      const saveBtn = document.getElementById('systemSettingsSave');
+      const haltEl = document.getElementById('systemSettingsDrawdownHalt');
+      const pctEl = document.getElementById('systemSettingsDrawdownPct');
+      if (!haltEl || !pctEl) return;
+      if (root && root.dataset.systemSettingsSaveInFlight === '1') return;
+      const v = clampDrawdownPctInput(pctEl);
+      if (v === null) {
+        alert('Enter a valid drawdown threshold between 1 and 99.');
+        return;
+      }
+      if (root) root.dataset.systemSettingsSaveInFlight = '1';
+      if (saveBtn) saveBtn.disabled = true;
+      try {
+        const r = await fetch(window.location.origin + '/api/system_settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: 'user_0001',
+            drawdown_trading_halt: !!haltEl.checked,
+            drawdown_reset_threshold_pct: v,
+          }),
+        });
+        const j = await r.json();
+        if (j.status !== 'ok') {
+          alert('Save failed: ' + (j.message || 'unknown error'));
+          return;
+        }
+        closeSystemSettingsPopover();
+        await refreshTradingHaltIndicator();
+      } catch (e) {
+        alert('Save failed: ' + (e && e.message ? e.message : 'Network error'));
+      } finally {
+        if (root) delete root.dataset.systemSettingsSaveInFlight;
+        if (saveBtn) saveBtn.disabled = false;
+      }
+    }
+
+    async function postSystemSettingsAction(action) {
+      try {
+        const r = await fetch(window.location.origin + '/api/system_settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: 'user_0001', action: action }),
+        });
+        const j = await r.json();
+        if (j.status !== 'ok') {
+          alert((action === 'restore_trade_operations' ? 'Restore failed: ' : 'Request failed: ') + (j.message || 'unknown'));
+          return;
+        }
+        updateTradingHaltUiFromSettingsPayload(j);
+        await loadMonitors();
+        applyCurrentSort();
+        initializeMonitors();
+      } catch (e) {
+        alert('Request failed: ' + (e && e.message ? e.message : 'Network error'));
+      }
+    }
+
+    function wireSystemSettingsPopover() {
+      const root = document.getElementById('systemSettingsPopoverRoot');
+      const cancelBtn = document.getElementById('systemSettingsCancel');
+      const saveBtn = document.getElementById('systemSettingsSave');
+      if (root) {
+        root.addEventListener('click', function(e) {
+          if (e.target === root) closeSystemSettingsPopover();
+        });
+      }
+      if (cancelBtn && !cancelBtn.dataset.sysSetWired) {
+        cancelBtn.dataset.sysSetWired = '1';
+        cancelBtn.addEventListener('click', closeSystemSettingsPopover);
+      }
+      if (saveBtn && !saveBtn.dataset.sysSetWired) {
+        saveBtn.dataset.sysSetWired = '1';
+        saveBtn.addEventListener('click', function() {
+          void saveSystemSettingsPopover();
+        });
+      }
+      const clearHaltBtn = document.getElementById('systemSettingsClearHaltAlert');
+      const restoreOpsBtn = document.getElementById('systemSettingsRestoreTradeOps');
+      if (clearHaltBtn && !clearHaltBtn.dataset.sysSetWired) {
+        clearHaltBtn.dataset.sysSetWired = '1';
+        clearHaltBtn.addEventListener('click', function() {
+          void postSystemSettingsAction('clear_trading_halt_alert');
+        });
+      }
+      if (restoreOpsBtn && !restoreOpsBtn.dataset.sysSetWired) {
+        restoreOpsBtn.dataset.sysSetWired = '1';
+        restoreOpsBtn.addEventListener('click', function() {
+          void postSystemSettingsAction('restore_trade_operations');
+        });
+      }
+    }
+
     document.addEventListener('DOMContentLoaded', async function() {
       const legacy = localStorage.getItem('rec_account_mode');
       if (legacy === 'demo') {
@@ -1655,7 +2128,9 @@
       initializePortfolioPanelTabs();
 
       wireMobileTradingModeControls();
-      
+      wireSystemSettingsPopover();
+      void refreshTradingHaltIndicator();
+
       // Connect to WebSockets after everything is loaded
       connectWebSocket();
       connectDbChangesWebSocket();
@@ -2028,9 +2503,9 @@
               <div class="monitor-symbol-container">
                 <span class="monitor-symbol">${monitor.symbol}</span>
                                   <div class="monitor-icons">
-                    <img src="/images/icons/trade_monitor_icon.png" alt="Monitor" title="Monitor" class="monitor-icon monitor-icon" onclick="switchToTradeMonitor('${monitor.id}')">
-                    <img src="/images/icons/trade_history.png" alt="History" title="History" class="monitor-icon history-icon" onclick="loadTradeHistory('${monitor.name}')">
-                    <img src="/images/icons/trash_icon.png" alt="Archive" title="Archive" class="monitor-icon trash-icon" onclick="showArchiveConfirmation('${monitor.id}', '${monitor.name}')">
+                    <img draggable="false" src="/images/icons/trade_monitor_icon.png" alt="Monitor" title="Monitor" class="monitor-icon monitor-icon" onclick="switchToTradeMonitor('${monitor.id}')">
+                    <img draggable="false" src="/images/icons/trade_history.png" alt="History" title="History" class="monitor-icon history-icon" onclick="loadTradeHistory('${monitor.name}')">
+                    <img draggable="false" src="/images/icons/trash_icon.png" alt="Archive" title="Archive" class="monitor-icon trash-icon" onclick="showArchiveConfirmation('${monitor.id}', '${monitor.name}')">
                   </div>
               </div>
               ${htmlMonitorStrategyMarketRow(monitor)}
@@ -2074,6 +2549,7 @@
                   src="/images/icons/panel_settings.png" 
                   alt="Monitor Settings" 
                   title="Monitor Settings" 
+                  draggable="false"
                   onclick="openMobileUnifiedAutoTradeSettings('${monitor.id}')"
                 />
                 <div class="auto-trade-label">AUTO TRADE</div>
@@ -2100,9 +2576,9 @@
                 <div class="monitor-symbol-container">
                   <span class="monitor-symbol">${monitor.symbol}</span>
                   <div class="monitor-icons">
-                    <img src="/images/icons/trade_monitor_icon.png" alt="Monitor" title="Monitor" class="monitor-icon monitor-icon" onclick="switchToTradeMonitor('${monitor.id}')">
-                    <img src="/images/icons/trade_history.png" alt="History" title="History" class="monitor-icon history-icon" onclick="loadTradeHistory('${monitor.name}')">
-                    <img src="/images/icons/trash_icon.png" alt="Archive" title="Archive" class="monitor-icon trash-icon" onclick="showArchiveConfirmation('${monitor.id}', '${monitor.name}')">
+                    <img draggable="false" src="/images/icons/trade_monitor_icon.png" alt="Monitor" title="Monitor" class="monitor-icon monitor-icon" onclick="switchToTradeMonitor('${monitor.id}')">
+                    <img draggable="false" src="/images/icons/trade_history.png" alt="History" title="History" class="monitor-icon history-icon" onclick="loadTradeHistory('${monitor.name}')">
+                    <img draggable="false" src="/images/icons/trash_icon.png" alt="Archive" title="Archive" class="monitor-icon trash-icon" onclick="showArchiveConfirmation('${monitor.id}', '${monitor.name}')">
                   </div>
                 </div>
                 ${htmlMonitorStrategyMarketRow(monitor, { stacked: true })}
@@ -2116,6 +2592,7 @@
                     src="/images/icons/panel_settings.png" 
                     alt="Monitor Settings" 
                     title="Monitor Settings" 
+                    draggable="false"
                     onclick="openMobileUnifiedAutoTradeSettings('${monitor.id}')"
                   />
                   <span class="auto-trade-label">AUTO TRADE</span>
@@ -3391,7 +3868,7 @@
 
       if (portfolioPanelActiveTab === 'bankroll') {
         if (accountBalanceSnapshot) {
-          const mtb = accountBalanceSnapshot.mtb_base_value;
+          const mtb = accountBalanceSnapshot.master_trading_bankroll;
           const centsRaw = (mtb != null && mtb !== '') ? Number(mtb) : Number(accountBalanceSnapshot.bankroll_current || 0);
           const dollars = Number.isFinite(centsRaw) ? centsRaw / 100 : 0;
           portfolioElement.textContent = new Intl.NumberFormat('en-US', {
@@ -3848,7 +4325,7 @@
         data: {
           labels: labels,
           datasets: [{
-            label: 'Bankroll',
+            label: 'MTB',
             data: smoothedData,
             borderColor: '#4a9eff',
             backgroundColor: 'rgba(74, 158, 255, 0.1)',
@@ -6186,9 +6663,11 @@
             }
           }
           
-          // Handle monitor list updates
+          // Handle monitor list updates (Redis-backed; includes trading_halt_active)
           if (data.type === 'monitor_list_updated') {
-            // Debounced soft refresh to avoid full tile redraw flicker.
+            if (typeof data.trading_halt_active === 'boolean') {
+              updateTradingHaltUiFromSettingsPayload({ trading_halt_active: data.trading_halt_active });
+            }
             scheduleMonitorsSoftRefresh(700);
           }
           
@@ -6535,6 +7014,44 @@
     }, { passive: false, capture: true });
 
   </script>
+
+  <div id="systemSettingsPopoverRoot" aria-hidden="true">
+    <div id="systemSettingsPopoverPanel" class="system-settings-panel" role="dialog" aria-labelledby="systemSettingsPopoverTitle" onclick="event.stopPropagation();">
+      <h3 id="systemSettingsPopoverTitle">System settings</h3>
+      <div id="systemSettingsHaltActions" class="system-settings-halt-actions" aria-hidden="true">
+        <p class="system-settings-halt-actions-label">TRADING HALT ACTIVE</p>
+        <div class="system-settings-halt-actions-buttons">
+          <button type="button" id="systemSettingsClearHaltAlert" class="uat-modal-btn-secondary">Clear Trade Halt Alert</button>
+          <button type="button" id="systemSettingsRestoreTradeOps" class="uat-modal-btn-primary">Restore Trade Operations</button>
+        </div>
+      </div>
+      <label>
+        <input type="checkbox" id="systemSettingsDrawdownHalt" />
+        Drawdown trading halt
+      </label>
+      <div class="system-settings-field">
+        <span class="row-label">Drawdown threshold (bankroll step-down)</span>
+        <div class="system-settings-number-row">
+          <input
+            type="number"
+            id="systemSettingsDrawdownPct"
+            class="system-settings-number-input"
+            min="1"
+            max="99"
+            step="1"
+            inputmode="numeric"
+            title="Drawdown % from sticky bankroll before reset and halt"
+            aria-label="Drawdown threshold percent"
+          />
+          <span class="system-settings-pct-suffix">%</span>
+        </div>
+      </div>
+      <div class="uat-modal-actions">
+        <button type="button" id="systemSettingsCancel" class="uat-modal-btn-secondary">Cancel</button>
+        <button type="button" id="systemSettingsSave" class="uat-modal-btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Mobile Unified Auto Trade Settings Modal (dark theme; matches desktop unifiedAutoTradeModal) -->
   <div id="mobileUnifiedAutoTradeModal" class="uat-modal-overlay" style="display:none;" onclick="if (window.hideMobileUnifiedAutoTradeSettings) window.hideMobileUnifiedAutoTradeSettings();">

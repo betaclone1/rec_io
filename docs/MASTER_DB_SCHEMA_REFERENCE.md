@@ -10014,6 +10014,29 @@ Unified Kalshi **hourly** active-trade tracking: **one table per user** (`active
 
 ---
 
+### Table: `users.system_settings_0001`
+
+Singleton global/system settings for user `0001` (one row `id = 1`). Migrations `20260409_2100_system_settings_0001`, `20260410_1000_system_settings_trading_halt_active`, `20260411_1100_system_settings_drawdown_halt_monitor_snapshot`.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `smallint` | NO | 1 | Primary key; must be `1`. |
+| `drawdown_trading_halt` | `boolean` | NO | true | When true, apply bankroll drawdown step-down and emergency monitor halt when threshold breached. |
+| `drawdown_reset_threshold_pct` | `numeric(5,2)` | NO | 50.00 | Percent drawdown from sticky `bankroll_current` that triggers step-down (exclusive 0–100). Equity at or below `(1 - pct/100) * sticky` triggers. |
+| `trading_halt_active` | `boolean` | NO | false | Set true when monitor_manager applies drawdown emergency halt; dashboard latch until cleared or full restore. |
+| `drawdown_halt_monitor_snapshot` | `jsonb` | YES | null | Pre-halt monitor `paper_trade` / `test_filter` snapshot (`schema_version` 1); set on emergency halt, cleared after **Restore Trade Operations**. Not returned by `GET /api/system_settings`. |
+| `updated_at` | `timestamp with time zone` | NO | now() | Last update. |
+
+#### Constraints
+
+- **Primary Key:** `system_settings_0001_pkey` on `id`
+- **Check:** `id = 1`
+- **Check:** `drawdown_reset_threshold_pct` between 0 and 100 (exclusive)
+
+---
+
 ### Table: `users.monitor_list_0001`
 
 #### Semantics (status vs auto_trade)

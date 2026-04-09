@@ -6,6 +6,47 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-09 — System settings, trading halt UI, MTB bankroll chart, drawdown/monitor wiring, backtest schema helpers
+
+**Summary**
+- **Database:** `users.system_settings_0001` (drawdown halt + threshold), trading halt active flag, drawdown halt monitor snapshot columns (migrations `20260409_2100_system_settings_0001`, `20260410_1000_system_settings_trading_halt_active`, `20260411_1100_system_settings_drawdown_halt_monitor_snapshot`). Backtest 1m candle / price-history table lineage (`20260414_1000` through `20260419_1000` slugs below).
+- **Backend:** `system_settings_store`, drawdown emergency restore path, `monitor_manager` / balance snapshot / `main.py` APIs (system settings, account balance includes `master_trading_bankroll`), `read_api` bankroll history uses `COALESCE(master_trading_bankroll, bankroll_current)`, `auto_entry_htc_gates`, `prod_target`, analytics GUI tweaks, Kalshi sync touch-up.
+- **Frontend:** Dashboard + mobile — trading halt badge, system settings popover, portfolio header stacking/cursor fixes, Bankroll tab chart and top line use master trading bankroll (MTB); `.env.example` hints.
+- **Scripts / tests:** Backtest helpers (`backtest_price_history`, strike span, HTC replay, Kalshi ticker construct), `restore_drawdown_emergency_monitors.py`, unit tests for backtest columns and ticker construct.
+
+**Plans:** (mixed session work; related: `mtb-account-dashboard`, monitor/dashboard UX)
+
+**DB migrations (required on production, in timestamp order — runner skips already-applied ids)**
+1. `20260409_2100_system_settings_0001`
+2. `20260410_1000_system_settings_trading_halt_active`
+3. `20260411_1100_system_settings_drawdown_halt_monitor_snapshot`
+4. `20260414_1000_backtest_kalshi_candles_1m_kxbtc15m_26mar051345_45`
+5. `20260415_1200_backtest_rename_kalshi_candles_tables_to_backtest_1m`
+6. `20260416_1000_backtest_1m_add_spot_price_columns`
+7. `20260417_1000_backtest_1m_rename_spot_to_price_history_names`
+8. `20260418_1000_backtest_1m_running_ask_15m_columns`
+9. `20260419_1000_backtest_1m_rename_cycle_ask_to_price_15m`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations (from project root on server, in order above):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260409_2100_system_settings_0001`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260410_1000_system_settings_trading_halt_active`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1100_system_settings_drawdown_halt_monitor_snapshot`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260414_1000_backtest_kalshi_candles_1m_kxbtc15m_26mar051345_45`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260415_1200_backtest_rename_kalshi_candles_tables_to_backtest_1m`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260416_1000_backtest_1m_add_spot_price_columns`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260417_1000_backtest_1m_rename_spot_to_price_history_names`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260418_1000_backtest_1m_running_ask_15m_columns`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260419_1000_backtest_1m_rename_cycle_ask_to_price_15m`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; spot-check dashboard Bankroll tab (MTB series), system settings popover, trading halt visibility; `read_api` healthy if used.
+
+---
+
 ## 2026-04-08 — Paper subaccounts id parity + automatic MTB rake in paper mode
 
 **Summary**

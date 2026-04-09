@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS backtest.kalshi_candles_1m_kxbtc15m_26mar051345_45;

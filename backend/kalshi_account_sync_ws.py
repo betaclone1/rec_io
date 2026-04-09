@@ -399,7 +399,7 @@ def notify_frontend_db_change(db_name: str, change_data: dict = None):
         logger.error("Error notifying frontend: %s", e)
 
 def notify_monitor_manager(bankroll_stepped_down=False):
-    """Notify monitor_manager that bankroll has been updated. Pass bankroll_stepped_down=True when bankroll was stepped down due to significant drawdown (MTB <= 70% of prior bankroll_current)."""
+    """Notify monitor_manager that bankroll has been updated. Pass bankroll_stepped_down=True when bankroll stepped down (drawdown halt on; MTB at/below configured % of prior bankroll_current)."""
     try:
         import requests
         from backend.core.port_config import get_port

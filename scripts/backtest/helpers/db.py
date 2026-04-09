@@ -3,14 +3,15 @@
 **Python interpreter:** use the **project virtualenv** (e.g. ``.venv/bin/python3``) so ``psycopg2``
 is available. System ``python3`` often lacks project dependencies.
 
-**Local dev:** ``REC_IO_BACKTEST_DB=local`` — uses ``DB_*`` / ``REC_*`` from your environment
-(plus repo ``.env`` loaded without overriding the shell).
+**Local (default):** If ``REC_IO_BACKTEST_DB`` is unset, backtests use **local** Postgres via
+``DB_*`` / ``REC_*`` from your environment (plus repo ``.env`` loaded without overriding the shell).
 
-**Production (default):** ``REC_IO_BACKTEST_DB=prod`` and ``REC_IO_BACKTEST_TRANSPORT=ssh`` (default)
-opens an SSH tunnel to the server and reads DB user/password/name from the **remote** environment
+**Production (opt-in):** ``REC_IO_BACKTEST_DB=prod`` with ``REC_IO_BACKTEST_TRANSPORT=ssh`` (default
+for prod) opens an SSH tunnel and reads DB user/password/name from the **remote** environment
 the same way as ``access-prod-db`` (source ``/opt/rec_io_server/.env`` if present, then
-``REC_DB_PASS`` / ``DB_PASSWORD`` / ``rec_io_password`` chain). No production password is required
-in your local ``.env``.
+``REC_DB_PASS`` / ``DB_PASSWORD`` / ``rec_io_password`` chain). Set ``REC_IO_BACKTEST_SSH`` or
+``REC_IO_BACKTEST_DB_HOST`` to the **current** prod host (``docs/PRODUCTION_HOST.md``); stale IPs in
+``.env`` will cause pointless SSH timeouts.
 
 **Direct TCP to prod:** ``REC_IO_BACKTEST_TRANSPORT=direct`` — requires
 ``REC_IO_BACKTEST_DB_HOST`` and a matching ``DB_PASSWORD`` / ``REC_DB_PASS`` locally.
@@ -70,7 +71,7 @@ def _load_env_file_simple(path: str) -> None:
 
 
 def _backtest_db_mode() -> str:
-    return (os.getenv("REC_IO_BACKTEST_DB") or "prod").strip().lower()
+    return (os.getenv("REC_IO_BACKTEST_DB") or "local").strip().lower()
 
 
 def _apply_backtest_db_target_direct() -> None:
@@ -281,7 +282,7 @@ def get_connection():
         return conn
 
     if mode not in ("prod", "production"):
-        raise ValueError(f"REC_IO_BACKTEST_DB={mode!r} is invalid; use prod (default) or local")
+        raise ValueError(f"REC_IO_BACKTEST_DB={mode!r} is invalid; use local (default) or prod")
 
     transport = (os.getenv("REC_IO_BACKTEST_TRANSPORT") or "ssh").strip().lower()
     if transport == "ssh":

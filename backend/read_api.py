@@ -148,7 +148,7 @@ async def get_portfolio_history(period: str = "1m") -> Dict[str, Any]:
 async def get_bankroll_history(period: str = "1m") -> Dict[str, Any]:
     """
     Mirror of main.py /api/bankroll/history, but served from read_api.
-    Historical MTB base value from account_balance for Bankroll chart.
+    Historical master trading bankroll (MTB balance in cents) from account_balance for Bankroll chart.
     """
     try:
         import psycopg2  # type: ignore
@@ -170,7 +170,7 @@ async def get_bankroll_history(period: str = "1m") -> Dict[str, Any]:
                 cursor.execute(
                     psql.SQL(
                         """
-                    SELECT updated_at, COALESCE(mtb_base_value, bankroll_current)
+                    SELECT updated_at, COALESCE(master_trading_bankroll, bankroll_current)
                     FROM {}
                     WHERE updated_at < %s
                     ORDER BY updated_at DESC, id DESC
@@ -185,7 +185,7 @@ async def get_bankroll_history(period: str = "1m") -> Dict[str, Any]:
                 cursor.execute(
                     psql.SQL(
                         """
-                    SELECT updated_at, COALESCE(mtb_base_value, bankroll_current)
+                    SELECT updated_at, COALESCE(master_trading_bankroll, bankroll_current)
                     FROM {}
                     WHERE updated_at >= %s
                     ORDER BY updated_at ASC, id ASC
@@ -212,7 +212,7 @@ async def get_bankroll_history(period: str = "1m") -> Dict[str, Any]:
                 cursor.execute(
                     psql.SQL(
                         """
-                    SELECT updated_at, COALESCE(mtb_base_value, bankroll_current)
+                    SELECT updated_at, COALESCE(master_trading_bankroll, bankroll_current)
                     FROM {}
                     WHERE updated_at >= %s
                     ORDER BY updated_at ASC, id ASC

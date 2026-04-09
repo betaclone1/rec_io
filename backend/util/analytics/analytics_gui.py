@@ -36,8 +36,15 @@ import psutil
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(os.path.join(_root, ".env"))
+except ImportError:
+    pass
+
 from backend.core.time_eastern import merge_psycopg2_connect_kwargs
-from backend.core.prod_target import get_production_db_host
+from backend.core.prod_target import resolve_production_db_host_for_gui
 
 
 class AnalyticsGUI:
@@ -653,13 +660,16 @@ class AnalyticsGUI:
     
     def sync_to_production(self):
         """Sync local analytics and historical_data schemas to production server"""
-        prod_host = get_production_db_host()
-        if not prod_host:
-            messagebox.showerror(
-                "Production host not set",
-                "Set REC_PROD_DB_HOST or REC_PROD_SSH_HOST to the production PostgreSQL host, then retry.",
+        prod_host, prod_from_env = resolve_production_db_host_for_gui()
+        source_note = (
+            ""
+            if prod_from_env
+            else (
+                "\n\nUsing built-in canonical prod host (set REC_PROD_DB_HOST or "
+                "REC_PROD_SSH_HOST in the environment or .env to override). "
+                "See docs/PRODUCTION_HOST.md."
             )
-            return
+        )
 
         # Confirmation dialog
         response = messagebox.askyesno(
@@ -668,7 +678,7 @@ class AnalyticsGUI:
             "This will:\n"
             "1. DROP analytics and historical_data schemas on PRODUCTION\n"
             "2. Replace them with your LOCAL data\n\n"
-            f"Production server: {prod_host}\n\n"
+            f"Production server: {prod_host}{source_note}\n\n"
             "Are you absolutely sure you want to continue?"
         )
         
@@ -696,16 +706,13 @@ class AnalyticsGUI:
     def _execute_production_sync(self):
         """Execute the production sync operation"""
         try:
-            prod_host = get_production_db_host()
-            if not prod_host:
-                self.add_log("❌ REC_PROD_DB_HOST / REC_PROD_SSH_HOST not set")
-                self.status_var.set("Sync failed")
-                messagebox.showerror(
-                    "Sync Error",
-                    "Set REC_PROD_DB_HOST or REC_PROD_SSH_HOST before syncing.",
+            prod_host, prod_from_env = resolve_production_db_host_for_gui()
+            if not prod_from_env:
+                self.add_log(
+                    f"☁️ Prod host (canonical default): {prod_host} "
+                    "(override with REC_PROD_DB_HOST / REC_PROD_SSH_HOST)"
                 )
-                return
-            
+
             # Step 1: Drop existing schemas on production
             self.add_log("📋 Step 1/3: Dropping production schemas...")
             drop_cmd = [

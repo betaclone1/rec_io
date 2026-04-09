@@ -7,6 +7,10 @@ from typing import Optional
 
 _LOCAL = frozenset({"localhost", "127.0.0.1", "::1"})
 
+# Public IPv4 for SSH + Postgres on current prod (droplet default in runbooks). Keep in
+# sync with docs/PRODUCTION_HOST.md; used when REC_PROD_* is unset (e.g. Finder-launched GUI).
+CANONICAL_PRODUCTION_PUBLIC_IPV4 = "165.22.13.146"
+
 
 def _strip(key: str) -> Optional[str]:
     v = (os.getenv(key) or "").strip()
@@ -24,6 +28,19 @@ def get_production_db_host() -> Optional[str]:
         if v and v.lower() not in _LOCAL:
             return v
     return None
+
+
+def resolve_production_db_host_for_gui() -> tuple[str, bool]:
+    """
+    Host for interactive tools (Analytics GUI): env first, else CANONICAL_PRODUCTION_PUBLIC_IPV4.
+
+    Returns (host, from_explicit_env). from_explicit_env is True when REC_PROD_DB_HOST or
+    REC_PROD_SSH_HOST was set and non-loopback.
+    """
+    explicit = get_production_db_host()
+    if explicit:
+        return explicit, True
+    return CANONICAL_PRODUCTION_PUBLIC_IPV4, False
 
 
 def get_legacy_script_db_host() -> str:

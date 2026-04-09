@@ -12,6 +12,11 @@ this file manually to stay aligned with the live paths:
   in backtests when reconciling trades recorded from that path.
 
 Does not handle cooldown, DB duplicate checks, or TTC window (callers supply TTC).
+
+**Backtest spans:** optional ``probability_min`` / ``probability_max`` (and ``yes_diff_*`` /
+``no_diff_*`` pairs) treat gates as **feasible** vs the strategy band: probability uses interval
+overlap with ``[min_probability, max_probability]``; min differential uses ``diff_band_hi >= floor``;
+max differential uses ``diff_band_hi <= max_differential``. Live strike rows use point values only.
 """
 
 from __future__ import annotations
@@ -115,6 +120,10 @@ def evaluate_hourly_htc_strike_entry(
     ``gate_profile="simulated_15m"`` matches ``check_simulated_15m_entry_hourly_htc``:
     probability band only (plus spike-adjusted min_probability); skips differential,
     volume, and max_ask caps. TTC window is enforced by the caller.
+
+    When the strike dict includes ``probability_min`` and ``probability_max`` (backtest rows),
+    the probability gate allows entry if those bounds overlap the configured min/max range
+    instead of requiring the point ``probability`` alone.
     """
     if gate_profile not in ("full", "simulated_15m"):
         return None, f"invalid gate_profile={gate_profile!r}"
@@ -127,29 +136,89 @@ def evaluate_hourly_htc_strike_entry(
     )
     max_probability = float(settings["max_probability"])
     min_differential = settings.get("min_differential")
-    prob = strike.get("probability")
-    if prob is None:
-        return None, "probability_missing"
-    if prob < min_probability:
-        return None, f"prob<{min_probability:.2f} (got {prob:.2f})"
-    if prob > max_probability:
-        return None, f"prob>{max_probability:.2f} (got {prob:.2f})"
+
+    def _float_opt(v: Any) -> Optional[float]:
+        if v is None:
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    p_lo = _float_opt(strike.get("probability_min"))
+    p_hi = _float_opt(strike.get("probability_max"))
+    prob_raw = strike.get("probability")
+    prob: Optional[float] = _float_opt(prob_raw) if prob_raw is not None else None
+
+    if p_lo is not None and p_hi is not None:
+        if p_lo > p_hi:
+            p_lo, p_hi = p_hi, p_lo
+        # Interval overlap with [min_probability, max_probability] (model vs audit band).
+        if p_hi < min_probability or p_lo > max_probability:
+            return None, (
+                f"prob_band[{p_lo:.2f},{p_hi:.2f}] disjoint from "
+                f"[{min_probability:.2f},{max_probability:.2f}]"
+            )
+        if prob is None:
+            prob = (p_lo + p_hi) / 2.0
+    else:
+        if prob is None:
+            return None, "probability_missing"
+        if prob < min_probability:
+            return None, f"prob<{min_probability:.2f} (got {prob:.2f})"
+        if prob > max_probability:
+            return None, f"prob>{max_probability:.2f} (got {prob:.2f})"
 
     yes_ask_dollars = strike.get("yes_ask_dollars")
     no_ask_dollars = strike.get("no_ask_dollars")
 
     if gate_profile == "full":
         if min_differential is not None:
-            diff = strike.get("yes_diff") if active_side == "yes" else strike.get("no_diff")
             floor = float(min_differential) - 0.5
-            if diff is None or diff < floor:
-                return None, f"diff<{floor:.2f} for min_diff={float(min_differential):.2f} (got {diff})"
+            if active_side == "yes":
+                d_lo = _float_opt(strike.get("yes_diff_min"))
+                d_hi = _float_opt(strike.get("yes_diff_max"))
+                diff_point = strike.get("yes_diff")
+            else:
+                d_lo = _float_opt(strike.get("no_diff_min"))
+                d_hi = _float_opt(strike.get("no_diff_max"))
+                diff_point = strike.get("no_diff")
+            if d_lo is not None and d_hi is not None:
+                if d_lo > d_hi:
+                    d_lo, d_hi = d_hi, d_lo
+                # Feasible if the band reaches at least ``floor`` (same geometry as point diff).
+                if d_hi < floor:
+                    return None, (
+                        f"diff_band_hi {d_hi:.2f}<{floor:.2f} for min_diff={float(min_differential):.2f} "
+                        f"(band {d_lo:.2f}-{d_hi:.2f})"
+                    )
+            else:
+                diff = diff_point
+                if diff is None or diff < floor:
+                    return None, f"diff<{floor:.2f} for min_diff={float(min_differential):.2f} (got {diff})"
 
         max_differential = settings.get("max_differential")
         if max_differential is not None:
-            diff = strike.get("yes_diff") if active_side == "yes" else strike.get("no_diff")
-            if diff is None or diff > float(max_differential):
-                return None, f"diff>max_differential {float(max_differential):.2f} (got {diff})"
+            md = float(max_differential)
+            if active_side == "yes":
+                d_lo = _float_opt(strike.get("yes_diff_min"))
+                d_hi = _float_opt(strike.get("yes_diff_max"))
+                diff_point = strike.get("yes_diff")
+            else:
+                d_lo = _float_opt(strike.get("no_diff_min"))
+                d_hi = _float_opt(strike.get("no_diff_max"))
+                diff_point = strike.get("no_diff")
+            if d_lo is not None and d_hi is not None:
+                if d_lo > d_hi:
+                    d_lo, d_hi = d_hi, d_lo
+                if d_hi > md:
+                    return None, (
+                        f"diff_band_hi {d_hi:.2f}>{md:.2f} (max_differential; band {d_lo:.2f}-{d_hi:.2f})"
+                    )
+            else:
+                diff = diff_point
+                if diff is None or diff > md:
+                    return None, f"diff>max_differential {md:.2f} (got {diff})"
 
         min_volume = settings.get("min_volume", 1000)
         volume = strike.get("volume", 0)
