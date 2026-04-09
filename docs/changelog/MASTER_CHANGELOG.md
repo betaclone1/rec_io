@@ -28,9 +28,9 @@ This changelog is used when pushing updates to production. Each entry is timesta
 9. `20260419_1000_backtest_1m_rename_cycle_ask_to_price_15m`
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations (from project root on server, in order above):  
+- [x] Apply migrations (from project root on server, in order above):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260409_2100_system_settings_0001`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260410_1000_system_settings_trading_halt_active`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1100_system_settings_drawdown_halt_monitor_snapshot`  
@@ -40,10 +40,10 @@ This changelog is used when pushing updates to production. Each entry is timesta
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260417_1000_backtest_1m_rename_spot_to_price_history_names`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260418_1000_backtest_1m_running_ask_15m_columns`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260419_1000_backtest_1m_rename_cycle_ask_to_price_15m`
-- [ ] Schema drift check (recommended):  
+- [x] Schema drift check (recommended):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; spot-check dashboard Bankroll tab (MTB series), system settings popover, trading halt visibility; `read_api` healthy if used.
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; spot-check dashboard Bankroll tab (MTB series), system settings popover, trading halt visibility; `read_api` healthy if used.
 
 ---
 
