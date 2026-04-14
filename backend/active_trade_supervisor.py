@@ -2900,7 +2900,7 @@ def update_active_trade_monitoring_data():
                         current_probability = 100 - current_probability
 
                 # Per-contract unrealized (Kalshi 0–1 $ space): mark from complementary ask vs entry.
-                # YES row uses no_ask as current_market_price → implied YES mark ≈ 1 - no_ask.
+                # YES row: current_market_price is the NO-side ask in $ space → implied YES mark ≈ 1 − that quote.
                 per_contract_pnl = 1.0 - float(current_market_price) - buy_price_float
                 # Total dollars: scale by contracts, subtract fees paid (sunk cost on the trade).
                 total_unrealized = per_contract_pnl * qty - fees_val
