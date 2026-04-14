@@ -87,7 +87,9 @@ $fn2$;
     PERFORM rec.ensure_tenant_rls_for_schema(r_schema.s);
   END LOOP;
 
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rec_io_user') THEN
+  -- Only a superuser may change BYPASSRLS. If migrations run as rec_io_user, apply NOBYPASSRLS once as role postgres (see migration header).
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rec_io_user')
+     AND (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
     EXECUTE 'ALTER ROLE rec_io_user NOBYPASSRLS';
   END IF;
 
