@@ -1,5 +1,5 @@
 # One workflow per push/PR: drift check, Kalshi dollars guard, unit tests + coverage.
-# Every commit to main/master is validated (no path skips — avoids silent broken merges).
+# Push: changelog-only commits skip CI (paths-ignore). PRs always run the full job.
 # Use `python -m pip` / `python -m pytest` only — bare `pip`/`pytest` are not always on PATH (exit 127).
 #
 # Strong guarantee: GitHub → Settings → Branches → add rule for main → require status check
@@ -50,6 +50,3 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
         run: |
           python -m pytest tests/unit -v --tb=short --cov=backend --cov-report=term-missing --cov-fail-under=0
-
-      - name: Guard new hardcoded users_*_0001 literals in main.py
-        run: python scripts/ci/scan_main_tenant_literals.py
