@@ -15,6 +15,7 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Frontend:** Login/register, `rec_session.js`, dashboard and mobile updates, system status version + last-updated row.
 - **Docs / CI:** Schema reference, tenant touch registry, SMTP secrets README pattern, workflow and AGENTS updates.
 - **Plans:** `db-prod-schema-alignment` (and related multi-session work).
+- **Deploy notes (2026-04-14):** Droplet snapshot `rec-io-prod-pre-update-2026-04-14`. Pull required moving aside an untracked `backend/data/secrets/README.md` on the server. **`ALTER ROLE rec_io_user NOBYPASSRLS`** was applied once as **`postgres`** so RLS could take effect (migration also skips that `ALTER` when the runner is not a superuser). Pending migrations were applied with **`PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`** (applies every missing id in sorted file order). Follow-up commits on `main` after the initial release commit: RLS migration superuser gate, `rec.tenant_pg_schema` in monitor_list sequence migrations, RLS-safe tenant subaccount seeding in `tenant_provision`.
 
 **DB migrations (required on production, strict timestamp order — runner skips already-applied ids)**
 1. `20260409_2100_system_settings_0001`
@@ -54,51 +55,17 @@ This changelog is used when pushing updates to production. Each entry is timesta
 35. `20260422_1000_system_version_control`
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations (from project root on server, in order above; safe to re-run — skips applied):  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260409_2100_system_settings_0001`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260409_2200_system_master_users_strategy_list`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260409_2300_system_strategy_list_rename_to_default`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260410_1000_system_settings_trading_halt_active`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260410_1000_trades_monitor_confirmed_default_null`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260410_1015_users_master_users_to_system`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260410_1020_system_master_users_registration_columns`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260410_1030_system_master_users_user_id_unique`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260410_2100_system_master_users_exchange_credentials`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1100_system_settings_drawdown_halt_monitor_snapshot`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1100_transfers_paper_0001`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1200_trades_close_method_auto_to_auto_probability`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1300_rename_users_schema_to_users_0001`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1500_rec_tenant_rls_session_guc`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1605_system_master_users_password_hash`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1700_tenant_monitor_list_id_serial`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260412_1000_monitor_test_filter_trade_history_include_test`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260412_1015_monitor_list_seq_slot_prefix_resync`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260412_1500_monitor_list_seq_ignore_misplaced_99xxx`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260412_1630_active_trades_pool_status_default`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260412_2000_trades_tenant_schemas_rec_io_db_notify`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260412_2145_tenant_balance_trade_timestamps`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260413_1000_backfill_paper_trade_for_test_filter_monitors`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260414_1000_backtest_kalshi_candles_1m_kxbtc15m_26mar051345_45`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260415_1200_backtest_rename_kalshi_candles_tables_to_backtest_1m`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260416_1000_backtest_1m_add_spot_price_columns`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260417_1000_backtest_1m_rename_spot_to_price_history_names`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260418_1000_backtest_1m_running_ask_15m_columns`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260419_1000_backtest_1m_rename_cycle_ask_to_price_15m`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260420_1000_system_master_users_registration_user_no`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260420_1010_system_master_users_widen_first_last_name`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260420_1200_system_master_users_email_verification`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260420_1430_backtest_kalshi_historical_trades_api`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260421_1400_master_users_kalshi_drop_user_info_tables`  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260422_1000_system_version_control`
-- [ ] Schema drift check (recommended):  
+- [x] Apply migrations (from project root; applies every pending id in sorted order — same ids as numbered list above; or run each `run_migration.py up <id>` individually):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
+- [x] Schema drift check (recommended):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Regenerate supervisor config:  
+- [x] Regenerate supervisor config:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/config/generate_unified_supervisor_config.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; spot-check login, dashboard, system version display.
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.0`
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; spot-check login, dashboard, system version display.
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.0`
 
 ---
 
