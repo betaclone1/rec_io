@@ -19,6 +19,10 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Unit tests import backend modules that resolve ports via default_pool_user_number();
+    # a clean Actions runner has no REC_* tenant vars unless we set them here.
+    env:
+      REC_USER_NO: "0001"
     steps:
       - uses: actions/checkout@v4
 
