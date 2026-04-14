@@ -23,6 +23,8 @@ BEGIN
     WHERE nspname ~ '^users_[0-9]{4}$'
   LOOP
     sch := r.schema_name;
+    -- RLS on tenant tables hides rows unless session GUC matches this schema.
+    PERFORM set_config('rec.tenant_pg_schema', sch, true);
     slot := substring(sch FROM 'users_(.+)');
     tbl := 'monitor_list_' || slot;
     fq_table := sch || '.' || tbl;

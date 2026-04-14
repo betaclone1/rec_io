@@ -23,6 +23,7 @@ BEGIN
     WHERE nspname ~ '^users_[0-9]{4}$'
   LOOP
     sch := r.schema_name;
+    PERFORM set_config('rec.tenant_pg_schema', sch, true);
     slot := substring(sch FROM 'users_(.+)');
     tbl := 'monitor_list_' || slot;
     fq_seq := sch || '.' || tbl || '_id_seq';
