@@ -183,6 +183,60 @@ def _minimal_subaccount_seed(cur, target_schema: str, dst_tbl: str) -> None:
     )
 
 
+def _copy_subaccount_rows_from_template(
+    cur,
+    *,
+    template_schema: str,
+    src_tbl: str,
+    target_schema: str,
+    dst_tbl: str,
+    is_paper: bool,
+) -> None:
+    """Copy subaccount definitions from template without INSERT...SELECT (RLS uses one GUC per schema)."""
+    cur.execute(
+        "SELECT set_config('rec.tenant_pg_schema', %s, false)",
+        (template_schema,),
+    )
+    cur.execute(
+        psql.SQL(
+            """
+            SELECT subaccount, base_value, target_pnl__pct, transfer_amt, automatic_transfers
+            FROM {s_s}.{s_tbl}
+            """
+        ).format(
+            s_s=psql.Identifier(template_schema),
+            s_tbl=psql.Identifier(src_tbl),
+        )
+    )
+    rows = cur.fetchall() or []
+    cur.execute(
+        "SELECT set_config('rec.tenant_pg_schema', %s, false)",
+        (target_schema,),
+    )
+    for subaccount, base_value, target_pnl__pct, transfer_amt, automatic_transfers in rows:
+        auto = False if is_paper else bool(automatic_transfers or False)
+        cur.execute(
+            psql.SQL(
+                """
+                INSERT INTO {t_s}.{t_tbl} (
+                    subaccount, balance, base_value, realized_pnl, realized_pnl_pct,
+                    target_pnl__pct, transfer_amt, automatic_transfers
+                ) VALUES (%s, 0, %s, NULL, NULL, %s, %s, %s)
+                """
+            ).format(
+                t_s=psql.Identifier(target_schema),
+                t_tbl=psql.Identifier(dst_tbl),
+            ),
+            (
+                subaccount,
+                base_value,
+                target_pnl__pct,
+                transfer_amt,
+                auto,
+            ),
+        )
+
+
 def _seed_subaccounts_from_template(
     cur,
     *,
@@ -202,6 +256,10 @@ def _seed_subaccounts_from_template(
         (f"subaccounts_paper_{target_no}", f"subaccounts_paper_{source_no}", True),
     )
     for dst_tbl, src_tbl, is_paper in specs:
+        cur.execute(
+            "SELECT set_config('rec.tenant_pg_schema', %s, false)",
+            (target_schema,),
+        )
         cur.execute(
             """
             SELECT EXISTS (
@@ -233,6 +291,10 @@ def _seed_subaccounts_from_template(
             _LOG.info("Minimal subaccount seed for %s.%s (no template table)", target_schema, dst_tbl)
             continue
         cur.execute(
+            "SELECT set_config('rec.tenant_pg_schema', %s, false)",
+            (template_schema,),
+        )
+        cur.execute(
             psql.SQL("SELECT COUNT(*) FROM {}.{}").format(
                 psql.Identifier(template_schema), psql.Identifier(src_tbl)
             )
@@ -243,30 +305,13 @@ def _seed_subaccounts_from_template(
                 _minimal_subaccount_seed(cur, target_schema, dst_tbl)
                 _LOG.info("Minimal subaccount seed for %s.%s (template empty)", target_schema, dst_tbl)
             elif is_paper:
-                cur.execute(
-                    psql.SQL(
-                        """
-                        INSERT INTO {t_s}.{t_tbl} (
-                            subaccount, balance, base_value, realized_pnl, realized_pnl_pct,
-                            target_pnl__pct, transfer_amt, automatic_transfers
-                        )
-                        SELECT
-                            s.subaccount,
-                            0,
-                            s.base_value,
-                            NULL,
-                            NULL,
-                            s.target_pnl__pct,
-                            s.transfer_amt,
-                            FALSE
-                        FROM {s_s}.{s_tbl} AS s
-                        """
-                    ).format(
-                        t_s=psql.Identifier(target_schema),
-                        t_tbl=psql.Identifier(dst_tbl),
-                        s_s=psql.Identifier(template_schema),
-                        s_tbl=psql.Identifier(src_tbl),
-                    )
+                _copy_subaccount_rows_from_template(
+                    cur,
+                    template_schema=template_schema,
+                    src_tbl=src_tbl,
+                    target_schema=target_schema,
+                    dst_tbl=dst_tbl,
+                    is_paper=True,
                 )
                 _LOG.info(
                     "Seeded %s.%s from %s.%s",
@@ -276,30 +321,13 @@ def _seed_subaccounts_from_template(
                     src_tbl,
                 )
             else:
-                cur.execute(
-                    psql.SQL(
-                        """
-                        INSERT INTO {t_s}.{t_tbl} (
-                            subaccount, balance, base_value, realized_pnl, realized_pnl_pct,
-                            target_pnl__pct, transfer_amt, automatic_transfers
-                        )
-                        SELECT
-                            s.subaccount,
-                            0,
-                            s.base_value,
-                            NULL,
-                            NULL,
-                            s.target_pnl__pct,
-                            s.transfer_amt,
-                            COALESCE(s.automatic_transfers, FALSE)
-                        FROM {s_s}.{s_tbl} AS s
-                        """
-                    ).format(
-                        t_s=psql.Identifier(target_schema),
-                        t_tbl=psql.Identifier(dst_tbl),
-                        s_s=psql.Identifier(template_schema),
-                        s_tbl=psql.Identifier(src_tbl),
-                    )
+                _copy_subaccount_rows_from_template(
+                    cur,
+                    template_schema=template_schema,
+                    src_tbl=src_tbl,
+                    target_schema=target_schema,
+                    dst_tbl=dst_tbl,
+                    is_paper=False,
                 )
                 _LOG.info(
                     "Seeded %s.%s from %s.%s",
@@ -308,6 +336,10 @@ def _seed_subaccounts_from_template(
                     template_schema,
                     src_tbl,
                 )
+        cur.execute(
+            "SELECT set_config('rec.tenant_pg_schema', %s, false)",
+            (target_schema,),
+        )
         _minimal_subaccount_seed(cur, target_schema, dst_tbl)
 
 
@@ -315,6 +347,10 @@ def _align_paper_primary_with_account_balance(
     cur, target_schema: str, target_no: str
 ) -> None:
     """If paper history exists but PRIMARY was just seeded at 0, match PRIMARY to latest portfolio."""
+    cur.execute(
+        "SELECT set_config('rec.tenant_pg_schema', %s, false)",
+        (target_schema,),
+    )
     ab_tbl = f"account_balance_paper_{target_no}"
     sa_tbl = f"subaccounts_paper_{target_no}"
     cur.execute(
