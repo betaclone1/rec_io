@@ -38,6 +38,8 @@ uvicorn==0.34.3
 websocket-client==1.8.0
 websockets==15.0.1
 yliveticker==0.3.0
+# yfinance pulls a modern protobuf; yliveticker ships stale yaticker_pb2.py (needs protobuf 3.20 API).
+protobuf>=3.20.3,<4.21
 yfinance==0.2.66
 Flask==3.1.1
 schedule==1.2.1

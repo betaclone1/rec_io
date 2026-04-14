@@ -47,6 +47,9 @@ from backend.core.strike_pipeline_health import (
     upsert_strike_pipeline_health,
     floor_strike_vs_spot_check,
 )
+from backend.core.kalshi_event_market_readiness import (
+    markets_all_have_usable_strike_inputs as _markets_all_have_usable_strike_inputs,
+)
 from backend.symbol_price_watchdog import get_current_price_from_db
 from backend.core.config.database import (
     SystemThreadedConnectionPool,
@@ -458,40 +461,6 @@ def ensure_ws_hourly_table(conn) -> None:
 
 
 # --- REST (rollover only) ---
-
-
-def _nonempty_str(v: object) -> bool:
-    if v is None:
-        return False
-    s = str(v).strip()
-    return bool(s)
-
-
-def _markets_all_have_usable_strike_inputs(event_data: dict) -> bool:
-    """
-    Rollover readiness gate.
-
-    Hard requirement for a usable strike table:
-      - explicit `floor_strike` for every market row
-      - `yes_ask_dollars`
-      - `yes_bid_dollars`
-
-    If strike metadata is temporarily missing for a symbol on the new event, that symbol
-    stays pending until it has full data.
-    """
-    markets = event_data.get("markets") or []
-    if not markets:
-        return False
-    for m in markets:
-        if not isinstance(m, dict):
-            return False
-        if m.get("floor_strike") is None:
-            return False
-        if not _nonempty_str(m.get("yes_ask_dollars")):
-            return False
-        if not _nonempty_str(m.get("yes_bid_dollars")):
-            return False
-    return True
 
 
 def _refetch_event_until_markets_usable(
