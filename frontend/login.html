@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <script src="/js/rec_session.js"></script>
+
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -98,6 +100,16 @@
     }
     .error-message { color: #e74c3c; }
     .success-message { color: #27ae60; }
+    .nav-links {
+      margin-top: 24px;
+      text-align: center;
+      font-size: 14px;
+    }
+    .nav-links a {
+      color: rgba(255, 255, 255, 0.95);
+      text-decoration: underline;
+    }
+    .nav-links a:hover { color: #fff; }
   </style>
 </head>
 <body>
@@ -122,6 +134,9 @@
       <div class="error-message" id="errorMessage"></div>
       <div class="success-message" id="successMessage"></div>
     </form>
+    <div class="nav-links">
+      <a href="/register">Create a New Account</a>
+    </div>
   </div>
 
   <script>
@@ -151,10 +166,20 @@
       .then(function(d) {
         if (d.authenticated) {
           authCheckDone = true;
+          if (d.userNo) { localStorage.setItem('rec_user_no', String(d.userNo)); }
+          if (typeof recSyncAuthCookie === 'function') recSyncAuthCookie();
           window.location.href = getRedirectUrl(token, deviceId);
-        } else { localStorage.removeItem('rec_auth_token'); localStorage.removeItem('rec_device_id'); }
+        } else {
+          localStorage.removeItem('rec_auth_token');
+          localStorage.removeItem('rec_device_id');
+          if (typeof recClearAuthCookie === 'function') recClearAuthCookie();
+        }
       })
-      .catch(function() { localStorage.removeItem('rec_auth_token'); localStorage.removeItem('rec_device_id'); })
+      .catch(function() {
+        localStorage.removeItem('rec_auth_token');
+        localStorage.removeItem('rec_device_id');
+        if (typeof recClearAuthCookie === 'function') recClearAuthCookie();
+      })
       .finally(function() { authCheckInProgress = false; });
     }
     if (window.location.pathname === '/login') setTimeout(checkAuthStatus, 500);
@@ -179,9 +204,27 @@
       })
       .then(function(r) { return r.json(); })
       .then(function(d) {
+        if (d.success && d.pending_email_verification) {
+          var uid = d.user_id || '';
+          var q = uid ? ('user_id=' + encodeURIComponent(uid)) : '';
+          if (d.email) q += (q ? '&' : '') + 'email=' + encodeURIComponent(d.email);
+          window.location.href = '/register/verify' + (q ? ('?' + q) : '');
+          return;
+        }
+        if (d.success && d.application_pending) {
+          var qs = [];
+          if (d.first_name) qs.push('first_name=' + encodeURIComponent(d.first_name));
+          if (d.email) qs.push('email=' + encodeURIComponent(d.email));
+          if (d.submitted_on) qs.push('submitted_on=' + encodeURIComponent(d.submitted_on));
+          window.location.href = '/register/application-submitted' + (qs.length ? ('?' + qs.join('&')) : '');
+          return;
+        }
         if (d.success) {
+          localStorage.setItem('rec_remember_device', rememberDevice ? '1' : '0');
           localStorage.setItem('rec_auth_token', d.token);
           localStorage.setItem('rec_device_id', d.deviceId);
+          if (d.userNo) { localStorage.setItem('rec_user_no', String(d.userNo)); }
+          if (typeof recSyncAuthCookie === 'function') recSyncAuthCookie(rememberDevice);
           okMsg.textContent = 'Authentication successful! Redirecting...';
           okMsg.style.display = 'block';
           setTimeout(function() { window.location.href = getRedirectUrl(d.token, d.deviceId); }, 1000);

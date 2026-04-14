@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from backend.core.config.config_manager import config
 from backend.core.time_eastern import now_est, today_est
 from backend.core.config.database import get_postgresql_connection
+from backend.core.strike_pipeline_health import floor_strike_vs_spot_check
 from backend.util.paths import get_data_dir, get_kalshi_data_dir
 
 
@@ -240,11 +241,63 @@ def final_quarter_ask_tracking_fields(
 class LookupProbabilityCalculator:
     """Probability calculator using the lookup table instead of live interpolation."""
     
-    def __init__(self, symbol: str):
+    def __init__(self, symbol: str, *, database_conn=None):
         self.symbol = symbol.lower()
         self.fine_price = uses_high_precision_price(symbol)
-        self.lookup_table_name = self._find_latest_lookup_table()
-        self.max_buffer = self._get_max_buffer_for_symbol()
+        # Backtests often run months after a trade; default "latest by name" can drift vs prod at
+        # trade time. Set REC_PROBABILITY_LOOKUP_TABLE=probability_lookup_btc_master_YYYYMMDD (etc.)
+        # to pin analytics.probability_lookup_* for reproducible tick/minute tables.
+        _override = (os.environ.get("REC_PROBABILITY_LOOKUP_TABLE") or "").strip()
+        if _override:
+            self.lookup_table_name = _override
+            logger.debug("Using pinned lookup table (REC_PROBABILITY_LOOKUP_TABLE): %s", _override)
+        elif database_conn is not None:
+            self.lookup_table_name = self._find_latest_lookup_table_using_conn(database_conn)
+        else:
+            self.lookup_table_name = self._find_latest_lookup_table()
+        if database_conn is not None:
+            self.max_buffer = self._get_max_buffer_for_symbol_using_conn(database_conn)
+        else:
+            self.max_buffer = self._get_max_buffer_for_symbol()
+
+    def _find_latest_lookup_table_using_conn(self, conn) -> str:
+        """Resolve latest master using an existing connection (e.g. prod SSH tunnel). Caller owns ``conn``."""
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'analytics'
+                AND table_name LIKE %s
+                ORDER BY table_name DESC
+                """,
+                (f"probability_lookup_{self.symbol}_master_%",),
+            )
+            results = cursor.fetchall()
+            if not results:
+                raise ValueError(f"No lookup tables found for symbol {self.symbol.upper()}")
+            latest_table = results[0][0]
+            logger.debug("Using lookup table: %s", latest_table)
+            return latest_table
+        finally:
+            cursor.close()
+
+    def _get_max_buffer_for_symbol_using_conn(self, conn) -> float:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                f"""
+                SELECT MAX(buffer_points) as max_buffer
+                FROM analytics.{self.lookup_table_name}
+                """
+            )
+            result = cursor.fetchone()
+            if not result or not result[0]:
+                raise ValueError(f"No buffer data found in lookup table {self.lookup_table_name}")
+            return float(result[0])
+        finally:
+            cursor.close()
     
     def _find_latest_lookup_table(self) -> str:
         """Find the most recent master lookup table for this symbol."""
@@ -570,6 +623,7 @@ class StrikeTableGenerator:
         unified_15m: bool = False,
         data_exchange: str = "kalshi",
         data_broker: str | None = None,
+        database_conn=None,
     ):
         self.unified_15m = unified_15m
         _ex = data_broker if data_broker is not None else data_exchange
@@ -581,7 +635,7 @@ class StrikeTableGenerator:
         if self.interval == "15m" and self.symbol not in ("btc", "eth", "sol", "xrp"):
             raise ValueError("15m interval only supported for BTC, ETH, SOL, XRP")
         logger.debug("Initializing strike table generator for %s (%s)", symbol.upper(), self.interval)
-        self.calculator = LookupProbabilityCalculator(symbol)
+        self.calculator = LookupProbabilityCalculator(symbol, database_conn=database_conn)
         logger.debug("Strike table generator initialized for %s (%s)", symbol.upper(), self.interval)
 
     def _strike_table_name(self) -> str:
@@ -1280,7 +1334,20 @@ class StrikeTableGenerator:
                 max_strikes = min(21, len(filtered_strikes))
                 strikes = filtered_strikes[:max_strikes]
                 logger.debug("Processing %s strikes from market data", len(strikes))
-            
+
+            anchor = strikes[0] if strikes else None
+            if anchor is not None and current_price:
+                ok_anchor, anchor_reason, _ = floor_strike_vs_spot_check(anchor, float(current_price))
+                if not ok_anchor:
+                    logger.error(
+                        "[%s] anchor strike vs spot failed (%s): anchor=%s spot=%s",
+                        self.symbol.upper(),
+                        anchor_reason,
+                        anchor,
+                        current_price,
+                    )
+                    return (False, None, 0)
+
             # Use momentum percentile directly as bucket
             # momentum_percentile is already in percentile format like -47.0, -51.0, etc.
             momentum_bucket = round(momentum_percentile)

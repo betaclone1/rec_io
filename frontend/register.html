@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>rec.io - Create account</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap" rel="stylesheet">
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: 'IBM Plex Sans', sans-serif;
+      background: url('/images/splash_page_bg.jpg') center/cover no-repeat;
+      color: white;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      touch-action: auto;
+    }
+    .register-container {
+      width: 360px;
+      margin-right: 200px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    @media (max-width: 768px) {
+      body { justify-content: center; }
+      .register-container { margin-right: 0; width: 90%; max-width: 400px; }
+    }
+    .register-logo {
+      width: 150px;
+      height: auto;
+      margin-bottom: 28px;
+    }
+    .register-form {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      position: relative;
+      -webkit-touch-callout: default;
+      touch-action: auto;
+      z-index: 5;
+    }
+    .form-label {
+      font-size: 14px;
+      font-weight: 500;
+      color: white;
+    }
+    .form-hint {
+      font-size: 12px;
+      line-height: 1.35;
+      color: rgba(255, 255, 255, 0.82);
+    }
+    .form-input {
+      padding: 12px 16px;
+      border: none;
+      border-radius: 8px;
+      background: #e0e0e0;
+      color: #333;
+      font-size: 16px;
+      font-family: inherit;
+      box-sizing: border-box;
+    }
+    .form-input:focus {
+      outline: none;
+      background: #f0f0f0;
+    }
+    .form-row {
+      display: flex;
+      flex-direction: row;
+      gap: 10px;
+      width: 100%;
+      align-items: flex-start;
+    }
+    .form-row .form-group {
+      flex: 1;
+      min-width: 0;
+    }
+    @media (max-width: 380px) {
+      .form-row.form-name-row { flex-direction: column; }
+    }
+    .field-error {
+      font-size: 12px;
+      color: #ffb4b4;
+      min-height: 16px;
+      display: none;
+    }
+    .field-error.visible { display: block; }
+    .register-button {
+      background: #2c3e50;
+      color: white;
+      border: none;
+      padding: 14px 20px;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 12px;
+      width: 100%;
+    }
+    .register-button:hover { background: #34495e; }
+    .register-button:disabled { background: #666; cursor: not-allowed; }
+    .error-message, .success-message {
+      font-size: 13px;
+      text-align: center;
+      margin-top: 8px;
+      display: none;
+      line-height: 1.4;
+    }
+    .error-message { color: #e74c3c; }
+    .error-message a { color: rgba(255, 255, 255, 0.95); text-decoration: underline; }
+    .error-message a:hover { color: #fff; }
+    .success-message { color: #27ae60; }
+    .nav-links {
+      margin-top: 20px;
+      text-align: center;
+      font-size: 14px;
+    }
+    .nav-links a {
+      color: rgba(255, 255, 255, 0.95);
+      text-decoration: underline;
+    }
+    .nav-links a:hover { color: #fff; }
+  </style>
+</head>
+<body>
+  <div class="register-container">
+    <img src="/images/rec_logo_trns.png" alt="REC.IO" class="register-logo">
+    <form class="register-form" id="registerForm" novalidate>
+      <div class="form-group">
+        <label for="user_id" class="form-label">User ID</label>
+        <input type="text" id="user_id" name="user_id" class="form-input" required maxlength="50" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <span class="field-error" id="err-user_id" aria-live="polite"></span>
+      </div>
+      <div class="form-group">
+        <label for="password" class="form-label">Password</label>
+        <input type="password" id="password" name="password" class="form-input" required maxlength="128" autocomplete="new-password">
+        <span class="form-hint">At least 7 characters, with letters, numbers, and one special character (for example ! @ # $ %).</span>
+        <span class="field-error" id="err-password" aria-live="polite"></span>
+      </div>
+      <div class="form-group">
+        <label for="password_confirm" class="form-label">Confirm password</label>
+        <input type="password" id="password_confirm" name="password_confirm" class="form-input" required maxlength="128" autocomplete="new-password">
+        <span class="field-error" id="err-password_confirm" aria-live="polite"></span>
+      </div>
+      <div class="form-row form-name-row">
+        <div class="form-group">
+          <label for="first_name" class="form-label">First name</label>
+          <input type="text" id="first_name" name="first_name" class="form-input" required maxlength="120" autocomplete="given-name">
+          <span class="field-error" id="err-first_name" aria-live="polite"></span>
+        </div>
+        <div class="form-group">
+          <label for="last_name" class="form-label">Last name</label>
+          <input type="text" id="last_name" name="last_name" class="form-input" required maxlength="120" autocomplete="family-name">
+          <span class="field-error" id="err-last_name" aria-live="polite"></span>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="email" class="form-label">Email</label>
+        <input type="email" id="email" name="email" class="form-input" required maxlength="255" autocomplete="email">
+        <span class="field-error" id="err-email" aria-live="polite"></span>
+      </div>
+      <div class="form-group">
+        <label for="phone" class="form-label">Phone</label>
+        <input type="tel" id="phone" name="phone" class="form-input" required maxlength="14" inputmode="numeric" autocomplete="tel" placeholder="(555) 555-5555">
+        <span class="field-error" id="err-phone" aria-live="polite"></span>
+      </div>
+      <button type="submit" class="register-button" id="registerButton">
+        <span id="registerButtonText">Submit registration</span>
+      </button>
+      <div class="error-message" id="errorMessage"></div>
+      <div class="success-message" id="successMessage"></div>
+    </form>
+    <div class="nav-links">
+      <a href="/login">Back to sign in</a>
+    </div>
+  </div>
+
+  <script>
+    var FIELD_KEYS = ['user_id', 'password', 'password_confirm', 'first_name', 'last_name', 'email', 'phone'];
+    // Simplified local@domain.tld (not full RFC). Verification email will confirm the address.
+    var REGISTER_EMAIL_SYNTAX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    var PASSWORD_SPECIAL = /[!@#$%^&*()+\-=[\]{};:'",.<>/?\\|`~]/;
+
+    function validatePassword(pw) {
+      if (!pw) return 'Required.';
+      if (/\s/.test(pw)) return 'Must not contain spaces.';
+      if (pw.length < 7) return 'Must be at least 7 characters.';
+      if (!/[a-zA-Z]/.test(pw)) return 'Must include at least one letter.';
+      if (!/\d/.test(pw)) return 'Must include at least one number.';
+      if (!PASSWORD_SPECIAL.test(pw)) return 'Must include at least one special character (!@#$%^&* etc.).';
+      return '';
+    }
+
+    function phoneDigits(s) {
+      return String(s || '').replace(/\D/g, '').slice(0, 10);
+    }
+    function formatPhoneDisplay(d) {
+      if (d.length === 0) return '';
+      if (d.length <= 3) return '(' + d;
+      if (d.length <= 6) return '(' + d.slice(0, 3) + ') ' + d.slice(3);
+      return '(' + d.slice(0, 3) + ') ' + d.slice(3, 6) + '-' + d.slice(6);
+    }
+
+    document.getElementById('phone').addEventListener('input', function() {
+      var el = this;
+      var d = phoneDigits(el.value);
+      var fmt = formatPhoneDisplay(d);
+      if (fmt !== el.value) el.value = fmt;
+    });
+
+    function clearFieldErrors() {
+      FIELD_KEYS.forEach(function(k) {
+        var n = document.getElementById('err-' + k);
+        if (n) { n.textContent = ''; n.classList.remove('visible'); }
+      });
+    }
+
+    function showFieldErrors(fe) {
+      clearFieldErrors();
+      if (!fe || typeof fe !== 'object') return;
+      FIELD_KEYS.forEach(function(k) {
+        if (fe[k]) {
+          var n = document.getElementById('err-' + k);
+          if (n) { n.textContent = fe[k]; n.classList.add('visible'); }
+        }
+      });
+    }
+
+    function summaryFromFieldErrors(fe) {
+      if (!fe || typeof fe !== 'object') return '';
+      var parts = [];
+      FIELD_KEYS.forEach(function(k) {
+        if (fe[k]) parts.push(k.replace(/_/g, ' ') + ': ' + fe[k]);
+      });
+      return parts.join('\n');
+    }
+
+    function validateClient() {
+      var userId = document.getElementById('user_id').value.trim();
+      var firstName = document.getElementById('first_name').value.trim();
+      var lastName = document.getElementById('last_name').value.trim();
+      var email = document.getElementById('email').value.trim();
+      var phoneRaw = document.getElementById('phone').value;
+      var pd = phoneDigits(phoneRaw);
+      var fe = {};
+      if (!userId) fe.user_id = 'Required.';
+      else if (userId.length > 50) fe.user_id = 'Must be at most 50 characters.';
+      else if (/\s/.test(userId)) fe.user_id = 'Must not contain spaces.';
+      if (!firstName) fe.first_name = 'Required.';
+      if (!lastName) fe.last_name = 'Required.';
+      if (firstName && lastName && (firstName + ' ' + lastName).length > 255) {
+        fe.last_name = 'Combined first and last name must be at most 255 characters.';
+      }
+      if (!email) fe.email = 'Required.';
+      else if (email.length > 255) fe.email = 'Must be at most 255 characters.';
+      else if (!REGISTER_EMAIL_SYNTAX.test(email)) fe.email = 'Enter a valid email address.';
+      if (pd.length === 0) fe.phone = 'Required.';
+      else if (pd.length !== 10) fe.phone = 'Enter a 10-digit US phone number.';
+      var pw = document.getElementById('password').value;
+      var pwErr = validatePassword(pw);
+      if (pwErr) fe.password = pwErr;
+      var pw2 = document.getElementById('password_confirm').value;
+      if (pw !== pw2) fe.password_confirm = 'Must match password.';
+      return fe;
+    }
+
+    document.getElementById('registerForm').onsubmit = function(e) {
+      e.preventDefault();
+      var userId = document.getElementById('user_id').value.trim();
+      var firstName = document.getElementById('first_name').value.trim();
+      var lastName = document.getElementById('last_name').value.trim();
+      var email = document.getElementById('email').value.trim();
+      var phoneFmt = document.getElementById('phone').value.trim();
+      var passwordVal = document.getElementById('password').value;
+      var passwordConfirmVal = document.getElementById('password_confirm').value;
+      var btn = document.getElementById('registerButton');
+      var btnText = document.getElementById('registerButtonText');
+      var errMsg = document.getElementById('errorMessage');
+      var okMsg = document.getElementById('successMessage');
+      errMsg.style.display = 'none';
+      okMsg.style.display = 'none';
+
+      var clientFe = validateClient();
+      if (Object.keys(clientFe).length) {
+        showFieldErrors(clientFe);
+        errMsg.textContent = 'Please correct the fields below.';
+        errMsg.style.display = 'block';
+        return false;
+      }
+      clearFieldErrors();
+
+      btn.disabled = true;
+      btnText.textContent = 'Submitting...';
+      fetch(window.location.origin + '/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: userId,
+          password: passwordVal,
+          password_confirm: passwordConfirmVal,
+          first_name: firstName,
+          last_name: lastName,
+          email: email,
+          phone: phoneFmt
+        })
+      })
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.success) {
+          var q = 'user_id=' + encodeURIComponent(d.user_id || userId);
+          if (email) q += '&email=' + encodeURIComponent(email);
+          window.location.href = '/register/verify?' + q;
+          return;
+        } else {
+          if (d.field_errors && typeof d.field_errors === 'object') {
+            showFieldErrors(d.field_errors);
+          }
+          errMsg.style.display = 'block';
+          if (d.sign_in_prompt) {
+            while (errMsg.firstChild) errMsg.removeChild(errMsg.firstChild);
+            errMsg.appendChild(document.createTextNode((d.error || 'An account with this email already exists.') + ' '));
+            var signInA = document.createElement('a');
+            signInA.href = '/login';
+            signInA.textContent = 'Sign in';
+            errMsg.appendChild(signInA);
+            errMsg.appendChild(document.createTextNode('.'));
+          } else {
+            errMsg.textContent = d.error || (d.field_errors && summaryFromFieldErrors(d.field_errors)) || 'Registration failed.';
+          }
+          btn.disabled = false;
+          btnText.textContent = 'Submit registration';
+        }
+      })
+      .catch(function() {
+        errMsg.textContent = 'Network error. Please try again.';
+        errMsg.style.display = 'block';
+        btn.disabled = false;
+        btnText.textContent = 'Submit registration';
+      });
+      return false;
+    };
+  </script>
+</body>
+</html>

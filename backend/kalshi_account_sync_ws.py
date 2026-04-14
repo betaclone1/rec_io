@@ -55,6 +55,7 @@ import asyncio
 import aiohttp
 import websockets
 import psycopg2
+from psycopg2 import sql as psql
 from psycopg2.extras import RealDictCursor
 import schedule
 from decimal import Decimal
@@ -300,6 +301,12 @@ def get_postgresql_connection():
     """Get a connection to the PostgreSQL database (uses centralized config)."""
     from backend.core.config.database import get_postgresql_connection as _get_pg
     return _get_pg()
+
+
+def _kas_process_user_no() -> str:
+    from backend.core.tenant_context import process_tenant_context
+
+    return process_tenant_context().user_no
 
 
 def _fp_to_numeric(v):
@@ -922,10 +929,17 @@ def sync_balance():
                     current_timestamp = now_est().isoformat()
 
                     from backend.balance_snapshot import apply_balance_snapshot
+                    from backend.core.tenant_context import process_tenant_context
+                    from backend.trading_mode import (
+                        account_balance_table_for_user,
+                        sql_ident_qualified_table,
+                        subaccounts_table_for_user,
+                    )
 
                     portfolio_value = int(total_portfolio_value)
                     positions_value = int(portfolio_value_raw)
                     total_exposure = positions_value
+                    _slot = process_tenant_context().user_no
 
                     inserted, _ = apply_balance_snapshot(
                         cursor,
@@ -934,8 +948,10 @@ def sync_balance():
                         positions_value=positions_value,
                         total_exposure=total_exposure,
                         portfolio_value=portfolio_value,
-                        account_balance_table="users.account_balance_0001",
-                        subaccounts_table="users.subaccounts_0001",
+                        account_balance_table=account_balance_table_for_user(
+                            _slot, force_live=True
+                        ),
+                        subaccounts_table=subaccounts_table_for_user(_slot, force_live=True),
                         current_timestamp=current_timestamp,
                         throttle=True,
                         notify_db_name="account_balance",
@@ -944,13 +960,35 @@ def sync_balance():
                     pg_conn.commit()
                     if inserted:
                         logger.debug(
-                            "Balance written to users.account_balance_0001 (portfolio=%s)",
+                            "Balance written to %s (portfolio=%s)",
+                            account_balance_table_for_user(_slot, force_live=True),
                             portfolio_value,
                         )
-                    # Sync Kalshi v1 account/history into users.account_history_0001 (simple UPDATE-then-INSERT, no ON CONFLICT)
-                    cursor.execute("SELECT kalshi_user_id FROM users.user_info_0001 WHERE user_no = '0001'")
-                    kalshi_user_row = cursor.fetchone()
-                    kalshi_user_id_for_history = (kalshi_user_row[0] or "").strip() if kalshi_user_row and kalshi_user_row[0] else None
+                    # Sync Kalshi v1 account/history (Kalshi user id from system.master_users)
+                    kalshi_user_id_for_history = None
+                    try:
+                        from backend.core.config.database import get_system_postgresql_connection
+
+                        sconn = get_system_postgresql_connection()
+                        if sconn:
+                            try:
+                                with sconn.cursor() as sc:
+                                    sc.execute(
+                                        """
+                                        SELECT kalshi_user_id FROM system.master_users
+                                        WHERE LPAD(TRIM(user_no::text), 4, '0') = %s
+                                        LIMIT 1
+                                        """,
+                                        (_kas_process_user_no(),),
+                                    )
+                                    kr = sc.fetchone()
+                                kalshi_user_id_for_history = (
+                                    (kr[0] or "").strip() if kr and kr[0] else None
+                                )
+                            finally:
+                                sconn.close()
+                    except Exception:
+                        kalshi_user_id_for_history = None
                 if pg_conn and kalshi_user_id_for_history:
                     try:
                         n_upserted, sync_err, new_deposit_amounts, new_withdrawal_amounts = sync_account_history(pg_conn, kalshi_user_id_for_history)
@@ -959,30 +997,74 @@ def sync_balance():
                         else:
                             logger.debug("Account history: %s entries synced to users.account_history_0001", n_upserted)
                         if new_deposit_amounts:
+                            _sa_id = sql_ident_qualified_table(
+                                subaccounts_table_for_user(_slot, force_live=True)
+                            )
+                            _ab_id = sql_ident_qualified_table(
+                                account_balance_table_for_user(_slot, force_live=True)
+                            )
                             with pg_conn.cursor() as cur:
                                 for amount_net in new_deposit_amounts:
-                                    cur.execute("UPDATE users.subaccounts_0001 SET balance = balance + %s WHERE subaccount = 'Cash Transfer'", (amount_net,))
-                                cur.execute("SELECT portfolio FROM users.account_balance_0001 ORDER BY id DESC LIMIT 1")
+                                    cur.execute(
+                                        psql.SQL(
+                                            "UPDATE {} SET balance = balance + %s WHERE subaccount = 'Cash Transfer'"
+                                        ).format(_sa_id),
+                                        (amount_net,),
+                                    )
+                                cur.execute(
+                                    psql.SQL("SELECT portfolio FROM {} ORDER BY id DESC LIMIT 1").format(
+                                        _ab_id
+                                    )
+                                )
                                 row = cur.fetchone()
                                 if row and row[0] is not None:
-                                    cur.execute("UPDATE users.subaccounts_0001 SET balance = %s WHERE subaccount = 'PRIMARY'", (int(row[0]),))
+                                    cur.execute(
+                                        psql.SQL(
+                                            "UPDATE {} SET balance = %s WHERE subaccount = 'PRIMARY'"
+                                        ).format(_sa_id),
+                                        (int(row[0]),),
+                                    )
                             pg_conn.commit()
                             notify_frontend_db_change("subaccounts", {"source": "external_deposit"})
                             notify_frontend_db_change("transfers", {"source": "external_deposit"})
                             notify_monitor_manager()
                             logger.debug("New deposit(s) applied to Cash Transfer + PRIMARY: %s cents total", sum(new_deposit_amounts))
                         if new_withdrawal_amounts:
+                            _sa_id = sql_ident_qualified_table(
+                                subaccounts_table_for_user(_slot, force_live=True)
+                            )
+                            _ab_id = sql_ident_qualified_table(
+                                account_balance_table_for_user(_slot, force_live=True)
+                            )
                             with pg_conn.cursor() as cur:
                                 for amount_net in new_withdrawal_amounts:
-                                    cur.execute("SELECT COALESCE(balance, 0) FROM users.subaccounts_0001 WHERE subaccount = 'Cash Transfer'")
+                                    cur.execute(
+                                        psql.SQL(
+                                            "SELECT COALESCE(balance, 0) FROM {} WHERE subaccount = 'Cash Transfer'"
+                                        ).format(_sa_id)
+                                    )
                                     cash_balance = (cur.fetchone() or (0,))[0]
                                     amount_subtracted = min(amount_net, cash_balance)
                                     new_cash = cash_balance - amount_subtracted
-                                    cur.execute("UPDATE users.subaccounts_0001 SET balance = %s WHERE subaccount = 'Cash Transfer'", (new_cash,))
-                                cur.execute("SELECT portfolio FROM users.account_balance_0001 ORDER BY id DESC LIMIT 1")
+                                    cur.execute(
+                                        psql.SQL(
+                                            "UPDATE {} SET balance = %s WHERE subaccount = 'Cash Transfer'"
+                                        ).format(_sa_id),
+                                        (new_cash,),
+                                    )
+                                cur.execute(
+                                    psql.SQL("SELECT portfolio FROM {} ORDER BY id DESC LIMIT 1").format(
+                                        _ab_id
+                                    )
+                                )
                                 row = cur.fetchone()
                                 if row and row[0] is not None:
-                                    cur.execute("UPDATE users.subaccounts_0001 SET balance = %s WHERE subaccount = 'PRIMARY'", (int(row[0]),))
+                                    cur.execute(
+                                        psql.SQL(
+                                            "UPDATE {} SET balance = %s WHERE subaccount = 'PRIMARY'"
+                                        ).format(_sa_id),
+                                        (int(row[0]),),
+                                    )
                             pg_conn.commit()
                             notify_frontend_db_change("subaccounts", {"source": "external_withdrawal"})
                             notify_frontend_db_change("transfers", {"source": "external_withdrawal"})
@@ -2151,6 +2233,10 @@ def _wait_for_trade_manager(timeout_sec=30, poll_interval=1):
 
 def main():
     logger.info("Kalshi Account Hybrid WebSocket/Polling Supervisor starting")
+
+    from backend.core.exchange_credentials import block_forever_if_kalshi_authenticated_api_disallowed
+
+    block_forever_if_kalshi_authenticated_api_disallowed(logger, "kalshi_account_sync")
 
     _wait_for_trade_manager()
 

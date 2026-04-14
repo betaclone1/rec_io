@@ -6,22 +6,49 @@ Used by main_app HTTP and by monitor_manager Redis stream consumer.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
+from backend.core.tenant_context import TenantContext
 
 _log = logging.getLogger(__name__)
 
+# Aligns with trade_manager.update_win_streak_for_cycle: when toggle is on,
+# loss_prevention is 'off' iff win_streak >= threshold, else 'one_contract'.
+_DEFAULT_WIN_STREAK_THRESHOLD = 22
 
-def trigger_regime_reconcile_after_auto_entry_save(monitor_id: str, source: str = "set_auto_entry_settings") -> None:
+
+def loss_prevention_value_for_streak(
+    win_streak: int, loss_prevention_toggle_on: bool, win_streak_threshold: int
+) -> str:
+    if not loss_prevention_toggle_on:
+        return "off"
+    if int(win_streak or 0) >= int(win_streak_threshold):
+        return "off"
+    return "one_contract"
+
+
+def trigger_regime_reconcile_after_auto_entry_save(
+    monitor_id: str,
+    *,
+    user_number: Optional[str] = None,
+    source: str = "set_auto_entry_settings",
+) -> None:
     try:
         import requests
         from backend.core.port_config import get_port
+        from backend.trading_mode import _norm_slot
+
+        try:
+            un = _norm_slot(user_number or "0001")
+        except ValueError:
+            un = "0001"
 
         monitor_manager_port = get_port("monitor_manager")
         requests.post(
             f"http://localhost:{monitor_manager_port}/api/regime/reconcile",
             json={
                 "monitor_id": int(monitor_id),
-                "user_number": "0001",
+                "user_number": un,
                 "full_sweep": False,
                 "force_immediate": True,
                 "source": source,
@@ -32,34 +59,62 @@ def trigger_regime_reconcile_after_auto_entry_save(monitor_id: str, source: str 
         _log.debug("[auto_entry_settings_store] regime reconcile skipped/failed: %s", exc)
 
 
-def monitor_list_flip_columns_available(cursor, table_name: str = "monitor_list_0001") -> bool:
+def _cursor_tenant_context(cursor):
+    ctx = getattr(cursor, "tenant_context", None)
+    if ctx is not None:
+        return ctx
+    from backend.core.tenant_context import worker_tenant_context_cached
+
+    return worker_tenant_context_cached()
+
+
+def monitor_list_flip_columns_available(
+    cursor,
+    table_name: Optional[str] = None,
+    *,
+    tenant_context: Optional[TenantContext] = None,
+) -> bool:
     """True when flip_sell_* migration has been applied (avoids broken SELECT/UPDATE on older DBs)."""
+    ctx = tenant_context if tenant_context is not None else _cursor_tenant_context(cursor)
+    tn = table_name or f"monitor_list_{ctx.user_no}"
     cursor.execute(
         """
         SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'users' AND table_name = %s AND column_name = 'flip_sell_prob'
+        WHERE table_schema = %s AND table_name = %s AND column_name = 'flip_sell_prob'
         LIMIT 1
         """,
-        (table_name,),
+        (ctx.pg_schema, tn),
     )
     return cursor.fetchone() is not None
 
 
-def apply_auto_entry_settings(cursor, monitor_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+def apply_auto_entry_settings(
+    cursor,
+    monitor_id: str,
+    data: Dict[str, Any],
+    *,
+    tenant_context: Optional[TenantContext] = None,
+) -> Dict[str, Any]:
     """
     Build UPDATE from ``data``, execute, return {"status":"ok", ...partial row} or error dict.
     Caller owns transaction (commit/rollback/close).
+
+    Pass ``tenant_context`` when the cursor is a raw psycopg2 cursor (e.g. monitor_manager);
+    it cannot carry a ``tenant_context`` attribute. When omitted, uses the cursor's bound
+    tenant (e.g. :class:`TenantRewritingCursor`) or the worker default.
     """
+    ctx = tenant_context if tenant_context is not None else _cursor_tenant_context(cursor)
+    ml = ctx.qualify_raw_table(f"monitor_list_{ctx.user_no}")
     cursor.execute(
-        """
-        SELECT id FROM users.monitor_list_0001 WHERE id = %s
+        f"""
+        SELECT id FROM {ml} WHERE id = %s
         """,
         (monitor_id,),
     )
     if not cursor.fetchone():
         return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
 
-    has_flip_cols = monitor_list_flip_columns_available(cursor)
+    has_flip_cols = monitor_list_flip_columns_available(cursor, tenant_context=ctx)
 
     update_fields = []
     update_values = []
@@ -164,8 +219,9 @@ def apply_auto_entry_settings(cursor, monitor_id: str, data: Dict[str, Any]) -> 
         update_fields.append("max_ask = %s")
         update_values.append(float(data["max_ask"]))
     if "loss_prevention_toggle" in data:
+        lp_tog = bool(data["loss_prevention_toggle"])
         update_fields.append("loss_prevention_toggle = %s")
-        update_values.append(bool(data["loss_prevention_toggle"]))
+        update_values.append(lp_tog)
     if "max_price_spread" in data:
         update_fields.append("max_price_spread = %s")
         update_values.append(float(data["max_price_spread"]))
@@ -229,9 +285,9 @@ def apply_auto_entry_settings(cursor, monitor_id: str, data: Dict[str, Any]) -> 
         )
     ):
         cursor.execute(
-            """
+            f"""
             SELECT flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult
-            FROM users.monitor_list_0001 WHERE id = %s
+            FROM {ml} WHERE id = %s
             """,
             (monitor_id,),
         )
@@ -280,10 +336,39 @@ def apply_auto_entry_settings(cursor, monitor_id: str, data: Dict[str, Any]) -> 
                 str(m).strip() if m is not None and str(m).strip() != "" else None
             )
 
+    if "loss_prevention_toggle" in data or "win_streak_threshold" in data:
+        cursor.execute(
+            f"""
+            SELECT win_streak, loss_prevention_toggle, win_streak_threshold
+            FROM {ml} WHERE id = %s
+            """,
+            (monitor_id,),
+        )
+        lp_row = cursor.fetchone()
+        if lp_row:
+            db_ws, db_lp_tog, db_ws_thresh = lp_row[0], lp_row[1], lp_row[2]
+        else:
+            db_ws, db_lp_tog, db_ws_thresh = 0, True, _DEFAULT_WIN_STREAK_THRESHOLD
+        eff_tog = (
+            bool(data["loss_prevention_toggle"])
+            if "loss_prevention_toggle" in data
+            else (bool(db_lp_tog) if db_lp_tog is not None else True)
+        )
+        if "win_streak_threshold" in data:
+            eff_thresh = int(data["win_streak_threshold"])
+        elif db_ws_thresh is not None:
+            eff_thresh = int(db_ws_thresh)
+        else:
+            eff_thresh = _DEFAULT_WIN_STREAK_THRESHOLD
+        ws = int(db_ws or 0)
+        lp_val = loss_prevention_value_for_streak(ws, eff_tog, eff_thresh)
+        update_fields.append("loss_prevention = %s")
+        update_values.append(lp_val)
+
     if not update_fields:
         return {"status": "error", "message": "No valid fields to update"}
 
-    query = f"UPDATE users.monitor_list_0001 SET {', '.join(update_fields)} WHERE id = %s"
+    query = f"UPDATE {ml} SET {', '.join(update_fields)} WHERE id = %s"
     update_values.append(monitor_id)
     cursor.execute(query, update_values)
 
@@ -301,8 +386,8 @@ def apply_auto_entry_settings(cursor, monitor_id: str, data: Dict[str, Any]) -> 
                , flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult
     """
     cursor.execute(
-        (sel_base + (sel_flip if has_flip_cols else "") + """
-        FROM users.monitor_list_0001 WHERE id = %s
+        (sel_base + (sel_flip if has_flip_cols else "") + f"""
+        FROM {ml} WHERE id = %s
         """).replace("\n", " "),
         (monitor_id,),
     )

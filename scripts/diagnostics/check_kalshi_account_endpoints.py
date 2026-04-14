@@ -54,14 +54,21 @@ def make_signature(private_key, method, path, timestamp):
 
 
 def get_kalshi_user_id_from_db():
-    """Try to read kalshi_user_id from user_info_0001 if DB is available."""
+    """Read kalshi_user_id from system.master_users if DB is available."""
     try:
-        from backend.core.config.database import get_postgresql_connection
-        conn = get_postgresql_connection()
+        from backend.core.config.database import get_system_postgresql_connection
+
+        conn = get_system_postgresql_connection()
         if not conn:
             return None
         with conn.cursor() as cur:
-            cur.execute("SELECT kalshi_user_id FROM users.user_info_0001 WHERE user_no = '0001' LIMIT 1")
+            cur.execute(
+                """
+                SELECT kalshi_user_id FROM system.master_users
+                WHERE LPAD(TRIM(user_no::text), 4, '0') = '0001'
+                LIMIT 1
+                """
+            )
             row = cur.fetchone()
         conn.close()
         return (row[0] or "").strip() if row and row[0] else None

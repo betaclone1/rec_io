@@ -68,14 +68,14 @@ def main() -> None:
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
-                    SELECT id FROM users.{mon_table}
+                    SELECT id FROM users_{args.user_number}.{mon_table}
                     WHERE UPPER(TRIM(status)) = 'ARCHIVED'
                     ORDER BY id
                     """
                 )
                 monitor_ids = [str(row[0]) for row in cur.fetchall()]
         except Exception as e:
-            print(f"Failed to query users.{mon_table}: {e}", file=sys.stderr)
+            print(f"Failed to query users_{args.user_number}.{mon_table}: {e}", file=sys.stderr)
             conn.close()
             sys.exit(1)
 

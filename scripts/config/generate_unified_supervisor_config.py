@@ -7,7 +7,9 @@ Uses absolute paths and proper environment variables.
 
 import sys
 import os
+import re
 from pathlib import Path
+from typing import Optional
 
 # Add project root to Python path (script lives in scripts/config/)
 current_dir = Path(__file__).parent
@@ -15,10 +17,11 @@ project_root = current_dir.parent.parent
 sys.path.insert(0, str(project_root))
 
 from backend.core.unified_config import unified_config
-from backend.core.config.database import get_database_config, get_postgresql_connection
+from backend.core.config.database import get_database_config
 from backend.core.path_manager import PathManager
 from backend.core.host_detector import HostDetector
-from backend.core.port_config import pool_user_for_unified_aes_ats
+from backend.core.exchange_credentials import fetch_kalshi_enabled_for_user_no
+from backend.core.tenant_provision import ensure_tenant_schemas_for_active_users
 import logging
 
 # Configure logging
@@ -73,25 +76,92 @@ class SupervisorConfigGenerator:
             logger.error(f"Error generating supervisor configuration: {e}")
             return False
     
-    def _get_active_monitors(self) -> list:
-        """Monitors that get AES/ATS programs in supervisor config.
-        Uses only status: 'active' = include, 'inactive' = omit. auto_trade/auto_trade_status are not used for script lifecycle."""
+    def _discover_trading_user_nos(self) -> list:
+        """
+        Active rows in ``system.master_users`` → 4-digit slots.
+
+        Prefer canonical ``user_no`` column (matches login tenant / ``users_NNNN``). Fall back to
+        parsing ``user_id`` only when it looks like ``0002`` or ``user_0002`` (legacy).
+        """
+        nos = []
         try:
-            conn = get_postgresql_connection()
-            if not conn:
-                logger.error("Database connection failed")
-                return []
-            with conn.cursor() as cursor:
-                cursor.execute("""
+            import psycopg2
+
+            conn = psycopg2.connect(**get_database_config())
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT user_no, user_id FROM system.master_users
+                    WHERE COALESCE(NULLIF(TRIM(LOWER(status)), ''), 'active') = 'active'
+                    ORDER BY user_no NULLS LAST, user_id
+                    """
+                )
+                for row in cur.fetchall() or []:
+                    u_no_col, uid = row[0], row[1] if len(row) > 1 else None
+                    slot = None
+                    un = str(u_no_col or "").strip()
+                    if un:
+                        if un.isdigit():
+                            slot = un.zfill(4) if len(un) <= 4 else None
+                        else:
+                            m = re.fullmatch(r"(?:user_)?(\d{4})", un, flags=re.IGNORECASE)
+                            if m:
+                                slot = m.group(1)
+                    if not slot and uid is not None:
+                        raw = str(uid or "").strip()
+                        m = re.fullmatch(r"(?:user_)?(\d{4})", raw, flags=re.IGNORECASE)
+                        if m:
+                            slot = m.group(1)
+                    if slot and re.fullmatch(r"\d{4}", slot):
+                        nos.append(slot)
+            conn.close()
+        except Exception as e:
+            logger.warning("Could not read system.master_users (%s)", e)
+        if not nos:
+            p = (os.environ.get("REC_POOL_USER_NUMBER") or os.environ.get("REC_USER_NO") or "").strip()
+            if p.isdigit():
+                nos = [p.zfill(4) if len(p) <= 4 else p[:4]]
+        return sorted(set(nos))
+
+    @staticmethod
+    def _scoped_port(
+        ports: dict,
+        base_key: str,
+        user_no: str,
+        default_port: int,
+        *,
+        ref_slot: str,
+    ) -> int:
+        """Prefer ``{base_key}_{user_no}`` from manifest; else offset from manifest ref slot."""
+        sk = f"{base_key}_{user_no}"
+        if sk in ports:
+            return ports[sk]
+        ref_key = f"{base_key}_{ref_slot}"
+        base = ports.get(ref_key, default_port)
+        try:
+            delta = int(user_no) - int(ref_slot)
+        except ValueError:
+            delta = 0
+        return base + delta * 10
+
+    def _get_active_monitors_for_user(self, user_no: str) -> list:
+        """Monitors for AES/ATS and logging; one tenant schema ``users_<user_no>``."""
+        monitors = []
+        try:
+            import psycopg2
+
+            conn = psycopg2.connect(**get_database_config())
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
                     SELECT id, name, status,
                            LOWER(TRIM(COALESCE(NULLIF(TRIM(market), ''), 'hourly'))) AS market_norm
-                    FROM users.monitor_list_0001 
-                    WHERE status = 'active' 
+                    FROM users_{user_no}.monitor_list_{user_no}
+                    WHERE status = 'active'
                     ORDER BY id
-                """)
-                
-                monitors = []
-                for row in cursor.fetchall():
+                    """
+                )
+                for row in cur.fetchall():
                     monitor_id = row[0]
                     name = row[1]
                     status = row[2]
@@ -99,37 +169,32 @@ class SupervisorConfigGenerator:
                     market_norm = (market_raw or "hourly").strip().lower()
                     if market_norm not in ("hourly", "15m"):
                         market_norm = "hourly"
-                    
-                    # Extract user_number and monitor_id from name (e.g., "mon_0001_10001")
                     if name.startswith("mon_"):
                         parts = name.split("_")
                         if len(parts) >= 3:
-                            user_number = parts[1]  # 0001
-                            monitor_id = parts[2]   # 10001
+                            parsed_user = parts[1]
+                            parsed_mon = parts[2]
                         else:
-                            user_number = "0001"
-                            monitor_id = str(monitor_id)
+                            parsed_user = user_no
+                            parsed_mon = str(monitor_id)
                     else:
-                        user_number = "0001"
-                        monitor_id = str(monitor_id)
-                    
-                    monitors.append({
-                        'id': monitor_id,
-                        'name': name,
-                        'status': status,
-                        'user_number': user_number,
-                        'monitor_id': monitor_id,
-                        'market': market_norm,
-                    })
-                
-                conn.close()
-                logger.info(f"Found {len(monitors)} active monitors in database")
-                return monitors
-                
+                        parsed_user = user_no
+                        parsed_mon = str(monitor_id)
+                    monitors.append(
+                        {
+                            "id": parsed_mon,
+                            "name": name,
+                            "status": status,
+                            "user_number": parsed_user,
+                            "monitor_id": parsed_mon,
+                            "market": market_norm,
+                        }
+                    )
+            conn.close()
+            logger.info("Found %s active monitors for user %s", len(monitors), user_no)
         except Exception as e:
-            logger.error(f"Error getting active monitors from database: {e}")
-            # Return default monitor if database query fails
-            return []  # No default monitors - must be configured
+            logger.error("Error getting monitors for %s: %s", user_no, e)
+        return monitors
 
     def _get_port_assignments(self) -> dict:
         """Get port assignments from MASTER_PORT_MANIFEST"""
@@ -181,6 +246,7 @@ class SupervisorConfigGenerator:
                 "active_trade_supervisor_hourly": 8038,
                 "system_monitor": 8006,
                 "monitor_manager_0001": 8012,
+                "kalshi_lifecycle_consumer_0001": 8040,
                 "cascading_failure_detector": 8007
             }
             
@@ -195,142 +261,239 @@ class SupervisorConfigGenerator:
                                    system_host: str, ports: dict) -> str:
         """Generate supervisor configuration content"""
         
-        # Get database configuration
         db_config = get_database_config()
-        
-        # Create environment variables string (REC_POOL_USER_NUMBER for main_app / port_config alignment)
-        active_monitors = self._get_active_monitors()
-        pool_user = pool_user_for_unified_aes_ats(active_monitors)
-        env_vars = self._create_environment_variables(db_config, system_host, pool_user)
-        
-        # Log directory for supervisord and all program logs (durable; see docs/CRITICAL_ASSET_LOGGING.md)
         log_dir = self.path_manager.get_log_directory()
-        
-        logger.info(f"Found {len(active_monitors)} active monitors: {active_monitors}")
-        
-        tm = f"trade_manager_{pool_user}"
-        te = f"trade_executor_{pool_user}"
-        kas = f"kalshi_account_sync_{pool_user}"
-        mm = f"monitor_manager_{pool_user}"
-        
-        # Define core services to configure
-        services = [
+        trading_users = self._discover_trading_user_nos()
+        if not trading_users:
+            raise RuntimeError(
+                "No active trading users in system.master_users (and no REC_POOL_USER_NUMBER / "
+                "REC_USER_NO fallback). Add master_users rows or set env before generating supervisord."
+            )
+        pool_for_global = sorted(trading_users)[0]
+        default_schema = (os.environ.get("REC_DEFAULT_USER_SCHEMA") or "").strip() or f"users_{pool_for_global}"
+        if not (os.environ.get("REC_DEFAULT_USER_SCHEMA") or "").strip():
+            os.environ["REC_DEFAULT_USER_SCHEMA"] = default_schema
+        if not ensure_tenant_schemas_for_active_users(trading_users, logger=logger):
+            raise RuntimeError(
+                "ensure_tenant_schemas_for_active_users failed; fix PostgreSQL / tenant template "
+                "before regenerating supervisord (see log above)."
+            )
+        monitors_by_user = {u: self._get_active_monitors_for_user(u) for u in trading_users}
+
+        env_global = self._create_environment_variables(
+            db_config,
+            system_host,
+            pool_for_global,
+            rec_single_user_mode="1",
+            rec_default_user_schema=default_schema,
+        )
+
+        services = []
+        services.append(
             {
                 "name": "main_app",
                 "script": "main.py",
-                "port": ports.get("main_app", 3000)
-            },
-            {
-                "name": tm,
-                "script": "trade_manager.py",
-                "port": ports.get(tm, 4000)
-            },
-            {
-                "name": te,
-                "script": "trade_executor.py",
-                "port": ports.get(te, 8001)
-            },
+                "port": ports.get("main_app", 3000),
+                "environment": env_global,
+                "autostart": True,
+            }
+        )
+        services.append(
             {
                 "name": "read_api",
                 "script": "read_api.py",
-                "port": ports.get("read_api", 3050)
-            },
+                "port": ports.get("read_api", 3050),
+                "environment": env_global,
+                "autostart": True,
+            }
+        )
+        services.append(
             {
                 "name": "redis_switchboard",
                 "script": "redis_switchboard.py",
-                "port": ports.get("redis_switchboard", 3010)
-            },
-            {
-                "name": "symbol_price_watchdog_btc",
-                "script": "symbol_price_watchdog.py BTC",
-                "port": ports.get("symbol_price_watchdog_btc", 8008)
-            },
-            {
-                "name": "symbol_price_watchdog_eth",
-                "script": "symbol_price_watchdog.py ETH",
-                "port": ports.get("symbol_price_watchdog_eth", 8009)
-            },
-            {
-                "name": "symbol_price_watchdog_sol",
-                "script": "symbol_price_watchdog.py SOL",
-                "port": ports.get("symbol_price_watchdog_sol", 8025)
-            },
-            {
-                "name": "symbol_price_watchdog_xrp",
-                "script": "symbol_price_watchdog.py XRP",
-                "port": ports.get("symbol_price_watchdog_xrp", 8026)
-            },
-            # SPX/NDX not currently traded; uncomment to re-enable later.
-            # {
-            #     "name": "symbol_price_watchdog_spx",
-            #     "script": "symbol_price_watchdog.py SPX",
-            #     "port": ports.get("symbol_price_watchdog_spx", 8017)
-            # },
-            # {
-            #     "name": "symbol_price_watchdog_ndx",
-            #     "script": "symbol_price_watchdog.py NDX",
-            #     "port": ports.get("symbol_price_watchdog_ndx", 8019)
-            # },
-            {
-                "name": kas,
-                "script": "kalshi_account_sync_ws.py",
-                "port": ports.get(kas, 8004)
-            },
+                "port": ports.get("redis_switchboard", 3010),
+                "environment": env_global,
+                "autostart": True,
+            }
+        )
+        for wname, wscript, wport_key, wdefault in (
+            ("symbol_price_watchdog_btc", "symbol_price_watchdog.py BTC", "symbol_price_watchdog_btc", 8008),
+            ("symbol_price_watchdog_eth", "symbol_price_watchdog.py ETH", "symbol_price_watchdog_eth", 8009),
+            ("symbol_price_watchdog_sol", "symbol_price_watchdog.py SOL", "symbol_price_watchdog_sol", 8025),
+            ("symbol_price_watchdog_xrp", "symbol_price_watchdog.py XRP", "symbol_price_watchdog_xrp", 8026),
+        ):
+            services.append(
+                {
+                    "name": wname,
+                    "script": wscript,
+                    "port": ports.get(wport_key, wdefault),
+                    "environment": env_global,
+                    "autostart": True,
+                }
+            )
+        services.append(
             {
                 "name": "market_watchdog_ws_kalshi_hourly",
                 "script": "market_watchdog_ws.py --exchange kalshi --market hourly",
                 "port": ports.get("market_watchdog_ws_kalshi_hourly", 8005),
-            },
+                "environment": env_global,
+                "autostart": True,
+            }
+        )
+        services.append(
             {
                 "name": "market_watchdog_ws_kalshi_15m",
                 "script": "market_watchdog_ws.py --exchange kalshi --market 15m",
                 "port": ports.get("market_watchdog_ws_kalshi_15m", 8035),
-            },
+                "environment": env_global,
+                "autostart": True,
+            }
+        )
+        services.append(
             {
                 "name": "system_monitor",
                 "script": "system_monitor.py",
-                "port": ports.get("system_monitor", 8006)
-            },
-            {
-                "name": mm,
-                "script": "monitor_manager.py",
-                "port": ports.get(mm, 8012)
-            },
+                "port": ports.get("system_monitor", 8006),
+                "environment": env_global,
+                "autostart": True,
+            }
+        )
+        services.append(
             {
                 "name": "cascading_failure_detector",
                 "script": "cascading_failure_detector.py",
-                "port": ports.get("cascading_failure_detector", 8007)
+                "port": ports.get("cascading_failure_detector", 8007),
+                "environment": env_global,
+                "autostart": True,
             }
-        ]
-        
-        # Unified AES/ATS: one process pair serves all active 15m and hourly-pool monitors (argv unified).
-        has_15m = any(m.get("market", "hourly") == "15m" for m in active_monitors)
-        has_hourly = any(m.get("market", "hourly") != "15m" for m in active_monitors)
+        )
 
-        if has_15m or has_hourly:
-            aes_name = f"auto_entry_supervisor_{pool_user}"
-            ats_name = f"active_trade_supervisor_{pool_user}"
-            services.append({
-                "name": aes_name,
-                "script": "auto_entry_supervisor.py unified",
-                "port": ports.get(aes_name, ports.get("auto_entry_supervisor_0001", 8033)),
-            })
-            services.append({
-                "name": ats_name,
-                "script": "active_trade_supervisor.py unified",
-                "port": ports.get(ats_name, ports.get("active_trade_supervisor_0001", 8034)),
-            })
-        
-        services.append({
-            "name": "strike_table_generator_ws_hourly",
-            "script": "strike_table_generator_ws.py --exchange kalshi --market hourly --debounce-ms 1200 --min-refresh-sec 1.2 --pipeline-max-age-sec 30",
-            "port": ports.get("strike_table_generator_ws_hourly", 8014),
-        })
-        services.append({
-            "name": "strike_table_generator_ws_15m",
-            "script": "strike_table_generator_ws.py --exchange kalshi --market 15m --debounce-ms 1200 --min-refresh-sec 1.2 --pipeline-max-age-sec 30",
-            "port": ports.get("strike_table_generator_ws_15m", 8036),
-        })
+        pr = Path(project_root)
+        for user_no in trading_users:
+            umon = monitors_by_user[user_no]
+            prod_pem = (
+                pr
+                / "backend"
+                / "data"
+                / "users"
+                / f"user_{user_no}"
+                / "credentials"
+                / "kalshi-credentials"
+                / "prod"
+                / "kalshi.pem"
+            )
+            prod_env = prod_pem.parent / ".env"
+            has_live = prod_pem.is_file() and prod_env.is_file()
+            kalshi_exchange = fetch_kalshi_enabled_for_user_no(user_no)
+            # Signed Kalshi API only when key material exists AND master_users does not set kalshi false.
+            # None from DB = unknown / legacy row → do not block (same as prior file-only behavior).
+            kalshi_auth_ok = has_live and (kalshi_exchange is not False)
+
+            env_u = self._create_environment_variables(
+                db_config,
+                system_host,
+                user_no,
+                rec_user_schema=f"users_{user_no}",
+                rec_single_user_mode="0",
+                rec_paper_only_user="1" if not kalshi_auth_ok else None,
+            )
+
+            tm = f"trade_manager_{user_no}"
+            te = f"trade_executor_{user_no}"
+            kas = f"kalshi_account_sync_{user_no}"
+            mm = f"monitor_manager_{user_no}"
+
+            services.append(
+                {
+                    "name": tm,
+                    "script": "trade_manager.py",
+                    "port": self._scoped_port(ports, "trade_manager", user_no, 4000, ref_slot=pool_for_global),
+                    "environment": env_u,
+                    "autostart": True,
+                }
+            )
+            services.append(
+                {
+                    "name": te,
+                    "script": "trade_executor.py",
+                    "port": self._scoped_port(ports, "trade_executor", user_no, 8001, ref_slot=pool_for_global),
+                    "environment": env_u,
+                    # Paper mode still routes fills through trade_executor (Redis streams); always start with trade_manager.
+                    "autostart": True,
+                }
+            )
+            services.append(
+                {
+                    "name": kas,
+                    "script": "kalshi_account_sync_ws.py",
+                    "port": self._scoped_port(ports, "kalshi_account_sync", user_no, 8004, ref_slot=pool_for_global),
+                    "environment": env_u,
+                    "autostart": kalshi_auth_ok,
+                }
+            )
+            services.append(
+                {
+                    "name": mm,
+                    "script": "monitor_manager.py",
+                    "port": self._scoped_port(ports, "monitor_manager", user_no, 8012, ref_slot=pool_for_global),
+                    "environment": env_u,
+                    "autostart": True,
+                }
+            )
+            services.append(
+                {
+                    "name": f"kalshi_lifecycle_consumer_{user_no}",
+                    "script": "kalshi_lifecycle_trade_consumer.py",
+                    "port": self._scoped_port(ports, "kalshi_lifecycle_consumer", user_no, 8040, ref_slot=pool_for_global),
+                    "environment": env_u,
+                    "autostart": True,
+                }
+            )
+
+            has_15m = any(m.get("market", "hourly") == "15m" for m in umon)
+            has_hourly = any(m.get("market", "hourly") != "15m" for m in umon)
+            if has_15m or has_hourly:
+                # One AES/ATS pair per trading user; name must match user_no (not monitor-derived pool id)
+                # so REC_POOL_USER_NUMBER and program name stay aligned with trade_manager_<user_no>.
+                aes_name = f"auto_entry_supervisor_{user_no}"
+                ats_name = f"active_trade_supervisor_{user_no}"
+                services.append(
+                    {
+                        "name": aes_name,
+                        "script": "auto_entry_supervisor.py unified",
+                        "port": self._scoped_port(ports, "auto_entry_supervisor", user_no, 8033, ref_slot=pool_for_global),
+                        "environment": env_u,
+                        "autostart": True,
+                    }
+                )
+                services.append(
+                    {
+                        "name": ats_name,
+                        "script": "active_trade_supervisor.py unified",
+                        "port": self._scoped_port(ports, "active_trade_supervisor", user_no, 8034, ref_slot=pool_for_global),
+                        "environment": env_u,
+                        "autostart": True,
+                    }
+                )
+
+        services.append(
+            {
+                "name": "strike_table_generator_ws_hourly",
+                "script": "strike_table_generator_ws.py --exchange kalshi --market hourly --debounce-ms 1200 --min-refresh-sec 1.2 --pipeline-max-age-sec 30",
+                "port": ports.get("strike_table_generator_ws_hourly", 8014),
+                "environment": env_global,
+                "autostart": True,
+            }
+        )
+        services.append(
+            {
+                "name": "strike_table_generator_ws_15m",
+                "script": "strike_table_generator_ws.py --exchange kalshi --market 15m --debounce-ms 1200 --min-refresh-sec 1.2 --pipeline-max-age-sec 30",
+                "port": ports.get("strike_table_generator_ws_15m", 8036),
+                "environment": env_global,
+                "autostart": True,
+            }
+        )
         # Supervisord main log: durable path under logs/ with rotation (critical for incident review)
         supervisord_log = os.path.join(log_dir, "supervisord.log")
         
@@ -358,7 +521,9 @@ supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
         
         # Long settlement polling can run many minutes; allow graceful stop before SIGKILL.
         PROGRAM_EXTRA_DIRECTIVES = {
-            tm: ["stopwaitsecs=120"],
+            s["name"]: ["stopwaitsecs=120"]
+            for s in services
+            if s["name"].startswith("trade_manager_")
         }
         # Critical assets get higher log retention (see docs/CRITICAL_ASSET_LOGGING.md)
         CRITICAL_LOG_SERVICES = {"system_monitor", "cascading_failure_detector"}
@@ -372,7 +537,9 @@ supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
             service_name = service["name"]
             script_path = service["script"]
             port = service["port"]
-            
+            env_vars = service["environment"]
+            autostart_s = "true" if service.get("autostart", True) else "false"
+
             stdout_log = os.path.join(log_dir, f"{service_name}.out.log")
             stderr_log = os.path.join(log_dir, f"{service_name}.err.log")
             if service_name in CRITICAL_LOG_SERVICES:
@@ -381,7 +548,7 @@ supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
             else:
                 stderr_max, stderr_backups = DEFAULT_STDERR_MAX, DEFAULT_STDERR_BACKUPS
                 stdout_max, stdout_backups = DEFAULT_STDOUT_MAX, DEFAULT_STDOUT_BACKUPS
-            
+
             run_cmd = f'{python_executable} {project_root}/backend/{script_path}'
             extra_lines = "\n".join(PROGRAM_EXTRA_DIRECTIVES.get(service_name, []))
             extra_block = f"{extra_lines}\n" if extra_lines else ""
@@ -389,7 +556,7 @@ supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
             config_content += f"""[program:{service_name}]
 command={run_cmd}
 directory={project_root}
-autostart=true
+autostart={autostart_s}
 autorestart=true
 startretries=3
 stopasgroup=true
@@ -407,9 +574,17 @@ environment={env_vars}
         return config_content
     
     def _create_environment_variables(
-        self, db_config: dict, system_host: str, rec_pool_user: str = "0001"
+        self,
+        db_config: dict,
+        system_host: str,
+        rec_pool_user: str,
+        *,
+        rec_user_schema: Optional[str] = None,
+        rec_single_user_mode: Optional[str] = None,
+        rec_paper_only_user: Optional[str] = None,
+        rec_default_user_schema: Optional[str] = None,
     ) -> str:
-        """Create environment variables string for supervisor"""
+        """Create environment variables string for supervisor (optional tenant / paper flags)."""
         try:
             env_vars = [
                 f'PATH="{self.config.get("runtime.venv_path", "")}/bin"',
@@ -453,8 +628,27 @@ environment={env_vars}
                 "REDIS_CHANNEL_ATS_ENROLL_REQUEST",
                 "REDIS_CHANNEL_DB_CHANGES",
                 "REDIS_CHANNEL_TM_POSITIONS_UPDATED",
+                "REDIS_CHANNEL_KALSHI_LIFECYCLE_TRADES",
             )
             for key in _trading_redis_keys:
+                val = os.getenv(key)
+                if val is None or str(val).strip() == "":
+                    continue
+                esc = str(val).replace("\\", "\\\\").replace('"', '\\"')
+                env_vars.append(f'{key}="{esc}"')
+
+            # Alerts / registration email (Gmail SMTP): propagate non-secret vars only.
+            # Do NOT embed REC_ALERTS_SMTP_PASSWORD here — it would land in supervisord.conf on disk.
+            # Use REC_ALERTS_SMTP_PASSWORD_FILE (path) or rely on backend/data/secrets/rec_alerts_smtp_password.txt
+            # next to the repo (see docs/REC_ALERTS_SMTP_SECRETS.md).
+            _rec_alerts_smtp_keys = (
+                "REC_ALERTS_SMTP_HOST",
+                "REC_ALERTS_SMTP_PORT",
+                "REC_ALERTS_SMTP_USER",
+                "REC_ALERTS_SMTP_FROM",
+                "REC_ALERTS_SMTP_PASSWORD_FILE",
+            )
+            for key in _rec_alerts_smtp_keys:
                 val = os.getenv(key)
                 if val is None or str(val).strip() == "":
                     continue
@@ -478,7 +672,19 @@ environment={env_vars}
             # HTTP fallback should be opt-in during Redis cutover.
             if not any(x.startswith("ATS_HTTP_FALLBACK_ENABLED=") for x in env_vars):
                 env_vars.append('ATS_HTTP_FALLBACK_ENABLED="0"')
-            
+
+            if rec_user_schema:
+                esc_s = str(rec_user_schema).replace("\\", "\\\\").replace('"', '\\"')
+                env_vars.append(f'REC_USER_SCHEMA="{esc_s}"')
+                env_vars.append(f'REC_USER_NO="{rec_pool_user}"')
+            if rec_single_user_mode is not None:
+                env_vars.append(f'REC_SINGLE_USER_MODE="{rec_single_user_mode}"')
+            if rec_paper_only_user is not None:
+                env_vars.append(f'REC_PAPER_ONLY_USER="{rec_paper_only_user}"')
+            if rec_default_user_schema:
+                esc_ds = str(rec_default_user_schema).replace("\\", "\\\\").replace('"', '\\"')
+                env_vars.append(f'REC_DEFAULT_USER_SCHEMA="{esc_ds}"')
+
             return ','.join(env_vars)
             
         except Exception as e:

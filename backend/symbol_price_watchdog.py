@@ -9,8 +9,6 @@ import os
 import sys
 import aiohttp
 import requests
-import psycopg2
-from psycopg2.extras import RealDictCursor
 import argparse
 from typing import Optional, Dict, Any, Tuple
 import yliveticker
@@ -72,6 +70,10 @@ SIMULATE_ETH_COINBASE_WS_OUTAGE = os.getenv("SIMULATE_ETH_COINBASE_WS_OUTAGE", "
     "on",
 )
 
+# Rolling DELETE in insert_tick: keep this many days of 1s ticks per live_data.live_price_log_1s_* table.
+# ~2 calendar years (730 = 2×365; span may include leap days).
+LIVE_PRICE_LOG_RETENTION_DAYS = 730
+
 # Symbol configuration
 SYMBOL_CONFIG = {
     'BTC': {
@@ -120,15 +122,6 @@ SYMBOL_CONFIG = {
         'heartbeat_file': 'ndx_logger_heartbeat_postgresql.txt',
         'price_change_file': 'ndx_price_change_postgresql.json'
     }
-}
-
-# PostgreSQL connection parameters
-POSTGRES_CONFIG = {
-    'host': os.getenv('POSTGRES_HOST', 'localhost'),
-    'port': int(os.getenv('POSTGRES_PORT', '5432')),
-    'database': os.getenv('POSTGRES_DB', 'rec_io_db'),
-    'user': os.getenv('POSTGRES_USER', 'rec_io_user'),
-    'password': os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
 }
 
 # Global momentum profile cache
@@ -426,8 +419,10 @@ def calculate_volatility_percentile(symbol: str, volatility_value: float) -> Opt
     return closest_percentile
 
 def get_postgres_connection():
-    """Get a PostgreSQL connection"""
-    return psycopg2.connect(**merge_psycopg2_connect_kwargs(POSTGRES_CONFIG))
+    """PostgreSQL connection for live_data / shared schemas only (no tenant ``users_NNNN``)."""
+    from backend.core.config.database import get_system_postgresql_connection
+
+    return get_system_postgresql_connection()
 
 def get_1m_avg_price(symbol: str) -> float:
     """
@@ -957,7 +952,7 @@ def get_volatility_for_minute(symbol: str, minute_key: str) -> Tuple[Optional[fl
 def insert_tick(symbol: str, timestamp: str, price: float):
     """
     Insert symbol price tick with 1-minute average and momentum data into PostgreSQL.
-    Maintains only the last 30 days of price data to prevent unlimited database growth.
+    Rolling retention: keeps ``LIVE_PRICE_LOG_RETENTION_DAYS`` days of 1s ticks per symbol table.
     """
     conn = get_postgres_connection()
     cursor = conn.cursor()
@@ -1137,9 +1132,9 @@ def insert_tick(symbol: str, timestamp: str, price: float):
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (symbol,) + status_tick_values)
         
-        # ROLLING WINDOW: Clean up data older than 30 days
+        # ROLLING WINDOW: drop ticks older than LIVE_PRICE_LOG_RETENTION_DAYS (all symbols).
         dt = datetime.now(ZoneInfo("America/New_York")).replace(microsecond=0)
-        cutoff_time = dt - timedelta(days=30)
+        cutoff_time = dt - timedelta(days=LIVE_PRICE_LOG_RETENTION_DAYS)
         cutoff_iso = cutoff_time.strftime("%Y-%m-%dT%H:%M:%S")
         cursor.execute(f"DELETE FROM live_data.{table_name} WHERE timestamp < %s", (cutoff_iso,))
         

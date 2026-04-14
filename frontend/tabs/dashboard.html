@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <script src="/js/rec_session.js"></script>
+
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Dashboard</title>
@@ -1890,6 +1892,48 @@
     let tradingModeLiveLabel = 'LIVE';
     let tradingModePaperLabel = 'PAPER';
 
+    function recEffectiveTradingModeQueryValue() {
+      var m = (window.__recTradingMode || localStorage.getItem('rec_trading_mode') || 'live').toLowerCase();
+      if (m !== 'paper' && m !== 'live') m = 'live';
+      return m;
+    }
+
+    /** Match read_api / balance queries to the UI paper|live toggle (not only the global on-disk mode). */
+    function recApiUrlWithTradingMode(pathOrUrl) {
+      try {
+        var u = new URL(pathOrUrl, window.location.origin);
+        u.searchParams.set('trading_mode', recEffectiveTradingModeQueryValue());
+        return u.pathname + u.search;
+      } catch (e) {
+        var base = String(pathOrUrl || '');
+        var sep = base.indexOf('?') >= 0 ? '&' : '?';
+        return base + sep + 'trading_mode=' + encodeURIComponent(recEffectiveTradingModeQueryValue());
+      }
+    }
+
+    /** Ignore WS payloads scoped to another tenant (multi-user local dev). */
+    function recTenantMatchesMessageTenant(msgTenant) {
+      if (msgTenant == null || msgTenant === '') return true;
+      if (typeof recSessionUserSlot !== 'function') return true;
+      var slot = recSessionUserSlot();
+      if (!slot) return true;
+      var mt = String(msgTenant).trim();
+      if (!/^\d+$/.test(mt)) return true;
+      while (mt.length < 4) mt = '0' + mt;
+      if (mt.length > 4) mt = mt.slice(-4);
+      return mt === slot;
+    }
+
+    function recMonitorIdBelongsToSession(monRaw) {
+      if (typeof recSessionUserSlot !== 'function') return true;
+      var slot = recSessionUserSlot();
+      if (!slot) return true;
+      var s = String(monRaw || '').replace(/^MON_/i, 'mon_');
+      var m = /^mon_(\d{4})_/.exec(s);
+      if (!m) return true;
+      return m[1] === slot;
+    }
+
     function splitTradingModeLabel(label) {
       const s = String(label || '').trim();
       let idx = s.indexOf(' - ');
@@ -1943,6 +1987,25 @@
       updateTradingModeSelectFace(sel);
     }
 
+    /** Hide LIVE option when API says this tenant has no live Kalshi (paper-only). */
+    function applyTradingModeLiveAvailability(sel, liveOk) {
+      if (!sel) return;
+      const oLive = sel.querySelector('option[value="live"]');
+      const ok = liveOk !== false;
+      if (oLive) {
+        oLive.disabled = !ok;
+        oLive.hidden = !ok;
+        oLive.setAttribute('aria-hidden', ok ? 'false' : 'true');
+      }
+      if (!ok && sel.value === 'live') {
+        sel.value = 'paper';
+        window.__recTradingMode = 'paper';
+        window.globalPaperMode = true;
+        localStorage.setItem('rec_trading_mode', 'paper');
+      }
+      updateTradingModeSelectFace(sel);
+    }
+
     async function fetchTradingModeFromServer() {
       try {
         const r = await fetch(window.location.origin + '/api/trading_mode', {
@@ -1954,14 +2017,20 @@
         }
         const j = await r.json();
         if (j.trading_mode === 'live' || j.trading_mode === 'paper') {
+          const liveOk = j.live_trading_available !== false;
           window.__recTradingMode = j.trading_mode;
           window.globalPaperMode = j.global_paper_mode === true;
           if (j.live_label) tradingModeLiveLabel = j.live_label;
           if (j.paper_label) tradingModePaperLabel = j.paper_label;
           localStorage.setItem('rec_trading_mode', j.trading_mode);
           const sel = document.getElementById('trading-mode-select');
-          if (sel) sel.value = j.trading_mode;
-          updateTradingModeSelectLabels();
+          if (sel) {
+            sel.value = j.trading_mode;
+            updateTradingModeSelectLabels();
+            applyTradingModeLiveAvailability(sel, liveOk);
+          } else {
+            updateTradingModeSelectLabels();
+          }
         }
       } catch (e) {
         console.warn('fetchTradingModeFromServer:', e);
@@ -2035,7 +2104,7 @@
 
     async function refreshTradingHaltIndicator() {
       try {
-        const r = await fetch(window.location.origin + '/api/system_settings?user_id=user_0001', { cache: 'no-store' });
+        const r = await fetch(window.location.origin + '/api/system_settings', { cache: 'no-store' });
         const j = await r.json();
         if (j.status === 'ok') updateTradingHaltUiFromSettingsPayload(j);
       } catch (e) {
@@ -2048,7 +2117,7 @@
       const pctEl = document.getElementById('systemSettingsDrawdownPct');
       if (!haltEl || !pctEl) return;
       try {
-        const r = await fetch(window.location.origin + '/api/system_settings?user_id=user_0001', { cache: 'no-store' });
+        const r = await fetch(window.location.origin + '/api/system_settings', { cache: 'no-store' });
         const j = await r.json();
         if (j.status !== 'ok') {
           console.warn('system_settings load:', j.message || j);
@@ -2123,7 +2192,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            user_id: 'user_0001',
+            user_id: window.recSessionUserId(),
             drawdown_trading_halt: !!haltEl.checked,
             drawdown_reset_threshold_pct: v,
           }),
@@ -2148,7 +2217,7 @@
         const r = await fetch(window.location.origin + '/api/system_settings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_id: 'user_0001', action: action }),
+          body: JSON.stringify({ user_id: window.recSessionUserId(), action: action }),
         });
         const j = await r.json();
         if (j.status !== 'ok') {
@@ -2804,7 +2873,7 @@
     // Load monitors from API
     async function loadMonitors() {
       try {
-        const response = await fetch('/api/monitors?user_id=user_0001&t=' + Date.now());
+        const response = await fetch('/api/monitors?t=' + Date.now());
         const data = await response.json();
         
         if (data.status === 'ok') {
@@ -3630,7 +3699,7 @@
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-              user_id: 'user_0001',
+              user_id: window.recSessionUserId(),
               monitor_orders: monitorOrders
             })
           });
@@ -3672,7 +3741,7 @@
         // Send update to backend
         // Extract numeric monitor ID from mon_0001_10002 format and convert to MON_0001_10002 format
         const numericId = monitorId.split('_').pop(); // Extract 10002 from mon_0001_10002
-        const formattedMonitorId = `MON_0001_${numericId}`;
+        const formattedMonitorId = `MON_${window.recSessionUserSlot()}_${numericId}`;
         
         console.log('Sending request with formatted monitor ID:', formattedMonitorId);
         
@@ -3967,28 +4036,28 @@
         const origin = window.location.origin;
 
         const [portfolioRes, bankrollRes, pnlRes] = await Promise.all([
-          fetch(`${origin}/api/portfolio/history?period=1y`),
-          fetch(`${origin}/api/bankroll/history?period=1y`),
-          fetch(`${origin}/api/pnl/history?period=1y`)
+          fetch(recApiUrlWithTradingMode(`${origin}/api/portfolio/history?period=1y`)),
+          fetch(recApiUrlWithTradingMode(`${origin}/api/bankroll/history?period=1y`)),
+          fetch(recApiUrlWithTradingMode(`${origin}/api/pnl/history?period=1y`))
         ]);
 
         if (portfolioRes.ok) {
           const data = await portfolioRes.json();
-          allHistoryData = data.data || [];
+          allHistoryData = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
         } else {
           allHistoryData = [];
         }
 
         if (bankrollRes.ok) {
           const data = await bankrollRes.json();
-          allBankrollHistoryData = data.data || [];
+          allBankrollHistoryData = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
         } else {
           allBankrollHistoryData = [];
         }
 
         if (pnlRes.ok) {
           const data = await pnlRes.json();
-          const history = data.data || [];
+          const history = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
           allPnlHistoryData = history.length > 0 ? history : [{ timestamp: new Date().toISOString(), pnl: 0 }];
         } else {
           allPnlHistoryData = [{ timestamp: new Date().toISOString(), pnl: 0 }];
@@ -4037,28 +4106,28 @@
 
       try {
         const [portfolioRes, bankrollRes, pnlRes] = await Promise.all([
-          fetch(`${origin}/api/portfolio/history?period=1y`),
-          fetch(`${origin}/api/bankroll/history?period=1y`),
-          fetch(`${origin}/api/pnl/history?period=1y`)
+          fetch(recApiUrlWithTradingMode(`${origin}/api/portfolio/history?period=1y`)),
+          fetch(recApiUrlWithTradingMode(`${origin}/api/bankroll/history?period=1y`)),
+          fetch(recApiUrlWithTradingMode(`${origin}/api/pnl/history?period=1y`))
         ]);
 
         if (portfolioRes.ok) {
           const data = await portfolioRes.json();
-          allHistoryData = data.data || [];
+          allHistoryData = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
         } else {
           allHistoryData = [];
         }
 
         if (bankrollRes.ok) {
           const data = await bankrollRes.json();
-          allBankrollHistoryData = data.data || [];
+          allBankrollHistoryData = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
         } else {
           allBankrollHistoryData = [];
         }
 
         if (pnlRes.ok) {
           const data = await pnlRes.json();
-          const history = data.data || [];
+          const history = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
           allPnlHistoryData = history.length > 0 ? history : [{ timestamp: new Date().toISOString(), pnl: 0 }];
         } else {
           allPnlHistoryData = [{ timestamp: new Date().toISOString(), pnl: 0 }];
@@ -4101,7 +4170,7 @@
 
     async function fetchAccountBalanceSnapshot() {
       try {
-        const response = await fetch(`${window.location.origin}/api/account/balance?mode=${GLOBAL_ACCOUNT_MODE}`);
+        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/account/balance?mode=${GLOBAL_ACCOUNT_MODE}`));
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
@@ -4169,10 +4238,10 @@
 
     async function loadPortfolioHistory() {
       try {
-        const response = await fetch(`${window.location.origin}/api/portfolio/history?period=1y`);
+        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/portfolio/history?period=1y`));
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
-        const history = data.data || [];
+        const history = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
         allHistoryData = history;
         applyPortfolioView();
       } catch (error) {
@@ -4188,10 +4257,10 @@
 
     async function loadBankrollHistory() {
       try {
-        const response = await fetch(`${window.location.origin}/api/bankroll/history?period=${currentView}`);
+        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/bankroll/history?period=${currentView}`));
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
-        const history = data.data || [];
+        const history = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
         allBankrollHistoryData = history;
         applyBankrollView();
       } catch (error) {
@@ -4420,7 +4489,7 @@
 
     async function loadPerformanceData() {
       try {
-        const response = await fetch(`${window.location.origin}/api/performance/realized`);
+        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/performance/realized`));
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
         if (data.status !== 'ok' || !data.periods) return;
@@ -4472,7 +4541,7 @@
 
     async function loadPerformancePanelCashBalance() {
       try {
-        const response = await fetch(`${window.location.origin}/api/subaccounts`);
+        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/subaccounts`));
         if (!response.ok) return;
         const data = await response.json();
         const subaccounts = data.subaccounts || [];
@@ -4494,10 +4563,10 @@
 
     async function loadPnlData() {
       try {
-        const response = await fetch(`${window.location.origin}/api/pnl/history?period=${currentView}`);
+        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/pnl/history?period=${currentView}`));
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
-        const totalPnl = data.total_pnl != null ? data.total_pnl : 0;
+        const totalPnl = (data && data.status === 'ok' && data.total_pnl != null) ? data.total_pnl : 0;
         const formattedValue = new Intl.NumberFormat('en-US', {
           style: 'currency',
           currency: 'USD',
@@ -4519,11 +4588,11 @@
 
     async function loadPnlHistory() {
       try {
-        const response = await fetch(`${window.location.origin}/api/pnl/history?period=${currentView}`);
+        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/pnl/history?period=${currentView}`));
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
-        const history = data.data || [];
-        const totalPnl = data.total_pnl != null ? data.total_pnl : 0;
+        const history = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
+        const totalPnl = (data && data.status === 'ok' && data.total_pnl != null) ? data.total_pnl : 0;
         allPnlHistoryData = history.length > 0 ? history : [{ timestamp: new Date().toISOString(), pnl: 0 }];
         applyPnlView(totalPnl);
       } catch (error) {
@@ -5075,43 +5144,31 @@
       let startDate;
       
       switch (view) {
-        case '1d':
-          // Current day starting at 06:00
-          startDate = new Date(now);
-          startDate.setHours(6, 0, 0, 0);
-          
-          // For 1d view, create 15-minute data points from 06:00 to current time
-          if (data.length > 0) {
-            const quarterHourlyData = [];
-            const currentHour = now.getHours();
-            const currentMinute = now.getMinutes();
-            
-            for (let hour = 6; hour <= currentHour; hour++) {
-              for (let minute = 0; minute < 60; minute += 15) {
-                // Skip if this time is in the future
-                if (hour === currentHour && minute > currentMinute) break;
-                
-                const timeDate = new Date(now);
-                timeDate.setHours(hour, minute, 0, 0);
-                
-                // Find the latest data point before or at this time
-                const latestData = data.filter(item => {
-                  const itemDate = new Date(item.timestamp);
-                  return itemDate <= timeDate;
-                }).pop();
-                
-                if (latestData) {
-                  quarterHourlyData.push({
-                    ...latestData,
-                    timestamp: timeDate.toISOString()
-                  });
-                }
-              }
-            }
-            return quarterHourlyData;
+        case '1d': {
+          // Rolling last 24 hours at 15-minute steps (matches /api/pnl/history period=1d).
+          // The old "06:00 → now" loop returned [] when local time was before 06:00, so the chart stayed blank.
+          if (!data.length) return [];
+          const end = new Date(now);
+          const start = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+          const valid = data.filter(item => {
+            const d = new Date(item.timestamp);
+            return !isNaN(d.getTime()) && d <= end;
+          });
+          if (!valid.length) return [];
+          const out = [];
+          for (let t = new Date(start); t <= end; t = new Date(t.getTime() + 15 * 60 * 1000)) {
+            const latest = valid.filter(item => new Date(item.timestamp) <= t).pop();
+            if (latest) out.push({ ...latest, timestamp: new Date(t).toISOString() });
           }
-          // If no data, fall through to generic filter
-          break;
+          if (out.length === 0) {
+            const last = valid[valid.length - 1];
+            return [
+              { ...last, timestamp: start.toISOString() },
+              { ...last, timestamp: end.toISOString() },
+            ];
+          }
+          return out;
+        }
         case '1w':
           // Previous 7 days from current time
           startDate = new Date(now);
@@ -6427,7 +6484,7 @@
           body: JSON.stringify({
             monitor_id: monitorId,
             monitor_name: monitorName,
-            user_id: 'user_0001'
+            user_id: window.recSessionUserId()
           })
         });
 
@@ -6458,7 +6515,7 @@
           body: JSON.stringify({
             monitor_id: monitorId,
             monitor_name: monitorName,
-            user_id: 'user_0001'
+            user_id: window.recSessionUserId()
           })
         });
 
@@ -6518,7 +6575,7 @@
           body: JSON.stringify({
             monitor_id: monitorId,
             monitor_name: monitorName,
-            user_id: 'user_0001'
+            user_id: window.recSessionUserId()
           })
         });
         const result = await response.json();
@@ -6575,7 +6632,7 @@
     }
 
     async function refreshMonitorHealthLightsOnly() {
-      const response = await fetch('/api/monitors/health?user_id=user_0001&t=' + Date.now());
+      const response = await fetch('/api/monitors/health?t=' + Date.now());
       const payload = await response.json();
       if (payload && payload.status === 'ok' && payload.monitors) {
         applyMonitorHealthLights(payload.monitors);
@@ -6600,7 +6657,7 @@
         // Extract numeric ID from format like "mon_0001_10019" or "10019"
         const parts = monitorId.split('_');
         const numericId = parts.length >= 3 ? parts[2] : monitorId;
-        const formattedMonitorId = `MON_0001_${numericId}`;
+        const formattedMonitorId = `MON_${window.recSessionUserSlot()}_${numericId}`;
         
         // Get current state
         const monitor = monitors.find(m => m.id === monitorId);
@@ -6751,17 +6808,29 @@
       try {
         const response = await fetch('/api/strategies');
         const data = await response.json();
-        
         const strategySelect = document.getElementById('newMonitorStrategy');
-        if (strategySelect && data.status === 'ok') {
-          strategySelect.innerHTML = '<option value="">Select Strategy</option>';
-          data.strategies.forEach(strategy => {
-            const option = document.createElement('option');
-            option.value = strategy;
-            option.textContent = strategy;
-            strategySelect.appendChild(option);
-          });
+        if (!strategySelect) {
+          return;
         }
+        if (!response.ok || data.status !== 'ok') {
+          console.warn(
+            'loadStrategyOptions: API failed',
+            response.status,
+            data && (data.message || data.detail)
+          );
+          return;
+        }
+        if (!Array.isArray(data.strategies) || data.strategies.length === 0) {
+          console.warn('loadStrategyOptions: empty strategies for current tenant');
+          return;
+        }
+        strategySelect.innerHTML = '<option value="">Select Strategy</option>';
+        data.strategies.forEach(strategy => {
+          const option = document.createElement('option');
+          option.value = strategy;
+          option.textContent = strategy;
+          strategySelect.appendChild(option);
+        });
       } catch (error) {
         console.error('Error loading strategy options:', error);
       }
@@ -6805,7 +6874,7 @@
             position_size: parseInt(positionSize),
             multiplier: parseFloat(multiplier),
             market: marketVal,
-            user_id: 'user_0001'
+            user_id: window.recSessionUserId()
           })
         });
 
@@ -6849,7 +6918,7 @@
       if (s !== 'Hourly HTC' && s !== '15m HTC') return base;
       const id = monitor.id;
       const numPart = (id != null && typeof id === 'string') ? id.split('_').pop() : (id != null ? String(id) : null);
-      const fromMap = (id != null && (cooldownTimers.get(id) ?? (numPart && cooldownTimers.get('MON_0001_' + numPart)) ?? (numPart && cooldownTimers.get(numPart))));
+      const fromMap = (id != null && (cooldownTimers.get(id) ?? (numPart && cooldownTimers.get('MON_' + window.recSessionUserSlot() + '_' + numPart)) ?? (numPart && cooldownTimers.get(numPart))));
       const fromMonitor = monitor.cooldown_timer != null ? Number(monitor.cooldown_timer) : 0;
       const timerSec = (typeof fromMap === 'number' && fromMap > 0) ? fromMap : (typeof fromMonitor === 'number' && fromMonitor > 0 ? fromMonitor : 0);
       if (timerSec > 0) return 'paused';
@@ -6864,7 +6933,7 @@
       }
       const numPart = (monitorId || (monitor && monitor.id) || '').toString().replace(/^mon_?\d+_/i, '').replace(/^MON_?\d+_/i, '');
       if (numPart) {
-        cooldownTimers.delete('MON_0001_' + numPart);
+        cooldownTimers.delete('MON_' + window.recSessionUserSlot() + '_' + numPart);
         cooldownTimers.delete(numPart);
       }
     }
@@ -6947,6 +7016,9 @@
           
           // Handle auto trade toggle updates
           if (data.type === 'auto_trade_toggled') {
+            if (!recTenantMatchesMessageTenant(data.tenant_user_no) && !recMonitorIdBelongsToSession(data.monitor_id)) {
+              return;
+            }
             console.log('Auto trade toggle received:', data);
             
             // Convert backend format (MON_0001_10002) to frontend format (mon_0001_10002)
@@ -6981,6 +7053,9 @@
           
           // Handle monitor list updates (Redis → main /ws/preferences); includes trading_halt_active for halt latch
           if (data.type === 'monitor_list_updated') {
+            if (!recTenantMatchesMessageTenant(data.tenant_user_no)) {
+              return;
+            }
             if (typeof data.trading_halt_active === 'boolean') {
               updateTradingHaltUiFromSettingsPayload({ trading_halt_active: data.trading_halt_active });
             }
@@ -6993,6 +7068,9 @@
             console.log('Cooldown timer change received:', data);
             
             const monitorId = data.data.monitor_id;
+            if (!recMonitorIdBelongsToSession(monitorId)) {
+              return;
+            }
             const cooldownTimer = data.data.cooldown_timer;
             const frontendId = (monitorId || '').toString().replace('MON_', 'mon_');
             const monitor = monitors.find(m => String(m.id) === String(monitorId) || String(m.id) === String(frontendId));
@@ -7023,6 +7101,9 @@
             console.log('Auto trade status change received:', data);
             console.log('Available monitor IDs:', monitors.map(m => m.id));
             const rawId = data.data.monitor_id;
+            if (!recMonitorIdBelongsToSession(rawId)) {
+              return;
+            }
             console.log('Looking for monitor ID:', rawId);
             // Single lookup: backend may send mon_* or MON_*; DOM uses mon_* in data-monitor-id.
             const frontendId = (rawId || '').toString().replace(/^MON_/i, 'mon_');
@@ -7038,13 +7119,16 @@
                 statusElement.textContent = getStatusText(data.data.auto_trade_status, stMonitor.id);
               }
               console.log(`Updated monitor ${rawId} auto trade status to: ${data.data.auto_trade_status}`);
-            } else {
+            } else if (localStorage.getItem('dashboard_ws_debug') === '1') {
               console.warn(`Monitor ${rawId} not found for status update`);
             }
           }
           
           // Handle paper trade toggle updates
           if (data.type === 'paper_trade_toggled') {
+            if (!recTenantMatchesMessageTenant(data.tenant_user_no) && !recMonitorIdBelongsToSession(data.monitor_id)) {
+              return;
+            }
             console.log('Paper trade toggle received:', data);
             
             // Convert backend format (MON_0001_10002) to frontend format (mon_0001_10002)
@@ -7976,7 +8060,7 @@
 
     function dashboardUatLoadMonitorPositionIntoModal(apiId) {
       if (!apiId || !window.UatUnifiedModalPositionSize) return;
-      fetch('/api/monitor/' + apiId + '?user_id=user_0001')
+      fetch('/api/monitor/' + apiId + '')
         .then(function (r) { return r.json(); })
         .then(function (j) {
           if (!j || j.status !== 'ok' || !j.monitor) return;
@@ -9751,12 +9835,7 @@
 
       // Close handlers
       document.getElementById('unifiedAutoTradeCancel').onclick = closeUnifiedAutoTradeSettings;
-      if (!modal._uatBackdropWired) {
-        modal._uatBackdropWired = true;
-        modal.addEventListener('click', function (e) {
-          if (e.target === modal) closeUnifiedAutoTradeSettings();
-        });
-      }
+      // Backdrop click intentionally does not close (avoid accidental dismiss while adjusting settings).
 
       // Keyboard shortcuts: ENTER saves, ESC closes
       const unifiedKeyHandler = function(e){

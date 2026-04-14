@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <script src="/js/rec_session.js"></script>
+
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>System - REC.IO Mobile</title>
@@ -27,6 +29,26 @@
             border-radius: 8px;
             margin-bottom: 16px;
             overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .system-status-meta-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px 16px;
+            padding: 8px 16px 12px;
+            font-size: 11px;
+            color: #94a3b8;
+        }
+
+        .system-status-meta-row #systemHealthLastUpdated {
+            margin: 0;
+            text-align: right;
+            font-size: 11px;
+            margin-left: auto;
         }
 
         .panel-header {
@@ -417,6 +439,10 @@
             <div id="healthContent">
                 <div class="loading">Loading system health data...</div>
             </div>
+            <div class="system-status-meta-row">
+                <span id="systemPanelReleaseVersion" aria-live="polite">Version —</span>
+                <span id="systemHealthLastUpdated" class="timestamp" aria-live="polite"></span>
+            </div>
         </div>
 
         <!-- Admin Controls Panel -->
@@ -453,6 +479,43 @@
     </div>
 
     <script>
+        let systemReleasePrefsWs = null;
+
+        function setSystemPanelReleaseVersion(version) {
+            const el = document.getElementById('systemPanelReleaseVersion');
+            if (!el || version == null || String(version).trim() === '') return;
+            el.textContent = 'Version ' + String(version).trim();
+        }
+
+        async function fetchReleaseVersionFromRedisCache() {
+            try {
+                const r = await fetch(window.location.origin + '/api/system/release_version', {
+                    credentials: 'include',
+                });
+                if (!r.ok) return;
+                const j = await r.json();
+                if (j && j.version) setSystemPanelReleaseVersion(j.version);
+            } catch (e) {
+                console.debug('release_version fetch skipped', e);
+            }
+        }
+
+        function connectSystemReleaseVersionWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            if (systemReleasePrefsWs) {
+                try { systemReleasePrefsWs.close(); } catch (e) { /* ignore */ }
+            }
+            systemReleasePrefsWs = new WebSocket(protocol + '//' + window.location.host + '/ws/preferences');
+            systemReleasePrefsWs.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'system_version' && data.version) {
+                        setSystemPanelReleaseVersion(data.version);
+                    }
+                } catch (e) { /* ignore */ }
+            };
+        }
+
         async function loadSystemHealth() {
             const content = document.getElementById('healthContent');
             content.innerHTML = '<div class="loading">Loading system health data...</div>';
@@ -476,6 +539,8 @@
             
             if (data.error) {
                 content.innerHTML = `<div class="error">${data.error}</div>`;
+                const tsEl = document.getElementById('systemHealthLastUpdated');
+                if (tsEl) tsEl.textContent = '';
                 return;
             }
             
@@ -513,9 +578,9 @@
                         <div class="health-card-value">${services}</div>
                     </div>
                 </div>
-                
-                <div class="timestamp">Last updated: ${timestamp}</div>
             `;
+            const tsEl = document.getElementById('systemHealthLastUpdated');
+            if (tsEl) tsEl.textContent = 'Last updated: ' + timestamp;
         }
         
         async function checkAdminPermissions() {
@@ -736,6 +801,8 @@
         // Load data when page loads
         document.addEventListener('DOMContentLoaded', async () => {
             loadSystemHealth();
+            void fetchReleaseVersionFromRedisCache();
+            connectSystemReleaseVersionWebSocket();
             await checkAdminPermissions();
         });
         

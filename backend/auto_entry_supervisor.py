@@ -95,13 +95,18 @@ if project_root not in sys.path:
 
 # Import the universal centralized port system
 from backend.core.port_config import (
+    default_pool_user_number,
     get_monitor_port,
     get_port,
     register_monitor_ports,
     unified_auto_entry_supervisor_service_name,
 )
 from backend.core.config.database import get_postgresql_connection as get_db_connection
-from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
+from backend.core.strike_pipeline_health import (
+    evaluate_pipeline_gate_conn,
+    floor_strike_vs_spot_check,
+)
+from backend.symbol_price_watchdog import get_current_price_from_db
 from backend.util.paths import get_host, get_data_dir, get_service_url, get_trade_history_dir, get_logs_dir
 from backend.core.time_eastern import now_est as est_now, today_est
 
@@ -112,7 +117,7 @@ def _aes_preferences_notify(event_type: str, data: dict) -> None:
         from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
 
         if use_trading_redis_comms():
-            if not publish_preferences_event(event_type, data):
+            if not publish_preferences_event(event_type, data, tenant_user_no=ctx_user()):
                 log(
                     f"[AUTO_ENTRY] Redis publish_preferences_event failed "
                     f"(event_type={event_type})"
@@ -211,7 +216,7 @@ AES_UNIFIED_HOURLY = MONITOR_IDENTIFIER == "unified_hourly"
 AES_UNIFIED_ALL = MONITOR_IDENTIFIER == "unified"
 AES_UNIFIED_POOL = AES_UNIFIED_15M or AES_UNIFIED_HOURLY or AES_UNIFIED_ALL
 if AES_UNIFIED_POOL:
-    USER_NUMBER = "0001"
+    USER_NUMBER = default_pool_user_number()
     MONITOR_ID = "0"
 else:
     USER_NUMBER = MONITOR_IDENTIFIER.split('_')[0]
@@ -253,6 +258,11 @@ def ctx_mid() -> str:
 
 def ctx_ident() -> str:
     return f"{ctx_user()}_{ctx_mid()}"
+
+
+def scoped_trade_manager_http_port() -> int:
+    """HTTP port for ``trade_manager_<this slot>`` (same tenant as ctx_user); never abstract ``trade_manager``."""
+    return get_port(f"trade_manager_{ctx_user()}")
 
 
 def _strike_cooldown_key(strike_value, active_side: str) -> str:
@@ -662,9 +672,10 @@ def _fetch_performance_modifier(weekly_cycle: int) -> float:
         from psycopg2 import sql
 
         conn = get_db_connection()
+        u = ctx_user()
         table_identifier = sql.SQL("{}.{}").format(
-            sql.Identifier("users"),
-            sql.Identifier(f"monitor_cycle_performance_{ctx_user()}_{ctx_mid()}")
+            sql.Identifier(f"users_{u}"),
+            sql.Identifier(f"monitor_cycle_performance_{u}_{ctx_mid()}"),
         )
         with conn.cursor() as cursor:
             cursor.execute(
@@ -686,9 +697,10 @@ def _fetch_max_pct_exposure(weekly_cycle: int) -> float:
         from psycopg2 import sql
 
         conn = get_db_connection()
+        u = ctx_user()
         table_identifier = sql.SQL("{}.{}").format(
-            sql.Identifier("users"),
-            sql.Identifier(f"monitor_cycle_performance_{ctx_user()}_{ctx_mid()}")
+            sql.Identifier(f"users_{u}"),
+            sql.Identifier(f"monitor_cycle_performance_{u}_{ctx_mid()}"),
         )
         with conn.cursor() as cursor:
             cursor.execute(
@@ -759,7 +771,7 @@ def update_monitor_current_state(strike_table_data: Dict[str, Any]) -> None:
             cursor.execute(
                 f"""
                 SELECT performance_based_allocation, position_size, position_type, multiplier
-                FROM users.monitor_list_{ctx_user()}
+                FROM users.monitor_list_0001
                 WHERE id = %s
                 """,
                 (ctx_mid(),)
@@ -778,7 +790,7 @@ def update_monitor_current_state(strike_table_data: Dict[str, Any]) -> None:
 
             cursor.execute(
                 f"""
-                UPDATE users.monitor_list_{ctx_user()}
+                UPDATE users.monitor_list_0001
                 SET current_contract = %s,
                     current_weekly_cycle = %s,
                     current_performance_modifier = %s,
@@ -865,7 +877,7 @@ def get_monitor_symbol():
 
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{uid0}
+            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_0001
             WHERE id = %s
         """, (mid0,))
         result = cursor.fetchone()
@@ -922,7 +934,7 @@ def get_current_monitor_symbol_and_market():
             return "BTC", "hourly"
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{ctx_user()}
+            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_0001
             WHERE id = %s
         """, (ctx_mid(),))
         result = cursor.fetchone()
@@ -1107,7 +1119,7 @@ def load_auto_entry_state_from_db():
                     )
                 
                 state = {
-                    "user_id": "user_0001",
+                    "user_id": f"user_{ctx_user()}",
                     "monitor_id": "default",
                     "enabled": False,
                     "scanning_active": False,
@@ -1261,7 +1273,7 @@ def check_spike_alert_conditions():
         if state is None:
             # Initialize state if file not found (should ideally not happen if load_auto_entry_state handles defaults)
             state = {
-                "user_id": "user_0001",
+                "user_id": f"user_{ctx_user()}",
                 "monitor_id": "default",
                 "enabled": False,
                 "scanning_active": False,
@@ -1409,7 +1421,7 @@ def start_cooldown_period_in_db():
         with conn.cursor() as cursor:
             # Update the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
-                f"UPDATE users.monitor_list_{ctx_user()} SET cooldown_start_time = NOW(), updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                "UPDATE users.monitor_list_0001 SET cooldown_start_time = NOW(), updated_at = CURRENT_TIMESTAMP WHERE id = %s",
                 (ctx_mid(),)
             )
             
@@ -1427,7 +1439,7 @@ def reset_cooldown_period_in_db():
         with conn.cursor() as cursor:
             # Reset the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
-                f"UPDATE users.monitor_list_{ctx_user()} SET cooldown_start_time = NULL, cooldown_timer = 0, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                "UPDATE users.monitor_list_0001 SET cooldown_start_time = NULL, cooldown_timer = 0, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
                 (ctx_mid(),)
             )
             
@@ -2722,10 +2734,20 @@ def get_loss_prevention_state():
         import psycopg2
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            cursor.execute("SELECT loss_prevention FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
+            cursor.execute(
+                "SELECT loss_prevention, loss_prevention_toggle FROM users.monitor_list_0001 WHERE id = %s",
+                (ctx_mid(),),
+            )
             result = cursor.fetchone()
             if result:
-                loss_prevention = result[0]
+                loss_prevention, lp_toggle = result[0], result[1]
+                toggle_on = bool(lp_toggle) if lp_toggle is not None else True
+                if not toggle_on:
+                    log_debug(
+                        f"[AUTO ENTRY] Loss prevention toggle off for monitor {ctx_mid()}; "
+                        f"ignoring loss_prevention={loss_prevention!r}"
+                    )
+                    return "off"
                 log(f"[AUTO ENTRY] Loss prevention state loaded from monitor {ctx_mid()}: {loss_prevention}")
                 return loss_prevention
             else:
@@ -2801,11 +2823,40 @@ def _defer_unified_aes_trade_followup(ticket_id: str, log_message: str, notifica
             from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
 
             if use_trading_redis_comms():
-                publish_preferences_event("automated_trade_triggered", notification_data)
+                publish_preferences_event(
+                    "automated_trade_triggered",
+                    notification_data,
+                    tenant_user_no=ctx_user(),
+                )
         except Exception:
             pass
 
     threading.Thread(target=_run, daemon=True).start()
+
+
+def _auto_entry_strike_vs_spot_gate(strike_data: dict, symbol_upper: str) -> tuple[bool, str]:
+    """
+    Failsafe: block auto-entry when the strike is wildly inconsistent with live spot.
+    Uses the same drift limits as ``floor_strike_vs_spot_check`` (see
+    ``FLOOR_STRIKE_VS_SPOT_CHECK`` and ``FLOOR_STRIKE_VS_SPOT_MAX_DRIFT_PCT``).
+    """
+    sym = (symbol_upper or "").strip().upper()
+    if not sym:
+        return True, "ok"
+    raw = strike_data.get("strike")
+    if raw is None:
+        return True, "ok"
+    try:
+        strike_f = float(raw)
+    except (TypeError, ValueError):
+        return True, "ok"
+    spot = None
+    try:
+        spot = get_current_price_from_db(sym)
+    except Exception:
+        pass
+    ok, reason, _drift = floor_strike_vs_spot_check(strike_f, spot)
+    return ok, reason
 
 
 def trigger_auto_entry_trade(strike_data):
@@ -2848,7 +2899,17 @@ def trigger_auto_entry_trade(strike_data):
                     pass
                 return False
 
-        port = get_port("trade_manager")
+        ok_spot, spot_reason = _auto_entry_strike_vs_spot_gate(
+            strike_data, (current_symbol or "").strip().upper()
+        )
+        if not ok_spot:
+            log(
+                f"[AUTO ENTRY] BLOCKED by strike vs live spot gate symbol={current_symbol} "
+                f"strike={strike_data.get('strike')} reason={spot_reason}"
+            )
+            return False
+
+        port = scoped_trade_manager_http_port()
         url = f"http://localhost:{port}/trades"
         
         strike_table_data = get_master_strike_table_data() or {}
@@ -2921,7 +2982,7 @@ def trigger_auto_entry_trade(strike_data):
             import psycopg2
             conn = get_db_connection()
             with conn.cursor() as cursor:
-                cursor.execute(f"SELECT paper_trade FROM users.monitor_list_{ctx_user()} WHERE id = %s", (ctx_mid(),))
+                cursor.execute("SELECT paper_trade FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
                 result = cursor.fetchone()
                 if result and result[0] is not None:
                     paper_trade = bool(result[0])
@@ -2947,7 +3008,7 @@ def trigger_auto_entry_trade(strike_data):
             "buy_price": strike_data.get("buy_price"),
             "position": position_size,
             "count_fp": f"{float(position_size):.2f}",
-            "monitor": f"mon_0001_{ctx_mid()}",
+            "monitor": f"mon_{ctx_user()}_{ctx_mid()}",
             "bankroll_allotment_total": bankroll_allotment,
             "entry_method": "auto_entry",
             "loss_prevention": loss_prevention == "one_contract",
@@ -2955,7 +3016,7 @@ def trigger_auto_entry_trade(strike_data):
             "paper_trade": paper_trade
         }
         
-        log(f"[AUTO ENTRY] 📤 Sending trade to trade_manager: {trade_payload}")
+        log(f"[AUTO ENTRY] 📤 Sending trade to trade_manager_{ctx_user()} :{port}/trades | {trade_payload}")
 
         log_message = (
             f"ENTRY | {contract_name} | {strike_data.get('strike')} | {strike_data.get('side')} | "
@@ -2979,6 +3040,7 @@ def trigger_auto_entry_trade(strike_data):
                 trade_payload,
                 "auto_entry_supervisor",
                 correlation_id=ticket_id,
+                tenant_user_no=ctx_user(),
             )
         )
 
@@ -3015,7 +3077,11 @@ def trigger_auto_entry_trade(strike_data):
                 from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms as _use_trc
 
                 if _use_trc():
-                    publish_preferences_event("automated_trade_triggered", notification_data)
+                    publish_preferences_event(
+                        "automated_trade_triggered",
+                        notification_data,
+                        tenant_user_no=ctx_user(),
+                    )
             except Exception:
                 pass
 
@@ -3091,7 +3157,7 @@ def has_bracket_for_cycle(contract: Optional[str] = None, strike_tier: Optional[
         cursor = conn.cursor()
         
         # Get current monitor identifier
-        current_monitor = f"mon_0001_{ctx_mid()}"
+        current_monitor = f"mon_{ctx_user()}_{ctx_mid()}"
         
         # Query trades_0001 table for open/pending trades from this monitor with the same contract
         cursor.execute("""
@@ -3167,7 +3233,7 @@ def is_strike_already_traded(strike_data):
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        current_monitor = f"mon_0001_{ctx_mid()}"
+        current_monitor = f"mon_{ctx_user()}_{ctx_mid()}"
         ticker = strike_data.get("ticker")
         want_side = _aes_side_bucket_for_dedupe(strike_data.get("side"))
         if not ticker or not want_side:
@@ -3268,7 +3334,7 @@ def is_strike_already_simulated_traded(strike_data):
                 cursor.execute("""
                     SELECT 1 FROM users.trades_simulated_0001
                     WHERE monitor = %s AND date = %s AND contract = %s AND strike = %s AND side = %s
-                """, (f"mon_0001_{ctx_mid()}", date_str, contract_str, strike_str, db_side))
+                """, (f"mon_{ctx_user()}_{ctx_mid()}", date_str, contract_str, strike_str, db_side))
                 return cursor.fetchone() is not None
         finally:
             conn.close()
@@ -3295,7 +3361,7 @@ def trigger_simulated_trade(strike_data):
     from datetime import datetime
     from zoneinfo import ZoneInfo
     try:
-        port = get_port("trade_manager")
+        port = scoped_trade_manager_http_port()
         current_symbol = get_current_monitor_symbol()
         hour_24, minute = _next_15m_boundary_est()
         contract_name = _format_15m_contract_label(current_symbol, hour_24, minute)
@@ -3311,7 +3377,7 @@ def trigger_simulated_trade(strike_data):
             "contract": contract_name, "strike": strike_data.get("strike"), "side": conv_side,
             "ticker": strike_data.get("ticker"), "prob": strike_data.get("probability"),
             "position": 1,
-            "monitor": f"mon_0001_{ctx_mid()}", "bankroll_allotment_total": bankroll_allotment,
+            "monitor": f"mon_{ctx_user()}_{ctx_mid()}", "bankroll_allotment_total": bankroll_allotment,
             "entry_method": "simulated_15m", "loss_prevention": False, "multiplier": get_current_multiplier(),
             "paper_trade": True, "simulated_trade": True,
         }
@@ -3319,7 +3385,10 @@ def trigger_simulated_trade(strike_data):
 
         r = None
         if use_trading_redis_comms() and publish_trade_manager_command(
-            "add_trade", payload, "auto_entry_supervisor"
+            "add_trade",
+            payload,
+            "auto_entry_supervisor",
+            tenant_user_no=ctx_user(),
         ):
             class _Ok:
                 status_code = 201
@@ -5862,7 +5931,9 @@ def spike_alert_settings():
         else:
             # POST - Update settings
             data = request.json
-            settings_path = os.path.join(get_data_dir(), "users", "user_0001", "preferences", "auto_entry_settings.json")
+            settings_path = os.path.join(
+                get_data_dir(), "users", f"user_{ctx_user()}", "preferences", "auto_entry_settings.json"
+            )
             
             # Load current settings
             if os.path.exists(settings_path):

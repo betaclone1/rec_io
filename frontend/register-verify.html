@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>rec.io - Verify email</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap" rel="stylesheet">
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: 'IBM Plex Sans', sans-serif;
+      background: url('/images/splash_page_bg.jpg') center/cover no-repeat;
+      color: white;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      touch-action: auto;
+    }
+    .register-container {
+      width: 360px;
+      margin-right: 200px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    @media (max-width: 768px) {
+      body { justify-content: center; }
+      .register-container { margin-right: 0; width: 90%; max-width: 400px; }
+    }
+    .register-logo {
+      width: 150px;
+      height: auto;
+      margin-bottom: 28px;
+    }
+    .register-form {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .form-label {
+      font-size: 14px;
+      font-weight: 500;
+      color: white;
+    }
+    .form-hint {
+      font-size: 12px;
+      line-height: 1.35;
+      color: rgba(255, 255, 255, 0.82);
+    }
+    .form-input {
+      padding: 12px 16px;
+      border: none;
+      border-radius: 8px;
+      background: #e0e0e0;
+      color: #333;
+      font-size: 20px;
+      letter-spacing: 0.25em;
+      text-align: center;
+      font-family: inherit;
+      box-sizing: border-box;
+    }
+    .form-input:focus {
+      outline: none;
+      background: #f0f0f0;
+    }
+    .field-error {
+      font-size: 12px;
+      color: #ffb4b4;
+      min-height: 16px;
+      display: none;
+    }
+    .field-error.visible { display: block; }
+    .register-button {
+      background: #2c3e50;
+      color: white;
+      border: none;
+      padding: 14px 20px;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 12px;
+      width: 100%;
+    }
+    .register-button:hover { background: #34495e; }
+    .register-button:disabled { background: #666; cursor: not-allowed; }
+    .error-message, .success-message {
+      font-size: 13px;
+      text-align: center;
+      margin-top: 8px;
+      display: none;
+      line-height: 1.4;
+    }
+    .error-message { color: #e74c3c; }
+    .success-message { color: #27ae60; }
+    .resend-wrap {
+      margin-top: 16px;
+      text-align: center;
+    }
+    .resend-link {
+      background: none;
+      border: none;
+      color: rgba(255, 255, 255, 0.95);
+      text-decoration: underline;
+      font-size: 14px;
+      font-family: inherit;
+      cursor: pointer;
+      padding: 0;
+    }
+    .resend-link:hover { color: #fff; }
+    .resend-link:disabled {
+      color: rgba(255, 255, 255, 0.45);
+      cursor: not-allowed;
+      text-decoration: none;
+    }
+    .nav-links {
+      margin-top: 20px;
+      text-align: center;
+      font-size: 14px;
+    }
+    .nav-links a {
+      color: rgba(255, 255, 255, 0.95);
+      text-decoration: underline;
+    }
+    .nav-links a:hover { color: #fff; }
+  </style>
+</head>
+<body>
+  <div class="register-container">
+    <img src="/images/rec_logo_trns.png" alt="REC.IO" class="register-logo">
+    <p class="form-hint" id="introLine" style="text-align: center; margin: 0 0 8px;">
+      Enter the 6-digit code that was sent to your email.
+    </p>
+    <form class="register-form" id="verifyForm" novalidate>
+      <input type="hidden" id="user_id" name="user_id" value="">
+      <div class="form-group">
+        <label for="code" class="form-label">Verification code</label>
+        <input type="text" id="code" name="code" class="form-input" required maxlength="8" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" autocorrect="off" spellcheck="false">
+        <span class="field-error" id="err-code" aria-live="polite"></span>
+      </div>
+      <div class="error-message" id="errorMessage" role="alert"></div>
+      <div class="success-message" id="successMessage" role="status"></div>
+      <button type="submit" class="register-button" id="verifyButton">
+        <span id="verifyButtonText">Verify</span>
+      </button>
+    </form>
+    <div class="resend-wrap">
+      <button type="button" class="resend-link" id="resendLink">Re-send Verification Code</button>
+    </div>
+    <div class="nav-links">
+      <a href="/login">Back to sign in</a>
+    </div>
+  </div>
+
+  <script>
+    function qs(name) {
+      var m = new RegExp('[?&]' + encodeURIComponent(name) + '=([^&]*)').exec(window.location.search);
+      return m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : '';
+    }
+
+    function applicationSubmittedUrl(d) {
+      var parts = [];
+      if (d.first_name) parts.push('first_name=' + encodeURIComponent(d.first_name));
+      if (d.email) parts.push('email=' + encodeURIComponent(d.email));
+      if (d.submitted_on) parts.push('submitted_on=' + encodeURIComponent(d.submitted_on));
+      return '/register/application-submitted' + (parts.length ? ('?' + parts.join('&')) : '');
+    }
+
+    var userId = qs('user_id').trim();
+    var userEmail = qs('email').trim();
+    document.getElementById('user_id').value = userId;
+
+    function setIntroLine() {
+      var el = document.getElementById('introLine');
+      if (!userId) return;
+      if (userEmail) {
+        el.textContent = 'Enter the 6-digit code that was sent to ' + userEmail + '.';
+      } else {
+        el.textContent = 'Enter the 6-digit code that was sent to your email.';
+      }
+    }
+
+    if (!userId) {
+      document.getElementById('introLine').textContent = 'Missing User ID. Return to registration or open the link from your registration confirmation.';
+      document.getElementById('verifyButton').disabled = true;
+      document.getElementById('resendLink').disabled = true;
+    } else {
+      setIntroLine();
+    }
+
+    function showErr(elId, msg) {
+      var n = document.getElementById(elId);
+      if (!n) return;
+      n.textContent = msg || '';
+      if (msg) n.classList.add('visible');
+      else n.classList.remove('visible');
+    }
+
+    function clearMessages() {
+      showErr('err-code', '');
+      document.getElementById('errorMessage').style.display = 'none';
+      document.getElementById('successMessage').style.display = 'none';
+    }
+
+    document.getElementById('code').addEventListener('input', function() {
+      this.value = this.value.replace(/\D/g, '').slice(0, 6);
+    });
+
+    document.getElementById('verifyForm').onsubmit = function(e) {
+      e.preventDefault();
+      clearMessages();
+      var uid = document.getElementById('user_id').value.trim();
+      var code = document.getElementById('code').value.trim();
+      var btn = document.getElementById('verifyButton');
+      var btnText = document.getElementById('verifyButtonText');
+      if (!uid) return false;
+      if (!code || code.length !== 6) {
+        showErr('err-code', 'Enter the 6-digit code from your email.');
+        return false;
+      }
+      btn.disabled = true;
+      btnText.textContent = 'Verifying...';
+      fetch(window.location.origin + '/api/auth/register/verify-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: uid, code: code })
+      })
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.success) {
+          if (d.already_active) {
+            window.location.href = '/login?already_verified=1';
+            return;
+          }
+          if (d.application_pending) {
+            window.location.href = applicationSubmittedUrl(d);
+            return;
+          }
+          window.location.href = applicationSubmittedUrl(d);
+          return;
+        }
+        if (d.field_errors && d.field_errors.code) {
+          showErr('err-code', d.field_errors.code);
+        }
+        var em = document.getElementById('errorMessage');
+        em.textContent = d.error || 'Verification failed.';
+        em.style.display = 'block';
+        btn.disabled = false;
+        btnText.textContent = 'Verify';
+      })
+      .catch(function() {
+        document.getElementById('errorMessage').textContent = 'Network error. Please try again.';
+        document.getElementById('errorMessage').style.display = 'block';
+        btn.disabled = false;
+        btnText.textContent = 'Verify';
+      });
+      return false;
+    };
+
+    document.getElementById('resendLink').onclick = function() {
+      var link = this;
+      var uid = document.getElementById('user_id').value.trim();
+      clearMessages();
+      if (!uid) return;
+      link.disabled = true;
+      fetch(window.location.origin + '/api/auth/register/resend-verification', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: uid })
+      })
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.success) {
+          var sm = document.getElementById('successMessage');
+          sm.textContent = 'A new code was sent. Check your email.';
+          sm.style.display = 'block';
+          setTimeout(function() { link.disabled = false; }, 65000);
+          return;
+        }
+        if (d.already_active) {
+          window.location.href = '/login?already_verified=1';
+          return;
+        }
+        if (d.application_pending) {
+          window.location.href = applicationSubmittedUrl(d);
+          return;
+        }
+        var em = document.getElementById('errorMessage');
+        em.textContent = d.error || 'Could not resend.';
+        em.style.display = 'block';
+        link.disabled = false;
+      })
+      .catch(function() {
+        document.getElementById('errorMessage').textContent = 'Network error. Please try again.';
+        document.getElementById('errorMessage').style.display = 'block';
+        link.disabled = false;
+      });
+    };
+  </script>
+</body>
+</html>

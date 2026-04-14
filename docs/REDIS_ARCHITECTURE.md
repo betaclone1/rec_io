@@ -15,8 +15,8 @@ This doc describes the full recommended architecture: the real-time backbone (Po
 | **PostgreSQL** | Source of truth. Stores all state. Triggers on watched tables fire NOTIFY with `{schema, table, op}`. | No Redis, no HTTP, no business logic beyond triggers. |
 | **Redis** | Carries one channel `rec_io:db_changes`. Receives messages from switchboard; **main_app** (forwarder) and backend subscribers consume. Routing only. | No queries, no calculation, no formatting, no storage of application data. |
 | **Switchboard** | One process. LISTENs to PostgreSQL NOTIFY; maps (schema, table) → stream name via stream registry; publishes one JSON message per event to Redis. Optional WS on its own port for tools; **not** required for product UIs. Serves `/health` and pilot test UI only. | No read/aggregate endpoints, no auth, no business logic. |
-| **read_api** | One persistent process (supervisor: `read_api`). Hosts read/aggregate HTTP endpoints. Request in → run query (and any calculation/formatting) → return JSON. Does **not** subscribe to Redis. | No WebSocket, no Redis subscribe. |
-| **Main** | Auth, static frontend, proxy to read_api, **`/ws/db_changes`** (Redis forward to browsers + `notify_db_change`), write/action routes as needed. | Read SQL for routes that have been migrated to read_api should stay in read_api. |
+| **read_api** | One persistent process (supervisor: `read_api`). Hosts read/aggregate HTTP **and** session auth (`/api/auth/*`, `/api/user/*`): pure ASGI tenant middleware (Bearer / `?token=` / dev `user_id`) scopes PostgreSQL to `users_NNNN`. | No WebSocket, no Redis subscribe. |
+| **Main** | Static frontend, **opaque HTTP proxy** to read_api for `/api/auth/*`, `/api/user/*`, and migrated read routes (forwards `Authorization` and session query params), **`/ws/db_changes`** (Redis forward to browsers + `notify_db_change`), write/action routes as needed. | No new tenant resolution or login logic on main; no duplicate SQL for paths proxied to read_api. |
 | **Frontend** | Loads from main. Subscribes to **`/ws/db_changes` on the same host as the page**. On message, filters by `database` and refetches the endpoints that need fresh data. | Does not hardcode internal service ports for real pages. |
 
 ---
@@ -27,7 +27,7 @@ This doc describes the full recommended architecture: the real-time backbone (Po
 2. **Trigger:** `public.rec_io_db_notify()` runs (four times or coalesced); sends NOTIFY on channel `rec_io_db_changes` with payload `{"schema":"users","table":"trades_0001","op":"UPDATE"}`.
 3. **Switchboard:** LISTEN thread receives NOTIFY; stream registry maps `(users, trades_0001)` → `trades`; builds message `{ type: "db_change", database: "trades", data: { change_data: { schema, table, op } }, timestamp }`; publishes to Redis `rec_io:db_changes`.
 4. **Main + frontend:** Main’s Redis subscriber receives the same message and sends it to browsers on **same-origin** `/ws/db_changes`. The frontend receives the message. Handler for `database === 'trades'` runs. Dashboard knows which areas depend on trades: Performance panel (day/week/month/year PnL and ret%), bankroll/portfolio if derived from trades, monitor cards’ PnL/Ret%, allocation if relevant. It **refetches** the corresponding **read_api** endpoints in parallel (e.g. `GET /api/performance/realized`, `GET /api/portfolio/history`, monitor stats, etc.).
-5. **read_api:** Receives those HTTP requests. For each request, runs the appropriate query (which now sees the four updated rows), computes and formats the result, returns JSON. No Redis subscription; it only responds to HTTP.
+5. **read_api:** Receives those HTTP requests (same-origin via main proxy is typical: browser sends `Authorization: Bearer …` or `?token=`; main forwards headers). For each request, tenant middleware sets the slot, then the handler runs the query (which now sees the four updated rows), computes and formats the result, returns JSON. No Redis subscription; it only responds to HTTP.
 6. **Frontend:** Gets responses; updates the dozen (or more) display areas. Real-time update complete.
 
 So: **signals** are pushed (DB → NOTIFY → switchboard → Redis → **main** → same-origin WS). **Values** are pulled (frontend refetches read_api on signal). All calculation and formatting for display happens in **read_api** on that refetch.
@@ -48,9 +48,11 @@ So: **signals** are pushed (DB → NOTIFY → switchboard → Redis → **main**
 - **Account manager:** Fills, positions, settlements, account balance, subaccounts, transfers (read views).
 - **Strike table / other:** Any other endpoint that is “read from DB (and optionally aggregate) and return JSON.”
 
-**What read_api does not do:** Auth (can be done by main in front of it, or minimal auth in read_api), WebSocket, Redis subscribe, broadcast, or write operations (those stay in main or other services). Optional: short TTL cache per endpoint if a query is expensive.
+**What read_api does not do:** WebSocket, Redis subscribe, broadcast, or broad write operations (those stay in main or other services). Session **login/verify/logout** and Bearer-scoped **user profile** reads/writes live **on read_api**. Optional: short TTL cache per endpoint if a query is expensive.
 
-**Deployment:** Run as a single process under supervisor (e.g. program name `read_api`, command e.g. `python -m backend.read_api`). Port from manifest. Frontend can call it directly (e.g. same host, different port) or via main as reverse proxy so the browser still talks to one origin.
+**Deployment:** Run as a single process under supervisor (e.g. program name `read_api`, command e.g. `python -m backend.read_api`). Port from manifest (default **3050**). Frontend should use **same-origin** `/api/...` on main so cookies and relative URLs stay simple; main forwards `Authorization` (and optional `token` / `user_id` query mirrors) to read_api. Alternatively, terminate `/api` at the edge (Caddy/nginx) directly to read_api and serve static/`ws` from main (**no** tenant SQL on main for those paths).
+
+**Auth:** Implemented on **read_api** (`backend/web/` — session files under `data/users/user_NNNN/auth_tokens.json`, unified password verification). Main does not verify passwords for product login; it only proxies.
 
 ---
 

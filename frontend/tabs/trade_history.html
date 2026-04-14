@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <script src="/js/rec_session.js"></script>
+
   <meta charset="UTF-8" />
   <meta http-equiv="X-UA-Compatible" content="IE=edge" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -881,9 +883,14 @@
       const container = document.getElementById('strategy-checkboxes-container');
       if (!container) return [];
       try {
-        const response = await fetch('/api/strategies?user_id=user_0001');
+        const response = await fetch('/api/strategies');
         const data = await response.json();
-        if (data.status !== 'ok' || !Array.isArray(data.strategies)) return [];
+        if (!response.ok || data.status !== 'ok' || !Array.isArray(data.strategies)) {
+          if (!response.ok || data.status !== 'ok') {
+            console.warn('loadStrategyOptions: /api/strategies failed', response.status, data);
+          }
+          return [];
+        }
         const rawStrategies = Array.isArray(data.strategies) ? data.strategies : [];
         const rawDefaults = Array.isArray(data.default_strategy_names) ? data.default_strategy_names : rawStrategies;
         strategyDefaultNames = Array.from(new Set(rawDefaults.filter(Boolean)));
@@ -1005,6 +1012,33 @@
       renderTrades(filteredTrades);
     }
 
+    /** Summary panel: thousands separators when |n| >= 1000 */
+    function formatSummaryNumber(n, fractionDigits) {
+      const v = Number(n);
+      if (isNaN(v)) return String(n);
+      if (Math.abs(v) < 1000) return v.toFixed(fractionDigits);
+      return v.toLocaleString('en-US', {
+        minimumFractionDigits: fractionDigits,
+        maximumFractionDigits: fractionDigits,
+      });
+    }
+    function formatSummaryTradeCount(n) {
+      const v = Math.floor(Number(n));
+      if (isNaN(v) || Math.abs(v) < 1000) return String(isNaN(v) ? n : v);
+      return v.toLocaleString('en-US');
+    }
+    function formatSummaryPnL(n) {
+      const v = Number(n);
+      if (isNaN(v)) return '$0.00';
+      if (Math.abs(v) < 1000) return `$${v.toFixed(2)}`;
+      const neg = v < 0;
+      const body = Math.abs(v).toLocaleString('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+      return (neg ? '-$' : '$') + body;
+    }
+
     function updateSummary(trades) {
       const tradeCountEl = document.getElementById('trade-count');
       const avgProbEl = document.getElementById('avg-prob');
@@ -1099,7 +1133,7 @@
         }
       });
       const retValue = retPctCount > 0 ? totalRetPct : 0;
-      const retPercentage = retValue.toFixed(2) + '%';
+      const retPercentage = `${formatSummaryNumber(retValue, 2)}%`;
       
       // Calculate total PnL and total investment (for display only)
       let totalPnlDisplay = 0;
@@ -1113,13 +1147,13 @@
       });
       
       // Update the display
-      tradeCountEl.textContent = tradeCount.toString();
-      avgProbEl.textContent = `${avgProb.toFixed(1)}%`;
-      winLossEl.textContent = `${winPercentage.toFixed(1)}%`;
-      avgBuyEl.textContent = `${avgBuy.toFixed(2)}`;
-      avgDiffEl.textContent = `${avgDiff > 0 ? '+' : ''}${avgDiff.toFixed(1)}`;
+      tradeCountEl.textContent = formatSummaryTradeCount(tradeCount);
+      avgProbEl.textContent = `${formatSummaryNumber(avgProb, 1)}%`;
+      winLossEl.textContent = `${formatSummaryNumber(winPercentage, 1)}%`;
+      avgBuyEl.textContent = formatSummaryNumber(avgBuy, 2);
+      avgDiffEl.textContent = `${avgDiff > 0 ? '+' : ''}${formatSummaryNumber(avgDiff, 1)}`;
       retPercentageEl.textContent = retPercentage;
-      totalPnlEl.textContent = `$${totalPnlDisplay.toFixed(2)}`;
+      totalPnlEl.textContent = formatSummaryPnL(totalPnlDisplay);
       
       // Color coding for Ret %
       if (retValue > 0) {
@@ -1910,7 +1944,7 @@
       // Load monitor options from API
       async function loadMonitorOptions() {
         try {
-          const response = await fetch('/api/trades/monitors?user_id=user_0001');
+          const response = await fetch('/api/trades/monitors');
           const data = await response.json();
           
           if (data.status === 'ok' && data.monitors) {

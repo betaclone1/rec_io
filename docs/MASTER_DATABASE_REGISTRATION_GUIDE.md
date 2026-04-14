@@ -97,29 +97,29 @@ export MASTER_DB_PASSWORD=your_secure_password
 PGPASSWORD=your_secure_password psql -h your_master_server_ip -U rec_io_master_user -d rec_io_master
 
 # View all users
-SELECT user_id, name, email, server_ip, registration_date, status FROM master_users ORDER BY registration_date DESC;
+SELECT user_id, name, email, server_ip, registration_date, status FROM system.master_users ORDER BY registration_date DESC;
 
 # View active users
-SELECT user_id, name, email, server_ip FROM master_users WHERE status = 'active';
+SELECT user_id, name, email, server_ip FROM system.master_users WHERE status = 'active';
 
 # View recent registrations
-SELECT user_id, name, email, registration_date FROM master_users WHERE registration_date > NOW() - INTERVAL '7 days';
+SELECT user_id, name, email, registration_date FROM system.master_users WHERE registration_date > NOW() - INTERVAL '7 days';
 ```
 
 #### **Update User Status**
 ```bash
 # Mark user as inactive
-UPDATE master_users SET status = 'inactive', last_updated = NOW() WHERE user_id = 'user_0002';
+UPDATE system.master_users SET status = 'inactive', last_updated = NOW() WHERE user_id = 'user_0002';
 
 # Add notes to user
-UPDATE master_users SET notes = 'Testing phase completed', last_updated = NOW() WHERE user_id = 'user_0002';
+UPDATE system.master_users SET notes = 'Testing phase completed', last_updated = NOW() WHERE user_id = 'user_0002';
 ```
 
 ## Master Database Schema
 
-### **master_users Table**
+### **system.master_users Table**
 ```sql
-CREATE TABLE master_users (
+CREATE TABLE system.master_users (
     id SERIAL PRIMARY KEY,
     user_id VARCHAR(50) UNIQUE NOT NULL,
     name VARCHAR(255) NOT NULL,
@@ -140,14 +140,14 @@ CREATE TABLE master_users (
 #### **System Overview**
 ```sql
 -- Total registered users
-SELECT COUNT(*) as total_users FROM master_users;
+SELECT COUNT(*) as total_users FROM system.master_users;
 
 -- Users by status
-SELECT status, COUNT(*) as count FROM master_users GROUP BY status;
+SELECT status, COUNT(*) as count FROM system.master_users GROUP BY status;
 
 -- Recent registrations
 SELECT user_id, name, email, registration_date 
-FROM master_users 
+FROM system.master_users 
 WHERE registration_date > NOW() - INTERVAL '30 days'
 ORDER BY registration_date DESC;
 ```
@@ -156,13 +156,13 @@ ORDER BY registration_date DESC;
 ```sql
 -- Users with server information
 SELECT user_id, name, server_ip, server_hostname, last_updated
-FROM master_users 
+FROM system.master_users 
 WHERE status = 'active'
 ORDER BY last_updated DESC;
 
 -- Inactive users
 SELECT user_id, name, email, last_updated
-FROM master_users 
+FROM system.master_users 
 WHERE status = 'inactive'
 ORDER BY last_updated DESC;
 ```

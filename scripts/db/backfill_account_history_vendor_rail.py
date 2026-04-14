@@ -15,19 +15,25 @@ sys.path.insert(0, str(ROOT))
 
 
 def main():
-    from backend.core.config.database import get_postgresql_connection
+    from backend.core.config.database import get_system_postgresql_connection
 
-    conn = get_postgresql_connection()
+    conn = get_system_postgresql_connection()
     if not conn:
         print("Failed to connect to database.")
         return 1
 
     with conn.cursor() as cur:
-        cur.execute("SELECT kalshi_user_id FROM users.user_info_0001 WHERE user_no = '0001' LIMIT 1")
+        cur.execute(
+            """
+            SELECT kalshi_user_id FROM system.master_users
+            WHERE LPAD(TRIM(user_no::text), 4, '0') = '0001'
+            LIMIT 1
+            """
+        )
         row = cur.fetchone()
     kalshi_user_id = (row[0] or "").strip() if row and row[0] else None
     if not kalshi_user_id:
-        print("No kalshi_user_id in users.user_info_0001.")
+        print("No kalshi_user_id in system.master_users for user_no 0001.")
         return 1
 
     from backend.kalshi_account_sync_ws import (

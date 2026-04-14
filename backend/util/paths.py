@@ -1,6 +1,18 @@
 import os
 import platform
+import re
 from pathlib import Path
+
+_USER_NO_ENV_RE = re.compile(r"^\d{4}$")
+
+
+def _tenant_user_no_for_paths() -> str:
+    """Prefer REC_USER_NO (supervisor); single-user installs default to 0001."""
+    u = os.environ.get("REC_USER_NO", "").strip()
+    if _USER_NO_ENV_RE.match(u):
+        return u
+    return "0001"
+
 
 def get_project_root():
     """Get the absolute path to the project root directory."""
@@ -21,8 +33,8 @@ def get_coinbase_data_dir():
 
 def get_accounts_data_dir():
     """Get the accounts data directory path."""
-    # Only use user-specific accounts location
-    return os.path.join(get_data_dir(), "users", "user_0001", "accounts")
+    u = _tenant_user_no_for_paths()
+    return os.path.join(get_data_dir(), "users", f"user_{u}", "accounts")
 
 def get_price_history_dir():
     """Get the price history directory path."""
@@ -34,13 +46,13 @@ def get_btc_price_history_dir():
 
 def get_trade_history_dir():
     """Get the trade history directory path."""
-    # Only use user-specific trade history location
-    return os.path.join(get_data_dir(), "users", "user_0001", "trade_history")
+    u = _tenant_user_no_for_paths()
+    return os.path.join(get_data_dir(), "users", f"user_{u}", "trade_history")
 
 def get_active_trades_dir():
     """Get the active trades directory path."""
-    # Only use user-specific active trades location
-    return os.path.join(get_data_dir(), "users", "user_0001", "active_trades")
+    u = _tenant_user_no_for_paths()
+    return os.path.join(get_data_dir(), "users", f"user_{u}", "active_trades")
 
 def get_logs_dir():
     """Get the logs directory path."""
@@ -48,8 +60,10 @@ def get_logs_dir():
 
 def get_kalshi_credentials_dir():
     """Get the Kalshi credentials directory path."""
-    # Credentials ONLY live in user-based location for security
-    return os.path.join(get_data_dir(), "users", "user_0001", "credentials", "kalshi-credentials")
+    u = _tenant_user_no_for_paths()
+    return os.path.join(
+        get_data_dir(), "users", f"user_{u}", "credentials", "kalshi-credentials"
+    )
 
 def get_supervisor_config_path():
     """Get the supervisor configuration file path."""
@@ -97,7 +111,14 @@ def ensure_data_dirs():
         get_btc_price_history_dir(),
         get_logs_dir(),
         # User credentials directories (only these are still needed)
-        os.path.join(get_data_dir(), "users", "user_0001", "credentials", "kalshi-credentials", "prod"),
+        os.path.join(
+            get_data_dir(),
+            "users",
+            f"user_{_tenant_user_no_for_paths()}",
+            "credentials",
+            "kalshi-credentials",
+            "prod",
+        ),
         os.path.join(get_data_dir(), "users", "user_0001", "credentials", "kalshi-credentials", "demo"),
     ]
     for dir_path in dirs:

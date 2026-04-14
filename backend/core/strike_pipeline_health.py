@@ -61,6 +61,51 @@ def default_max_age_hourly_market_sec() -> int:
     return pipeline_health_writer_dead_sec()
 
 
+def floor_strike_vs_spot_check_enabled() -> bool:
+    """When False, skip floor_strike vs spot sanity checks (emergency override). Default on."""
+    return os.getenv("FLOOR_STRIKE_VS_SPOT_CHECK", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def floor_strike_vs_spot_max_drift_pct() -> float:
+    """
+    Max allowed percent difference between a Kalshi ``floor_strike`` (or anchor strike)
+    and the live symbol spot. Above this, data is treated as corrupt: strike updates are
+    skipped and ``strike_pipeline_health`` is marked unhealthy (strict mode gates trading).
+    """
+    try:
+        return float(os.getenv("FLOOR_STRIKE_VS_SPOT_MAX_DRIFT_PCT", "10"))
+    except (TypeError, ValueError):
+        return 10.0
+
+
+def floor_strike_vs_spot_check(
+    floor_strike_val: object,
+    spot: float | None,
+) -> tuple[bool, str, float | None]:
+    """
+    Return (ok, reason, drift_pct). Missing or invalid spot skips the check (ok True).
+    ``drift_pct`` is ``|floor - spot| / spot * 100`` when comparable.
+    """
+    if not floor_strike_vs_spot_check_enabled():
+        return True, "check_disabled", None
+    if spot is None or float(spot) <= 0:
+        return True, "no_spot_baseline", None
+    try:
+        fs = float(floor_strike_val)
+    except (TypeError, ValueError):
+        return True, "unparseable_floor_skip", None
+    drift = abs(fs - float(spot)) / float(spot) * 100.0
+    cap = floor_strike_vs_spot_max_drift_pct()
+    if drift > cap:
+        return False, f"floor_strike_vs_spot_drift_{drift:.2f}_pct_gt_{cap}", drift
+    return True, "ok", drift
+
+
 def upsert_strike_pipeline_health(
     conn,
     *,

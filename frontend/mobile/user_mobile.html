@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <script src="/js/rec_session.js"></script>
+
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>User - REC.IO Mobile</title>
@@ -227,9 +229,9 @@
         // Logout functionality
         document.getElementById('logoutButton').addEventListener('click', async () => {
             const token = localStorage.getItem('rec_auth_token');
-            const deviceId = localStorage.getItem('rec_device_id');
+            const deviceId = localStorage.getItem('rec_device_id') || '';
             
-            if (token && deviceId) {
+            if (token) {
                 try {
                     const response = await fetch(window.location.origin + '/api/auth/logout', {
                         method: 'POST',
@@ -252,8 +254,10 @@
             // Clear local storage
             localStorage.removeItem('rec_auth_token');
             localStorage.removeItem('rec_device_id');
+            localStorage.removeItem('rec_user_no');
             localStorage.removeItem('rec_local_bypass');
-            
+            if (typeof recClearAuthCookie === 'function') recClearAuthCookie();
+
             // Redirect to login page
             window.location.href = '/login';
         });

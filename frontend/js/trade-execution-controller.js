@@ -189,7 +189,7 @@ window.prepareTradeData = async function(target) {
     }
     
     console.log('DEBUG: Fetching monitor data for ID:', currentMonitorId);
-    const response = await fetch(window.location.origin + `/api/monitor/${currentMonitorId}?user_id=user_0001`);
+    const response = await fetch(window.location.origin + `/api/monitor/${currentMonitorId}`);
     console.log('DEBUG: Monitor API response status:', response.status);
     if (response.ok) {
       const data = await response.json();
@@ -308,7 +308,7 @@ window.prepareTradeData = async function(target) {
       return null;
     }
     
-    const response = await fetch(window.location.origin + `/api/monitor/${currentMonitorId}?user_id=user_0001`);
+    const response = await fetch(window.location.origin + `/api/monitor/${currentMonitorId}`);
     if (response.ok) {
       const data = await response.json();
       if (data.status === 'ok' && data.monitor) {

@@ -1,7 +1,12 @@
 """
-Single-market **HTC-style** replay against ``backtest.backtest_1m_*`` rows.
+Single-market **HTC-style** replay against ``backtest.backtest_1m_*`` rows (1-minute bars), or
+``backtest.tick_backtest_*`` (1-second strike-shaped rows) when ``from_tick_table=True``.
 
-- Entry: ``min_time <= ttc_15m_close_seconds <= max_time`` from **strategy defaults**
+- **Tick replay:** chronological ``ORDER BY timestamp``; AES uses ``ttc_15m`` and
+  ``tick_backtest_row_to_strike_mapping``; ATS uses ``ttc_15m``, point ``yes_prob_15m`` / ``no_prob_15m``,
+  and trade-carried asks (same harness as 1m, finer timestep).
+
+- Entry (1m): ``min_time <= ttc_15m_close_seconds <= max_time`` from **strategy defaults**
   (``users.strategy_list_<user>`` by name, usually ``15m HTC`` vs ``Hourly HTC`` from the ticker) or
   optionally a specific ``users.monitor_list_<user>`` row; then
   ``backend.util.auto_entry_htc_gates.evaluate_hourly_htc_strike_entry`` on a strike-shaped dict built
@@ -38,9 +43,49 @@ from backend.util.auto_entry_htc_gates import (
     evaluate_hourly_htc_strike_entry,
     format_strike_label,
 )
+from datetime import datetime
+
+from zoneinfo import ZoneInfo
+
 from scripts.backtest.helpers.backtest_strike_span import implied_no_ask_min_max_from_yes_ask_bar
 from scripts.backtest.helpers.htc_aes_replay import infer_contract_market_from_kalshi_ticker
-from scripts.backtest.helpers.kalshi_candles_1m import qualified_backtest_candles_table
+from scripts.backtest.helpers.kalshi_candles_1m import (
+    qualified_backtest_candles_table,
+    resolve_floor_strike_and_market_result,
+)
+from scripts.backtest.helpers.tick_backtest_build import tick_backtest_relname
+
+_EASTERN = ZoneInfo("America/New_York")
+# US Eastern legal time (EST/EDT via DST). All replay clock strings use this IANA zone.
+
+
+def _eastern_naive_iso(ts: Any) -> Optional[str]:
+    """Wall-clock time in America/New_York as a naive ISO string (no ``Z``); used for ``*_et_naive`` fields."""
+    if ts is None:
+        return None
+    if not isinstance(ts, datetime):
+        return str(ts)
+    if ts.tzinfo is None:
+        return ts.isoformat()
+    return ts.astimezone(_EASTERN).replace(tzinfo=None).isoformat()
+
+
+def _eastern_offset_iso(ts: Any) -> Optional[str]:
+    """ISO-8601 with numeric offset in America/New_York (unambiguous EST vs EDT)."""
+    if ts is None or not isinstance(ts, datetime):
+        return None
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=_EASTERN).isoformat()
+    return ts.astimezone(_EASTERN).isoformat()
+
+
+def _epoch_unix_utc(ts: Any) -> Optional[int]:
+    """UTC epoch seconds for the instant; naive datetimes are interpreted as Eastern wall time."""
+    if ts is None or not isinstance(ts, datetime):
+        return None
+    if ts.tzinfo is None:
+        return int(ts.replace(tzinfo=_EASTERN).timestamp())
+    return int(ts.timestamp())
 
 
 def infer_strategy_list_name_for_kalshi_ticker(market_ticker: str) -> str:
@@ -168,22 +213,22 @@ def _f(x: Any) -> Optional[float]:
 
 
 def _bar_timing(row: Mapping[str, Any]) -> dict[str, Any]:
-    """Bar end in Eastern **naive** wall time (``backtest`` contract); Kalshi ``end_period_ts`` epoch."""
+    """Bar time in America/New_York; ``timestamp`` may be naive (Eastern) or timestamptz from Postgres."""
     ts = row.get("timestamp")
     eps = row.get("end_period_ts")
-    ts_iso: Optional[str] = None
-    if ts is not None:
-        if hasattr(ts, "isoformat"):
-            ts_iso = ts.isoformat()
-        else:
-            ts_iso = str(ts)
     ep: Optional[int] = None
     if eps is not None:
         try:
             ep = int(eps)
         except (TypeError, ValueError):
             ep = None
-    return {"bar_timestamp_et_naive": ts_iso, "end_period_ts": ep}
+    if ep is None and ts is not None:
+        ep = _epoch_unix_utc(ts)
+    return {
+        "bar_timestamp_et_naive": _eastern_naive_iso(ts),
+        "bar_timestamp_eastern_iso": _eastern_offset_iso(ts),
+        "end_period_ts": ep,
+    }
 
 
 def _mid(a: Optional[float], b: Optional[float]) -> Optional[float]:
@@ -269,6 +314,61 @@ def backtest_row_to_strike_mapping(row: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _volume_fp_to_int(volume_fp: Any) -> int:
+    if volume_fp is None:
+        return 0
+    s = str(volume_fp).strip().replace(",", "")
+    if not s:
+        return 0
+    try:
+        return int(float(s))
+    except (TypeError, ValueError):
+        return 0
+
+
+def tick_backtest_row_to_strike_mapping(row: Mapping[str, Any]) -> dict[str, Any]:
+    """
+    Map a ``backtest.tick_backtest_*`` row (strike-table-shaped, one row per second) to the
+    ``strike`` dict expected by ``evaluate_hourly_htc_strike_entry`` (point values, no min/max span).
+    """
+    prob = _f(row.get("probability_15m"))
+    yd = _f(row.get("yes_ask_dollars"))
+    nd = _f(row.get("no_ask_dollars"))
+    ydiff = _f(row.get("yes_diff"))
+    ndiff = _f(row.get("no_diff"))
+    out: dict[str, Any] = {
+        "strike": row.get("strike"),
+        "probability": prob,
+        "yes_ask_dollars": yd,
+        "no_ask_dollars": nd,
+        "yes_diff": ydiff,
+        "no_diff": ndiff,
+        "active_side": row.get("active_side"),
+        "volume": _volume_fp_to_int(row.get("volume_fp")),
+        "ticker": row.get("ticker"),
+    }
+    return out
+
+
+def _bar_timing_tick_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    ts = row.get("timestamp")
+    ep = _epoch_unix_utc(ts)
+    return {
+        "bar_timestamp_et_naive": _eastern_naive_iso(ts),
+        "bar_timestamp_eastern_iso": _eastern_offset_iso(ts),
+        "end_period_ts": ep,
+    }
+
+
+def _tick_opposite_ask_for_stop(row: Mapping[str, Any], side: str) -> Optional[float]:
+    s = (side or "").strip().lower()
+    if s == "yes":
+        return _f(row.get("no_ask_dollars"))
+    if s == "no":
+        return _f(row.get("yes_ask_dollars"))
+    return None
+
+
 def _ttc_window_ok(ttc: Any, settings: Mapping[str, Any]) -> bool:
     if ttc is None or settings.get("min_time") is None or settings.get("max_time") is None:
         return False
@@ -316,6 +416,45 @@ def first_htc_entry_hit(
     return None
 
 
+def first_htc_entry_hit_tick(
+    rows: list[Any],
+    settings: Mapping[str, Any],
+    *,
+    spike_alert_active: bool,
+    gate_profile: str,
+) -> Optional[tuple[int, dict[str, Any]]]:
+    """
+    AES scan: chronological tick rows with ``ttc_15m`` (strike-table replay), same gates as 1m bars.
+    """
+    for i, row in enumerate(rows):
+        active = (row.get("active_side") or "").strip().lower()
+        if active not in ("yes", "no"):
+            continue
+        ttc = row.get("ttc_15m")
+        if not _ttc_window_ok(ttc, settings):
+            continue
+        strike = tick_backtest_row_to_strike_mapping(row)
+        pay, _reason = evaluate_hourly_htc_strike_entry(
+            settings,
+            strike,
+            spike_alert_active=spike_alert_active,
+            gate_profile=gate_profile,  # type: ignore[arg-type]
+        )
+        if pay is None:
+            continue
+        side = pay["side"]
+        if side == "yes":
+            buy_high = _f(row.get("yes_ask_dollars"))
+        else:
+            buy_high = _f(row.get("no_ask_dollars"))
+        if buy_high is None or buy_high <= 0:
+            continue
+        pay = dict(pay)
+        pay["buy_price"] = float(buy_high)
+        return i, pay
+    return None
+
+
 def _contracts_for_allocation(buy_price: float, allocation_dollars: float) -> int:
     if buy_price <= 0 or buy_price >= 1 or allocation_dollars <= 0:
         return 0
@@ -354,24 +493,34 @@ def run_htc_single_market_replay(
     allocation_dollars_override: Optional[float] = None,
     contracts_cap: Optional[int] = None,
     ret_pct_reference_balance: Optional[float] = None,
+    from_tick_table: bool = False,
 ) -> dict[str, Any]:
     settings = entry_settings
     u = str(replay_user).strip()
     if not re.fullmatch(r"[0-9]+", u):
         raise ValueError(f"invalid replay_user (digits only): {replay_user!r}")
 
-    fq = qualified_backtest_candles_table(market_ticker)
+    if from_tick_table:
+        rel = tick_backtest_relname(market_ticker)
+        fq = f"backtest.{rel}"
+    else:
+        fq = qualified_backtest_candles_table(market_ticker)
     _provenance = {
         "entry_settings_source": entry_settings_source,
         "replay_user": u,
         "strategy_name": strategy_name,
         "monitor_id": monitor_id,
+        "replay_source": "tick_backtest" if from_tick_table else "backtest_1m",
+        "time_zone": "America/New_York",
     }
 
     from psycopg2 import extras
 
     with conn.cursor(cursor_factory=extras.RealDictCursor) as cur:
-        cur.execute(f"SELECT * FROM {fq} ORDER BY end_period_ts ASC")
+        if from_tick_table:
+            cur.execute(f'SELECT * FROM {fq} ORDER BY "timestamp" ASC')
+        else:
+            cur.execute(f"SELECT * FROM {fq} ORDER BY end_period_ts ASC")
         rows = cur.fetchall()
 
     if not rows:
@@ -379,12 +528,20 @@ def run_htc_single_market_replay(
         out.update({k: v for k, v in _provenance.items() if v is not None})
         return out
 
-    hit = first_htc_entry_hit(
-        rows,
-        settings,
-        spike_alert_active=spike_alert_active,
-        gate_profile=gate_profile,
-    )
+    if from_tick_table:
+        hit = first_htc_entry_hit_tick(
+            rows,
+            settings,
+            spike_alert_active=spike_alert_active,
+            gate_profile=gate_profile,
+        )
+    else:
+        hit = first_htc_entry_hit(
+            rows,
+            settings,
+            spike_alert_active=spike_alert_active,
+            gate_profile=gate_profile,
+        )
     if hit is None:
         entry_i = None
         payload = None
@@ -443,55 +600,104 @@ def run_htc_single_market_replay(
         stop_floor = 0.0
     stop_floor = max(0.0, min(stop_floor, 0.99))
 
-    market_result = rows[-1].get("market_result")
+    if from_tick_table:
+        _, mr_resolve, _src = resolve_floor_strike_and_market_result(market_ticker)
+        market_result = mr_resolve
+    else:
+        market_result = rows[-1].get("market_result")
     exit_i = len(rows) - 1
     sell_price: float
     close_method = "expiration"
     stopped = False
 
-    for j in range(entry_i + 1, len(rows)):
-        r = rows[j]
-        ttc = r.get("ttc_15m_close_seconds")
-        try:
-            ttc_i = int(ttc) if ttc is not None else -1
-        except (TypeError, ValueError):
-            ttc_i = -1
-        ttc_ok_for_stops = ttc is not None and ttc_i >= min_ttc_stop
+    if from_tick_table:
+        for j in range(entry_i + 1, len(rows)):
+            r = rows[j]
+            ttc = r.get("ttc_15m")
+            try:
+                ttc_i = int(ttc) if ttc is not None else -1
+            except (TypeError, ValueError):
+                ttc_i = -1
+            ttc_ok_for_stops = ttc is not None and ttc_i >= min_ttc_stop
 
-        if ttc_ok_for_stops and stop_floor > 0:
-            opp = _opposite_ask_high_for_stop_floor(r, side)
-            thresh_ask = 1.0 - stop_floor
-            if opp is not None and opp > thresh_ask:
-                stopped = True
-                close_method = "auto_stop_loss_floor"
-                exit_i = j
+            if ttc_ok_for_stops and stop_floor > 0:
+                opp = _tick_opposite_ask_for_stop(r, side)
+                thresh_ask = 1.0 - stop_floor
+                if opp is not None and opp > thresh_ask:
+                    stopped = True
+                    close_method = "auto_stop_loss_floor"
+                    exit_i = j
+                    if side == "yes":
+                        sell_price = float(_f(r.get("yes_ask_dollars")) or 0.0)
+                    else:
+                        sell_price = float(_f(r.get("no_ask_dollars")) or 0.0)
+                    break
+
+            if ttc_ok_for_stops:
                 if side == "yes":
-                    sell_price = float(r.get("yes_price_low_dollars") or 0.0)
+                    ypv = _f(r.get("yes_prob_15m"))
+                    if ypv is not None and ypv < stop_prob_threshold:
+                        stopped = True
+                        close_method = "auto_probability"
+                        exit_i = j
+                        sell_price = float(_f(r.get("yes_ask_dollars")) or 0.0)
+                        break
                 else:
-                    sell_price = float(r.get("no_price_low_dollars") or 0.0)
-                break
-
-        if ttc_ok_for_stops:
-            if side == "yes":
-                ypmin = _f(r.get("yes_prob_15m_min"))
-                if ypmin is not None and ypmin < stop_prob_threshold:
-                    stopped = True
-                    close_method = "auto_probability"
-                    exit_i = j
-                    sell_price = float(r.get("yes_price_low_dollars") or 0.0)
-                    break
-            else:
-                npmin = _f(r.get("no_prob_15m_min"))
-                if npmin is not None and npmin < stop_prob_threshold:
-                    stopped = True
-                    close_method = "auto_probability"
-                    exit_i = j
-                    sell_price = float(r.get("no_price_low_dollars") or 0.0)
-                    break
+                    npv = _f(r.get("no_prob_15m"))
+                    if npv is not None and npv < stop_prob_threshold:
+                        stopped = True
+                        close_method = "auto_probability"
+                        exit_i = j
+                        sell_price = float(_f(r.get("no_ask_dollars")) or 0.0)
+                        break
+        else:
+            close_method = "expiration"
+            stopped = False
+            sell_price = _settlement_price(side, str(market_result) if market_result else None)
     else:
-        close_method = "expiration"
-        stopped = False
-        sell_price = _settlement_price(side, str(market_result) if market_result else None)
+        for j in range(entry_i + 1, len(rows)):
+            r = rows[j]
+            ttc = r.get("ttc_15m_close_seconds")
+            try:
+                ttc_i = int(ttc) if ttc is not None else -1
+            except (TypeError, ValueError):
+                ttc_i = -1
+            ttc_ok_for_stops = ttc is not None and ttc_i >= min_ttc_stop
+
+            if ttc_ok_for_stops and stop_floor > 0:
+                opp = _opposite_ask_high_for_stop_floor(r, side)
+                thresh_ask = 1.0 - stop_floor
+                if opp is not None and opp > thresh_ask:
+                    stopped = True
+                    close_method = "auto_stop_loss_floor"
+                    exit_i = j
+                    if side == "yes":
+                        sell_price = float(r.get("yes_price_low_dollars") or 0.0)
+                    else:
+                        sell_price = float(r.get("no_price_low_dollars") or 0.0)
+                    break
+
+            if ttc_ok_for_stops:
+                if side == "yes":
+                    ypmin = _f(r.get("yes_prob_15m_min"))
+                    if ypmin is not None and ypmin < stop_prob_threshold:
+                        stopped = True
+                        close_method = "auto_probability"
+                        exit_i = j
+                        sell_price = float(r.get("yes_price_low_dollars") or 0.0)
+                        break
+                else:
+                    npmin = _f(r.get("no_prob_15m_min"))
+                    if npmin is not None and npmin < stop_prob_threshold:
+                        stopped = True
+                        close_method = "auto_probability"
+                        exit_i = j
+                        sell_price = float(r.get("no_price_low_dollars") or 0.0)
+                        break
+        else:
+            close_method = "expiration"
+            stopped = False
+            sell_price = _settlement_price(side, str(market_result) if market_result else None)
 
     if sell_price < 0:
         sell_price = 0.0
@@ -519,8 +725,10 @@ def run_htc_single_market_replay(
     else:
         win_loss_confirmed = None
 
-    strike_label = format_strike_label(payload.get("strike") or rows[entry_i].get("floor_strike"), market_ticker)
-    entry_row = rows[entry_i]
+    er = rows[entry_i]
+    raw_sl = payload.get("strike") or er.get("floor_strike") or er.get("strike")
+    strike_label = format_strike_label(raw_sl, market_ticker)
+    entry_row = er
     exit_row = rows[exit_i]
 
     notional_r = round(float(notional), 2)
@@ -530,8 +738,12 @@ def run_htc_single_market_replay(
     pnl_r = round(float(pnl), 2)
     ret_r = round(float(ret_pct), 4)
     ret_notional_r = round(float(return_on_notional_pct), 4)
-    entry_t = _bar_timing(entry_row)
-    exit_t = _bar_timing(exit_row)
+    if from_tick_table:
+        entry_t = _bar_timing_tick_row(entry_row)
+        exit_t = _bar_timing_tick_row(exit_row)
+    else:
+        entry_t = _bar_timing(entry_row)
+        exit_t = _bar_timing(exit_row)
     trade_one_liner = (
         f"{side_u} x{contracts} {market_ticker} strike={strike_label} "
         f"@ {buy_price:.4f} → {sell_price:.4f}"
@@ -596,6 +808,8 @@ def run_htc_single_market_replay(
         "exit_bar_index": exit_i,
         "entry_timestamp_et_naive": entry_t.get("bar_timestamp_et_naive"),
         "exit_timestamp_et_naive": exit_t.get("bar_timestamp_et_naive"),
+        "entry_timestamp_eastern_iso": entry_t.get("bar_timestamp_eastern_iso"),
+        "exit_timestamp_eastern_iso": exit_t.get("bar_timestamp_eastern_iso"),
         "entry_end_period_ts": entry_t.get("end_period_ts"),
         "exit_end_period_ts": exit_t.get("end_period_ts"),
         "buy_price": buy_price,

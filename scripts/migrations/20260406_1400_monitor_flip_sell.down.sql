@@ -1,17 +1,25 @@
 DO $$
 DECLARE
+  sch text;
   tbl text;
 BEGIN
-  FOR tbl IN
-    SELECT table_name
-    FROM information_schema.tables
-    WHERE table_schema = 'users'
-      AND table_name LIKE 'monitor_list_%'
+  FOR sch IN
+    SELECT nspname
+    FROM pg_namespace
+    WHERE nspname = 'users' OR nspname ~ '^users_[0-9]{4}$'
+    ORDER BY 1
   LOOP
-    EXECUTE format('ALTER TABLE users.%I DROP COLUMN IF EXISTS flip_sell_floor_mult', tbl);
-    EXECUTE format('ALTER TABLE users.%I DROP COLUMN IF EXISTS flip_sell_prob_mult', tbl);
-    EXECUTE format('ALTER TABLE users.%I DROP COLUMN IF EXISTS flip_sell_floor', tbl);
-    EXECUTE format('ALTER TABLE users.%I DROP COLUMN IF EXISTS flip_sell_prob', tbl);
+    FOR tbl IN
+      SELECT t.table_name
+      FROM information_schema.tables t
+      WHERE t.table_schema = sch
+        AND t.table_name LIKE 'monitor_list_%'
+    LOOP
+      EXECUTE format('ALTER TABLE %I.%I DROP COLUMN IF EXISTS flip_sell_floor_mult', sch, tbl);
+      EXECUTE format('ALTER TABLE %I.%I DROP COLUMN IF EXISTS flip_sell_prob_mult', sch, tbl);
+      EXECUTE format('ALTER TABLE %I.%I DROP COLUMN IF EXISTS flip_sell_floor', sch, tbl);
+      EXECUTE format('ALTER TABLE %I.%I DROP COLUMN IF EXISTS flip_sell_prob', sch, tbl);
+    END LOOP;
   END LOOP;
 END
 $$;

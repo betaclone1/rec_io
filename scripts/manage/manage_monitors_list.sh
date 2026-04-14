@@ -50,13 +50,17 @@ create_monitors_table() {
     
     log_info "Creating monitor_list table for user $user_id (user_$user_number)..."
     
+    # First monitor id = slot * 10000 + 1 (e.g. 0002 -> 20001, 0065 -> 650001)
+    SQ_START=$((10#${user_number} * 10000 + 1))
+    SQ_MAX=$((10#${user_number} * 10000 + 9999))
+
     PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -p "$DB_PORT" << EOF
-        -- Create sequence for 5-digit IDs starting with 10001
+        -- Per-tenant id band: slot*10000+1 .. slot*10000+9999
         CREATE SEQUENCE IF NOT EXISTS users.monitor_list_${user_number}_id_seq
-        START WITH 10001
+        START WITH ${SQ_START}
         INCREMENT BY 1
-        MINVALUE 10001
-        MAXVALUE 99999
+        MINVALUE ${SQ_START}
+        MAXVALUE ${SQ_MAX}
         CYCLE;
         
         -- Create monitor_list table

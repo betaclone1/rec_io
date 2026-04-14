@@ -28,8 +28,63 @@ from typing import Dict, Any, Optional, List
 from flask import Flask, request, jsonify
 from backend.core.unified_config import UnifiedConfigManager
 from backend.core.time_eastern import merge_psycopg2_connect_kwargs, now_est, today_est
-from backend.core.port_config import get_port
-from backend.trading_mode import account_balance_table_for_user, sql_ident_qualified_table
+from backend.core.port_config import get_port, default_pool_user_number
+from backend.trading_mode import (
+    account_balance_table_for_user,
+    monitor_list_fqn,
+    sql_ident_qualified_table,
+    strategy_list_fqn,
+    trades_table_fqn,
+    _norm_slot,
+)
+
+
+def _mm_resolve_user_no(explicit: Optional[str]) -> str:
+    """Trading slot for this MM worker or an explicit value from the API (e.g. session-forwarded)."""
+    if explicit is None:
+        return _norm_slot(default_pool_user_number())
+    s = str(explicit).strip()
+    if s.lower().startswith("user_"):
+        s = s[5:]
+    return _norm_slot(s)
+
+
+def _mm_worker_slot() -> str:
+    """This monitor_manager process tenant (REC_USER_NO / supervisor suffix)."""
+    return _mm_resolve_user_no(None)
+
+
+def _mm_monitor_list_qualified() -> sql.Composed:
+    sch, tbl = monitor_list_fqn(_mm_worker_slot()).split(".", 1)
+    return sql.SQL("{}.{}").format(sql.Identifier(sch), sql.Identifier(tbl))
+
+
+def _mm_trades_qualified() -> sql.Composed:
+    sch, tbl = trades_table_fqn(_mm_worker_slot()).split(".", 1)
+    return sql.SQL("{}.{}").format(sql.Identifier(sch), sql.Identifier(tbl))
+
+
+def _latest_bankroll_cents(cursor, user_no: str) -> int:
+    """Latest equity cents for the slot (same basis as /api/monitors/allocation)."""
+    ab_ident = sql_ident_qualified_table(account_balance_table_for_user(_norm_slot(user_no)))
+    cursor.execute(
+        sql.SQL(
+            """
+            SELECT bankroll_current, portfolio
+            FROM {}
+            ORDER BY timestamp DESC NULLS LAST, id DESC
+            LIMIT 1
+            """
+        ).format(ab_ident)
+    )
+    row = cursor.fetchone()
+    if not row:
+        return 0
+    bc, pf = row[0], row[1]
+    bankroll_value = int(bc) if bc is not None else 0
+    portfolio_value = int(pf) if pf is not None else 0
+    return bankroll_value if bankroll_value > 0 else portfolio_value
+from backend.core.config.database import get_system_postgresql_connection
 import threading
 import time
 
@@ -122,12 +177,12 @@ class MonitorManager:
         try:
             conn = self.get_database_connection()
             with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT id, name, status 
-                    FROM users.monitor_list_0001 
-                    WHERE status = 'active' 
-                    ORDER BY id
-                """)
+                ml = _mm_monitor_list_qualified()
+                cursor.execute(
+                    sql.SQL(
+                        "SELECT id, name, status FROM {} WHERE status = 'active' ORDER BY id"
+                    ).format(ml)
+                )
                 
                 monitors = []
                 for row in cursor.fetchall():
@@ -142,10 +197,10 @@ class MonitorManager:
                             user_number = parts[1]  # 0001
                             monitor_id = parts[2]   # 10001
                         else:
-                            user_number = "0001"
+                            user_number = _mm_worker_slot()
                             monitor_id = str(monitor_id)
                     else:
-                        user_number = "0001"
+                        user_number = _mm_worker_slot()
                         monitor_id = str(monitor_id)
                     
                     monitors.append({
@@ -467,11 +522,16 @@ environment={env_vars}
 
     def _notify_frontend_monitor_list_updated(self, message: str = "Monitor list updated") -> None:
         """Whenever monitor_manager changes monitor_list, alert frontend so displays refresh."""
-        body: Dict[str, Any] = {"type": "monitor_list_updated", "message": message}
+        slot = _mm_resolve_user_no(None)
+        body: Dict[str, Any] = {
+            "type": "monitor_list_updated",
+            "message": message,
+            "tenant_user_no": slot,
+        }
         try:
             from backend.core.system_settings_store import fetch_system_settings_row
 
-            row = fetch_system_settings_row("0001")
+            row = fetch_system_settings_row(slot)
             body["trading_halt_active"] = bool(row.get("trading_halt_active")) if row else False
         except Exception:
             body["trading_halt_active"] = False
@@ -485,10 +545,12 @@ environment={env_vars}
     def _notify_frontend_monitor_total_position(
         self, monitor_id: int, total_position: int, multiplier: float = None
     ) -> None:
+        slot = _mm_resolve_user_no(None)
         msg: Dict[str, Any] = {
             "type": "monitor_total_position_updated",
             "monitor_id": monitor_id,
             "total_position": total_position,
+            "tenant_user_no": slot,
         }
         if multiplier is not None:
             msg["multiplier"] = multiplier
@@ -504,7 +566,11 @@ environment={env_vars}
         )
 
     def _notify_frontend_monitor_statistics(self, payload: dict) -> None:
-        msg = {"type": "monitor_statistics_update", **payload}
+        msg = {
+            "type": "monitor_statistics_update",
+            "tenant_user_no": _mm_resolve_user_no(None),
+            **payload,
+        }
         self._deliver_preferences_ws(
             msg,
             http_path=None,
@@ -527,13 +593,13 @@ environment={env_vars}
         conn = None
         try:
             conn = self.get_database_connection()
+            slot = _mm_worker_slot()
+            ml = _mm_monitor_list_qualified()
             with conn.cursor() as cursor:
                 cursor.execute(
-                    """
-                    SELECT id, name, status, paper_trade, test_filter
-                    FROM users.monitor_list_0001
-                    ORDER BY id
-                    """
+                    sql.SQL(
+                        "SELECT id, name, status, paper_trade, test_filter FROM {} ORDER BY id"
+                    ).format(ml)
                 )
                 rows = cursor.fetchall()
 
@@ -553,22 +619,20 @@ environment={env_vars}
                     "schema_version": 1,
                     "created_at_utc": datetime.now(timezone.utc).isoformat(),
                     "reason": "bankroll_drawdown_step_down_50pct",
-                    "monitor_list_table": "users.monitor_list_0001",
-                    "user_number": "0001",
+                    "monitor_list_table": monitor_list_fqn(slot),
+                    "user_number": slot,
                     "monitors": monitors,
                 }
 
                 cursor.execute(
-                    """
-                    UPDATE users.monitor_list_0001
-                    SET paper_trade = TRUE,
-                        test_filter = TRUE,
-                        updated_at = CURRENT_TIMESTAMP
-                    """
+                    sql.SQL(
+                        "UPDATE {} SET paper_trade = TRUE, test_filter = TRUE, "
+                        "updated_at = CURRENT_TIMESTAMP"
+                    ).format(ml)
                 )
                 n_updated = cursor.rowcount
                 n_snap = set_drawdown_halt_monitor_snapshot_with_cursor(
-                    cursor, "0001", snapshot
+                    cursor, slot, snapshot
                 )
                 if n_snap == 0:
                     conn.rollback()
@@ -576,12 +640,12 @@ environment={env_vars}
                         "status": "error",
                         "message": "system_settings row missing or snapshot not saved",
                     }
-                set_trading_halt_active_with_cursor(cursor, "0001", True)
+                set_trading_halt_active_with_cursor(cursor, slot, True)
             conn.commit()
 
             out = {
                 "status": "success",
-                "snapshot_storage": "users.system_settings_0001.drawdown_halt_monitor_snapshot",
+                "snapshot_storage": f"users_{slot}.system_settings_{slot}.drawdown_halt_monitor_snapshot",
                 "monitors_snapshotted": len(monitors),
                 "monitors_updated": int(n_updated),
             }
@@ -657,14 +721,16 @@ environment={env_vars}
         try:
             conn = self.get_database_connection()
 
+            un = _mm_resolve_user_no(None)
+            ml_ident = sql_ident_qualified_table(monitor_list_fqn(un))
             with conn.cursor() as cursor:
-                ab_ident = sql_ident_qualified_table(account_balance_table_for_user("0001"))
+                ab_ident = sql_ident_qualified_table(account_balance_table_for_user(un))
                 cursor.execute(
                     sql.SQL(
                         """
                         SELECT bankroll_current, portfolio
                         FROM {}
-                        ORDER BY id DESC
+                        ORDER BY timestamp DESC NULLS LAST, id DESC
                         LIMIT 1
                         """
                     ).format(ab_ident)
@@ -677,15 +743,16 @@ environment={env_vars}
                 pf = bankroll_result[1]
                 bankroll_value = int(bc) if bc is not None else 0
                 portfolio_value = int(pf) if pf is not None else 0
-                # Same basis as create_monitor: MTB ratchet when set; else total equity (live or paper).
                 bankroll_cents = bankroll_value if bankroll_value > 0 else portfolio_value
 
                 cursor.execute(
-                    """
-                    SELECT id, name, bankroll_allotment_pct 
-                    FROM users.monitor_list_0001 
-                    WHERE status = 'active'
-                    """
+                    sql.SQL(
+                        """
+                        SELECT id, name, bankroll_allotment_pct
+                        FROM {}
+                        WHERE status = 'active'
+                        """
+                    ).format(ml_ident)
                 )
                 monitors = list(cursor.fetchall())
 
@@ -697,19 +764,23 @@ environment={env_vars}
                 try:
                     with conn.cursor() as cursor:
                         cursor.execute(
-                            """
-                            UPDATE users.monitor_list_0001 
-                            SET bankroll_allotment_total = %s 
-                            WHERE id = %s
-                            """,
+                            sql.SQL(
+                                """
+                                UPDATE {}
+                                SET bankroll_allotment_total = %s
+                                WHERE id = %s
+                                """
+                            ).format(ml_ident),
                             (allotment_total_cents, monitor_id),
                         )
                         cursor.execute(
-                            """
-                            SELECT position_size, position_type, multiplier, current_max_pct_exposure 
-                            FROM users.monitor_list_0001 
-                            WHERE id = %s
-                            """,
+                            sql.SQL(
+                                """
+                                SELECT position_size, position_type, multiplier, current_max_pct_exposure
+                                FROM {}
+                                WHERE id = %s
+                                """
+                            ).format(ml_ident),
                             (monitor_id,),
                         )
                         pos_result = cursor.fetchone()
@@ -745,11 +816,13 @@ environment={env_vars}
                             new_total_position = int(position_size * multiplier_value)
 
                         cursor.execute(
-                            """
-                            UPDATE users.monitor_list_0001 
-                            SET total_position = %s 
-                            WHERE id = %s
-                            """,
+                            sql.SQL(
+                                """
+                                UPDATE {}
+                                SET total_position = %s
+                                WHERE id = %s
+                                """
+                            ).format(ml_ident),
                             (new_total_position, monitor_id),
                         )
                     conn.commit()
@@ -817,7 +890,15 @@ environment={env_vars}
         """
         return self.update_monitor_bankroll_allotments(0)  # bankroll parameter not used anymore
 
-    def update_monitor_position_variables(self, monitor_id: int, position_size: int = None, position_type: str = None, multiplier: float = None) -> Dict[str, Any]:
+    def update_monitor_position_variables(
+        self,
+        monitor_id: int,
+        position_size: int = None,
+        position_type: str = None,
+        multiplier: float = None,
+        *,
+        user_number: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Update monitor position variables and recalculate total_position
         Called when frontend sends position variable updates
@@ -825,58 +906,73 @@ environment={env_vars}
         import time
         start_time = time.time()
         conn = None
+        un = _mm_resolve_user_no(user_number)
+        ml_ident = sql_ident_qualified_table(monitor_list_fqn(un))
         try:
             conn = self.get_database_connection()
             self.log_event("TIMING", f"DB connection: {time.time() - start_time:.3f}s")
-            
+
             with conn.cursor() as cursor:
-                # Build update query for position variables
                 update_fields = []
                 values = []
-                
+
                 if position_size is not None:
                     update_fields.append("position_size = %s")
                     values.append(position_size)
-                
+
                 if position_type is not None:
                     update_fields.append("position_type = %s")
                     values.append(position_type)
-                
+
                 if multiplier is not None:
                     update_fields.append("multiplier = %s")
                     values.append(multiplier)
-                
+
                 if not update_fields:
                     return {"status": "error", "message": "No position variables to update"}
-                
-                # Update position variables
+
                 values.append(monitor_id)
                 update_start = time.time()
-                cursor.execute(f"""
-                    UPDATE users.monitor_list_0001 
-                    SET {', '.join(update_fields)}
-                    WHERE id = %s AND status = 'active'
-                """, values)
+                cursor.execute(
+                    sql.SQL(
+                        "UPDATE {} SET "
+                        + ", ".join(update_fields)
+                        + " WHERE id = %s AND (status IS NULL OR status <> %s)"
+                    ).format(ml_ident),
+                    values + ["ARCHIVED"],
+                )
                 self.log_event("TIMING", f"Position update: {time.time() - update_start:.3f}s")
-                
+
                 if cursor.rowcount == 0:
-                    return {"status": "error", "message": "Monitor not found or not active"}
-                
-                # Get current monitor settings for calculation
+                    return {"status": "error", "message": "Monitor not found or archived"}
+
                 fetch_start = time.time()
-                cursor.execute("""
-                    SELECT position_size, position_type, multiplier, bankroll_allotment_total, current_max_pct_exposure 
-                    FROM users.monitor_list_0001 
-                    WHERE id = %s
-                """, (monitor_id,))
+                cursor.execute(
+                    sql.SQL(
+                        """
+                        SELECT position_size, position_type, multiplier,
+                               bankroll_allotment_total, bankroll_allotment_pct, current_max_pct_exposure
+                        FROM {}
+                        WHERE id = %s
+                        """
+                    ).format(ml_ident),
+                    (monitor_id,),
+                )
                 self.log_event("TIMING", f"Fetch settings: {time.time() - fetch_start:.3f}s")
-                
+
                 result = cursor.fetchone()
                 if not result:
                     return {"status": "error", "message": "Failed to retrieve monitor settings"}
-                
-                position_size, position_type, multiplier, bankroll_allotment_total, current_max_pct_exposure = result
-                
+
+                (
+                    position_size,
+                    position_type,
+                    multiplier,
+                    bankroll_allotment_total,
+                    bankroll_allotment_pct,
+                    current_max_pct_exposure,
+                ) = result
+
                 multiplier_value = float(multiplier or 0)
                 max_pct_cap = None
                 try:
@@ -884,54 +980,62 @@ environment={env_vars}
                         max_pct_cap = float(current_max_pct_exposure)
                 except (TypeError, ValueError):
                     max_pct_cap = None
-                
+
                 if multiplier_value == 0:
                     new_total_position = 1
-                elif position_type == 'percent':
-                    # For percent: round((position_size * allotment_dollars / 100) * multiplier)
-                    if bankroll_allotment_total is not None:
-                        allotment_dollars = bankroll_allotment_total / 100
-                        base_pct = (position_size or 0) / 100.0
-                        effective_pct = base_pct * multiplier_value
-                        if max_pct_cap is not None and max_pct_cap > 0:
-                            effective_pct = min(effective_pct, max_pct_cap)
-                        new_total_position = int(round(allotment_dollars * effective_pct))
-                        if new_total_position < 1:
-                            new_total_position = 1
-                    else:
-                        new_total_position = 1  # Default minimum position when allotment is missing
+                elif position_type == "percent":
+                    allotment_cents = int(bankroll_allotment_total or 0)
+                    if allotment_cents <= 0 and bankroll_allotment_pct is not None:
+                        try:
+                            pct = float(bankroll_allotment_pct)
+                        except (TypeError, ValueError):
+                            pct = 0.0
+                        if pct > 0:
+                            br = _latest_bankroll_cents(cursor, un)
+                            allotment_cents = int(round(pct * br))
+                    allotment_dollars = allotment_cents / 100.0
+                    base_pct = (position_size or 0) / 100.0
+                    effective_pct = base_pct * multiplier_value
+                    if max_pct_cap is not None and max_pct_cap > 0:
+                        effective_pct = min(effective_pct, max_pct_cap)
+                    new_total_position = int(round(allotment_dollars * effective_pct))
+                    if new_total_position < 1:
+                        new_total_position = 1
                 else:
-                    # For contracts: position_size * multiplier
-                    new_total_position = int(position_size * multiplier_value)
-                
-                # Update total_position
+                    new_total_position = int((position_size or 0) * multiplier_value)
+
                 total_update_start = time.time()
-                cursor.execute("""
-                    UPDATE users.monitor_list_0001 
-                    SET total_position = %s 
-                    WHERE id = %s
-                """, (new_total_position, monitor_id))
+                cursor.execute(
+                    sql.SQL(
+                        """
+                        UPDATE {}
+                        SET total_position = %s
+                        WHERE id = %s
+                        """
+                    ).format(ml_ident),
+                    (new_total_position, monitor_id),
+                )
                 self.log_event("TIMING", f"Total position update: {time.time() - total_update_start:.3f}s")
-                
+
                 commit_start = time.time()
                 conn.commit()
                 self.log_event("TIMING", f"Commit: {time.time() - commit_start:.3f}s")
-                
+
                 self._notify_frontend_monitor_total_position(
                     monitor_id, new_total_position, multiplier_value
                 )
-                
+
                 self._notify_frontend_monitor_list_updated("Monitor position variables updated")
                 total_time = time.time() - start_time
                 self.log_event("TIMING", f"Total function time: {total_time:.3f}s")
-                
+
                 return {
                     "status": "success",
                     "message": "Monitor position variables updated and total_position recalculated",
                     "monitor_id": monitor_id,
-                    "total_position": new_total_position
+                    "total_position": new_total_position,
                 }
-                
+
         except Exception as e:
             return {"status": "error", "message": str(e)}
         finally:
@@ -946,25 +1050,32 @@ environment={env_vars}
         conn = None
         try:
             conn = self.get_database_connection()
+            un = _mm_resolve_user_no(None)
+            ml_ident = sql_ident_qualified_table(monitor_list_fqn(un))
 
             with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT id,
-                           name,
-                           position_size,
-                           position_type,
-                           multiplier,
-                           bankroll_allotment_total,
-                           current_max_pct_exposure,
-                           performance_based_allocation
-                    FROM users.monitor_list_0001 
-                    WHERE status = 'active'
-                """)
+                cursor.execute(
+                    sql.SQL(
+                        """
+                        SELECT id,
+                               name,
+                               position_size,
+                               position_type,
+                               multiplier,
+                               bankroll_allotment_total,
+                               bankroll_allotment_pct,
+                               current_max_pct_exposure,
+                               performance_based_allocation
+                        FROM {}
+                        WHERE status = 'active'
+                        """
+                    ).format(ml_ident)
+                )
                 monitors = list(cursor.fetchall())
 
             updated_count = 0
             for row in monitors:
-                if not row or len(row) < 8:
+                if not row or len(row) < 9:
                     continue
                 (
                     monitor_id,
@@ -973,6 +1084,7 @@ environment={env_vars}
                     position_type,
                     multiplier,
                     bankroll_allotment_total,
+                    bankroll_allotment_pct,
                     current_max_pct_exposure,
                     performance_based_allocation,
                 ) = row
@@ -990,28 +1102,37 @@ environment={env_vars}
                 if multiplier_value == 0:
                     new_total_position = 1
                 elif position_type == "percent":
-                    if bankroll_allotment_total is not None:
-                        allotment_dollars = bankroll_allotment_total / 100
-                        base_pct = (position_size or 0) / 100.0
-                        effective_pct = base_pct * multiplier_value
-                        if performance_based_allocation and max_pct_cap is not None and max_pct_cap > 0:
-                            effective_pct = min(effective_pct, max_pct_cap)
-                        new_total_position = int(round(allotment_dollars * effective_pct))
-                        if new_total_position < 1:
-                            new_total_position = 1
-                    else:
-                        continue
+                    allotment_cents = int(bankroll_allotment_total or 0)
+                    if allotment_cents <= 0 and bankroll_allotment_pct is not None:
+                        try:
+                            pct = float(bankroll_allotment_pct)
+                        except (TypeError, ValueError):
+                            pct = 0.0
+                        if pct > 0:
+                            with conn.cursor() as c2:
+                                br = _latest_bankroll_cents(c2, un)
+                            allotment_cents = int(round(pct * br))
+                    allotment_dollars = allotment_cents / 100.0
+                    base_pct = (position_size or 0) / 100.0
+                    effective_pct = base_pct * multiplier_value
+                    if performance_based_allocation and max_pct_cap is not None and max_pct_cap > 0:
+                        effective_pct = min(effective_pct, max_pct_cap)
+                    new_total_position = int(round(allotment_dollars * effective_pct))
+                    if new_total_position < 1:
+                        new_total_position = 1
                 else:
                     new_total_position = int(position_size * multiplier_value)
 
                 try:
                     with conn.cursor() as cursor:
                         cursor.execute(
-                            """
-                            UPDATE users.monitor_list_0001 
-                            SET total_position = %s 
-                            WHERE id = %s
-                            """,
+                            sql.SQL(
+                                """
+                                UPDATE {}
+                                SET total_position = %s
+                                WHERE id = %s
+                                """
+                            ).format(ml_ident),
                             (new_total_position, monitor_id),
                         )
                     conn.commit()
@@ -1066,13 +1187,15 @@ environment={env_vars}
             conn = self.get_database_connection()
             
             with conn.cursor() as cursor:
+                ml = _mm_monitor_list_qualified()
+                tr = _mm_trades_qualified()
                 # Get all active and inactive monitors (excluding ARCHIVED)
-                cursor.execute("""
-                    SELECT id, name, symbol 
-                    FROM users.monitor_list_0001 
-                    WHERE status IN ('active', 'inactive')
-                    ORDER BY id
-                """)
+                cursor.execute(
+                    sql.SQL(
+                        "SELECT id, name, symbol FROM {} "
+                        "WHERE status IN ('active', 'inactive') ORDER BY id"
+                    ).format(ml)
+                )
                 
                 monitors = cursor.fetchall()
                 updated_count = 0
@@ -1091,9 +1214,10 @@ environment={env_vars}
                         monitor_identifier = monitor_name
                         
                         # Get the strategy for this monitor
-                        cursor.execute("""
-                            SELECT strategy FROM users.monitor_list_0001 WHERE id = %s
-                        """, (monitor_id,))
+                        cursor.execute(
+                            sql.SQL("SELECT strategy FROM {} WHERE id = %s").format(ml),
+                            (monitor_id,),
+                        )
                         strategy_row = cursor.fetchone()
                         strategy = "Hourly HTC"
                         if strategy_row and len(strategy_row) >= 1 and strategy_row[0] is not None:
@@ -1107,7 +1231,9 @@ environment={env_vars}
                         is_cycle_based_win_loss = is_momentum_contain or is_momentum_breakout
                         
                         if is_cycle_based_win_loss:
-                            cursor.execute("""
+                            cursor.execute(
+                                sql.SQL(
+                                    """
                                 WITH cycle_grouped AS (
                                     SELECT 
                                         ticker,
@@ -1116,7 +1242,7 @@ environment={env_vars}
                                                 regexp_replace(ticker, '-[^-]*$', '')
                                             ELSE ticker
                                         END as cycle_id
-                                    FROM users.trades_0001 
+                                    FROM {} 
                                     WHERE monitor = %s 
                                     AND status IN ('closed', 'settled') 
                                     AND (test_filter IS NULL OR test_filter = FALSE)
@@ -1129,7 +1255,7 @@ environment={env_vars}
                                         COUNT(CASE WHEN t.win_loss = 'L' THEN 1 END) as cycle_losses,
                                         COUNT(*) as cycle_trade_count
                                     FROM cycle_grouped cg
-                                    JOIN users.trades_0001 t ON t.ticker = cg.ticker
+                                    JOIN {} t ON t.ticker = cg.ticker
                                     WHERE t.monitor = %s 
                                     AND t.status IN ('closed', 'settled') 
                                     AND (t.test_filter IS NULL OR t.test_filter = FALSE)
@@ -1145,7 +1271,10 @@ environment={env_vars}
                                     COUNT(*) as total_cycles,
                                     SUM(is_winning_cycle) as winning_cycles
                                 FROM cycle_summary
-                            """, (monitor_identifier, monitor_identifier))
+                            """
+                                ).format(tr, tr),
+                                (monitor_identifier, monitor_identifier),
+                            )
                             
                             cycle_stats = cursor.fetchone()
                             total_cycles, winning_cycles = self._unpack_cycle_stats_row(cycle_stats)
@@ -1154,14 +1283,19 @@ environment={env_vars}
                             if total_cycles > 0:
                                 win_loss_rate = round((winning_cycles / total_cycles) * 100, 1)
                             
-                            cursor.execute("""
+                            cursor.execute(
+                                sql.SQL(
+                                    """
                                 SELECT 
                                     COUNT(*) as total_trades,
                                     COALESCE(SUM(ret_pct), 0) as total_ret_pct,
                                     COALESCE(SUM(pnl), 0) as total_pnl
-                                FROM users.trades_0001 
+                                FROM {} 
                                 WHERE monitor = %s AND status IN ('closed', 'settled') AND (test_filter IS NULL OR test_filter = FALSE)
-                            """, (monitor_identifier,))
+                            """
+                                ).format(tr),
+                                (monitor_identifier,),
+                            )
                             
                             trade_stats = cursor.fetchone()
                             if trade_stats and len(trade_stats) >= 3:
@@ -1173,15 +1307,26 @@ environment={env_vars}
                                 ret_pct_sum = total_ret_pct
                                 pnl_show = float(total_pnl) if total_pnl is not None else 0.0
                                 
-                                cursor.execute("""
-                                    UPDATE users.monitor_list_0001 
+                                cursor.execute(
+                                    sql.SQL(
+                                        """
+                                    UPDATE {} 
                                     SET 
                                         trades = %s,
                                         win_loss = %s,
                                         ret_pct = %s,
                                         pnl = %s
                                     WHERE id = %s
-                                """, (total_trades, win_loss_rate, ret_pct_sum, total_pnl, monitor_id))
+                                """
+                                    ).format(ml),
+                                    (
+                                        total_trades,
+                                        win_loss_rate,
+                                        ret_pct_sum,
+                                        total_pnl,
+                                        monitor_id,
+                                    ),
+                                )
                                 
                                 updated_count += 1
                                 
@@ -1190,16 +1335,21 @@ environment={env_vars}
                                     f"Updated monitor {monitor_name}: trades={total_trades}, cycles={total_cycles}, winning_cycles={winning_cycles}, W/L={win_loss_rate}% (cycle-based), ret_pct={ret_pct_sum}%, PNL=${pnl_show:.2f}",
                                 )
                         else:
-                            cursor.execute("""
+                            cursor.execute(
+                                sql.SQL(
+                                    """
                             SELECT 
                                 COUNT(*) as total_trades,
                                 COUNT(CASE WHEN win_loss = 'W' THEN 1 END) as wins,
                                 COUNT(CASE WHEN win_loss = 'L' THEN 1 END) as losses,
                                 COALESCE(SUM(ret_pct), 0) as total_ret_pct,
                                 COALESCE(SUM(pnl), 0) as total_pnl
-                                FROM users.trades_0001 
+                                FROM {} 
                                 WHERE monitor = %s AND status IN ('closed', 'settled') AND (test_filter IS NULL OR test_filter = FALSE)
-                            """, (monitor_identifier,))
+                            """
+                                ).format(tr),
+                                (monitor_identifier,),
+                            )
                             
                             trade_stats = cursor.fetchone()
                             if trade_stats and len(trade_stats) >= 5:
@@ -1218,15 +1368,26 @@ environment={env_vars}
                                 ret_pct_sum = total_ret_pct
                                 pnl_show = float(total_pnl) if total_pnl is not None else 0.0
                                 
-                                cursor.execute("""
-                                    UPDATE users.monitor_list_0001 
+                                cursor.execute(
+                                    sql.SQL(
+                                        """
+                                    UPDATE {} 
                                     SET 
                                         trades = %s,
                                         win_loss = %s,
                                         ret_pct = %s,
                                         pnl = %s
                                     WHERE id = %s
-                                """, (total_trades, win_loss_rate, ret_pct_sum, total_pnl, monitor_id))
+                                """
+                                    ).format(ml),
+                                    (
+                                        total_trades,
+                                        win_loss_rate,
+                                        ret_pct_sum,
+                                        total_pnl,
+                                        monitor_id,
+                                    ),
+                                )
                                 
                                 updated_count += 1
                                 
@@ -1298,8 +1459,10 @@ environment={env_vars}
         if not parsed:
             return
 
-        user_number = parsed["user_number"]
+        user_number = _norm_slot(parsed["user_number"])
         monitor_id = parsed["monitor_id"]
+        ml_ident = sql_ident_qualified_table(monitor_list_fqn(user_number))
+        tr_ident = sql_ident_qualified_table(trades_table_fqn(user_number))
 
         # MVP threshold is fixed at 0.0 (PnL/fees already reflected in ret_pct at trade close).
         threshold = 0.0
@@ -1310,11 +1473,13 @@ environment={env_vars}
             conn = self.get_database_connection()
             with conn.cursor() as cursor:
                 cursor.execute(
-                    f"""
+                    sql.SQL(
+                        """
                     SELECT regime_monitor_enabled, regime_window, paper_trade
-                    FROM users.monitor_list_{user_number}
+                    FROM {}
                     WHERE id = %s
-                    """,
+                    """
+                    ).format(ml_ident),
                     (monitor_id,),
                 )
                 row = cursor.fetchone()
@@ -1330,11 +1495,12 @@ environment={env_vars}
                     interval_str = "30 days"
 
                 cursor.execute(
-                    """
+                    sql.SQL(
+                        """
                     SELECT
                       COALESCE(SUM(ret_pct), 0),
                       COUNT(*)
-                    FROM users.trades_0001
+                    FROM {}
                     WHERE monitor = %s
                       AND LOWER(TRIM(status)) IN ('closed', 'settled')
                       AND (test_filter IS NULL OR test_filter = FALSE)
@@ -1344,7 +1510,8 @@ environment={env_vars}
                              THEN closed_at::timestamptz
                              ELSE created_at
                            END) >= NOW() - %s::interval
-                    """,
+                    """
+                    ).format(tr_ident),
                     (monitor_name, interval_str),
                 )
                 win_row = cursor.fetchone()
@@ -1379,11 +1546,13 @@ environment={env_vars}
                     return
 
                 cursor.execute(
-                    f"""
-                    UPDATE users.monitor_list_{user_number}
+                    sql.SQL(
+                        """
+                    UPDATE {}
                     SET paper_trade = %s, updated_at = CURRENT_TIMESTAMP
                     WHERE id = %s
-                    """,
+                    """
+                    ).format(ml_ident),
                     (desired_paper_trade, monitor_id),
                 )
                 conn.commit()
@@ -1458,10 +1627,12 @@ environment={env_vars}
         """Immediately run regime evaluation for a single monitor."""
         conn = None
         try:
+            slot = _norm_slot(user_number)
+            ml_ident = sql_ident_qualified_table(monitor_list_fqn(slot))
             conn = self.get_database_connection()
             with conn.cursor() as cursor:
                 cursor.execute(
-                    f"SELECT name FROM users.monitor_list_{user_number} WHERE id = %s",
+                    sql.SQL("SELECT name FROM {} WHERE id = %s").format(ml_ident),
                     (monitor_id,),
                 )
                 row = cursor.fetchone()
@@ -1486,16 +1657,20 @@ environment={env_vars}
         """Run regime evaluation across the monitor list immediately."""
         conn = None
         try:
+            slot = _norm_slot(user_number)
+            ml_ident = sql_ident_qualified_table(monitor_list_fqn(slot))
             conn = self.get_database_connection()
             with conn.cursor() as cursor:
                 cursor.execute(
-                    f"""
+                    sql.SQL(
+                        """
                     SELECT name
-                    FROM users.monitor_list_{user_number}
+                    FROM {}
                     WHERE name IS NOT NULL
                       AND status != 'ARCHIVED'
                     ORDER BY id
                     """
+                    ).format(ml_ident)
                 )
                 monitor_names = [row[0] for row in cursor.fetchall() if row and row[0]]
 
@@ -1546,13 +1721,19 @@ environment={env_vars}
             conn = self.get_database_connection()
             
             with conn.cursor() as cursor:
-                cursor.execute("""
+                ml = _mm_monitor_list_qualified()
+                cursor.execute(
+                    sql.SQL(
+                        """
                     SELECT 
                         id, name, symbol, strategy, trades, win_loss, ret_pct, pnl,
                         bankroll_allotment_total, total_position, status
-                    FROM users.monitor_list_0001 
+                    FROM {} 
                     WHERE id = %s
-                """, (monitor_id,))
+                """
+                    ).format(ml),
+                    (monitor_id,),
+                )
                 
                 result = cursor.fetchone()
                 if result and len(result) >= 11:
@@ -1597,13 +1778,18 @@ environment={env_vars}
             conn = self.get_database_connection()
             
             with conn.cursor() as cursor:
-                cursor.execute("""
+                ml = _mm_monitor_list_qualified()
+                cursor.execute(
+                    sql.SQL(
+                        """
                     SELECT 
                         id, name, symbol, strategy, trades, win_loss, ret_pct, pnl,
                         bankroll_allotment_total, total_position, status
-                    FROM users.monitor_list_0001 
+                    FROM {} 
                     ORDER BY id
-                """)
+                """
+                    ).format(ml)
+                )
                 
                 monitors = []
                 for row in cursor.fetchall():
@@ -1677,11 +1863,12 @@ environment={env_vars}
         try:
             conn = self.get_database_connection()
             with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT id FROM users.monitor_list_0001 
-                    WHERE status IN ('inactive', 'ARCHIVED')
-                    ORDER BY id
-                """)
+                ml = _mm_monitor_list_qualified()
+                cursor.execute(
+                    sql.SQL(
+                        "SELECT id FROM {} WHERE status IN ('inactive', 'ARCHIVED') ORDER BY id"
+                    ).format(ml)
+                )
                 return [str(row[0]) for row in cursor.fetchall()]
         except Exception as e:
             _logger.error("Error getting inactive monitor IDs: %s", e)
@@ -1693,9 +1880,10 @@ environment={env_vars}
         logs_dir = os.path.join(self.project_root, "logs")
         
         # Define log file patterns for this monitor - catch all log file types
+        slot = _mm_worker_slot()
         log_patterns = [
-            f"active_trade_supervisor_0001_{monitor_id}*.log",
-            f"auto_entry_supervisor_0001_{monitor_id}*.log"
+            f"active_trade_supervisor_{slot}_{monitor_id}*.log",
+            f"auto_entry_supervisor_{slot}_{monitor_id}*.log",
         ]
         
         try:
@@ -1727,7 +1915,8 @@ environment={env_vars}
             # Get all monitor IDs from database
             conn = self.get_database_connection()
             with conn.cursor() as cursor:
-                cursor.execute("SELECT id FROM users.monitor_list_0001 ORDER BY id")
+                ml = _mm_monitor_list_qualified()
+                cursor.execute(sql.SQL("SELECT id FROM {} ORDER BY id").format(ml))
                 valid_monitor_ids = {str(row[0]) for row in cursor.fetchall()}
             
             # Create monitor_log_archive directory if it doesn't exist
@@ -1739,19 +1928,21 @@ environment={env_vars}
             
             # Find all monitor log files
             import glob
-            all_log_files = glob.glob(os.path.join(logs_dir, "*_0001_*.log"))
+            all_log_files = glob.glob(
+                os.path.join(logs_dir, f"*_{_mm_worker_slot()}_*.log")
+            )
             
             for log_file in all_log_files:
                 filename = os.path.basename(log_file)
                 
                 # Extract monitor ID from filename
-                # Pattern: service_0001_MONITOR_ID.suffix.log
-                # Need to find the position of '0001' and get the next part
-                parts = filename.split('_')
+                # Pattern: service_<slot>_MONITOR_ID.suffix.log
+                parts = filename.split("_")
+                slot = _mm_worker_slot()
                 try:
-                    idx_0001 = parts.index('0001')
-                    if idx_0001 + 1 < len(parts):
-                        monitor_id = parts[idx_0001 + 1].split('.')[0]  # Remove any file extensions
+                    idx_slot = parts.index(slot)
+                    if idx_slot + 1 < len(parts):
+                        monitor_id = parts[idx_slot + 1].split(".")[0]
                     else:
                         continue
                 except ValueError:
@@ -1909,50 +2100,60 @@ def sync_bankroll_allotments():
 def update_monitor_position_variables():
     """Update monitor position variables and recalculate total_position"""
     try:
-        data = request.get_json()
+        data = request.get_json() or {}
         monitor_id_raw = data.get('monitor_id')
         position_size = data.get('position_size')
         position_type = data.get('position_type')
         multiplier = data.get('multiplier')
-        
+
+        user_slot: Optional[str] = None
+        if isinstance(monitor_id_raw, str) and monitor_id_raw.startswith('mon_'):
+            parts = monitor_id_raw.split('_')
+            if len(parts) >= 3 and parts[1].isdigit():
+                user_slot = _norm_slot(parts[1])
+        if user_slot is None:
+            raw_u = data.get('user_number') or data.get('user_id')
+            if raw_u is not None:
+                user_slot = _mm_resolve_user_no(str(raw_u))
+            else:
+                user_slot = _mm_resolve_user_no(None)
+
         # Extract numeric monitor ID from format like "mon_0001_10019" or "10019"
         if isinstance(monitor_id_raw, str) and '_' in monitor_id_raw:
-            # Format: "mon_0001_10019" -> extract "10019"
             parts = monitor_id_raw.split('_')
             if len(parts) >= 3:
-                monitor_id = int(parts[-1])  # Get last part (the numeric ID)
+                monitor_id = int(parts[-1])
             else:
                 monitor_id = int(monitor_id_raw)
         else:
-            monitor_id = int(monitor_id_raw) if monitor_id_raw else None
-        
+            monitor_id = int(monitor_id_raw) if monitor_id_raw is not None else None
+
         if monitor_id is None:
             return jsonify({'success': False, 'error': 'Invalid monitor_id'}), 400
-        
-        _logger.debug("Updating monitor %s (from %s) position variables", monitor_id, monitor_id_raw)
+
+        _logger.debug(
+            "Updating monitor %s (from %s) slot=%s position variables",
+            monitor_id,
+            monitor_id_raw,
+            user_slot,
+        )
         _logger.debug("Position size: %s, type: %s, multiplier: %s", position_size, position_type, multiplier)
-        
-        # Update the monitor_list table with new values
-        conn = monitor_manager.get_database_connection() # Use monitor_manager's connection
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                UPDATE users.monitor_list_0001 
-                SET position_size = %s, position_type = %s, multiplier = %s
-                WHERE id = %s
-            """, (position_size, position_type, multiplier, monitor_id))
-            conn.commit()
-        
-        # Recalculate total_position using monitor_manager method
-        result = monitor_manager.update_monitor_position_variables(monitor_id, position_size, position_type, multiplier)
-        
+
+        result = monitor_manager.update_monitor_position_variables(
+            monitor_id,
+            position_size,
+            position_type,
+            multiplier,
+            user_number=user_slot,
+        )
+
         if result.get('status') == 'error':
             return jsonify({'success': False, 'error': result.get('message')}), 500
-        
-        # The monitor_manager method already handles the total_position calculation and WebSocket notification
+
         total_position = result.get('total_position', 0)
-        
+
         return jsonify({'success': True, 'total_position': total_position})
-        
+
     except Exception as e:
         _logger.error("Error updating monitor position: %s", e)
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -2016,152 +2217,201 @@ def periodic_monitor_statistics_update():
         _logger.error("Error in periodic statistics update: %s", e)
         return jsonify({'success': False, 'error': str(e)}), 500
 
+def _strategy_defaults_tuple_to_dict(result) -> Dict[str, Any]:
+    """Map strategy_list row tuple (from get_strategy_default_settings SELECT) to a dict."""
+    return {
+        "win_streak_threshold": result[0],
+        "loss_prevention": result[1],
+        "loss_prevention_toggle": result[2],
+        "performance_based_allocation": result[3],
+        "max_price_spread": float(result[4]) if result[4] is not None else 0.0300,
+        "paper_trade": result[5],
+        "prob_adj": float(result[6]) if result[6] is not None else 5.00,
+        "position_size": result[7],
+        "position_type": result[8],
+        "multiplier": float(result[9]) if result[9] is not None else 1.00,
+        "min_probability": float(result[10]) if result[10] is not None else None,
+        "max_probability": float(result[11]) if result[11] is not None else None,
+        "min_differential": float(result[12]) if result[12] else 0.25,
+        "max_differential": float(result[13]) if result[13] is not None else None,
+        "min_time": result[14],
+        "max_time": result[15],
+        "allow_re_entry": result[16],
+        "spike_alert_enabled": result[17],
+        "spike_alert_momentum_threshold": result[18],
+        "spike_alert_cooldown_threshold": result[19],
+        "spike_alert_cooldown_minutes": result[20],
+        "current_probability": result[21],
+        "min_ttc_seconds": result[22],
+        "momentum_spike_enabled": result[23],
+        "momentum_spike_threshold": result[24],
+        "verification_period_enabled": result[25],
+        "verification_period_seconds": result[26],
+        "min_volume": result[27],
+        "momentum_scalp_entry_threshold": float(result[28]) if result[28] is not None else None,
+        "momentum_scalp_trailing_stop_amount": float(result[29]) if result[29] is not None else 0.10,
+        "momentum_scalp_profit_target": float(result[30]) if result[30] is not None else 0.99,
+        "min_ask": float(result[31]) if result[31] is not None else 0.0000,
+        "max_ask": float(result[32]) if result[32] is not None else 0.9800,
+        "max_profit": float(result[33]) if result[33] is not None else 0.9900,
+        "min_ask_range": float(result[34]) if result[34] is not None else None,
+        "stop_loss_price": float(result[35]) if result[35] is not None else 0.0,
+    }
+
+
+def _code_fallback_strategy_defaults() -> Dict[str, Any]:
+    """Last-resort defaults when tenant and system.strategy_list_default both miss the strategy."""
+    return {
+        "win_streak_threshold": 22,
+        "loss_prevention": "none",
+        "loss_prevention_toggle": True,
+        "performance_based_allocation": False,
+        "max_price_spread": 0.0300,
+        "paper_trade": False,
+        "prob_adj": 5.00,
+        "position_size": 1,
+        "position_type": "percent",
+        "multiplier": 1.00,
+        "min_probability": 25,
+        "max_probability": None,
+        "min_differential": 0.25,
+        "max_differential": None,
+        "min_time": 0,
+        "max_time": 0,
+        "allow_re_entry": False,
+        "spike_alert_enabled": False,
+        "spike_alert_momentum_threshold": 80,
+        "spike_alert_cooldown_threshold": 60,
+        "spike_alert_cooldown_minutes": 30,
+        "current_probability": None,
+        "min_ttc_seconds": 0,
+        "momentum_spike_enabled": False,
+        "momentum_spike_threshold": 70,
+        "verification_period_enabled": False,
+        "verification_period_seconds": 60,
+        "min_volume": 0,
+        "momentum_scalp_entry_threshold": None,
+        "momentum_scalp_trailing_stop_amount": 0.10,
+        "momentum_scalp_profit_target": 0.99,
+        "min_ask": 0.0000,
+        "max_ask": 0.9800,
+        "max_profit": 0.9900,
+        "min_ask_range": None,
+        "stop_loss_price": 0.0,
+    }
+
+
+def _fetch_strategy_defaults_row(cursor, table_ident, strategy_name):
+    """
+    Return one row of strategy defaults or None.
+    Raises psycopg2.ProgrammingError if the table lacks expected columns.
+    """
+    sel = sql.SQL(
+        """
+        SELECT
+            win_streak_threshold, loss_prevention, loss_prevention_toggle,
+            performance_based_allocation, max_price_spread, paper_trade, prob_adj,
+            position_size, position_type, multiplier,
+            min_probability, max_probability, min_differential, max_differential,
+            min_time, max_time, allow_re_entry,
+            spike_alert_enabled, spike_alert_momentum_threshold,
+            spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
+            current_probability, min_ttc_seconds, momentum_spike_enabled,
+            momentum_spike_threshold, verification_period_enabled,
+            verification_period_seconds, min_volume,
+            momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount,
+            momentum_scalp_profit_target, min_ask, max_ask, max_profit,
+            min_ask_range,
+            stop_loss_price
+        FROM {}
+        WHERE name = %s
+        """
+    ).format(table_ident)
+    cursor.execute(sel, (strategy_name,))
+    result = cursor.fetchone()
+    if result:
+        return result
+    sel_lo = sql.SQL(
+        """
+        SELECT
+            win_streak_threshold, loss_prevention, loss_prevention_toggle,
+            performance_based_allocation, max_price_spread, paper_trade, prob_adj,
+            position_size, position_type, multiplier,
+            min_probability, max_probability, min_differential, max_differential,
+            min_time, max_time, allow_re_entry,
+            spike_alert_enabled, spike_alert_momentum_threshold,
+            spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
+            current_probability, min_ttc_seconds, momentum_spike_enabled,
+            momentum_spike_threshold, verification_period_enabled,
+            verification_period_seconds, min_volume,
+            momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount,
+            momentum_scalp_profit_target, min_ask, max_ask, max_profit,
+            min_ask_range,
+            stop_loss_price
+        FROM {}
+        WHERE LOWER(name) = LOWER(%s)
+        """
+    ).format(table_ident)
+    cursor.execute(sel_lo, (strategy_name,))
+    return cursor.fetchone()
+
+
 def get_strategy_default_settings(strategy_name, user_number="0001"):
-    """Get default auto trade settings for a strategy from strategy_list table"""
-    try:
-        conn = monitor_manager.get_database_connection()
-        if not conn:
-            _logger.debug("Strategy defaults: database connection failed")
-            return {}
-        
-        with conn.cursor() as cursor:
-            # Select all default settings columns (matching monitor_list structure)
-            cursor.execute(f"""
-                SELECT 
-                    win_streak_threshold, loss_prevention, loss_prevention_toggle,
-                    performance_based_allocation, max_price_spread, paper_trade, prob_adj,
-                    position_size, position_type, multiplier,
-                    min_probability, max_probability, min_differential, max_differential,
-                    min_time, max_time, allow_re_entry,
-                    spike_alert_enabled, spike_alert_momentum_threshold,
-                    spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
-                    current_probability, min_ttc_seconds, momentum_spike_enabled,
-                    momentum_spike_threshold, verification_period_enabled, 
-                    verification_period_seconds, min_volume,
-                    momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount,
-                    momentum_scalp_profit_target, min_ask, max_ask, max_profit,
-                    min_ask_range,
-                    stop_loss_price
-                FROM users.strategy_list_{user_number} 
-                WHERE name = %s
-            """, (strategy_name,))
-            
-            result = cursor.fetchone()
-            if not result:
-                # Fallback for case/casing differences from UI payloads.
-                cursor.execute(f"""
-                    SELECT 
-                        win_streak_threshold, loss_prevention, loss_prevention_toggle,
-                        performance_based_allocation, max_price_spread, paper_trade, prob_adj,
-                        position_size, position_type, multiplier,
-                        min_probability, max_probability, min_differential, max_differential,
-                        min_time, max_time, allow_re_entry,
-                        spike_alert_enabled, spike_alert_momentum_threshold,
-                        spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
-                        current_probability, min_ttc_seconds, momentum_spike_enabled,
-                        momentum_spike_threshold, verification_period_enabled, 
-                        verification_period_seconds, min_volume,
-                        momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount,
-                        momentum_scalp_profit_target, min_ask, max_ask, max_profit,
-                        min_ask_range,
-                        stop_loss_price
-                    FROM users.strategy_list_{user_number}
-                    WHERE LOWER(name) = LOWER(%s)
-                """, (strategy_name,))
-                result = cursor.fetchone()
+    """
+    Load per-strategy defaults from the tenant ``strategy_list_<slot>`` row.
+
+    If that table is missing columns (name-only stub) or has no matching row, read from
+    ``system.strategy_list_default`` (canonical mirror of slot 0001). Only then use
+    built-in code fallbacks.
+    """
+    slot = _norm_slot(user_number)
+    tenant_ident = sql_ident_qualified_table(strategy_list_fqn(slot))
+    row = None
+
+    conn = monitor_manager.get_database_connection()
+    if conn:
+        try:
+            with conn.cursor() as cursor:
+                try:
+                    row = _fetch_strategy_defaults_row(cursor, tenant_ident, strategy_name)
+                except psycopg2.ProgrammingError as pe:
+                    _logger.debug(
+                        "strategy defaults: tenant strategy_list not usable for slot %s: %s",
+                        slot,
+                        pe,
+                    )
+        except Exception as e:
+            _logger.warning("strategy defaults: tenant read error: %s", e)
+            row = None
+        finally:
             conn.close()
-            
-            if result:
-                defaults = {
-                    # Strategy defaults
-                    'win_streak_threshold': result[0],
-                    'loss_prevention': result[1],
-                    'loss_prevention_toggle': result[2],
-                    'performance_based_allocation': result[3],
-                    'max_price_spread': float(result[4]) if result[4] is not None else 0.0300,
-                    'paper_trade': result[5],
-                    'prob_adj': float(result[6]) if result[6] is not None else 5.00,
-                    # Position sizing defaults
-                    'position_size': result[7],
-                    'position_type': result[8],
-                    'multiplier': float(result[9]) if result[9] is not None else 1.00,
-                    # Auto entry settings
-                    'min_probability': float(result[10]) if result[10] is not None else None,
-                    'max_probability': float(result[11]) if result[11] is not None else None,
-                    'min_differential': float(result[12]) if result[12] else 0.25,
-                    'max_differential': float(result[13]) if result[13] is not None else None,
-                    'min_time': result[14],
-                    'max_time': result[15],
-                    'allow_re_entry': result[16],
-                    'spike_alert_enabled': result[17],
-                    'spike_alert_momentum_threshold': result[18],
-                    'spike_alert_cooldown_threshold': result[19],
-                    'spike_alert_cooldown_minutes': result[20],
-                    'current_probability': result[21],
-                    'min_ttc_seconds': result[22],
-                    'momentum_spike_enabled': result[23],
-                    'momentum_spike_threshold': result[24],
-                    'verification_period_enabled': result[25],
-                    'verification_period_seconds': result[26],
-                    'min_volume': result[27],
-                    'momentum_scalp_entry_threshold': float(result[28]) if result[28] is not None else None,
-                    'momentum_scalp_trailing_stop_amount': float(result[29]) if result[29] is not None else 0.10,
-                    'momentum_scalp_profit_target': float(result[30]) if result[30] is not None else 0.99,
-                    'min_ask': float(result[31]) if result[31] is not None else 0.0000,
-                    'max_ask': float(result[32]) if result[32] is not None else 0.9800,
-                    'max_profit': float(result[33]) if result[33] is not None else 0.9900,
-                    'min_ask_range': float(result[34]) if result[34] is not None else None,
-                    'stop_loss_price': float(result[35]) if result[35] is not None else 0.0,
-                }
-                _logger.debug("Loaded defaults for strategy '%s'", strategy_name)
-                return defaults
-            else:
-                _logger.debug("No defaults found for strategy '%s', using fallback defaults", strategy_name)
-                # Return fallback defaults if strategy not found
-                return {
-                    'win_streak_threshold': 22,
-                    'loss_prevention': 'none',
-                    'loss_prevention_toggle': True,
-                    'performance_based_allocation': False,
-                    'max_price_spread': 0.0300,
-                    'paper_trade': False,
-                    'prob_adj': 5.00,
-                    'position_size': 1,
-                    'position_type': 'percent',
-                    'multiplier': 1.00,
-                    'min_probability': 25,
-                    'max_probability': None,
-                    'min_differential': 0.25,
-                    'max_differential': None,
-                    'min_time': 0,
-                    'max_time': 0,
-                    'allow_re_entry': False,
-                    'spike_alert_enabled': False,
-                    'spike_alert_momentum_threshold': 80,
-                    'spike_alert_cooldown_threshold': 60,
-                    'spike_alert_cooldown_minutes': 30,
-                    'current_probability': None,
-                    'min_ttc_seconds': 0,
-                    'momentum_spike_enabled': False,
-                    'momentum_spike_threshold': 70,
-                    'verification_period_enabled': False,
-                    'verification_period_seconds': 60,
-                    'min_volume': 0,
-                    'momentum_scalp_entry_threshold': None,
-                    'momentum_scalp_trailing_stop_amount': 0.10,
-                    'momentum_scalp_profit_target': 0.99,
-                    'min_ask': 0.0000,
-                    'max_ask': 0.9800,
-                    'max_profit': 0.9900,
-                    'min_ask_range': None,
-                    'stop_loss_price': 0.0,
-                }
-                
-    except Exception as e:
-        _logger.error("Error getting strategy defaults for '%s': %s", strategy_name, e)
-        import traceback
-        traceback.print_exc()
-        return {}
+
+    if row is None:
+        sys_ident = sql.SQL("{}.{}").format(
+            sql.Identifier("system"),
+            sql.Identifier("strategy_list_default"),
+        )
+        sys_conn = get_system_postgresql_connection()
+        if sys_conn:
+            try:
+                with sys_conn.cursor() as cursor:
+                    try:
+                        row = _fetch_strategy_defaults_row(cursor, sys_ident, strategy_name)
+                    except psycopg2.ProgrammingError as pe:
+                        _logger.debug("strategy defaults: system.strategy_list_default unreadable: %s", pe)
+                        row = None
+            except Exception as e:
+                _logger.warning("strategy defaults: system read error: %s", e)
+                row = None
+            finally:
+                sys_conn.close()
+
+    if row:
+        _logger.debug("Loaded strategy defaults for '%s' (tenant or system)", strategy_name)
+        return _strategy_defaults_tuple_to_dict(row)
+
+    _logger.debug("No DB row for strategy '%s'; using code fallback", strategy_name)
+    return _code_fallback_strategy_defaults()
 
 def _format_hour_label(hour_index: int) -> str:
     """Return time label matching contract_hour formatting."""
@@ -2182,10 +2432,11 @@ def initialize_monitor_performance_table(
     window_days: int = 84,
 ) -> None:
     """Create and seed the monitor_cycle_performance table for a new monitor."""
-    table_name = f"monitor_cycle_performance_{user_number}_{monitor_id}"
+    u = _norm_slot(user_number)
+    table_name = f"monitor_cycle_performance_{u}_{monitor_id}"
     table_identifier = sql.SQL("{}.{}").format(
-        sql.Identifier("users"),
-        sql.Identifier(table_name)
+        sql.Identifier(f"users_{u}"),
+        sql.Identifier(table_name),
     )
     index_name = f"{table_name}_winrate_idx"
 
@@ -2315,50 +2566,14 @@ def create_monitor():
         if not symbol or not strategy:
             return jsonify({"status": "error", "message": "Missing symbol or strategy parameter"}), 400
         
-        # Extract user number from user_id (e.g., user_0001 -> 0001)
-        user_number = user_id.replace("user_", "")
-        
+        # Extract user number from user_id (e.g., user_0001 -> 0001, user_2 -> 0002)
+        user_number = _norm_slot(user_id.replace("user_", ""))
+
         # Get strategy default settings
         strategy_defaults = get_strategy_default_settings(strategy, user_number)
         if not strategy_defaults:
-            _logger.warning("Monitor create: strategy_defaults is empty for '%s', using fallback defaults", strategy)
-            # Use fallback defaults if strategy not found
-            strategy_defaults = {
-                'win_streak_threshold': 22,
-                'loss_prevention': 'none',
-                'loss_prevention_toggle': True,
-                'performance_based_allocation': False,
-                'max_price_spread': 0.0300,
-                'paper_trade': False,
-                'prob_adj': 5.00,
-                'position_size': 1,
-                'position_type': 'percent',
-                'multiplier': 1.00,
-                'min_probability': 25,
-                'max_probability': None,
-                'min_differential': 0.25,
-                'max_differential': None,
-                'min_time': 0,
-                'max_time': 0,
-                'allow_re_entry': False,
-                'spike_alert_enabled': False,
-                'spike_alert_momentum_threshold': 80,
-                'spike_alert_cooldown_threshold': 60,
-                'spike_alert_cooldown_minutes': 30,
-                'current_probability': None,
-                'min_ttc_seconds': 0,
-                'momentum_spike_enabled': False,
-                'momentum_spike_threshold': 70,
-                'verification_period_enabled': False,
-                'verification_period_seconds': 60,
-                'min_volume': 0,
-                'momentum_scalp_entry_threshold': None,
-                'momentum_scalp_trailing_stop_amount': 0.10,
-                'momentum_scalp_profit_target': 0.99,
-                'min_ask': 0.0000,
-                'max_ask': 0.9800,
-                'max_profit': 0.9900
-            }
+            _logger.warning("Monitor create: strategy_defaults empty for '%s'", strategy)
+            strategy_defaults = _code_fallback_strategy_defaults()
         _logger.debug("Monitor create: using strategy defaults for '%s'", strategy)
         _logger.debug("Monitor create: min_time=%s max_time=%s min_probability=%s", strategy_defaults.get('min_time'), strategy_defaults.get('max_time'), strategy_defaults.get('min_probability'))
         _logger.debug("Monitor create: max_probability=%s min_differential=%s max_differential=%s", strategy_defaults.get('max_probability'), strategy_defaults.get('min_differential'), strategy_defaults.get('max_differential'))
@@ -2369,8 +2584,9 @@ def create_monitor():
             return jsonify({"status": "error", "message": "Database connection failed"}), 500
         
         with conn.cursor() as cursor:
-            # Get current bankroll to calculate allotment_total (paper vs live for 0001)
+            # Get current bankroll to calculate allotment_total (paper vs live for this slot)
             ab_ident = sql_ident_qualified_table(account_balance_table_for_user(user_number))
+            ml_ident = sql_ident_qualified_table(monitor_list_fqn(user_number))
             cursor.execute(
                 sql.SQL(
                     """
@@ -2410,22 +2626,27 @@ def create_monitor():
                 total_position = int(final_position_size * multiplier_value)
             
             # Let PostgreSQL handle the ID automatically with SERIAL
-            cursor.execute(f"""
-                INSERT INTO users.monitor_list_{user_number}
-                (name, symbol, market, strategy, auto_trade, auto_trade_status, status, bankroll_allotment_pct, bankroll_allotment_total, position_size, position_type, multiplier, total_position, trades, win_loss, ret_pct, pnl, dashboard_order, created,
+            cursor.execute(
+                sql.SQL(
+                    """
+                INSERT INTO {}
+                (name, symbol, market, strategy, default_strategy, auto_trade, auto_trade_status, status, bankroll_allotment_pct, bankroll_allotment_total, position_size, position_type, multiplier, total_position, trades, win_loss, ret_pct, pnl, dashboard_order, created,
                  win_streak_threshold, loss_prevention, loss_prevention_toggle, performance_based_allocation, max_price_spread, paper_trade, prob_adj,
                  min_probability, max_probability, min_differential, max_differential, min_time, max_time, allow_re_entry, spike_alert_enabled, spike_alert_momentum_threshold, spike_alert_cooldown_threshold, spike_alert_cooldown_minutes, current_probability, min_ttc_seconds, momentum_spike_enabled, momentum_spike_threshold, verification_period_enabled, verification_period_seconds, min_volume,
                  momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target, min_ask, max_ask, max_profit, min_ask_range, stop_loss_price)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(),
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(),
                         %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
-            """, (
+            """
+                ).format(ml_ident),
+                (
                 f"mon_{user_number}_temp",  # Temporary name
                 symbol,
                 market,  # market: hourly or 15m
                 strategy,
+                False,  # default_strategy (NOT NULL boolean; some tenant clones lack table default)
                 False,  # auto_trade defaults to False
                 'off',  # auto_trade_status defaults to 'off'
                 'active',  # status defaults to 'active'
@@ -2478,8 +2699,9 @@ def create_monitor():
                 strategy_defaults.get('max_profit', 0.9900),
                 float(strategy_defaults.get('min_ask_range')) if strategy_defaults.get('min_ask_range') is not None else None,
                 float(strategy_defaults.get('stop_loss_price', 0.0) or 0.0),
-            ))
-            
+                ),
+            )
+
             # Get the generated ID
             monitor_id = cursor.fetchone()[0]
             
@@ -2487,11 +2709,16 @@ def create_monitor():
             monitor_name = f"mon_{user_number}_{monitor_id}"
             
             # Update the name with the correct ID
-            cursor.execute(f"""
-                UPDATE users.monitor_list_{user_number}
+            cursor.execute(
+                sql.SQL(
+                    """
+                UPDATE {}
                 SET name = %s
                 WHERE id = %s
-            """, (monitor_name, monitor_id))
+            """
+                ).format(ml_ident),
+                (monitor_name, monitor_id),
+            )
 
             initialize_monitor_performance_table(cursor, user_number, monitor_id, symbol)
             
@@ -2616,7 +2843,7 @@ def toggle_auto_trade():
         if monitor_id.startswith("MON_") and "_" in monitor_id:
             parts = monitor_id.split("_")
             if len(parts) >= 3:
-                user_number = parts[1]
+                user_number = _norm_slot(parts[1])
                 db_monitor_id = parts[2]
             else:
                 return jsonify({"status": "error", "message": "Invalid monitor ID format"})
@@ -2624,13 +2851,19 @@ def toggle_auto_trade():
             return jsonify({"status": "error", "message": "Invalid monitor ID format"})
         
         conn = monitor_manager.get_database_connection()
+        ml_ident = sql_ident_qualified_table(monitor_list_fqn(user_number))
         with conn.cursor() as cursor:
             # Update ONLY auto_trade boolean - do NOT change auto_trade_status
-            cursor.execute(f"""
-                UPDATE users.monitor_list_{user_number}
+            cursor.execute(
+                sql.SQL(
+                    """
+                UPDATE {}
                 SET auto_trade = %s
                 WHERE id = %s
-            """, (auto_trade, db_monitor_id))
+            """
+                ).format(ml_ident),
+                (auto_trade, db_monitor_id),
+            )
             
             if cursor.rowcount == 0:
                 return jsonify({"status": "error", "message": "Monitor not found"})
@@ -2755,10 +2988,10 @@ class MonitorStatusWatcher:
         try:
             conn = self.monitor_manager.get_database_connection()
             with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT id, status FROM users.monitor_list_0001 
-                    ORDER BY id
-                """)
+                ml = _mm_monitor_list_qualified()
+                cursor.execute(
+                    sql.SQL("SELECT id, status FROM {} ORDER BY id").format(ml)
+                )
                 
                 current_status = {}
                 for row in cursor.fetchall():
@@ -2894,14 +3127,29 @@ def _handle_auto_entry_settings_stream(decoded: Dict[str, Any], msg_id: str, raw
         cid = str(decoded.get("correlation_id") or inner.get("correlation_id") or "")
         body = inner.get("body") or {}
         mid = str(inner.get("monitor_id") or body.get("monitor_id") or "")
+        from backend.core.tenant_context import get_api_tenant_context, worker_tenant_context_cached
+        from backend.trading_mode import _norm_slot
+
+        un_raw = inner.get("user_number") or body.get("user_number")
+        if un_raw is not None and str(un_raw).strip():
+            try:
+                tenant_user_no = _norm_slot(str(un_raw))
+            except ValueError:
+                tenant_user_no = worker_tenant_context_cached().user_no
+        else:
+            tenant_user_no = worker_tenant_context_cached().user_no
+        tenant_ctx = get_api_tenant_context(tenant_user_no)
+
         conn = monitor_manager.get_database_connection()
         try:
             with conn.cursor() as cursor:
-                result = apply_auto_entry_settings(cursor, mid, body)
+                result = apply_auto_entry_settings(cursor, mid, body, tenant_context=tenant_ctx)
             if result.get("status") == "ok":
                 conn.commit()
                 trigger_regime_reconcile_after_auto_entry_save(
-                    mid, source="set_auto_entry_settings_redis"
+                    mid,
+                    user_number=tenant_user_no,
+                    source="set_auto_entry_settings_redis",
                 )
                 monitor_manager._notify_frontend_monitor_list_updated(
                     "Auto trade settings updated (Redis)"

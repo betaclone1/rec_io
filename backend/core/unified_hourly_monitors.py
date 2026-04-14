@@ -1,7 +1,7 @@
 """
-Active non-15m monitors for the unified AES/ATS hourly strike pool (users.monitor_list_0001).
+Active non-15m monitors for the unified AES/ATS hourly strike pool.
 
-Matches supervisor ``has_hourly``: any active row whose normalized market is not ``15m``.
+Uses ``users.monitor_list_0001`` in SQL as a tenant-rewrite template (see unified_15m_monitors).
 """
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import logging
 from typing import Iterator, List, Tuple
 
 from backend.core.config.database import get_postgresql_connection
+from backend.core.port_config import default_pool_user_number
 
 _log = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ _MARKET_NOT_15M_SQL = (
 
 
 def iter_active_hourly_monitor_bindings() -> Iterator[Tuple[str, str]]:
-    """Yield (user_number, monitor_id) for each active hourly monitor (table monitor_list_0001)."""
+    """Yield (user_number, monitor_id) for each active hourly monitor on this worker's tenant."""
     for row in list_active_hourly_monitor_rows():
         yield row["user_number"], row["monitor_id"]
 
@@ -40,13 +41,10 @@ def list_active_hourly_monitor_rows() -> List[dict]:
                 ORDER BY id
                 """
             )
+            worker = default_pool_user_number()
             for mid, name, symbol, _market in cursor.fetchall():
-                user_number = "0001"
+                user_number = worker
                 monitor_id = str(mid)
-                if name and str(name).startswith("mon_"):
-                    parts = str(name).split("_")
-                    if len(parts) >= 3:
-                        user_number = parts[1]
                 sym_u = str(symbol or "BTC").strip().upper() or "BTC"
                 out.append(
                     {

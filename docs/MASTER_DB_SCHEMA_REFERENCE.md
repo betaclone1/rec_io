@@ -9,6 +9,20 @@ Update this document whenever schema changes are made during development.
 
 Python code should open PostgreSQL connections via `get_postgresql_connection()` / `get_database_config()` in [`backend/core/config/database.py`](../backend/core/config/database.py). Those connections include **`options=-c timezone=America/New_York`**, so session `TimeZone` is US Eastern. That keeps **`timestamp without time zone`** columns that use `DEFAULT CURRENT_TIMESTAMP` / `NOW()` aligned with the project convention (Eastern naive wall time), matching series such as `historical_data.*_price_history.timestamp` and Kalshi candle scratch tables documented below. **`timestamptz`** columns store absolute instants and are unaffected by session display semantics.
 
+### Multi-tenant enforcement (`users_NNNN` + RLS)
+
+Per-user data lives in schema **`users_<4-digit>`** (e.g. `users_0001`). Application connections are wrapped in **`TenantConnection`** ([`backend/core/tenant_context.py`](../backend/core/tenant_context.py)): they set session **`rec.tenant_pg_schema`** (via `set_config`) and **`search_path`** to that schema, validate SQL/parameters for cross-tenant tokens, and rewrite legacy `users.*` qualifiers.
+
+Migration **`20260411_1500_rec_tenant_rls_session_guc`** installs **row-level security** on every base table in each `users_NNNN` schema: policy **`rec_tenant_gate`** allows access only when `current_setting('rec.tenant_pg_schema', true)` equals that schema name (**`FORCE ROW LEVEL SECURITY`** applies even to the table owner). Role **`rec_io_user`** is set **`NOBYPASSRLS`**. Helpers in schema **`rec`**: **`rec.ensure_tenant_rls_for_schema(text)`**, **`rec.refresh_all_tenant_rls()`** — run the latter after creating a new tenant schema or bulk-adding tables so policies exist.
+
+Shared schemas (`system`, `live_data`, `archive`, etc.) are **not** covered by this policy set; do not store per-tenant mutable business data there without separate controls. If `set_config('rec.tenant_pg_schema', ...)` fails at connect time, add **`custom_variable_classes = 'rec'`** to `postgresql.conf` and restart PostgreSQL (rare on PostgreSQL 15+).
+
+**Superusers bypass RLS:** If the database role used by `get_postgresql_connection()` is a **superuser** (common on local dev), PostgreSQL will **not** enforce these policies. Use a **non-superuser** application role in environments where the database must enforce tenant boundaries, or run `ALTER ROLE … NOSUPERUSER` on the app role after confirming DDL/extension needs.
+
+**Tenant `monitor_list_*`.`id`:** Each `users_NNNN.monitor_list_NNNN` must have **`id INTEGER` default `nextval`** on a **sequence in the same schema** (e.g. `users_0002.monitor_list_0002_id_seq`). Tables created with `LIKE` / partial clones can end up with `NOT NULL id` and **no default**, which breaks `INSERT` without an explicit `id`. Migration **`20260411_1700_tenant_monitor_list_id_serial`** attaches a per-tenant sequence, `OWNED BY`, and grants for `rec_io_user`. New tenants: run that migration (or mirror the same DDL when provisioning).
+
+**Monitor id numbering (slot prefix):** Numeric ids are allocated in **`slot * 10_000 + n`** with **n = 1..9999** (four-digit slot as integer: `0002` → 20001–29999, `0065` → 650001–659999, `0001` → 10001–19999). Names stay **`mon_<slot>_<id>`** (e.g. `mon_0002_20001`). Migrations **`20260412_1015_monitor_list_seq_slot_prefix_resync`** and **`20260412_1500_monitor_list_seq_ignore_misplaced_99xxx`** reset each `monitor_list_*_id_seq`: slot **0001** uses **`GREATEST(MAX(id), 10000) + 1`** over all rows (includes legacy **99xxx**); slots **`0002+`** use **`GREATEST(MAX(id) within [slot×10000+1, slot×10000+9999], slot×10000) + 1`** so stray **99xxx** rows in a non–0001 tenant do not pin the sequence. Legacy **99xxx** for slot 0001 remain valid; **`backend/core/port_config.py`** `_monitor_id_port_offset` still maps them for per-monitor ports.
+
 ---
 
 ## How to Check and Update Your Database (No Scripts)
@@ -8076,6 +8090,14 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 **Bootstrap:** `CREATE SCHEMA IF NOT EXISTS backtest` is included in `backend/core.config.database.init_database` (grants to `rec_io_user`). The schema may already exist on developer databases before that runs.
 
+### Table: `backtest.kalshi_historical_trades_api`
+
+**Purpose:** Store raw rows from Kalshi Trade API **`GET /trade-api/v2/historical/trades`** ([Get Historical Trades](https://docs.kalshi.com/api-reference/historical/get-historical-trades)) for exploration and future backtest use. Column names match the API **`Trade`** object: **`trade_id`**, **`ticker`**, **`count_fp`**, **`yes_price_dollars`**, **`no_price_dollars`**, **`taker_side`**, **`created_time`**, plus **`ingested_at`** when the row was written.
+
+**Population:** `scripts/backtest/fetch_kalshi_historical_trades_to_backtest.py --ticker <MARKET_TICKER>` (default: **`GET /markets/trades`** live tape; add **`--endpoint historical`** for **`GET /historical/trades`** after Kalshi’s historical cutoff). Signed request uses prod Kalshi credentials. **`ON CONFLICT (trade_id) DO NOTHING`** for repeat runs.
+
+**Migration:** `20260420_1430_backtest_kalshi_historical_trades_api`.
+
 ### Pattern: `backtest.backtest_1m_<slug>`
 
 **Naming:** `<slug>` = lowercased Kalshi market ticker with `-` and `.` replaced by `_` (see `scripts/backtest/helpers/kalshi_candles_1m.ticker_slug`). Example: `KXBTC15M-26MAR051345-45` → `backtest.backtest_1m_kxbtc15m_26mar051345_45`.
@@ -9170,6 +9192,74 @@ Per-symbol pipeline health for **Kalshi 15m and hourly** WS strike publishers, t
 
 ---
 
+### Table: `system.master_users`
+
+Canonical registration / ops table for collaborator installs. **Not** in `users` (legacy `users.master_users` removed by migration `20260410_1015_users_master_users_to_system`). Column alignment for legacy merges: `20260410_1020_system_master_users_registration_columns`. Created by `database.py` and `scripts/manage/user_registration_system.sh`; managed via `scripts/manage/manage_master_users.sh`.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | nextval | Primary key (canonical installs); legacy merges may omit `id`. |
+| `user_no` | `character varying(10)` | NO | - | Sequential tenant-style slot (`0001`, `0002`, …). Unique. Added or backfilled from `id` by migration `20260420_1000_system_master_users_registration_user_no` when missing. |
+| `user_id` | `character varying(50)` | NO | - | Unique login / display id from registration |
+| `name` | `character varying(255)` | NO | - | Full name |
+| `first_name` | `character varying(100)` | YES | - | Self-service registration; widened from legacy 50 by `20260420_1010_system_master_users_widen_first_last_name` where applicable. |
+| `last_name` | `character varying(100)` | YES | - | Same as `first_name`. |
+| `email` | `character varying(255)` | NO | - | |
+| `phone` | `character varying(50)` | YES | - | |
+| `server_ip` | `character varying(45)` | YES | - | |
+| `server_hostname` | `character varying(255)` | YES | - | |
+| `registration_date` | `timestamp without time zone` | YES | CURRENT_TIMESTAMP | |
+| `last_updated` | `timestamp without time zone` | YES | CURRENT_TIMESTAMP | |
+| `system_version` | `character varying(50)` | YES | - | |
+| `status` | `character varying(64)` | YES | active | Workflow: `pending_email_verification` (self-reg, code not yet confirmed) → `pending_admin_approval` (email verified, awaiting ops) → `active`. Migration `20260420_1000_system_master_users_registration_user_no` widens from 20. |
+| `notes` | `text` | YES | - | |
+| `password_hash` | `character varying(255)` | YES | - | Optional bcrypt hash from self-service registration (`/api/auth/register`). Migration `20260411_1605_system_master_users_password_hash`. |
+| `account_type` | `character varying(32)` | YES | user_basic | Default for new registrations via API (`user_basic`). Legacy merges may use other values (e.g. `master_admin`). |
+| `email_verification_code_hash` | `character varying(255)` | YES | - | Bcrypt hash of the latest emailed 6-digit code; cleared when verified. Migration `20260420_1200_system_master_users_email_verification`. |
+| `email_verification_sent_at` | `timestamp without time zone` | YES | - | When the current code was issued; used for expiry and resend cooldown. |
+| `kalshi_user_id` | `character varying(64)` | YES | - | Kalshi API user UUID (v1 account endpoints, sync). Backfilled from legacy `users*.user_info_NNNN` and those tables dropped by migration `20260421_1400_master_users_kalshi_drop_user_info_tables`. |
+| `exchange_credentials` | `jsonb` | NO | `{"kalshi": false, "polymarket": false}` | Which exchanges may use authenticated API (keys on disk are not enough). Migration `20260410_2100_system_master_users_exchange_credentials`; `init_database` adds the column if missing. |
+
+Legacy rows merged from `users.master_users` may have extra columns (`is_active`, `created_at`, etc.). Migration `20260410_1020_system_master_users_registration_columns` adds registration-shaped columns and backfills where needed; `database.py` defines the same helper views on init.
+
+#### Views (helper queries for scripts)
+
+- **`system.active_master_users`** — `user_id`, `name`, `email`, `server_ip`, `last_updated` where `status = 'active'`.
+- **`system.recent_master_registrations`** — registrations in the last 30 days (`registration_date`).
+- **`system.master_users_summary`** — aggregate counts: `total_users`, `active_users`, `recent_registrations`.
+
+---
+
+### Table: `system.strategy_list_default`
+
+Mirror of `users.strategy_list_0001` at migration time: same shape as `users.strategy_list_0001` (see that table’s column list), with a full row copy. Not a merge of all per-user `users.strategy_list_*` tables. Migrations `20260409_2200_system_master_users_strategy_list` (create) and `20260409_2300_system_strategy_list_rename_to_default` (rename from `system.strategy_list` on older installs). Refreshing this copy after app changes to `users.strategy_list_0001` is a separate operational step unless a sync job is added.
+
+---
+
+### Table: `system.version_control`
+
+Append-only history of deployed application versions. **Current version** is the latest row by `id` (or by `updated_at`). Seeded with `3.0.1` when empty. Migration `20260422_1000_system_version_control`. **Tooling:** `scripts/ops/read_system_version.py` (print current), `next_system_version.py` (compute patch bump or `--version` / `--bump-from`), `record_system_version.py` (insert row; use `--version` pinned in `MASTER_CHANGELOG` during deploy). **prepare-update** (push flow) resolves the next release from prod DB when possible, then writes `Release: vNEXT` + checklist into the changelog and commit message.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `integer(32)` | NO | nextval | Primary key; monotonic deploy order. |
+| `version` | `character varying(32)` | NO | - | Semantic version string (e.g. `3.0.1`). |
+| `updated_at` | `timestamp with time zone` | NO | `now()` | When this version row was inserted. |
+
+#### Constraints
+
+- **Primary Key:** `version_control_pkey` on `id`
+
+#### Indexes
+
+- `version_control_updated_at_idx` on `updated_at DESC` (optional helper for “recent deploys” queries).
+
+---
+
 ## Schema: `testing`
 
 ### Table: `testing.kalshi_level2_orderbook`
@@ -9609,7 +9699,7 @@ Unified Kalshi 15m active-trade tracking: **one table per user** (`active_trades
 - **Unique:** `trade_id` (one row per trade).
 - **Index:** `(monitor_id, status)` for lookups by monitor.
 
-**Migrations:** `20260326_1800_active_trades_0001_15m_pool` (create pool). `20260331_1115_active_trades_unified_table_naming` (rename to `active_trades_15m_0001`). `20260327_1015_active_trades_ensure_exchange` (idempotent: rename `market` → `exchange` or add `exchange` on any `users.active_trades_*` still missing it). `20260327_1020_active_trades_monitoring_price_precision` (`current_symbol_price`, `buffer_from_entry` → `numeric(20,8)` on all `users.active_trades_*`).
+**Migrations:** `20260326_1800_active_trades_0001_15m_pool` (create pool). `20260331_1115_active_trades_unified_table_naming` (rename to `active_trades_15m_0001`). `20260327_1015_active_trades_ensure_exchange` (idempotent: rename `market` → `exchange` or add `exchange` on any `users.active_trades_*` still missing it). `20260327_1020_active_trades_monitoring_price_precision` (`current_symbol_price`, `buffer_from_entry` → `numeric(20,8)` on all `users.active_trades_*`). `20260412_1630_active_trades_pool_status_default` (pool `status` DEFAULT + NULL backfill on all `users_NNNN` pool tables).
 
 ---
 
@@ -9658,7 +9748,7 @@ Unified Kalshi **hourly** active-trade tracking: **one table per user** (`active
 - **Unique:** `trade_id`.
 - **Index:** `(monitor_id, status)` for lookups by monitor.
 
-**Migrations:** `20260330_2200_active_trades_0001_hourly_pool` (create pool). `20260331_1115_active_trades_unified_table_naming` (rename to `active_trades_hourly_0001`). Same follow-on migrations as other `users.active_trades_*` tables apply where idempotent (`exchange` column, monitoring price precision).
+**Migrations:** `20260330_2200_active_trades_0001_hourly_pool` (create pool). `20260331_1115_active_trades_unified_table_naming` (rename to `active_trades_hourly_0001`). `20260412_1630_active_trades_pool_status_default` (every `users_NNNN` schema: `status` DEFAULT `'active'` on `active_trades_15m_*` / `active_trades_hourly_*` pool tables, backfill NULL). Same follow-on migrations as other `users.active_trades_*` tables apply where idempotent (`exchange` column, monitoring price precision).
 
 ---
 
@@ -9837,28 +9927,6 @@ Unified Kalshi **hourly** active-trade tracking: **one table per user** (`active
   ```sql
   CREATE INDEX idx_fills_0001_ticker ON users.fills_0001 USING btree (ticker)
   ```
-
----
-
-### Table: `users.master_users`
-
-#### Columns
-
-| Column Name | Data Type | Nullable | Default | Description |
-|-------------|-----------|----------|---------|-------------|
-| `user_no` | `character varying(10)` | YES | - | |
-| `user_id` | `character varying(50)` | YES | - | |
-| `email` | `character varying(255)` | YES | - | |
-| `first_name` | `character varying(50)` | YES | - | |
-| `last_name` | `character varying(50)` | YES | - | |
-| `phone` | `character varying(20)` | YES | - | |
-| `account_type` | `character varying(20)` | YES | - | |
-| `created_at` | `timestamp with time zone` | YES | - | |
-| `last_login` | `timestamp with time zone` | YES | - | |
-| `is_active` | `boolean` | YES | - | |
-| `password_hash` | `character varying(255)` | YES | - | |
-| `updated_at` | `timestamp with time zone` | YES | - | |
-| `server_ip` | `character varying(45)` | YES | - | |
 
 ---
 
@@ -10473,7 +10541,7 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 
 ### Table: `users.trades_0001`
 
-**Schema sync:** When changing this table (columns, types, indexes), apply the same changes to `users.trades_simulated_0001` so both stay in sync. **Exception:** `symbol_expiration`, `win_loss_confirmed`, and `market_result` (venue resolution snapshot on the trade row) exist on **`trades_0001` only** (not on `trades_simulated_0001`; see migrations `20260328_1500_trades_symbol_expiration_win_loss_confirmed`, `20260331_2300_trades_kalshi_outcome_verified_at`, `20260401_1200_trades_rename_outcome_evaluated_column`, `20260401_1600_trades_0001_rec_io_db_notify` (real-time NOTIFY trigger → stream `trades`), `20260402_1000_trades_outcome_checked_at_short_name`, `20260402_1400_trades_market_result_from_outcome_check`, `20260403_1000_trades_drop_outcome_checked_at`). `market_result` is written from **Kalshi `market_lifecycle_v2`** in `market_watchdog_ws` for paper and live rows when the venue reports `determined` / `settled`. **`market` (cadence)** exists on both live and simulated tables (migration `20260330_1015_trades_market_cadence`). **Strike final-window ask snapshot** columns (`yes_ask_min_15m`, …, `no_ask_range_15m`) exist on both tables (migration `20260330_2200_trades_strike_final_quarter_asks`); `trade_manager` fills them at insert from the latest matching strike row when available.
+**Schema sync:** When changing this table (columns, types, indexes), apply the same changes to `users.trades_simulated_0001` so both stay in sync. **Exception:** `symbol_expiration`, `win_loss_confirmed`, and `market_result` (venue resolution snapshot on the trade row) exist on **`trades_0001` only** (not on `trades_simulated_0001`; see migrations `20260328_1500_trades_symbol_expiration_win_loss_confirmed`, `20260331_2300_trades_kalshi_outcome_verified_at`, `20260401_1200_trades_rename_outcome_evaluated_column`, `20260401_1600_trades_0001_rec_io_db_notify` and `20260412_2000_trades_tenant_schemas_rec_io_db_notify` (real-time `public.rec_io_db_notify` trigger on every `users_<slot>.trades_<slot>` → stream `trades` for trade_history `/ws/db_changes`), `20260402_1000_trades_outcome_checked_at_short_name`, `20260402_1400_trades_market_result_from_outcome_check`, `20260403_1000_trades_drop_outcome_checked_at`). `market_result` is written from **Kalshi `market_lifecycle_v2`** in `market_watchdog_ws` for paper and live rows when the venue reports `determined` / `settled`. **`market` (cadence)** exists on both live and simulated tables (migration `20260330_1015_trades_market_cadence`). **Strike final-window ask snapshot** columns (`yes_ask_min_15m`, …, `no_ask_range_15m`) exist on both tables (migration `20260330_2200_trades_strike_final_quarter_asks`); `trade_manager` fills them at insert from the latest matching strike row when available.
 
 #### Columns
 
@@ -10797,39 +10865,6 @@ Kalshi v1 /deposits and /withdrawals only (we do not use the account/history end
 - `account_history_0001_created_type_amount_key` (unique constraint backing index)
   ```sql
   CREATE UNIQUE INDEX account_history_0001_created_type_amount_key ON users.account_history_0001 USING btree (created_at, entry_type, amount)
-  ```
-
----
-
-### Table: `users.user_info_0001`
-
-#### Columns
-
-| Column Name | Data Type | Nullable | Default | Description |
-|-------------|-----------|----------|---------|-------------|
-| `user_no` | `character varying(10)` | NO | - | |
-| `user_id` | `character varying(50)` | NO | - | |
-| `kalshi_user_id` | `character varying(50)` | YES | - | Kalshi API user UUID (e.g. for account/history and other v1 endpoints). |
-| `email` | `character varying(255)` | YES | - | |
-| `first_name` | `character varying(50)` | YES | - | |
-| `last_name` | `character varying(50)` | YES | - | |
-| `phone` | `character varying(20)` | YES | - | |
-| `account_type` | `character varying(20)` | YES | - | |
-| `created_at` | `timestamp with time zone` | YES | - | |
-| `last_login` | `timestamp with time zone` | YES | - | |
-| `is_active` | `boolean` | YES | - | |
-| `password_hash` | `character varying(255)` | YES | - | |
-| `updated_at` | `timestamp with time zone` | YES | CURRENT_TIMESTAMP | |
-
-#### Constraints
-
-- **Primary Key:** `user_info_0001_pkey` on `user_no`
-
-#### Indexes
-
-- `user_info_0001_pkey`
-  ```sql
-  CREATE UNIQUE INDEX user_info_0001_pkey ON users.user_info_0001 USING btree (user_no)
   ```
 
 ---

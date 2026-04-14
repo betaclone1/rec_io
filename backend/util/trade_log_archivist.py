@@ -14,9 +14,19 @@ from typing import Any, Dict, List, Sequence, Tuple
 
 from psycopg2 import sql
 
-# Master trade log is singular today; archive tables are per user_number (e.g. 0001).
+def tenant_trades_schema(user_number: str) -> str:
+    """PostgreSQL schema for tenant user_number (e.g. users_0001)."""
+    return f"users_{user_number}"
+
+
+def master_trades_table(user_number: str) -> str:
+    """Master trades table name for user_number (e.g. trades_0001)."""
+    return f"trades_{user_number}"
+
+
+# Default single-tenant names (tests / legacy imports).
 MASTER_TRADES_TABLE = "trades_0001"
-MASTER_TRADES_SCHEMA = "users"
+MASTER_TRADES_SCHEMA = "users_0001"
 
 
 def archive_table_live(user_number: str) -> str:
@@ -32,7 +42,7 @@ def canonical_monitor_key(user_number: str, monitor_id: str) -> str:
     return f"mon_{user_number}_{monitor_id}"
 
 
-def fetch_trades_0001_column_names(cursor) -> List[str]:
+def fetch_master_trades_column_names(cursor, user_number: str) -> List[str]:
     cursor.execute(
         """
         SELECT column_name
@@ -40,19 +50,36 @@ def fetch_trades_0001_column_names(cursor) -> List[str]:
         WHERE table_schema = %s AND table_name = %s
         ORDER BY ordinal_position
         """,
-        (MASTER_TRADES_SCHEMA, MASTER_TRADES_TABLE),
+        (tenant_trades_schema(user_number), master_trades_table(user_number)),
     )
     return [r[0] for r in cursor.fetchall()]
+
+
+def _information_schema_table_exists(cursor, schema: str, table: str) -> bool:
+    """True if ``schema.table`` exists (for optional archive UNION branches)."""
+    cursor.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = %s AND table_name = %s
+        )
+        """,
+        (schema, table),
+    )
+    row = cursor.fetchone()
+    return bool(row and row[0])
 
 
 def _compose_insert_from_master(
     archive_schema: str,
     archive_table: str,
     columns: Sequence[str],
+    user_number: str,
     *,
     paper_rows: bool,
 ) -> sql.Composed:
-    """INSERT ... SELECT from users.trades_0001 for one paper/live split."""
+    """INSERT ... SELECT from users_<n>.trades_<n> for one paper/live split."""
     ins_cols = sql.SQL(", ").join([sql.Identifier(c) for c in columns] + [sql.Identifier("archived_at")])
     sel_cols = sql.SQL(", ").join([sql.Identifier("t", c) for c in columns])
     dest = sql.Identifier(archive_schema, archive_table)
@@ -68,17 +95,23 @@ def _compose_insert_from_master(
         dest=dest,
         ins_cols=ins_cols,
         sel_cols=sel_cols,
-        src=sql.Identifier(MASTER_TRADES_SCHEMA, MASTER_TRADES_TABLE),
+        src=sql.Identifier(
+            tenant_trades_schema(user_number), master_trades_table(user_number)
+        ),
     )
 
 
-def _compose_delete_master() -> sql.Composed:
+def _compose_delete_master(user_number: str) -> sql.Composed:
     return sql.SQL(
         """
         DELETE FROM {src} AS t
         WHERE LOWER(TRIM(t.monitor)) = LOWER(%s)
         """
-    ).format(src=sql.Identifier(MASTER_TRADES_SCHEMA, MASTER_TRADES_TABLE))
+    ).format(
+        src=sql.Identifier(
+            tenant_trades_schema(user_number), master_trades_table(user_number)
+        )
+    )
 
 
 def _sql_where_archivable_not_active_inactive_monitor(mon_list_rel: str, user_number: str) -> str:
@@ -87,7 +120,7 @@ def _sql_where_archivable_not_active_inactive_monitor(mon_list_rel: str, user_nu
     Archives when: no monitor text, malformed mon_* key, user prefix != user_number,
     no row in monitor_list for that id, or list status is not active/inactive (incl. NULL).
 
-    mon_list_rel must be a safe qualified name e.g. users.monitor_list_0001; user_number
+    mon_list_rel must be a safe qualified name e.g. users_0001.monitor_list_0001; user_number
     exactly four digits (caller validates).
     """
     return f"""
@@ -130,29 +163,29 @@ def archive_trades_not_in_active_or_inactive_monitor(
     Same archive tables and paper/live split as archive_trades_for_monitor.
     """
     _validate_user_number(user_number)
-    if user_number != "0001":
-        raise NotImplementedError(
-            f"trade_log_archivist: only users.trades_0001 is wired; got user_number={user_number!r}"
-        )
 
     live_tbl = archive_table_live(user_number)
     paper_tbl = archive_table_paper(user_number)
-    mon_list_rel = f"{MASTER_TRADES_SCHEMA}.monitor_list_{user_number}"
+    ts = tenant_trades_schema(user_number)
+    mon_list_rel = f"{ts}.monitor_list_{user_number}"
     pred = _sql_where_archivable_not_active_inactive_monitor(mon_list_rel, user_number)
 
-    columns = fetch_trades_0001_column_names(cursor)
+    columns = fetch_master_trades_column_names(cursor, user_number)
     if not columns:
-        raise RuntimeError("users.trades_0001 has no columns (missing table?)")
+        raise RuntimeError(
+            f"{ts}.{master_trades_table(user_number)} has no columns (missing table?)"
+        )
 
     col_list = ", ".join([f'"{c.replace(chr(34), "")}"' for c in columns])
 
+    mt = master_trades_table(user_number)
     if dry_run:
         cursor.execute(
             f"""
             SELECT
               COUNT(*) FILTER (WHERE COALESCE(t.paper_trade, FALSE)),
               COUNT(*) FILTER (WHERE NOT COALESCE(t.paper_trade, FALSE))
-            FROM {MASTER_TRADES_SCHEMA}.{MASTER_TRADES_TABLE} AS t
+            FROM {ts}.{mt} AS t
             WHERE {pred}
             """
         )
@@ -166,14 +199,14 @@ def archive_trades_not_in_active_or_inactive_monitor(
     ins_paper = f"""
 INSERT INTO archive.{paper_tbl} ({col_list}, archived_at)
 SELECT {col_list}, NOW()
-FROM {MASTER_TRADES_SCHEMA}.{MASTER_TRADES_TABLE} AS t
+FROM {ts}.{mt} AS t
 WHERE {pred}
   AND COALESCE(t.paper_trade, FALSE) = TRUE
 """
     ins_live = f"""
 INSERT INTO archive.{live_tbl} ({col_list}, archived_at)
 SELECT {col_list}, NOW()
-FROM {MASTER_TRADES_SCHEMA}.{MASTER_TRADES_TABLE} AS t
+FROM {ts}.{mt} AS t
 WHERE {pred}
   AND COALESCE(t.paper_trade, FALSE) = FALSE
 """
@@ -183,7 +216,7 @@ WHERE {pred}
     live_moved = cursor.rowcount
 
     del_sql = f"""
-DELETE FROM {MASTER_TRADES_SCHEMA}.{MASTER_TRADES_TABLE} AS t
+DELETE FROM {ts}.{mt} AS t
 WHERE {pred}
 """
     cursor.execute(del_sql)
@@ -223,31 +256,30 @@ def archive_trades_for_monitor(
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """
-    Copy trades for mon_<user_number>_<monitor_id> from users.trades_0001 into archive
+    Copy trades for mon_<user_number>_<monitor_id> from users_<n>.trades_<n> into archive
     (live vs paper), then delete from master. Uses the caller's transaction.
 
     Returns counts and monitor_key. On dry_run, only returns estimated rows (no writes).
     """
-    if user_number != "0001":
-        raise NotImplementedError(
-            f"trade_log_archivist: only users.trades_0001 is wired; got user_number={user_number!r}"
-        )
+    _validate_user_number(user_number)
 
     mk = canonical_monitor_key(user_number, str(monitor_id).strip())
     live_tbl = archive_table_live(user_number)
     paper_tbl = archive_table_paper(user_number)
+    ts = tenant_trades_schema(user_number)
+    mt = master_trades_table(user_number)
 
-    columns = fetch_trades_0001_column_names(cursor)
+    columns = fetch_master_trades_column_names(cursor, user_number)
     if not columns:
-        raise RuntimeError("users.trades_0001 has no columns (missing table?)")
+        raise RuntimeError(f"{ts}.{mt} has no columns (missing table?)")
 
     if dry_run:
         cursor.execute(
-            """
+            f"""
             SELECT
               COUNT(*) FILTER (WHERE COALESCE(paper_trade, FALSE)),
               COUNT(*) FILTER (WHERE NOT COALESCE(paper_trade, FALSE))
-            FROM users.trades_0001
+            FROM {ts}.{mt}
             WHERE LOWER(TRIM(monitor)) = LOWER(%s)
             """,
             (mk,),
@@ -260,15 +292,19 @@ def archive_trades_for_monitor(
             "dry_run": True,
         }
 
-    ins_paper = _compose_insert_from_master("archive", paper_tbl, columns, paper_rows=True)
+    ins_paper = _compose_insert_from_master(
+        "archive", paper_tbl, columns, user_number, paper_rows=True
+    )
     cursor.execute(ins_paper, (mk, True))
     paper_moved = cursor.rowcount
 
-    ins_live = _compose_insert_from_master("archive", live_tbl, columns, paper_rows=False)
+    ins_live = _compose_insert_from_master(
+        "archive", live_tbl, columns, user_number, paper_rows=False
+    )
     cursor.execute(ins_live, (mk, False))
     live_moved = cursor.rowcount
 
-    del_q = _compose_delete_master()
+    del_q = _compose_delete_master(user_number)
     cursor.execute(del_q, (mk,))
     deleted = cursor.rowcount
 
@@ -290,31 +326,34 @@ def union_trades_with_archives_select(
 ) -> Tuple[str, Tuple]:
     """
     Build SQL text for (live master ∪ archive live ∪ archive paper) with trailing archived_at.
-    Same column order as users.trades_0001 plus archived_at.
+    Same column order as users_<n>.trades_<n> plus archived_at.
 
     Returns (sql_string, ()) — params empty; safe identifiers are embedded only from user_number.
     """
-    if user_number != "0001":
-        raise NotImplementedError("union_trades_with_archives_select: only trades_0001 master wired")
+    _validate_user_number(user_number)
+    ts = tenant_trades_schema(user_number)
+    mt = master_trades_table(user_number)
 
-    cols = fetch_trades_0001_column_names(cursor)
+    cols = fetch_master_trades_column_names(cursor, user_number)
     if not cols:
-        raise RuntimeError("users.trades_0001 column list empty")
+        raise RuntimeError(f"{ts}.{mt} column list empty")
 
     quoted = ", ".join(f'"{c.replace(chr(34), "")}"' for c in cols)
     live_arch = archive_table_live(user_number)
     paper_arch = archive_table_paper(user_number)
 
-    q = f"""
-SELECT {quoted}, NULL::timestamptz AS archived_at
-FROM {MASTER_TRADES_SCHEMA}.{MASTER_TRADES_TABLE}
-UNION ALL
-SELECT {quoted}, archived_at
-FROM archive.{live_arch}
-UNION ALL
-SELECT {quoted}, archived_at
-FROM archive.{paper_arch}
-""".strip()
+    parts = [
+        f"SELECT {quoted}, NULL::timestamptz AS archived_at\nFROM {ts}.{mt}"
+    ]
+    if _information_schema_table_exists(cursor, "archive", live_arch):
+        parts.append(
+            f"SELECT {quoted}, archived_at\nFROM archive.{live_arch}"
+        )
+    if _information_schema_table_exists(cursor, "archive", paper_arch):
+        parts.append(
+            f"SELECT {quoted}, archived_at\nFROM archive.{paper_arch}"
+        )
+    q = "\nUNION ALL\n".join(parts)
     return q, ()
 
 

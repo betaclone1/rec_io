@@ -29,7 +29,7 @@
   - **users.monitor_list_0001:** `current_weekly_cycle` DB=SMALLINT, DOC=INTEGER.
   - **users.strategy_list_0001:** `min_probability` DB=INTEGER, DOC=NUMERIC(5,2); “Columns in DB only” includes `max_probability` (likely doc omission).
   - **users.trade_history_preferences_0001:** `last_search_timestamp` DB=BIGINT, DOC=INTEGER.
-  - **users.user_info_0001:** `kalshi_user_id` DB=TEXT, DOC=VARCHAR(50) (compatible).
+  - **users.user_info_0001:** removed; `kalshi_user_id` lives on **`system.master_users`** (migration `20260421_1400_master_users_kalshi_drop_user_info_tables`). This historical audit line is superseded.
 
 ### database.py vs local DB
 

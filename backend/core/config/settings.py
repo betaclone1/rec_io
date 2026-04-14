@@ -71,12 +71,13 @@ class ConfigManager:
     
     def _get_default_port(self, agent_name: str) -> int:
         """Get default port for an agent using centralized port management."""
-        
-        # Use centralized port management for default ports
-        # All ports are now managed by the centralized port system
-        
-        # All ports are now managed by the centralized port system
-        return get_port(agent_name)
+        # Legacy config.json agent keys → MASTER_PORT_MANIFEST service names
+        manifest_key = {
+            "main": "main_app",
+            "market_watchdog": "market_watchdog_ws_kalshi_hourly",
+            "trade_monitor": "main_app",
+        }.get(agent_name, agent_name)
+        return get_port(manifest_key)
     
     def _get_default_agent_config(self, agent_name: str) -> Dict[str, Any]:
         """Get default configuration for an agent."""

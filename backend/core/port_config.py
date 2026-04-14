@@ -12,29 +12,44 @@ _port_cfg_logger = logging.getLogger(__name__)
 
 
 def default_pool_user_number() -> str:
-    """Default trading user id for pool AES/ATS manifest keys (e.g. 0001). Set REC_POOL_USER_NUMBER to override."""
-    u = os.environ.get("REC_POOL_USER_NUMBER", "0001").strip()
-    return u if u else "0001"
+    """Trading slot from ``REC_USER_NO`` / ``REC_POOL_USER_NUMBER``, else tail of ``REC_DEFAULT_USER_SCHEMA``."""
+    u = (os.environ.get("REC_USER_NO") or os.environ.get("REC_POOL_USER_NUMBER") or "").strip()
+    if u:
+        if u.isdigit() and len(u) <= 4:
+            u = u.zfill(4)
+        return u
+    schema = (os.environ.get("REC_DEFAULT_USER_SCHEMA") or "").strip()
+    if schema.lower().startswith("users_") and len(schema) > len("users_"):
+        tail = schema.split("_", 1)[-1].strip()
+        if tail.isdigit() and len(tail) <= 4:
+            return tail.zfill(4)
+    raise RuntimeError(
+        "Set REC_USER_NO, REC_POOL_USER_NUMBER, or REC_DEFAULT_USER_SCHEMA (users_<slot>) "
+        "so the process can resolve the trading slot."
+    )
 
 
-def pool_user_for_unified_aes_ats(active_monitors: Optional[List] = None) -> str:
+def pool_user_for_unified_aes_ats(active_monitors: Optional[List] = None) -> Optional[str]:
     """
     Supervisor program suffix for pool AES/ATS: auto_entry_supervisor_<id> / active_trade_supervisor_<id>.
-    Prefer distinct user_number values from monitor rows; align REC_POOL_USER_NUMBER with this on the host.
+    Prefer distinct user_number values from monitor rows. Returns None if the list is empty
+    (caller should fall back to ``REC_POOL_USER_NUMBER`` / ``default_pool_user_number()``).
     """
     if not active_monitors:
-        return default_pool_user_number()
+        return None
     ids = sorted(
-        set(
-            str(m.get("user_number") or "").strip() or "0001"
+        {
+            str(m.get("user_number") or "").strip()
             for m in active_monitors
-        )
+            if str(m.get("user_number") or "").strip()
+        }
     )
     if not ids:
-        return default_pool_user_number()
+        return None
     if len(ids) > 1:
         _port_cfg_logger.warning(
-            "Multiple user_numbers among active monitors (%s); using %s for pool AES/ATS supervisor names",
+            "Multiple user_numbers among active monitors (%s); using %s for pool AES/ATS supervisor names "
+            "(supervisor generator should pass monitors for one tenant only)",
             ids,
             ids[0],
         )
@@ -119,13 +134,15 @@ def _monitor_id_port_offset(monitor_num: int) -> int:
     """
     Map monitor_list numeric id to the small integer used for per-monitor port spacing.
 
-    Default (prod-style): 10012 -> 12 via (monitor_num - 10_000).
-    Dev 99xxx range: 99012 -> 12 via (monitor_num - 99_000) so offsets stay small and
-    ports do not overflow (unlike subtracting 10_000 from 99012).
+    Slot-prefixed ids: numeric id is ``<slot> * 10_000 + offset`` with a small ``offset``
+    (e.g. 10012 -> 12, 20012 -> 12, 650001 -> 1). Implemented as ``monitor_num - (monitor_num // 10_000) * 10_000``.
+
+    Legacy local-dev band 99000–99999: offset = ``monitor_num - 99_000`` (existing rows).
     """
-    if monitor_num >= 99_000:
+    if 99_000 <= monitor_num < 100_000:
         return monitor_num - 99_000
-    return monitor_num - 10_000
+    hi = (monitor_num // 10_000) * 10_000
+    return monitor_num - hi
 
 # Default port assignments (fallback only)
 DEFAULT_PORTS = {
@@ -158,6 +175,12 @@ DEFAULT_PORTS = {
     "trade_executor_0001": 8001,
     "kalshi_account_sync_0001": 8004,
     "monitor_manager_0001": 8012,
+    "trade_manager_0002": 4010,
+    "trade_executor_0002": 8011,
+    "kalshi_account_sync_0002": 8014,
+    "monitor_manager_0002": 8022,
+    "auto_entry_supervisor_0002": 8043,
+    "active_trade_supervisor_0002": 8044,
 }
 
 def ensure_port_config_exists():
@@ -272,7 +295,7 @@ def ensure_port_config_exists():
                 "description": "Dynamic port range for monitor-specific processes",
                 "auto_entry_supervisor_offset": 0,
                 "active_trade_supervisor_offset": 1,
-                "note": "Port calculation: start_port + (port_offset * 2) + service_offset; port_offset is (monitor_id - 10000) for 1xxxx ids, (monitor_id - 99000) for 99xxx ids."
+                "note": "Port calculation: start_port + (port_offset * 2) + service_offset; port_offset from monitor_id via _monitor_id_port_offset (slot*10000+offset ids; legacy 99xxx supported)."
             },
             "notes": {
                 "avoid_ports": [5000, 7000, 9000, 10000],
@@ -543,16 +566,30 @@ def register_monitor_ports(monitor_identifier: str) -> Dict[str, int]:
     return ports
 
 
+def _monitor_suffix_tenant_slot(monitor_suffix: str) -> Optional[str]:
+    """4-digit slot from ``<user>_<monitor_id>`` for tenant-scoped DB reads."""
+    if "_" not in monitor_suffix:
+        return None
+    user_number, _ = monitor_suffix.split("_", 1)
+    u = user_number.strip()
+    if u.isdigit() and len(u) <= 4:
+        return u.zfill(4)
+    return None
+
+
 def monitor_suffix_uses_unified_15m_pool(monitor_suffix: str) -> bool:
     """True when this monitor should use the unified 15m AES/ATS ports (market = 15m)."""
     if "_" not in monitor_suffix:
+        return False
+    tenant_slot = _monitor_suffix_tenant_slot(monitor_suffix)
+    if not tenant_slot:
         return False
     user_number, monitor_id = monitor_suffix.split("_", 1)
     conn = None
     try:
         from backend.core.config.database import get_postgresql_connection
 
-        conn = get_postgresql_connection()
+        conn = get_postgresql_connection(tenant_user_no=tenant_slot)
         if not conn:
             return False
         with conn.cursor() as cursor:
@@ -582,12 +619,15 @@ def monitor_suffix_uses_unified_hourly_pool(monitor_suffix: str) -> bool:
     """True when this monitor uses the hourly unified ladder (normalized market is not 15m)."""
     if "_" not in monitor_suffix:
         return False
+    tenant_slot = _monitor_suffix_tenant_slot(monitor_suffix)
+    if not tenant_slot:
+        return False
     user_number, monitor_id = monitor_suffix.split("_", 1)
     conn = None
     try:
         from backend.core.config.database import get_postgresql_connection
 
-        conn = get_postgresql_connection()
+        conn = get_postgresql_connection(tenant_user_no=tenant_slot)
         if not conn:
             return False
         with conn.cursor() as cursor:

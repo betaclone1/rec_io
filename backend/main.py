@@ -4,8 +4,8 @@ Uses the single centralized port configuration system.
 """
 
 import logging
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException, Query
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from starlette.responses import Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +15,9 @@ import json
 import asyncio
 import threading
 from contextlib import asynccontextmanager
+from collections import defaultdict
 import time
+import re as _main_re
 from datetime import datetime, timedelta
 import pytz
 import requests
@@ -26,9 +28,6 @@ from typing import List, Optional, Dict
 import fcntl
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
-import hashlib
-import secrets
-import hmac
 
 # Import the universal centralized port system
 import sys
@@ -51,27 +50,25 @@ from backend.core.port_config import (
 
 # Import unified configuration system for database connections
 from backend.core.unified_config import UnifiedConfigManager
-from backend.core.config.database import get_postgresql_connection, get_database_config
+from backend.core.config.database import (
+    get_database_config,
+    get_postgresql_connection,
+    get_system_postgresql_connection,
+)
 from backend.core.exchange_ids import normalize_exchange
 from backend.core.time_eastern import EST, now_est
 from backend.util.trade_log_archivist import (
     archive_trades_for_monitor,
+    fetch_master_trades_column_names,
     union_trades_with_archives_select,
 )
 
 unified_config = UnifiedConfigManager()
 
 
-def _auth_expiry_utc(iso_str: str) -> datetime:
-    """Parse auth token expiry as UTC for comparison (handles legacy naive ISO)."""
-    s = (iso_str or "").replace("Z", "+00:00")
-    dt = datetime.fromisoformat(s)
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
 # Get port from centralized system
 MAIN_APP_PORT = get_port("main_app")
+READ_API_BASE_URL = f"http://127.0.0.1:{get_port('read_api')}"
 # Aggregate /api/active_trades is served by pool ATS (8034), not legacy key active_trade_supervisor (6000).
 ACTIVE_TRADE_SUPERVISOR_PORT = get_port(unified_active_trade_supervisor_service_name())
 
@@ -111,18 +108,107 @@ _main_logger.info("Using centralized port %s (ATS port %s)", MAIN_APP_PORT, ACTI
 from backend.util.paths import get_data_dir, get_trade_history_dir, get_accounts_data_dir
 from backend.account_mode import get_account_mode
 from backend.trading_mode import (
+    _norm_slot,
     account_balance_table_for_user,
-    get_trading_mode,
     is_paper_trading,
     migrate_legacy_state_file,
-    set_trading_mode as persist_trading_mode,
     sql_ident_qualified_table,
     subaccounts_table_for_user,
     transfers_table_for_user,
 )
 
-# Global set of connected websocket clients for preferences
-connected_clients = set()
+# /ws/preferences: tenant-scoped subscribers (Redis fan-out targets by tenant_user_no)
+preferences_ws_by_user: Dict[str, set] = defaultdict(set)
+
+
+def _prefs_ws_all_clients():
+    for sset in preferences_ws_by_user.values():
+        for ws in sset:
+            yield ws
+
+
+def _prefs_ws_register(ws, user_no: str) -> None:
+    preferences_ws_by_user[str(user_no).strip().zfill(4)].add(ws)
+
+
+def _prefs_ws_unregister(ws) -> None:
+    for un, sset in list(preferences_ws_by_user.items()):
+        if ws in sset:
+            sset.discard(ws)
+            if not sset:
+                del preferences_ws_by_user[un]
+            return
+
+
+def _prefs_recipient_slots_for_redis_message(obj: dict) -> Optional[set]:
+    """
+    None → deliver to all preference WebSocket clients.
+    Non-empty set of 4-digit slots → only those tenants.
+    """
+    raw = obj.get("tenant_user_no")
+    if raw is not None:
+        u = str(raw).strip()
+        if u.isdigit() and len(u) <= 4:
+            return {u.zfill(4)}
+    mon_re = _main_re.compile(r"^(?:mon|MON)_(\d{4})_")
+    slots: set = set()
+    for key in ("monitor_id", "monitor_identifier"):
+        v = obj.get(key)
+        if isinstance(v, str):
+            m = mon_re.match(v.strip())
+            if m:
+                slots.add(m.group(1))
+    if slots:
+        return slots
+    data = obj.get("data")
+    slots = set()
+    if isinstance(data, dict):
+        for key in ("monitor_id", "monitor_identifier"):
+            v = data.get(key)
+            if isinstance(v, str):
+                m = mon_re.match(v.strip())
+                if m:
+                    slots.add(m.group(1))
+        at = data.get("active_trades")
+        if isinstance(at, list):
+            for row in at:
+                if not isinstance(row, dict):
+                    continue
+                mon = row.get("monitor") or row.get("monitor_identifier")
+                if isinstance(mon, str):
+                    m = mon_re.match(mon.strip())
+                    if m:
+                        slots.add(m.group(1))
+    if slots:
+        return slots
+    return None
+
+
+def _prefs_ws_clients_for_slots(targets: Optional[set]) -> List:
+    if not targets:
+        return list(_prefs_ws_all_clients())
+    out: List = []
+    for slot in targets:
+        out.extend(list(preferences_ws_by_user.get(slot, ())))
+    return out
+
+
+def _prefs_ws_client_count() -> int:
+    return sum(len(s) for s in preferences_ws_by_user.values())
+
+
+async def _prefs_ws_send_json_to_slot(message: dict, tenant_slot: str) -> None:
+    """Deliver a JSON message only to /ws/preferences clients for the given four-digit slot."""
+    slot = _norm_slot(tenant_slot)
+    text = json.dumps(message)
+    to_remove = set()
+    for websocket in list(preferences_ws_by_user.get(slot, ())):
+        try:
+            await websocket.send_text(text)
+        except Exception:
+            to_remove.add(websocket)
+    for c in to_remove:
+        _prefs_ws_unregister(c)
 
 # Global set of connected websocket clients for database changes
 db_change_clients = set()
@@ -154,9 +240,13 @@ def get_trade_history_preferences_postgresql():
     """Get trade history preferences from PostgreSQL"""
     try:
         from backend.core.config.database import get_postgresql_connection
+        from backend.core.tenant_context import resolved_tenant_user_no_for_app
+
         conn = get_postgresql_connection()
+        un = resolved_tenant_user_no_for_app()
+        pref_table = f"users.trade_history_preferences_{un}"
         with conn.cursor() as cursor:
-            select_full = """
+            select_full = f"""
                 SELECT date_filter, start_date, end_date, win_filter, loss_filter,
                        contract_9am, contract_10am, contract_11am, contract_12am,
                        contract_1pm, contract_2pm, contract_3pm, contract_4pm,
@@ -167,11 +257,11 @@ def get_trade_history_preferences_postgresql():
                        day_sunday, day_monday, day_tuesday, day_wednesday, day_thursday, day_friday, day_saturday,
                        analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp, chart_view, pct_mode,
                        live_filter, paper_filter, include_test_trades,
-                       COALESCE(strategy_selection, '{}'::jsonb),
-                       COALESCE(symbol_selection, '{}'::jsonb)
-                FROM users.trade_history_preferences_0001 WHERE id = 1
+                       COALESCE(strategy_selection, '{{}}'::jsonb),
+                       COALESCE(symbol_selection, '{{}}'::jsonb)
+                FROM {pref_table} WHERE id = 1
             """
-            select_with_strategy = """
+            select_with_strategy = f"""
                 SELECT date_filter, start_date, end_date, win_filter, loss_filter,
                        contract_9am, contract_10am, contract_11am, contract_12am,
                        contract_1pm, contract_2pm, contract_3pm, contract_4pm,
@@ -182,10 +272,10 @@ def get_trade_history_preferences_postgresql():
                        day_sunday, day_monday, day_tuesday, day_wednesday, day_thursday, day_friday, day_saturday,
                        analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp, chart_view, pct_mode,
                        live_filter, paper_filter, include_test_trades,
-                       COALESCE(strategy_selection, '{}'::jsonb)
-                FROM users.trade_history_preferences_0001 WHERE id = 1
+                       COALESCE(strategy_selection, '{{}}'::jsonb)
+                FROM {pref_table} WHERE id = 1
             """
-            select_without_strategy = """
+            select_without_strategy = f"""
                 SELECT date_filter, start_date, end_date, win_filter, loss_filter,
                        contract_9am, contract_10am, contract_11am, contract_12am,
                        contract_1pm, contract_2pm, contract_3pm, contract_4pm,
@@ -196,7 +286,7 @@ def get_trade_history_preferences_postgresql():
                        day_sunday, day_monday, day_tuesday, day_wednesday, day_thursday, day_friday, day_saturday,
                        analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp, chart_view, pct_mode,
                        live_filter, paper_filter, include_test_trades
-                FROM users.trade_history_preferences_0001 WHERE id = 1
+                FROM {pref_table} WHERE id = 1
             """
             result = None
             has_strategy_col = False
@@ -362,12 +452,16 @@ def get_trade_history_preferences_postgresql():
 def update_trade_history_preferences_postgresql(**kwargs):
     """Update trade history preferences in PostgreSQL using UPSERT"""
     try:
+        from backend.core.tenant_context import resolved_tenant_user_no_for_app
+
         conn = get_postgresql_connection()
         if not conn:
             return
+        un = resolved_tenant_user_no_for_app()
+        pref_table = f"users.trade_history_preferences_{un}"
         with conn.cursor() as cursor:
             # First, ensure we only have one row
-            cursor.execute("DELETE FROM users.trade_history_preferences_0001 WHERE id > 1")
+            cursor.execute(f"DELETE FROM {pref_table} WHERE id > 1")
             
             # Build dynamic UPSERT query
             columns = list(kwargs.keys())
@@ -379,7 +473,7 @@ def update_trade_history_preferences_postgresql(**kwargs):
             placeholders.append('CURRENT_TIMESTAMP')
             
             query = f"""
-                INSERT INTO users.trade_history_preferences_0001 (id, {', '.join(columns)})
+                INSERT INTO {pref_table} (id, {', '.join(columns)})
                 VALUES (1, {', '.join(placeholders)})
                 ON CONFLICT (id) DO UPDATE SET
                 {', '.join([f"{col} = EXCLUDED.{col}" for col in columns])}
@@ -393,148 +487,126 @@ def update_trade_history_preferences_postgresql(**kwargs):
     except Exception as e:
         _main_logger.warning(f"[PostgreSQL Error] Failed to update trade history preferences: {e}")
 
-# Authentication system
-AUTH_TOKENS_FILE = os.path.join(get_data_dir(), "users", "user_0001", "auth_tokens.json")
-DEVICE_TOKENS_FILE = os.path.join(get_data_dir(), "users", "user_0001", "device_tokens.json")
+# Authentication: sessions and password checks live on read_api; main proxies /api/auth and /api/user.
+from backend.core.tenant_context import resolved_tenant_user_no_for_app
+from backend.web.session_store import find_valid_token
 
-# Authentication settings - respect environment variable
+
+def _session_user_number_from_optional_user_id(user_id: Optional[str]) -> str:
+    """Authenticated tenant slot; optional ``user_id`` must match session (cross-tenant guard)."""
+    slot = resolved_tenant_user_no_for_app()
+    if user_id is None or not str(user_id).strip():
+        return slot
+    s = str(user_id).strip()
+    low = s.lower()
+    if low.startswith("user_"):
+        s = s.split("_", 1)[-1]
+    s = s.strip().zfill(4)
+    if len(s) != 4 or not s.isdigit():
+        raise HTTPException(status_code=400, detail="invalid user_id")
+    if s != slot:
+        raise HTTPException(status_code=403, detail="user_id does not match session")
+    return s
+
+
+def _monitor_slot_and_db_id_from_monitor_id(
+    monitor_id: str, body_user_id: Optional[str]
+) -> tuple[str, str]:
+    """
+    Parse MON_/mon_ / numeric monitor id. Numeric id uses session slot.
+    Embedded tenant in prefixed ids must match session.
+    """
+    slot = _session_user_number_from_optional_user_id(body_user_id)
+    mid = str(monitor_id).strip()
+    if (mid.startswith("MON_") or mid.startswith("mon_")) and "_" in mid:
+        parts = mid.split("_")
+        if len(parts) >= 3:
+            un = parts[1].strip().zfill(4)
+            db_id = parts[2].strip()
+            if len(un) != 4 or not un.isdigit() or not db_id.isdigit():
+                raise HTTPException(status_code=400, detail="Invalid monitor ID format")
+            if un != slot:
+                raise HTTPException(
+                    status_code=403, detail="monitor_id tenant does not match session"
+                )
+            return un, db_id
+        raise HTTPException(status_code=400, detail="Invalid monitor ID format")
+    if mid.isdigit():
+        return slot, mid
+    raise HTTPException(status_code=400, detail="Invalid monitor ID format")
+
+
 AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "false").lower() == "true"
-# Force authentication in production
 if os.environ.get("REC_ENVIRONMENT") == "production":
     AUTH_ENABLED = True
 
-def load_auth_tokens():
-    """Load authentication tokens from file"""
-    try:
-        if os.path.exists(AUTH_TOKENS_FILE):
-            with open(AUTH_TOKENS_FILE, "r") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {}
 
-def save_auth_tokens(tokens):
-    """Save authentication tokens to file"""
-    try:
-        os.makedirs(os.path.dirname(AUTH_TOKENS_FILE), exist_ok=True)
-        with open(AUTH_TOKENS_FILE, "w") as f:
-            json.dump(tokens, f, indent=2)
-    except Exception as e:
-        _main_logger.warning(f"[AUTH] Error saving auth tokens: {e}")
-
-def load_device_tokens():
-    """Load device tokens from file"""
-    try:
-        if os.path.exists(DEVICE_TOKENS_FILE):
-            with open(DEVICE_TOKENS_FILE, "r") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {}
-
-def save_device_tokens(tokens):
-    """Save device tokens to file"""
-    try:
-        os.makedirs(os.path.dirname(DEVICE_TOKENS_FILE), exist_ok=True)
-        with open(DEVICE_TOKENS_FILE, "w") as f:
-            json.dump(tokens, f, indent=2)
-    except Exception as e:
-        _main_logger.warning(f"[AUTH] Error saving device tokens: {e}")
-
-def generate_token():
-    """Generate a secure authentication token"""
-    return secrets.token_urlsafe(32)
-
-def hash_password(password):
-    """Hash a password using HMAC-SHA256"""
-    salt = secrets.token_hex(16)
-    hash_obj = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000)
-    return salt + hash_obj.hex()
-
-def verify_password(password, hashed):
-    """Verify a password against its hash"""
-    try:
-        salt = hashed[:32]  # First 32 chars are salt
-        hash_part = hashed[32:]
-        hash_obj = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000)
-        return hmac.compare_digest(hash_obj.hex(), hash_part)
-    except Exception:
+def _query_token_auth_ok(request: Request) -> bool:
+    if not AUTH_ENABLED:
+        return True
+    token = (request.query_params.get("token") or "").strip()
+    if not token:
+        ck = request.cookies.get("rec_auth_token")
+        token = (ck or "").strip()
+    if not token:
         return False
+    return find_valid_token(token) is not None
 
-def get_user_credentials():
-    """Get user credentials from PostgreSQL"""
-    try:
-        conn = get_postgresql_connection()
-        if not conn:
-            raise Exception("Database connection failed")
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                SELECT user_id, first_name, last_name, email, phone, account_type, password_hash
-                FROM users.user_info_0001 WHERE user_no = '0001'
-            """)
-            result = cursor.fetchone()
-            if result:
-                user_id, first_name, last_name, email, phone, account_type, password_hash = result
-                return {
-                    "username": user_id,
-                    "name": f"{first_name} {last_name}" if first_name and last_name else user_id,
-                    "email": email,
-                    "phone": phone,
-                    "account_type": account_type,
-                    "password_hash": password_hash
-                }
-    except Exception as e:
-        _main_logger.warning(f"[AUTH] Error loading user credentials from PostgreSQL: {e}")
-    
-    # Fallback to JSON file only when not in production
-    if os.getenv("REC_ENVIRONMENT") != "production":
+
+def _read_api_forward_headers(request: Request) -> Dict[str, str]:
+    h: Dict[str, str] = {}
+    auth = request.headers.get("authorization")
+    if auth:
+        h["Authorization"] = auth
+    # read_api resolves tenant from session; browser fetch uses Cookie, not Bearer.
+    cookie = request.headers.get("cookie")
+    if cookie:
+        h["Cookie"] = cookie
+    return h
+
+
+def _read_api_query_with_session(request: Request, base: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = dict(base)
+    for k in ("token", "user_id", "trading_mode"):
+        v = request.query_params.get(k)
+        if v is not None and str(v).strip() != "":
+            out[k] = v
+    return out
+
+
+async def _proxy_read_api_raw(
+    request: Request, method: str, path: str, body: Optional[bytes] = None
+):
+    url = f"{READ_API_BASE_URL}{path}"
+    hdrs = _read_api_forward_headers(request)
+    if body is not None:
+        hdrs["Content-Type"] = request.headers.get("content-type") or "application/json"
+
+    def _do():
+        if method.upper() == "GET":
+            return requests.get(url, headers=hdrs, timeout=60)
+        if method.upper() == "POST":
+            return requests.post(url, data=body if body is not None else b"", headers=hdrs, timeout=60)
+        raise ValueError(method)
+
+    return await asyncio.to_thread(_do)
+
+
+async def _as_starlette_response(r: requests.Response) -> Response:
+    ct = (r.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if r.status_code == 204 or not r.content:
+        return Response(status_code=r.status_code)
+    if "application/json" in ct:
         try:
-            user_info_path = os.path.join(get_data_dir(), "users", "user_0001", "user_info.json")
-            if os.path.exists(user_info_path):
-                with open(user_info_path, "r") as f:
-                    user_info = json.load(f)
-                    return {
-                        "username": user_info.get("user_id", "admin"),
-                        "password": user_info.get("password", "admin"),
-                        "name": user_info.get("name", "Admin User")
-                    }
-        except Exception as e:
-            _main_logger.warning(f"[AUTH] Error loading user credentials from JSON: {e}")
-    
-    # Default credentials if nothing works (dev only)
-    return {
-        "username": "admin",
-        "password": "admin",
-        "name": "Admin User"
-    }
+            return JSONResponse(content=r.json(), status_code=r.status_code)
+        except Exception:
+            pass
+    return Response(
+        content=r.content,
+        status_code=r.status_code,
+        media_type=r.headers.get("content-type"),
+    )
 
-def verify_password(password, hashed_password):
-    """Verify a password against its hash"""
-    try:
-        # Check if it's a fallback hash (starts with 'fallback_hash_')
-        if hashed_password.startswith('fallback_hash_'):
-            # Extract the actual password from the fallback hash
-            actual_password = hashed_password.replace('fallback_hash_', '')
-            return password == actual_password
-        
-        # Try bcrypt verification
-        import bcrypt
-        return bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8'))
-    except Exception as e:
-        _main_logger.debug(f"[AUTH] Password verification error: {e}")
-        return False
-
-def change_password_hash(password):
-    """Hash a password for storage. Requires bcrypt; no plaintext fallback."""
-    try:
-        import bcrypt
-        return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-    except ImportError:
-        _main_logger.debug(f"[AUTH] bcrypt required for password hashing")
-        raise ValueError("bcrypt is required for password hashing")
-    except Exception as e:
-        _main_logger.debug(f"[AUTH] Password hashing error: {e}")
-        raise
 
 def load_preferences():
     global _preferences_cache, _cache_timestamp
@@ -582,7 +654,7 @@ async def broadcast_preferences_update():
         
         # Send to all connected clients concurrently
         tasks = []
-        for client in connected_clients:
+        for client in _prefs_ws_all_clients():
             task = asyncio.create_task(send_to_client(client, data))
             tasks.append(task)
         
@@ -591,7 +663,8 @@ async def broadcast_preferences_update():
             await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=1.0)
         
         # Clean up disconnected clients
-        connected_clients.difference_update(to_remove)
+        for c in to_remove:
+            _prefs_ws_unregister(c)
     except Exception as e:
         _main_logger.warning(f"[Broadcast Preferences Error] {e}")
 
@@ -606,12 +679,13 @@ async def send_to_client(client, data):
 async def broadcast_account_mode(mode: str):
     message = json.dumps({"account_mode": mode})
     to_remove = set()
-    for client in connected_clients:
+    for client in _prefs_ws_all_clients():
         try:
             await client.send_text(message)
         except Exception:
             to_remove.add(client)
-    connected_clients.difference_update(to_remove)
+    for c in to_remove:
+        _prefs_ws_unregister(c)
 
 
 async def broadcast_trading_mode(mode: str):
@@ -623,12 +697,13 @@ async def broadcast_trading_mode(mode: str):
         }
     )
     to_remove = set()
-    for client in connected_clients:
+    for client in _prefs_ws_all_clients():
         try:
             await client.send_text(message)
         except Exception:
             to_remove.add(client)
-    connected_clients.difference_update(to_remove)
+    for c in to_remove:
+        _prefs_ws_unregister(c)
 
 
 async def ripple_bankroll_to_monitors():
@@ -645,6 +720,14 @@ async def ripple_bankroll_to_monitors():
             _main_logger.warning("ripple_bankroll_to_monitors: %s", e)
 
     await asyncio.to_thread(_run)
+
+
+from backend.web.trading_mode_routes import configure_trading_mode_hooks, trading_mode_router
+
+configure_trading_mode_hooks(
+    broadcast_trading_mode=broadcast_trading_mode,
+    ripple_bankroll_to_monitors=ripple_bankroll_to_monitors,
+)
 
 
 # Broadcast helper function for database changes
@@ -851,13 +934,29 @@ async def _redis_trading_preferences_consume_loop(queue: asyncio.Queue) -> None:
     while True:
         try:
             text = await queue.get()
+            try:
+                obj = json.loads(text)
+            except Exception:
+                obj = None
+            targets = (
+                _prefs_recipient_slots_for_redis_message(obj)
+                if isinstance(obj, dict)
+                else None
+            )
+            clients = _prefs_ws_clients_for_slots(targets)
+            seen = set()
             to_remove = set()
-            for client in list(connected_clients):
+            for client in clients:
+                wid = id(client)
+                if wid in seen:
+                    continue
+                seen.add(wid)
                 try:
                     await client.send_text(text)
                 except Exception:
                     to_remove.add(client)
-            connected_clients.difference_update(to_remove)
+            for c in to_remove:
+                _prefs_ws_unregister(c)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -929,6 +1028,9 @@ _explicit_origins = [
 ]
 origins = _explicit_origins if os.getenv("REC_ENVIRONMENT") == "production" else _explicit_origins + ["*"]
 
+from backend.web.tenant_asgi import WebTenantMiddleware
+
+app.add_middleware(WebTenantMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -936,6 +1038,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(trading_mode_router, prefix="/api")
 
 # Mount static files with cache busting
 from fastapi.staticfiles import StaticFiles
@@ -982,6 +1086,28 @@ async def health_check():
         "timestamp": now_est().isoformat(),
         "port_system": "centralized"
     }
+
+
+@app.get("/api/system/release_version")
+async def get_release_version_main() -> Dict[str, Any]:
+    """Global deploy label from Redis (same contract as read_api; same-origin for System UI)."""
+    ver: Optional[str] = None
+    try:
+        from backend.core.trading_redis_comms import (
+            redis_client_optional,
+            redis_key_system_release_version,
+        )
+
+        r = redis_client_optional()
+        if r:
+            raw = r.get(redis_key_system_release_version())
+            if raw is not None:
+                ver = raw.decode() if isinstance(raw, bytes) else str(raw)
+                ver = ver.strip() or None
+    except Exception:
+        ver = None
+    return {"version": ver}
+
 
 # Port information endpoint
 @app.get("/api/ports")
@@ -1071,16 +1197,31 @@ async def get_system_health():
 # WebSocket endpoint for preferences updates
 @app.websocket("/ws/preferences")
 async def websocket_preferences(websocket: WebSocket):
+    from backend.web.tenant_asgi import resolve_session_user_no_from_asgi_scope
+
+    user_no = resolve_session_user_no_from_asgi_scope(websocket.scope)
+    if not user_no:
+        await websocket.close(code=4401, reason="Not authenticated")
+        return
+    # Omit Sec-WebSocket-Protocol on accept even if the client sent the token there:
+    # echoing a long token_urlsafe value breaks some browsers (abnormal close 1006).
     await websocket.accept()
-    connected_clients.add(websocket)
+    _prefs_ws_register(websocket, user_no)
     try:
         while True:
             await websocket.receive_text()  # Keep connection alive
     except WebSocketDisconnect:
-        connected_clients.discard(websocket)
+        pass
+    finally:
+        _prefs_ws_unregister(websocket)
 
 @app.websocket("/ws/db_changes")
 async def websocket_db_changes(websocket: WebSocket):
+    from backend.web.tenant_asgi import resolve_session_user_no_from_asgi_scope
+
+    if not resolve_session_user_no_from_asgi_scope(websocket.scope):
+        await websocket.close(code=4401, reason="Not authenticated")
+        return
     await websocket.accept()
     db_change_clients.add(websocket)
     try:
@@ -1118,27 +1259,7 @@ async def serve_main_app(request: Request):
     """Serve the main application (protected route)."""
     # Check if user is authenticated
     if AUTH_ENABLED:
-        # Get token from query parameters (sent by login page)
-        token = request.query_params.get("token", "")
-        device_id = request.query_params.get("deviceId", "")
-        
-        if not token or not device_id:
-            return RedirectResponse(url="/login")
-        
-        # Verify the token
-        try:
-            auth_tokens = load_auth_tokens()
-            if token not in auth_tokens:
-                return RedirectResponse(url="/login")
-            
-            token_data = auth_tokens[token]
-            expires = _auth_expiry_utc(token_data["expires"])
-            
-            if datetime.now(timezone.utc) >= expires:
-                return RedirectResponse(url="/login")
-                
-        except Exception as e:
-            _main_logger.warning(f"[AUTH] Error verifying token: {e}")
+        if not _query_token_auth_ok(request):
             return RedirectResponse(url="/login")
     
     # Serve the main app
@@ -1252,27 +1373,7 @@ async def serve_mobile_trade_monitor(request: Request):
     """Serve mobile trade monitor with cache busting headers."""
     # Check if user is authenticated
     if AUTH_ENABLED:
-        # Get token from query parameters
-        token = request.query_params.get("token", "")
-        device_id = request.query_params.get("deviceId", "")
-        
-        if not token or not device_id:
-            return RedirectResponse(url="/login")
-        
-        # Verify the token
-        try:
-            auth_tokens = load_auth_tokens()
-            if token not in auth_tokens:
-                return RedirectResponse(url="/login")
-            
-            token_data = auth_tokens[token]
-            expires = _auth_expiry_utc(token_data["expires"])
-            
-            if datetime.now(timezone.utc) >= expires:
-                return RedirectResponse(url="/login")
-                
-        except Exception as e:
-            _main_logger.warning(f"[AUTH] Error verifying token: {e}")
+        if not _query_token_auth_ok(request):
             return RedirectResponse(url="/login")
     
     file_path = f"{frontend_dir}/mobile/trade_monitor_mobile.html"
@@ -1296,27 +1397,7 @@ async def serve_mobile_dashboard(request: Request):
     """Serve mobile dashboard with cache busting headers."""
     # Check if user is authenticated
     if AUTH_ENABLED:
-        # Get token from query parameters
-        token = request.query_params.get("token", "")
-        device_id = request.query_params.get("deviceId", "")
-        
-        if not token or not device_id:
-            return RedirectResponse(url="/login")
-        
-        # Verify the token
-        try:
-            auth_tokens = load_auth_tokens()
-            if token not in auth_tokens:
-                return RedirectResponse(url="/login")
-            
-            token_data = auth_tokens[token]
-            expires = _auth_expiry_utc(token_data["expires"])
-            
-            if datetime.now(timezone.utc) >= expires:
-                return RedirectResponse(url="/login")
-                
-        except Exception as e:
-            _main_logger.warning(f"[AUTH] Error verifying token: {e}")
+        if not _query_token_auth_ok(request):
             return RedirectResponse(url="/login")
     
     file_path = f"{frontend_dir}/mobile/dashboard_mobile.html"
@@ -1340,27 +1421,7 @@ async def serve_mobile_account_manager(request: Request):
     """Serve mobile account manager with cache busting headers."""
     # Check if user is authenticated
     if AUTH_ENABLED:
-        # Get token from query parameters
-        token = request.query_params.get("token", "")
-        device_id = request.query_params.get("deviceId", "")
-        
-        if not token or not device_id:
-            return RedirectResponse(url="/login")
-        
-        # Verify the token
-        try:
-            auth_tokens = load_auth_tokens()
-            if token not in auth_tokens:
-                return RedirectResponse(url="/login")
-            
-            token_data = auth_tokens[token]
-            expires = _auth_expiry_utc(token_data["expires"])
-            
-            if datetime.now(timezone.utc) >= expires:
-                return RedirectResponse(url="/login")
-                
-        except Exception as e:
-            _main_logger.warning(f"[AUTH] Error verifying token: {e}")
+        if not _query_token_auth_ok(request):
             return RedirectResponse(url="/login")
     
     file_path = f"{frontend_dir}/mobile/account_manager_mobile.html"
@@ -1384,27 +1445,7 @@ async def serve_mobile_index(request: Request):
     """Serve mobile index with cache busting headers."""
     # Check if user is authenticated
     if AUTH_ENABLED:
-        # Get token from query parameters
-        token = request.query_params.get("token", "")
-        device_id = request.query_params.get("deviceId", "")
-        
-        if not token or not device_id:
-            return RedirectResponse(url="/login")
-        
-        # Verify the token
-        try:
-            auth_tokens = load_auth_tokens()
-            if token not in auth_tokens:
-                return RedirectResponse(url="/login")
-            
-            token_data = auth_tokens[token]
-            expires = _auth_expiry_utc(token_data["expires"])
-            
-            if datetime.now(timezone.utc) >= expires:
-                return RedirectResponse(url="/login")
-                
-        except Exception as e:
-            _main_logger.warning(f"[AUTH] Error verifying token: {e}")
+        if not _query_token_auth_ok(request):
             return RedirectResponse(url="/login")
     
     file_path = f"{frontend_dir}/mobile/index.html"
@@ -1428,27 +1469,7 @@ async def serve_mobile_index_html(request: Request):
     """Serve mobile index.html directly with authentication."""
     # Check if user is authenticated
     if AUTH_ENABLED:
-        # Get token from query parameters
-        token = request.query_params.get("token", "")
-        device_id = request.query_params.get("deviceId", "")
-        
-        if not token or not device_id:
-            return RedirectResponse(url="/login")
-        
-        # Verify the token
-        try:
-            auth_tokens = load_auth_tokens()
-            if token not in auth_tokens:
-                return RedirectResponse(url="/login")
-            
-            token_data = auth_tokens[token]
-            expires = _auth_expiry_utc(token_data["expires"])
-            
-            if datetime.now(timezone.utc) >= expires:
-                return RedirectResponse(url="/login")
-                
-        except Exception as e:
-            _main_logger.warning(f"[AUTH] Error verifying token: {e}")
+        if not _query_token_auth_ok(request):
             return RedirectResponse(url="/login")
     
     file_path = f"{frontend_dir}/mobile/index.html"
@@ -1503,27 +1524,7 @@ async def serve_mobile_user(request: Request):
     """Serve mobile user settings with authentication."""
     # Check if user is authenticated
     if AUTH_ENABLED:
-        # Get token from query parameters
-        token = request.query_params.get("token", "")
-        device_id = request.query_params.get("deviceId", "")
-        
-        if not token or not device_id:
-            return RedirectResponse(url="/login")
-        
-        # Verify the token
-        try:
-            auth_tokens = load_auth_tokens()
-            if token not in auth_tokens:
-                return RedirectResponse(url="/login")
-            
-            token_data = auth_tokens[token]
-            expires = _auth_expiry_utc(token_data["expires"])
-            
-            if datetime.now(timezone.utc) >= expires:
-                return RedirectResponse(url="/login")
-                
-        except Exception as e:
-            _main_logger.warning(f"[AUTH] Error verifying token: {e}")
+        if not _query_token_auth_ok(request):
             return RedirectResponse(url="/login")
     
     file_path = f"{frontend_dir}/mobile/user_mobile.html"
@@ -1547,27 +1548,7 @@ async def serve_mobile_system(request: Request):
     """Serve mobile system page with authentication."""
     # Check if user is authenticated
     if AUTH_ENABLED:
-        # Get token from query parameters
-        token = request.query_params.get("token", "")
-        device_id = request.query_params.get("deviceId", "")
-        
-        if not token or not device_id:
-            return RedirectResponse(url="/login")
-        
-        # Verify the token
-        try:
-            auth_tokens = load_auth_tokens()
-            if token not in auth_tokens:
-                return RedirectResponse(url="/login")
-            
-            token_data = auth_tokens[token]
-            expires = _auth_expiry_utc(token_data["expires"])
-            
-            if datetime.now(timezone.utc) >= expires:
-                return RedirectResponse(url="/login")
-                
-        except Exception as e:
-            _main_logger.warning(f"[AUTH] Error verifying token: {e}")
+        if not _query_token_auth_ok(request):
             return RedirectResponse(url="/login")
     
     file_path = f"{frontend_dir}/mobile/system_mobile.html"
@@ -1591,27 +1572,7 @@ async def serve_mobile_trade_history(request: Request):
     """Serve mobile trade history with authentication."""
     # Check if user is authenticated
     if AUTH_ENABLED:
-        # Get token from query parameters
-        token = request.query_params.get("token", "")
-        device_id = request.query_params.get("deviceId", "")
-        
-        if not token or not device_id:
-            return RedirectResponse(url="/login")
-        
-        # Verify the token
-        try:
-            auth_tokens = load_auth_tokens()
-            if token not in auth_tokens:
-                return RedirectResponse(url="/login")
-            
-            token_data = auth_tokens[token]
-            expires = _auth_expiry_utc(token_data["expires"])
-            
-            if datetime.now(timezone.utc) >= expires:
-                return RedirectResponse(url="/login")
-                
-        except Exception as e:
-            _main_logger.warning(f"[AUTH] Error verifying token: {e}")
+        if not _query_token_auth_ok(request):
             return RedirectResponse(url="/login")
     
     file_path = f"{frontend_dir}/mobile/trade_history_mobile.html"
@@ -1775,18 +1736,20 @@ async def get_core_data(symbol: str = "BTC"):
         latest_db_price = 0
         try:
             conn = get_postgresql_connection()
+            slot_price = resolved_tenant_user_no_for_app()
             with conn.cursor() as cursor:
-                union_sql, _ = union_trades_with_archives_select(cursor, "0001")
-                cursor.execute(
-                    f"""
-                    SELECT buy_price FROM ({union_sql}) AS all_trades
-                    WHERE test_filter IS NULL OR test_filter = FALSE
-                    ORDER BY date DESC, time DESC LIMIT 1
-                    """
-                )
-                result = cursor.fetchone()
-                if result:
-                    latest_db_price = result[0]
+                if fetch_master_trades_column_names(cursor, slot_price):
+                    union_sql, _ = union_trades_with_archives_select(cursor, slot_price)
+                    cursor.execute(
+                        f"""
+                        SELECT buy_price FROM ({union_sql}) AS all_trades
+                        WHERE test_filter IS NULL OR test_filter = FALSE
+                        ORDER BY date DESC, time DESC LIMIT 1
+                        """
+                    )
+                    result = cursor.fetchone()
+                    if result:
+                        latest_db_price = result[0]
             conn.close()
         except Exception as e:
             _main_logger.warning(f"Error getting latest DB price: {e}")
@@ -1841,98 +1804,14 @@ async def get_account_mode_endpoint():
     """Get current account mode."""
     return {"mode": get_account_mode()}
 
-def _read_kalshi_email_from_auth_file() -> Optional[str]:
-    """Return email from prod kalshi-auth.txt, or None if missing or unreadable."""
-    try:
-        from backend.util.paths import get_kalshi_credentials_dir
-
-        cred_dir = os.path.join(get_kalshi_credentials_dir(), "prod")
-        auth_file = os.path.join(cred_dir, "kalshi-auth.txt")
-        if not os.path.exists(auth_file):
-            return None
-        with open(auth_file, "r") as f:
-            for line in f:
-                if line.startswith("email:"):
-                    val = line.split("email:", 1)[1].strip()
-                    return val or None
-    except Exception as e:
-        _main_logger.warning(f"Error reading Kalshi auth email: {e}")
-    return None
-
-
-@app.get("/api/get_kalshi_email")
-async def get_kalshi_email_endpoint():
-    """Get Kalshi email from prod credentials (Kalshi env is always prod)."""
-    try:
-        email = _read_kalshi_email_from_auth_file()
-        if email:
-            return {"email": email}
-        from backend.util.paths import get_kalshi_credentials_dir
-
-        cred_dir = os.path.join(get_kalshi_credentials_dir(), "prod")
-        auth_file = os.path.join(cred_dir, "kalshi-auth.txt")
-        if os.path.exists(auth_file):
-            return {"email": "No email found in credentials"}
-        return {"email": "No credentials found"}
-
-    except Exception as e:
-        _main_logger.warning(f"Error reading Kalshi credentials: {e}")
-        return {"email": "Error reading credentials"}
-
-
-@app.get("/api/trading_mode")
-async def get_trading_mode_endpoint(response: Response):
-    """Global live vs paper; labels for dashboard switcher."""
-    _api_no_store_headers(response)
-    tm = get_trading_mode()
-    gp = is_paper_trading()
-    live_label = "LIVE"
-    paper_label = "PAPER"
-    try:
-        e = _read_kalshi_email_from_auth_file()
-        bad = (
-            "no email",
-            "no credentials",
-            "error reading",
-        )
-        if e and not any(b in str(e).lower() for b in bad):
-            live_label = f"LIVE - {e}"
-    except Exception:
-        pass
-    try:
-        creds = get_user_credentials()
-        name = (creds or {}).get("name")
-        if name:
-            paper_label = f"PAPER - {name}"
-    except Exception:
-        pass
-    return {
-        "trading_mode": tm,
-        "global_paper_mode": gp,
-        "live_label": live_label,
-        "paper_label": paper_label,
-    }
-
-
-@app.post("/api/set_trading_mode")
-async def set_trading_mode_endpoint(payload: dict):
-    """Persist live|paper, bulk monitor paper flags, broadcast to clients."""
-    mode = (payload or {}).get("trading_mode")
-    norm, err = persist_trading_mode(mode)
-    if err:
-        return {"status": "error", "message": err}
-    await broadcast_trading_mode(norm)
-    await ripple_bankroll_to_monitors()
-    return {"status": "ok", "trading_mode": norm, "global_paper_mode": norm == "paper"}
-
 
 @app.get("/api/system_settings")
-async def get_system_settings_endpoint(response: Response, user_id: str = "user_0001"):
+async def get_system_settings_endpoint(response: Response):
     """Global system settings (drawdown halt, threshold) for dashboard gear menu."""
     _api_no_store_headers(response)
     from backend.core.system_settings_store import fetch_system_settings_row
 
-    num = str(user_id or "user_0001").replace("user_", "").strip() or "0001"
+    num = resolved_tenant_user_no_for_app()
     row = fetch_system_settings_row(num)
     if not row:
         return {"status": "error", "message": "system_settings not available for user"}
@@ -1950,7 +1829,7 @@ async def post_system_settings_endpoint(payload: dict):
     )
 
     body = payload or {}
-    num = str(body.get("user_id") or "user_0001").replace("user_", "").strip() or "0001"
+    num = resolved_tenant_user_no_for_app()
     action = str(body.get("action") or "").strip().lower()
 
     if action == "clear_trading_halt_alert":
@@ -2008,18 +1887,22 @@ async def seed_paper_bankroll_endpoint(payload: dict):
         cents = (payload or {}).get("bankroll_cents")
         if cents is None:
             return {"status": "error", "message": "bankroll_cents required"}
-        c = int(cents)
+        try:
+            c = int(cents)
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "bankroll_cents must be an integer"}
         if c < 0:
             return {"status": "error", "message": "bankroll_cents must be non-negative"}
         from backend.paper_bankroll import seed_paper_bankroll_cents
 
-        if not seed_paper_bankroll_cents(c):
-            return {"status": "error", "message": "database unavailable"}
+        try:
+            if not seed_paper_bankroll_cents(c):
+                return {"status": "error", "message": "database unavailable"}
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
         await broadcast_db_change("account_balance_paper", {"source": "seed"})
         await broadcast_db_change("subaccounts", {"source": "paper_seed"})
         return {"status": "ok", "bankroll_cents": c}
-    except (TypeError, ValueError):
-        return {"status": "error", "message": "bankroll_cents must be an integer"}
     except Exception as e:
         _main_logger.warning("paper bankroll seed: %s", e)
         return {"status": "error", "message": str(e)}
@@ -2045,11 +1928,15 @@ async def get_trades(status: Optional[str] = None):
 
         # Connect to PostgreSQL
         conn = get_postgresql_connection()
+        slot = resolved_tenant_user_no_for_app()
 
         # Plain cursor required: union_trades_with_archives_select uses
-        # fetch_trades_0001_column_names(), which expects tuple rows from fetchall().
+        # information_schema column names, which expects tuple rows from fetchall().
         with conn.cursor() as cursor:
-            union_sql, _ = union_trades_with_archives_select(cursor, "0001")
+            if not fetch_master_trades_column_names(cursor, slot):
+                conn.close()
+                return []
+            union_sql, _ = union_trades_with_archives_select(cursor, slot)
             # Build query based on status filter (master + archive live + archive paper)
             if status:
                 cursor.execute(
@@ -2312,7 +2199,14 @@ def _api_no_store_headers(response: Response) -> None:
 
 
 @app.get("/api/account/balance")
-async def get_account_balance(response: Response, mode: str = "prod"):
+async def get_account_balance(
+    response: Response,
+    mode: str = "prod",
+    trading_mode: Optional[str] = Query(
+        None,
+        description="paper|live — must match UI toggle; same table selection as portfolio chart",
+    ),
+):
     """Get account balance from PostgreSQL database."""
     _api_no_store_headers(response)
     try:
@@ -2321,9 +2215,26 @@ async def get_account_balance(response: Response, mode: str = "prod"):
         
         # Connect to PostgreSQL
         conn = get_postgresql_connection()
-        
+        if not conn:
+            _main_logger.error(
+                "get_account_balance: database connection unavailable "
+                "(check main_app logs for 'Failed to open tenant PostgreSQL connection')"
+            )
+            return {
+                "portfolio": 0,
+                "positions": 0,
+                "bankroll_current": 0,
+                "mtb_base_value": None,
+                "master_trading_bankroll": None,
+            }
+
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            ab_ident = sql_ident_qualified_table(account_balance_table_for_user("0001"))
+            ab_ident = sql_ident_qualified_table(
+                account_balance_table_for_user(
+                    resolved_tenant_user_no_for_app(),
+                    client_trading_mode=trading_mode,
+                )
+            )
             cursor.execute(
                 sql.SQL(
                     """
@@ -2372,15 +2283,25 @@ async def get_account_balance(response: Response, mode: str = "prod"):
         }
 
 @app.get("/api/subaccounts")
-async def get_subaccounts(response: Response):
+async def get_subaccounts(response: Response, trading_mode: Optional[str] = None):
     """Get subaccounts for display (live or paper table). Balances in cents."""
     _api_no_store_headers(response)
     try:
         import psycopg2
         from psycopg2.extras import RealDictCursor
         conn = get_postgresql_connection()
+        if not conn:
+            _main_logger.error(
+                "get_subaccounts: database connection unavailable "
+                "(check main_app logs for 'Failed to open tenant PostgreSQL connection')"
+            )
+            return {"subaccounts": []}
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            sa_ident = sql_ident_qualified_table(subaccounts_table_for_user("0001"))
+            sa_ident = sql_ident_qualified_table(
+                subaccounts_table_for_user(
+                    resolved_tenant_user_no_for_app(), client_trading_mode=trading_mode
+                )
+            )
             cursor.execute(
                 sql.SQL(
                     """
@@ -2409,7 +2330,9 @@ async def update_subaccount_automatic_transfers(request: Request):
             return {"ok": False, "error": "subaccount and automatic_transfers required"}
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            sa_ident = sql_ident_qualified_table(subaccounts_table_for_user("0001"))
+            sa_ident = sql_ident_qualified_table(
+                subaccounts_table_for_user(resolved_tenant_user_no_for_app())
+            )
             cursor.execute(
                 sql.SQL("UPDATE {} SET automatic_transfers = %s WHERE subaccount = %s").format(sa_ident),
                 (bool(automatic), subaccount_name),
@@ -2438,7 +2361,9 @@ async def update_subaccount_transfer_settings(request: Request):
             return {"ok": False, "error": "at least one of target_pnl__pct or transfer_amt required"}
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            sa_ident = sql_ident_qualified_table(subaccounts_table_for_user("0001"))
+            sa_ident = sql_ident_qualified_table(
+                subaccounts_table_for_user(resolved_tenant_user_no_for_app())
+            )
             if target_pct is not None and transfer_amt is not None:
                 cursor.execute(
                     sql.SQL(
@@ -2486,7 +2411,9 @@ async def update_subaccount_base_value(request: Request):
             return {"ok": False, "error": "base_value must be non-negative"}
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            sa_ident = sql_ident_qualified_table(subaccounts_table_for_user("0001"))
+            sa_ident = sql_ident_qualified_table(
+                subaccounts_table_for_user(resolved_tenant_user_no_for_app())
+            )
             cursor.execute(
                 sql.SQL("UPDATE {} SET base_value = %s WHERE subaccount = %s").format(sa_ident),
                 (base_value_int, subaccount_name),
@@ -2505,10 +2432,13 @@ async def update_subaccount_base_value(request: Request):
 @app.post("/api/subaccounts/initiate-transfer")
 async def initiate_transfer(request: Request):
     """
-    Manual internal transfer between subaccounts (e.g. MTB → Cash Transfer).
-    Body: { "from": "Master Trading Bankroll", "to": "Cash Transfer", "amount": 100 } (amount in dollars).
-    Inserts into users.transfers_0001 or users.transfers_paper_0001 (initiated=manual), updates
-    subaccounts (live or paper), then in live mode triggers kalshi_account_sync (sync_balance).
+    Manual internal transfer between subaccounts (e.g. Cash Transfer ↔ Master Trading Bankroll).
+    Body: { "from": "...", "to": "...", "amount": 100 } (amount in dollars).
+    Inserts into transfers (live or paper), updates subaccounts. If Master Trading Bankroll is the
+    from or to side, appends an account_balance row with bankroll_current and master_trading_bankroll
+    set to the new MTB balance and notifies monitor_manager to refresh monitor allocations (live and paper).
+    In live mode, kalshi_account_sync sync_balance runs only when MTB is not involved (rare); CT↔MTB
+    reshuffles local slices only and does not change Kalshi totals.
     """
     try:
         payload = await request.json()
@@ -2540,7 +2470,9 @@ async def initiate_transfer(request: Request):
         conn = get_postgresql_connection()
         try:
             with conn.cursor() as cursor:
-                sa_ident = sql_ident_qualified_table(subaccounts_table_for_user("0001"))
+                sa_ident = sql_ident_qualified_table(
+                subaccounts_table_for_user(resolved_tenant_user_no_for_app())
+            )
                 cursor.execute(
                     sql.SQL("SELECT balance FROM {} WHERE subaccount = %s").format(sa_ident),
                     (from_name,),
@@ -2558,7 +2490,9 @@ async def initiate_transfer(request: Request):
                 if not cursor.fetchone():
                     return {"ok": False, "error": f"subaccount not found: {to_name}"}
 
-                xfer_ident = sql_ident_qualified_table(transfers_table_for_user("0001"))
+                xfer_ident = sql_ident_qualified_table(
+                    transfers_table_for_user(resolved_tenant_user_no_for_app())
+                )
                 insert_xfer = sql.SQL(
                     """
                     INSERT INTO {} (timestamp, type, "from", "to", amount, initiated)
@@ -2588,8 +2522,27 @@ async def initiate_transfer(request: Request):
         else:
             await broadcast_db_change("transfers", {"source": "initiate_transfer"})
 
-        if not is_paper_trading():
-            # Live: poll Kalshi, update subaccounts/account_balance, notify
+        mtb_affected = from_name == "Master Trading Bankroll" or to_name == "Master Trading Bankroll"
+        if mtb_affected:
+            try:
+                from backend.balance_snapshot import (
+                    insert_account_balance_snapshot_after_mtb_subaccount_internal_transfer,
+                )
+
+                slot = resolved_tenant_user_no_for_app()
+                ab_tbl = account_balance_table_for_user(slot)
+                sa_tbl = subaccounts_table_for_user(slot)
+                notify_name = "account_balance_paper" if is_paper_trading() else "account_balance"
+                insert_account_balance_snapshot_after_mtb_subaccount_internal_transfer(
+                    account_balance_table=ab_tbl,
+                    subaccounts_table=sa_tbl,
+                    notify_db_name=notify_name,
+                )
+            except Exception as e:
+                _main_logger.warning(f"initiate-transfer: MTB account_balance snapshot failed: {e}")
+
+        if not is_paper_trading() and not mtb_affected:
+            # Live: poll Kalshi when the transfer did not only reshuffle MTB vs other local slices
             def _run_sync():
                 try:
                     from backend.kalshi_account_sync_ws import sync_balance
@@ -2643,7 +2596,9 @@ async def get_monitor_bankroll(monitor_id: str):
         return {"monitor_id": monitor_id, "bankroll_allotment_total": 0, "name": "Unknown", "symbol": "BTC"}
 
 @app.get("/api/account/balance/history")
-async def get_account_balance_history(mode: str = "prod", limit: int = 1000):
+async def get_account_balance_history(
+    mode: str = "prod", limit: int = 1000, trading_mode: Optional[str] = None
+):
     """Get historical account balance data from PostgreSQL database."""
     try:
         import psycopg2
@@ -2653,7 +2608,11 @@ async def get_account_balance_history(mode: str = "prod", limit: int = 1000):
         conn = get_postgresql_connection()
         
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            ab_ident = sql_ident_qualified_table(account_balance_table_for_user("0001"))
+            ab_ident = sql_ident_qualified_table(
+                account_balance_table_for_user(
+                    resolved_tenant_user_no_for_app(), client_trading_mode=trading_mode
+                )
+            )
             cursor.execute(
                 sql.SQL(
                     """
@@ -2813,14 +2772,25 @@ def get_settlements(response: Response):
 
 
 @app.get("/api/db/transfers")
-def get_transfers(response: Response):
-    """Transfer history: live users.transfers_0001; paper users.transfers_paper_0001."""
+def get_transfers(
+    response: Response,
+    trading_mode: Optional[str] = Query(
+        None,
+        description="paper|live — match UI toggle (same table selection as subaccounts)",
+    ),
+):
+    """Transfer history: live ``transfers_<slot>``; paper ``transfers_paper_<slot>``."""
     _api_no_store_headers(response)
     try:
         from psycopg2.extras import RealDictCursor
 
         conn = get_postgresql_connection()
-        t_ident = sql_ident_qualified_table(transfers_table_for_user("0001"))
+        t_ident = sql_ident_qualified_table(
+            transfers_table_for_user(
+                resolved_tenant_user_no_for_app(),
+                client_trading_mode=trading_mode,
+            )
+        )
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 sql.SQL(
@@ -2903,9 +2873,13 @@ def get_trades_from_postgresql():
 
         # Connect to PostgreSQL
         conn = get_postgresql_connection()
+        slot = resolved_tenant_user_no_for_app()
 
         with conn.cursor() as cursor:
-            union_sql, _ = union_trades_with_archives_select(cursor, "0001")
+            if not fetch_master_trades_column_names(cursor, slot):
+                conn.close()
+                return {"trades": []}
+            union_sql, _ = union_trades_with_archives_select(cursor, slot)
             cursor.execute(
                 f"""
                 SELECT * FROM ({union_sql}) AS all_trades
@@ -3569,12 +3543,17 @@ async def get_auto_entry_settings(monitor_id: str = None):
 
 
 @app.get("/api/monitor_auto_stop_accuracy")
-async def get_monitor_auto_stop_accuracy(monitor_id: str = None):
+async def get_monitor_auto_stop_accuracy(request: Request, monitor_id: str = None):
     """Proxy: delegate auto-stop accuracy aggregates to read_api service."""
     try:
+        params: Dict[str, Any] = {}
+        if monitor_id:
+            params["monitor_id"] = monitor_id
+        params = _read_api_query_with_session(request, params)
         resp = requests.get(
-            "http://localhost:3050/api/monitor_auto_stop_accuracy",
-            params={"monitor_id": monitor_id} if monitor_id else {},
+            f"{READ_API_BASE_URL}/api/monitor_auto_stop_accuracy",
+            params=params,
+            headers=_read_api_forward_headers(request),
             timeout=5,
         )
         resp.raise_for_status()
@@ -3609,7 +3588,12 @@ async def set_auto_entry_settings(request: Request):
             import uuid
 
             cid = str(uuid.uuid4())
-            if publish_auto_entry_settings_job(str(monitor_id), data, cid):
+            if publish_auto_entry_settings_job(
+                str(monitor_id),
+                data,
+                cid,
+                user_number=resolved_tenant_user_no_for_app(),
+            ):
                 ack = wait_auto_entry_settings_ack(cid)
                 if ack is not None:
                     return ack
@@ -3623,7 +3607,11 @@ async def set_auto_entry_settings(request: Request):
                 result = apply_auto_entry_settings(cursor, str(monitor_id), data)
             if result.get("status") == "ok":
                 conn.commit()
-                trigger_regime_reconcile_after_auto_entry_save(str(monitor_id), source="set_auto_entry_settings")
+                trigger_regime_reconcile_after_auto_entry_save(
+                    str(monitor_id),
+                    user_number=resolved_tenant_user_no_for_app(),
+                    source="set_auto_entry_settings",
+                )
                 _main_logger.debug(
                     "[Auto Entry & Auto Stop Settings] Updated monitor %s: %s",
                     monitor_id,
@@ -4475,7 +4463,7 @@ async def get_auto_entry_indicator(
 ):
     """Proxy endpoint to get auto entry indicator state from auto_entry_supervisor.
 
-    For unified 15m AES pass monitor_id (and optionally user_number, default 0001).
+    For unified 15m AES pass monitor_id; user_number defaults to the logged-in tenant.
     """
     try:
         from backend.core.port_config import (
@@ -4484,7 +4472,7 @@ async def get_auto_entry_indicator(
         )
 
         if monitor_id:
-            un = user_number or "0001"
+            un = user_number or resolved_tenant_user_no_for_app()
             suffix = f"{un}_{monitor_id}"
             port = get_auto_entry_supervisor_http_port_for_monitor_suffix(suffix)
         else:
@@ -4492,7 +4480,7 @@ async def get_auto_entry_indicator(
         q = {}
         if monitor_id:
             q["monitor_id"] = monitor_id
-            q["user_number"] = user_number or "0001"
+            q["user_number"] = user_number or resolved_tenant_user_no_for_app()
         # Use localhost for internal service communication
         url = f"http://localhost:{port}/api/auto_entry_indicator"
         response = requests.get(url, params=q or None, timeout=2)
@@ -4592,202 +4580,40 @@ async def log_event(request: Request):
 
 
 
-# Authentication endpoints
+# Authentication endpoints (opaque proxy to read_api web data plane; no tenant SQL here)
 @app.post("/api/auth/login")
 async def login(request: Request):
-    """Handle user login"""
-    try:
-        data = await request.json()
-        username = data.get("username", "")
-        password = data.get("password", "")
-        remember_device = data.get("rememberDevice", False)
-        
-        # Get user credentials
-        credentials = get_user_credentials()
-        
-        # Check credentials
-        if username == credentials["username"]:
-            # Check if we have a hashed password (PostgreSQL) or plain text (JSON fallback)
-            if "password_hash" in credentials:
-                # PostgreSQL authentication with hashed password
-                if verify_password(password, credentials["password_hash"]):
-                    auth_success = True
-                else:
-                    auth_success = False
-            else:
-                # JSON fallback with plain text password
-                if password == credentials["password"]:
-                    auth_success = True
-                else:
-                    auth_success = False
-            
-            if auth_success:
-                # Generate authentication token
-                token = generate_token()
-                device_id = f"device_{secrets.token_hex(8)}"
-                now_u = datetime.now(timezone.utc)
-                
-                # Store token
-                auth_tokens = load_auth_tokens()
-                auth_tokens[token] = {
-                    "username": username,
-                    "created": now_u.isoformat(),
-                    "expires": (
-                        (now_u + timedelta(days=30)).isoformat()
-                        if remember_device
-                        else (now_u + timedelta(hours=24)).isoformat()
-                    ),
-                }
-                save_auth_tokens(auth_tokens)
-                
-                # Store device token if remember device
-                if remember_device:
-                    device_tokens = load_device_tokens()
-                    device_tokens[device_id] = {
-                        "username": username,
-                        "token": token,
-                        "created": now_u.isoformat(),
-                        "expires": (now_u + timedelta(days=365)).isoformat(),
-                    }
-                    save_device_tokens(device_tokens)
-                
-                _main_logger.debug(f"[AUTH] User {username} logged in successfully")
-                return {
-                    "success": True,
-                    "token": token,
-                    "deviceId": device_id,
-                    "username": username,
-                    "name": credentials["name"]
-                }
-            else:
-                _main_logger.debug(f"[AUTH] Failed login attempt for username: {username}")
-                return {
-                    "success": False,
-                    "error": "Invalid username or password"
-                }
-        else:
-            _main_logger.debug(f"[AUTH] Failed login attempt for username: {username}")
-            return {
-                "success": False,
-                "error": "Invalid username or password"
-            }
-    except Exception as e:
-        _main_logger.debug(f"[AUTH] Login error: {e}")
-        return {
-            "success": False,
-            "error": "Authentication error"
-        }
+    body = await request.body()
+    r = await _proxy_read_api_raw(request, "POST", "/api/auth/login", body)
+    return await _as_starlette_response(r)
+
 
 @app.post("/api/auth/verify")
 async def verify_auth(request: Request):
-    """Verify authentication token"""
-    try:
-        data = await request.json()
-        token = data.get("token", "")
-        device_id = data.get("deviceId", "")
-        
-        # Local development bypass only when not in production
-        if token.startswith("local_dev_") and os.getenv("REC_ENVIRONMENT") != "production":
-            return {"authenticated": True, "username": "local_dev", "name": "Local Development"}
-        
-        # Check auth tokens only (device token alone is not enough for verify)
-        auth_tokens = load_auth_tokens()
-        if token in auth_tokens:
-            token_data = auth_tokens[token]
-            expires = _auth_expiry_utc(token_data["expires"])
-            
-            if datetime.now(timezone.utc) < expires:
-                return {
-                    "authenticated": True,
-                    "username": token_data["username"],
-                    "name": get_user_credentials()["name"]
-                }
-        
-        return {"authenticated": False}
-    except Exception as e:
-        _main_logger.debug(f"[AUTH] Verification error: {e}")
-        return {"authenticated": False}
+    body = await request.body()
+    r = await _proxy_read_api_raw(request, "POST", "/api/auth/verify", body)
+    return await _as_starlette_response(r)
+
 
 @app.post("/api/auth/logout")
 async def logout(request: Request):
-    """Handle user logout"""
-    try:
-        data = await request.json()
-        token = data.get("token", "")
-        device_id = data.get("deviceId", "")
-        
-        # Remove auth token
-        auth_tokens = load_auth_tokens()
-        if token in auth_tokens:
-            del auth_tokens[token]
-            save_auth_tokens(auth_tokens)
-        
-        # Remove device token
-        device_tokens = load_device_tokens()
-        if device_id in device_tokens:
-            del device_tokens[device_id]
-            save_device_tokens(device_tokens)
-        
-        _main_logger.debug(f"[AUTH] User logged out successfully")
-        return {"success": True}
-    except Exception as e:
-        _main_logger.debug(f"[AUTH] Logout error: {e}")
-        return {"success": False, "error": str(e)}
+    body = await request.body()
+    r = await _proxy_read_api_raw(request, "POST", "/api/auth/logout", body)
+    return await _as_starlette_response(r)
+
 
 @app.get("/api/user/info")
-async def get_user_info():
-    """Get current user information from database"""
-    try:
-        # Get user credentials from database
-        credentials = get_user_credentials()
-        
-        return {
-            "user_id": credentials.get("username"),
-            "name": credentials.get("name"),
-            "email": credentials.get("email"),
-            "phone": credentials.get("phone"),
-            "account_type": credentials.get("account_type")
-        }
-    except Exception as e:
-        _main_logger.debug(f"[USER INFO] Error getting user info: {e}")
-        return {"error": "Failed to get user information"}
+async def get_user_info(request: Request):
+    r = await _proxy_read_api_raw(request, "GET", "/api/user/info")
+    return await _as_starlette_response(r)
+
 
 @app.post("/api/user/change-password")
 async def change_password(request: Request):
-    """Change user password"""
-    try:
-        data = await request.json()
-        current_password = data.get("currentPassword", "")
-        new_password = data.get("newPassword", "")
-        
-        # Get current password hash
-        credentials = get_user_credentials()
-        if not credentials or not credentials.get("password_hash"):
-            return {"success": False, "error": "User not found"}
-        
-        # Verify current password
-        if not verify_password(current_password, credentials["password_hash"]):
-            return {"success": False, "error": "Current password is incorrect"}
-        
-        # Hash new password
-        new_hash = change_password_hash(new_password)
-        
-        # Update in PostgreSQL
-        conn = get_postgresql_connection()
-        if not conn:
-            return {"success": False, "error": "Database unavailable"}
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                UPDATE users.user_info_0001 
-                SET password_hash = %s
-                WHERE user_no = '0001'
-            """, (new_hash,))
-            conn.commit()
-        
-        return {"success": True, "message": "Password updated successfully"}
-    except Exception as e:
-        _main_logger.warning(f"[AUTH] Error changing password: {e}")
-        return {"success": False, "error": str(e)}
+    body = await request.body()
+    r = await _proxy_read_api_raw(request, "POST", "/api/user/change-password", body)
+    return await _as_starlette_response(r)
+
 
 @app.get("/api/system/health")
 async def get_system_health():
@@ -5255,7 +5081,7 @@ async def download_file_get(file: str):
         return {"success": False, "error": str(e)}
 
 @app.get("/api/portfolio/current")
-async def get_current_portfolio():
+async def get_current_portfolio(trading_mode: Optional[str] = None):
     """Get the current portfolio value from PostgreSQL"""
     try:
         import psycopg2
@@ -5264,7 +5090,11 @@ async def get_current_portfolio():
         conn = get_postgresql_connection()
         
         with conn.cursor() as cursor:
-            ab_ident = sql_ident_qualified_table(account_balance_table_for_user("0001"))
+            ab_ident = sql_ident_qualified_table(
+                account_balance_table_for_user(
+                    resolved_tenant_user_no_for_app(), client_trading_mode=trading_mode
+                )
+            )
             cursor.execute(
                 sql.SQL(
                     """
@@ -5297,66 +5127,74 @@ async def get_current_portfolio():
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/portfolio/history")
-async def get_portfolio_history(period: str = "1m"):
-    """Proxy: delegate portfolio history to read_api service."""
-    try:
-        resp = requests.get("http://localhost:3050/api/portfolio/history", params={"period": period}, timeout=5)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        _main_logger.warning(f"[read_api proxy] Error getting portfolio history from read_api: {e}")
-        return {"status": "error", "message": "read_api proxy failed for /api/portfolio/history"}
+async def get_portfolio_history(
+    period: str = "1m",
+    trading_mode: Optional[str] = Query(
+        None, description="paper|live — same as UI toggle; session selects tenant"
+    ),
+):
+    """Portfolio chart series — same DB/session tenant as monitors (no read_api hop)."""
+    from backend.core.dashboard_portfolio_queries import portfolio_history_payload
+
+    return portfolio_history_payload(period=period, trading_mode=trading_mode)
+
 
 @app.get("/api/bankroll/history")
-async def get_bankroll_history(period: str = "1m"):
-    """Proxy: delegate bankroll history to read_api service."""
-    try:
-        resp = requests.get("http://localhost:3050/api/bankroll/history", params={"period": period}, timeout=5)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        _main_logger.warning(f"[read_api proxy] Error getting bankroll history from read_api: {e}")
-        return {"status": "error", "message": "read_api proxy failed for /api/bankroll/history"}
+async def get_bankroll_history(
+    period: str = "1m",
+    trading_mode: Optional[str] = Query(
+        None, description="paper|live — same as UI toggle; session selects tenant"
+    ),
+):
+    from backend.core.dashboard_portfolio_queries import bankroll_history_payload
+
+    return bankroll_history_payload(period=period, trading_mode=trading_mode)
+
 
 @app.get("/api/pnl/history")
-async def get_pnl_history(period: str = "1m"):
-    """Proxy: delegate PnL history to read_api service."""
-    try:
-        resp = requests.get(f"http://localhost:3050/api/pnl/history", params={"period": period}, timeout=5)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        _main_logger.warning(f"[read_api proxy] Error getting PnL history from read_api: {e}")
-        return {"status": "error", "message": "read_api proxy failed for /api/pnl/history"}
+async def get_pnl_history(
+    period: str = "1m",
+    trading_mode: Optional[str] = Query(
+        None, description="paper|live — same as UI toggle; session selects tenant"
+    ),
+):
+    from backend.core.dashboard_portfolio_queries import pnl_history_payload
+
+    return pnl_history_payload(period=period, trading_mode=trading_mode)
+
 
 @app.get("/api/performance/realized")
-async def get_performance_realized():
-    """Proxy: delegate realized performance summary to read_api service."""
-    try:
-        resp = requests.get("http://localhost:3050/api/performance/realized", timeout=5)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        _main_logger.warning(f"[read_api proxy] Error getting performance realized from read_api: {e}")
-        return {"status": "error", "message": "read_api proxy failed for /api/performance/realized"}
+async def get_performance_realized(
+    trading_mode: Optional[str] = Query(
+        None, description="paper|live — same as UI toggle; session selects tenant"
+    ),
+):
+    from backend.core.dashboard_portfolio_queries import performance_realized_payload
+
+    return performance_realized_payload(trading_mode=trading_mode)
 
 @app.get("/api/dashboard/preferences")
 async def get_dashboard_preferences(mode: str = "prod"):
     """Get dashboard preferences for the current user"""
     try:
         from backend.core.config.database import get_postgresql_connection
+        import psycopg2
+
+        slot = resolved_tenant_user_no_for_app()
         conn = get_postgresql_connection()
-        
+        pref_table = f"users.dashboard_preferences_{slot}"
         with conn.cursor() as cursor:
-            cursor.execute("""
+            cursor.execute(
+                f"""
                 SELECT portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, portfolio_view
-                FROM users.dashboard_preferences_0001 
+                FROM {pref_table}
                 WHERE user_id = 1
-            """)
+                """
+            )
             result = cursor.fetchone()
-            
+
         conn.close()
-        
+
         if result:
             return {
                 "status": "ok",
@@ -5364,18 +5202,27 @@ async def get_dashboard_preferences(mode: str = "prod"):
                 "monitor_view_mode": result[1] if result[1] else "tile",
                 "monitor_sort_by": result[2] if result[2] else "name",
                 "allocation_view": result[3] if result[3] else "pie",
-                "portfolio_view": result[4] if result[4] else "portfolio"
+                "portfolio_view": result[4] if result[4] else "portfolio",
             }
-        else:
-            return {
-                "status": "ok",
-                "portfolio_chart_view": "all",
-                "monitor_view_mode": "tile",
-                "monitor_sort_by": "name",
-                "allocation_view": "pie",
-                "portfolio_view": "portfolio"
-            }
-            
+        return {
+            "status": "ok",
+            "portfolio_chart_view": "all",
+            "monitor_view_mode": "tile",
+            "monitor_sort_by": "name",
+            "allocation_view": "pie",
+            "portfolio_view": "portfolio",
+        }
+
+    except psycopg2.Error as e:
+        _main_logger.debug("dashboard preferences read skipped for slot (missing table or row): %s", e)
+        return {
+            "status": "ok",
+            "portfolio_chart_view": "all",
+            "monitor_view_mode": "tile",
+            "monitor_sort_by": "name",
+            "allocation_view": "pie",
+            "portfolio_view": "portfolio",
+        }
     except Exception as e:
         _main_logger.warning(f"Error getting dashboard preferences: {e}")
         return {"status": "error", "message": str(e)}
@@ -5385,8 +5232,11 @@ async def save_dashboard_preferences(request: Request):
     """Save dashboard preferences for the current user"""
     try:
         from backend.core.config.database import get_postgresql_connection
+        import psycopg2
+
+        slot = resolved_tenant_user_no_for_app()
         conn = get_postgresql_connection()
-        
+
         data = await request.json()
         _main_logger.debug(f"[DASHBOARD PREFERENCES] Received data: {data}")
         portfolio_chart_view = data.get("portfolio_chart_view", "all")
@@ -5397,30 +5247,37 @@ async def save_dashboard_preferences(request: Request):
         if portfolio_view not in ("bankroll", "portfolio", "pnl"):
             portfolio_view = "portfolio"
         _main_logger.debug(f"[DASHBOARD PREFERENCES] Extracted values: portfolio_chart_view={portfolio_chart_view}, monitor_view_mode={monitor_view_mode}, monitor_sort_by={monitor_sort_by}, allocation_view={allocation_view}, portfolio_view={portfolio_view}")
-        
+
+        pref_table = f"users.dashboard_preferences_{slot}"
         with conn.cursor() as cursor:
-            cursor.execute("""
-                INSERT INTO users.dashboard_preferences_0001 (user_id, portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, portfolio_view, updated_at)
+            cursor.execute(
+                f"""
+                INSERT INTO {pref_table} (user_id, portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, portfolio_view, updated_at)
                 VALUES (1, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                ON CONFLICT (user_id) 
-                DO UPDATE SET 
+                ON CONFLICT (user_id)
+                DO UPDATE SET
                     portfolio_chart_view = EXCLUDED.portfolio_chart_view,
                     monitor_view_mode = EXCLUDED.monitor_view_mode,
                     monitor_sort_by = EXCLUDED.monitor_sort_by,
                     allocation_view = EXCLUDED.allocation_view,
                     portfolio_view = EXCLUDED.portfolio_view,
                     updated_at = CURRENT_TIMESTAMP
-            """, (portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, portfolio_view))
-            
+                """,
+                (portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, portfolio_view),
+            )
+
         conn.commit()
         conn.close()
-        
+
         _main_logger.debug(f"[DASHBOARD PREFERENCES] Successfully saved preferences to database")
         return {
             "status": "ok",
             "message": "Preferences saved successfully"
         }
-            
+
+    except psycopg2.Error as e:
+        _main_logger.warning(f"Error saving dashboard preferences (table may be missing for slot): {e}")
+        return {"status": "error", "message": str(e)}
     except Exception as e:
         _main_logger.warning(f"Error saving dashboard preferences: {e}")
         return {"status": "error", "message": str(e)}
@@ -5447,7 +5304,7 @@ async def get_total_position():
         return {"total_position": 0}
 
 @app.get("/api/monitors")
-async def get_monitors(user_id: str = "user_0001"):
+async def get_monitors(user_id: Optional[str] = None):
     """Get monitors list for the specified user"""
     try:
         from backend.core.config.database import get_postgresql_connection
@@ -5457,10 +5314,17 @@ async def get_monitors(user_id: str = "user_0001"):
         )
 
         conn = get_postgresql_connection()
-        
-        # Extract user number from user_id (e.g., user_0001 -> 0001)
-        user_number = user_id.replace("user_", "")
-        
+        user_number = _session_user_number_from_optional_user_id(user_id)
+        if not conn:
+            _main_logger.error(
+                "get_monitors: database connection unavailable "
+                "(check main_app logs for 'Failed to open tenant PostgreSQL connection')"
+            )
+            return {
+                "status": "error",
+                "message": "Database connection failed",
+            }
+
         with conn.cursor() as cursor:
             cursor.execute(f"""
                 SELECT 
@@ -5662,11 +5526,13 @@ async def get_monitors(user_id: str = "user_0001"):
         
         return {
             "status": "ok",
-            "user_id": user_id,
+            "user_id": f"user_{user_number}",
             "count": len(monitors) - 1,  # Exclude NEW_MONITOR from count
             "monitors": monitors,
             "global_paper_mode": is_paper_trading(),
         }
+    except HTTPException:
+        raise
     except Exception as e:
         return {
             "status": "error",
@@ -5675,7 +5541,7 @@ async def get_monitors(user_id: str = "user_0001"):
 
 
 @app.get("/api/monitors/health")
-async def get_monitors_health(user_id: str = "user_0001"):
+async def get_monitors_health(user_id: Optional[str] = None):
     """Get monitor health only (power-light payload), without full monitor tile data."""
     try:
         from backend.core.config.database import get_postgresql_connection
@@ -5685,8 +5551,17 @@ async def get_monitors_health(user_id: str = "user_0001"):
         )
 
         conn = get_postgresql_connection()
-        user_number = user_id.replace("user_", "")
+        user_number = _session_user_number_from_optional_user_id(user_id)
         strict_pipeline_health = strike_pipeline_health_strict_mode_enabled()
+        if not conn:
+            _main_logger.error(
+                "get_monitors_health: database connection unavailable "
+                "(check main_app logs for 'Failed to open tenant PostgreSQL connection')"
+            )
+            return {
+                "status": "error",
+                "message": "Database connection failed",
+            }
 
         with conn.cursor() as cursor:
             cursor.execute(
@@ -5759,10 +5634,12 @@ async def get_monitors_health(user_id: str = "user_0001"):
 
         return {
             "status": "ok",
-            "user_id": user_id,
+            "user_id": f"user_{user_number}",
             "count": len(out),
             "monitors": out,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -5808,13 +5685,12 @@ async def get_symbols():
         }
 
 @app.get("/api/monitor/{monitor_id}")
-async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
+async def get_monitor_details(monitor_id: int, user_id: Optional[str] = None):
     """Get details for a specific monitor"""
     try:
         from backend.core.config.database import get_postgresql_connection
         
-        # Extract user number from user_id (e.g., user_0001 -> 0001)
-        user_number = user_id.replace("user_", "")
+        user_number = _session_user_number_from_optional_user_id(user_id)
         
         conn = get_postgresql_connection()
         if not conn:
@@ -5860,6 +5736,8 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
                 "message": "Monitor not found"
             }
             
+    except HTTPException:
+        raise
     except Exception as e:
         return {
             "status": "error",
@@ -5867,13 +5745,12 @@ async def get_monitor_details(monitor_id: int, user_id: str = "user_0001"):
         }
 
 @app.post("/api/monitor/{monitor_id}/update")
-async def update_monitor_details(monitor_id: int, request: dict, user_id: str = "user_0001"):
+async def update_monitor_details(monitor_id: int, request: dict, user_id: Optional[str] = None):
     """Update details for a specific monitor"""
     try:
         from backend.core.config.database import get_postgresql_connection
         
-        # Extract user number from user_id (e.g., user_0001 -> 0001)
-        user_number = user_id.replace("user_", "")
+        user_number = _session_user_number_from_optional_user_id(user_id)
         
         # Get update data from request
         symbol = request.get("symbol")
@@ -5951,6 +5828,8 @@ async def update_monitor_details(monitor_id: int, request: dict, user_id: str = 
             "message": "Monitor updated successfully"
         }
             
+    except HTTPException:
+        raise
     except Exception as e:
         return {
             "status": "error",
@@ -5958,13 +5837,12 @@ async def update_monitor_details(monitor_id: int, request: dict, user_id: str = 
         }
 
 @app.get("/api/monitors/names")
-async def get_monitor_names(user_id: str = "user_0001"):
+async def get_monitor_names(user_id: Optional[str] = None):
     """Get just the monitor names for the monitor picker dropdown"""
     try:
         from backend.core.config.database import get_postgresql_connection
         
-        # Extract user number from user_id (e.g., user_0001 -> 0001)
-        user_number = user_id.replace("user_", "")
+        user_number = _session_user_number_from_optional_user_id(user_id)
         
         conn = get_postgresql_connection()
         if not conn:
@@ -5997,10 +5875,12 @@ async def get_monitor_names(user_id: str = "user_0001"):
         
         return {
             "status": "ok",
-            "user_id": user_id,
+            "user_id": f"user_{user_number}",
             "count": len(monitors),
             "monitors": monitors
         }
+    except HTTPException:
+        raise
     except Exception as e:
         return {
             "status": "error",
@@ -6008,13 +5888,20 @@ async def get_monitor_names(user_id: str = "user_0001"):
         }
 
 @app.get("/api/trades/monitors")
-async def get_trade_monitors(user_id: str = "user_0001"):
-    """Get monitor names from the trades table for trade history filtering"""
+async def get_trade_monitors(user_id: Optional[str] = None):
+    """Get monitor names from the trades table for trade history filtering (session tenant)."""
     try:
         from backend.core.config.database import get_postgresql_connection
-        
-        # Extract user number from user_id (e.g., user_0001 -> 0001)
-        user_number = user_id.replace("user_", "")
+
+        slot = resolved_tenant_user_no_for_app()
+        if user_id:
+            req = (user_id.replace("user_", "").strip() or "").zfill(4)
+            if len(req) == 4 and req.isdigit() and req != slot:
+                raise HTTPException(
+                    status_code=403,
+                    detail="user_id does not match authenticated tenant",
+                )
+        user_number = slot
         
         conn = get_postgresql_connection()
         if not conn:
@@ -6055,10 +5942,12 @@ async def get_trade_monitors(user_id: str = "user_0001"):
         
         return {
             "status": "ok",
-            "user_id": user_id,
+            "user_id": f"user_{user_number}",
             "count": len(monitors),
             "monitors": monitors
         }
+    except HTTPException:
+        raise
     except Exception as e:
         return {
             "status": "error",
@@ -6066,13 +5955,12 @@ async def get_trade_monitors(user_id: str = "user_0001"):
         }
 
 @app.get("/api/monitors/allocation")
-async def get_monitors_allocation(user_id: str = "user_0001"):
+async def get_monitors_allocation(user_id: Optional[str] = None):
     """Get bankroll allocation data for active monitors"""
     try:
         from backend.core.config.database import get_postgresql_connection
         
-        # Extract user number from user_id (e.g., user_0001 -> 0001)
-        user_number = user_id.replace("user_", "")
+        user_number = _session_user_number_from_optional_user_id(user_id)
         
         conn = get_postgresql_connection()
         if not conn:
@@ -6082,7 +5970,9 @@ async def get_monitors_allocation(user_id: str = "user_0001"):
             }
         
         with conn.cursor() as cursor:
-            # Get active monitors with their bankroll allocations
+            # Non-archived monitors with a positive allotment *percentage* (stored as decimal, e.g. 0.10 = 10%).
+            # Do not require bankroll_allotment_total > 0: totals are often still zero when the monitor was
+            # created before any bankroll existed; recompute display dollars from current bankroll × pct.
             cursor.execute(f"""
                 SELECT 
                     id,
@@ -6093,8 +5983,8 @@ async def get_monitors_allocation(user_id: str = "user_0001"):
                     bankroll_allotment_total,
                     status
                 FROM users.monitor_list_{user_number}
-                WHERE status = 'active' AND bankroll_allotment_total > 0
-                ORDER BY bankroll_allotment_total DESC, id
+                WHERE status != 'ARCHIVED' AND COALESCE(bankroll_allotment_pct, 0) > 0
+                ORDER BY bankroll_allotment_pct DESC, id
             """)
             
             monitor_results = cursor.fetchall()
@@ -6126,12 +6016,15 @@ async def get_monitors_allocation(user_id: str = "user_0001"):
         allocations = []
         for row in monitor_results:
             monitor_id, name, symbol, strategy, bankroll_allotment_pct, bankroll_allotment_total, status = row
-            
-            # bankroll_allotment_pct is in decimal (0.99 = 99%)
-            # bankroll_allotment_total is in cents (219653 = $2,196.53)
-            percentage = float(bankroll_allotment_pct) * 100  # Convert decimal to percentage
-            dollar_amount = float(bankroll_allotment_total) / 100  # Convert cents to dollars
-            
+
+            # bankroll_allotment_pct is decimal fraction (0.10 = 10%)
+            pct_decimal = float(bankroll_allotment_pct or 0)
+            percentage = pct_decimal * 100
+            # Prefer live bankroll × pct so the chart matches portfolio header after balance moves
+            dollar_amount = total_bankroll_dollars * pct_decimal
+            if dollar_amount <= 0 and bankroll_allotment_total:
+                dollar_amount = float(bankroll_allotment_total) / 100.0
+
             allocations.append({
                 "id": f"mon_{user_number}_{monitor_id}",
                 "name": name,
@@ -6139,7 +6032,8 @@ async def get_monitors_allocation(user_id: str = "user_0001"):
                 "strategy": strategy,
                 "bankroll_pct": round(percentage, 2),
                 "dollar_amount": round(dollar_amount, 2),
-                "total_bankroll": total_bankroll_dollars
+                "total_bankroll": total_bankroll_dollars,
+                "status": status,
             })
         
         return {
@@ -6148,6 +6042,8 @@ async def get_monitors_allocation(user_id: str = "user_0001"):
             "total_bankroll": total_bankroll_dollars
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         _main_logger.warning(f"Error getting monitors allocation: {e}")
         return {
@@ -6161,14 +6057,12 @@ async def update_monitors_allocation(request: dict):
     try:
         from backend.core.config.database import get_postgresql_connection
         
-        user_id = request.get("user_id", "user_0001")
         updates = request.get("updates", [])
         
         if not updates:
             return {"status": "error", "message": "No updates provided"}
         
-        # Extract user number from user_id (e.g., user_0001 -> 0001)
-        user_number = user_id.replace("user_", "")
+        user_number = _session_user_number_from_optional_user_id(request.get("user_id"))
         
         conn = get_postgresql_connection()
         if not conn:
@@ -6273,14 +6167,15 @@ async def update_monitors_allocation(request: dict):
                             use_trading_redis_comms,
                         )
                         payload = {
-                            "type": "monitor_total_position_updated",
                             "monitor_id": monitor_id,
                             "total_position": new_total_position,
                             "multiplier": multiplier_value,
                         }
                         if use_trading_redis_comms():
                             if not publish_preferences_event(
-                                "monitor_total_position_updated", payload
+                                "monitor_total_position_updated",
+                                payload,
+                                tenant_user_no=user_number,
                             ):
                                 _main_logger.warning(
                                     "Redis preferences publish failed for monitor_total_position_updated "
@@ -6302,6 +6197,8 @@ async def update_monitors_allocation(request: dict):
             "message": f"Updated {len(updates)} monitor allocations"
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         _main_logger.warning(f"Error updating monitors allocation: {e}")
         return {
@@ -6315,14 +6212,12 @@ async def update_monitors_order(request: dict):
     try:
         from backend.core.config.database import get_postgresql_connection
         
-        user_id = request.get("user_id", "user_0001")
         monitor_orders = request.get("monitor_orders", [])
         
         if not monitor_orders:
             return {"status": "error", "message": "No monitor orders provided"}
         
-        # Extract user number from user_id (e.g., user_0001 -> 0001)
-        user_number = user_id.replace("user_", "")
+        user_number = _session_user_number_from_optional_user_id(request.get("user_id"))
         
         conn = get_postgresql_connection()
         if not conn:
@@ -6355,6 +6250,8 @@ async def update_monitors_order(request: dict):
         
         return {"status": "ok", "message": "Monitor order updated successfully"}
         
+    except HTTPException:
+        raise
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -6365,26 +6262,13 @@ async def toggle_auto_trade(request: dict):
         # Extract parameters from request body
         monitor_id = request.get("monitor_id")
         auto_trade = request.get("auto_trade")
-        user_id = request.get("user_id", "user_0001")
         
         if not monitor_id or auto_trade is None:
             return {"status": "error", "message": "Missing monitor_id or auto_trade parameter"}
         
-        # Extract user number and monitor ID from monitor_id
-        # Handle multiple formats: MON_0001_10001, mon_0001_10001, or just 10001
-        if (monitor_id.startswith("MON_") or monitor_id.startswith("mon_")) and "_" in monitor_id:
-            parts = monitor_id.split("_")
-            if len(parts) >= 3:
-                user_number = parts[1]
-                db_monitor_id = parts[2]
-            else:
-                return {"status": "error", "message": "Invalid monitor ID format"}
-        elif monitor_id.isdigit():
-            # Handle numeric ID format (e.g., "10010")
-            user_number = "0001"  # Default user number
-            db_monitor_id = monitor_id
-        else:
-            return {"status": "error", "message": "Invalid monitor ID format"}
+        user_number, db_monitor_id = _monitor_slot_and_db_id_from_monitor_id(
+            str(monitor_id), request.get("user_id")
+        )
         
         # Update the database directly
         try:
@@ -6412,33 +6296,30 @@ async def toggle_auto_trade(request: dict):
             _main_logger.warning(f"[MAIN] ❌ Error updating database: {e}")
             return {"status": "error", "message": f"Database error: {str(e)}"}
         
-        # Broadcast the auto trade toggle to all connected WebSocket clients
+        # Broadcast the auto trade toggle to this tenant's WebSocket clients only
         try:
             message = {
                 "type": "auto_trade_toggled",
                 "monitor_id": monitor_id,
                 "auto_trade": auto_trade,
-                "message": f"Auto trade {'enabled' if auto_trade else 'disabled'} for monitor {monitor_id}"
+                "tenant_user_no": _norm_slot(user_number),
+                "message": f"Auto trade {'enabled' if auto_trade else 'disabled'} for monitor {monitor_id}",
             }
             
             _main_logger.debug(f"[MAIN] 🔔 Broadcasting auto trade toggle: {message}")
-            _main_logger.debug(f"[MAIN] 🔔 Connected WebSocket clients: {len(connected_clients)}")
-            
-            # Send to preferences WebSocket clients
-            for websocket in connected_clients.copy():
-                try:
-                    await websocket.send_text(json.dumps(message))
-                    _main_logger.debug(f"[MAIN] ✅ Message sent to WebSocket client")
-                except Exception as e:
-                    _main_logger.warning(f"Error sending to WebSocket client: {e}")
-                    connected_clients.discard(websocket)
-            
-            _main_logger.debug(f"[MAIN] ✅ Auto trade toggle broadcasted to {len(connected_clients)} WebSocket clients")
+            _main_logger.debug(
+                "[MAIN] 🔔 Preferences WebSocket clients (all tenants): %s",
+                _prefs_ws_client_count(),
+            )
+            await _prefs_ws_send_json_to_slot(message, user_number)
+            _main_logger.debug("[MAIN] ✅ Auto trade toggle sent to tenant %s", user_number)
         except Exception as e:
             _main_logger.debug(f"[MAIN] ⚠️ Warning: Failed to broadcast auto trade toggle: {e}")
         
         return {"status": "ok", "message": f"Auto trade {'enabled' if auto_trade else 'disabled'} for monitor {monitor_id}"}
         
+    except HTTPException:
+        raise
     except Exception as e:
         _main_logger.warning(f"Error in toggle auto trade: {e}")
         return {"status": "error", "message": str(e)}
@@ -6458,26 +6339,13 @@ async def toggle_paper_trade(request: Request):
         data = await request.json()
         monitor_id = data.get("monitor_id")
         paper_trade = data.get("paper_trade")
-        user_id = data.get("user_id", "user_0001")
         
         if not monitor_id or paper_trade is None:
             return {"status": "error", "message": "Missing monitor_id or paper_trade parameter"}
         
-        # Extract user number and monitor ID from monitor_id
-        # Handle multiple formats: MON_0001_10001, mon_0001_10001, or just 10001
-        if (monitor_id.startswith("MON_") or monitor_id.startswith("mon_")) and "_" in monitor_id:
-            parts = monitor_id.split("_")
-            if len(parts) >= 3:
-                user_number = parts[1]
-                db_monitor_id = parts[2]
-            else:
-                return {"status": "error", "message": "Invalid monitor ID format"}
-        elif monitor_id.isdigit():
-            # Handle numeric ID format (e.g., "10010")
-            user_number = "0001"  # Default user number
-            db_monitor_id = monitor_id
-        else:
-            return {"status": "error", "message": "Invalid monitor ID format"}
+        user_number, db_monitor_id = _monitor_slot_and_db_id_from_monitor_id(
+            str(monitor_id), data.get("user_id")
+        )
         
         # Update the database directly
         try:
@@ -6519,22 +6387,14 @@ async def toggle_paper_trade(request: Request):
             
             _main_logger.debug(f"[MAIN] ✅ Updated monitor {monitor_id} paper_trade to {paper_trade}")
             
-            # Broadcast the change to all connected WebSocket clients
             message = {
                 "type": "paper_trade_toggled",
                 "monitor_id": monitor_id,  # Keep original format (MON_0001_10001)
-                "paper_trade": paper_trade
+                "paper_trade": paper_trade,
+                "tenant_user_no": _norm_slot(user_number),
             }
-            
-            # Send to preferences WebSocket clients
-            for websocket in connected_clients.copy():
-                try:
-                    await websocket.send_text(json.dumps(message))
-                except Exception as e:
-                    _main_logger.warning(f"Error sending paper_trade update to WebSocket client: {e}")
-                    connected_clients.discard(websocket)
-            
-            _main_logger.debug(f"[MAIN] ✅ Paper trade change broadcasted to {len(connected_clients)} clients")
+            await _prefs_ws_send_json_to_slot(message, user_number)
+            _main_logger.debug("[MAIN] ✅ Paper trade change sent to tenant %s", user_number)
             
             return {"status": "ok", "message": "Paper trade updated successfully"}
             
@@ -6542,6 +6402,8 @@ async def toggle_paper_trade(request: Request):
             _main_logger.warning(f"[MAIN] ❌ Error updating database: {e}")
             return {"status": "error", "message": f"Database error: {str(e)}"}
             
+    except HTTPException:
+        raise
     except Exception as e:
         _main_logger.warning(f"[MAIN] ❌ Error toggling paper trade: {e}")
         return {"status": "error", "message": str(e)}
@@ -6555,17 +6417,19 @@ async def update_monitor_position(request: Request):
         position_size = data.get("position_size")
         position_type = data.get("position_type")
         multiplier = data.get("multiplier")
-        
+
         if monitor_id is None or position_size is None or position_type is None or multiplier is None:
             return {"error": "Missing required fields"}
-        
-        _main_logger.debug(f"[PROXY] Forwarding to monitor_manager: {data}")
-        
-        # Forward to monitor_manager
+
+        slot = _norm_slot(resolved_tenant_user_no_for_app())
+        forward = {**data, "user_number": slot}
+        mm_key = f"monitor_manager_{slot}"
+        _main_logger.debug(f"[PROXY] Forwarding to {mm_key}: {forward}")
+
         response = requests.post(
-            f"http://localhost:{get_port('monitor_manager')}/api/update_monitor_position",
-            json=data,
-            timeout=30
+            f"http://localhost:{get_port(mm_key)}/api/update_monitor_position",
+            json=forward,
+            timeout=30,
         )
         
         _main_logger.debug(f"[PROXY] Monitor manager response: {response.status_code}")
@@ -6588,26 +6452,13 @@ async def archive_monitor(request: dict):
         # Extract parameters from request body
         monitor_id = request.get("monitor_id")
         monitor_name = request.get("monitor_name")
-        user_id = request.get("user_id", "user_0001")
         
         if not monitor_id or not monitor_name:
             return {"status": "error", "message": "Missing monitor_id or monitor_name parameter"}
         
-        # Extract user number and monitor ID from monitor_id
-        # Handle multiple formats: MON_0001_10001, mon_0001_10001, or just 10001
-        if (monitor_id.startswith("MON_") or monitor_id.startswith("mon_")) and "_" in monitor_id:
-            parts = monitor_id.split("_")
-            if len(parts) >= 3:
-                user_number = parts[1]
-                db_monitor_id = parts[2]
-            else:
-                return {"status": "error", "message": "Invalid monitor ID format"}
-        elif monitor_id.isdigit():
-            # Handle numeric ID format (e.g., "10010")
-            user_number = "0001"  # Default user number
-            db_monitor_id = monitor_id
-        else:
-            return {"status": "error", "message": "Invalid monitor ID format"}
+        user_number, db_monitor_id = _monitor_slot_and_db_id_from_monitor_id(
+            str(monitor_id), request.get("user_id")
+        )
         
         conn = get_postgresql_connection()
         if not conn:
@@ -6679,25 +6530,19 @@ async def archive_monitor(request: dict):
         
         _main_logger.debug(f"[ARCHIVE] Monitor {monitor_name} (ID: {monitor_id}) archived successfully")
         
-        # Broadcast monitor list update to all connected WebSocket clients
         message = {
             "type": "monitor_list_updated",
             "monitor_id": monitor_id,
-            "action": "archived"
+            "action": "archived",
+            "tenant_user_no": _norm_slot(user_number),
         }
-        
-        # Send to preferences WebSocket clients
-        for websocket in connected_clients.copy():
-            try:
-                await websocket.send_text(json.dumps(message))
-            except Exception as e:
-                _main_logger.warning(f"Error sending monitor list update to WebSocket client: {e}")
-                connected_clients.discard(websocket)
-        
-        _main_logger.debug(f"[ARCHIVE] ✅ Monitor list update broadcasted to {len(connected_clients)} clients")
+        await _prefs_ws_send_json_to_slot(message, user_number)
+        _main_logger.debug("[ARCHIVE] ✅ Monitor list update sent to tenant %s", user_number)
         
         return {"status": "ok", "message": f"Monitor {monitor_name} archived successfully"}
         
+    except HTTPException:
+        raise
     except Exception as e:
         _main_logger.warning(f"Error archiving monitor: {e}")
         return {"status": "error", "message": str(e)}
@@ -6711,26 +6556,13 @@ async def deactivate_monitor(request: dict):
         # Extract parameters from request body
         monitor_id = request.get("monitor_id")
         monitor_name = request.get("monitor_name")
-        user_id = request.get("user_id", "user_0001")
         
         if not monitor_id or not monitor_name:
             return {"status": "error", "message": "Missing monitor_id or monitor_name parameter"}
         
-        # Extract user number and monitor ID from monitor_id
-        # Handle multiple formats: MON_0001_10001, mon_0001_10001, or just 10001
-        if (monitor_id.startswith("MON_") or monitor_id.startswith("mon_")) and "_" in monitor_id:
-            parts = monitor_id.split("_")
-            if len(parts) >= 3:
-                user_number = parts[1]
-                db_monitor_id = parts[2]
-            else:
-                return {"status": "error", "message": "Invalid monitor ID format"}
-        elif monitor_id.isdigit():
-            # Handle numeric ID format (e.g., "10010")
-            user_number = "0001"  # Default user number
-            db_monitor_id = monitor_id
-        else:
-            return {"status": "error", "message": "Invalid monitor ID format"}
+        user_number, db_monitor_id = _monitor_slot_and_db_id_from_monitor_id(
+            str(monitor_id), request.get("user_id")
+        )
         
         conn = get_postgresql_connection()
         if not conn:
@@ -6809,25 +6641,19 @@ async def deactivate_monitor(request: dict):
         except Exception as e:
             _main_logger.warning(f"[DEACTIVATE] ⚠️ In-process monitor process sync failed: {e}")
 
-        # Broadcast monitor list update to all connected WebSocket clients
         message = {
             "type": "monitor_list_updated",
             "monitor_id": monitor_id,
-            "action": "deactivated"
+            "action": "deactivated",
+            "tenant_user_no": _norm_slot(user_number),
         }
-        
-        # Send to preferences WebSocket clients
-        for websocket in connected_clients.copy():
-            try:
-                await websocket.send_text(json.dumps(message))
-            except Exception as e:
-                _main_logger.warning(f"Error sending monitor list update to WebSocket client: {e}")
-                connected_clients.discard(websocket)
-        
-        _main_logger.debug(f"[DEACTIVATE] ✅ Monitor list update broadcasted to {len(connected_clients)} clients")
+        await _prefs_ws_send_json_to_slot(message, user_number)
+        _main_logger.debug("[DEACTIVATE] ✅ Monitor list update sent to tenant %s", user_number)
         
         return {"status": "ok", "message": f"Monitor {monitor_name} deactivated successfully"}
         
+    except HTTPException:
+        raise
     except Exception as e:
         _main_logger.warning(f"Error deactivating monitor: {e}")
         return {"status": "error", "message": str(e)}
@@ -6841,26 +6667,13 @@ async def activate_monitor(request: dict):
         # Extract parameters from request body
         monitor_id = request.get("monitor_id")
         monitor_name = request.get("monitor_name")
-        user_id = request.get("user_id", "user_0001")
         
         if not monitor_id or not monitor_name:
             return {"status": "error", "message": "Missing monitor_id or monitor_name parameter"}
         
-        # Extract user number and monitor ID from monitor_id
-        # Handle multiple formats: MON_0001_10001, mon_0001_10001, or just 10001
-        if (monitor_id.startswith("MON_") or monitor_id.startswith("mon_")) and "_" in monitor_id:
-            parts = monitor_id.split("_")
-            if len(parts) >= 3:
-                user_number = parts[1]
-                db_monitor_id = parts[2]
-            else:
-                return {"status": "error", "message": "Invalid monitor ID format"}
-        elif monitor_id.isdigit():
-            # Handle numeric ID format (e.g., "10010")
-            user_number = "0001"  # Default user number
-            db_monitor_id = monitor_id
-        else:
-            return {"status": "error", "message": "Invalid monitor ID format"}
+        user_number, db_monitor_id = _monitor_slot_and_db_id_from_monitor_id(
+            str(monitor_id), request.get("user_id")
+        )
         
         conn = get_postgresql_connection()
         if not conn:
@@ -6938,25 +6751,19 @@ async def activate_monitor(request: dict):
         except Exception as e:
             _main_logger.warning(f"[ACTIVATE] ⚠️ In-process monitor process sync failed: {e}")
 
-        # Broadcast monitor list update to all connected WebSocket clients
         message = {
             "type": "monitor_list_updated",
             "monitor_id": monitor_id,
-            "action": "activated"
+            "action": "activated",
+            "tenant_user_no": _norm_slot(user_number),
         }
-        
-        # Send to preferences WebSocket clients
-        for websocket in connected_clients.copy():
-            try:
-                await websocket.send_text(json.dumps(message))
-            except Exception as e:
-                _main_logger.warning(f"Error sending monitor list update to WebSocket client: {e}")
-                connected_clients.discard(websocket)
-        
-        _main_logger.debug(f"[ACTIVATE] ✅ Monitor list update broadcasted to {len(connected_clients)} clients")
+        await _prefs_ws_send_json_to_slot(message, user_number)
+        _main_logger.debug("[ACTIVATE] ✅ Monitor list update sent to tenant %s", user_number)
         
         return {"status": "ok", "message": f"Monitor {monitor_name} activated successfully"}
         
+    except HTTPException:
+        raise
     except Exception as e:
         _main_logger.warning(f"Error activating monitor: {e}")
         return {"status": "error", "message": str(e)}
@@ -6964,100 +6771,20 @@ async def activate_monitor(request: dict):
 
 
 @app.get("/api/strategies")
-async def get_strategies(user_id: str = "user_0001"):
-    """Get available strategies for the strategy picker dropdown"""
+async def get_strategies(user_id: Optional[str] = None):
+    """Strategy picker for the authenticated tenant (see :mod:`backend.core.tenant_strategy_list`)."""
+    _ = user_id  # optional query ignored; session token is authoritative (rec_session may still send user_id)
     try:
-        from backend.core.config.database import get_postgresql_connection
-        
-        user_number = user_id.replace("user_", "")
-        
-        conn = get_postgresql_connection()
-        if not conn:
-            return {
-                "status": "error",
-                "message": "Database connection failed"
-            }
-        
-        cursor = conn.cursor()
-        # Table creation is now handled in database.py init_database()
-        # Just ensure it exists (will be created/updated by init_database if needed)
-        cursor.execute("""
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE table_schema = 'users' 
-                AND table_name = 'strategy_list_0001'
-            )
-        """)
-        table_exists = cursor.fetchone()[0]
-        
-        if not table_exists:
-            # If table doesn't exist, it will be created by init_database on next run
-            # For now, create minimal version
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS users.strategy_list_0001 (
-                    id SERIAL PRIMARY KEY,
-                    name VARCHAR(100) NOT NULL UNIQUE,
-                    created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-        
-        # Check if table has any data, if not insert default strategies
-        cursor.execute("SELECT COUNT(*) FROM users.strategy_list_0001")
-        count = cursor.fetchone()[0]
-        
-        if count == 0:
-            # Insert default strategies
-            default_strategies = [
-                'Hourly HTC',
-                'Reverse HTC',
-                'Momentum Scalp',
-                'Momentum Breakout',
-                'Momentum Contain',
-                'Rising Devil',
-                'Test Strategy',
-                'Daily HTC',
-                'Scalp Strategy'
-            ]
-            for strategy in default_strategies:
-                cursor.execute("""
-                    INSERT INTO users.strategy_list_0001 (name) 
-                    VALUES (%s) 
-                    ON CONFLICT (name) DO NOTHING
-                """, (strategy,))
-        
-        # Now get all strategies and which have default=TRUE (for trade history Reset)
-        try:
-            cursor.execute("""
-                SELECT name, "default"
-                FROM users.strategy_list_0001
-                ORDER BY id
-            """)
-            results = cursor.fetchall()
-            strategies = [str(row[0]) if row[0] else "" for row in results]
-            default_strategy_names = [str(row[0]) for row in results if row[0] and row[1]]
-        except psycopg2.ProgrammingError:
-            cursor.execute("""
-                SELECT name
-                FROM users.strategy_list_0001
-                ORDER BY id
-            """)
-            results = cursor.fetchall()
-            strategies = [str(row[0]) if row[0] else "" for row in results]
-            default_strategy_names = list(strategies)
-        conn.commit()
-        conn.close()
-        
-        return {
-            "status": "ok",
-            "strategies": strategies,
-            "default_strategy_names": default_strategy_names
-        }
-        
+        from backend.core.tenant_strategy_list import load_strategy_picker_for_slot
+
+        slot = resolved_tenant_user_no_for_app()
+        payload = load_strategy_picker_for_slot(slot)
+        return {"status": "ok", **payload}
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
     except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+        _main_logger.warning("get_strategies: %s", e)
+        return {"status": "error", "message": str(e)}
 
 @app.post("/api/monitor/create")
 async def create_monitor(request: dict):
@@ -7065,9 +6792,10 @@ async def create_monitor(request: dict):
     try:
         import requests
         from backend.core.port_config import get_port
-        
-        # Forward the request to monitor_manager
-        monitor_manager_port = get_port("monitor_manager")
+        from backend.core.tenant_context import resolved_tenant_user_no_for_app
+
+        slot = resolved_tenant_user_no_for_app()
+        monitor_manager_port = get_port(f"monitor_manager_{slot}")
         response = requests.post(
             f"http://localhost:{monitor_manager_port}/api/monitor/create",
             json=request,

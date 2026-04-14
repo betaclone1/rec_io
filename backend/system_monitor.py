@@ -15,7 +15,7 @@ import platform
 import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 # Force output to be unbuffered for supervisor
 sys.stdout.reconfigure(line_buffering=True)
@@ -63,6 +63,7 @@ from backend.util.paths import get_project_root
 sys.path.insert(0, os.path.join(get_project_root(), 'scripts'))
 
 from backend.core.port_config import (
+    default_pool_user_number,
     get_port,
     get_port_info,
     list_all_ports,
@@ -74,6 +75,9 @@ from backend.core.port_config import (
 from backend.util.paths import get_data_dir, get_trade_history_dir, get_price_history_dir
 from backend.core.unified_config import unified_config
 from backend.core.time_eastern import merge_psycopg2_connect_kwargs, now_est
+from backend.core.config.database import get_database_config
+from backend.core.tenant_context import process_tenant_context
+
 
 class SystemMonitor:
     def __init__(self):
@@ -89,6 +93,7 @@ class SystemMonitor:
         self.restart_completion_checked = False
         
         # Trading state tracking removed - no longer modifying user settings automatically
+        self._last_published_release_version: Optional[str] = None
         
         # Get service URLs using bulletproof port manager (updated to match current configuration)
         self.service_urls = {
@@ -134,7 +139,7 @@ class SystemMonitor:
             
             # Get active monitors
             active_monitors = generator._get_active_monitors()
-            pu = pool_user_for_unified_aes_ats(active_monitors)
+            pu = pool_user_for_unified_aes_ats(active_monitors) or default_pool_user_number()
             tm = f"trade_manager_{pu}"
             te = f"trade_executor_{pu}"
             kas = f"kalshi_account_sync_{pu}"
@@ -347,50 +352,43 @@ class SystemMonitor:
 
     def check_database_health(self) -> Dict[str, Any]:
         """Check PostgreSQL database connectivity and health."""
-        db_health = {}
-        
-        # Check trades database
+        import psycopg2
+        from psycopg2 import sql as psql
+
+        db_health: Dict[str, Any] = {}
+        cfg = merge_psycopg2_connect_kwargs(get_database_config())
+        ctx = process_tenant_context()
+        trades_schema, trades_table = ctx.ut("trades").split(".", 1)
+
+        # Trades: tenant schema (e.g. users_0001.trades_0001), not legacy users.trades_0001
         try:
-            import psycopg2
-            conn = psycopg2.connect(
-                **merge_psycopg2_connect_kwargs(
-                    {
-                        "host": "localhost",
-                        "database": "rec_io_db",
-                        "user": "rec_io_user",
-                        "password": "rec_io_password",
-                    }
+            conn = psycopg2.connect(**cfg)
+            cursor = conn.cursor()
+            cursor.execute(
+                psql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+                    psql.Identifier(trades_schema),
+                    psql.Identifier(trades_table),
                 )
             )
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM users.trades_0001")
             trade_count = cursor.fetchone()[0]
             conn.close()
             db_health["trades_db"] = {
                 "status": "healthy",
                 "trade_count": trade_count,
-                "database_type": "postgresql"
+                "database_type": "postgresql",
+                "qualified_table": f"{trades_schema}.{trades_table}",
             }
         except Exception as e:
             db_health["trades_db"] = {
                 "status": "unhealthy",
                 "error": str(e),
-                "database_type": "postgresql"
+                "database_type": "postgresql",
+                "qualified_table": f"{trades_schema}.{trades_table}",
             }
-        
-        # Check price history database
+
+        # Price log (global live_data)
         try:
-            import psycopg2
-            conn = psycopg2.connect(
-                **merge_psycopg2_connect_kwargs(
-                    {
-                        "host": "localhost",
-                        "database": "rec_io_db",
-                        "user": "rec_io_user",
-                        "password": "rec_io_password",
-                    }
-                )
-            )
+            conn = psycopg2.connect(**cfg)
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM live_data.live_price_log_1s_btc")
             price_count = cursor.fetchone()[0]
@@ -398,15 +396,15 @@ class SystemMonitor:
             db_health["price_db"] = {
                 "status": "healthy",
                 "price_count": price_count,
-                "database_type": "postgresql"
+                "database_type": "postgresql",
             }
         except Exception as e:
             db_health["price_db"] = {
                 "status": "unhealthy",
                 "error": str(e),
-                "database_type": "postgresql"
+                "database_type": "postgresql",
             }
-        
+
         return db_health
     
     def check_system_resources(self) -> Dict[str, Any]:
@@ -638,17 +636,8 @@ class SystemMonitor:
             import psycopg2
             import json
             
-            conn = psycopg2.connect(
-                **merge_psycopg2_connect_kwargs(
-                    {
-                        "host": "localhost",
-                        "database": "rec_io_db",
-                        "user": "rec_io_user",
-                        "password": "rec_io_password",
-                    }
-                )
-            )
-            
+            conn = psycopg2.connect(**merge_psycopg2_connect_kwargs(get_database_config()))
+
             with conn.cursor() as cursor:
                 # Determine overall status
                 overall_status = "healthy"
@@ -847,11 +836,52 @@ class SystemMonitor:
         except Exception as e:
             _sm_logger.warning("Error checking restart completion: %s", e)
     
+    def _sync_release_version_to_redis(self) -> None:
+        """Read latest ``system.version_control`` row, SET Redis cache, publish WS when it changes."""
+        try:
+            from backend.core.config.database import get_system_postgresql_connection
+            from backend.core.trading_redis_comms import (
+                publish_preferences_ws_message,
+                redis_client_optional,
+                redis_key_system_release_version,
+                use_trading_redis_comms,
+            )
+
+            conn = get_system_postgresql_connection()
+            if not conn:
+                return
+            ver: Optional[str] = None
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT version FROM system.version_control ORDER BY id DESC LIMIT 1"
+                    )
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        ver = str(row[0]).strip() or None
+            finally:
+                conn.close()
+            if not ver:
+                return
+            r = redis_client_optional()
+            if r:
+                try:
+                    r.set(redis_key_system_release_version(), ver)
+                except Exception:
+                    pass
+            changed = ver != self._last_published_release_version
+            self._last_published_release_version = ver
+            if changed and use_trading_redis_comms():
+                publish_preferences_ws_message({"type": "system_version", "version": ver})
+        except Exception as e:
+            _sm_logger.debug("release version redis sync skipped: %s", e)
+    
     def run_monitoring_loop(self):
         """Run continuous monitoring loop."""
         _sm_logger.info("Starting System Monitor; monitoring %s services every %ss", len(self.service_urls), self.monitoring_interval)
         
         try:
+            self._sync_release_version_to_redis()
             while True:
                 report = self.generate_health_report()
                 resources = report["system_resources"]
@@ -960,6 +990,7 @@ class SystemMonitor:
                 if self.master_restart_triggered and not self.restart_completion_checked:
                     self.check_restart_completion()
                 
+                self._sync_release_version_to_redis()
                 time.sleep(self.monitoring_interval)
                 
         except KeyboardInterrupt:

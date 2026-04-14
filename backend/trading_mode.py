@@ -12,7 +12,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from psycopg2 import sql as psql
 
-from backend.core.config.database import get_postgresql_connection
+from backend.core.config.database import get_system_postgresql_connection
+from backend.core.tenant_provision import fetch_active_master_user_nos
 from backend.util.paths import get_data_dir
 
 _STATE_BASENAME = "account_mode_state.json"
@@ -51,32 +52,82 @@ def is_paper_trading() -> bool:
     return get_trading_mode() == "paper"
 
 
-def _snapshot_active_monitor_paper_flags() -> Dict[str, bool]:
-    """Map monitor id (str) -> paper_trade bool for active monitors."""
-    out: Dict[str, bool] = {}
-    conn = get_postgresql_connection()
+def paper_mode_from_client_query(client_trading_mode: Optional[str]) -> Optional[bool]:
+    """
+    When the UI sends ``trading_mode=paper|live`` on API requests, honor it for **reads** so each
+    tenant sees charts/PnL for the mode they selected, independent of the global on-disk toggle
+    (which remains the execution default for workers that do not receive the query param).
+
+    Returns ``None`` if the client did not send a recognized value (caller should use global
+    :func:`is_paper_trading`).
+    """
+    if client_trading_mode is None:
+        return None
+    m = str(client_trading_mode).strip().lower()
+    if m == "paper":
+        return True
+    if m == "live":
+        return False
+    return None
+
+
+def use_paper_for_request(client_trading_mode: Optional[str]) -> bool:
+    """Effective paper vs live for read paths (dashboard, read_api, proxies)."""
+    explicit = paper_mode_from_client_query(client_trading_mode)
+    if explicit is not None:
+        return explicit
+    return is_paper_trading()
+
+
+def _active_tenant_slots(cur) -> List[str]:
+    """Four-digit slots for active rows in system.master_users."""
+    return list(fetch_active_master_user_nos(cur))
+
+
+def _monitor_list_sql_identifiers(slot: str) -> Tuple[psql.Identifier, psql.Identifier]:
+    u = _norm_slot(slot)
+    return psql.Identifier(f"users_{u}"), psql.Identifier(f"monitor_list_{u}")
+
+
+def _snapshot_active_monitor_paper_flags() -> Dict[str, Dict[str, bool]]:
+    """
+    Per-tenant map: slot -> { monitor_id (str) -> paper_trade } for active monitors.
+    Uses system DB connection so all tenants are visible (not request-bound TenantConnection).
+    """
+    out: Dict[str, Dict[str, bool]] = {}
+    conn = get_system_postgresql_connection()
     if not conn:
         return out
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id::text, COALESCE(paper_trade, false)
-                FROM users.monitor_list_0001
-                WHERE status = 'active'
-                """
-            )
-            for mid, pt in cur.fetchall() or []:
-                out[str(mid)] = bool(pt)
+            for slot in _active_tenant_slots(cur):
+                sch, tbl = _monitor_list_sql_identifiers(slot)
+                cur.execute(
+                    psql.SQL(
+                        "SELECT id::text, COALESCE(paper_trade, false) FROM {}.{} WHERE status = 'active'"
+                    ).format(sch, tbl)
+                )
+                per: Dict[str, bool] = {}
+                for mid, pt in cur.fetchall() or []:
+                    per[str(mid)] = bool(pt)
+                if per:
+                    out[slot] = per
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
     return out
 
 
-def _apply_monitor_paper_flags(flags: Dict[str, bool]) -> None:
-    conn = get_postgresql_connection()
+def _apply_monitor_paper_flags_for_slot(slot: str, flags: Dict[str, bool]) -> None:
+    """Restore paper_trade for one tenant's monitors (system connection)."""
+    if not flags:
+        return
+    conn = get_system_postgresql_connection()
     if not conn:
         return
+    sch, tbl = _monitor_list_sql_identifiers(slot)
     try:
         with conn.cursor() as cur:
             for mid, pt in flags.items():
@@ -85,16 +136,55 @@ def _apply_monitor_paper_flags(flags: Dict[str, bool]) -> None:
                 except (TypeError, ValueError):
                     continue
                 cur.execute(
-                    """
-                    UPDATE users.monitor_list_0001
-                    SET paper_trade = %s, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = %s AND status = 'active'
-                    """,
+                    psql.SQL(
+                        "UPDATE {}.{} SET paper_trade = %s, updated_at = CURRENT_TIMESTAMP "
+                        "WHERE id = %s AND status = 'active'"
+                    ).format(sch, tbl),
                     (pt, mid_int),
                 )
         conn.commit()
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _apply_monitor_paper_flags_merged(snap: Any) -> None:
+    """
+    Restore from state file. Supports:
+    - New: { slot: { mid: bool } }
+    - Legacy flat: { mid: bool } (only ever matched users.monitor_list_0001); apply to 0001 if active.
+    """
+    if not isinstance(snap, dict) or not snap:
+        return
+    if all(isinstance(v, dict) for v in snap.values()):
+        for slot, flags in snap.items():
+            if not isinstance(flags, dict):
+                continue
+            try:
+                u = _norm_slot(str(slot))
+            except ValueError:
+                continue
+            flat = {str(k): bool(v) for k, v in flags.items()}
+            _apply_monitor_paper_flags_for_slot(u, flat)
+        return
+    flat = {str(k): bool(v) for k, v in snap.items() if not isinstance(v, dict)}
+    if not flat:
+        return
+    conn = get_system_postgresql_connection()
+    if not conn:
+        return
+    try:
+        with conn.cursor() as cur:
+            slots = set(_active_tenant_slots(cur))
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    if "0001" in slots:
+        _apply_monitor_paper_flags_for_slot("0001", flat)
 
 
 def set_trading_mode(mode: str) -> Tuple[str, Optional[str]]:
@@ -124,20 +214,24 @@ def set_trading_mode(mode: str) -> Tuple[str, Optional[str]]:
         state["paper_monitor_snapshot"] = snap
         state["trading_mode"] = "paper"
         _save_state(state)
-        conn = get_postgresql_connection()
+        conn = get_system_postgresql_connection()
         if conn:
             try:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        UPDATE users.monitor_list_0001
-                        SET paper_trade = true, updated_at = CURRENT_TIMESTAMP
-                        WHERE status = 'active'
-                        """
-                    )
+                    for slot in _active_tenant_slots(cur):
+                        sch, tbl = _monitor_list_sql_identifiers(slot)
+                        cur.execute(
+                            psql.SQL(
+                                "UPDATE {}.{} SET paper_trade = true, updated_at = CURRENT_TIMESTAMP "
+                                "WHERE status = 'active'"
+                            ).format(sch, tbl)
+                        )
                 conn.commit()
             finally:
-                conn.close()
+                try:
+                    conn.close()
+                except Exception:
+                    pass
         return "paper", None
 
     # live
@@ -147,32 +241,97 @@ def set_trading_mode(mode: str) -> Tuple[str, Optional[str]]:
     state["paper_monitor_snapshot"] = None
     state["trading_mode"] = "live"
     _save_state(state)
-    _apply_monitor_paper_flags({str(k): bool(v) for k, v in snap.items()})
+    _apply_monitor_paper_flags_merged(snap)
     return "live", None
 
 
-def account_balance_table_for_user(user_number: str) -> str:
-    """Live vs paper balance history table (paper v1: user 0001 only)."""
-    if str(user_number) == "0001" and get_trading_mode() == "paper":
-        return "users.account_balance_paper_0001"
-    return f"users.account_balance_{user_number}"
+def _norm_slot(user_number: str) -> str:
+    u = str(user_number).strip().zfill(4)
+    if len(u) != 4 or not u.isdigit():
+        raise ValueError(f"invalid user number: {user_number!r}")
+    return u
 
 
-def subaccounts_table_for_user(user_number: str) -> str:
-    if str(user_number) == "0001" and get_trading_mode() == "paper":
-        return "users.subaccounts_paper_0001"
-    return f"users.subaccounts_{user_number}"
+def account_balance_table_for_user(
+    user_number: str,
+    *,
+    client_trading_mode: Optional[str] = None,
+    force_live: bool = False,
+) -> str:
+    """Live vs paper balance history table (per four-digit slot).
+
+    Uses tenant schema ``users_<slot>`` (not legacy ``users``), so raw psycopg2 connections
+    (e.g. monitor_manager) resolve the correct relation after ``users`` → ``users_0001`` rename.
+
+    Pass ``client_trading_mode`` from HTTP query (``paper`` / ``live``) so dashboards match the
+    user's UI toggle even when another tenant changed the global on-disk mode.
+
+    ``force_live=True``: always the real Kalshi-backed ``account_balance_<slot>`` table. Use for
+    ``kalshi_account_sync`` REST/WS writes so global ``trading_mode=paper`` does not redirect live
+    API payloads into ``account_balance_paper_*`` (which would overwrite simulated paper history).
+    """
+    u = _norm_slot(user_number)
+    if force_live:
+        base = "account_balance"
+    else:
+        paper = use_paper_for_request(client_trading_mode)
+        base = "account_balance_paper" if paper else "account_balance"
+    return f"users_{u}.{base}_{u}"
 
 
-def transfers_table_for_user(user_number: str) -> str:
-    """Live vs paper transfer log (paper v1: user 0001 only)."""
-    if str(user_number) == "0001" and get_trading_mode() == "paper":
-        return "users.transfers_paper_0001"
-    return f"users.transfers_{user_number}"
+def subaccounts_table_for_user(
+    user_number: str,
+    *,
+    client_trading_mode: Optional[str] = None,
+    force_live: bool = False,
+) -> str:
+    u = _norm_slot(user_number)
+    if force_live:
+        return f"users_{u}.subaccounts_{u}"
+    if use_paper_for_request(client_trading_mode):
+        return f"users_{u}.subaccounts_paper_{u}"
+    return f"users_{u}.subaccounts_{u}"
+
+
+def transfers_table_for_user(
+    user_number: str, *, client_trading_mode: Optional[str] = None
+) -> str:
+    """Live vs paper transfer log (per four-digit slot)."""
+    u = _norm_slot(user_number)
+    if use_paper_for_request(client_trading_mode):
+        return f"users_{u}.transfers_paper_{u}"
+    return f"users_{u}.transfers_{u}"
+
+
+def paper_account_balance_fqn(user_number: str) -> str:
+    """Always paper balance table for this slot (ignores global trading_mode)."""
+    u = _norm_slot(user_number)
+    return f"users_{u}.account_balance_paper_{u}"
+
+
+def paper_subaccounts_fqn(user_number: str) -> str:
+    """Always paper subaccounts table for this slot."""
+    u = _norm_slot(user_number)
+    return f"users_{u}.subaccounts_paper_{u}"
+
+
+def monitor_list_fqn(user_number: str) -> str:
+    u = _norm_slot(user_number)
+    return f"users_{u}.monitor_list_{u}"
+
+
+def strategy_list_fqn(user_number: str) -> str:
+    u = _norm_slot(user_number)
+    return f"users_{u}.strategy_list_{u}"
+
+
+def trades_table_fqn(user_number: str) -> str:
+    u = _norm_slot(user_number)
+    return f"users_{u}.trades_{u}"
 
 
 def sql_ident_qualified_table(fqn: str) -> psql.Composed:
-    """psycopg2.sql Identifier pair for schema.table (e.g. users.account_balance_0001)."""
+    """psycopg2.sql Identifier pair for schema.table (e.g. users_0001.account_balance_0001)."""
     parts = fqn.split(".")
     if len(parts) != 2:
         raise ValueError(f"expected schema.table, got {fqn!r}")

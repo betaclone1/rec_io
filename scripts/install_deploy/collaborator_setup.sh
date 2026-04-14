@@ -35,11 +35,13 @@ DELETE FROM users.trade_history_preferences_0001;
 -- Clear user info (will be updated with new user data later)
 DELETE FROM users.user_info_0001;
 
--- CRITICAL: Remove master users table and views (ONLY exists on production server)
--- First drop foreign key constraints that reference master tables
+-- CRITICAL: Remove master users table and views (system schema; legacy users.* drops kept as no-ops)
 ALTER TABLE users.user_info_0001 DROP CONSTRAINT IF EXISTS user_info_0001_user_no_fkey;
 
--- Then drop master tables and views
+DROP VIEW IF EXISTS system.active_master_users CASCADE;
+DROP VIEW IF EXISTS system.recent_master_registrations CASCADE;
+DROP VIEW IF EXISTS system.master_users_summary CASCADE;
+DROP TABLE IF EXISTS system.master_users CASCADE;
 DROP VIEW IF EXISTS users.active_master_users CASCADE;
 DROP VIEW IF EXISTS users.recent_master_registrations CASCADE;
 DROP VIEW IF EXISTS users.master_users_summary CASCADE;

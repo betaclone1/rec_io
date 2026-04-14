@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <script src="/js/rec_session.js"></script>
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="/styles/global.css">
@@ -2544,7 +2546,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
               const numericId = parseInt(currentIdNormalized, 10);
               if (!Number.isNaN(numericId)) {
-                fetch(`/api/monitor/${numericId}?user_id=user_0001`)
+                fetch(`/api/monitor/${numericId}`)
                   .then(resp => resp.json())
                   .then(respData => {
                     if (respData && respData.status === 'ok' && respData.monitor) {
@@ -2573,7 +2575,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (data.monitor_id && data.monitor_id == currentMonitorId) {
           console.log('Current monitor updated, refreshing auto trade toggle state');
           // Fetch the updated monitor data and update the toggle
-          fetch(`/api/monitor/${currentMonitorId}?user_id=user_0001`)
+          fetch(`/api/monitor/${currentMonitorId}`)
             .then(response => response.json())
             .then(monitorData => {
               if (monitorData.status === 'ok' && monitorData.monitor && autoTradeToggle) {
@@ -2662,7 +2664,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // Send update to backend using same endpoint as dashboard
       try {
         // Format monitor_id correctly for backend (MON_0001_10001 format)
-        const formattedMonitorId = `MON_0001_${currentMonitorId}`;
+        const formattedMonitorId = `MON_${window.recSessionUserSlot()}_${currentMonitorId}`;
         
         const response = await fetch('/api/monitor/toggle-auto-trade', {
           method: 'POST',
@@ -3942,7 +3944,7 @@ async function fetchAndRenderTradeHistory() {
     // Filter trades by current monitor if one is selected
     let filteredTrades = trades;
     if (currentMonitorId) {
-      const monitorName = `mon_0001_${currentMonitorId}`;
+      const monitorName = `mon_${window.recSessionUserSlot()}_${currentMonitorId}`;
       filteredTrades = trades.filter(trade => trade.monitor === monitorName);
       console.log(`Filtering trades for monitor: ${monitorName}, found ${filteredTrades.length} trades`);
     }
@@ -6181,14 +6183,14 @@ async function fetchInitialAutoEntryIndicator() {
         }
         
         console.log('🔄 Fetching auto trade status for monitor:', currentMonitorId);
-        console.log('Making API call to:', `/api/monitors?user_id=user_0001`);
-        const response = await fetch(`/api/monitors?user_id=user_0001`);
+        console.log('Making API call to:', `/api/monitors`);
+        const response = await fetch(`/api/monitors`);
         if (!response.ok) throw new Error('Failed to fetch monitors data');
         const monitorsData = await response.json();
         
         if (monitorsData.status === 'ok' && monitorsData.monitors) {
             // Find the specific monitor from the monitors array
-            const monitor = monitorsData.monitors.find(m => m.id === `mon_0001_${currentMonitorId}`);
+            const monitor = monitorsData.monitors.find(m => m.id === `mon_${window.recSessionUserSlot()}_${currentMonitorId}`);
             
             if (monitor) {
                 console.log('📊 Monitor data received:', monitor);
@@ -6768,7 +6770,7 @@ document.addEventListener('DOMContentLoaded', () => {
     async function populateMonitorPicker() {
       console.log('Populating monitor picker...');
       try {
-        const response = await fetch('/api/monitors/names?user_id=user_0001');
+        const response = await fetch('/api/monitors/names');
         const data = await response.json();
         console.log('Monitor data received:', data);
         
@@ -6854,7 +6856,7 @@ document.addEventListener('DOMContentLoaded', () => {
     async function loadMonitorDetails(monitorId) {
       console.log('Loading monitor details for ID:', monitorId);
       try {
-        const response = await fetch(`/api/monitor/${monitorId}?user_id=user_0001`);
+        const response = await fetch(`/api/monitor/${monitorId}`);
         const data = await response.json();
         
         if (data.status === 'ok' && data.monitor) {
@@ -7061,7 +7063,7 @@ document.addEventListener('DOMContentLoaded', () => {
           return false;
         }
         
-        const response = await fetch(`${window.location.origin}/api/monitors?user_id=user_0001`);
+        const response = await fetch(`${window.location.origin}/api/monitors`);
         const data = await response.json();
         
         if (data.status === 'ok' && data.monitors) {
@@ -7094,7 +7096,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Extract numeric monitor ID from mon_0001_10002 format and convert to MON_0001_10002 format
         const numericId = window.currentMonitorId.split('_').pop();
-        const formattedMonitorId = `MON_0001_${numericId}`;
+        const formattedMonitorId = `MON_${window.recSessionUserSlot()}_${numericId}`;
         
         const response = await fetch('/api/monitor/toggle-paper-trade', {
           method: 'POST',

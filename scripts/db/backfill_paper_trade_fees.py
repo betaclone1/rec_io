@@ -5,7 +5,7 @@ Uses taker formula: open_fee = round_up(0.07 * position * buy_price * (1 - buy_p
 for closed-before-expiration adds close_fee = round_up(0.07 * position * (1 - sell_price) * sell_price).
 Updates ONLY the fees column; does not touch any row where paper_trade is not TRUE.
 
-Run against production with: DB_HOST=$REC_PROD_SSH_HOST PYTHONPATH=$(pwd) python3 scripts/db/backfill_paper_trade_fees.py
+Run against production with: DB_HOST=$REC_PROD_SSH_HOST PYTHONPATH=$(pwd) python3 scripts/db/backfill_paper_trade_fees.py --user-no 0001
 (Canonical prod IPv4 and env: docs/PRODUCTION_HOST.md — currently 165.22.13.146.)
 Dry run (no writes): add --dry-run
 """
@@ -17,6 +17,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from backend.core.config.database import get_postgresql_connection
+from backend.core.tenant_script_args import add_user_no_argument, resolve_user_no
 from psycopg2 import extras
 
 
@@ -29,10 +30,12 @@ def estimate_kalshi_taker_fee(position: int, price: float) -> float:
 
 def main():
     parser = argparse.ArgumentParser(description="Backfill paper trade fees (fees column only)")
+    add_user_no_argument(parser)
     parser.add_argument("--dry-run", action="store_true", help="Do not UPDATE; only report what would be set")
     args = parser.parse_args()
+    user_no = resolve_user_no(args)
 
-    conn = get_postgresql_connection()
+    conn = get_postgresql_connection(tenant_user_no=user_no)
     if not conn:
         print("Failed to connect to database.")
         sys.exit(1)

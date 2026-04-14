@@ -26,6 +26,9 @@ from backend.util.paths import get_btc_price_history_dir, ensure_data_dirs
 # Ensure all data directories exist
 ensure_data_dirs()
 
+# Match backend/symbol_price_watchdog.LIVE_PRICE_LOG_RETENTION_DAYS (keep in sync).
+LIVE_PRICE_LOG_RETENTION_DAYS = 730
+
 # Symbol configuration for test version (SPX and NDX)
 SYMBOL_CONFIG = {
     'SPX': {
@@ -139,8 +142,8 @@ def calculate_momentum_percentile(symbol: str, momentum_value: float) -> Optiona
 
 def get_postgres_connection():
     """Get a PostgreSQL connection (uses backend.core.config.database; DB_* / REC_DB_* env)."""
-    from backend.core.config.database import get_postgresql_connection
-    return get_postgresql_connection()
+    from backend.core.config.database import get_system_postgresql_connection
+    return get_system_postgresql_connection()
 
 def get_1m_avg_price(symbol: str) -> float:
     """
@@ -421,7 +424,7 @@ def calculate_native_momentum(symbol: str = 'SPX') -> Dict[str, Any]:
 def insert_tick(symbol: str, timestamp: str, price: float):
     """
     Insert symbol price tick with 1-minute average and momentum data into PostgreSQL.
-    Maintains only the last 30 days of price data to prevent unlimited database growth.
+    Rolling retention: keeps ``LIVE_PRICE_LOG_RETENTION_DAYS`` days of 1s ticks per symbol table.
     """
     conn = get_postgres_connection()
     cursor = conn.cursor()
@@ -500,9 +503,9 @@ def insert_tick(symbol: str, timestamp: str, price: float):
             momentum_30s_avg
         ))
         
-        # ROLLING WINDOW: Clean up data older than 30 days
+        # ROLLING WINDOW: drop ticks older than LIVE_PRICE_LOG_RETENTION_DAYS
         dt = datetime.now(ZoneInfo("America/New_York")).replace(microsecond=0)
-        cutoff_time = dt - timedelta(days=30)
+        cutoff_time = dt - timedelta(days=LIVE_PRICE_LOG_RETENTION_DAYS)
         cutoff_iso = cutoff_time.strftime("%Y-%m-%dT%H:%M:%S")
         cursor.execute(f"DELETE FROM live_data.{table_name} WHERE timestamp < %s", (cutoff_iso,))
         

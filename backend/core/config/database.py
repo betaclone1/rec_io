@@ -5,13 +5,54 @@ Provides environment variable-based configuration for PostgreSQL connections.
 Single pattern: use DB_HOST, DB_NAME, DB_USER, DB_PASSWORD, DB_PORT. If unset,
 falls back to REC_DB_HOST, REC_DB_NAME, REC_DB_USER, REC_DB_PASS, REC_DB_PORT
 so .env or deploy can use either convention. Scripts should use
-get_postgresql_connection() or get_database_config() here; do not use POSTGRES_*
+get_postgresql_connection() / get_system_postgresql_connection() or get_database_config(); do not use POSTGRES_*
 or hardcoded credentials.
 """
 
+import logging
 import os
+from typing import Optional
+
+import psycopg2
+import psycopg2.pool
 
 from backend.core.time_eastern import merge_psycopg2_connect_kwargs
+
+_logger = logging.getLogger(__name__)
+
+# Shared schemas for global daemons (no users_NNNN). Order: app shared data first, then public, catalog.
+_SYSTEM_SEARCH_PATH = (
+    "live_data, system, historical_data, backtest, testing, archive, public, pg_catalog"
+)
+
+
+def _apply_system_search_path(conn) -> None:
+    cur = conn.cursor()
+    try:
+        cur.execute(f"SET search_path TO {_SYSTEM_SEARCH_PATH}")
+    finally:
+        cur.close()
+
+
+class SystemThreadedConnectionPool(psycopg2.pool.ThreadedConnectionPool):
+    """
+    Raw psycopg2 pool with system ``search_path`` only (no :class:`TenantConnection`, no ``users.`` rewrite).
+
+    Use from global processes that must **not** bind to a tenant (e.g. market_watchdog_ws → ``live_data`` only).
+    """
+
+    def __init__(self, minconn: int, maxconn: int, **connect_kwargs):
+        super().__init__(minconn, maxconn, **merge_psycopg2_connect_kwargs(connect_kwargs))
+
+    def _connect(self, key=None):
+        conn = psycopg2.connect(*self._args, **self._kwargs)
+        _apply_system_search_path(conn)
+        if key is not None:
+            self._used[key] = conn
+            self._rused[id(conn)] = key
+        else:
+            self._pool.append(conn)
+        return conn
 
 
 def get_database_config():
@@ -32,16 +73,88 @@ def get_database_config():
     }
     return merge_psycopg2_connect_kwargs(base)
 
-def get_postgresql_connection():
-    """Get a connection to the PostgreSQL database using environment configuration."""
+def get_system_postgresql_connection():
+    """
+    Raw PostgreSQL connection for **global** services (market ingest, live_data writers, LISTEN/NOTIFY helpers).
+
+    Does **not** wrap :class:`~backend.core.tenant_context.TenantConnection` and does **not** rewrite ``users.``.
+    Session ``search_path`` is limited to shared schemas (see ``_SYSTEM_SEARCH_PATH``).
+
+    Do **not** use this to read or write ``users_NNNN`` tenant tables; use :func:`get_postgresql_connection` with
+    request tenant, ``tenant_user_no``, or a worker ``REC_USER_SCHEMA`` instead.
+    """
     try:
-        import psycopg2
+        conn = psycopg2.connect(**get_database_config())
+        _apply_system_search_path(conn)
+        return conn
+    except Exception:
+        _logger.exception("Failed to connect to PostgreSQL (system)")
+        return None
+
+
+def get_postgresql_connection(tenant_user_no: Optional[str] = None):
+    """Get a connection to the PostgreSQL database using environment configuration.
+
+    Wraps the connection so SQL strings containing ``users.`` are rewritten to the
+    tenant schema: from ``tenant_user_no`` when provided (HTTP/API), else from
+    the bound web session slot, else (workers/scripts only) ``REC_USER_SCHEMA`` /
+    single-user default. See :mod:`backend.core.tenant_context`.
+
+    When ``REC_STRICT_SESSION_TENANT_FOR_DB`` is set (main_app, read_api), a connection
+    is refused if neither ``tenant_user_no`` nor a valid web session tenant is available
+    (no silent default user).
+
+    For processes that must not bind to any tenant (writes to ``live_data`` / ``system`` only),
+    use :func:`get_system_postgresql_connection` instead.
+    """
+    from backend.core.tenant_context import (
+        TenantConnection,
+        effective_tenant_context_for_sql_rewrite,
+        get_api_tenant_context,
+        strict_session_tenant_for_db_enabled,
+    )
+    from backend.web.tenant_asgi import get_web_api_user_no
+
+    conn = None
+    try:
         config = get_database_config()
         conn = psycopg2.connect(**config)
-        return conn
-    except Exception as e:
-        print(f"❌ Failed to connect to PostgreSQL: {e}")
+        if tenant_user_no:
+            ctx = get_api_tenant_context(tenant_user_no)
+        else:
+            rt = get_web_api_user_no()
+            if rt:
+                ctx = get_api_tenant_context(rt)
+            elif strict_session_tenant_for_db_enabled():
+                conn.close()
+                conn = None
+                raise RuntimeError(
+                    "tenant PostgreSQL connection refused: no session tenant "
+                    "(REC_STRICT_SESSION_TENANT_FOR_DB is enabled; authenticate or pass tenant_user_no)"
+                )
+            else:
+                ctx = effective_tenant_context_for_sql_rewrite()
+        return TenantConnection(conn, ctx)
+    except RuntimeError:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        raise
+    except Exception:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        _logger.exception("Failed to open tenant PostgreSQL connection")
         return None
+
+
+def get_postgresql_tenant_connection(tenant_user_no: str):
+    """API helper: qualify ``users.`` SQL to ``users_<tenant_user_no>`` (validated)."""
+    return get_postgresql_connection(tenant_user_no=tenant_user_no)
 
 def test_database_connection():
     """Test the database connection and return status."""
@@ -64,9 +177,27 @@ def init_database():
             return False, "Database connection failed"
         
         cursor = conn.cursor()
+        from backend.core.tenant_context import default_pg_schema_for_init
+        TS = default_pg_schema_for_init()
+
+        def _us(sql: str) -> str:
+            return (
+                sql.replace("SCHEMA users ", f"SCHEMA {TS} ")
+                .replace("SCHEMA users\n", f"SCHEMA {TS}\n")
+                .replace("IN SCHEMA users ", f"IN SCHEMA {TS} ")
+                .replace("IN SCHEMA users\n", f"IN SCHEMA {TS}\n")
+                .replace("ON SCHEMA users ", f"ON SCHEMA {TS} ")
+                .replace("ON SCHEMA users\n", f"ON SCHEMA {TS}\n")
+                .replace("table_schema = 'users'", f"table_schema = '{TS}'")
+                .replace("c.table_schema = 'users'", f"c.table_schema = '{TS}'")
+                .replace("n.nspname = 'users'", f"n.nspname = '{TS}'")
+                .replace("schemaname = 'users'", f"schemaname = '{TS}'")
+                .replace("users.", f"{TS}.")
+            )
+
         
         # Create schemas if they don't exist
-        cursor.execute("CREATE SCHEMA IF NOT EXISTS users;")
+        cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {TS};")
         cursor.execute("CREATE SCHEMA IF NOT EXISTS live_data;")
         cursor.execute("CREATE SCHEMA IF NOT EXISTS system;")
         cursor.execute("CREATE SCHEMA IF NOT EXISTS testing;")
@@ -74,7 +205,7 @@ def init_database():
         cursor.execute("CREATE SCHEMA IF NOT EXISTS archive;")
 
         # Redis switchboard pilot: minimal testing table for DB -> NOTIFY -> Redis -> WS.
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS testing.redis_basic_test (
                 id SERIAL PRIMARY KEY,
                 test_value_1 NUMERIC,
@@ -98,10 +229,10 @@ def init_database():
                 test_value_19 NUMERIC,
                 test_value_20 NUMERIC
             );
-        """)
+        """))
         
         # Create core tables
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS users.trades_0001 (
                 id SERIAL PRIMARY KEY,
                 status VARCHAR(50) DEFAULT 'pending',
@@ -174,10 +305,10 @@ def init_database():
                 movement_percentile NUMERIC(5,1),
                 ats_updated TIMESTAMPTZ
             );
-        """)
+        """))
 
         # Simulated trades table: same column set as trades_0001, but buy_price, position, fees, bankroll, price_spread (and sell_price) are nullable by design—the simulated path inserts NULL for those. See MASTER_DB_SCHEMA_REFERENCE.
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS users.trades_simulated_0001 (
                 id SERIAL PRIMARY KEY,
                 status TEXT NOT NULL,
@@ -248,10 +379,10 @@ def init_database():
                 cycle_ret_pct REAL,
                 ats_updated TIMESTAMPTZ
             );
-        """)
+        """))
 
         # Ensure new columns exist for legacy databases
-        cursor.execute("""
+        cursor.execute(_us("""
             DO $$
             BEGIN
                 IF NOT EXISTS (
@@ -620,11 +751,11 @@ def init_database():
                 END IF;
             END
             $$;
-        """)
+        """))
         
         # Legacy generic table kept for backwards compatibility with older tooling.
         # Unified ATS pool tables are users.active_trades_15m_0001 and users.active_trades_hourly_0001.
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS users.active_trades_0001 (
                 id SERIAL PRIMARY KEY,
                 user_id VARCHAR(50) NOT NULL,
@@ -636,9 +767,9 @@ def init_database():
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 status VARCHAR(20)
             );
-        """)
+        """))
         
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS users.trade_preferences_0001 (
                 id SERIAL PRIMARY KEY,
                 user_id VARCHAR(50) NOT NULL,
@@ -647,9 +778,9 @@ def init_database():
                 trade_strategy VARCHAR(100),
                 created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
-        """)
+        """))
         
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS users.account_history_0001 (
                 id SERIAL PRIMARY KEY,
                 entry_type VARCHAR(20) NOT NULL,
@@ -667,9 +798,9 @@ def init_database():
                 mtb_base_value INTEGER,
                 CONSTRAINT account_history_0001_created_type_amount_key UNIQUE (created_at, entry_type, amount)
             );
-        """)
+        """))
         # Ensure account_history_0001 columns and constraint exist (for tables created manually)
-        cursor.execute("""
+        cursor.execute(_us("""
             DO $$
             DECLARE
                 col TEXT;
@@ -706,9 +837,9 @@ def init_database():
             EXCEPTION WHEN OTHERS THEN
                 NULL;
             END $$;
-        """)
+        """))
 
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS live_data.strike_pipeline_health (
                 exchange VARCHAR(20) NOT NULL,
                 market VARCHAR(20) NOT NULL,
@@ -721,17 +852,17 @@ def init_database():
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
                 PRIMARY KEY (exchange, market, symbol)
             );
-        """)
-        cursor.execute("""
+        """))
+        cursor.execute(_us("""
             CREATE INDEX IF NOT EXISTS strike_pipeline_health_checked_idx
             ON live_data.strike_pipeline_health USING btree (pipeline_health_checked_at DESC);
-        """)
-        cursor.execute("""
+        """))
+        cursor.execute(_us("""
             CREATE INDEX IF NOT EXISTS strike_pipeline_health_transport_idx
             ON live_data.strike_pipeline_health USING btree (ws_transport_ok_at DESC NULLS LAST);
-        """)
+        """))
         # Add status and external_transfer_id to transfers_0001 if table exists
-        cursor.execute("""
+        cursor.execute(_us("""
             DO $$
             BEGIN
                 IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'users' AND table_name = 'transfers_0001') THEN
@@ -743,20 +874,19 @@ def init_database():
                     END IF;
                 END IF;
             END $$;
-        """)
-        # Add kalshi_user_id to user_info_0001 if table exists (MASTER_DB_SCHEMA_REFERENCE)
-        cursor.execute("""
+        """))
+        # Kalshi v1 account UUID for sync (system.master_users; migration 20260421_1400).
+        # exchange_credentials: migration 20260410_2100 only (column is on CREATE TABLE below for fresh installs).
+        cursor.execute(_us("""
             DO $$
             BEGIN
-                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'users' AND table_name = 'user_info_0001') THEN
-                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'users' AND table_name = 'user_info_0001' AND column_name = 'kalshi_user_id') THEN
-                        ALTER TABLE users.user_info_0001 ADD COLUMN kalshi_user_id VARCHAR(50);
-                    END IF;
+                IF to_regclass('system.master_users') IS NOT NULL THEN
+                    ALTER TABLE system.master_users ADD COLUMN IF NOT EXISTS kalshi_user_id VARCHAR(64);
                 END IF;
             END $$;
-        """)
+        """))
 
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS users.system_settings_0001 (
                 id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
                 drawdown_trading_halt BOOLEAN NOT NULL DEFAULT TRUE,
@@ -766,8 +896,8 @@ def init_database():
                 drawdown_halt_monitor_snapshot JSONB,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
-        """)
-        cursor.execute("""
+        """))
+        cursor.execute(_us("""
             DO $$
             BEGIN
                 IF NOT EXISTS (
@@ -787,24 +917,24 @@ def init_database():
                         ADD COLUMN drawdown_halt_monitor_snapshot JSONB;
                 END IF;
             END $$;
-        """)
-        cursor.execute("""
+        """))
+        cursor.execute(_us("""
             INSERT INTO users.system_settings_0001 (id, drawdown_trading_halt, drawdown_reset_threshold_pct)
             VALUES (1, TRUE, 50.00)
             ON CONFLICT (id) DO NOTHING;
-        """)
+        """))
 
         # Create sequence for 5-digit IDs starting with 10001
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE SEQUENCE IF NOT EXISTS users.monitor_list_0001_id_seq
             START WITH 10001
             INCREMENT BY 1
             MINVALUE 10001
             MAXVALUE 99999
             CYCLE;
-        """)
+        """))
         
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS users.monitor_list_0001 (
                 id INTEGER PRIMARY KEY DEFAULT nextval('users.monitor_list_0001_id_seq'),
                 name VARCHAR(255) NOT NULL,
@@ -836,9 +966,9 @@ def init_database():
                 prob_adj NUMERIC(5,2) DEFAULT 5.00,
                 created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
-        """)
+        """))
         # New naming convention tables
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS live_data.live_price_log_1s_btc (
                 timestamp TEXT PRIMARY KEY,
                 price DECIMAL(10,2),
@@ -859,9 +989,9 @@ def init_database():
                 movement DECIMAL(10,4),
                 movement_percentile DECIMAL(5,1)
             );
-        """)
+        """))
         
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS live_data.live_price_log_1s_eth (
                 timestamp TEXT PRIMARY KEY,
                 price DECIMAL(10,2),
@@ -882,9 +1012,9 @@ def init_database():
                 movement DECIMAL(10,4),
                 movement_percentile DECIMAL(5,1)
             );
-        """)
+        """))
 
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS live_data.live_price_log_1s_sol (
                 timestamp TEXT PRIMARY KEY,
                 price DECIMAL(10,6),
@@ -910,9 +1040,9 @@ def init_database():
                 movement DECIMAL(10,4),
                 movement_percentile DECIMAL(5,1)
             );
-        """)
+        """))
 
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS live_data.live_price_log_1s_xrp (
                 timestamp TEXT PRIMARY KEY,
                 price DECIMAL(10,6),
@@ -938,10 +1068,10 @@ def init_database():
                 movement DECIMAL(10,4),
                 movement_percentile DECIMAL(5,1)
             );
-        """)
+        """))
         
         # Ensure movement columns exist on live_price_log tables
-        cursor.execute("""
+        cursor.execute(_us("""
             DO $$
             DECLARE
                 t text;
@@ -960,10 +1090,10 @@ def init_database():
                     END IF;
                 END LOOP;
             END $$;
-        """)
+        """))
 
         # Watchdog insert_tick requires momentum/volatility percentile columns (same as BTC/ETH).
-        cursor.execute("""
+        cursor.execute(_us("""
             DO $$
             DECLARE
                 t text;
@@ -988,10 +1118,10 @@ def init_database():
                     END IF;
                 END LOOP;
             END $$;
-        """)
+        """))
         
         # Add volatility and movement columns to hourly strike tables (btc, eth)
-        cursor.execute("""
+        cursor.execute(_us("""
             DO $$
             DECLARE
                 t text;
@@ -1008,10 +1138,10 @@ def init_database():
                     END IF;
                 END LOOP;
             END $$;
-        """)
+        """))
         
         # Add market column (TEXT: 'hourly' or '15m') to all market_kalshi_* and strike_table_* tables
-        cursor.execute("""
+        cursor.execute(_us("""
             DO $$
             DECLARE
                 r record;
@@ -1032,10 +1162,10 @@ def init_database():
                     END IF;
                 END LOOP;
             END $$;
-        """)
+        """))
         
         # Rename momentum_value -> movement_value in all analytics movement profile tables
-        cursor.execute("""
+        cursor.execute(_us("""
             DO $$
             DECLARE
                 r record;
@@ -1048,10 +1178,10 @@ def init_database():
                     END IF;
                 END LOOP;
             END $$;
-        """)
+        """))
         
         # live_symbol_status: one row per symbol; columns mirror live_price_log_1s_* (latest tick per symbol)
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS live_data.live_symbol_status (
                 id SERIAL PRIMARY KEY,
                 symbol VARCHAR(20),
@@ -1083,15 +1213,15 @@ def init_database():
                 prev_day_avg_movement_percentile DECIMAL(5,1),
                 daily_update TEXT
             );
-        """)
+        """))
 
         # Trigger-driven live_symbol_status sync depends on a deterministic uniqueness guarantee per symbol.
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE UNIQUE INDEX IF NOT EXISTS live_symbol_status_symbol_uniq_all
             ON live_data.live_symbol_status USING btree (symbol);
-        """)
+        """))
         # Trigger-driven sync from live_price_log_1s_* into live_symbol_status (BTC/ETH/SOL/XRP).
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE OR REPLACE FUNCTION live_data.trg_sync_live_symbol_status_from_price_log()
             RETURNS trigger
             LANGUAGE plpgsql
@@ -1138,8 +1268,8 @@ def init_database():
                 RETURN NEW;
             END;
             $$;
-        """)
-        cursor.execute("""
+        """))
+        cursor.execute(_us("""
             DO $$
             BEGIN
                 IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'live_data' AND table_name = 'live_price_log_1s_btc') THEN
@@ -1167,8 +1297,8 @@ def init_database():
                     FOR EACH ROW EXECUTE FUNCTION live_data.trg_sync_live_symbol_status_from_price_log('XRP');
                 END IF;
             END $$;
-        """)
-        cursor.execute("""
+        """))
+        cursor.execute(_us("""
             DO $$
             DECLARE
                 col text;
@@ -1185,9 +1315,9 @@ def init_database():
                     END LOOP;
                 END IF;
             END $$;
-        """)
+        """))
         # Migrate daily_update from timestamptz to TEXT (same format as timestamp column)
-        cursor.execute("""
+        cursor.execute(_us("""
             DO $$
             BEGIN
                 IF EXISTS (SELECT 1 FROM information_schema.columns
@@ -1198,9 +1328,9 @@ def init_database():
                     ALTER COLUMN daily_update TYPE TEXT USING to_char(daily_update AT TIME ZONE 'America/New_York', 'YYYY-MM-DD"T"HH24:MI:SS');
                 END IF;
             END $$;
-        """)
+        """))
         
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS live_data.btc_price_change (
                 id SERIAL PRIMARY KEY,
                 change1h DECIMAL(10,6),
@@ -1208,9 +1338,9 @@ def init_database():
                 change1d DECIMAL(10,6),
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
-        """)
+        """))
         
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS live_data.eth_price_change (
                 id SERIAL PRIMARY KEY,
                 change1h DECIMAL(10,6),
@@ -1218,10 +1348,10 @@ def init_database():
                 change1d DECIMAL(10,6),
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
-        """)
+        """))
         
         # New naming convention for price change tables
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS live_data.price_change_btc (
                 id SERIAL PRIMARY KEY,
                 change1h DECIMAL(10,6),
@@ -1229,9 +1359,9 @@ def init_database():
                 change1d DECIMAL(10,6),
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
-        """)
+        """))
         
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS live_data.price_change_eth (
                 id SERIAL PRIMARY KEY,
                 change1h DECIMAL(10,6),
@@ -1239,9 +1369,9 @@ def init_database():
                 change1d DECIMAL(10,6),
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
-        """)
+        """))
 
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS live_data.price_change_sol (
                 id SERIAL PRIMARY KEY,
                 change1h DECIMAL(10,6),
@@ -1249,9 +1379,9 @@ def init_database():
                 change1d DECIMAL(10,6),
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
-        """)
+        """))
 
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS live_data.price_change_xrp (
                 id SERIAL PRIMARY KEY,
                 change1h DECIMAL(10,6),
@@ -1259,10 +1389,10 @@ def init_database():
                 change1d DECIMAL(10,6),
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
-        """)
+        """))
         
         # Unified hourly strike table (BTC+ETH rows); same column types as strike_table_15m / migration 20260331_1530.
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS live_data.strike_table_hourly (
                 id SERIAL PRIMARY KEY,
                 timestamp TIMESTAMP WITH TIME ZONE DEFAULT now(),
@@ -1307,12 +1437,12 @@ def init_database():
                 no_ask_range_15m NUMERIC(18,4),
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
             );
-        """)
+        """))
 
         # Backward-compatible column changes for existing hourly strike tables:
         # - Rename ttc_seconds -> ttc_hourly, probability -> probability_hourly.
         # - Add ttc_15m and probability_15m for simulated 15m cycles (initially NULL).
-        cursor.execute("""
+        cursor.execute(_us("""
             DO $$
             DECLARE
                 tbl TEXT;
@@ -1370,11 +1500,11 @@ def init_database():
                 END LOOP;
             END
             $$;
-        """)
+        """))
 
         # Final-quarter (15m window) YES/NO ask extrema in dollars — matches migration
         # 20260328_2115_strike_table_final_quarter_ask_tracking.
-        cursor.execute("""
+        cursor.execute(_us("""
             DO $$
             DECLARE
               t TEXT;
@@ -1402,9 +1532,9 @@ def init_database():
               END LOOP;
             END
             $$;
-        """)
+        """))
         
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS system.health_status (
                 id SERIAL PRIMARY KEY,
                 service_name VARCHAR(100),
@@ -1412,9 +1542,9 @@ def init_database():
                 last_check TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 details JSONB
             );
-        """)
+        """))
         
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS system.installation_access_log (
                 id SERIAL PRIMARY KEY,
                 installer_user_id VARCHAR(100) NOT NULL,
@@ -1433,12 +1563,25 @@ def init_database():
                 installation_package_version VARCHAR(50),
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             );
-        """)
+        """))
+
+        cursor.execute(_us("""
+            CREATE TABLE IF NOT EXISTS system.version_control (
+                id SERIAL PRIMARY KEY,
+                version VARCHAR(32) NOT NULL,
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            );
+        """))
+        cursor.execute(_us("""
+            INSERT INTO system.version_control (version, updated_at)
+            SELECT '3.0.1', NOW()
+            WHERE NOT EXISTS (SELECT 1 FROM system.version_control);
+        """))
         
         # Create historical_data schema and tables
         cursor.execute("CREATE SCHEMA IF NOT EXISTS historical_data;")
         
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS historical_data.btc_price_history (
                 id SERIAL PRIMARY KEY,
                 timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
@@ -1450,9 +1593,9 @@ def init_database():
                 momentum DECIMAL(10,4),
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             );
-        """)
+        """))
         
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS historical_data.eth_price_history (
                 id SERIAL PRIMARY KEY,
                 timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
@@ -1464,10 +1607,10 @@ def init_database():
                 momentum DECIMAL(10,4),
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             );
-        """)
+        """))
         
         # Ensure loss_prevention_toggle column exists for monitor_list_0001
-        cursor.execute("""
+        cursor.execute(_us("""
             DO $$
             BEGIN
                 IF NOT EXISTS (
@@ -1565,19 +1708,19 @@ def init_database():
                 END IF;
             END
             $$;
-        """)
+        """))
         
         # Add market column to all monitor_list tables (hourly vs 15m); backfill existing rows to 'hourly'
-        cursor.execute("""
+        cursor.execute(_us("""
             SELECT table_name 
             FROM information_schema.tables 
             WHERE table_schema = 'users' 
             AND table_name LIKE 'monitor_list_%'
             ORDER BY table_name
-        """)
+        """))
         monitor_list_tables_market = [row[0] for row in cursor.fetchall()]
         for table_name in monitor_list_tables_market:
-            cursor.execute(f"""
+            cursor.execute(_us(f"""
                 DO $$
                 BEGIN
                     IF NOT EXISTS (
@@ -1591,10 +1734,10 @@ def init_database():
                     END IF;
                 END
                 $$;
-            """)
+            """))
         
         # Create strategy_list_0001 table with all default settings columns (matching monitor_list structure)
-        cursor.execute("""
+        cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS users.strategy_list_0001 (
                 id SERIAL PRIMARY KEY,
                 name VARCHAR(100) NOT NULL UNIQUE,
@@ -1642,10 +1785,10 @@ def init_database():
                 min_cooldown_timer INTEGER DEFAULT 300,
                 max_cooldown_timer INTEGER DEFAULT 3300
             );
-        """)
+        """))
         
         # Add any missing columns to strategy_list_0001 (for existing tables)
-        cursor.execute("""
+        cursor.execute(_us("""
             DO $$
             BEGIN
                 -- Add columns that might not exist in older versions
@@ -2003,21 +2146,109 @@ def init_database():
                 END IF;
             END
             $$;
-        """)
+        """))
+
+        # system.master_users: canonical table (migration 20260410_1015_users_master_users_to_system); not in users schema
+        cursor.execute(_us("""
+            CREATE TABLE IF NOT EXISTS system.master_users (
+                id SERIAL PRIMARY KEY,
+                user_id VARCHAR(50) UNIQUE NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                email VARCHAR(255) NOT NULL,
+                phone VARCHAR(50),
+                server_ip VARCHAR(45),
+                server_hostname VARCHAR(255),
+                registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                system_version VARCHAR(50),
+                status VARCHAR(20) DEFAULT 'active',
+                notes TEXT,
+                password_hash VARCHAR(255),
+                kalshi_user_id VARCHAR(64),
+                exchange_credentials JSONB NOT NULL DEFAULT '{"kalshi": false, "polymarket": false}'::jsonb
+            );
+        """))
+        cursor.execute(_us("""
+            CREATE OR REPLACE VIEW system.active_master_users AS
+            SELECT user_id, name, email, server_ip, last_updated
+            FROM system.master_users
+            WHERE status = 'active';
+        """))
+        cursor.execute(_us("""
+            CREATE OR REPLACE VIEW system.recent_master_registrations AS
+            SELECT user_id, name, email, server_ip, registration_date
+            FROM system.master_users
+            WHERE registration_date > NOW() - INTERVAL '30 days';
+        """))
+        cursor.execute(_us("""
+            CREATE OR REPLACE VIEW system.master_users_summary AS
+            SELECT
+                COUNT(*)::bigint AS total_users,
+                COUNT(*) FILTER (WHERE status = 'active')::bigint AS active_users,
+                COUNT(*) FILTER (WHERE registration_date > NOW() - INTERVAL '30 days')::bigint AS recent_registrations
+            FROM system.master_users;
+        """))
+        # system.strategy_list_default mirror (migrations 20260409_2200, 20260409_2300)
+        cursor.execute(_us("""
+            DO $$
+            BEGIN
+                IF to_regclass('users.strategy_list_0001') IS NOT NULL
+                   AND to_regclass('system.strategy_list_default') IS NULL THEN
+                    EXECUTE 'CREATE TABLE system.strategy_list_default (LIKE users.strategy_list_0001 INCLUDING ALL)';
+                    EXECUTE 'INSERT INTO system.strategy_list_default SELECT * FROM users.strategy_list_0001';
+                END IF;
+            END
+            $$;
+        """))
+        cursor.execute(_us("""
+            DO $$
+            DECLARE
+                seq text;
+                has_id boolean;
+            BEGIN
+                IF to_regclass('system.master_users') IS NOT NULL THEN
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'system'
+                          AND table_name = 'master_users'
+                          AND column_name = 'id'
+                    ) INTO has_id;
+                    IF has_id THEN
+                        seq := pg_get_serial_sequence('system.master_users', 'id');
+                        IF seq IS NOT NULL THEN
+                            EXECUTE format(
+                                'SELECT setval(%L, (SELECT COALESCE(MAX(id), 1) FROM system.master_users), true)',
+                                seq
+                            );
+                        END IF;
+                    END IF;
+                END IF;
+                IF to_regclass('system.strategy_list_default') IS NOT NULL THEN
+                    seq := pg_get_serial_sequence('system.strategy_list_default', 'id');
+                    IF seq IS NOT NULL THEN
+                        EXECUTE format(
+                            'SELECT setval(%L, (SELECT COALESCE(MAX(id), 1) FROM system.strategy_list_default), true)',
+                            seq
+                        );
+                    END IF;
+                END IF;
+            END
+            $$;
+        """))
         
         # Add paper_trade column to all monitor_list tables (not just 0001)
         # Find all monitor_list tables and add the column if it doesn't exist
-        cursor.execute("""
+        cursor.execute(_us("""
             SELECT table_name 
             FROM information_schema.tables 
             WHERE table_schema = 'users' 
             AND table_name LIKE 'monitor_list_%'
             ORDER BY table_name
-        """)
+        """))
         monitor_list_tables = [row[0] for row in cursor.fetchall()]
         
         for table_name in monitor_list_tables:
-            cursor.execute(f"""
+            cursor.execute(_us(f"""
                 DO $$
                 BEGIN
                     IF NOT EXISTS (
@@ -2117,27 +2348,45 @@ def init_database():
                     END IF;
                 END
                 $$;
-            """)
+            """))
         
         # Grant privileges
-        cursor.execute("GRANT ALL PRIVILEGES ON SCHEMA users TO rec_io_user;")
+        cursor.execute(_us("GRANT ALL PRIVILEGES ON SCHEMA users TO rec_io_user;"))
         cursor.execute("GRANT ALL PRIVILEGES ON SCHEMA live_data TO rec_io_user;")
         cursor.execute("GRANT ALL PRIVILEGES ON SCHEMA system TO rec_io_user;")
         cursor.execute("GRANT ALL PRIVILEGES ON SCHEMA historical_data TO rec_io_user;")
         cursor.execute("GRANT ALL PRIVILEGES ON SCHEMA backtest TO rec_io_user;")
         cursor.execute("GRANT ALL PRIVILEGES ON SCHEMA archive TO rec_io_user;")
-        cursor.execute("GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA users TO rec_io_user;")
+        cursor.execute(_us("GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA users TO rec_io_user;"))
         cursor.execute("GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA live_data TO rec_io_user;")
         cursor.execute("GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA system TO rec_io_user;")
         cursor.execute("GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA historical_data TO rec_io_user;")
         cursor.execute("GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA backtest TO rec_io_user;")
-        cursor.execute("GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA users TO rec_io_user;")
+        cursor.execute(_us("GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA users TO rec_io_user;"))
         cursor.execute("GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA live_data TO rec_io_user;")
         cursor.execute("GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA system TO rec_io_user;")
         cursor.execute("GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA historical_data TO rec_io_user;")
         cursor.execute("GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA backtest TO rec_io_user;")
         cursor.execute("GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA archive TO rec_io_user;")
         cursor.execute("GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA archive TO rec_io_user;")
+
+        # Row-level tenant gate on users_* (see migration 20260411_1500_rec_tenant_rls_session_guc).
+        try:
+            cursor.execute(
+                """
+                SELECT EXISTS (
+                  SELECT 1
+                  FROM pg_proc p
+                  JOIN pg_namespace n ON p.pronamespace = n.oid
+                  WHERE n.nspname = 'rec'
+                    AND p.proname = 'ensure_tenant_rls_for_schema'
+                )
+                """
+            )
+            if cursor.fetchone()[0]:
+                cursor.execute("SELECT rec.ensure_tenant_rls_for_schema(%s)", (TS,))
+        except Exception as rls_exc:
+            print(f"⚠️ rec.ensure_tenant_rls_for_schema skipped (run migrations if needed): {rls_exc}")
         
         conn.commit()
         cursor.close()

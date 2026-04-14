@@ -2,32 +2,47 @@
 read_api: dedicated read/aggregate service for frontend data.
 
 Role: host all read-only/aggregate endpoints (dashboard, history, stats).
-No WebSocket, no Redis subscription, no writes. See docs/REDIS_ARCHITECTURE.md.
+No WebSocket, no Redis subscription, no writes, except a single Redis **GET** of the
+cached release string (`redis_key_system_release_version`) for the System UI.
+See docs/REDIS_ARCHITECTURE.md.
 """
 
 import os
-from datetime import datetime, timedelta
-from typing import List, Dict, Any
+from datetime import datetime
+from typing import Dict, Any, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from psycopg2 import sql as psql
-
 from backend.core.config.database import get_postgresql_connection
-from backend.trading_mode import account_balance_table_for_user, is_paper_trading, sql_ident_qualified_table
-from backend.util.trade_log_archivist import canonical_monitor_key, union_trades_with_archives_select
+from backend.core.tenant_context import resolved_tenant_user_no_for_app
+from backend.core.dashboard_portfolio_queries import (
+    bankroll_history_payload,
+    performance_realized_payload,
+    pnl_history_payload,
+    portfolio_history_payload,
+)
+from backend.util.trade_log_archivist import (
+    canonical_monitor_key,
+    fetch_master_trades_column_names,
+    union_trades_with_archives_select,
+)
+from backend.web.auth_routes import auth_router, user_router
+from backend.web.tenant_asgi import WebTenantMiddleware
 
 app = FastAPI(title="read_api")
 
-
-def _format_currency_cents(value_cents: Any) -> float:
-    if value_cents is None:
-        return 0.0
-    try:
-        return float(value_cents) / 100.0
-    except Exception:
-        return 0.0
+app.add_middleware(WebTenantMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.include_router(auth_router, prefix="/api/auth")
+app.include_router(user_router, prefix="/api/user")
 
 
 @app.get("/health")
@@ -41,415 +56,65 @@ async def health() -> JSONResponse:
     )
 
 
-@app.get("/api/portfolio/history")
-async def get_portfolio_history(period: str = "1m") -> Dict[str, Any]:
-    """
-    Mirror of main.py /api/portfolio/history, but served from read_api.
-    Historical portfolio data from users.account_balance_0001 for charting.
-    """
+@app.get("/api/system/release_version")
+async def get_release_version() -> Dict[str, Any]:
+    """Latest release from Redis (populated by system_monitor from ``system.version_control``)."""
+    ver: Optional[str] = None
     try:
-        import psycopg2  # type: ignore
+        from backend.core.trading_redis_comms import (
+            redis_client_optional,
+            redis_key_system_release_version,
+        )
 
-        conn = get_postgresql_connection()
-        if not conn:
-            return {"status": "error", "message": "No DB connection"}
+        r = redis_client_optional()
+        if r:
+            raw = r.get(redis_key_system_release_version())
+            if raw is not None:
+                ver = raw.decode() if isinstance(raw, bytes) else str(raw)
+                ver = ver.strip() or None
+    except Exception:
+        ver = None
+    return {"version": ver}
 
-        ab_ident = sql_ident_qualified_table(account_balance_table_for_user("0001"))
 
-        # Use a timezone-aware reference for consistent timestamptz filtering.
-        from zoneinfo import ZoneInfo  # local import to keep startup fast
-        eastern = ZoneInfo("America/New_York")
-        now = datetime.now(eastern)
-        results: List[Any] = []
-
-        if period == "1d":
-            today_5am = now.replace(hour=5, minute=0, second=0, microsecond=0)
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    psql.SQL(
-                        """
-                    SELECT updated_at, portfolio
-                    FROM {}
-                    WHERE updated_at < %s
-                    ORDER BY updated_at DESC, id DESC
-                    LIMIT 1
-                """
-                    ).format(ab_ident),
-                    (today_5am,),
-                )
-                last_before_5am = cursor.fetchone()
-
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    psql.SQL(
-                        """
-                    SELECT updated_at, portfolio
-                    FROM {}
-                    WHERE updated_at >= %s
-                    ORDER BY updated_at ASC, id ASC
-                """
-                    ).format(ab_ident),
-                    (today_5am,),
-                )
-                results = cursor.fetchall()
-
-            if last_before_5am:
-                results = [last_before_5am] + list(results)
-
-        else:
-            if period == "1w":
-                start_time = now - timedelta(weeks=1)
-            elif period == "1m":
-                start_time = now - timedelta(days=30)
-            elif period == "1y":
-                start_time = now - timedelta(days=365)
-            else:  # "all"
-                start_time = datetime(2020, 1, 1, tzinfo=eastern)
-
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    psql.SQL(
-                        """
-                    SELECT updated_at, portfolio
-                    FROM {}
-                    WHERE updated_at >= %s
-                    ORDER BY updated_at ASC, id ASC
-                """
-                    ).format(ab_ident),
-                    (start_time,),
-                )
-                results = cursor.fetchall()
-
-        conn.close()
-
-        data: List[Dict[str, Any]] = []
-        for row in results:
-            timestamp, portfolio = row
-            data.append(
-                {
-                    "timestamp": timestamp if timestamp else None,
-                    "portfolio": _format_currency_cents(portfolio),
-                }
-            )
-
-        return {
-            "status": "ok",
-            "period": period,
-            "count": len(data),
-            "data": data,
-            "trading_mode": "paper" if is_paper_trading() else "live",
-        }
-
-    except Exception as e:  # pragma: no cover - defensive
-        return {"status": "error", "message": str(e)}
+@app.get("/api/portfolio/history")
+async def get_portfolio_history(
+    period: str = "1m",
+    trading_mode: Optional[str] = Query(
+        None, description="paper|live — match UI toggle; omit to use server global mode file"
+    ),
+) -> Dict[str, Any]:
+    """Same implementation as main_app (shared module)."""
+    return portfolio_history_payload(period=period, trading_mode=trading_mode)
 
 
 @app.get("/api/bankroll/history")
-async def get_bankroll_history(period: str = "1m") -> Dict[str, Any]:
-    """
-    Mirror of main.py /api/bankroll/history, but served from read_api.
-    Historical master trading bankroll (MTB balance in cents) from account_balance for Bankroll chart.
-    """
-    try:
-        import psycopg2  # type: ignore
-
-        conn = get_postgresql_connection()
-        if not conn:
-            return {"status": "error", "message": "No DB connection"}
-
-        ab_ident = sql_ident_qualified_table(account_balance_table_for_user("0001"))
-        # Use a timezone-aware reference for consistent timestamptz filtering.
-        from zoneinfo import ZoneInfo  # local import to keep startup fast
-        eastern = ZoneInfo("America/New_York")
-        now = datetime.now(eastern)
-        results: List[Any] = []
-
-        if period == "1d":
-            today_5am = now.replace(hour=5, minute=0, second=0, microsecond=0)
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    psql.SQL(
-                        """
-                    SELECT updated_at, COALESCE(master_trading_bankroll, bankroll_current)
-                    FROM {}
-                    WHERE updated_at < %s
-                    ORDER BY updated_at DESC, id DESC
-                    LIMIT 1
-                """
-                    ).format(ab_ident),
-                    (today_5am,),
-                )
-                last_before_5am = cursor.fetchone()
-
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    psql.SQL(
-                        """
-                    SELECT updated_at, COALESCE(master_trading_bankroll, bankroll_current)
-                    FROM {}
-                    WHERE updated_at >= %s
-                    ORDER BY updated_at ASC, id ASC
-                """
-                    ).format(ab_ident),
-                    (today_5am,),
-                )
-                results = cursor.fetchall()
-
-            if last_before_5am:
-                results = [last_before_5am] + list(results)
-
-        else:
-            if period == "1w":
-                start_time = now - timedelta(weeks=1)
-            elif period == "1m":
-                start_time = now - timedelta(days=30)
-            elif period == "1y":
-                start_time = now - timedelta(days=365)
-            else:  # "all"
-                start_time = datetime(2020, 1, 1, tzinfo=eastern)
-
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    psql.SQL(
-                        """
-                    SELECT updated_at, COALESCE(master_trading_bankroll, bankroll_current)
-                    FROM {}
-                    WHERE updated_at >= %s
-                    ORDER BY updated_at ASC, id ASC
-                """
-                    ).format(ab_ident),
-                    (start_time,),
-                )
-                results = cursor.fetchall()
-
-        conn.close()
-
-        data: List[Dict[str, Any]] = []
-        for row in results:
-            timestamp, value_cents = row
-            data.append(
-                {
-                    "timestamp": timestamp if timestamp else None,
-                    "bankroll": _format_currency_cents(value_cents),
-                }
-            )
-
-        return {
-            "status": "ok",
-            "period": period,
-            "count": len(data),
-            "data": data,
-            "trading_mode": "paper" if is_paper_trading() else "live",
-        }
-
-    except Exception as e:  # pragma: no cover - defensive
-        return {"status": "error", "message": str(e)}
+async def get_bankroll_history(
+    period: str = "1m",
+    trading_mode: Optional[str] = Query(
+        None, description="paper|live — match UI toggle; omit to use server global mode file"
+    ),
+) -> Dict[str, Any]:
+    return bankroll_history_payload(period=period, trading_mode=trading_mode)
 
 
 @app.get("/api/pnl/history")
-async def get_pnl_history(period: str = "1m") -> Dict[str, Any]:
-    """
-    Cumulative PnL time series for charting.
-    Mirrors the working implementation from main.py using the `pnl` column.
-    """
-    try:
-        import psycopg2  # type: ignore
-
-        conn = get_postgresql_connection()
-        if not conn:
-            return {"status": "error", "message": "No DB connection"}
-
-        now = datetime.now()
-        if period == "1d":
-            start_time = now - timedelta(hours=24)
-        elif period == "1w":
-            start_time = now - timedelta(days=7)
-        elif period == "1m":
-            start_time = now - timedelta(days=30)
-        elif period == "1y":
-            start_time = now - timedelta(days=365)
-        else:
-            start_time = datetime(2020, 1, 1)
-
-        start_date_sql = start_time.strftime("%Y-%m-%d")
-
-        paper_clause = (
-            "AND paper_trade IS TRUE"
-            if is_paper_trading()
-            else "AND (paper_trade IS NULL OR paper_trade = FALSE)"
-        )
-
-        with conn.cursor() as cursor:
-            union_sql, _ = union_trades_with_archives_select(cursor, "0001")
-            cursor.execute(
-                """
-                SELECT COALESCE(
-                    CASE WHEN closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE NULL END,
-                    created_at
-                ) AS ts, pnl
-                FROM ("""
-                + union_sql
-                + """) AS trades_all
-                WHERE (test_filter IS NULL OR test_filter = FALSE)
-                """
-                + paper_clause
-                + """
-                  AND LOWER(TRIM(status)) IN ('closed', 'settled')
-                  AND pnl IS NOT NULL
-                  AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN (closed_at::timestamptz)::date ELSE created_at::date END) >= %s::date
-                ORDER BY ts ASC
-            """,
-                (start_date_sql,),
-            )
-            rows = cursor.fetchall()
-
-        conn.close()
-
-        # Build cumulative series starting at $0
-        data: List[Dict[str, Any]] = []
-        cumulative = 0.0
-        # First point: start of window at $0
-        data.append({"timestamp": start_date_sql + "T00:00:00", "pnl": 0.0})
-        for ts, pnl in rows:
-            pnl_val = float(pnl) if pnl is not None else 0.0
-            cumulative += pnl_val
-            ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
-            data.append({"timestamp": ts_str, "pnl": round(cumulative, 2)})
-
-        return {
-            "status": "ok",
-            "period": period,
-            "count": len(data),
-            "data": data,
-            "total_pnl": round(cumulative, 2),
-            "trading_mode": "paper" if is_paper_trading() else "live",
-        }
-
-    except Exception as e:  # pragma: no cover - defensive
-        return {"status": "error", "message": str(e)}
+async def get_pnl_history(
+    period: str = "1m",
+    trading_mode: Optional[str] = Query(
+        None, description="paper|live — match UI toggle; omit to use server global mode file"
+    ),
+) -> Dict[str, Any]:
+    return pnl_history_payload(period=period, trading_mode=trading_mode)
 
 
 @app.get("/api/performance/realized")
-async def get_performance_realized() -> Dict[str, Any]:
-    """
-    Day/week/month/year realized PnL and returns.
-    Mirrors the working implementation from main.py, inlining the SQL.
-    """
-    try:
-        import psycopg2  # type: ignore
-        from datetime import datetime, timedelta
-        from zoneinfo import ZoneInfo  # type: ignore
-
-        conn = get_postgresql_connection()
-        if not conn:
-            return {"status": "error", "message": "No DB connection"}
-
-        with conn.cursor() as tz_cur:
-            tz_cur.execute("SET TIME ZONE 'America/New_York'")
-        eastern = ZoneInfo("America/New_York")
-        now = datetime.now(eastern)
-        today = now.date()
-
-        def et_start(y: int, m: int, d: int) -> datetime:
-            return datetime(y, m, d, 0, 0, 0, tzinfo=eastern)
-
-        day_start = et_start(today.year, today.month, today.day)
-        days_since_sunday = (today.weekday() + 1) % 7
-        sunday = today - timedelta(days=days_since_sunday)
-        week_start = et_start(sunday.year, sunday.month, sunday.day)
-        month_start = et_start(today.year, today.month, 1)
-        year_start = et_start(today.year, 1, 1)
-
-        yesterday = today - timedelta(days=1)
-        prev_sunday = sunday - timedelta(days=7)
-        prev_month_first = (today.replace(day=1) - timedelta(days=1)).replace(day=1)
-        prev_year_first = today.replace(month=1, day=1, year=today.year - 1)
-
-        prev_day_start = et_start(yesterday.year, yesterday.month, yesterday.day)
-        prev_week_start = et_start(prev_sunday.year, prev_sunday.month, prev_sunday.day)
-        prev_month_start = et_start(prev_month_first.year, prev_month_first.month, prev_month_first.day)
-        prev_year_start = et_start(prev_year_first.year, prev_year_first.month, prev_year_first.day)
-
-        periods_spec = [
-            ("day", day_start, prev_day_start),
-            ("week", week_start, prev_week_start),
-            ("month", month_start, prev_month_start),
-            ("year", year_start, prev_year_start),
-        ]
-
-        paper_clause = (
-            "AND paper_trade IS TRUE"
-            if is_paper_trading()
-            else "AND (paper_trade IS NULL OR paper_trade = FALSE)"
-        )
-
-        result: Dict[str, Any] = {}
-        with conn.cursor() as cursor:
-            union_sql, _ = union_trades_with_archives_select(cursor, "0001")
-            for key, period_start, prev_start in periods_spec:
-                period_end = now
-                cursor.execute(
-                    """
-                    SELECT COALESCE(SUM(pnl), 0), COALESCE(SUM(ret_pct), 0), COALESCE(SUM(ret_pct_base), 0)
-                    FROM ("""
-                    + union_sql
-                    + """) AS trades_all
-                    WHERE (test_filter IS NULL OR test_filter = FALSE)
-                    """
-                    + paper_clause
-                    + """
-                      AND LOWER(TRIM(status)) IN ('closed', 'settled')
-                      AND pnl IS NOT NULL
-                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) >= %s
-                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) <= %s
-                """,
-                    (period_start, period_end),
-                )
-                row = cursor.fetchone()
-                pnl = float(row[0]) if row and row[0] is not None else 0.0
-                ret_pct_sum = float(row[1]) if row and row[1] is not None else None
-                ret_pct_base_sum = float(row[2]) if row and row[2] is not None else None
-
-                duration = period_end - period_start
-                prev_end = prev_start + duration
-                cursor.execute(
-                    """
-                    SELECT COALESCE(SUM(pnl), 0)
-                    FROM ("""
-                    + union_sql
-                    + """) AS trades_all
-                    WHERE (test_filter IS NULL OR test_filter = FALSE)
-                    """
-                    + paper_clause
-                    + """
-                      AND LOWER(TRIM(status)) IN ('closed', 'settled')
-                      AND pnl IS NOT NULL
-                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) >= %s
-                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) <= %s
-                """,
-                    (prev_start, prev_end),
-                )
-                prev_row = cursor.fetchone()
-                prev_pnl = float(prev_row[0]) if prev_row and prev_row[0] is not None else 0.0
-
-                ret_pct = round(ret_pct_sum, 2) if ret_pct_sum is not None else None
-                ret_pct_base = round(ret_pct_base_sum, 2) if ret_pct_base_sum is not None else None
-                result[key] = {
-                    "pnl": round(pnl, 2),
-                    "ret_pct": ret_pct,
-                    "ret_pct_base": ret_pct_base,
-                    "prev_pnl": round(prev_pnl, 2),
-                }
-
-        conn.close()
-        return {
-            "status": "ok",
-            "periods": result,
-            "trading_mode": "paper" if is_paper_trading() else "live",
-        }
-
-    except Exception as e:  # pragma: no cover - defensive
-        return {"status": "error", "message": str(e)}
+async def get_performance_realized(
+    trading_mode: Optional[str] = Query(
+        None, description="paper|live — match UI toggle; omit to use server global mode file"
+    ),
+) -> Dict[str, Any]:
+    return performance_realized_payload(trading_mode=trading_mode)
 
 
 def _monitor_auto_stop_accuracy_bucket(
@@ -495,7 +160,7 @@ async def get_monitor_auto_stop_accuracy(monitor_id: str | None = None) -> Dict[
     """
     Auto-stop accuracy from trade log: losing closes via auto_probability or
     auto_stop_loss_floor; percentage with win_loss_confirmed = TRUE (7d and 30d).
-    Includes users.trades_0001 and archive tables.
+    Includes tenant trades table and archive tables.
     """
     if not monitor_id:
         return {"status": "error", "message": "monitor_id required"}
@@ -504,12 +169,27 @@ async def get_monitor_auto_stop_accuracy(monitor_id: str | None = None) -> Dict[
         return {"status": "error", "message": "monitor_id must be numeric"}
 
     try:
+        slot = resolved_tenant_user_no_for_app()
         conn = get_postgresql_connection()
         if not conn:
             return {"status": "error", "message": "No DB connection"}
-        monitor_key = canonical_monitor_key("0001", mid)
+        monitor_key = canonical_monitor_key(slot, mid)
         with conn.cursor() as cursor:
-            union_sql, _ = union_trades_with_archives_select(cursor, "0001")
+            if not fetch_master_trades_column_names(cursor, slot):
+                conn.close()
+                return {
+                    "status": "ok",
+                    "monitor_key": monitor_key,
+                    "probability_stop": {
+                        "30d": {"confirmed": 0, "total": 0, "accuracy_pct": None},
+                        "7d": {"confirmed": 0, "total": 0, "accuracy_pct": None},
+                    },
+                    "stop_loss_floor": {
+                        "30d": {"confirmed": 0, "total": 0, "accuracy_pct": None},
+                        "7d": {"confirmed": 0, "total": 0, "accuracy_pct": None},
+                    },
+                }
+            union_sql, _ = union_trades_with_archives_select(cursor, slot)
             prob_30 = _monitor_auto_stop_accuracy_bucket(
                 cursor, union_sql, monitor_key, "auto_probability", 30
             )

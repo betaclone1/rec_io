@@ -1,5 +1,8 @@
 """
-Active 15m monitors for the unified AES/ATS supervisor pool (users.monitor_list_0001).
+Active 15m monitors for the unified AES/ATS supervisor pool.
+
+SQL uses ``users.monitor_list_0001`` as a template; :class:`~backend.core.tenant_context.TenantConnection`
+rewrites it to the worker's ``users_<slot>.monitor_list_<slot>``.
 """
 from __future__ import annotations
 
@@ -7,12 +10,13 @@ import logging
 from typing import Iterator, List, Tuple
 
 from backend.core.config.database import get_postgresql_connection
+from backend.core.port_config import default_pool_user_number
 
 _log = logging.getLogger(__name__)
 
 
 def iter_active_15m_monitor_bindings() -> Iterator[Tuple[str, str]]:
-    """Yield (user_number, monitor_id) for each active 15m monitor (table monitor_list_0001)."""
+    """Yield (user_number, monitor_id) for each active 15m monitor on this worker's tenant."""
     for row in list_active_15m_monitor_rows():
         yield row["user_number"], row["monitor_id"]
 
@@ -34,13 +38,11 @@ def list_active_15m_monitor_rows() -> List[dict]:
                 ORDER BY id
                 """
             )
+            worker = default_pool_user_number()
             for mid, name, symbol, market in cursor.fetchall():
-                user_number = "0001"
+                # Rows already come from this process tenant; bind AES/ATS with worker slot (not name parse).
+                user_number = worker
                 monitor_id = str(mid)
-                if name and str(name).startswith("mon_"):
-                    parts = str(name).split("_")
-                    if len(parts) >= 3:
-                        user_number = parts[1]
                 sym_u = str(symbol or "BTC").strip().upper() or "BTC"
                 mkt = str(market or "15m").strip().lower()
                 if mkt != "15m":

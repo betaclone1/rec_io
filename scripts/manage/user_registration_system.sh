@@ -333,9 +333,9 @@ try:
     conn = psycopg2.connect(**MASTER_DB_CONFIG)
     cursor = conn.cursor()
     
-    # Create master users table if it doesn't exist
+    # Create master users table if it doesn't exist (system schema)
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS master_users (
+        CREATE TABLE IF NOT EXISTS system.master_users (
             id SERIAL PRIMARY KEY,
             user_id VARCHAR(50) UNIQUE NOT NULL,
             name VARCHAR(255) NOT NULL,
@@ -353,7 +353,7 @@ try:
     
     # Insert or update user record
     cursor.execute("""
-        INSERT INTO master_users (
+        INSERT INTO system.master_users (
             user_id, name, email, phone, server_ip, server_hostname, 
             system_version, status
         ) VALUES (

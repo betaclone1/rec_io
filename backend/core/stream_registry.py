@@ -11,7 +11,10 @@ separate module and document the rule in REALTIME_BACKBONE.md Section 0.
 Keys (schema, table) must be lowercase for consistent lookup.
 """
 
-from typing import Dict, Tuple
+import re
+from typing import Dict, Optional, Tuple
+
+_TENANT_SCHEMA_RE = re.compile(r"^users_(\d{4})$", re.IGNORECASE)
 
 # (schema, table) -> stream name. Stream name is the value of "database" in db_change payloads.
 TABLE_TO_STREAM: Dict[Tuple[str, str], str] = {
@@ -38,3 +41,37 @@ TABLE_TO_STREAM: Dict[Tuple[str, str], str] = {
 def get_table_to_stream() -> Dict[Tuple[str, str], str]:
     """Return the full (schema, table) -> stream_name mapping. Used by the switchboard."""
     return dict(TABLE_TO_STREAM)
+
+
+def resolve_stream_for_notify(
+    schema: str, table: str
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Map NOTIFY payload (schema, table) to (stream_name, tenant_user_no).
+
+    ``tenant_user_no`` is set when schema is ``users_NNNN`` and the table suffix matches
+    that user (e.g. users_0001.trades_0001). Shared streams (live_data, testing) return
+    ``tenant_user_no=None``.
+    """
+    s = (schema or "").lower()
+    t = (table or "").lower()
+    key = (s, t)
+    if key in TABLE_TO_STREAM:
+        return TABLE_TO_STREAM[key], None
+    m = _TENANT_SCHEMA_RE.match(s)
+    if not m:
+        return None, None
+    user_no = m.group(1)
+    if not t.endswith(f"_{user_no}"):
+        return None, None
+    legacy_key = ("users", t)
+    if legacy_key in TABLE_TO_STREAM:
+        return TABLE_TO_STREAM[legacy_key], user_no
+    # Same logical stream as legacy users.<base>_0001 (e.g. account_balance_paper_0002 → paper stream).
+    suffix = f"_{user_no}"
+    base_table = t[: -len(suffix)] if len(t) > len(suffix) else ""
+    if base_table:
+        canonical_key = ("users", f"{base_table}_0001")
+        if canonical_key in TABLE_TO_STREAM:
+            return TABLE_TO_STREAM[canonical_key], user_no
+    return None, None

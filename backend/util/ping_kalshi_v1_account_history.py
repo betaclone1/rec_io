@@ -42,12 +42,20 @@ def load_credentials():
 
 def get_kalshi_user_id_from_db():
     try:
-        from backend.core.config.database import get_postgresql_connection
-        conn = get_postgresql_connection()
+        from backend.core.config.database import get_system_postgresql_connection
+
+        conn = get_system_postgresql_connection()
         if not conn:
             return None, "No DB connection"
         with conn.cursor() as cur:
-            cur.execute("SELECT kalshi_user_id FROM users.user_info_0001 WHERE user_no = %s", (USER_NO,))
+            cur.execute(
+                """
+                SELECT kalshi_user_id FROM system.master_users
+                WHERE LPAD(TRIM(user_no::text), 4, '0') = %s
+                LIMIT 1
+                """,
+                (USER_NO,),
+            )
             row = cur.fetchone()
         conn.close()
         if not row or not (row[0] or "").strip():

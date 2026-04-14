@@ -27,8 +27,10 @@ sys.path.insert(0, PROJECT_ROOT)
 
 
 def get_conn():
-    from backend.core.config.database import get_postgresql_connection
-    return get_postgresql_connection()
+    """Migrations use the system search_path only (no tenant SQL rewrite or session tenant)."""
+    from backend.core.config.database import get_system_postgresql_connection
+
+    return get_system_postgresql_connection()
 
 
 def ensure_tracking_table(conn):

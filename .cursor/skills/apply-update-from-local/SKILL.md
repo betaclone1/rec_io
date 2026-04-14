@@ -31,6 +31,8 @@ If an open changelog entry’s checklist includes **Apply migrations** (or runni
 
 5. **Verify production (via SSH)** — Health (3000, 8001), supervisor status, tail key logs. Only current errors (after process start) count. End with VERIFY STATUS block (✅ All good / ⚠️ Investigate / 🔴 Critical). If required migrations were not run, status is **🔴 Critical**.
 
+   After a successful deploy, when verify is **✅ All good** or **⚠️ Investigate** (not **🔴 Critical**), complete the checklist item **Record release in DB** when present: run **`record_system_version.py --version NEXT`** with the exact **NEXT** from that changelog entry (Summary line `Release: vNEXT` and/or the checklist command). Do not use no-arg `record_system_version.py` when the entry pins a version — it must match git/changelog. Legacy entries without a pinned version: no-arg patch bump is acceptable once.
+
 6. **Fidelity check** — Local vs prod: `git rev-parse HEAD` and `run_migration.py list`. Report same commit and migrations or mismatches.
 
 7. **Stage the changelog** — After the changelog has been updated (checkboxes set to `- [x]`), stage it to confirm the operation: `git add docs/changelog/MASTER_CHANGELOG.md`.

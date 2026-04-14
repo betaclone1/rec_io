@@ -22,6 +22,9 @@ When the user says **@updater prepare update**, you are preparing for a push of 
 2. **Update the changelog (must produce an open entry for this batch)**
    - Open **`docs/changelog/MASTER_CHANGELOG.md`**.
    - **When there are completed plans or substantive staged changes, you must create (or update) a timestamped entry that has at least one unchecked `- [ ]` item in its Production checklist.** This is what `/apply-update-from-local` will execute on prod.
+   - **Release version:** Follow `.cursor/skills/prepare-update/SKILL.md` step 4 to determine **NEXT** (patch bump from prod or local `system.version_control`, or an explicit version from the user). The Summary must include **`Release: vNEXT`**, and the Production checklist must include  
+     `- [ ] Record release in DB: PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version NEXT`  
+     (same **NEXT** as in `Release: vNEXT`, no `v` in the CLI argument). The suggested git commit title must include **vNEXT** (see prepare-update step 7).
    - Add a **new timestamped entry** at the top (newest-first). Use today’s date (YYYY-MM-DD) and a clear title (e.g. `## 2026-03-07 — Short description`).
    - In the Summary and/or a short “Plans” line, explicitly reference the relevant plan files (e.g. ``Plans: mtb-account-dashboard, account-history-strategy-filters``) so changes can be traced back to their plans.
    - Write a **Summary** that describes the change in plain language, informed by the completed plans.

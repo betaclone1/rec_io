@@ -10,6 +10,8 @@
 
 **Production server:** Canonical SSH/DB host and paths are in `docs/PRODUCTION_HOST.md` (agents should use `REC_PROD_SSH_HOST` / `REC_PROD_DB_HOST`, not hardcoded IPs in new code).
 
+**Tenant vs system PostgreSQL (non-negotiable for new code):** Per-tenant data lives in schemas `users_NNNN`. Use `get_postgresql_connection()` (or explicit `tenant_user_no=` / worker `REC_USER_SCHEMA`) for any access to those tables. Global daemons that only touch shared schemas (`live_data`, `system`, etc.) must use `get_system_postgresql_connection()` or `SystemThreadedConnectionPool` — not tenant-wrapped connections. Do not add DML against `users_*` from global market-ingest processes; fan out via Redis and per-tenant workers (see `docs/TENANT_TOUCH_REGISTRY.md`). Operator scripts that mutate tenant tables must accept `--user-no` / document env defaults via `backend/core/tenant_script_args.py`.
+
 ---
 
 ## Workflow agents (PM, Explorer, Builder, Reviewer)

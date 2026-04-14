@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <script src="/js/rec_session.js"></script>
+
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Account Manager Mobile</title>
@@ -518,6 +520,24 @@
             if (oPaper) oPaper.textContent = accountManagerTradingPaperLabelMobile || "PAPER";
         }
 
+        function applyAccountManagerLiveAvailabilityMobile(sel, liveOk) {
+            if (!sel) return;
+            const oLive = sel.querySelector('option[value="live"]');
+            const ok = liveOk !== false;
+            if (oLive) {
+                oLive.disabled = !ok;
+                oLive.hidden = !ok;
+                oLive.setAttribute("aria-hidden", ok ? "false" : "true");
+            }
+            if (!ok && sel.value === "live") {
+                sel.value = "paper";
+                REC_TRADING_MODE = "paper";
+                window.REC_TRADING_MODE = REC_TRADING_MODE;
+                window.__recTradingModeAmMobile = "paper";
+                localStorage.setItem("rec_trading_mode", "paper");
+            }
+        }
+
         /** Whole units are dollars (1000 → 100000 cents). Optional $ / commas stripped. */
         function parseUsdInputToCentsMobile(raw) {
             const s = String(raw ?? "").trim().replace(/^\$/, "").replace(/,/g, "");
@@ -578,6 +598,7 @@
                 if (!r.ok) throw new Error("trading_mode HTTP " + r.status);
                 const j = await r.json();
                 if (j.trading_mode === "live" || j.trading_mode === "paper") {
+                    const liveOk = j.live_trading_available !== false;
                     REC_TRADING_MODE = j.trading_mode;
                     window.REC_TRADING_MODE = REC_TRADING_MODE;
                     window.__recTradingModeAmMobile = j.trading_mode;
@@ -585,8 +606,13 @@
                     if (j.paper_label) accountManagerTradingPaperLabelMobile = j.paper_label;
                     localStorage.setItem("rec_trading_mode", j.trading_mode);
                     const sel = document.getElementById("account-manager-trading-mode-select-mobile");
-                    if (sel) sel.value = j.trading_mode;
-                    updateAccountManagerTradingSelectLabelsMobile();
+                    if (sel) {
+                        sel.value = j.trading_mode;
+                        updateAccountManagerTradingSelectLabelsMobile();
+                        applyAccountManagerLiveAvailabilityMobile(sel, liveOk);
+                    } else {
+                        updateAccountManagerTradingSelectLabelsMobile();
+                    }
                 }
             } finally {
                 updatePaperBalanceButtonVisibilityMobile();
@@ -678,10 +704,12 @@
             try {
                 const fetchOpts = { cache: "no-store" };
                 const isPaper = REC_TRADING_MODE === "paper";
+                const tm = REC_TRADING_MODE === "paper" || REC_TRADING_MODE === "live" ? REC_TRADING_MODE : "live";
+                const tmq = "trading_mode=" + encodeURIComponent(tm);
                 const [balanceRes, subaccountsRes, transfersRes] = await Promise.all([
-                    fetch(`${window.location.origin}/api/account/balance`, fetchOpts),
-                    fetch(window.location.origin + "/api/subaccounts", fetchOpts),
-                    fetch(window.location.origin + "/api/db/transfers", fetchOpts),
+                    fetch(`${window.location.origin}/api/account/balance?${tmq}`, fetchOpts),
+                    fetch(window.location.origin + "/api/subaccounts?" + tmq, fetchOpts),
+                    fetch(window.location.origin + "/api/db/transfers?" + tmq, fetchOpts),
                 ]);
 
                 let settlementsRes;

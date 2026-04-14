@@ -396,7 +396,7 @@ class MonitorHistoryDisplay {
         
         // Fallback: construct monitor name from ID
         // This assumes the monitor ID format and user number
-        return `mon_0001_${monitorId}`;
+        return `mon_${window.recSessionUserSlot()}_${monitorId}`;
     }
 
     /**

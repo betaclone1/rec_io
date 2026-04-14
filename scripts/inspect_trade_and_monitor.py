@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
 One-off diagnostic: print trade by id and monitor config for comparison.
-Usage: PYTHONPATH=/opt/rec_io_server python scripts/inspect_trade_and_monitor.py <trade_id> [monitor_id]
-Example: PYTHONPATH=/opt/rec_io_server python scripts/inspect_trade_and_monitor.py 9948 10026
+Usage: PYTHONPATH=$(pwd) python scripts/inspect_trade_and_monitor.py [--user-no NNNN] <trade_id> [monitor_id]
+Example: PYTHONPATH=$(pwd) python scripts/inspect_trade_and_monitor.py --user-no 0001 9948 10026
 """
+import argparse
 import os
 import sys
 
@@ -13,16 +14,20 @@ if _project_root not in sys.path:
 os.chdir(_project_root)
 
 from backend.core.config.database import get_postgresql_connection
+from backend.core.tenant_script_args import add_user_no_argument, resolve_user_no
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: inspect_trade_and_monitor.py <trade_id> [monitor_id]")
-        sys.exit(1)
-    trade_id = int(sys.argv[1])
-    monitor_id = int(sys.argv[2]) if len(sys.argv) > 2 else None
+    parser = argparse.ArgumentParser(description="Inspect trade + monitor row")
+    add_user_no_argument(parser)
+    parser.add_argument("trade_id", type=int)
+    parser.add_argument("monitor_id", nargs="?", type=int, default=None)
+    args = parser.parse_args()
+    trade_id = args.trade_id
+    monitor_id = args.monitor_id
+    user_no = resolve_user_no(args)
 
-    conn = get_postgresql_connection()
+    conn = get_postgresql_connection(tenant_user_no=user_no)
     if not conn:
         print("Failed to connect to database")
         sys.exit(1)

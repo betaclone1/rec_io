@@ -1,4 +1,4 @@
-`# Global file ignore
+# Global file ignore
 
 # Database files (excluding historical data)
 *.db
@@ -70,6 +70,11 @@ backend/api/kalshi-api/kalshi-credentials/
 # Local configuration overrides
 backend/core/config/config.local.json
 
+# Gmail app password file (never commit). README in this folder is tracked.
+backend/data/secrets/**
+backend/data/secrets/.*
+!backend/data/secrets/README.md
+
 # Runtime state (per machine): trading_mode, paper monitor snapshot, etc. Created by trading_mode/account_mode code.
 backend/data/account_mode_state.json
 
@@ -85,6 +90,9 @@ logs/main_app.out.log.1
 *.tmp
 *.temp
 changes.patch
+.coverage
+dump.rdb
+.cursor/tmp_*.json
 
 # User-specific data (credentials, accounts, etc.)
 backend/data/users/
@@ -168,6 +176,10 @@ backend/data/historical_data/btc_historical/btc_1m_master_5y.csv
 # DigitalOcean credentials (sensitive)
 DIGITAL_OCEAN_CREDENTIALS.md
 backend/supervisord.conf
+
+# Generated tenant-touch scan output (regenerate with scripts/db/scan_tenant_touch.py)
+scripts/db/output/
+
 # Runtime port configuration (environment-specific)
 backend/core/config/MASTER_PORT_MANIFEST.json
 backend/core/config/MASTER_PORT_MANIFEST.json.corrupted_*

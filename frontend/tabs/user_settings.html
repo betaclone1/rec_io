@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <script src="/js/rec_session.js"></script>
+
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>User Settings - REC.IO</title>
@@ -416,8 +418,8 @@
         // Logout functionality
         document.getElementById('logoutButton').addEventListener('click', async () => {
             const token = localStorage.getItem('rec_auth_token');
-            const deviceId = localStorage.getItem('rec_device_id');
-            if (token && deviceId) {
+            const deviceId = localStorage.getItem('rec_device_id') || '';
+            if (token) {
                 try {
                     await fetch(window.location.origin + '/api/auth/logout', {
                         method: 'POST',
@@ -428,6 +430,7 @@
                     console.log('Logout request failed:', e);
                 }
             }
+            if (typeof recClearAuthCookie === 'function') recClearAuthCookie();
             localStorage.clear();
             sessionStorage.clear();
             // Redirect to login page in the main window

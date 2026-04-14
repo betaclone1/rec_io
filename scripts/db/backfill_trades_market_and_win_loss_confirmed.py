@@ -39,6 +39,30 @@ from psycopg2 import sql
 from backend.core.config.database import get_postgresql_connection
 
 MONITOR_KEY_PATTERN = re.compile(r"^mon_(\d+?)_(\d+)$", re.IGNORECASE)
+_TRADES_TABLE_RE = re.compile(r"^trades_(\d{4})$")
+
+
+def _tenant_schema_for_trades_table(table_name: str) -> str:
+    m = _TRADES_TABLE_RE.match(table_name)
+    if not m:
+        raise ValueError(f"expected trades_NNNN table name, got {table_name!r}")
+    return f"users_{m.group(1)}"
+
+
+def _parse_trades_table_fq(fq: str) -> Tuple[str, str]:
+    """Return (schema, table_name) for users_NNNN.trades_NNNN; accepts legacy users.trades_NNNN."""
+    fq = fq.strip()
+    if "." not in fq:
+        t = fq
+        return _tenant_schema_for_trades_table(t), t
+    sch, t = fq.split(".", 1)
+    if re.fullmatch(r"users_\d{4}", sch):
+        return sch, t
+    if sch == "users":
+        return _tenant_schema_for_trades_table(t), t
+    raise ValueError(
+        f"expected schema users_NNNN or legacy users.*, got {fq!r}"
+    )
 
 
 def _get_market_for_monitor_key(pg_conn, monitor_key: Optional[str]) -> str:
@@ -55,7 +79,7 @@ def _get_market_for_monitor_key(pg_conn, monitor_key: Optional[str]) -> str:
                 sql.SQL(
                     "SELECT COALESCE(market, 'hourly') FROM {}.{} WHERE id = %s"
                 ).format(
-                    sql.Identifier("users"),
+                    sql.Identifier(f"users_{user_number}"),
                     sql.Identifier(f"monitor_list_{user_number}"),
                 ),
                 (monitor_id,),
@@ -143,17 +167,17 @@ def _eff_symbol_exp(sym_exp: Any, sym_close: Any) -> Optional[float]:
         return None
 
 
-def _list_trades_tables(cur) -> list[str]:
+def _list_trades_tables(cur) -> list[Tuple[str, str]]:
     cur.execute(
         """
-        SELECT table_name
+        SELECT table_schema, table_name
         FROM information_schema.tables
-        WHERE table_schema = 'users'
-          AND table_name ~ '^trades_[0-9]+$'
-        ORDER BY table_name
+        WHERE table_schema ~ '^users_[0-9]{4}$'
+          AND table_name ~ '^trades_[0-9]{4}$'
+        ORDER BY table_schema, table_name
         """
     )
-    return [r[0] for r in cur.fetchall()]
+    return [(r[0], r[1]) for r in cur.fetchall()]
 
 
 def _table_has_columns(cur, schema: str, table: str, cols: Sequence[str]) -> Tuple[bool, list[str]]:
@@ -170,7 +194,9 @@ def _table_has_columns(cur, schema: str, table: str, cols: Sequence[str]) -> Tup
     return ok, missing
 
 
-def backfill_market(pg_conn, table_name: str, *, dry_run: bool, limit: Optional[int]) -> int:
+def backfill_market(
+    pg_conn, schema: str, table_name: str, *, dry_run: bool, limit: Optional[int]
+) -> int:
     q = sql.SQL(
         """
         SELECT id, monitor, trade_strategy, ticker
@@ -178,7 +204,7 @@ def backfill_market(pg_conn, table_name: str, *, dry_run: bool, limit: Optional[
         WHERE market IS NULL
         ORDER BY id
         """
-    ).format(sql.Identifier("users"), sql.Identifier(table_name))
+    ).format(sql.Identifier(schema), sql.Identifier(table_name))
     if limit is not None:
         q = sql.SQL("{} LIMIT %s").format(q)
     with pg_conn.cursor() as cur:
@@ -188,14 +214,14 @@ def backfill_market(pg_conn, table_name: str, *, dry_run: bool, limit: Optional[
     for tid, monitor, strategy, ticker in rows:
         m = _resolve_trade_market_for_insert(pg_conn, monitor, strategy, ticker)
         if dry_run:
-            print(f"  [dry-run] {table_name} id={tid} market <- {m!r}")
+            print(f"  [dry-run] {schema}.{table_name} id={tid} market <- {m!r}")
             updated += 1
             continue
         with pg_conn.cursor() as cur:
             cur.execute(
                 sql.SQL(
                     "UPDATE {}.{} SET market = %s WHERE id = %s AND market IS NULL"
-                ).format(sql.Identifier("users"), sql.Identifier(table_name)),
+                ).format(sql.Identifier(schema), sql.Identifier(table_name)),
                 (m, tid),
             )
             updated += cur.rowcount
@@ -203,7 +229,7 @@ def backfill_market(pg_conn, table_name: str, *, dry_run: bool, limit: Optional[
 
 
 def backfill_win_loss_confirmed(
-    pg_conn, table_name: str, *, dry_run: bool, limit: Optional[int]
+    pg_conn, schema: str, table_name: str, *, dry_run: bool, limit: Optional[int]
 ) -> int:
     q = sql.SQL(
         """
@@ -214,7 +240,7 @@ def backfill_win_loss_confirmed(
           AND win_loss_confirmed IS NULL
         ORDER BY id
         """
-    ).format(sql.Identifier("users"), sql.Identifier(table_name))
+    ).format(sql.Identifier(schema), sql.Identifier(table_name))
     if limit is not None:
         q = sql.SQL("{} LIMIT %s").format(q)
     with pg_conn.cursor() as cur:
@@ -227,7 +253,7 @@ def backfill_win_loss_confirmed(
         if wlc is None:
             continue
         if dry_run:
-            print(f"  [dry-run] {table_name} id={tid} win_loss_confirmed <- {wlc}")
+            print(f"  [dry-run] {schema}.{table_name} id={tid} win_loss_confirmed <- {wlc}")
             updated += 1
             continue
         with pg_conn.cursor() as cur:
@@ -238,7 +264,7 @@ def backfill_win_loss_confirmed(
                     SET win_loss_confirmed = %s
                     WHERE id = %s AND status = 'closed' AND win_loss_confirmed IS NULL
                     """
-                ).format(sql.Identifier("users"), sql.Identifier(table_name)),
+                ).format(sql.Identifier(schema), sql.Identifier(table_name)),
                 (wlc, tid),
             )
             updated += cur.rowcount
@@ -259,24 +285,22 @@ def main() -> int:
         "--tables",
         type=str,
         default="",
-        help="Comma-separated full names (e.g. users.trades_0001). Default: all users.trades_<n>",
+        help="Comma-separated full names (e.g. users_0001.trades_0001 or legacy users.trades_0001). "
+        "Default: all users_NNNN.trades_NNNN",
     )
     args = ap.parse_args()
 
-    tables: list[str] = []
+    tables: list[Tuple[str, str]] = []
     if args.tables.strip():
         for raw in args.tables.split(","):
             fq = raw.strip()
             if not fq:
                 continue
-            if "." in fq:
-                sch, tname = fq.split(".", 1)
-                if sch != "users":
-                    print(f"Expected users.* table, got: {fq}", file=sys.stderr)
-                    return 2
-                tables.append(tname)
-            else:
-                tables.append(fq)
+            try:
+                tables.append(_parse_trades_table_fq(fq))
+            except ValueError as e:
+                print(e, file=sys.stderr)
+                return 2
     if not tables:
         c0 = get_postgresql_connection()
         if not c0:
@@ -294,15 +318,21 @@ def main() -> int:
         return 1
     try:
         total_m = total_w = 0
-        for tname in tables:
+        for sch, tname in tables:
             with pg.cursor() as cur:
-                ok, missing = _table_has_columns(cur, "users", tname, ("market", "win_loss_confirmed"))
+                ok, missing = _table_has_columns(
+                    cur, sch, tname, ("market", "win_loss_confirmed")
+                )
             if not ok:
-                print(f"Skip {tname}: missing columns {missing}")
+                print(f"Skip {sch}.{tname}: missing columns {missing}")
                 continue
-            print(f"=== users.{tname} ===")
-            m = backfill_market(pg, tname, dry_run=args.dry_run, limit=args.limit)
-            w = backfill_win_loss_confirmed(pg, tname, dry_run=args.dry_run, limit=args.limit)
+            print(f"=== {sch}.{tname} ===")
+            m = backfill_market(
+                pg, sch, tname, dry_run=args.dry_run, limit=args.limit
+            )
+            w = backfill_win_loss_confirmed(
+                pg, sch, tname, dry_run=args.dry_run, limit=args.limit
+            )
             total_m += m
             total_w += w
             print(f"  market rows updated: {m}; win_loss_confirmed rows updated: {w}")

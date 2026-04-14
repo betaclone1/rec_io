@@ -27,6 +27,7 @@ from apscheduler.triggers.cron import CronTrigger
 from backend.util.paths import get_project_root, get_trade_history_dir, get_logs_dir, get_host, get_data_dir
 from backend.util.trade_log_archivist import union_trades_with_archives_select
 from backend.util.paths import get_accounts_data_dir
+from backend.core.config.database import get_postgresql_connection
 EST_ZONE = ZoneInfo("America/New_York")
 # Hourly: "BTC 2pm" -> hour 2, pm
 CONTRACT_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2})(am|pm)$", re.IGNORECASE)
@@ -34,6 +35,37 @@ CONTRACT_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2})(am|pm)$", re.IGNORECASE)
 CONTRACT_15M_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2}):[0-9]{2}\s*(am|pm)", re.IGNORECASE)
 CONTRACT_15M_FULL_PATTERN = re.compile(r".*\s([0-9]{1,2}):([0-9]{2})\s*(am|pm)", re.IGNORECASE)
 MONITOR_KEY_PATTERN = re.compile(r"^mon_(\d+?)_(\d+)$", re.IGNORECASE)
+
+
+def _monitor_slot_and_id(monitor_key):
+    """Parse mon_<slot>_<id>; return (slot_str, id_str) or (None, None)."""
+    if not monitor_key:
+        return None, None
+    m = MONITOR_KEY_PATTERN.match(str(monitor_key))
+    if not m:
+        return None, None
+    return m.group(1), m.group(2)
+
+
+def _worker_tenant_user_no():
+    try:
+        from backend.core.tenant_context import get_worker_tenant_context
+
+        return get_worker_tenant_context().user_no
+    except Exception:
+        return None
+
+
+def _monitor_key_matches_worker(monitor_key) -> bool:
+    """False if monitor key targets another tenant than this process (when tenant context exists)."""
+    slot, _ = _monitor_slot_and_id(monitor_key)
+    if not slot:
+        return False
+    w = _worker_tenant_user_no()
+    if w is None:
+        return True
+    return slot == w
+
 
 # trade_manager ↔ ATS: resilient delivery (Redis enroll + HTTP notify). Tune in prod under load.
 _ATS_ENROLL_ACK_WAIT_SEC = float(os.getenv("ATS_ENROLL_ACK_WAIT_SEC", "18"))
@@ -283,34 +315,42 @@ def log_debug(msg):
     _tm_logger.debug("%s", msg)
 
 
-def _fetch_monitor_state(pg_conn, monitor_key):
-    """Fetch loss_prevention and multiplier from monitor_list table based on monitor_key."""
-    if not monitor_key or not pg_conn:
+# Set during FastAPI lifespan teardown. Do not register signal.signal(SIGTERM) here:
+# uvicorn installs its own SIGTERM handler; replacing it prevents graceful shutdown and
+# can stall MASTER_RESTART until stopwaitsecs/SIGKILL.
+_trade_manager_scheduler_shutdown = threading.Event()
+
+
+def _fetch_monitor_state(cursor, monitor_key):
+    """
+    Fetch loss_prevention, multiplier, test_filter, loss_prevention_toggle from monitor_list.
+    Use the caller's cursor (no nested cursor). SQL uses users.monitor_list_0001 template;
+    TenantConnection rewrites to the bound schema/table.
+    """
+    if not monitor_key or not cursor:
         return None
-    
+    if not _monitor_key_matches_worker(monitor_key):
+        return None
+    _, monitor_id = _monitor_slot_and_id(monitor_key)
+    if not monitor_id:
+        return None
     try:
-        # Parse monitor key (e.g., "mon_0001_10002" -> user_number="0001", monitor_id="10002")
-        match = MONITOR_KEY_PATTERN.match(str(monitor_key))
-        if not match:
-            return None
-        
-        user_number = match.group(1)
-        monitor_id = match.group(2)
-        
-        with pg_conn.cursor() as cursor:
-            cursor.execute(f"""
-                SELECT loss_prevention, multiplier, test_filter
-                FROM users.monitor_list_{user_number}
-                WHERE id = %s
-            """, (monitor_id,))
-            row = cursor.fetchone()
-            
-            if row:
-                return {
-                    'loss_prevention': row[0],
-                    'multiplier': row[1],
-                    'test_filter': row[2],
-                }
+        cursor.execute(
+            """
+            SELECT loss_prevention, multiplier, test_filter, loss_prevention_toggle
+            FROM users.monitor_list_0001
+            WHERE id = %s
+            """,
+            (monitor_id,),
+        )
+        row = cursor.fetchone()
+        if row:
+            return {
+                "loss_prevention": row[0],
+                "multiplier": row[1],
+                "test_filter": row[2],
+                "loss_prevention_toggle": row[3],
+            }
         return None
     except Exception as e:
         log(f"⚠️ Error fetching monitor state for {monitor_key}: {e}")
@@ -331,9 +371,13 @@ def _resolve_monitor_for_trade_insert(cursor, raw_monitor):
     match = MONITOR_KEY_PATTERN.match(mk)
     if not match:
         return (None, f"invalid_monitor_format:{mk!r}")
-    user_number, monitor_id = match.group(1), match.group(2)
+    if not _monitor_key_matches_worker(mk):
+        return (None, f"monitor_wrong_tenant:{mk!r}")
+    _, monitor_id = _monitor_slot_and_id(mk)
+    if not monitor_id:
+        return (None, f"invalid_monitor_format:{mk!r}")
     cursor.execute(
-        f"SELECT 1 FROM users.monitor_list_{user_number} WHERE id = %s",
+        "SELECT 1 FROM users.monitor_list_0001 WHERE id = %s",
         (monitor_id,),
     )
     if not cursor.fetchone():
@@ -341,37 +385,39 @@ def _resolve_monitor_for_trade_insert(cursor, raw_monitor):
     return (mk, None)
 
 
-def _get_market_for_monitor_key(pg_conn, monitor_key):
-    """Return market ('hourly' or '15m') for the given monitor_key from monitor_list. Default 'hourly'."""
-    if not monitor_key or not pg_conn:
-        return 'hourly'
+def _get_market_for_monitor_key_cursor(cursor, monitor_key):
+    """Return market ('hourly' or '15m') from monitor_list using the caller's cursor (same transaction)."""
+    if not monitor_key or not cursor:
+        return "hourly"
+    if not _monitor_key_matches_worker(monitor_key):
+        return "hourly"
+    _, monitor_id = _monitor_slot_and_id(monitor_key)
+    if not monitor_id:
+        return "hourly"
     try:
-        match = MONITOR_KEY_PATTERN.match(str(monitor_key))
-        if not match:
-            return 'hourly'
-        user_number = match.group(1)
-        monitor_id = match.group(2)
-        with pg_conn.cursor() as cursor:
-            cursor.execute(f"""
-                SELECT COALESCE(market, 'hourly') FROM users.monitor_list_{user_number}
-                WHERE id = %s
-            """, (monitor_id,))
-            row = cursor.fetchone()
-            if row and row[0]:
-                m = str(row[0]).strip().lower()
-                return m if m in ('hourly', '15m') else 'hourly'
-        return 'hourly'
-    except Exception as e:
-        return 'hourly'
+        cursor.execute(
+            """
+            SELECT COALESCE(market, 'hourly') FROM users.monitor_list_0001
+            WHERE id = %s
+            """,
+            (monitor_id,),
+        )
+        row = cursor.fetchone()
+        if row and row[0]:
+            m = str(row[0]).strip().lower()
+            return m if m in ("hourly", "15m") else "hourly"
+        return "hourly"
+    except Exception:
+        return "hourly"
 
 
-def _resolve_trade_market_for_insert(pg_conn, monitor_key, trade_strategy, ticker):
+def _resolve_trade_market_for_insert(cursor, monitor_key, trade_strategy, ticker):
     """
     Trade cadence stored on each row: 'hourly' or '15m' (Kalshi cycle), not the venue slug.
     Prefer users.monitor_list.market when monitor_key resolves; else infer from strategy/ticker.
     """
-    if monitor_key and pg_conn:
-        return _get_market_for_monitor_key(pg_conn, monitor_key)
+    if monitor_key and cursor is not None:
+        return _get_market_for_monitor_key_cursor(cursor, monitor_key)
     ts = (trade_strategy or "").lower()
     tk = (ticker or "").upper()
     if "15m" in ts or "15M" in tk:
@@ -1053,28 +1099,9 @@ def get_momentum_data_from_postgresql(symbol):
 # Get port from centralized system
 TRADE_MANAGER_PORT = get_port("trade_manager")
 
-    # Thread-safe set to track trades being processed
+# Thread-safe set to track trades being processed
 processing_trades = set()
 processing_lock = threading.Lock()
-
-# PostgreSQL connection: local (unchanged from pre-addba64). Do not switch to database.py here.
-def get_postgresql_connection():
-    """Get a connection to the PostgreSQL database."""
-    try:
-        conn = psycopg2.connect(
-            **merge_psycopg2_connect_kwargs(
-                {
-                    "host": "localhost",
-                    "database": "rec_io_db",
-                    "user": "rec_io_user",
-                    "password": "rec_io_password",
-                }
-            )
-        )
-        return conn
-    except Exception as e:
-        log(f"❌ Failed to connect to PostgreSQL: {e}")
-        return None
 
 
 def _order_count_val(legacy, fp):
@@ -1125,7 +1152,7 @@ def _paper_ledger_on_close(buy_price: float, position: int, pnl_dollars: float) 
         from backend.balance_snapshot import sync_paper_balance_feed_after_close
 
         pnl_cents = int(round(float(pnl_dollars) * 100.0))
-        sync_paper_balance_feed_after_close(pnl_cents)
+        sync_paper_balance_feed_after_close(pnl_cents, float(buy_price), int(position))
     except Exception as e:
         log(f"⚠️ paper ledger close: {e}")
 
@@ -1219,16 +1246,26 @@ def send_trigger_to_executor(payload: dict) -> None:
     try:
         from backend.core.trading_redis_comms import (
             redis_client_optional,
-            stream_executor,
+            resolve_tm_command_stream_slot,
+            stream_executor_resolved,
             use_trading_redis_comms,
             xadd_trading_json,
         )
 
         if use_trading_redis_comms():
             r = redis_client_optional()
+            slot = resolve_tm_command_stream_slot(payload if isinstance(payload, dict) else {}, None)
+            if not slot:
+                try:
+                    from backend.core.tenant_context import get_worker_tenant_context
+
+                    slot = get_worker_tenant_context().user_no
+                except Exception:
+                    slot = None
+            ex_stream = stream_executor_resolved(slot)
             if r and xadd_trading_json(
                 r,
-                stream_executor(),
+                ex_stream,
                 msg_type="trigger_trade",
                 payload=payload,
                 source="trade_manager",
@@ -1250,8 +1287,16 @@ def send_trigger_to_executor(payload: dict) -> None:
 def _fanout_active_trades_change_via_redis_or_http(broadcast_payload: dict) -> None:
     try:
         from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
+        from backend.core.tenant_context import get_worker_tenant_context
 
-        if use_trading_redis_comms() and publish_preferences_event("active_trades_change", broadcast_payload):
+        slot = None
+        try:
+            slot = get_worker_tenant_context().user_no
+        except Exception:
+            pass
+        if use_trading_redis_comms() and publish_preferences_event(
+            "active_trades_change", broadcast_payload, tenant_user_no=slot
+        ):
             log("NOTIFIED FRONTEND - ACTIVE TRADES CHANGE (Redis)")
             return
     except Exception:
@@ -1387,22 +1432,24 @@ def insert_trade(trade):
                 monitor_state = None
                 cooldown_timer = None
                 if monitor_key:
-                    monitor_state = _fetch_monitor_state(pg_conn, monitor_key)
-                    
+                    monitor_state = _fetch_monitor_state(cursor, monitor_key)
+
                     # Fetch cooldown_timer from monitor_list
                     try:
-                        match = MONITOR_KEY_PATTERN.match(str(monitor_key))
-                        if match:
-                            user_number = match.group(1)
-                            monitor_id = match.group(2)
-                            cursor.execute(f"""
-                                SELECT cooldown_timer
-                                FROM users.monitor_list_{user_number}
-                                WHERE id = %s
-                            """, (monitor_id,))
-                            cooldown_result = cursor.fetchone()
-                            if cooldown_result and cooldown_result[0] is not None:
-                                cooldown_timer = int(cooldown_result[0])
+                        if _monitor_key_matches_worker(monitor_key):
+                            _, monitor_id_cd = _monitor_slot_and_id(monitor_key)
+                            if monitor_id_cd:
+                                cursor.execute(
+                                    """
+                                    SELECT cooldown_timer
+                                    FROM users.monitor_list_0001
+                                    WHERE id = %s
+                                    """,
+                                    (monitor_id_cd,),
+                                )
+                                cooldown_result = cursor.fetchone()
+                                if cooldown_result and cooldown_result[0] is not None:
+                                    cooldown_timer = int(cooldown_result[0])
                     except Exception as e:
                         log(f"⚠️ Error fetching cooldown_timer for {monitor_key}: {e}")
                 
@@ -1414,13 +1461,18 @@ def insert_trade(trade):
                 else:
                     # Trade didn't provide loss_prevention, fetch from monitor state
                     if monitor_state and monitor_state.get('loss_prevention') is not None:
-                        # Monitor stores loss_prevention as string ("one_contract", "off", etc.)
-                        # Convert to boolean: True if "one_contract", False otherwise
-                        monitor_loss_prevention = monitor_state.get('loss_prevention')
-                        if isinstance(monitor_loss_prevention, str):
-                            loss_prevention_flag = monitor_loss_prevention == "one_contract"
+                        lp_toggle = monitor_state.get('loss_prevention_toggle')
+                        toggle_on = bool(lp_toggle) if lp_toggle is not None else True
+                        if not toggle_on:
+                            loss_prevention_flag = False
                         else:
-                            loss_prevention_flag = _normalize_boolean_flag(monitor_loss_prevention)
+                            # Monitor stores loss_prevention as string ("one_contract", "off", etc.)
+                            # Convert to boolean: True if "one_contract", False otherwise
+                            monitor_loss_prevention = monitor_state.get('loss_prevention')
+                            if isinstance(monitor_loss_prevention, str):
+                                loss_prevention_flag = monitor_loss_prevention == "one_contract"
+                            else:
+                                loss_prevention_flag = _normalize_boolean_flag(monitor_loss_prevention)
                     else:
                         loss_prevention_flag = False
                 
@@ -1447,7 +1499,7 @@ def insert_trade(trade):
                 ticker = trade.get('ticker')
                 side = trade.get('side')
                 trade_market_for_db = _resolve_trade_market_for_insert(
-                    pg_conn, monitor_key, trade.get("trade_strategy"), ticker
+                    cursor, monitor_key, trade.get("trade_strategy"), ticker
                 )
                 price_spread = None
                 if ticker and side:
@@ -1477,13 +1529,10 @@ def insert_trade(trade):
                 master_trading_bankroll_for_db = None
                 mtb_base_value_for_db = None
                 try:
-                    from backend.trading_mode import get_trading_mode
+                    from backend.core.tenant_context import resolved_tenant_user_no_for_app
+                    from backend.trading_mode import account_balance_table_for_user
 
-                    _ab = (
-                        "users.account_balance_paper_0001"
-                        if get_trading_mode() == "paper"
-                        else "users.account_balance_0001"
-                    )
+                    _ab = account_balance_table_for_user(resolved_tenant_user_no_for_app())
                     cursor.execute(
                         f"""
                         SELECT master_trading_bankroll, mtb_base_value
@@ -1536,8 +1585,9 @@ def insert_trade(trade):
                         hour_idx, weekly_cycle, loss_prevention, multiplier, price_spread,
                         yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
                         yes_ask_range_15m, no_ask_range_15m,
-                        paper_trade, cooldown_timer, test_filter
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        paper_trade, cooldown_timer, test_filter,
+                        created_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                     RETURNING id
                 """, (
                     trade.get('status', 'pending'), trade['date'], trade['time'],
@@ -1684,16 +1734,19 @@ def insert_simulated_trade(trade):
             cooldown_timer = None
             if monitor_key:
                 try:
-                    match = MONITOR_KEY_PATTERN.match(str(monitor_key))
-                    if match:
-                        user_number, monitor_id = match.group(1), match.group(2)
-                        cursor.execute(
-                            "SELECT cooldown_timer FROM users.monitor_list_{} WHERE id = %s".format(user_number),
-                            (monitor_id,)
-                        )
-                        row = cursor.fetchone()
-                        if row and len(row) > 0 and row[0] is not None:
-                            cooldown_timer = int(row[0])
+                    if _monitor_key_matches_worker(monitor_key):
+                        _, mid_cd = _monitor_slot_and_id(monitor_key)
+                        if mid_cd:
+                            cursor.execute(
+                                """
+                                SELECT cooldown_timer FROM users.monitor_list_0001
+                                WHERE id = %s
+                                """,
+                                (mid_cd,),
+                            )
+                            row = cursor.fetchone()
+                            if row and len(row) > 0 and row[0] is not None:
+                                cooldown_timer = int(row[0])
                 except Exception:
                     pass
             loss_prevention_flag = _normalize_boolean_flag(trade.get('loss_prevention', False))
@@ -1708,7 +1761,7 @@ def insert_simulated_trade(trade):
             price_spread = None
             ticker, side = trade.get('ticker'), trade.get('side')
             trade_market_for_db = _resolve_trade_market_for_insert(
-                pg_conn, monitor_key, trade.get("trade_strategy"), ticker
+                cursor, monitor_key, trade.get("trade_strategy"), ticker
             )
             strike_for_db = canonical_trade_strike_display(symbol, trade.get("strike"))
             venue_exchange = normalize_exchange(
@@ -1749,8 +1802,9 @@ def insert_simulated_trade(trade):
                     hour_idx, weekly_cycle, loss_prevention, multiplier, price_spread,
                     yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
                     yes_ask_range_15m, no_ask_range_15m,
-                    paper_trade, cooldown_timer, test_filter
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    paper_trade, cooldown_timer, test_filter,
+                    created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                 RETURNING id
             """, (
                 trade.get('status', 'pending'), trade['date'], trade['time'],
@@ -3476,15 +3530,19 @@ def update_monitor_win_streak(trade_id: int) -> None:
         if monitor and monitor.startswith('mon_'):
             parts = monitor.split('_')
             if len(parts) >= 3:
-                monitor_id = parts[2]  # Get the monitor ID (10002)
-                user_number = parts[1]  # Get the user number (0001)
+                monitor_id = parts[2]  # e.g. mon_0001_10002 -> 10002
             else:
                 pg_conn.close()
                 return
         else:
             pg_conn.close()
             return
-        
+
+        if not _monitor_key_matches_worker(monitor):
+            log_debug(f"win_streak: skip monitor {monitor!r} (wrong tenant for this worker)")
+            pg_conn.close()
+            return
+
         # CYCLE-BASED WIN STREAK LOGIC:
         # A cycle is defined by the contract (settlement hour).
         # If ANY trade in a cycle is a loss, the entire cycle doesn't count toward win_streak.
@@ -3505,8 +3563,8 @@ def update_monitor_win_streak(trade_id: int) -> None:
         
         # Check if we've already processed this cycle for this monitor
         with pg_conn.cursor() as cursor:
-            cursor.execute(f"""
-                SELECT last_processed_cycle FROM users.monitor_list_{user_number}
+            cursor.execute("""
+                SELECT last_processed_cycle FROM users.monitor_list_0001
                 WHERE id = %s
             """, (monitor_id,))
             result = cursor.fetchone()
@@ -3561,8 +3619,8 @@ def update_monitor_win_streak(trade_id: int) -> None:
         
         # Get the strategy, win_streak_threshold and loss_prevention_toggle from the database for this monitor
         with pg_conn.cursor() as cursor:
-            cursor.execute(f"""
-                SELECT strategy, win_streak_threshold, loss_prevention_toggle FROM users.monitor_list_{user_number}
+            cursor.execute("""
+                SELECT strategy, win_streak_threshold, loss_prevention_toggle FROM users.monitor_list_0001
                 WHERE id = %s
             """, (monitor_id,))
             config_row = cursor.fetchone()
@@ -3585,8 +3643,8 @@ def update_monitor_win_streak(trade_id: int) -> None:
                 # Any loss in the cycle means win_streak = 0 for this cycle
                 if loss_prevention_toggle:
                     # If toggle is TRUE, update loss_prevention based on win streak
-                    cursor.execute(f"""
-                        UPDATE users.monitor_list_{user_number}
+                    cursor.execute("""
+                        UPDATE users.monitor_list_0001
                         SET win_streak = 0,
                             loss_prevention = 'one_contract',
                             last_processed_cycle = %s
@@ -3594,8 +3652,8 @@ def update_monitor_win_streak(trade_id: int) -> None:
                     """, (cycle_id, monitor_id))
                 else:
                     # If toggle is FALSE, always set loss_prevention to 'off'
-                    cursor.execute(f"""
-                        UPDATE users.monitor_list_{user_number}
+                    cursor.execute("""
+                        UPDATE users.monitor_list_0001
                         SET win_streak = 0,
                             loss_prevention = 'off',
                             last_processed_cycle = %s
@@ -3606,8 +3664,8 @@ def update_monitor_win_streak(trade_id: int) -> None:
                 # All wins in the cycle - increment win_streak
                 if loss_prevention_toggle:
                     # If toggle is TRUE, update loss_prevention based on win streak threshold
-                    cursor.execute(f"""
-                        UPDATE users.monitor_list_{user_number}
+                    cursor.execute("""
+                        UPDATE users.monitor_list_0001
                         SET win_streak = win_streak + %s,
                             loss_prevention = CASE 
                                 WHEN win_streak + %s >= %s THEN 'off'
@@ -3618,8 +3676,8 @@ def update_monitor_win_streak(trade_id: int) -> None:
                     """, (streak_increment, streak_increment, win_streak_threshold, cycle_id, monitor_id))
                 else:
                     # If toggle is FALSE, always set loss_prevention to 'off'
-                    cursor.execute(f"""
-                        UPDATE users.monitor_list_{user_number}
+                    cursor.execute("""
+                        UPDATE users.monitor_list_0001
                         SET win_streak = win_streak + %s,
                             loss_prevention = 'off',
                             last_processed_cycle = %s
@@ -3781,7 +3839,10 @@ def get_trades(status: str = None, recent_hours: int = None):
     
     try:
         with pg_conn.cursor() as cursor:
-            union_sql, _ = union_trades_with_archives_select(cursor, "0001")
+            from backend.core.tenant_context import get_worker_tenant_context
+
+            slot = get_worker_tenant_context().user_no
+            union_sql, _ = union_trades_with_archives_select(cursor, slot)
             if status == "open":
                 cursor.execute(
                     f"""
@@ -3847,7 +3908,10 @@ def get_trade_by_id(trade_id: int):
         # `cursor.fetchall()`. A `RealDictCursor` returns dict rows, which
         # breaks column-name extraction and causes HTTP 500.
         with pg_conn.cursor() as cursor:
-            union_sql, _ = union_trades_with_archives_select(cursor, "0001")
+            from backend.core.tenant_context import get_worker_tenant_context
+
+            slot = get_worker_tenant_context().user_no
+            union_sql, _ = union_trades_with_archives_select(cursor, slot)
             cursor.execute(
                 f"SELECT * FROM ({union_sql}) AS all_trades WHERE id = %s LIMIT 1",
                 (trade_id,),
@@ -4073,13 +4137,22 @@ async def add_trade(request: Request):
             else:
                 if row:
                     log(f"TRADE {trade_id} EXISTS BUT STATUS IS: {row[1]} (expected: open)")
-                    return {"error": f"Trade {trade_id} is not open (status: {row[1]})", "id": trade_id}
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Trade {trade_id} is not open (status: {row[1]})",
+                    )
                 else:
                     log(f"TRADE {trade_id} NOT FOUND")
-                    return {"error": f"Trade {trade_id} not found", "id": trade_id}
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Trade {trade_id} not found",
+                    )
         else:
             log(f"NO TRADE_ID PROVIDED IN CLOSE REQUEST")
-            return {"error": "trade_id (id) is required for close requests"}
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="trade_id (id) is required for close requests",
+            )
 
         return {"message": "Close ticket received and processed"}
     
@@ -4118,10 +4191,12 @@ async def add_trade(request: Request):
     # Global maintenance guard: never open new trades while the system is in maintenance mode.
     try:
         if not _is_trading_enabled():
-            return {"error": "trading_disabled", "id": None}
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="trading_disabled")
+    except HTTPException:
+        raise
     except Exception as e:
         log(f"⚠️ Error checking system trading mode: {e}")
-        return {"error": "trading_disabled", "id": None}
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="trading_disabled")
 
     required_fields = {"date", "time", "strike", "side", "buy_price", "position"}
     if not required_fields.issubset(data.keys()):
@@ -4147,7 +4222,8 @@ async def add_trade(request: Request):
         try:
             pg_mon = get_postgresql_connection()
             if pg_mon:
-                mst = _fetch_monitor_state(pg_mon, monitor_key_open)
+                with pg_mon.cursor() as _c_mon:
+                    mst = _fetch_monitor_state(_c_mon, monitor_key_open)
                 if mst and _normalize_boolean_flag(mst.get("test_filter")):
                     paper_trade = True
                     data["paper_trade"] = True
@@ -4165,7 +4241,42 @@ async def add_trade(request: Request):
         # Return HTTP response as soon as DB work is done so the client (e.g. auto_entry_supervisor)
         # does not timeout when main_app or active_trade_supervisor are slow; notifications run in background.
         log(f"📝 PAPER TRADE: Skipping executor, processing immediately")
-        
+
+        try:
+            from backend.paper_collateral import paper_open_passes_collateral_cap
+
+            _bp_g = float(data["buy_price"])
+            _pos_g = int(data["position"])
+            _fee_g = estimate_kalshi_taker_fee(_pos_g, _bp_g)
+            _ok_cap, _cap_reason = paper_open_passes_collateral_cap(
+                ticker=data.get("ticker"),
+                side=data.get("side"),
+                buy_price=_bp_g,
+                position=_pos_g,
+                open_fee_dollars=_fee_g,
+            )
+            if not _ok_cap:
+                log(f"PAPER TRADE SKIPPED (buying power / collateral): {_cap_reason}")
+                log_event(
+                    data.get("ticket_id", "UNKNOWN"),
+                    f"MANAGER: PAPER — SKIPPED insufficient buying power: {_cap_reason}",
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "error": "insufficient_paper_buying_power",
+                        "message": _cap_reason,
+                    },
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            log(f"paper collateral precheck failed: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="paper_collateral_precheck_failed",
+            ) from e
+
         # Insert trade with 'pending' status first
         data['status'] = 'pending'
         trade_id = insert_trade(data)
@@ -4173,7 +4284,10 @@ async def add_trade(request: Request):
         if trade_id is None:
             log(f"❌ Failed to insert paper trade to database")
             log_event(data.get("ticket_id", "UNKNOWN"), "MANAGER: PAPER TRADE — DATABASE INSERT FAILED")
-            return {"error": "Failed to insert paper trade to database", "id": None}
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to insert paper trade to database",
+            )
         
         # Immediately mark as open with estimated taker open fee, order_id_open = NULL
         try:
@@ -4260,7 +4374,10 @@ async def add_trade(request: Request):
     if trade_id is None:
         log(f"❌ Failed to insert trade to database - cannot notify active trade supervisor")
         log_event(data["ticket_id"], "MANAGER: SENT TO EXECUTOR — DATABASE INSERT FAILED")
-        return {"error": "Failed to insert trade to database", "id": None}
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to insert trade to database",
+        )
     
     log_event(data["ticket_id"], "MANAGER: SENT TO EXECUTOR — CONFIRMED")
     
@@ -4540,6 +4657,9 @@ async def manual_settlement_poll():
 def finalize_expired_trade_from_market_result(trade_id: int) -> bool:
     """Promote ``expired`` → ``closed`` using venue ``market_result`` + ``side`` (held to expiration). Idempotent."""
     from backend.core.kalshi_lifecycle_trade_outcome import expiry_win_loss_from_market_result
+
+    if _trade_manager_scheduler_shutdown.is_set():
+        return False
 
     pg_conn = get_postgresql_connection()
     if not pg_conn:
@@ -4866,6 +4986,8 @@ def check_expired_trades():
     ``15m`` (aligned with the monitor's market). Hourly or NULL ``market`` is
     expired only at :00, for every strategy.
     """
+    if _trade_manager_scheduler_shutdown.is_set():
+        return
     try:
         now_est = datetime.now(ZoneInfo("America/New_York"))
         log(f"[15-MIN CHECK] Starting expiry sweep at {now_est.strftime('%Y-%m-%d %H:%M:%S %Z')}")
@@ -5136,6 +5258,8 @@ def sweep_finalize_expired_trades_with_market_result() -> None:
 
 def check_expired_trades_for_settlements():
     """Periodic sweep: finalize ``expired`` trades once ``market_result`` is present."""
+    if _trade_manager_scheduler_shutdown.is_set():
+        return
     sweep_finalize_expired_trades_with_market_result()
 
 
@@ -5246,34 +5370,50 @@ def _trade_manager_command_handler(decoded: dict, msg_id: str, raw_fields: dict)
                     return True
         port = get_port("trade_manager")
         host = get_host()
-        requests.post(f"http://{host}:{port}/trades", json=payload, timeout=120)
+        resp = requests.post(f"http://{host}:{port}/trades", json=payload, timeout=120)
+        if resp.status_code not in (200, 201):
+            log(
+                f"❌ Redis tm_commands POST /trades failed status={resp.status_code} "
+                f"body={getattr(resp, 'text', '')[:900]!r}"
+            )
+        else:
+            try:
+                j = resp.json()
+                if isinstance(j, dict) and j.get("error") is not None:
+                    log(f"❌ Redis tm_commands POST /trades application error in JSON body: {j!r}")
+            except Exception:
+                pass
     except Exception as e:
         log(f"❌ trade_manager command stream: {e}")
     return True
 
 
-def start_trading_redis_trade_manager_consumers() -> None:
+def start_trading_redis_trade_manager_consumers(
+    stop_event: Optional[threading.Event] = None,
+) -> None:
     from backend.core.trading_redis_comms import (
         default_consumer_name,
         start_consumer_daemon,
-        stream_tm_commands,
-        stream_tm_status,
+        stream_tm_commands_for_worker,
+        stream_tm_status_for_worker,
         use_trading_redis_comms,
     )
 
     if not use_trading_redis_comms():
         return
     start_consumer_daemon(
-        stream_tm_status(),
+        stream_tm_status_for_worker(),
         "tm_status",
         default_consumer_name("tm-status"),
         _trade_manager_executor_status_handler,
+        stop_event=stop_event,
     )
     start_consumer_daemon(
-        stream_tm_commands(),
+        stream_tm_commands_for_worker(),
         "tm_commands",
         default_consumer_name("tm-cmd"),
         _trade_manager_command_handler,
+        stop_event=stop_event,
     )
 
 
@@ -5340,11 +5480,6 @@ def _notify_monitor_manager_trade_payload(payload: dict) -> None:
 
 # ---------- APScheduler Setup ----------------------------------------------------
 
-# Cleared on app start; set during FastAPI shutdown so settlement polling exits promptly.
-# APScheduler shutdown(wait=True) can block for a long-running job; use wait=False on teardown
-# so supervisord's stopwaitsecs is not exceeded.
-_trade_manager_scheduler_shutdown = threading.Event()
-
 _scheduler = BackgroundScheduler(timezone=ZoneInfo("America/New_York"))
 _scheduler.add_job(check_expired_trades, CronTrigger(minute="*/15", second=0), max_instances=1, coalesce=True)
 _scheduler.add_job(check_expired_trades_for_settlements, CronTrigger(minute="*/5", second=0), max_instances=1, coalesce=True)
@@ -5368,7 +5503,7 @@ async def lifespan(app: FastAPI):
             kwargs={"window_days": 84},
             daemon=True
         ).start()
-        start_trading_redis_trade_manager_consumers()
+        start_trading_redis_trade_manager_consumers(_trade_manager_scheduler_shutdown)
         start_trade_manager_positions_updated_subscriber()
     except Exception as e:
         pass

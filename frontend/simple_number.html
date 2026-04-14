@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <script src="/js/rec_session.js"></script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Simple Number</title>
@@ -34,8 +35,8 @@
                     // Get the first monitor's total_position
                     const firstMonitor = data.monitors[0];
                     if (firstMonitor && firstMonitor.id !== 'NEW_MONITOR') {
-                        // Extract the monitor ID from the formatted ID (e.g., "MON_0001_10002" -> 10002)
-                        const monitorId = firstMonitor.id.replace('MON_0001_', '');
+                        // Extract numeric id from MON_<slot>_<id>
+                        const monitorId = firstMonitor.id.replace(/^MON_\d{4}_/i, '');
                         
                         // Get the specific monitor data to get total_position
                         const monitorResponse = await fetch(`/api/monitors/${monitorId}`);

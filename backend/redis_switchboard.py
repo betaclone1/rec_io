@@ -12,7 +12,7 @@ endpoints (/api/redis_basic_test, /redis-basic-test, /api/strike_table_15m_lates
 
 Run: python -m backend.redis_switchboard
 Config (env): REDIS_URL or REDIS_HOST+REDIS_PORT; SWITCHBOARD_*; PG_NOTIFY_CHANNEL;
-REDIS_CHANNEL_DB_CHANGES; DB via get_postgresql_connection (LISTEN).
+REDIS_CHANNEL_DB_CHANGES; DB via get_system_postgresql_connection (LISTEN).
 """
 
 import os
@@ -50,8 +50,7 @@ SWITCHBOARD_PORT = int(os.getenv("SWITCHBOARD_PORT", "3010"))
 PG_NOTIFY_CHANNEL = os.getenv("PG_NOTIFY_CHANNEL", "rec_io_db_changes")
 
 # Stream registry: (schema, table) -> stream name. Single source of truth: backend/core/stream_registry.py
-from backend.core.stream_registry import get_table_to_stream
-TABLE_TO_DATABASE = get_table_to_stream()
+from backend.core.stream_registry import resolve_stream_for_notify
 
 logging.basicConfig(
     level=logging.INFO,
@@ -80,8 +79,8 @@ def pg_listen_loop():
     """Run in a thread: LISTEN to PostgreSQL, on notify build db_change message and publish to Redis."""
     try:
         import psycopg2.extensions
-        from backend.core.config.database import get_postgresql_connection
-        conn = get_postgresql_connection()
+        from backend.core.config.database import get_system_postgresql_connection
+        conn = get_system_postgresql_connection()
         if not conn:
             logger.warning("PG connection failed; DB-driven events disabled")
             return
@@ -105,8 +104,10 @@ def pg_listen_loop():
                     schema = payload.get("schema")
                     table = payload.get("table")
                     op = payload.get("op", "UNKNOWN")
-                    key = (str(schema).lower(), str(table).lower()) if schema and table else None
-                    db_name = TABLE_TO_DATABASE.get(key) if key else None
+                    db_name, tenant_user_no = resolve_stream_for_notify(
+                        str(schema) if schema else "",
+                        str(table) if table else "",
+                    )
                     if not db_name:
                         logger.debug("Ignore notify for %s.%s (no mapping)", schema, table)
                         continue
@@ -120,6 +121,8 @@ def pg_listen_loop():
                         },
                         "timestamp": now,
                     }
+                    if tenant_user_no:
+                        msg["tenant_user_no"] = tenant_user_no
                     try:
                         r.publish(REDIS_CHANNEL_DB_CHANGES, json.dumps(msg))
                         logger.info("Published db_change %s -> Redis", db_name)
@@ -149,8 +152,8 @@ app = FastAPI(title="Redis Switchboard")
 
 
 def get_pg():
-    from backend.core.config.database import get_postgresql_connection
-    return get_postgresql_connection()
+    from backend.core.config.database import get_system_postgresql_connection
+    return get_system_postgresql_connection()
 
 
 def _jsonable_value(v):

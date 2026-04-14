@@ -6,6 +6,10 @@
 # This script provides a complete system restart with port flushing and
 # supervisor restart. Use this as the primary tool for starting/restarting
 # the trading system.
+#
+# Every supervisord start done through this script runs generate_unified_supervisor_config.py
+# first so active system.master_users get user-level program blocks. For OS boot without
+# MASTER_RESTART, use scripts/supervisord_with_config_regen.sh as supervisord's command.
 # =============================================================================
 
 set -e  # Exit on any error
@@ -232,6 +236,18 @@ stop_supervisor() {
     print_success "Supervisor stopped"
 }
 
+# Regenerate backend/supervisord.conf from the database (active system.master_users → per-user stacks).
+# Call this before every supervisord start so reboot / quick restart picks up newly active users.
+regenerate_supervisor_config() {
+    print_status "Regenerating supervisord.conf from DB (active system.master_users + per-tenant monitors)..."
+    if [ ! -f "$REC_PROJECT_ROOT/scripts/config/generate_unified_supervisor_config.py" ]; then
+        print_error "scripts/config/generate_unified_supervisor_config.py not found"
+        return 1
+    fi
+    "$REC_PYTHON_EXECUTABLE" "$REC_PROJECT_ROOT/scripts/config/generate_unified_supervisor_config.py"
+    print_success "Supervisor configuration written: $SUPERVISOR_CONFIG"
+}
+
 # Function to start supervisor
 start_supervisor() {
     print_status "Starting supervisor..."
@@ -239,6 +255,8 @@ start_supervisor() {
     # Force Python to load current source (avoids stale .pyc; ensures account sync and all backend use disk code)
     _REPO_ROOT="$(cd "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
     rm -rf "${_REPO_ROOT}/backend/__pycache__" 2>/dev/null || true
+
+    regenerate_supervisor_config || return 1
 
     # Start supervisor in background
     supervisord -c "$SUPERVISOR_CONFIG" &
@@ -598,25 +616,15 @@ EOF
     flush_all_ports
     echo ""
     
-    # Step 4: Generate supervisor configuration
-    print_status "Step 4: Generating unified supervisor configuration..."
-    if [ -f "$REC_PROJECT_ROOT/scripts/config/generate_unified_supervisor_config.py" ]; then
-        "$REC_PYTHON_EXECUTABLE" "$REC_PROJECT_ROOT/scripts/config/generate_unified_supervisor_config.py"
-    else
-        print_error "scripts/config/generate_unified_supervisor_config.py not found"
-        exit 1
-    fi
-    echo ""
-    
-    # Step 5: Start supervisor (clear backend bytecode after config gen so processes load current .py)
-    print_status "Step 5: Starting supervisor..."
+    # Step 4: Start supervisor (regenerates supervisord.conf inside start_supervisor — all active users get stacks)
+    print_status "Step 4: Starting supervisor (regenerates config from DB first)..."
     _REPO_ROOT="$(cd "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
     rm -rf "${_REPO_ROOT}/backend/__pycache__" 2>/dev/null || true
     start_supervisor
     echo ""
 
-    # Step 5b: Wait for core services to bind (avoids kalshi_account_sync hitting trade_manager before it is listening)
-    print_status "Step 5b: Waiting for core ports (3000, 4000, 8001)..."
+    # Step 5: Wait for core services to bind (avoids kalshi_account_sync hitting trade_manager before it is listening)
+    print_status "Step 5: Waiting for core ports (3000, 4000, 8001)..."
     _wait_attempts=0
     while [ $_wait_attempts -lt 30 ]; do
         if check_port 3000 && check_port 4000 && check_port 8001; then
@@ -631,7 +639,7 @@ EOF
     fi
     echo ""
     
-    # Step 6: Restart all services
+    # Step 6: Restart all programs (picks up any new [program:...] sections from regenerated config)
     print_status "Step 6: Restarting all services..."
     restart_all_services
     echo ""
@@ -663,7 +671,7 @@ EOF
 # Function to perform quick restart (just supervisor restart)
 quick_restart() {
     print_header
-    print_status "Initiating QUICK RESTART (supervisor only)..."
+    print_status "Initiating QUICK RESTART (supervisor stop → regenerate config from DB → start)..."
     echo ""
 
     ensure_redis_available
@@ -759,6 +767,7 @@ main() {
             master_restart
             ;;
         "quick")
+            # Regenerates supervisord.conf then restarts supervisor (same as full path for multi-user stacks)
             quick_restart
             ;;
         "emergency"|"force")
@@ -775,7 +784,7 @@ main() {
             echo ""
             echo "Commands:"
             echo "  master, full    - Complete MASTER RESTART with process cleanup (default); ensures local Redis if REDIS_HOST is localhost"
-            echo "  quick           - Quick supervisor restart only (no process cleanup)"
+            echo "  quick           - Supervisor stop/start + regenerate config from DB (no full process kill)"
             echo "  emergency, force - Same as master restart (legacy alias)"
             echo "  status          - Show current system status"
             echo "  flush           - Flush all ports only"

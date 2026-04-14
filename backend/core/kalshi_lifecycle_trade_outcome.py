@@ -22,8 +22,10 @@ from decimal import Decimal
 from typing import Any, Optional
 
 from psycopg2 import errors as pg_errors
+from psycopg2 import sql as psql
 
 from backend.core.kalshi_event_market_fetch import normalize_market_result_field
+from backend.core.tenant_context import worker_tenant_context_cached
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +135,12 @@ def apply_lifecycle_market_result_for_ticker(market_ticker: str, result_raw: Any
 
     from backend.core.config.database import get_postgresql_connection
 
+    ctx = worker_tenant_context_cached()
+    trades_tbl = psql.SQL("{}.{}").format(
+        psql.Identifier(ctx.pg_schema),
+        psql.Identifier(f"trades_{ctx.user_no}"),
+    )
+
     n = 0
     trade_log_targets: list[tuple[str, int]] = []
     expired_to_finalize: list[int] = []
@@ -149,25 +157,29 @@ def apply_lifecycle_market_result_for_ticker(market_ticker: str, result_raw: Any
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
-                    SELECT id, ticket_id, side, win_loss, win_loss_confirmed, status
-                    FROM users.trades_0001
-                    WHERE ticker = %s
-                      AND status IN ('open', 'closing', 'close_failed', 'expired', 'closed')
-                    ORDER BY id
-                    FOR UPDATE
-                    """,
+                    psql.SQL(
+                        """
+                        SELECT id, ticket_id, side, win_loss, win_loss_confirmed, status
+                        FROM {}
+                        WHERE ticker = %s
+                          AND status IN ('open', 'closing', 'close_failed', 'expired', 'closed')
+                        ORDER BY id
+                        FOR UPDATE
+                        """
+                    ).format(trades_tbl),
                     (mt,),
                 )
                 rows = cur.fetchall()
                 for trade_id, ticket_id, side, wl, wlc, status in rows:
                     cur.execute(
-                        """
-                        UPDATE users.trades_0001
-                        SET market_result = %s
-                        WHERE id = %s
-                          AND status IN ('open', 'closing', 'close_failed', 'expired', 'closed')
-                        """,
+                        psql.SQL(
+                            """
+                            UPDATE {}
+                            SET market_result = %s
+                            WHERE id = %s
+                              AND status IN ('open', 'closing', 'close_failed', 'expired', 'closed')
+                            """
+                        ).format(trades_tbl),
                         (bin_out, trade_id),
                     )
                     if cur.rowcount:
@@ -181,11 +193,13 @@ def apply_lifecycle_market_result_for_ticker(market_ticker: str, result_raw: Any
                     wlc_new = compute_win_loss_confirmed_from_venue(side, bin_out, wl)
                     if wlc_new is not None:
                         cur.execute(
-                            """
-                            UPDATE users.trades_0001
-                            SET win_loss_confirmed = %s
-                            WHERE id = %s
-                            """,
+                            psql.SQL(
+                                """
+                                UPDATE {}
+                                SET win_loss_confirmed = %s
+                                WHERE id = %s
+                                """
+                            ).format(trades_tbl),
                             (wlc_new, trade_id),
                         )
                         if not wlc_new:

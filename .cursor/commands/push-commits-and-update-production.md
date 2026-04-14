@@ -22,4 +22,6 @@ Use for lighter, high-confidence updates when you want a one-stop shop. For larg
 
 3. **Run apply-update-from-local** — Execute the apply-update-from-local workflow (see `.cursor/skills/apply-update-from-local/SKILL.md`): confirm code is pushed, read changelog agent instructions, find open MASTER_CHANGELOG entries, execute each checklist task on prod via SSH, verify production, fidelity check, report outcome.
 
+4. **Record deploy version** — The changelog entry from **prepare-update** already pins **NEXT** (`Release: vNEXT` + checklist `record_system_version.py --version NEXT`). **apply-update-from-local** runs that checklist line on prod. Do not use no-arg `record_system_version.py` when the entry pins **NEXT**. See `.cursor/skills/push-commits-and-update-production/SKILL.md`.
+
 **References:** `.cursor/skills/prepare-update/SKILL.md`, `.cursor/skills/apply-update-from-local/SKILL.md`, `.cursor/commands/prepare-update.md`, `.cursor/commands/apply-update-from-local.md`.

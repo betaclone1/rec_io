@@ -245,7 +245,7 @@ def _notify_trade_manager_executor_status(status_payload: dict) -> None:
     try:
         from backend.core.trading_redis_comms import (
             redis_client_optional,
-            stream_tm_status,
+            stream_tm_status_for_worker,
             use_trading_redis_comms,
             xadd_trading_json,
         )
@@ -255,7 +255,7 @@ def _notify_trade_manager_executor_status(status_payload: dict) -> None:
             if r:
                 if xadd_trading_json(
                     r,
-                    stream_tm_status(),
+                    stream_tm_status_for_worker(),
                     msg_type="update_trade_status",
                     payload=status_payload,
                     source="trade_executor",
@@ -336,7 +336,8 @@ def process_trigger_trade_request(data: dict):
     full_path = f"/trade-api/v2{path}"
 
     KEY_ID, KEY_PATH = get_current_credentials()
-    log_event(ticket_id, f"🔑 CREDENTIALS: KEY_ID={KEY_ID[:8]}..., KEY_PATH={KEY_PATH}", trade_id=trade_id)
+    _kid = f"{KEY_ID[:8]}..." if KEY_ID else "(none)"
+    log_event(ticket_id, f"🔑 CREDENTIALS: KEY_ID={_kid}, KEY_PATH={KEY_PATH}", trade_id=trade_id)
 
     signature = generate_kalshi_signature("POST", full_path, timestamp, str(KEY_PATH))
     log_event(ticket_id, f"🔐 SIGNATURE: timestamp={timestamp}, path={full_path}", trade_id=trade_id)
@@ -431,7 +432,27 @@ def _executor_stream_handler(decoded: dict, msg_id: str, raw_fields: dict) -> bo
     if not isinstance(payload, dict):
         return True
     try:
-        from backend.core.trading_redis_comms import idempotency_begin, redis_client_optional, use_trading_redis_comms
+        from backend.core.trading_redis_comms import (
+            idempotency_begin,
+            redis_client_optional,
+            tenant_slot_from_monitor_key,
+            use_trading_redis_comms,
+        )
+
+        try:
+            from backend.core.tenant_context import get_worker_tenant_context
+
+            w_slot = get_worker_tenant_context().user_no
+            m_slot = tenant_slot_from_monitor_key(payload.get("monitor"))
+            if w_slot and m_slot and m_slot != w_slot:
+                _te_logger.warning(
+                    "executor skipping trigger_trade: monitor tenant %s != worker %s (legacy shared stream?)",
+                    m_slot,
+                    w_slot,
+                )
+                return True
+        except Exception:
+            pass
 
         if use_trading_redis_comms():
             r = redis_client_optional()
@@ -449,14 +470,14 @@ def _start_trading_redis_executor_consumer() -> None:
     from backend.core.trading_redis_comms import (
         default_consumer_name,
         start_consumer_daemon,
-        stream_executor,
+        stream_executor_for_worker,
         use_trading_redis_comms,
     )
 
     if not use_trading_redis_comms():
         return
     start_consumer_daemon(
-        stream_executor(),
+        stream_executor_for_worker(),
         "executor",
         default_consumer_name("trade-exec"),
         _executor_stream_handler,
@@ -517,5 +538,9 @@ _start_trading_redis_executor_consumer()
 
 # Main entry point
 if __name__ == "__main__":
+    _log = logging.getLogger("trade_executor")
+    from backend.core.exchange_credentials import block_forever_if_kalshi_authenticated_api_disallowed
+
+    block_forever_if_kalshi_authenticated_api_disallowed(_log, "trade_executor")
     app.run(host="0.0.0.0", port=TRADE_EXECUTOR_PORT, debug=False)
 

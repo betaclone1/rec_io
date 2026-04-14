@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <script src="/js/rec_session.js"></script>
+
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>rec.io - Trading Platform</title>
@@ -800,60 +802,40 @@
       initializeCollapsedSidebarTooltips();
     });
     
-    // Load user information and display in sidebar
+    // Sidebar display name: GET /api/user/info only. Blank if missing or error (no placeholders).
+    function clearSidebarUserLabel() {
+      const userDisplay = document.getElementById('userDisplay');
+      if (userDisplay) {
+        userDisplay.textContent = '';
+      }
+      const userSettingsItem = document.getElementById('userSettingsItem');
+      if (userSettingsItem) {
+        userSettingsItem.setAttribute('data-tooltip', 'User Settings');
+      }
+    }
+
     async function loadUserDisplay() {
       try {
-        // Try to get user info directly from database first
         const userResponse = await fetch(window.location.origin + '/api/user/info');
-        if (userResponse.ok) {
-          const userInfo = await userResponse.json();
-          const userDisplay = document.getElementById('userDisplay');
-          if (userDisplay) {
-            // Use the full name (first + last) from the database, fallback to user_id
-            const userName = userInfo.name || userInfo.user_id || 'ewais';
-            userDisplay.textContent = userName;
-            // Update the tooltip for the user settings item
-            updateUserSettingsTooltip(userName);
-          }
+        const userInfo = await userResponse.json().catch(function () { return null; });
+
+        if (!userResponse.ok || !userInfo || userInfo.error) {
+          clearSidebarUserLabel();
           return;
         }
-        
-        // Fallback to authentication method
-        const token = localStorage.getItem('rec_auth_token');
-        const deviceId = localStorage.getItem('rec_device_id');
-        
-        if (!token || !deviceId) {
-          return;
+
+        const disp = (userInfo.name != null && String(userInfo.name).trim())
+          ? String(userInfo.name).trim()
+          : '';
+
+        const userDisplay = document.getElementById('userDisplay');
+        if (userDisplay) {
+          userDisplay.textContent = disp;
         }
-        
-        const response = await fetch(window.location.origin + '/api/auth/verify', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ token, deviceId })
-        });
-        
-        if (response.ok) {
-          const data = await response.json();
-          if (data.authenticated) {
-            // Get user info from database
-            const userResponse = await fetch(window.location.origin + '/api/user/info');
-            if (userResponse.ok) {
-              const userInfo = await userResponse.json();
-              const userDisplay = document.getElementById('userDisplay');
-              if (userDisplay) {
-                // Use the full name (first + last) from the database, fallback to user_id
-                const userName = userInfo.name || userInfo.user_id || data.username || 'ewais';
-                userDisplay.textContent = userName;
-                // Update the tooltip for the user settings item
-                updateUserSettingsTooltip(userName);
-              }
-            }
-          }
-        }
+        updateUserSettingsTooltip(disp);
       } catch (error) {
         console.error('Error loading user display:', error);
+        clearSidebarUserLabel();
       }
     }
     
@@ -861,14 +843,14 @@
     function updateUserSettingsTooltip(userName) {
       const userSettingsItem = document.getElementById('userSettingsItem');
       const sidebar = document.getElementById('sidebar');
+      if (!userSettingsItem || !sidebar) {
+        return;
+      }
       const isCollapsed = sidebar.classList.contains('collapsed');
-      
-      if (userSettingsItem) {
-        if (isCollapsed) {
-          userSettingsItem.setAttribute('data-tooltip', userName);
-        } else {
-          userSettingsItem.setAttribute('data-tooltip', 'User Settings');
-        }
+      if (isCollapsed && userName) {
+        userSettingsItem.setAttribute('data-tooltip', userName);
+      } else {
+        userSettingsItem.setAttribute('data-tooltip', 'User Settings');
       }
     }
     

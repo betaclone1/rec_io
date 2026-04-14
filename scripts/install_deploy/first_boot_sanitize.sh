@@ -134,7 +134,11 @@ perform_sanitization() {
             DELETE FROM live_data.websocket_market_data;
             DELETE FROM live_data.btc_live_strikes;
             
-            -- CRITICAL: Remove master users table and views (ONLY exists on production server)
+            -- CRITICAL: Remove master users table and views (system schema; see migration 20260410_1015)
+            DROP VIEW IF EXISTS system.active_master_users CASCADE;
+            DROP VIEW IF EXISTS system.recent_master_registrations CASCADE;
+            DROP VIEW IF EXISTS system.master_users_summary CASCADE;
+            DROP TABLE IF EXISTS system.master_users CASCADE;
             DROP VIEW IF EXISTS users.active_master_users CASCADE;
             DROP VIEW IF EXISTS users.recent_master_registrations CASCADE;
             DROP VIEW IF EXISTS users.master_users_summary CASCADE;

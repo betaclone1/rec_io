@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>rec.io - Application submitted</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap" rel="stylesheet">
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: 'IBM Plex Sans', sans-serif;
+      background: url('/images/splash_page_bg.jpg') center/cover no-repeat;
+      color: white;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      touch-action: auto;
+    }
+    .register-container {
+      width: 360px;
+      margin-right: 200px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    @media (max-width: 768px) {
+      body { justify-content: center; }
+      .register-container { margin-right: 0; width: 90%; max-width: 400px; }
+    }
+    .register-logo {
+      width: 150px;
+      height: auto;
+      margin-bottom: 28px;
+    }
+    .message {
+      font-size: 16px;
+      line-height: 1.5;
+      text-align: center;
+      color: rgba(255, 255, 255, 0.95);
+      margin: 0;
+    }
+    .nav-links {
+      margin-top: 28px;
+      text-align: center;
+      font-size: 14px;
+    }
+    .nav-links a {
+      color: rgba(255, 255, 255, 0.95);
+      text-decoration: underline;
+    }
+    .nav-links a:hover { color: #fff; }
+  </style>
+</head>
+<body>
+  <div class="register-container">
+    <img src="/images/rec_logo_trns.png" alt="REC.IO" class="register-logo">
+    <p class="message" id="messageLine">
+      Your new user account application has been submitted. You will be notified via email upon admin approval.
+    </p>
+    <div class="nav-links">
+      <a href="/login">Back to sign in</a>
+    </div>
+  </div>
+  <script>
+    function qs(name) {
+      var m = new RegExp('[?&]' + encodeURIComponent(name) + '=([^&]*)').exec(window.location.search);
+      return m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : '';
+    }
+    (function() {
+      var fn = qs('first_name').trim();
+      var em = qs('email').trim();
+      var sub = qs('submitted_on').trim();
+      var el = document.getElementById('messageLine');
+      if (!el) return;
+      if (em) {
+        var hi = fn ? ('Hi ' + fn + '. ') : 'Hi. ';
+        var mid = sub
+          ? ('Your new user account application was submitted on ' + sub + '. ')
+          : ('Your new user account application has been submitted. ');
+        el.textContent =
+          hi + mid + 'You will be notified at ' + em + ' upon admin approval.';
+      } else if (sub) {
+        el.textContent =
+          'Your new user account application was submitted on ' +
+          sub +
+          '. You will be notified via email upon admin approval.';
+      }
+    })();
+  </script>
+</body>
+</html>

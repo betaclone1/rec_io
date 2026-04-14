@@ -3,8 +3,8 @@
 # =============================================================================
 # MASTER USERS MANAGEMENT SCRIPT
 # =============================================================================
-# This script provides utilities for managing the master_users table
-# in the users schema of the REC.IO database.
+# This script provides utilities for managing system.master_users
+# (and helper views under the system schema).
 # =============================================================================
 
 set -e
@@ -57,28 +57,28 @@ run_query() {
 show_all_users() {
     print_status "Showing all master users..."
     echo ""
-    run_query "SELECT user_id, name, email, server_ip, registration_date, status FROM users.master_users ORDER BY registration_date DESC;"
+    run_query "SELECT user_id, name, email, server_ip, registration_date, status FROM system.master_users ORDER BY registration_date DESC;"
 }
 
 # Function to show active users
 show_active_users() {
     print_status "Showing active master users..."
     echo ""
-    run_query "SELECT user_id, name, email, server_ip, last_updated FROM users.active_master_users;"
+    run_query "SELECT user_id, name, email, server_ip, last_updated FROM system.active_master_users;"
 }
 
 # Function to show recent registrations
 show_recent_registrations() {
     print_status "Showing recent registrations (last 30 days)..."
     echo ""
-    run_query "SELECT user_id, name, email, server_ip, registration_date FROM users.recent_master_registrations;"
+    run_query "SELECT user_id, name, email, server_ip, registration_date FROM system.recent_master_registrations;"
 }
 
 # Function to show summary
 show_summary() {
     print_status "Showing master users summary..."
     echo ""
-    run_query "SELECT * FROM users.master_users_summary;"
+    run_query "SELECT * FROM system.master_users_summary;"
 }
 
 # Function to add a user
@@ -97,7 +97,8 @@ add_user() {
     
     print_status "Adding user: $user_id"
     
-    local query="INSERT INTO users.master_users (user_id, name, email, phone, server_ip, server_hostname, system_version, status) VALUES ('$user_id', '$name', '$email', '${phone:-}', '${server_ip:-}', '${server_hostname:-}', 'REC.IO v2', 'active') ON CONFLICT (user_id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email, phone = EXCLUDED.phone, server_ip = EXCLUDED.server_ip, server_hostname = EXCLUDED.server_hostname, last_updated = CURRENT_TIMESTAMP;"
+    # user_no: next 4-digit slot (same rule as /api/auth/register); account_type default for ops-added rows.
+    local query="INSERT INTO system.master_users (user_no, user_id, name, email, phone, server_ip, server_hostname, system_version, status, account_type) SELECT LPAD((SELECT COALESCE(MAX(CAST(TRIM(user_no) AS INTEGER)), 0) + 1 FROM system.master_users WHERE TRIM(user_no) ~ E'^[0-9]+\$')::text, 4, '0'), '$user_id', '$name', '$email', '${phone:-}', '${server_ip:-}', '${server_hostname:-}', 'REC.IO v2', 'active', 'user_basic' ON CONFLICT (user_id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email, phone = EXCLUDED.phone, server_ip = EXCLUDED.server_ip, server_hostname = EXCLUDED.server_hostname, last_updated = CURRENT_TIMESTAMP;"
     
     if run_query "$query" > /dev/null 2>&1; then
         print_success "User $user_id added/updated successfully"
@@ -124,7 +125,7 @@ update_user_status() {
     
     print_status "Updating user $user_id status to $status"
     
-    local query="UPDATE users.master_users SET status = '$status', last_updated = CURRENT_TIMESTAMP WHERE user_id = '$user_id';"
+    local query="UPDATE system.master_users SET status = '$status', last_updated = CURRENT_TIMESTAMP WHERE user_id = '$user_id';"
     
     if run_query "$query" > /dev/null 2>&1; then
         print_success "User $user_id status updated to $status"
@@ -146,7 +147,7 @@ add_user_notes() {
     
     print_status "Adding notes to user $user_id"
     
-    local query="UPDATE users.master_users SET notes = '$notes', last_updated = CURRENT_TIMESTAMP WHERE user_id = '$user_id';"
+    local query="UPDATE system.master_users SET notes = '$notes', last_updated = CURRENT_TIMESTAMP WHERE user_id = '$user_id';"
     
     if run_query "$query" > /dev/null 2>&1; then
         print_success "Notes added to user $user_id"
@@ -170,7 +171,7 @@ delete_user() {
     if [[ "$response" =~ ^[Yy]$ ]]; then
         print_status "Deleting user $user_id"
         
-        local query="DELETE FROM users.master_users WHERE user_id = '$user_id';"
+        local query="DELETE FROM system.master_users WHERE user_id = '$user_id';"
         
         if run_query "$query" > /dev/null 2>&1; then
             print_success "User $user_id deleted successfully"
@@ -195,7 +196,7 @@ search_users() {
     print_status "Searching for users matching: $search_term"
     echo ""
     
-    local query="SELECT user_id, name, email, server_ip, status FROM users.master_users WHERE user_id ILIKE '%$search_term%' OR name ILIKE '%$search_term%' OR email ILIKE '%$search_term%' OR server_ip ILIKE '%$search_term%' ORDER BY registration_date DESC;"
+    local query="SELECT user_id, name, email, server_ip, status FROM system.master_users WHERE user_id ILIKE '%$search_term%' OR name ILIKE '%$search_term%' OR email ILIKE '%$search_term%' OR server_ip ILIKE '%$search_term%' ORDER BY registration_date DESC;"
     
     run_query "$query"
 }
@@ -212,7 +213,7 @@ show_user_details() {
     print_status "Showing details for user: $user_id"
     echo ""
     
-    local query="SELECT user_id, name, email, phone, server_ip, server_hostname, registration_date, last_updated, system_version, status, notes FROM users.master_users WHERE user_id = '$user_id';"
+    local query="SELECT user_id, name, email, phone, server_ip, server_hostname, registration_date, last_updated, system_version, status, notes FROM system.master_users WHERE user_id = '$user_id';"
     
     run_query "$query"
 }

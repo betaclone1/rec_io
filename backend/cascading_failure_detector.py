@@ -57,7 +57,11 @@ sys.path.insert(0, os.path.join(get_project_root(), 'scripts'))
 
 from backend.core.unified_config import unified_config
 from backend.core.time_eastern import merge_psycopg2_connect_kwargs, now_est
+from backend.core.config.database import get_database_config
+from backend.core.tenant_context import process_tenant_context
 from backend.core.port_config import (
+    default_pool_user_number,
+    pool_user_for_unified_aes_ats,
     unified_active_trade_supervisor_service_name,
     user_scoped_service_name,
 )
@@ -157,9 +161,7 @@ class CascadingFailureDetector:
             has_15m = any(m.get("market", "hourly") == "15m" for m in active_monitors)
             has_hourly = any(m.get("market", "hourly") != "15m" for m in active_monitors)
             if has_15m or has_hourly:
-                from backend.core.port_config import pool_user_for_unified_aes_ats
-
-                pu = pool_user_for_unified_aes_ats(active_monitors)
+                pu = pool_user_for_unified_aes_ats(active_monitors) or default_pool_user_number()
                 discovered_services.extend(
                     [
                         f"auto_entry_supervisor_{pu}",
@@ -258,18 +260,19 @@ class CascadingFailureDetector:
             
             # Check trades database connection
             try:
-                conn_trades = psycopg2.connect(
-                    **merge_psycopg2_connect_kwargs(
-                        {
-                            "host": "localhost",
-                            "database": "rec_io_db",
-                            "user": "rec_io_user",
-                            "password": "rec_io_password",
-                        }
+                from psycopg2 import sql as psql
+
+                cfg = merge_psycopg2_connect_kwargs(get_database_config())
+                ctx = process_tenant_context()
+                sch, tbl = ctx.ut("trades").split(".", 1)
+                conn_trades = psycopg2.connect(**cfg)
+                cursor_trades = conn_trades.cursor()
+                cursor_trades.execute(
+                    psql.SQL("SELECT 1 FROM {}.{} LIMIT 1").format(
+                        psql.Identifier(sch),
+                        psql.Identifier(tbl),
                     )
                 )
-                cursor_trades = conn_trades.cursor()
-                cursor_trades.execute("SELECT 1 FROM users.trades_0001 LIMIT 1")
                 cursor_trades.fetchone()
                 conn_trades.close()
             except Exception as e:
@@ -279,14 +282,7 @@ class CascadingFailureDetector:
             # Check live_data database connection
             try:
                 conn_live_data = psycopg2.connect(
-                    **merge_psycopg2_connect_kwargs(
-                        {
-                            "host": "localhost",
-                            "database": "rec_io_db",
-                            "user": "rec_io_user",
-                            "password": "rec_io_password",
-                        }
-                    )
+                    **merge_psycopg2_connect_kwargs(get_database_config())
                 )
                 cursor_live_data = conn_live_data.cursor()
                 cursor_live_data.execute("SELECT 1 FROM live_data.live_price_log_1s_btc LIMIT 1")

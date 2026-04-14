@@ -22,11 +22,17 @@ from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import psycopg2
 import pytz
 import requests
 
 from backend.core.time_eastern import merge_psycopg2_connect_kwargs
+from backend.core.strike_pipeline_health import (
+    MARKET_15M,
+    floor_strike_vs_spot_check,
+    pipeline_health_writer_dead_sec,
+    upsert_strike_pipeline_health,
+)
+from backend.symbol_price_watchdog import get_current_price_from_db
 from psycopg2.extras import RealDictCursor
 
 _script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -291,8 +297,15 @@ def _fixed_point_text(value, default="0.00"):
 
 
 def connect_database():
+    """
+    Live_data / shared-schema connection for market ingest (not tenant ``users_NNNN``).
+
+    Uses :func:`backend.core.config.database.get_system_postgresql_connection` (no tenant rewrite).
+    """
     try:
-        return psycopg2.connect(**merge_psycopg2_connect_kwargs(DB_CONFIG))
+        from backend.core.config.database import get_system_postgresql_connection
+
+        return get_system_postgresql_connection()
     except Exception as e:
         logger.error("Database connection failed: %s", e)
         return None
@@ -396,15 +409,12 @@ def ensure_unified_15m_table(connection):
 
 def get_open_trade_tickers_for_symbol(connection, table_name: str, symbol_upper: str, exchange: str):
     try:
-        cursor = connection.cursor()
-        cursor.execute(
-            """
-            SELECT DISTINCT ticker FROM users.trades_0001
-            WHERE status IN ('pending', 'open') AND symbol = %s AND ticker IS NOT NULL
-            """,
-            (symbol_upper,),
+        from backend.core.kalshi_lifecycle_pending_tickers import (
+            distinct_open_trade_tickers_for_symbol_all_tenants,
         )
-        open_tickers = {row[0] for row in cursor.fetchall()}
+
+        cursor = connection.cursor()
+        open_tickers = distinct_open_trade_tickers_for_symbol_all_tenants(connection, symbol_upper)
         if not open_tickers:
             return set()
         cursor.execute(
@@ -585,13 +595,42 @@ def save_kalshi_15m_unified(
         sym = symbol_upper.upper()
         br = exchange.lower().strip()
         market_val = "15m"
+        spot = None
+        try:
+            spot = get_current_price_from_db(sym)
+        except Exception:
+            logger.debug("save_kalshi_15m: spot lookup failed for %s", sym, exc_info=True)
         for market in markets_data:
             try:
                 market_ticker = market.get("ticker", "")
                 subtitle = market.get("subtitle", "")
                 strike = subtitle.split(" or above")[0].strip() if " or above" in subtitle else ""
                 if market.get("floor_strike") is not None:
-                    strike = format_15m_strike_from_api_floor_strike(market.get("floor_strike"))
+                    ok_fs, fs_reason, _ = floor_strike_vs_spot_check(market.get("floor_strike"), spot)
+                    if ok_fs:
+                        strike = format_15m_strike_from_api_floor_strike(market.get("floor_strike"))
+                    else:
+                        logger.error(
+                            "[15m REST] floor_strike rejected (corrupt vs spot) symbol=%s ticker=%s %s "
+                            "floor_strike=%r spot=%s — using subtitle strike only",
+                            sym,
+                            market_ticker,
+                            fs_reason,
+                            market.get("floor_strike"),
+                            spot,
+                        )
+                        try:
+                            upsert_strike_pipeline_health(
+                                connection,
+                                exchange=br,
+                                market=MARKET_15M,
+                                symbol=sym,
+                                healthy=False,
+                                reason=f"rest_seed:{fs_reason}",
+                                max_age_sec=pipeline_health_writer_dead_sec(),
+                            )
+                        except Exception:
+                            logger.exception("strike_pipeline_health upsert after REST floor_strike reject")
 
                 yes_bid_dollars = market.get("yes_bid_dollars")
                 yes_ask_dollars = market.get("yes_ask_dollars")

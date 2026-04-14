@@ -31,6 +31,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from backend.core.port_config import (
+    default_pool_user_number,
     get_monitor_port,
     get_port,
     register_monitor_ports,
@@ -41,6 +42,7 @@ from backend.core.config.database import get_postgresql_connection
 from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
 from backend.util.paths import get_host
 from backend.core.time_eastern import now_est as wall_now, EST
+from backend.trading_mode import _norm_slot
 
 # Cached per symbol; same master lookup tables as strike_table_generator (not fingerprint calc).
 _lookup_probability_calculator_cache: Dict[str, Any] = {}
@@ -161,8 +163,8 @@ def create_unified_15m_active_trades_pool_table():
         conn = get_postgresql_connection()
         if not conn:
             return
-        u = ctx_user()
-        tbl = f"active_trades_15m_{u}"
+        # Template suffix _0001; TenantConnection rewrites to this worker's slot.
+        tbl = "active_trades_15m_0001"
         with conn.cursor() as cursor:
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS users.{tbl} (
@@ -219,8 +221,7 @@ def create_unified_hourly_active_trades_pool_table():
         conn = get_postgresql_connection()
         if not conn:
             return
-        u = ctx_user()
-        tbl = f"active_trades_hourly_{u}"
+        tbl = "active_trades_hourly_0001"
         with conn.cursor() as cursor:
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS users.{tbl} (
@@ -347,18 +348,18 @@ def drop_monitor_active_trades_table():
         log(f"[ACTIVE_TRADES] ❌ Error dropping active trades table: {e}")
 
 def get_monitor_active_trades_table():
-    """Per-monitor legacy table or unified pool active_trades_15m_<user>|active_trades_hourly_<user>."""
+    """Per-monitor legacy table or unified pool active_trades_15m_*|active_trades_hourly_* (tenant rewrite)."""
     if ATS_UNIFIED_15M:
-        return f"active_trades_15m_{ctx_user()}"
+        return "active_trades_15m_0001"
     if ATS_UNIFIED_HOURLY:
-        return f"active_trades_hourly_{ctx_user()}"
+        return "active_trades_hourly_0001"
     if ATS_UNIFIED_ALL:
         from backend.core.port_config import monitor_suffix_uses_unified_15m_pool
 
         suffix = f"{ctx_user()}_{ctx_mid()}"
         if monitor_suffix_uses_unified_15m_pool(suffix):
-            return f"active_trades_15m_{ctx_user()}"
-        return f"active_trades_hourly_{ctx_user()}"
+            return "active_trades_15m_0001"
+        return "active_trades_hourly_0001"
     return f"active_trades_{ctx_user()}_{ctx_mid()}"
 
 
@@ -428,7 +429,7 @@ def _unified_pool_accepts_monitor_suffix(monitor_suffix: str) -> bool:
 
 
 if ATS_UNIFIED_POOL:
-    USER_NUMBER = "0001"
+    USER_NUMBER = default_pool_user_number()
     MONITOR_ID = "0"
 else:
     USER_NUMBER = MONITOR_IDENTIFIER.split('_')[0]
@@ -450,6 +451,11 @@ def ctx_mid() -> str:
 
 def ctx_ident() -> str:
     return f"{ctx_user()}_{ctx_mid()}"
+
+
+def scoped_trade_manager_http_port() -> int:
+    """HTTP port for ``trade_manager_<this slot>`` (same tenant as ctx_user); never abstract ``trade_manager``."""
+    return get_port(f"trade_manager_{ctx_user()}")
 
 
 @contextmanager
@@ -598,7 +604,7 @@ def get_monitor_symbol():
 
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{uid0}
+            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_0001
             WHERE id = %s
         """, (mid0,))
         result = cursor.fetchone()
@@ -646,7 +652,7 @@ def get_current_monitor_symbol_and_market():
             return "BTC", "hourly"
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_{ctx_user()}
+            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_0001
             WHERE id = %s
         """, (ctx_mid(),))
         result = cursor.fetchone()
@@ -693,19 +699,20 @@ else:
 
 def _count_active_trades_across_unified_pool_monitors() -> int:
     """Rows in unified 15m or hourly pool that need the monitoring loop (active, pending, or closing)."""
-    conn = get_postgresql_connection()
+    # Bind explicitly to this worker slot so counts never follow a stray HTTP/API tenant context.
+    conn = get_postgresql_connection(tenant_user_no=USER_NUMBER)
     if not conn:
         return 0
     try:
         cur = conn.cursor()
         if ATS_UNIFIED_ALL:
-            u = USER_NUMBER
             total = 0
-            for tbl in (f"active_trades_15m_{u}", f"active_trades_hourly_{u}"):
+            for tbl in ("active_trades_15m_0001", "active_trades_hourly_0001"):
                 cur.execute(
                     f"""
                     SELECT COUNT(*) FROM users.{tbl}
-                    WHERE status IN ('active', 'pending', 'closing')
+                    WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active')
+                        IN ('active', 'pending', 'closing')
                     """
                 )
                 total += int(cur.fetchone()[0])
@@ -714,7 +721,8 @@ def _count_active_trades_across_unified_pool_monitors() -> int:
         cur.execute(
             f"""
             SELECT COUNT(*) FROM users.{tbl}
-            WHERE status IN ('active', 'pending', 'closing')
+            WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active')
+                IN ('active', 'pending', 'closing')
             """
         )
         return int(cur.fetchone()[0])
@@ -953,7 +961,7 @@ def broadcast_active_trades_change():
             from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
 
             if use_trading_redis_comms() and publish_preferences_event(
-                "active_trades_change", body
+                "active_trades_change", body, tenant_user_no=ctx_user()
             ):
                 return
         except Exception as e:
@@ -1069,7 +1077,7 @@ def _open_enrollment_ack_payload(
             cursor = conn.cursor()
             cursor.execute(
                 f"""
-                SELECT ticker, side, symbol FROM users.trades_{ctx_user()}
+                SELECT ticker, side, symbol FROM users.trades_0001
                 WHERE id = %s AND status = 'open'
                 """,
                 (trade_id,),
@@ -1129,6 +1137,15 @@ def _handle_ats_enroll_redis_message(data: dict) -> None:
                 )
                 return
             u, mid = suffix.split("_", 1)
+            try:
+                if _norm_slot(u) != _norm_slot(USER_NUMBER):
+                    log_debug(
+                        f"ATS ENROLL Redis: skip mon={suffix} trade={data.get('trade_id')} "
+                        f"(this unified ATS is user {USER_NUMBER}, not {_norm_slot(u)})"
+                    )
+                    return
+            except ValueError:
+                return
             correlation_id = data.get("correlation_id")
             trade_id = data.get("trade_id")
             ticket_id = data.get("ticket_id") or ""
@@ -1205,12 +1222,13 @@ def _handle_ats_tm_notification_redis(data: dict) -> None:
                 u_trade = str(monitor_identifier).split("_")[0]
             elif not ATS_UNIFIED_POOL and MONITOR_IDENTIFIER and "_" in MONITOR_IDENTIFIER:
                 u_trade = MONITOR_IDENTIFIER.split("_", 1)[0]
-            pg = get_postgresql_connection()
+            slot = _norm_slot(str(u_trade).strip())
+            pg = get_postgresql_connection(tenant_user_no=slot)
             if pg:
                 try:
                     with pg.cursor() as cur:
                         cur.execute(
-                            f"SELECT ticket_id FROM users.trades_{u_trade} WHERE id = %s",
+                            "SELECT ticket_id FROM users.trades_0001 WHERE id = %s",
                             (trade_id,),
                         )
                         row = cur.fetchone()
@@ -1233,6 +1251,15 @@ def _handle_ats_tm_notification_redis(data: dict) -> None:
                 )
                 return
             u, mid = mon_s.split("_", 1)
+            try:
+                if _norm_slot(u) != _norm_slot(USER_NUMBER):
+                    log_debug(
+                        f"ATS Redis tm notify: skip mon={mon_s} trade={trade_id} "
+                        f"(this unified ATS is user {USER_NUMBER}, not {_norm_slot(u)})"
+                    )
+                    return
+            except ValueError:
+                return
             log(
                 f"📡 REDIS TM NOTIFY (unified pool): mon={monitor_identifier} trade={trade_id} status={status}"
             )
@@ -1284,12 +1311,13 @@ def handle_trade_manager_notification():
                 u_trade = str(monitor_identifier).split("_")[0]
             elif not ATS_UNIFIED_POOL and MONITOR_IDENTIFIER and "_" in MONITOR_IDENTIFIER:
                 u_trade = MONITOR_IDENTIFIER.split("_", 1)[0]
-            pg = get_postgresql_connection()
+            slot = _norm_slot(str(u_trade).strip())
+            pg = get_postgresql_connection(tenant_user_no=slot)
             if pg:
                 try:
                     with pg.cursor() as cur:
                         cur.execute(
-                            f"SELECT ticket_id FROM users.trades_{u_trade} WHERE id = %s",
+                            "SELECT ticket_id FROM users.trades_0001 WHERE id = %s",
                             (trade_id,),
                         )
                         row = cur.fetchone()
@@ -1396,12 +1424,16 @@ _trades_venue_column_cache: Dict[str, str] = {}
 
 def trades_venue_sql_column(user_num: str) -> str:
     """
-    Column on users.trades_<user> that holds execution venue slug.
+    Column on users_<user>.trades_<user> that holds execution venue slug.
     Post-migration name is exchange; older DBs still have market.
     """
-    if user_num in _trades_venue_column_cache:
-        return _trades_venue_column_cache[user_num]
+    u = str(user_num).strip()
+    if not re.fullmatch(r"\d{4}", u):
+        return "exchange"
+    if u in _trades_venue_column_cache:
+        return _trades_venue_column_cache[u]
     col = "exchange"
+    pg_schema = f"users_{u}"
     conn = get_postgresql_connection()
     if conn:
         try:
@@ -1409,12 +1441,12 @@ def trades_venue_sql_column(user_num: str) -> str:
                 cur.execute(
                     """
                     SELECT column_name FROM information_schema.columns
-                    WHERE table_schema = 'users' AND table_name = %s
+                    WHERE table_schema = %s AND table_name = %s
                       AND column_name IN ('exchange', 'market')
                     ORDER BY CASE column_name WHEN 'exchange' THEN 0 ELSE 1 END
                     LIMIT 1
                     """,
-                    (f"trades_{user_num}",),
+                    (pg_schema, f"trades_{u}"),
                 )
                 row = cur.fetchone()
                 if row and row[0] in ("exchange", "market"):
@@ -1423,7 +1455,7 @@ def trades_venue_sql_column(user_num: str) -> str:
             pass
         finally:
             conn.close()
-    _trades_venue_column_cache[user_num] = col
+    _trades_venue_column_cache[u] = col
     return col
 
 
@@ -1447,7 +1479,7 @@ def add_new_active_trade(trade_id: int, ticket_id: str) -> bool:
             SELECT id, ticket_id, date, time, strike, side, buy_price, position,
                    contract, ticker, symbol, {vcol}, trade_strategy, symbol_open,
                    momentum, prob, fees, diff
-            FROM users.trades_{ctx_user()} 
+            FROM users.trades_0001 
             WHERE id = %s AND status = 'open'
         """, (trade_id,))
         
@@ -1474,25 +1506,40 @@ def add_new_active_trade(trade_id: int, ticket_id: str) -> bool:
         )
         existing = cursor.fetchone()
         if existing:
-            if existing[1] == 'active':
+            st_raw = existing[1]
+            st = str(st_raw or "").strip().lower()
+            if st == "active":
                 conn.close()
                 log_debug(f"Trade {trade_id} already enrolled as active (idempotent)")
                 return True
-            if existing[1] == 'pending':
+            if st == "pending":
                 conn.close()
                 return confirm_pending_trade(trade_id, ticket_id)
-            if existing[1] == 'closing':
+            if st == "closing":
                 conn.close()
                 log_debug(f"Trade {trade_id} already in closing state in pool (skip insert)")
                 return True
+            # Stale terminal row (closed/removed/etc.) still holds unique trade_id — sync would
+            # think the trade is missing and retry INSERT → duplicate key. Replace the row.
+            log_debug(
+                f"Trade {trade_id} pool row status={st_raw!r} not open lifecycle; "
+                f"deleting stale row before re-enroll ({ctx_ident()})"
+            )
+            cursor.execute(
+                f"DELETE FROM users.{active_trades_table} WHERE trade_id = %s",
+                (trade_id,),
+            )
+            conn.commit()
 
         if ATS_UNIFIED_POOL:
+            # Always set status: some tenant pool tables were created without DEFAULT 'active', leaving NULL
+            # rows that monitoring COUNT queries (status IN (...)) never see.
             cursor.execute(f"""
                 INSERT INTO users.{active_trades_table} (
                     monitor_id, trade_id, ticket_id, date, time, strike, side, buy_price, position,
                     contract, ticker, symbol, exchange, trade_strategy, symbol_open,
-                    momentum, prob, fees, diff, high_price, low_price
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    momentum, prob, fees, diff, high_price, low_price, status
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
             """, (
                 ctx_mid(), trade_id, ticket_id, date, time, strike, side, buy_price, position,
                 contract, ticker, symbol, exchange, trade_strategy, symbol_open,
@@ -1570,7 +1617,7 @@ def add_pending_trade(trade_id: int, ticket_id: str) -> bool:
             SELECT id, ticket_id, date, time, strike, side, buy_price, position,
                    contract, ticker, symbol, {vcol}, trade_strategy, symbol_open,
                    momentum, prob, fees, diff
-            FROM users.trades_{ctx_user()} 
+            FROM users.trades_0001 
             WHERE id = %s AND status = 'pending'
         """, (trade_id,))
         
@@ -1587,7 +1634,7 @@ def add_pending_trade(trade_id: int, ticket_id: str) -> bool:
                 try:
                     tr_cur = tr_conn.cursor()
                     tr_cur.execute(
-                        f"SELECT status FROM users.trades_{ctx_user()} WHERE id = %s",
+                        f"SELECT status FROM users.trades_0001 WHERE id = %s",
                         (trade_id,),
                     )
                     tr_row = tr_cur.fetchone()
@@ -1698,7 +1745,7 @@ def confirm_pending_trade(trade_id: int, ticket_id: str) -> bool:
             SELECT id, ticket_id, date, time, strike, side, buy_price, position,
                    contract, ticker, symbol, {vcol}, trade_strategy, symbol_open,
                    momentum, prob, fees, diff
-            FROM users.trades_{ctx_user()} 
+            FROM users.trades_0001 
             WHERE id = %s AND status = 'open'
         """, (trade_id,))
         
@@ -1771,13 +1818,24 @@ def confirm_pending_trade(trade_id: int, ticket_id: str) -> bool:
         )
         
         if cursor.rowcount == 0:
+            cursor.execute(
+                f"SELECT status FROM users.{active_trades_table} WHERE trade_id = %s{scope_sql}",
+                (trade_id,) + scope_params,
+            )
+            already = cursor.fetchone()
+            if already and str(already[0] or "").strip().lower() == "active":
+                conn.close()
+                log_debug(
+                    f"Trade {trade_id} already active in pool (confirm idempotent) ({ctx_ident()})"
+                )
+                return True
             log(f"No pending trade found in active_trades.db for trade_id {trade_id}")
             conn.close()
             return False
-        
+
         conn.commit()
         conn.close()
-        
+
         # Log the confirmed trade
         log(f"✅ PENDING TRADE CONFIRMED AND ACTIVATED")
         log(f"   Trade ID: {trade_id}")
@@ -1965,10 +2023,9 @@ def _users_trade_status_for_stale_flush(trade_id: int) -> Optional[str]:
         conn = get_trades_db_connection()
         if not conn:
             return None
-        u = ctx_user()
         with conn.cursor() as cur:
             cur.execute(
-                f"SELECT status FROM users.trades_{u} WHERE id = %s",
+                "SELECT status FROM users.trades_0001 WHERE id = %s",
                 (trade_id,),
             )
             row = cur.fetchone()
@@ -2003,14 +2060,14 @@ def flush_stale_active_trades_past_contract_settlement() -> None:
                 SELECT id, trade_id, ticket_id, monitor_id, ticker, status, contract, symbol,
                        trade_strategy, strike, side, created_at, last_updated
                 FROM users.{tbl}
-                WHERE status IN ('active', 'pending', 'closing')
+                WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
             """
         else:
             q = f"""
                 SELECT id, trade_id, ticket_id, ticker, status, contract, symbol,
                        trade_strategy, strike, side, created_at, last_updated
                 FROM users.{tbl}
-                WHERE status IN ('active', 'pending', 'closing')
+                WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
             """
         with conn.cursor() as cur:
             cur.execute(q)
@@ -2646,10 +2703,10 @@ def _iter_unified_pool_monitor_bindings_for_monitoring():
     u = USER_NUMBER
     pool_tables: List[str]
     if ATS_UNIFIED_ALL:
-        pool_tables = [f"active_trades_15m_{u}", f"active_trades_hourly_{u}"]
+        pool_tables = ["active_trades_15m_0001", "active_trades_hourly_0001"]
     else:
         pool_tables = [get_monitor_active_trades_table()]
-    conn = get_postgresql_connection()
+    conn = get_postgresql_connection(tenant_user_no=USER_NUMBER)
     if conn:
         try:
             with conn.cursor() as cur:
@@ -2657,7 +2714,7 @@ def _iter_unified_pool_monitor_bindings_for_monitoring():
                     cur.execute(
                         f"""
                         SELECT DISTINCT monitor_id FROM users.{tbl}
-                        WHERE status IN ('active', 'pending', 'closing')
+                        WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
                         """
                     )
                     for (mid,) in cur.fetchall():
@@ -2717,9 +2774,9 @@ def update_active_trade_monitoring_data():
         active_trades_table = get_monitor_active_trades_table()
         scope_sql, scope_params = _active_trades_monitor_scope_sql()
         cursor.execute(f"""
-            SELECT id, trade_id, buy_price, prob, time, date, strike, side, momentum, ticker, symbol, high_price, low_price, current_close_price
+            SELECT id, trade_id, buy_price, position, fees, prob, time, date, strike, side, momentum, ticker, symbol, high_price, low_price, current_close_price
             FROM users.{active_trades_table} 
-            WHERE status = 'active'{scope_sql}
+            WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') = 'active'{scope_sql}
         """, scope_params)
         active_trades = cursor.fetchall()
         conn.close()
@@ -2727,7 +2784,24 @@ def update_active_trade_monitoring_data():
         if not active_trades:
             return
         
-        for (active_id, trade_id, buy_price, prob, time_str, date_str, strike, side, momentum, ticker, symbol, current_high_price, current_low_price, current_close_price_db) in active_trades:
+        for (
+            active_id,
+            trade_id,
+            buy_price,
+            position,
+            fees,
+            prob,
+            time_str,
+            date_str,
+            strike,
+            side,
+            momentum,
+            ticker,
+            symbol,
+            current_high_price,
+            current_low_price,
+            current_close_price_db,
+        ) in active_trades:
             try:
                 # Parse strike price - handle currency formatting (Decimal: match spot precision)
                 strike_clean = str(strike).replace('$', '').replace(',', '')
@@ -2802,6 +2876,16 @@ def update_active_trade_monitoring_data():
                 momentum_score = float(momentum) if momentum is not None else None
 
                 buy_price_float = float(buy_price) if hasattr(buy_price, '__float__') else buy_price
+                try:
+                    qty = float(position) if position is not None else 1.0
+                    if qty <= 0 or qty != qty:  # NaN
+                        qty = 1.0
+                except (TypeError, ValueError):
+                    qty = 1.0
+                try:
+                    fees_val = float(fees) if fees is not None else 0.0
+                except (TypeError, ValueError):
+                    fees_val = 0.0
 
                 # Model probability: master prob lookup tables (same as strike_table_generator); strike_table_* fallback only
                 current_probability = get_current_probability(
@@ -2815,11 +2899,12 @@ def update_active_trade_monitoring_data():
                     if buffer_from_strike < 0:
                         current_probability = 100 - current_probability
 
-                # Calculate PnL: 1 - current_close_price - buy_price
-                # For YES trades: PnL = 1 - current_close_price - buy_price
-                # For NO trades: PnL = 1 - current_close_price - buy_price (same formula)
-                pnl = 1 - current_market_price - buy_price_float
-                pnl_formatted = f"{pnl:.2f}"  # Format as "0.15" or "-0.08"
+                # Per-contract unrealized (Kalshi 0–1 $ space): mark from complementary ask vs entry.
+                # YES row uses no_ask as current_market_price → implied YES mark ≈ 1 - no_ask.
+                per_contract_pnl = 1.0 - float(current_market_price) - buy_price_float
+                # Total dollars: scale by contracts, subtract fees paid (sunk cost on the trade).
+                total_unrealized = per_contract_pnl * qty - fees_val
+                pnl_formatted = f"{total_unrealized:.2f}"
 
                 # Position value from exit ask (high/low tracking)
                 position_value = 1.0 - float(current_market_price)
@@ -2950,7 +3035,7 @@ def check_monitoring_failsafe():
             cursor.execute(
                 f"""
                 SELECT COUNT(*) FROM users.{active_trades_table}
-                WHERE status IN ('active', 'pending', 'closing')
+                WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
                 """
             )
             active_count = cursor.fetchone()[0]
@@ -3148,7 +3233,7 @@ def start_monitoring_loop():
                         active_trades_table = get_monitor_active_trades_table()
                         scope_sql, scope_params = _active_trades_monitor_scope_sql()
                         cursor.execute(
-                            f"SELECT * FROM users.{active_trades_table} WHERE status = 'active'{scope_sql}",
+                            f"SELECT * FROM users.{active_trades_table} WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') = 'active'{scope_sql}",
                             scope_params,
                         )
                         columns = [desc[0] for desc in cursor.description]
@@ -3167,7 +3252,7 @@ def start_monitoring_loop():
                         active_trades_table = get_monitor_active_trades_table()
                         scope_sql, scope_params = _active_trades_monitor_scope_sql()
                         cursor.execute(
-                            f"SELECT * FROM users.{active_trades_table} WHERE status = 'active'{scope_sql}",
+                            f"SELECT * FROM users.{active_trades_table} WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') = 'active'{scope_sql}",
                             scope_params,
                         )
                         columns = [desc[0] for desc in cursor.description]
@@ -3206,7 +3291,7 @@ def start_monitoring_loop():
                                 with conn.cursor() as cursor:
                                     # First get the strategy name for this monitor
                                     cursor.execute(f"""
-                                        SELECT strategy FROM users.monitor_list_{ctx_user()} WHERE id = %s
+                                        SELECT strategy FROM users.monitor_list_0001 WHERE id = %s
                                     """, (ctx_mid(),))
                                     monitor_result = cursor.fetchone()
                             
@@ -3251,7 +3336,7 @@ def start_monitoring_loop():
                                         active_trades_table = get_monitor_active_trades_table()
                                         scope_sql, scope_params = _active_trades_monitor_scope_sql()
                                         cursor.execute(
-                                            f"SELECT * FROM users.{active_trades_table} WHERE status = 'active'{scope_sql}",
+                                            f"SELECT * FROM users.{active_trades_table} WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') = 'active'{scope_sql}",
                                             scope_params,
                                         )
                                         columns = [desc[0] for desc in cursor.description]
@@ -3439,7 +3524,7 @@ def start_monitoring_loop():
                         _tc.execute(
                             f"""
                             SELECT COUNT(*) FROM users.{_ttbl}
-                            WHERE status IN ('active', 'pending', 'closing')
+                            WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
                             """
                         )
                         tracked_left = int(_tc.fetchone()[0])
@@ -3469,7 +3554,7 @@ def start_monitoring_loop():
                     cursor.execute(
                         f"""
                         SELECT COUNT(*) FROM users.active_trades_{ctx_user()}_{ctx_mid()}
-                        WHERE status IN ('active', 'pending', 'closing')
+                        WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
                         """
                     )
                     active_count = cursor.fetchone()[0]
@@ -3561,7 +3646,7 @@ def _get_all_active_trades_for_current_monitor() -> List[Dict[str, Any]]:
         cursor.execute(
             f"""
             SELECT * FROM users.{active_trades_table}
-            WHERE status IN ('active', 'pending', 'closing'){scope_sql}
+            WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing'){scope_sql}
             ORDER BY created_at DESC
             """,
             scope_params,
@@ -3584,13 +3669,12 @@ def _get_all_active_trades_unified_pool_unbound() -> List[Dict[str, Any]]:
         conn = get_db_connection()
         cursor = conn.cursor()
         if ATS_UNIFIED_ALL:
-            u = USER_NUMBER
             combined: List[Dict[str, Any]] = []
-            for tbl in (f"active_trades_15m_{u}", f"active_trades_hourly_{u}"):
+            for tbl in ("active_trades_15m_0001", "active_trades_hourly_0001"):
                 cursor.execute(
                     f"""
                     SELECT * FROM users.{tbl}
-                    WHERE status IN ('active', 'pending', 'closing')
+                    WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
                     """
                 )
                 columns = [desc[0] for desc in cursor.description]
@@ -3609,7 +3693,7 @@ def _get_all_active_trades_unified_pool_unbound() -> List[Dict[str, Any]]:
         cursor.execute(
             f"""
             SELECT * FROM users.{tbl}
-            WHERE status IN ('active', 'pending', 'closing')
+            WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
             ORDER BY created_at DESC
             """
         )
@@ -3630,14 +3714,20 @@ def get_all_active_trades() -> List[Dict[str, Any]]:
 
 def _sync_with_trades_db_for_current_monitor():
     """Sync active_trades for the monitor bound in context (single monitor)."""
-    # Get all open trades from PostgreSQL
+    # Canonical trade log rows for this monitor (must match reconcile_active_trades_with_trade_log_each_tick).
+    # Using only status='open' wrongly treats pending/closing log rows as absent and removes pool rows.
+    mon_tag = f"mon_{ctx_user()}_{ctx_mid()}"
     conn = get_trades_db_connection()
     cursor = conn.cursor()
     cursor.execute(
-        f"SELECT id FROM users.trades_{ctx_user()} WHERE status = 'open' AND monitor = %s",
-        (f"mon_{ctx_user()}_{ctx_mid()}",),
+        """
+        SELECT id FROM users.trades_0001
+        WHERE monitor = %s
+          AND LOWER(TRIM(status)) IN ('pending', 'open', 'closing')
+        """,
+        (mon_tag,),
     )
-    open_trade_ids = [row[0] for row in cursor.fetchall()]
+    tracked_trade_ids = [row[0] for row in cursor.fetchall()]
     conn.close()
 
     # Get all active trade IDs
@@ -3648,7 +3738,7 @@ def _sync_with_trades_db_for_current_monitor():
     cursor.execute(
         f"""
         SELECT trade_id FROM users.{active_trades_table}
-        WHERE status IN ('active', 'pending', 'closing'){scope_sql}
+        WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing'){scope_sql}
         """,
         scope_params,
     )
@@ -3656,13 +3746,13 @@ def _sync_with_trades_db_for_current_monitor():
     conn.close()
 
     # Find trades that should be active but aren't
-    missing_trades = set(open_trade_ids) - set(active_trade_ids)
+    missing_trades = set(tracked_trade_ids) - set(active_trade_ids)
     for trade_id in missing_trades:
         log(f"🔄 SYNC: Found missing active trade: {trade_id}, adding...")
         add_new_active_trade(trade_id, "SYNC")  # Use "SYNC" as ticket_id for auto-added trades
 
     # Find trades that are active but should be closed
-    closed_trades = set(active_trade_ids) - set(open_trade_ids)
+    closed_trades = set(active_trade_ids) - set(tracked_trade_ids)
     for trade_id in closed_trades:
         log(f"🔄 SYNC: Found closed trade still in active: {trade_id}, removing...")
         remove_closed_trade(trade_id)
@@ -3699,8 +3789,8 @@ def reconcile_active_trades_with_trade_log_each_tick() -> None:
     try:
         cur = conn_tr.cursor()
         cur.execute(
-            f"""
-            SELECT id, ticket_id, status FROM users.trades_{u}
+            """
+            SELECT id, ticket_id, status FROM users.trades_0001
             WHERE monitor = %s AND LOWER(TRIM(status)) IN ('pending', 'open', 'closing')
             """,
             (mon_tag,),
@@ -3767,7 +3857,7 @@ def reconcile_active_trades_with_trade_log_each_tick() -> None:
     try:
         cur2 = conn_tr2.cursor()
         cur2.execute(
-            f"SELECT id, monitor, status FROM users.trades_{u} WHERE id = ANY(%s)",
+            "SELECT id, monitor, status FROM users.trades_0001 WHERE id = ANY(%s)",
             (stale_tids,),
         )
         meta_rows = cur2.fetchall()
@@ -3806,13 +3896,13 @@ def _purge_unified_active_trades_wrong_market() -> int:
     specs: List[Tuple[str, Any, str]] = []
     if ATS_UNIFIED_ALL:
         specs = [
-            (f"active_trades_15m_{user}", monitor_suffix_uses_unified_15m_pool, "15m"),
-            (f"active_trades_hourly_{user}", monitor_suffix_uses_unified_hourly_pool, "hourly"),
+            ("active_trades_15m_0001", monitor_suffix_uses_unified_15m_pool, "15m"),
+            ("active_trades_hourly_0001", monitor_suffix_uses_unified_hourly_pool, "hourly"),
         ]
     elif ATS_UNIFIED_15M:
-        specs = [(f"active_trades_15m_{user}", monitor_suffix_uses_unified_15m_pool, "15m")]
+        specs = [("active_trades_15m_0001", monitor_suffix_uses_unified_15m_pool, "15m")]
     elif ATS_UNIFIED_HOURLY:
-        specs = [(f"active_trades_hourly_{user}", monitor_suffix_uses_unified_hourly_pool, "hourly")]
+        specs = [("active_trades_hourly_0001", monitor_suffix_uses_unified_hourly_pool, "hourly")]
     else:
         return 0
 
@@ -3827,7 +3917,7 @@ def _purge_unified_active_trades_wrong_market() -> int:
                 cur.execute(
                     f"""
                     SELECT DISTINCT monitor_id FROM users.{tbl}
-                    WHERE status IN ('active', 'pending', 'closing')
+                    WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
                     """
                 )
                 mismatched: List[str] = []
@@ -3838,14 +3928,21 @@ def _purge_unified_active_trades_wrong_market() -> int:
                     if not sm:
                         continue
                     suffix = f"{user}_{sm}"
-                    if not belongs(suffix):
+                    try:
+                        in_pool = belongs(suffix)
+                    except Exception as e:
+                        log_debug(
+                            f"🧹 Purge wrong-pool: skip monitor_id={sm} ({pool_label}): classify error: {e}"
+                        )
+                        continue
+                    if not in_pool:
                         mismatched.append(sm)
                 for sm in mismatched:
                     cur.execute(
                         f"""
                         DELETE FROM users.{tbl}
                         WHERE monitor_id::text = %s
-                          AND status IN ('active', 'pending', 'closing')
+                          AND COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
                         """,
                         (sm,),
                     )
@@ -3881,11 +3978,9 @@ def _reconcile_unified_pool_open_trades_full_scan() -> None:
         monitor_suffix_uses_unified_hourly_pool,
     )
 
-    user = USER_NUMBER
-
     if ATS_UNIFIED_ALL:
-        tbl_15 = f"active_trades_15m_{user}"
-        tbl_h = f"active_trades_hourly_{user}"
+        tbl_15 = "active_trades_15m_0001"
+        tbl_h = "active_trades_hourly_0001"
         conn = get_postgresql_connection()
         if not conn:
             log("🔄 RECONCILE: no DB connection; skipping unified open-trade scan")
@@ -3895,14 +3990,14 @@ def _reconcile_unified_pool_open_trades_full_scan() -> None:
                 cur.execute(
                     f"""
                     SELECT trade_id FROM users.{tbl_15}
-                    WHERE status IN ('active', 'pending', 'closing')
+                    WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
                     """
                 )
                 tracked_15m = {int(r[0]) for r in cur.fetchall()}
                 cur.execute(
                     f"""
                     SELECT trade_id FROM users.{tbl_h}
-                    WHERE status IN ('active', 'pending', 'closing')
+                    WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
                     """
                 )
                 tracked_h = {int(r[0]) for r in cur.fetchall()}
@@ -3915,8 +4010,8 @@ def _reconcile_unified_pool_open_trades_full_scan() -> None:
         try:
             c2 = conn_tr.cursor()
             c2.execute(
-                f"""
-                SELECT id, monitor FROM users.trades_{user}
+                """
+                SELECT id, monitor FROM users.trades_0001
                 WHERE status = 'open' AND monitor IS NOT NULL AND monitor LIKE 'mon_%%'
                 """
             )
@@ -3955,14 +4050,14 @@ def _reconcile_unified_pool_open_trades_full_scan() -> None:
         return
 
     if ATS_UNIFIED_15M:
-        tbl = f"active_trades_15m_{user}"
+        tbl = "active_trades_15m_0001"
 
         def _use_unified_pool(suffix: str) -> bool:
             return monitor_suffix_uses_unified_15m_pool(suffix)
 
         pool_label = "15m"
     elif ATS_UNIFIED_HOURLY:
-        tbl = f"active_trades_hourly_{user}"
+        tbl = "active_trades_hourly_0001"
 
         def _use_unified_pool(suffix: str) -> bool:
             return monitor_suffix_uses_unified_hourly_pool(suffix)
@@ -3979,7 +4074,7 @@ def _reconcile_unified_pool_open_trades_full_scan() -> None:
             cur.execute(
                 f"""
                 SELECT trade_id FROM users.{tbl}
-                WHERE status IN ('active', 'pending', 'closing')
+                WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
                 """
             )
             tracked = {int(r[0]) for r in cur.fetchall()}
@@ -3992,8 +4087,8 @@ def _reconcile_unified_pool_open_trades_full_scan() -> None:
     try:
         c2 = conn_tr.cursor()
         c2.execute(
-            f"""
-            SELECT id, monitor FROM users.trades_{user}
+            """
+            SELECT id, monitor FROM users.trades_0001
             WHERE status = 'open' AND monitor IS NOT NULL AND monitor LIKE 'mon_%%'
             """
         )
@@ -4091,7 +4186,7 @@ def start_event_driven_supervisor():
         cursor.execute(
             f"""
             SELECT COUNT(*) FROM users.{active_trades_table}
-            WHERE status IN ('active', 'pending', 'closing')
+            WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
             """
         )
         active_count = cursor.fetchone()[0]
@@ -4141,7 +4236,7 @@ def start_event_driven_supervisor():
                 cursor.execute(
                     f"""
                     SELECT COUNT(*) FROM users.{active_trades_table}
-                    WHERE status IN ('active', 'pending', 'closing')
+                    WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
                     """
                 )
                 active_count = cursor.fetchone()[0]
@@ -4223,7 +4318,7 @@ def is_auto_stop_enabled():
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             # Check auto_trade boolean from the specific monitor's row in monitor_list
-            cursor.execute(f"SELECT auto_trade FROM users.monitor_list_{ctx_user()} WHERE id = %s", (ctx_mid(),))
+            cursor.execute(f"SELECT auto_trade FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             if result:
                 auto_trade_enabled = result[0]
@@ -4262,6 +4357,7 @@ def _defer_unified_ats_close_followup(
     notification_data: dict,
 ) -> None:
     """trade_logger + close notify off the unified ATS hot path (same idea as unified AES)."""
+    slot = ctx_user()
 
     def _run():
         import requests as _req
@@ -4276,7 +4372,11 @@ def _defer_unified_ats_close_followup(
             from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
 
             if use_trading_redis_comms():
-                publish_preferences_event("automated_trade_closed", notification_data)
+                publish_preferences_event(
+                    "automated_trade_closed",
+                    notification_data,
+                    tenant_user_no=slot,
+                )
         except Exception:
             pass
 
@@ -4390,6 +4490,7 @@ def trigger_auto_stop_close(
         "buy_price": float(sell_price_float),
         "symbol_close": float(symbol_close_float),
         "close_method": close_method_val,
+        "monitor": trade.get("monitor"),
     }
     try:
         from backend.core.trading_redis_comms import publish_trade_manager_command, use_trading_redis_comms
@@ -4435,6 +4536,7 @@ def trigger_auto_stop_close(
             payload,
             "active_trade_supervisor",
             correlation_id=ticket_id,
+            tenant_user_no=ctx_user(),
         ):
             if ATS_UNIFIED_POOL:
                 log(
@@ -4463,11 +4565,10 @@ def trigger_auto_stop_close(
             if ATS_UNIFIED_POOL:
                 log(
                     "[AUTO STOP] ⚠️ Unified pool: Redis add_trade unavailable; "
-                    "falling back to synchronous HTTP POST main_app /trades (proxy to trade_manager)"
+                    f"falling back to HTTP POST trade_manager_{ctx_user()} /trades (same as AES)"
                 )
-            # Prefer main_app: it proxies to trade_manager with the same contract as legacy ATS.
-            main_port = get_port("main_app")
-            url = get_service_url(main_port) + "/trades"
+            tm_port = scoped_trade_manager_http_port()
+            url = get_service_url(tm_port) + "/trades"
             resp = requests.post(url, json=payload, timeout=10)
         if resp.status_code == 201 or resp.status_code == 200:
             try:
@@ -4623,7 +4724,7 @@ def get_trade_strategy():
         import psycopg2
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT strategy FROM users.monitor_list_{ctx_user()} WHERE id = %s", (ctx_mid(),))
+            cursor.execute(f"SELECT strategy FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             if result:
                 trade_strategy = result[0]
@@ -4644,7 +4745,7 @@ def get_momentum_scalp_trailing_stop_amount():
         import psycopg2
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT momentum_scalp_trailing_stop_amount FROM users.monitor_list_{ctx_user()} WHERE id = %s", (ctx_mid(),))
+            cursor.execute(f"SELECT momentum_scalp_trailing_stop_amount FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             conn.close()
             if result and result[0] is not None:
@@ -4662,7 +4763,7 @@ def get_momentum_scalp_profit_target():
         import psycopg2
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT momentum_scalp_profit_target FROM users.monitor_list_{ctx_user()} WHERE id = %s", (ctx_mid(),))
+            cursor.execute(f"SELECT momentum_scalp_profit_target FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             conn.close()
             if result and result[0] is not None:
@@ -4680,7 +4781,7 @@ def get_max_profit():
         import psycopg2
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT max_profit FROM users.monitor_list_{ctx_user()} WHERE id = %s", (ctx_mid(),))
+            cursor.execute(f"SELECT max_profit FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             conn.close()
             if result and result[0] is not None:
@@ -4698,7 +4799,7 @@ def get_momentum_scalp_entry_threshold():
         import psycopg2
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT momentum_scalp_entry_threshold FROM users.monitor_list_{ctx_user()} WHERE id = %s", (ctx_mid(),))
+            cursor.execute(f"SELECT momentum_scalp_entry_threshold FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             conn.close()
             if result and result[0] is not None:
@@ -4717,7 +4818,7 @@ def get_auto_stop_threshold():
         with conn.cursor() as cursor:
             # First get the strategy name for this monitor
             cursor.execute(f"""
-                SELECT strategy FROM users.monitor_list_{ctx_user()} WHERE id = %s
+                SELECT strategy FROM users.monitor_list_0001 WHERE id = %s
             """, (ctx_mid(),))
             monitor_result = cursor.fetchone()
             
@@ -4792,7 +4893,7 @@ def get_min_ttc_seconds():
         with conn.cursor() as cursor:
             # First get the strategy name for this monitor
             cursor.execute(f"""
-                SELECT strategy FROM users.monitor_list_{ctx_user()} WHERE id = %s
+                SELECT strategy FROM users.monitor_list_0001 WHERE id = %s
             """, (ctx_mid(),))
             monitor_result = cursor.fetchone()
             
@@ -4831,7 +4932,7 @@ def get_verification_period_enabled():
         with conn.cursor() as cursor:
             # First get the strategy name for this monitor
             cursor.execute(f"""
-                SELECT strategy FROM users.monitor_list_{ctx_user()} WHERE id = %s
+                SELECT strategy FROM users.monitor_list_0001 WHERE id = %s
             """, (ctx_mid(),))
             monitor_result = cursor.fetchone()
             
@@ -4870,7 +4971,7 @@ def get_verification_period_seconds():
         with conn.cursor() as cursor:
             # First get the strategy name for this monitor
             cursor.execute(f"""
-                SELECT strategy FROM users.monitor_list_{ctx_user()} WHERE id = %s
+                SELECT strategy FROM users.monitor_list_0001 WHERE id = %s
             """, (ctx_mid(),))
             monitor_result = cursor.fetchone()
             

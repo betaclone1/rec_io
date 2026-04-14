@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <script src="/js/rec_session.js"></script>
+
   <meta charset="UTF-8" />
   <title>Account Overview</title>
   <link rel="stylesheet" href="/styles/global.css" />
@@ -442,6 +444,24 @@
       if (oPaper) oPaper.textContent = accountManagerTradingPaperLabel || "PAPER";
     }
 
+    function applyAccountManagerLiveAvailability(sel, liveOk) {
+      if (!sel) return;
+      const oLive = sel.querySelector('option[value="live"]');
+      const ok = liveOk !== false;
+      if (oLive) {
+        oLive.disabled = !ok;
+        oLive.hidden = !ok;
+        oLive.setAttribute("aria-hidden", ok ? "false" : "true");
+      }
+      if (!ok && sel.value === "live") {
+        sel.value = "paper";
+        REC_TRADING_MODE = "paper";
+        window.REC_TRADING_MODE = REC_TRADING_MODE;
+        window.__recTradingModeAm = "paper";
+        localStorage.setItem("rec_trading_mode", "paper");
+      }
+    }
+
     /** Whole units are dollars (1000 → $1000.00 → 100000 cents). Optional $ / commas stripped. */
     function parseUsdInputToCents(raw) {
       const s = String(raw ?? "").trim().replace(/^\$/, "").replace(/,/g, "");
@@ -501,6 +521,7 @@
         const r = await fetch(window.location.origin + "/api/trading_mode");
         const j = await r.json();
         if (j.trading_mode === "live" || j.trading_mode === "paper") {
+          const liveOk = j.live_trading_available !== false;
           REC_TRADING_MODE = j.trading_mode;
           window.REC_TRADING_MODE = REC_TRADING_MODE;
           window.__recTradingModeAm = j.trading_mode;
@@ -508,8 +529,13 @@
           if (j.paper_label) accountManagerTradingPaperLabel = j.paper_label;
           localStorage.setItem("rec_trading_mode", j.trading_mode);
           const sel = document.getElementById("account-manager-trading-mode-select");
-          if (sel) sel.value = j.trading_mode;
-          updateAccountManagerTradingSelectLabels();
+          if (sel) {
+            sel.value = j.trading_mode;
+            updateAccountManagerTradingSelectLabels();
+            applyAccountManagerLiveAvailability(sel, liveOk);
+          } else {
+            updateAccountManagerTradingSelectLabels();
+          }
         }
       } catch (e) {
         console.warn("fetchTradingModeForAccountManager:", e);
@@ -589,10 +615,12 @@
     async function loadAccountData() {
       const fetchOpts = { cache: "no-store" };
       const isPaper = REC_TRADING_MODE === "paper";
+      const tm = REC_TRADING_MODE === "paper" || REC_TRADING_MODE === "live" ? REC_TRADING_MODE : "live";
+      const tmq = "trading_mode=" + encodeURIComponent(tm);
       const [balanceRes, subaccountsRes, transfersRes] = await Promise.all([
-        fetch(`${window.location.origin}/api/account/balance`, fetchOpts),
-        fetch(window.location.origin + "/api/subaccounts", fetchOpts),
-        fetch(window.location.origin + "/api/db/transfers", fetchOpts),
+        fetch(`${window.location.origin}/api/account/balance?${tmq}`, fetchOpts),
+        fetch(window.location.origin + "/api/subaccounts?" + tmq, fetchOpts),
+        fetch(window.location.origin + "/api/db/transfers?" + tmq, fetchOpts),
       ]);
       let settlementsRes;
       let fillsRes;

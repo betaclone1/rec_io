@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 import redis
 
-from backend.core.config.database import get_postgresql_connection
+from backend.core.config.database import get_system_postgresql_connection
 from backend.strike_table_generator import (
     DEFAULT_KALSHI_15M_SYMBOL_ORDER,
     KALSHI_15M_SYMBOLS,
@@ -161,7 +161,7 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
         """Ensure health table exists, then parent strike/market DDL (migrations are source of truth)."""
         conn = None
         try:
-            conn = get_postgresql_connection()
+            conn = get_system_postgresql_connection()
             cursor = conn.cursor()
             cursor.execute("CREATE SCHEMA IF NOT EXISTS live_data")
             self._ensure_strike_pipeline_health_schema(cursor, conn)
@@ -180,7 +180,7 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
         super()._setup_unified_15m_schema(cursor, conn)
 
     def set_pipeline_health(self, *, healthy: bool, reason: str) -> None:
-        conn = get_postgresql_connection()
+        conn = get_system_postgresql_connection()
         if not conn:
             return
         try:
@@ -209,7 +209,7 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
 
     def market_stream_age_sec(self) -> float:
         """Age in seconds of latest WS market row for this symbol."""
-        conn = get_postgresql_connection()
+        conn = get_system_postgresql_connection()
         if not conn:
             return float("inf")
         try:
@@ -234,7 +234,7 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
 
     def price_stream_age_sec(self) -> float:
         """Age in seconds of latest live symbol status tick for this symbol."""
-        conn = get_postgresql_connection()
+        conn = get_system_postgresql_connection()
         if not conn:
             return float("inf")
         try:
@@ -290,7 +290,7 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
 
     def get_current_market_data(self):
         """Read current spot/momentum from live_symbol_status and ladder from WS market table."""
-        conn = get_postgresql_connection()
+        conn = get_system_postgresql_connection()
         if not conn:
             raise ValueError("database unavailable")
         try:
@@ -340,7 +340,7 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
 
     def get_kalshi_market_snapshot(self):
         """Read latest event + ladder from the configured WS market table (15m or hourly)."""
-        conn = get_postgresql_connection()
+        conn = get_system_postgresql_connection()
         if not conn:
             raise ValueError("database unavailable")
         try:

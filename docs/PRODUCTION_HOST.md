@@ -22,4 +22,4 @@ export REC_PROD_DB_HOST=165.22.13.146   # when a script needs DB_HOST pointed at
 - Prefer these variables in docs and automation instead of scattering the raw IP. When copy-paste clarity matters, this file is the single place that records the **current** production IPv4.
 - **`DO_PROD_DROPLET_ID`** overrides the snapshot script default; the default in repo tracks **562337636** with this IPv4.
 
-See also: [ARCHITECTURE.md](ARCHITECTURE.md) (production targeting), [PRODUCTION_SYNC_CHECKLIST.md](PRODUCTION_SYNC_CHECKLIST.md).
+See also: [ARCHITECTURE.md](ARCHITECTURE.md) (production targeting), [PRODUCTION_SYNC_CHECKLIST.md](PRODUCTION_SYNC_CHECKLIST.md), [REC_ALERTS_SMTP_SECRETS.md](REC_ALERTS_SMTP_SECRETS.md) (Gmail app password file for registration email).

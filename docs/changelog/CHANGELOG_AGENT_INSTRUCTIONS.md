@@ -28,6 +28,7 @@ For **each open entry** (only those with unchecked boxes), in **newest-first ord
    - **Any one-time scripts** — If the checklist specifies a script (e.g. dedupe, historical ingest), run it exactly as written, from project root, with `PYTHONPATH=$(pwd) venv/bin/python` (or the exact command given). Run each such script only as many times as the entry says (e.g. "run once").
    - **Restart application services** — If the checklist says to restart, run `scripts/MASTER_RESTART.sh` (or the services/order specified). Run it blocking until complete; use the permissions required for it to succeed (e.g. full/unrestricted so supervisor and ports can be managed). After all checklist tasks, run the verify workflow (health, supervisor status, recent logs, status block).
    - **Verification steps** — Run any DB queries, log checks, or UI checks the checklist asks for.
+   - **Record release in DB** — If the checklist includes `scripts/ops/record_system_version.py --version …`, run that exact command on the target server after migrations/restart/verify as the entry specifies. Use the **same version string** as in the entry’s `Release: v…` line; do not run no-arg `record_system_version.py` when the entry pins a version.
 4. **Update the checklist in MASTER_CHANGELOG.md** — After completing each task, change its `- [ ]` to `- [x]` in the file. Do this as you go (or immediately after finishing all tasks for that entry).
 5. If a task cannot be completed (e.g. missing env, user intervention required), report clearly and do not mark it `[x]` until it is done.
 

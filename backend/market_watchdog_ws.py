@@ -31,20 +31,33 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import psycopg2.pool
 import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
-from backend.core.kalshi_lifecycle_trade_outcome import (
-    apply_lifecycle_market_result_for_ticker,
-    strike_display_from_floor_strike,
-)
+from backend.core.kalshi_lifecycle_trade_outcome import strike_display_from_floor_strike
 from backend.core.kalshi_market_normalize import (
     strike_from_kalshi_15m_rest_market,
     ticker_msg_to_row_values,
 )
 from backend.core.kalshi_ws_auth import kalshi_ws_connect_headers
-from backend.core.config.database import get_postgresql_connection
+from backend.core.strike_pipeline_health import (
+    MARKET_15M,
+    MARKET_HOURLY,
+    pipeline_health_writer_dead_sec,
+    upsert_strike_pipeline_health,
+    floor_strike_vs_spot_check,
+)
+from backend.symbol_price_watchdog import get_current_price_from_db
+from backend.core.config.database import (
+    SystemThreadedConnectionPool,
+    get_system_postgresql_connection,
+)
+from backend.core.kalshi_lifecycle_pending_tickers import (
+    fetch_lifecycle_pending_meta_all_tenants,
+    ticker_still_needs_market_result_any_tenant,
+)
+from backend.core.trading_redis_comms import publish_kalshi_lifecycle_trades_event
+from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 from backend.market_watchdog import (
     DB_CONFIG,
     EST,
@@ -111,6 +124,12 @@ def _market_watchdog_lifecycle_enabled() -> bool:
     )
 
 
+def _ws_market_interval_from_table_ref(table_ref: str) -> str:
+    if table_ref == WS_TABLE_HOURLY or "hourly" in (table_ref or "").lower():
+        return MARKET_HOURLY
+    return MARKET_15M
+
+
 def _lifecycle_update_strike_on_created(
     msg: dict, meta: dict, exchange_key: str, table_ref: str
 ) -> None:
@@ -131,6 +150,40 @@ def _lifecycle_update_strike_on_created(
         fs,
     )
     if fs is None:
+        return
+    spot = None
+    try:
+        spot = get_current_price_from_db(sym_u)
+    except Exception:
+        logger.debug("lifecycle strike: spot lookup failed for %s", sym_u, exc_info=True)
+    ok_drift, drift_reason, drift_pct = floor_strike_vs_spot_check(fs, spot)
+    if not ok_drift:
+        logger.error(
+            "[LIFECYCLE] floor_strike rejected (corrupt vs spot) market_ticker=%s symbol=%s %s "
+            "floor_strike=%s spot=%s drift_pct=%s",
+            mt,
+            sym_u,
+            drift_reason,
+            fs,
+            spot,
+            drift_pct,
+        )
+        conn_bad = _borrow_conn_retry("lifecycle_strike_corrupt", 15.0)
+        if conn_bad:
+            try:
+                upsert_strike_pipeline_health(
+                    conn_bad,
+                    exchange=exchange_key,
+                    market=_ws_market_interval_from_table_ref(table_ref),
+                    symbol=sym_u,
+                    healthy=False,
+                    reason=f"lifecycle_created:{drift_reason}",
+                    max_age_sec=pipeline_health_writer_dead_sec(),
+                )
+            except Exception:
+                logger.exception("upsert strike_pipeline_health after corrupt floor_strike")
+            finally:
+                _return_conn(conn_bad)
         return
     strike_s = strike_display_from_floor_strike(fs)
     if not strike_s:
@@ -167,10 +220,10 @@ def _lifecycle_update_strike_on_created(
 
 
 def _lifecycle_apply_result_if_tracked(msg: dict) -> None:
-    """On ``determined`` / ``settled`` with ``result``, update ``users.trades_0001.market_result``.
+    """On ``determined`` / ``settled`` with ``result``, publish for per-tenant consumers (no direct ``users_*`` writes).
 
     Do not gate on ``lifecycle_meta`` membership: if Kalshi delivered the message on this socket,
-    the row update must run (avoids drops when pending/cycle meta is briefly out of sync).
+    downstream must see it (avoids drops when pending/cycle meta is briefly out of sync).
     """
     mt = msg.get("market_ticker")
     if not mt:
@@ -182,14 +235,23 @@ def _lifecycle_apply_result_if_tracked(msg: dict) -> None:
     if result is None or str(result).strip() == "":
         return
     logger.info(
-        "[LIFECYCLE] %s market_ticker=%s result=%s (trades.market_result + optional win_loss_confirmed)",
+        "[LIFECYCLE] %s market_ticker=%s result=%s (publish → kalshi_lifecycle_trade_consumer per user)",
         et,
         mt,
         result,
     )
-    apply_lifecycle_market_result_for_ticker(str(mt).strip(), result)
+    ok = publish_kalshi_lifecycle_trades_event(
+        market_ticker=str(mt).strip(),
+        result_raw=result,
+        event_type=str(et),
+    )
+    if not ok:
+        logger.warning(
+            "[LIFECYCLE] Redis publish failed market_ticker=%s — tenant trades.market_result not updated (fix Redis or run consumers)",
+            mt,
+        )
 
-_DB_POOL: psycopg2.pool.ThreadedConnectionPool | None = None
+_DB_POOL: TenantThreadedConnectionPool | None = None
 
 def _ticker_upsert_sql(table_ref: str) -> str:
     return f"""
@@ -258,8 +320,12 @@ def _init_db_pool(maxconn: int) -> bool:
         if _DB_POOL is not None:
             return True
         try:
-            _DB_POOL = psycopg2.pool.ThreadedConnectionPool(minconn, maxconn, **DB_CONFIG)
-            logger.info("db ThreadedConnectionPool min=%s max=%s", minconn, maxconn)
+            _DB_POOL = SystemThreadedConnectionPool(
+                minconn,
+                maxconn,
+                **merge_psycopg2_connect_kwargs(DB_CONFIG),
+            )
+            logger.info("db SystemThreadedConnectionPool min=%s max=%s", minconn, maxconn)
             return True
         except Exception:
             logger.exception("db pool init failed; will use connect_database per call")
@@ -559,7 +625,7 @@ def _numeric_strike_from_rest_market(market: dict) -> float | None:
 def _hourly_spot_price(sym_u: str) -> float | None:
     """Align with strike pipeline: live_symbol_status, then 1s price log."""
     sym_u = sym_u.upper().strip()
-    conn = get_postgresql_connection()
+    conn = get_system_postgresql_connection()
     if not conn:
         return None
     try:
@@ -948,50 +1014,21 @@ class SubState:
 
 
 def _fetch_lifecycle_pending_meta(exchange_key: str, market_label: str) -> dict[str, tuple[str, str]]:
-    """Tickers on this exchange with any row still missing ``market_result`` (all cadences).
+    """Tickers on this exchange with any row still missing ``market_result`` (all tenants, read-only).
 
     ``market_label`` identifies the watchdog process only; retention is **not** split by ``trades.market``
     so 15m and hourly rows cannot fall through the wrong subscription.
     """
-    ex = str(exchange_key).strip().lower()
     conn = _borrow_conn_retry("lifecycle_pending_meta", 15.0)
     if not conn:
         return {}
-    out: dict[str, tuple[str, str]] = {}
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT DISTINCT ON (ticker) ticker, symbol
-                FROM users.trades_0001
-                WHERE LOWER(TRIM(COALESCE(exchange, ''))) = %s
-                  AND ticker IS NOT NULL AND TRIM(ticker::text) != ''
-                  AND status IN ('open', 'closing', 'close_failed', 'expired', 'closed')
-                  AND (
-                    (status IN ('open', 'closing', 'close_failed') AND market_result IS NULL)
-                    OR (status = 'expired')
-                    OR (status = 'closed' AND market_result IS NULL)
-                  )
-                ORDER BY ticker, id DESC
-                """,
-                (ex,),
-            )
-            for row in cur.fetchall() or ():
-                tkr, sym = row[0], row[1]
-                if not tkr:
-                    continue
-                ts = str(tkr).strip()
-                su = str(sym or "").strip().upper()
-                out[ts] = (su, "")
-    except Exception:
-        logger.exception("lifecycle pending meta fetch failed")
+        return fetch_lifecycle_pending_meta_all_tenants(conn, exchange_key)
     finally:
         _return_conn(conn)
-    return out
 
 
 def _ticker_still_needs_market_result(market_ticker: str, exchange_key: str) -> bool:
-    ex = str(exchange_key).strip().lower()
     mt = str(market_ticker).strip()
     if not mt:
         return False
@@ -999,27 +1036,7 @@ def _ticker_still_needs_market_result(market_ticker: str, exchange_key: str) -> 
     if not conn:
         return True
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT 1
-                FROM users.trades_0001
-                WHERE ticker = %s
-                  AND LOWER(TRIM(COALESCE(exchange, ''))) = %s
-                  AND status IN ('open', 'closing', 'close_failed', 'expired', 'closed')
-                  AND (
-                    (status IN ('open', 'closing', 'close_failed') AND market_result IS NULL)
-                    OR (status = 'expired')
-                    OR (status = 'closed' AND market_result IS NULL)
-                  )
-                LIMIT 1
-                """,
-                (mt, ex),
-            )
-            return cur.fetchone() is not None
-    except Exception:
-        logger.exception("lifecycle needs_result check failed ticker=%s", mt)
-        return True
+        return ticker_still_needs_market_result_any_tenant(conn, mt, exchange_key)
     finally:
         _return_conn(conn)
 

@@ -68,6 +68,13 @@ Uses ``created_at`` (timestamptz) for the window. Default: exclude ``test_filter
 
 DB: ``scripts/backtest/helpers/db.py`` (SSH prod default, etc.).
 
+**Tick-level backtest table:** ``--build-tick-backtest TICKER`` builds ``backtest.tick_backtest_<slug>`` with
+columns aligned to ``live_data.strike_table_15m`` (trade prices as YES/NO asks; bids/spreads NULL).
+Optional ``volume_fp`` / ``open_interest_fp`` from ``backtest.backtest_1m_<slug>`` when that table exists
+(same minute repeated per tick). Sources: ``live_data.live_price_log_1s_*``, trades, candles. See
+``scripts/backtest/helpers/tick_backtest_build.py``. **HTC replay on ticks:** ``--replay-htc-market TICKER
+--replay-from-tick-backtest`` runs AES/ATS over ``tick_backtest_<slug>`` (see ``htc_backtest_replay``).
+
 **Kalshi → backtest schema (any tickers):** ``--ingest-kalshi-tickers T1 T2 ...`` fetches 1m
 candlesticks plus ``floor_strike`` / ``market_result`` (historical markets API, then live market
 fallback) and upserts into ``backtest.backtest_1m_<slug>`` per ticker. For ``KXBTC*`` / ``KXETH*``
@@ -2390,6 +2397,16 @@ def _run_ingest_kalshi_series_close_window(
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
+        "--build-tick-backtest",
+        default=None,
+        metavar="TICKER",
+        help=(
+            "If set: build backtest.tick_backtest_<slug> for one ticker (strike_table_15m-shaped columns; "
+            "trade-based asks). Uses live 1s price log + kalshi_historical_trades_api; optional "
+            "backtest_1m_<slug> for volume_fp/open_interest_fp. Then exit. Mutually exclusive with Kalshi ingest."
+        ),
+    )
+    p.add_argument(
         "--ingest-kalshi-tickers",
         nargs="+",
         metavar="TICKER",
@@ -2486,12 +2503,21 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         metavar="TICKER",
         help=(
-            "Single-market HTC gate replay on ``backtest.backtest_1m_<slug>``: entry settings from "
-            "``users.strategy_list_<user>`` (default: strategy name ``15m HTC`` or ``Hourly HTC`` "
-            "from ticker per ``infer_contract_market_from_kalshi_ticker``), unless "
-            "``--replay-monitor-id`` is set (then ``users.monitor_list_<user>``). Bankroll sizing "
-            "from --replay-bankroll / --replay-allocation-pct; prints JSON and exits. "
+            "Single-market HTC gate replay on ``backtest.backtest_1m_<slug>`` (default), or on "
+            "``backtest.tick_backtest_<slug>`` when ``--replay-from-tick-backtest`` is set. Entry "
+            "settings from ``users.strategy_list_<user>`` (default: ``15m HTC`` or ``Hourly HTC`` "
+            "from ticker), unless ``--replay-monitor-id`` is set (then ``users.monitor_list_<user>``). "
+            "Bankroll from --replay-bankroll / --replay-allocation-pct; prints JSON and exits. "
             "Omit --monitors / --start / --end. Mutually exclusive with Kalshi ingest modes."
+        ),
+    )
+    p.add_argument(
+        "--replay-from-tick-backtest",
+        action="store_true",
+        help=(
+            "With --replay-htc-market only: scan ``backtest.tick_backtest_<slug>`` chronologically "
+            "(1s strike-shaped rows) for AES entry + ATS exits instead of 1m candle bars. "
+            "Build the table first with --build-tick-backtest."
         ),
     )
     p.add_argument(
@@ -2945,6 +2971,22 @@ def main(argv: list[str] | None = None) -> int:
             verbose=args.ingest_kalshi_verbose,
         )
 
+    if args.build_tick_backtest:
+        if ingest_mode_count:
+            p.error("--build-tick-backtest cannot combine with Kalshi ingest modes")
+        tkr = (args.build_tick_backtest or "").strip()
+        if not tkr:
+            p.error("--build-tick-backtest requires a non-empty ticker")
+        from scripts.backtest.helpers.tick_backtest_build import build_tick_backtest_table
+
+        conn = get_connection()
+        try:
+            out = build_tick_backtest_table(conn, tkr)
+        finally:
+            conn.close()
+        print(json.dumps(out, indent=2, default=str))
+        return 0
+
     if args.replay_htc_range:
         if ingest_mode_count:
             p.error("--replay-htc-range cannot be combined with Kalshi ingest modes")
@@ -3023,6 +3065,11 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(out, indent=2, default=str))
         return 0
 
+    if args.replay_from_tick_backtest and not args.replay_htc_market:
+        p.error("--replay-from-tick-backtest requires --replay-htc-market")
+    if args.replay_htc_range and args.replay_from_tick_backtest:
+        p.error("--replay-from-tick-backtest cannot be combined with --replay-htc-range")
+
     if args.replay_htc_market:
         if ingest_mode_count:
             p.error("--replay-htc-market cannot be combined with Kalshi ingest modes")
@@ -3063,6 +3110,7 @@ def main(argv: list[str] | None = None) -> int:
                     monitor_id=int(args.replay_monitor_id),
                     spike_alert_active=bool(args.replay_spike_alert_active),
                     gate_profile=str(args.replay_gate_profile),
+                    from_tick_table=bool(args.replay_from_tick_backtest),
                 )
             else:
                 sname = (args.replay_strategy or infer_strategy_list_name_for_kalshi_ticker(ticker)).strip()
@@ -3090,6 +3138,7 @@ def main(argv: list[str] | None = None) -> int:
                     strategy_name=sname,
                     spike_alert_active=bool(args.replay_spike_alert_active),
                     gate_profile=str(args.replay_gate_profile),
+                    from_tick_table=bool(args.replay_from_tick_backtest),
                 )
         finally:
             conn.close()

@@ -36,10 +36,15 @@ Run when the user wants a **single command** to prepare an update, commit and pu
      - Report outcome, remaining open items, VERIFY STATUS, fidelity.
    - Respect all apply-update-from-local rules (e.g. migration pre-flight; never mark DB tasks done or report "All good" if migrations were required and not successfully run).
 
+4. **`system.version_control` on prod must match the release you committed**
+   - **prepare-update** already chose **NEXT**, put **`Release: vNEXT`** in `MASTER_CHANGELOG.md`, and added a checklist line `record_system_version.py --version NEXT` (same string as in the summary, without the `v` prefix).
+   - **apply-update-from-local** must run that checklist item on prod (check it off when done). **Do not** run bare `record_system_version.py` with no `--version` if the changelog pins **NEXT** — that could double-bump or diverge from the git tag in the commit message.
+   - Only if an old changelog entry has no pinned version (legacy): you may use no-arg `record_system_version.py` once to patch-bump from whatever prod’s DB last row is; prefer adding an explicit `--version` line when you touch that entry.
+
 ## Summary
 
-- **Prepare** → if blocking issues, **stop**.
-- **Commit and push** with the suggested message.
-- **Apply** on prod via SSH (checklist, verify, fidelity, report).
+- **Prepare** → if blocking issues, **stop** (includes resolving **NEXT** from prod/local DB and writing it into changelog + suggested commit title).
+- **Commit and push** with the suggested message (title includes **vNEXT**).
+- **Apply** on prod via SSH (checklist, verify, fidelity, report) — including **`record_system_version.py --version NEXT`** from the entry.
 
 References: `.cursor/commands/push-commits-and-update-production.md`, prepare-update skill, apply-update-from-local skill.

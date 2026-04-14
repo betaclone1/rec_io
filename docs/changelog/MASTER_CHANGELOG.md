@@ -6,6 +6,102 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-14 — Release v3.1.0: tenant schemas, web auth, system version, trading/supervisor alignment
+
+**Summary**
+- **Release: v3.1.0**
+- **Database:** Catch-up chain from **`20260409_2100`** through **`20260422_1000`** — system settings, `master_users` strategy list + registration + password hash + `exchange_credentials`, `users` → `users_0001`, tenant RLS session GUC, monitor list serial/seq fixes, active trades default, trades `rec_io_db_notify` per tenant schema, tenant balance trade timestamps, backtest historical trades API, drop legacy Kalshi user-info tables on master, and **`system.version_control`**. Each id has a paired **`.down.sql`** (reversible rollbacks).
+- **Backend / web:** Multi-tenant context, web auth and session routes, trading Redis consumers and graceful shutdown paths, Kalshi account sync / lifecycle, `read_api` / `main_app` alignment, paper collateral, supervisor config generation, ops (`read_system_version.py`, `record_system_version.py`).
+- **Frontend:** Login/register, `rec_session.js`, dashboard and mobile updates, system status version + last-updated row.
+- **Docs / CI:** Schema reference, tenant touch registry, SMTP secrets README pattern, workflow and AGENTS updates.
+- **Plans:** `db-prod-schema-alignment` (and related multi-session work).
+
+**DB migrations (required on production, strict timestamp order — runner skips already-applied ids)**
+1. `20260409_2100_system_settings_0001`
+2. `20260409_2200_system_master_users_strategy_list`
+3. `20260409_2300_system_strategy_list_rename_to_default`
+4. `20260410_1000_system_settings_trading_halt_active`
+5. `20260410_1000_trades_monitor_confirmed_default_null`
+6. `20260410_1015_users_master_users_to_system`
+7. `20260410_1020_system_master_users_registration_columns`
+8. `20260410_1030_system_master_users_user_id_unique`
+9. `20260410_2100_system_master_users_exchange_credentials`
+10. `20260411_1100_system_settings_drawdown_halt_monitor_snapshot`
+11. `20260411_1100_transfers_paper_0001`
+12. `20260411_1200_trades_close_method_auto_to_auto_probability`
+13. `20260411_1300_rename_users_schema_to_users_0001`
+14. `20260411_1500_rec_tenant_rls_session_guc`
+15. `20260411_1605_system_master_users_password_hash`
+16. `20260411_1700_tenant_monitor_list_id_serial`
+17. `20260412_1000_monitor_test_filter_trade_history_include_test`
+18. `20260412_1015_monitor_list_seq_slot_prefix_resync`
+19. `20260412_1500_monitor_list_seq_ignore_misplaced_99xxx`
+20. `20260412_1630_active_trades_pool_status_default`
+21. `20260412_2000_trades_tenant_schemas_rec_io_db_notify`
+22. `20260412_2145_tenant_balance_trade_timestamps`
+23. `20260413_1000_backfill_paper_trade_for_test_filter_monitors`
+24. `20260414_1000_backtest_kalshi_candles_1m_kxbtc15m_26mar051345_45`
+25. `20260415_1200_backtest_rename_kalshi_candles_tables_to_backtest_1m`
+26. `20260416_1000_backtest_1m_add_spot_price_columns`
+27. `20260417_1000_backtest_1m_rename_spot_to_price_history_names`
+28. `20260418_1000_backtest_1m_running_ask_15m_columns`
+29. `20260419_1000_backtest_1m_rename_cycle_ask_to_price_15m`
+30. `20260420_1000_system_master_users_registration_user_no`
+31. `20260420_1010_system_master_users_widen_first_last_name`
+32. `20260420_1200_system_master_users_email_verification`
+33. `20260420_1430_backtest_kalshi_historical_trades_api`
+34. `20260421_1400_master_users_kalshi_drop_user_info_tables`
+35. `20260422_1000_system_version_control`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations (from project root on server, in order above; safe to re-run — skips applied):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260409_2100_system_settings_0001`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260409_2200_system_master_users_strategy_list`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260409_2300_system_strategy_list_rename_to_default`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260410_1000_system_settings_trading_halt_active`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260410_1000_trades_monitor_confirmed_default_null`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260410_1015_users_master_users_to_system`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260410_1020_system_master_users_registration_columns`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260410_1030_system_master_users_user_id_unique`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260410_2100_system_master_users_exchange_credentials`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1100_system_settings_drawdown_halt_monitor_snapshot`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1100_transfers_paper_0001`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1200_trades_close_method_auto_to_auto_probability`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1300_rename_users_schema_to_users_0001`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1500_rec_tenant_rls_session_guc`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1605_system_master_users_password_hash`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260411_1700_tenant_monitor_list_id_serial`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260412_1000_monitor_test_filter_trade_history_include_test`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260412_1015_monitor_list_seq_slot_prefix_resync`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260412_1500_monitor_list_seq_ignore_misplaced_99xxx`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260412_1630_active_trades_pool_status_default`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260412_2000_trades_tenant_schemas_rec_io_db_notify`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260412_2145_tenant_balance_trade_timestamps`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260413_1000_backfill_paper_trade_for_test_filter_monitors`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260414_1000_backtest_kalshi_candles_1m_kxbtc15m_26mar051345_45`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260415_1200_backtest_rename_kalshi_candles_tables_to_backtest_1m`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260416_1000_backtest_1m_add_spot_price_columns`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260417_1000_backtest_1m_rename_spot_to_price_history_names`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260418_1000_backtest_1m_running_ask_15m_columns`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260419_1000_backtest_1m_rename_cycle_ask_to_price_15m`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260420_1000_system_master_users_registration_user_no`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260420_1010_system_master_users_widen_first_last_name`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260420_1200_system_master_users_email_verification`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260420_1430_backtest_kalshi_historical_trades_api`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260421_1400_master_users_kalshi_drop_user_info_tables`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260422_1000_system_version_control`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Regenerate supervisor config:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/config/generate_unified_supervisor_config.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; spot-check login, dashboard, system version display.
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.0`
+
+---
+
 ## 2026-04-09 — System settings, trading halt UI, MTB bankroll chart, drawdown/monitor wiring, backtest schema helpers
 
 **Summary**

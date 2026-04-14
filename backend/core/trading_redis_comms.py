@@ -4,23 +4,31 @@ Trading-plane Redis helpers: streams (reliable commands) and pub/sub (UI fanout)
 Env:
   USE_TRADING_REDIS_COMMS — when truthy, services prefer Redis over internal HTTP (per-path fallback remains in callers).
 
+  TRADING_REDIS_STARTUP_WAIT_SEC — seconds to retry PING when establishing the shared client (default 45).
+  TRADING_REDIS_STARTUP_RETRY_INTERVAL_SEC — sleep between PING attempts (default 0.25).
+  TRADING_REDIS_BACKOFF_AFTER_FAIL_SEC — after a failed wait, skip new attempts for this many seconds (default 15).
+  TRADING_REDIS_WARN_COOLDOWN_SEC — at most one WARNING about unreachable Redis per this many seconds (default 120).
+  TRADING_REDIS_UNCACHED_WAIT_SEC — shorter PING wait for :func:`redis_connect_uncached` reconnect loops (default 8).
+
 Streams (defaults):
-  TRADING_REDIS_STREAM_EXECUTOR — trade_manager → trade_executor (trigger_trade payloads)
-  TRADING_REDIS_STREAM_TM_STATUS — trade_executor → trade_manager (update_trade_status payloads)
-  TRADING_REDIS_STREAM_TM_COMMANDS — AES / ATS → trade_manager (add_trade / close bodies)
+  TRADING_REDIS_STREAM_EXECUTOR — trade_manager → trade_executor (trigger_trade payloads); per-slot ``…:NNNN`` unless TRADING_REDIS_EXECUTOR_LEGACY_SINGLE_STREAM
+  TRADING_REDIS_STREAM_TM_STATUS — trade_executor → trade_manager (update_trade_status payloads); per-slot ``…:NNNN`` unless TRADING_REDIS_TM_STATUS_LEGACY_SINGLE_STREAM
+  TRADING_REDIS_STREAM_TM_COMMANDS — AES / ATS → trade_manager (add_trade / close bodies); per-slot stream ``…:NNNN`` unless legacy flag is set
+  TRADING_REDIS_TM_COMMANDS_LEGACY_SINGLE_STREAM — if truthy, one shared command stream (multi-tenant unsafe with multiple trade_managers)
   TRADING_REDIS_STREAM_MM_MONITOR_SETTINGS — main_app → monitor_manager (set_auto_entry_settings JSON body)
   TRADING_REDIS_STREAM_MAXLEN — approximate max stream length per XADD (default 8000)
 
-Consumer groups (fixed names):
+Consumer groups (fixed names; command stream may be per-slot):
   trade_executor: group executor, consumer hostname-based
   trade_manager status: group tm_status
-  trade_manager commands: group tm_commands
+  trade_manager commands: group tm_commands on ``trading:tm:commands:<NNNN>`` (one stream per tenant slot)
 
 Pub/sub:
   REDIS_CHANNEL_ATS_TM_NOTIFICATIONS — trade_manager → ATS (non-open notifications; open uses ats_enrollment_redis)
   REDIS_CHANNEL_TRADING_PREFERENCES — trading/UI events → main forwards to /ws/preferences (default rec_io:preferences)
   REDIS_CHANNEL_DB_CHANGES — same contract as main db_changes forwarder (default rec_io:db_changes)
   REDIS_CHANNEL_TM_POSITIONS_UPDATED — kalshi_account_sync_ws → trade_manager (same JSON as POST /api/positions_updated)
+  REDIS_CHANNEL_KALSHI_LIFECYCLE_TRADES — market_watchdog_ws → per-tenant kalshi_lifecycle_trade_consumer (``users_NNNN.trades_NNNN``)
 
 See docs/TRADING_REDIS_COMMS.md.
 """
@@ -30,15 +38,89 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import socket
 import threading
 import time
 import uuid
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
+
+_MONITOR_SLOT_IN_KEY = re.compile(r"^mon_(\d{4})_\d+$", re.IGNORECASE)
+_USER_NO_4 = re.compile(r"^\d{4}$")
 
 from backend.core.time_eastern import now_est
 
 logger = logging.getLogger(__name__)
+
+# Shared client: wait for Redis during supervisor restart (ordering) before logging errors.
+_trading_redis_cached_lock = threading.Lock()
+_trading_redis_cached: Any = None
+_trading_redis_skip_until_mono: float = 0.0
+_trading_redis_warn_last_mono: float = 0.0
+
+
+def _trading_redis_startup_wait_sec() -> float:
+    try:
+        return max(1.0, float(os.getenv("TRADING_REDIS_STARTUP_WAIT_SEC", "45")))
+    except ValueError:
+        return 45.0
+
+
+def _trading_redis_startup_retry_interval_sec() -> float:
+    try:
+        return max(0.05, float(os.getenv("TRADING_REDIS_STARTUP_RETRY_INTERVAL_SEC", "0.25")))
+    except ValueError:
+        return 0.25
+
+
+def _trading_redis_backoff_after_fail_sec() -> float:
+    try:
+        return max(1.0, float(os.getenv("TRADING_REDIS_BACKOFF_AFTER_FAIL_SEC", "15")))
+    except ValueError:
+        return 15.0
+
+
+def _trading_redis_warn_cooldown_sec() -> float:
+    try:
+        return max(5.0, float(os.getenv("TRADING_REDIS_WARN_COOLDOWN_SEC", "120")))
+    except ValueError:
+        return 120.0
+
+
+def _trading_redis_uncached_wait_sec() -> float:
+    """Shorter wait for per-call connections (e.g. stream consumer reconnect loop)."""
+    try:
+        return max(0.5, float(os.getenv("TRADING_REDIS_UNCACHED_WAIT_SEC", "8")))
+    except ValueError:
+        return 8.0
+
+
+def _should_emit_trading_redis_warning() -> bool:
+    global _trading_redis_warn_last_mono
+    now = time.monotonic()
+    if now - _trading_redis_warn_last_mono >= _trading_redis_warn_cooldown_sec():
+        _trading_redis_warn_last_mono = now
+        return True
+    return False
+
+
+def _ping_redis_with_backoff(r: Any, *, max_wait_sec: float) -> Tuple[bool, Optional[BaseException]]:
+    """
+    Retry PING until success or ``max_wait_sec`` elapses. No logging (callers decide).
+    """
+    if r is None:
+        return False, None
+    deadline = time.monotonic() + max_wait_sec
+    interval = _trading_redis_startup_retry_interval_sec()
+    last_err: Optional[BaseException] = None
+    while time.monotonic() < deadline:
+        try:
+            r.ping()
+            return True, None
+        except Exception as e:
+            last_err = e
+            time.sleep(interval)
+    return False, last_err
 
 
 def use_trading_redis_comms() -> bool:
@@ -55,7 +137,128 @@ def stream_tm_status() -> str:
 
 
 def stream_tm_commands() -> str:
+    """Base stream name only. Prefer :func:`stream_tm_commands_for_worker` / :func:`stream_tm_commands_resolved`."""
     return os.getenv("TRADING_REDIS_STREAM_TM_COMMANDS", "trading:tm:commands")
+
+
+def _legacy_single_tm_command_stream() -> bool:
+    """If true, use one global stream (breaks multi-tenant when multiple trade_managers run)."""
+    v = (os.getenv("TRADING_REDIS_TM_COMMANDS_LEGACY_SINGLE_STREAM") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def tenant_slot_from_monitor_key(monitor: Optional[str]) -> Optional[str]:
+    """Parse ``mon_<slot>_<id>`` → four-digit slot."""
+    if not monitor:
+        return None
+    m = _MONITOR_SLOT_IN_KEY.match(str(monitor).strip())
+    return m.group(1) if m else None
+
+
+def resolve_tm_command_stream_slot(
+    payload: Dict[str, Any],
+    tenant_user_no: Optional[str],
+) -> Optional[str]:
+    """Pick Redis stream slot: explicit arg, then ``payload['monitor']``, then worker tenant."""
+    if tenant_user_no and _USER_NO_4.match(str(tenant_user_no).strip()):
+        return str(tenant_user_no).strip()
+    slot = tenant_slot_from_monitor_key(payload.get("monitor") if isinstance(payload, dict) else None)
+    if slot:
+        return slot
+    try:
+        from backend.core.tenant_context import get_worker_tenant_context
+
+        w = get_worker_tenant_context().user_no
+        if w and _USER_NO_4.match(str(w).strip()):
+            return str(w).strip()
+    except Exception:
+        pass
+    return None
+
+
+def stream_tm_commands_resolved(slot: Optional[str]) -> str:
+    """
+    Stream key for AES/ATS → trade_manager commands.
+
+    Default: ``{base}:<slot>`` for four-digit slots so each ``trade_manager_NNNN`` consumes only its queue.
+    Set ``TRADING_REDIS_TM_COMMANDS_LEGACY_SINGLE_STREAM=1`` to force a single shared stream (legacy).
+    """
+    base = stream_tm_commands()
+    if _legacy_single_tm_command_stream():
+        return base
+    if slot and _USER_NO_4.match(str(slot).strip()):
+        return f"{base}:{str(slot).strip()}"
+    return base
+
+
+def stream_tm_commands_for_worker() -> str:
+    """Stream this ``trade_manager`` process should XREADGROUP (from ``REC_USER_SCHEMA`` / worker tenant)."""
+    try:
+        from backend.core.tenant_context import get_worker_tenant_context
+
+        return stream_tm_commands_resolved(get_worker_tenant_context().user_no)
+    except Exception:
+        return stream_tm_commands_resolved(None)
+
+
+def _legacy_single_executor_stream() -> bool:
+    """If true, use one global executor stream (unsafe with multiple trade_executors)."""
+    v = (os.getenv("TRADING_REDIS_EXECUTOR_LEGACY_SINGLE_STREAM") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def stream_executor_resolved(slot: Optional[str]) -> str:
+    """
+    Stream for trade_manager → trade_executor ``trigger_trade``.
+
+    Default: ``{base}:<slot>`` for four-digit slots so each ``trade_executor_NNNN`` consumes only its queue.
+    """
+    base = stream_executor()
+    if _legacy_single_executor_stream():
+        return base
+    if slot and _USER_NO_4.match(str(slot).strip()):
+        return f"{base}:{str(slot).strip()}"
+    return base
+
+
+def stream_executor_for_worker() -> str:
+    """Stream this ``trade_executor`` process should XREADGROUP."""
+    try:
+        from backend.core.tenant_context import get_worker_tenant_context
+
+        return stream_executor_resolved(get_worker_tenant_context().user_no)
+    except Exception:
+        return stream_executor_resolved(None)
+
+
+def _legacy_single_tm_status_stream() -> bool:
+    """If true, use one global tm_status stream (unsafe with multiple trade_managers)."""
+    v = (os.getenv("TRADING_REDIS_TM_STATUS_LEGACY_SINGLE_STREAM") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def stream_tm_status_resolved(slot: Optional[str]) -> str:
+    """
+    Stream for trade_executor → trade_manager ``update_trade_status``.
+
+    Default: ``{base}:<slot>`` per tenant so status updates reach the correct ``trade_manager_NNNN``.
+    """
+    base = stream_tm_status()
+    if _legacy_single_tm_status_stream():
+        return base
+    if slot and _USER_NO_4.match(str(slot).strip()):
+        return f"{base}:{str(slot).strip()}"
+    return base
+
+
+def stream_tm_status_for_worker() -> str:
+    """Stream this ``trade_manager`` process should XREADGROUP for executor status."""
+    try:
+        from backend.core.tenant_context import get_worker_tenant_context
+
+        return stream_tm_status_resolved(get_worker_tenant_context().user_no)
+    except Exception:
+        return stream_tm_status_resolved(None)
 
 
 def stream_mm_monitor_settings() -> str:
@@ -84,6 +287,11 @@ def channel_trading_preferences() -> str:
     return os.getenv("REDIS_CHANNEL_TRADING_PREFERENCES", "rec_io:preferences")
 
 
+def redis_key_system_release_version() -> str:
+    """String value: current app release (e.g. 3.0.2). Set by system_monitor from system.version_control."""
+    return os.getenv("REDIS_KEY_SYSTEM_RELEASE_VERSION", "rec_io:system_release_version")
+
+
 def channel_db_changes() -> str:
     return os.getenv("REDIS_CHANNEL_DB_CHANGES", "rec_io:db_changes")
 
@@ -94,6 +302,45 @@ def channel_monitor_manager() -> str:
 
 def channel_tm_positions_updated() -> str:
     return os.getenv("REDIS_CHANNEL_TM_POSITIONS_UPDATED", "rec_io:tm:positions_updated")
+
+
+def channel_kalshi_lifecycle_trades() -> str:
+    return os.getenv("REDIS_CHANNEL_KALSHI_LIFECYCLE_TRADES", "rec_io:kalshi_lifecycle_trades")
+
+
+def publish_kalshi_lifecycle_trades_event(
+    *,
+    market_ticker: str,
+    result_raw: object,
+    event_type: str,
+    source: str = "market_watchdog_ws",
+) -> bool:
+    """
+    Publish a Kalshi ``market_lifecycle_v2`` outcome for fan-out to tenant-bound consumers.
+
+    Each :mod:`backend.kalshi_lifecycle_trade_consumer` applies :func:`backend.core.kalshi_lifecycle_trade_outcome.apply_lifecycle_market_result_for_ticker`
+    only within its ``REC_USER_SCHEMA``.
+    """
+    r = redis_client_optional()
+    if r is None:
+        return False
+    payload = json.dumps(
+        {
+            "type": "kalshi_lifecycle_trades",
+            "market_ticker": str(market_ticker).strip(),
+            "result": result_raw,
+            "event_type": str(event_type),
+            "source": source,
+        },
+        default=str,
+    )
+    try:
+        r.publish(channel_kalshi_lifecycle_trades(), payload)
+        return True
+    except Exception as e:
+        logger.warning("publish kalshi_lifecycle_trades failed: %s", e)
+        _invalidate_trading_redis_cache()
+        return False
 
 
 def _redis_client():
@@ -124,16 +371,13 @@ def _redis_client():
         return None
 
 
-_trading_redis_cached_lock = threading.Lock()
-_trading_redis_cached = None
-
-
 def _invalidate_trading_redis_cache() -> None:
     """Drop cached publisher client (e.g. after connection error)."""
-    global _trading_redis_cached
+    global _trading_redis_cached, _trading_redis_skip_until_mono
     with _trading_redis_cached_lock:
         old = _trading_redis_cached
         _trading_redis_cached = None
+        _trading_redis_skip_until_mono = 0.0
     if old is not None:
         try:
             old.close()
@@ -145,45 +389,67 @@ def redis_client_optional():
     """
     Shared Redis connection for pub/sub and XADD from many call sites.
     Avoids a new TCP handshake + PING on every publish (previous behavior).
+
+    On cold start (supervisor restart), Redis may not accept connections for a few seconds.
+    This path retries PING for ``TRADING_REDIS_STARTUP_WAIT_SEC`` (default 45) before emitting
+    a rate-limited warning, and backs off ``TRADING_REDIS_BACKOFF_AFTER_FAIL_SEC`` before retrying
+    a full wait again — so logs are not flooded with benign restart noise.
     """
-    global _trading_redis_cached
+    global _trading_redis_cached, _trading_redis_skip_until_mono
     with _trading_redis_cached_lock:
         if _trading_redis_cached is not None:
             return _trading_redis_cached
+        now = time.monotonic()
+        if now < _trading_redis_skip_until_mono:
+            return None
         r = _redis_client()
         if r is None:
             return None
+        ok, last_err = _ping_redis_with_backoff(r, max_wait_sec=_trading_redis_startup_wait_sec())
+        if ok:
+            _trading_redis_cached = r
+            _trading_redis_skip_until_mono = 0.0
+            return r
         try:
-            r.ping()
-        except Exception as e:
-            logger.warning("Trading Redis ping failed: %s", e)
-            try:
-                r.close()
-            except Exception:
-                pass
-            return None
-        _trading_redis_cached = r
-        return r
+            r.close()
+        except Exception:
+            pass
+        _trading_redis_skip_until_mono = time.monotonic() + _trading_redis_backoff_after_fail_sec()
+        if _should_emit_trading_redis_warning():
+            logger.warning(
+                "Trading Redis unreachable after %.0fs of startup retries (backing off %.0fs; "
+                "set TRADING_REDIS_STARTUP_WAIT_SEC to tune): %s",
+                _trading_redis_startup_wait_sec(),
+                _trading_redis_backoff_after_fail_sec(),
+                last_err,
+            )
+        return None
 
 
 def redis_connect_uncached():
     """
     Dedicated connection for long-lived consumers that call close() in a finally block.
     Do not use redis_client_optional() there — it would tear down the shared cache.
+
+    Uses a shorter default wait than :func:`redis_client_optional` so reconnect loops do not stall.
     """
     r = _redis_client()
     if r is None:
         return None
-    try:
-        r.ping()
+    ok, last_err = _ping_redis_with_backoff(r, max_wait_sec=_trading_redis_uncached_wait_sec())
+    if ok:
         return r
-    except Exception as e:
-        logger.warning("Trading Redis ping failed: %s", e)
-        try:
-            r.close()
-        except Exception:
-            pass
-        return None
+    try:
+        r.close()
+    except Exception:
+        pass
+    if _should_emit_trading_redis_warning():
+        logger.warning(
+            "Trading Redis unreachable (uncached, waited %.0fs): %s",
+            _trading_redis_uncached_wait_sec(),
+            last_err,
+        )
+    return None
 
 
 def ensure_consumer_group(r, stream: str, group: str) -> None:
@@ -266,10 +532,24 @@ def publish_ats_tm_notification(
         return False
 
 
-def publish_preferences_event(event_type: str, data: Dict[str, Any], r=None) -> bool:
-    """Same JSON shape as main.py WS helpers: type + data (forwarded to /ws/preferences)."""
+def publish_preferences_event(
+    event_type: str,
+    data: Dict[str, Any],
+    r=None,
+    *,
+    tenant_user_no: Optional[str] = None,
+) -> bool:
+    """Same JSON shape as main.py WS helpers: type + data (forwarded to /ws/preferences).
+
+    When ``tenant_user_no`` is set (four-digit slot), main_app delivers only to WebSockets
+    for that tenant instead of broadcasting every AES/ATS event to all browsers.
+    """
     channel = channel_trading_preferences()
-    envelope = {"type": event_type, "data": data}
+    envelope: Dict[str, Any] = {"type": event_type, "data": data}
+    if tenant_user_no:
+        u = str(tenant_user_no).strip()
+        if u.isdigit() and len(u) <= 4:
+            envelope["tenant_user_no"] = u.zfill(4)
     payload = json.dumps(envelope, default=str)
 
     def _try_publish(client) -> bool:
@@ -335,15 +615,26 @@ def publish_trade_manager_command(
     source: str,
     *,
     correlation_id: Optional[str] = None,
+    tenant_user_no: Optional[str] = None,
 ) -> bool:
     r = redis_client_optional()
     if not r:
         return False
     cid = correlation_id or (str(payload.get("ticket_id")) if payload.get("ticket_id") else None)
+    slot = resolve_tm_command_stream_slot(payload, tenant_user_no)
+    stream = stream_tm_commands_resolved(slot)
+    if not _legacy_single_tm_command_stream() and slot is None:
+        logger.warning(
+            "publish_trade_manager_command: could not resolve tenant slot for stream "
+            "(set monitor on payload or pass tenant_user_no); using base stream=%s source=%s type=%s",
+            stream,
+            source,
+            cmd_type,
+        )
     return bool(
         xadd_trading_json(
             r,
-            stream_tm_commands(),
+            stream,
             msg_type=cmd_type,
             payload=payload,
             source=source,
@@ -384,12 +675,16 @@ def publish_auto_entry_settings_job(
     body: Dict[str, Any],
     correlation_id: str,
     *,
+    user_number: Optional[str] = None,
     source: str = "main_app",
     r=None,
 ) -> bool:
     """
     Queue monitor_list auto-entry/auto-stop field updates for monitor_manager.
     consumer writes JSON result to mm_monitor_settings_ack_key(cor_uuid).
+
+    ``user_number`` (four-digit slot) is required for multi-tenant: any monitor_manager
+    process may consume the stream; apply uses this tenant, not the worker's REC_USER_SCHEMA.
     """
     client = r if r is not None else redis_client_optional()
     if not client:
@@ -399,6 +694,8 @@ def publish_auto_entry_settings_job(
         "monitor_id": str(monitor_id),
         "body": body,
     }
+    if user_number is not None and str(user_number).strip():
+        payload["user_number"] = str(user_number).strip()
     return bool(
         xadd_trading_json(
             client,
@@ -546,6 +843,8 @@ def start_consumer_daemon(
     group: str,
     consumer: str,
     handler: Callable[[Dict[str, Any], str, Dict[str, str]], bool],
+    *,
+    stop_event: Optional[threading.Event] = None,
 ) -> threading.Thread:
     t = threading.Thread(
         target=run_stream_consumer_loop,
@@ -554,6 +853,7 @@ def start_consumer_daemon(
             "group": group,
             "consumer": consumer,
             "handler": handler,
+            "stop_event": stop_event,
         },
         daemon=True,
         name=f"trading-redis-{stream}",

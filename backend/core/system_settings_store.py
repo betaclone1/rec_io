@@ -15,13 +15,14 @@ from typing import Any, Optional, Tuple
 
 from psycopg2 import sql
 
+from backend.trading_mode import _norm_slot
+
 _LOG = logging.getLogger(__name__)
 
 _DEFAULT_HALT = True
 _DEFAULT_THRESHOLD_PCT = Decimal("50.00")
 
-# Tables exist for these users only (extend with migrations).
-_KNOWN_USERS = frozenset({"0001"})
+_USER_SLOT_RE = re.compile(r"^\d{4}$")
 
 
 def parse_user_number_from_account_balance_table(account_balance_table: str) -> Optional[str]:
@@ -34,7 +35,7 @@ def parse_user_number_from_account_balance_table(account_balance_table: str) -> 
 
 def _settings_table_ident(user_number: str) -> sql.Composed:
     return sql.SQL("{}.{}").format(
-        sql.Identifier("users"),
+        sql.Identifier(f"users_{user_number}"),
         sql.Identifier(f"system_settings_{user_number}"),
     )
 
@@ -49,7 +50,7 @@ def get_drawdown_trading_controls(
     On missing table/row, defaults (True, 50).
     """
     u = str(user_number).strip()
-    if u not in _KNOWN_USERS:
+    if not _USER_SLOT_RE.match(u):
         return _DEFAULT_HALT, _DEFAULT_THRESHOLD_PCT
 
     try:
@@ -77,7 +78,7 @@ def get_drawdown_trading_controls(
 def fetch_system_settings_row(user_number: str) -> Optional[dict]:
     """Load full row for API; returns dict or None."""
     u = str(user_number).strip()
-    if u not in _KNOWN_USERS:
+    if not _USER_SLOT_RE.match(u):
         return None
     from backend.core.config.database import get_postgresql_connection
 
@@ -119,7 +120,7 @@ def update_system_settings_drawdown(
 ) -> Tuple[bool, str]:
     """Update drawdown fields; returns (ok, message)."""
     u = str(user_number).strip()
-    if u not in _KNOWN_USERS:
+    if not _USER_SLOT_RE.match(u):
         return False, "unsupported user"
     if drawdown_trading_halt is None and drawdown_reset_threshold_pct is None:
         return False, "no fields to update"
@@ -182,7 +183,7 @@ def set_drawdown_halt_monitor_snapshot_with_cursor(
     from psycopg2.extras import Json
 
     u = str(user_number).strip()
-    if u not in _KNOWN_USERS:
+    if not _USER_SLOT_RE.match(u):
         return 0
     ident = _settings_table_ident(u)
     val = Json(snapshot) if snapshot is not None else None
@@ -203,7 +204,7 @@ def set_drawdown_halt_monitor_snapshot_with_cursor(
 def set_trading_halt_active_with_cursor(cursor: Any, user_number: str, active: bool) -> int:
     """Set trading_halt_active using an existing cursor (same transaction). Returns rowcount."""
     u = str(user_number).strip()
-    if u not in _KNOWN_USERS:
+    if not _USER_SLOT_RE.match(u):
         return 0
     ident = _settings_table_ident(u)
     cursor.execute(
@@ -218,7 +219,7 @@ def set_trading_halt_active_with_cursor(cursor: Any, user_number: str, active: b
 def set_trading_halt_active(user_number: str, active: bool) -> Tuple[bool, str]:
     """Update trading_halt_active only."""
     u = str(user_number).strip()
-    if u not in _KNOWN_USERS:
+    if not _USER_SLOT_RE.match(u):
         return False, "unsupported user"
     from backend.core.config.database import get_postgresql_connection
 
@@ -254,6 +255,7 @@ def _fanout_monitor_list_trading_halt_ws(user_number: str) -> None:
                 "type": "monitor_list_updated",
                 "message": "system_settings_trading_halt",
                 "trading_halt_active": bool(row.get("trading_halt_active")) if row else False,
+                "tenant_user_no": _norm_slot(u),
             }
         )
     except Exception:
@@ -277,7 +279,7 @@ def restore_trade_operations_from_snapshot(user_number: str) -> Tuple[bool, str,
     from backend.core.drawdown_emergency_restore import apply_drawdown_monitor_snapshot_updates
 
     u = str(user_number).strip()
-    if u not in _KNOWN_USERS:
+    if not _USER_SLOT_RE.match(u):
         return False, "unsupported user", 0
 
     from backend.core.config.database import get_postgresql_connection
