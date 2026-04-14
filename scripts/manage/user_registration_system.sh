@@ -321,8 +321,6 @@ USER_DATA = {
     'name': '$USER_NAME',
     'email': '$USER_EMAIL',
     'phone': '$USER_PHONE',
-    'server_ip': '$SERVER_IP',
-    'server_hostname': '$SERVER_HOSTNAME',
     'registration_date': datetime.now().isoformat(),
     'system_version': 'REC.IO v2',
     'status': 'active'
@@ -341,8 +339,6 @@ try:
             name VARCHAR(255) NOT NULL,
             email VARCHAR(255) NOT NULL,
             phone VARCHAR(50),
-            server_ip VARCHAR(45),
-            server_hostname VARCHAR(255),
             registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             system_version VARCHAR(50),
@@ -354,16 +350,14 @@ try:
     # Insert or update user record
     cursor.execute("""
         INSERT INTO system.master_users (
-            user_id, name, email, phone, server_ip, server_hostname, 
+            user_id, name, email, phone,
             system_version, status
         ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s
         ) ON CONFLICT (user_id) DO UPDATE SET
             name = EXCLUDED.name,
             email = EXCLUDED.email,
             phone = EXCLUDED.phone,
-            server_ip = EXCLUDED.server_ip,
-            server_hostname = EXCLUDED.server_hostname,
             last_updated = CURRENT_TIMESTAMP,
             system_version = EXCLUDED.system_version,
             status = EXCLUDED.status
@@ -372,8 +366,6 @@ try:
         USER_DATA['name'],
         USER_DATA['email'],
         USER_DATA['phone'],
-        USER_DATA['server_ip'],
-        USER_DATA['server_hostname'],
         USER_DATA['system_version'],
         USER_DATA['status']
     ))

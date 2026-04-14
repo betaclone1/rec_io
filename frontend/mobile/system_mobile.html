@@ -548,7 +548,19 @@
             const cpu = data.cpu_percent ? `${data.cpu_percent.toFixed(1)}%` : '--';
             const memory = data.memory_percent ? `${data.memory_percent.toFixed(1)}%` : '--';
             const disk = data.disk_percent ? `${data.disk_percent.toFixed(1)}%` : '--';
-            const services = `${data.services_healthy || 0}/${data.services_total || 0}`;
+            const sum = data.service_summary || {};
+            let services;
+            if (sum.checked_total != null && sum.supervisor_running != null) {
+                services = `${sum.supervisor_running}/${sum.checked_total} running`;
+                if (sum.optional_not_running > 0) {
+                    services += `, ${sum.optional_not_running} optional off`;
+                }
+                if (sum.failed_supervisor > 0) {
+                    services += `, ${sum.failed_supervisor} failed`;
+                }
+            } else {
+                services = `${data.services_healthy || 0}/${data.services_total || 0}`;
+            }
             const timestamp = data.timestamp ? new Date(data.timestamp).toLocaleString() : 'Unknown';
             
             content.innerHTML = `

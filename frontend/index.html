@@ -88,6 +88,7 @@
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Tektur:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles/global.css">
+  <script src="/js/db_changes_prefilter.js"></script>
   
   <!-- Preload only shell-critical images (sidebar logo, favicon, default-tab icon, collapse/expand). Others load when needed. -->
   <link rel="preload" href="/images/rec_logo_1.png" as="image" type="image/png">
@@ -564,6 +565,12 @@
       
       <!-- User Section -->
       <div class="user-section">
+        <a class="nav-item" data-page="admin-tools" id="adminToolsItem" style="display: none;" data-tooltip="Admin Tools">
+          <span class="nav-icon">
+            <img id="adminToolsIcon" src="/images/icons/admin_tools_icon.png" alt="Admin Tools" style="width: 20px; height: 20px; object-fit: contain;">
+          </span>
+          <span class="nav-label">Admin Tools</span>
+        </a>
         <a class="nav-item" data-page="user-settings" id="userSettingsItem">
           <span class="nav-icon">
             <img src="/images/icons/user_icon.png" alt="User Settings" style="width: 20px; height: 20px; object-fit: contain;">
@@ -619,6 +626,7 @@
       <iframe id="strategyLabFrame" class="content-frame" data-tab-src="/tabs/strategy_lab.html"></iframe>
       <iframe id="helpFrame" class="content-frame" data-tab-src="/tabs/help.html"></iframe>
       <iframe id="settingsFrame" class="content-frame" data-tab-src="/tabs/settings.html"></iframe>
+      <iframe id="adminToolsFrame" class="content-frame" data-tab-src="/tabs/admin_tools.html"></iframe>
       <iframe id="userSettingsFrame" class="content-frame" data-tab-src="/tabs/user_settings.html"></iframe>
       <iframe id="systemFrame" class="content-frame" data-tab-src="/tabs/system.html"></iframe>
     </div>
@@ -684,6 +692,7 @@
       'strategy-lab': 'strategyLabFrame',
       'help': 'helpFrame',
       'settings': 'settingsFrame',
+      'admin-tools': 'adminToolsFrame',
       'user-settings': 'userSettingsFrame',
       'system': 'systemFrame'
     };
@@ -802,6 +811,81 @@
       initializeCollapsedSidebarTooltips();
     });
     
+    // Master-admin: highlight Admin Tools when any user is pending_admin_approval (WS + initial fetch).
+    const ADMIN_TOOLS_ICON_DEFAULT = '/images/icons/admin_tools_icon.png';
+    const ADMIN_TOOLS_ICON_ATTN = '/images/icons/admin_tools_icon_attn.png';
+    let _adminIndexPendingWs = null;
+    let _adminIndexPendingWsStopped = true;
+    let _adminIndexPendingRefreshTimer = null;
+    const _ADMIN_INDEX_PENDING_WS_DEBOUNCE_MS = 500;
+
+    async function refreshAdminToolsAttentionIcon() {
+      const adminItem = document.getElementById('adminToolsItem');
+      const icon = document.getElementById('adminToolsIcon');
+      if (!adminItem || !icon || adminItem.style.display === 'none') return;
+      try {
+        const res = await fetch(window.location.origin + '/api/user/admin/master_users', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json().catch(function () { return null; });
+        if (!data || !Array.isArray(data.rows)) return;
+        const pending = data.rows.some(function (r) {
+          return String(r.status || '').trim() === 'pending_admin_approval';
+        });
+        icon.src = pending ? ADMIN_TOOLS_ICON_ATTN : ADMIN_TOOLS_ICON_DEFAULT;
+      } catch (e) { /* keep current icon */ }
+    }
+
+    function scheduleAdminToolsAttentionRefresh() {
+      if (_adminIndexPendingWsStopped) return;
+      if (_adminIndexPendingRefreshTimer) clearTimeout(_adminIndexPendingRefreshTimer);
+      _adminIndexPendingRefreshTimer = setTimeout(function () {
+        _adminIndexPendingRefreshTimer = null;
+        refreshAdminToolsAttentionIcon();
+      }, _ADMIN_INDEX_PENDING_WS_DEBOUNCE_MS);
+    }
+
+    function setupAdminToolsPendingDbChangesWs() {
+      if (_adminIndexPendingWsStopped) return;
+      if (_adminIndexPendingWs) return;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(protocol + '//' + window.location.host + '/ws/db_changes');
+      _adminIndexPendingWs = ws;
+      ws.onmessage = function (event) {
+        try {
+          const raw = event.data;
+          if (typeof recDbChangeRawMentionsStream === 'function' &&
+              !recDbChangeRawMentionsStream(raw, 'master_users')) {
+            return;
+          }
+          const data = JSON.parse(raw);
+          if (data.type === 'db_change' && data.database === 'master_users') {
+            scheduleAdminToolsAttentionRefresh();
+          }
+        } catch (e) { /* ignore malformed frames */ }
+      };
+      ws.onerror = function () {};
+      ws.onclose = function () {
+        _adminIndexPendingWs = null;
+        if (!_adminIndexPendingWsStopped) {
+          setTimeout(setupAdminToolsPendingDbChangesWs, 5000);
+        }
+      };
+    }
+
+    function stopAdminToolsPendingIndicator() {
+      _adminIndexPendingWsStopped = true;
+      if (_adminIndexPendingRefreshTimer) {
+        clearTimeout(_adminIndexPendingRefreshTimer);
+        _adminIndexPendingRefreshTimer = null;
+      }
+      if (_adminIndexPendingWs) {
+        try { _adminIndexPendingWs.close(); } catch (e) {}
+        _adminIndexPendingWs = null;
+      }
+      const icon = document.getElementById('adminToolsIcon');
+      if (icon) icon.src = ADMIN_TOOLS_ICON_DEFAULT;
+    }
+
     // Sidebar display name: GET /api/user/info only. Blank if missing or error (no placeholders).
     function clearSidebarUserLabel() {
       const userDisplay = document.getElementById('userDisplay');
@@ -812,6 +896,11 @@
       if (userSettingsItem) {
         userSettingsItem.setAttribute('data-tooltip', 'User Settings');
       }
+      const adminToolsItem = document.getElementById('adminToolsItem');
+      if (adminToolsItem) {
+        adminToolsItem.style.display = 'none';
+      }
+      stopAdminToolsPendingIndicator();
     }
 
     async function loadUserDisplay() {
@@ -833,6 +922,19 @@
           userDisplay.textContent = disp;
         }
         updateUserSettingsTooltip(disp);
+
+        const adminToolsItem = document.getElementById('adminToolsItem');
+        if (adminToolsItem) {
+          const isMasterAdmin = String(userInfo.account_type || '').toLowerCase() === 'master_admin';
+          adminToolsItem.style.display = isMasterAdmin ? 'flex' : 'none';
+          if (isMasterAdmin) {
+            _adminIndexPendingWsStopped = false;
+            refreshAdminToolsAttentionIcon();
+            setupAdminToolsPendingDbChangesWs();
+          } else {
+            stopAdminToolsPendingIndicator();
+          }
+        }
       } catch (error) {
         console.error('Error loading user display:', error);
         clearSidebarUserLabel();

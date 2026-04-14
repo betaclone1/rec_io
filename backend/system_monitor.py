@@ -137,30 +137,30 @@ class SystemMonitor:
             # Get port assignments
             ports = generator._get_port_assignments()
             
-            # Get active monitors
+            trading_users = generator._discover_trading_user_nos()
+            if not trading_users:
+                p = (
+                    os.environ.get("REC_POOL_USER_NUMBER")
+                    or os.environ.get("REC_USER_NO")
+                    or "0001"
+                ).strip()
+                trading_users = [
+                    p.zfill(4) if p.isdigit() and len(p) <= 4 else "0001"
+                ]
+            ref_slot = sorted(trading_users)[0]
             active_monitors = generator._get_active_monitors()
-            pu = pool_user_for_unified_aes_ats(active_monitors) or default_pool_user_number()
-            tm = f"trade_manager_{pu}"
-            te = f"trade_executor_{pu}"
-            kas = f"kalshi_account_sync_{pu}"
-            mm = f"monitor_manager_{pu}"
+            pu = pool_user_for_unified_aes_ats(active_monitors) or ref_slot
             
-            # Build the complete service list dynamically
-            discovered_services = {}
+            discovered_services: Dict[str, int] = {}
             
-            # Core services from the generator (updated to match current configuration)
-            core_services = [
+            global_core = [
                 {"name": "main_app", "script": "main.py"},
-                {"name": tm, "script": "trade_manager.py"},
-                {"name": te, "script": "trade_executor.py"},
+                {"name": "read_api", "script": "read_api.py"},
+                {"name": "redis_switchboard", "script": "redis_switchboard.py"},
                 {"name": "symbol_price_watchdog_btc", "script": "symbol_price_watchdog.py BTC"},
                 {"name": "symbol_price_watchdog_eth", "script": "symbol_price_watchdog.py ETH"},
                 {"name": "symbol_price_watchdog_sol", "script": "symbol_price_watchdog.py SOL"},
                 {"name": "symbol_price_watchdog_xrp", "script": "symbol_price_watchdog.py XRP"},
-                # SPX/NDX not currently traded; uncomment to re-enable later.
-                # {"name": "symbol_price_watchdog_ndx", "script": "symbol_price_watchdog.py NDX"},
-                # {"name": "symbol_price_watchdog_spx", "script": "symbol_price_watchdog.py SPX"},
-                {"name": kas, "script": "kalshi_account_sync_ws.py"},
                 {
                     "name": "market_watchdog_ws_kalshi_hourly",
                     "script": "market_watchdog_ws.py --exchange kalshi --market hourly",
@@ -170,22 +170,51 @@ class SystemMonitor:
                     "script": "market_watchdog_ws.py --exchange kalshi --market 15m",
                 },
                 {"name": "system_monitor", "script": "system_monitor.py"},
-                {"name": mm, "script": "monitor_manager.py"},
-                {"name": "cascading_failure_detector", "script": "cascading_failure_detector.py"}
+                {"name": "cascading_failure_detector", "script": "cascading_failure_detector.py"},
             ]
+            for svc in global_core:
+                n = svc["name"]
+                discovered_services[n] = ports.get(n, 8000)
             
-            # Add core services
-            for service in core_services:
-                service_name = service["name"]
-                discovered_services[service_name] = ports.get(service_name, 8000)
-            
-            has_15m = any(m.get("market", "hourly") == "15m" for m in active_monitors)
-            has_hourly = any(m.get("market", "hourly") != "15m" for m in active_monitors)
-            if has_15m or has_hourly:
-                aes_n = f"auto_entry_supervisor_{pu}"
-                ats_n = f"active_trade_supervisor_{pu}"
-                discovered_services[aes_n] = ports.get(aes_n, ports.get("auto_entry_supervisor_0001", 8033))
-                discovered_services[ats_n] = ports.get(ats_n, ports.get("active_trade_supervisor_0001", 8034))
+            for user_no in trading_users:
+                tm = f"trade_manager_{user_no}"
+                te = f"trade_executor_{user_no}"
+                kas = f"kalshi_account_sync_{user_no}"
+                mm = f"monitor_manager_{user_no}"
+                klc = f"kalshi_lifecycle_consumer_{user_no}"
+                for name, default_port in (
+                    (tm, 4000),
+                    (te, 8001),
+                    (kas, 8004),
+                    (mm, 8012),
+                    (klc, 8040),
+                ):
+                    discovered_services[name] = ports.get(
+                        name,
+                        generator._scoped_port(
+                            ports,
+                            name.rsplit("_", 1)[0],
+                            user_no,
+                            default_port,
+                            ref_slot=ref_slot,
+                        ),
+                    )
+                umon = generator._get_active_monitors_for_user(
+                    user_no, log_monitor_counts=False
+                )
+                has_15m = any(m.get("market", "hourly") == "15m" for m in umon)
+                has_hourly = any(m.get("market", "hourly") != "15m" for m in umon)
+                if has_15m or has_hourly:
+                    aes_n = f"auto_entry_supervisor_{user_no}"
+                    ats_n = f"active_trade_supervisor_{user_no}"
+                    discovered_services[aes_n] = ports.get(
+                        aes_n,
+                        ports.get(f"auto_entry_supervisor_{pu}", 8033),
+                    )
+                    discovered_services[ats_n] = ports.get(
+                        ats_n,
+                        ports.get(f"active_trade_supervisor_{pu}", 8034),
+                    )
             
             discovered_services["strike_table_generator_ws_hourly"] = ports.get(
                 "strike_table_generator_ws_hourly", 8014
@@ -194,9 +223,12 @@ class SystemMonitor:
                 "strike_table_generator_ws_15m", 8036
             )
 
-            # Update the service URLs with discovered services
             self.service_urls = discovered_services
-            self.critical_services = [tm, te, mm]
+            self.critical_services = [
+                f"trade_manager_{ref_slot}",
+                f"trade_executor_{ref_slot}",
+                f"monitor_manager_{ref_slot}",
+            ]
             
             _sm_logger.debug("Discovered %s services from universal config", len(discovered_services))
             
@@ -478,21 +510,26 @@ class SystemMonitor:
                 [get_supervisorctl_path(), "-c", get_supervisor_config_path(), "status"],
                 capture_output=True, text=True, timeout=5
             )
-            
-            if result.returncode == 0:
+            out = (result.stdout or "").strip()
+            # supervisorctl exits 3 when any program is not RUNNING; stdout is still valid.
+            if out and (
+                result.returncode in (0, 3)
+                or "RUNNING" in out
+                or "STOPPED" in out
+                or "FATAL" in out
+                or "BACKOFF" in out
+                or "STARTING" in out
+                or "EXITED" in out
+            ):
                 supervisor_available = True
-                # Parse supervisor status output to find monitor-specific processes
-                for line in result.stdout.strip().split('\n'):
-                    if line.strip():
-                        # Supervisor status format: process_name STATUS pid, uptime
-                        parts = line.split()
-                        if len(parts) >= 2:
-                            process_name = parts[0]
-                            # Add monitor-specific processes to our list
-                            if (process_name.startswith('auto_entry_supervisor_') or 
-                                process_name.startswith('active_trade_supervisor_')):
-                                if process_name not in all_services:
-                                    all_services.append(process_name)
+                for line in out.split("\n"):
+                    if not line.strip():
+                        continue
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        process_name = parts[0]
+                        if process_name not in all_services:
+                            all_services.append(process_name)
         except Exception as e:
             _sm_logger.debug("Supervisor not available, using direct process check: %s", e)
             supervisor_available = False
@@ -515,10 +552,23 @@ class SystemMonitor:
                             "supervisor_status": result.stdout.strip()
                         }
                     elif "STOPPED" in result.stdout:
-                        service_status[service] = {
-                            "status": "stopped",
-                            "supervisor_status": result.stdout.strip()
-                        }
+                        st_line = result.stdout.strip()
+                        # Live Kalshi sync is optional: supervisord sets autostart=false when prod keys
+                        # are missing or ``exchange_credentials.kalshi`` is false — shows STOPPED / Not started.
+                        if service.startswith("kalshi_account_sync_") and "Not started" in st_line:
+                            service_status[service] = {
+                                "status": "skipped",
+                                "supervisor_status": st_line,
+                                "skip_reason": (
+                                    "kalshi_account_sync not autostarted "
+                                    "(paper tenant, missing prod kalshi.pem+.env, or Kalshi disabled in master_users)"
+                                ),
+                            }
+                        else:
+                            service_status[service] = {
+                                "status": "stopped",
+                                "supervisor_status": st_line,
+                            }
                     elif "FATAL" in result.stdout:
                         service_status[service] = {
                             "status": "fatal",
@@ -579,6 +629,7 @@ class SystemMonitor:
             "services": service_status,
             "total_services": len(all_services),
             "running_services": len([s for s in service_status.values() if s["status"] == "running"]),
+            "skipped_services": len([s for s in service_status.values() if s["status"] == "skipped"]),
             "stopped_services": len([s for s in service_status.values() if s["status"] == "stopped"]),
             "fatal_services": len([s for s in service_status.values() if s["status"] == "fatal"]),
             "timestamp": now_est().isoformat()
@@ -602,14 +653,23 @@ class SystemMonitor:
         
         # Add all services to the report (use only dynamically discovered services)
         for service_name, service_info in all_services_status.items():
-            # Use supervisor status for all services (both core and monitor-specific)
-            if service_info.get("status") == "running":
+            st = service_info.get("status")
+            if st == "running":
                 report["services"][service_name] = {
                     "service": service_name,
                     "status": "healthy",
                     "port": None,
                     "response_time": 0.0,
-                    "timestamp": now_est().isoformat()
+                    "timestamp": now_est().isoformat(),
+                }
+            elif st == "skipped":
+                report["services"][service_name] = {
+                    "service": service_name,
+                    "status": "skipped",
+                    "port": None,
+                    "reason": service_info.get("skip_reason", "optional service not started by supervisord"),
+                    "supervisor_status": service_info.get("supervisor_status"),
+                    "timestamp": now_est().isoformat(),
                 }
             else:
                 report["services"][service_name] = {
@@ -617,9 +677,21 @@ class SystemMonitor:
                     "status": "unhealthy",
                     "port": None,
                     "error": f"Service status: {service_info.get('status', 'unknown')}",
-                    "timestamp": now_est().isoformat()
+                    "timestamp": now_est().isoformat(),
                 }
-        
+
+        raw_svc = report["all_services_status"]["services"]
+        report["service_summary"] = {
+            "supervisor_running": sum(1 for s in raw_svc.values() if s.get("status") == "running"),
+            "optional_not_running": sum(1 for s in raw_svc.values() if s.get("status") == "skipped"),
+            "failed_supervisor": sum(
+                1
+                for s in raw_svc.values()
+                if s.get("status") not in ("running", "skipped")
+            ),
+            "checked_total": len(raw_svc),
+        }
+
         # Add to history
         self.health_history.append(report)
         if len(self.health_history) > self.max_history:
@@ -675,7 +747,8 @@ class SystemMonitor:
                 else:
                     # Production environment - check actual service status
                     for service_name, service_info in services.items():
-                        if service_info.get("status") == "healthy":
+                        st = service_info.get("status")
+                        if st == "healthy" or st == "skipped":
                             services_healthy += 1
                         else:
                             failed_services.append(service_name)

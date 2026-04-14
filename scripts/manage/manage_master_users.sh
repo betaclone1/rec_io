@@ -57,21 +57,21 @@ run_query() {
 show_all_users() {
     print_status "Showing all master users..."
     echo ""
-    run_query "SELECT user_id, name, email, server_ip, registration_date, status FROM system.master_users ORDER BY registration_date DESC;"
+    run_query "SELECT user_id, name, email, registration_date, status FROM system.master_users ORDER BY registration_date DESC;"
 }
 
 # Function to show active users
 show_active_users() {
     print_status "Showing active master users..."
     echo ""
-    run_query "SELECT user_id, name, email, server_ip, last_updated FROM system.active_master_users;"
+    run_query "SELECT user_id, name, email, last_updated FROM system.active_master_users;"
 }
 
 # Function to show recent registrations
 show_recent_registrations() {
     print_status "Showing recent registrations (last 30 days)..."
     echo ""
-    run_query "SELECT user_id, name, email, server_ip, registration_date FROM system.recent_master_registrations;"
+    run_query "SELECT user_id, name, email, registration_date FROM system.recent_master_registrations;"
 }
 
 # Function to show summary
@@ -87,18 +87,16 @@ add_user() {
     local name="$2"
     local email="$3"
     local phone="$4"
-    local server_ip="$5"
-    local server_hostname="$6"
     
     if [[ -z "$user_id" || -z "$name" || -z "$email" ]]; then
-        print_error "Usage: $0 add-user <user_id> <name> <email> [phone] [server_ip] [server_hostname]"
+        print_error "Usage: $0 add-user <user_id> <name> <email> [phone]"
         exit 1
     fi
     
     print_status "Adding user: $user_id"
     
     # user_no: next 4-digit slot (same rule as /api/auth/register); account_type default for ops-added rows.
-    local query="INSERT INTO system.master_users (user_no, user_id, name, email, phone, server_ip, server_hostname, system_version, status, account_type) SELECT LPAD((SELECT COALESCE(MAX(CAST(TRIM(user_no) AS INTEGER)), 0) + 1 FROM system.master_users WHERE TRIM(user_no) ~ E'^[0-9]+\$')::text, 4, '0'), '$user_id', '$name', '$email', '${phone:-}', '${server_ip:-}', '${server_hostname:-}', 'REC.IO v2', 'active', 'user_basic' ON CONFLICT (user_id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email, phone = EXCLUDED.phone, server_ip = EXCLUDED.server_ip, server_hostname = EXCLUDED.server_hostname, last_updated = CURRENT_TIMESTAMP;"
+    local query="INSERT INTO system.master_users (user_no, user_id, name, email, phone, system_version, status, account_type) SELECT LPAD((SELECT COALESCE(MAX(CAST(TRIM(user_no) AS INTEGER)), 0) + 1 FROM system.master_users WHERE TRIM(user_no) ~ E'^[0-9]+\$')::text, 4, '0'), '$user_id', '$name', '$email', '${phone:-}', 'REC.IO v2', 'active', 'user_basic' ON CONFLICT (user_id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email, phone = EXCLUDED.phone, last_updated = CURRENT_TIMESTAMP;"
     
     if run_query "$query" > /dev/null 2>&1; then
         print_success "User $user_id added/updated successfully"
@@ -196,7 +194,7 @@ search_users() {
     print_status "Searching for users matching: $search_term"
     echo ""
     
-    local query="SELECT user_id, name, email, server_ip, status FROM system.master_users WHERE user_id ILIKE '%$search_term%' OR name ILIKE '%$search_term%' OR email ILIKE '%$search_term%' OR server_ip ILIKE '%$search_term%' ORDER BY registration_date DESC;"
+    local query="SELECT user_id, name, email, status FROM system.master_users WHERE user_id ILIKE '%$search_term%' OR name ILIKE '%$search_term%' OR email ILIKE '%$search_term%' ORDER BY registration_date DESC;"
     
     run_query "$query"
 }
@@ -213,7 +211,7 @@ show_user_details() {
     print_status "Showing details for user: $user_id"
     echo ""
     
-    local query="SELECT user_id, name, email, phone, server_ip, server_hostname, registration_date, last_updated, system_version, status, notes FROM system.master_users WHERE user_id = '$user_id';"
+    local query="SELECT user_id, name, email, phone, registration_date, last_updated, system_version, status, notes FROM system.master_users WHERE user_id = '$user_id';"
     
     run_query "$query"
 }
@@ -227,7 +225,7 @@ show_help() {
     echo "  active                  Show active users only"
     echo "  recent                  Show recent registrations (last 30 days)"
     echo "  summary                 Show summary statistics"
-    echo "  add-user <id> <name> <email> [phone] [ip] [hostname]"
+    echo "  add-user <id> <name> <email> [phone]"
     echo "                          Add a new user"
     echo "  update-status <id> <active|inactive>"
     echo "                          Update user status"

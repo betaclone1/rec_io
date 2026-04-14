@@ -963,7 +963,19 @@
             const cpuPercent = data.cpu_percent || 0;
             const memoryPercent = data.memory_percent || 0;
             const diskPercent = data.disk_percent || 0;
-            const services = `${data.services_healthy || 0}/${data.services_total || 0}`;
+            const sum = data.service_summary || {};
+            let services;
+            if (sum.checked_total != null && sum.supervisor_running != null) {
+                services = `${sum.supervisor_running}/${sum.checked_total} running`;
+                if (sum.optional_not_running > 0) {
+                    services += `, ${sum.optional_not_running} optional off`;
+                }
+                if (sum.failed_supervisor > 0) {
+                    services += `, ${sum.failed_supervisor} failed`;
+                }
+            } else {
+                services = `${data.services_healthy || 0}/${data.services_total || 0}`;
+            }
             const timestamp = data.timestamp ? formatRecNyLocaleString(data.timestamp) : 'Unknown';
             
             // Calculate storage details

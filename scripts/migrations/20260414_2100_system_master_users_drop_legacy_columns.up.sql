@@ -1,11 +1,12 @@
--- Revert status width and views only (does not remove user_no / first_name / account_type if present).
-
-DROP VIEW IF EXISTS system.master_users_summary CASCADE;
-DROP VIEW IF EXISTS system.recent_master_registrations CASCADE;
+-- Remove legacy / unused columns from system.master_users; refresh views.
 DROP VIEW IF EXISTS system.active_master_users CASCADE;
+DROP VIEW IF EXISTS system.recent_master_registrations CASCADE;
+DROP VIEW IF EXISTS system.master_users_summary CASCADE;
 
-ALTER TABLE system.master_users
-  ALTER COLUMN status TYPE VARCHAR(20);
+ALTER TABLE system.master_users DROP COLUMN IF EXISTS is_active;
+ALTER TABLE system.master_users DROP COLUMN IF EXISTS server_ip;
+ALTER TABLE system.master_users DROP COLUMN IF EXISTS server_hostname;
+ALTER TABLE system.master_users DROP COLUMN IF EXISTS created_at;
 
 CREATE OR REPLACE VIEW system.active_master_users AS
 SELECT user_id, name, email, last_updated

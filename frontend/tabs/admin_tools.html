@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <script src="/js/rec_session.js"></script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Tools - REC.IO</title>
+  <link rel="stylesheet" href="/styles/global.css">
+  <script src="/js/db_changes_prefilter.js"></script>
+  <style>
+    body {
+      box-sizing: border-box;
+      margin: 0;
+      padding-right: 5%;
+    }
+
+    :root {
+      --bg-primary: #1e1e2f;
+      --bg-secondary: #323c4e;
+      --border-color: #3d4552;
+      --text-primary: #ffffff;
+      --text-secondary: #c4c4c4;
+      --accent-color: #3498db;
+    }
+
+    .master-user-search-row {
+      margin-bottom: 10px;
+    }
+
+    .master-user-search-row label {
+      display: block;
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-bottom: 4px;
+    }
+
+    .master-user-search-input {
+      width: 100%;
+      max-width: 420px;
+      box-sizing: border-box;
+      padding: 8px 10px;
+      border-radius: 4px;
+      border: 1px solid var(--border-color);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-size: 13px;
+      font-family: inherit;
+    }
+
+    .master-user-search-input::placeholder {
+      color: var(--text-secondary);
+      opacity: 0.85;
+    }
+
+    .master-user-search-input:focus {
+      outline: none;
+      border-color: var(--accent-color);
+    }
+
+    .table-wrap {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      overflow: auto;
+      max-width: 100%;
+    }
+
+    .master-users-table {
+      width: 100%;
+      min-width: 1200px;
+      border-collapse: collapse;
+      font-size: 12px;
+      font-family: inherit;
+    }
+
+    .master-users-table th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      padding: 10px 8px;
+      text-align: left;
+      font-weight: 600;
+      color: var(--text-secondary);
+      background: var(--bg-primary);
+      border-bottom: 1px solid var(--border-color);
+      white-space: nowrap;
+    }
+
+    .master-users-table td {
+      padding: 8px;
+      border-bottom: 1px solid var(--border-color);
+      color: var(--text-primary);
+      vertical-align: top;
+      font-family: inherit;
+    }
+
+    .master-users-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .master-users-table tbody tr:hover {
+      background: var(--bg-primary);
+    }
+
+    .admin-master-select.admin-status-pending-approval {
+      background-color: #7f1d1d !important;
+      color: #fecaca !important;
+      border: 1px solid #991b1b !important;
+    }
+
+    .loading, .error, .empty {
+      padding: 32px;
+      text-align: center;
+      color: var(--text-secondary);
+ }
+
+    .error {
+      color: #ef4444;
+    }
+  </style>
+</head>
+<body>
+  <div id="status"></div>
+  <div class="master-user-search-row">
+    <label for="masterUserSearch">Search users</label>
+    <input type="search" id="masterUserSearch" class="master-user-search-input"
+      placeholder="Match any column (name, email, user ID, status, …)" autocomplete="off" spellcheck="false">
+  </div>
+  <div id="tableHost"></div>
+
+  <script>
+    (function () {
+      var COLUMN_ORDER = [
+        'id', 'user_no', 'user_id', 'first_name', 'last_name', 'email', 'phone',
+        'account_type', 'status', 'monitors', 'registration_date', 'last_login'
+      ];
+
+      var HIDDEN_COLUMNS = {
+        name: true,
+        system_version: true,
+        kalshi_user_id: true,
+        exchange_credentials: true,
+        email_verification_sent_at: true,
+        email_verification_code_hash: true,
+        notes: true,
+        updated_at: true,
+        last_updated: true
+      };
+
+      var ACCOUNT_TYPE_OPTIONS = ['master_admin', 'admin', 'user_basic', 'user_premium'];
+      var STATUS_OPTIONS = [
+        'pending_email_verification',
+        'pending_admin_approval',
+        'active',
+        'inactive'
+      ];
+
+      function esc(s) {
+        if (s == null) return '';
+        return String(s)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
+      /** API ISO timestamps → mm/dd/yyyy, HH:mm (local). Date-only YYYY-MM-DD uses local midnight. */
+      function formatAdminDateTimeDisplay(val) {
+        if (val == null || val === '') return '—';
+        var s = String(val).trim();
+        var d;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+          var p = s.split('-');
+          d = new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10), 0, 0, 0, 0);
+        } else {
+          d = new Date(s);
+        }
+        if (isNaN(d.getTime())) return esc(String(val));
+        var mm = String(d.getMonth() + 1).padStart(2, '0');
+        var dd = String(d.getDate()).padStart(2, '0');
+        var yyyy = d.getFullYear();
+        var hh = String(d.getHours()).padStart(2, '0');
+        var min = String(d.getMinutes()).padStart(2, '0');
+        return esc(mm + '/' + dd + '/' + yyyy + ', ' + hh + ':' + min);
+      }
+
+      function formatCell(key, val) {
+        if (key === 'registration_date' || key === 'last_login') {
+          return formatAdminDateTimeDisplay(val);
+        }
+        if (val == null) return '—';
+        if (typeof val === 'object') {
+          try {
+            return esc(JSON.stringify(val, null, 0));
+          } catch (e) {
+            return esc(String(val));
+          }
+        }
+        return esc(String(val));
+      }
+
+      /** snake_case → Title Case with spaces; id/ip/uuid tokens normalized */
+      function humanizeColumnKey(k) {
+        return String(k).split('_').map(function (part) {
+          if (!part) return '';
+          var low = part.toLowerCase();
+          if (low === 'id') return 'ID';
+          if (low === 'ip') return 'IP';
+          if (low === 'uuid') return 'UUID';
+          return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+        }).join(' ');
+      }
+
+      function escAttr(s) {
+        return String(s)
+          .replace(/&/g, '&amp;')
+          .replace(/"/g, '&quot;')
+          .replace(/</g, '&lt;');
+      }
+
+      /** Lowercase haystack of all row values shown in the table (for client filter). */
+      function rowFilterHaystack(row, keys) {
+        var parts = [];
+        keys.forEach(function (k) {
+          var v = row[k];
+          if (v == null) return;
+          if (typeof v === 'object') {
+            try {
+              parts.push(JSON.stringify(v));
+            } catch (e) {
+              parts.push(String(v));
+            }
+          } else {
+            var s = String(v);
+            parts.push(s);
+            if (/[_]/.test(s)) {
+              parts.push(humanizeColumnKey(s));
+            }
+          }
+        });
+        return parts.join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
+      }
+
+      function applyMasterUserFilter() {
+        var inp = document.getElementById('masterUserSearch');
+        var q = (inp && inp.value || '').trim().toLowerCase();
+        var tbody = document.querySelector('.master-users-table tbody');
+        if (!tbody) return;
+        var trs = tbody.querySelectorAll('tr');
+        if (!q) {
+          trs.forEach(function (tr) { tr.style.display = ''; });
+          return;
+        }
+        trs.forEach(function (tr) {
+          var hay = tr.getAttribute('data-admin-row-filter') || '';
+          tr.style.display = hay.indexOf(q) !== -1 ? '' : 'none';
+        });
+      }
+
+      function theadHtml(keys) {
+        var row = keys.map(function (k) {
+          return '<th>' + esc(humanizeColumnKey(k)) + '</th>';
+        }).join('');
+        return '<thead><tr>' + row + '</tr></thead>';
+      }
+
+      function mergeCurrentEnumOption(baseOpts, current) {
+        var c = current == null ? '' : String(current).trim();
+        var out = baseOpts.slice();
+        if (c && out.indexOf(c) === -1) out.push(c);
+        return out;
+      }
+
+      function slotAttr(row) {
+        var un = row.user_no;
+        if (un == null) return '';
+        var s = String(un).trim();
+        if (/^\d+$/.test(s) && s.length < 4) s = ('0000' + s).slice(-4);
+        return s;
+      }
+
+      function buildAccountTypeSelect(row) {
+        var un = slotAttr(row);
+        var cur = row.account_type == null ? '' : String(row.account_type).trim();
+        var opts = mergeCurrentEnumOption(ACCOUNT_TYPE_OPTIONS, row.account_type);
+        var html = '<select class="dropdown-picker admin-master-select" data-master-field="account_type" data-user-no="' +
+          esc(un) + '" data-prev-value="' + esc(cur) + '">';
+        opts.forEach(function (v) {
+          var sel = cur === v ? ' selected' : '';
+          html += '<option value="' + esc(v) + '"' + sel + '>' + esc(humanizeColumnKey(v)) + '</option>';
+        });
+        html += '</select>';
+        return html;
+      }
+
+      function buildStatusSelect(row) {
+        var un = slotAttr(row);
+        var cur = row.status == null ? '' : String(row.status).trim();
+        var opts = mergeCurrentEnumOption(STATUS_OPTIONS, row.status);
+        var pendingCls = cur === 'pending_admin_approval' ? ' admin-status-pending-approval' : '';
+        var html = '<select class="dropdown-picker admin-master-select' + pendingCls +
+          '" data-master-field="status" data-user-no="' + esc(un) + '" data-prev-value="' + esc(cur) + '">';
+        opts.forEach(function (v) {
+          var sel = cur === v ? ' selected' : '';
+          html += '<option value="' + esc(v) + '"' + sel + '>' + esc(humanizeColumnKey(v)) + '</option>';
+        });
+        html += '</select>';
+        return html;
+      }
+
+      function applyPendingApprovalStyle(selectEl) {
+        if (!selectEl || selectEl.getAttribute('data-master-field') !== 'status') return;
+        if (selectEl.value === 'pending_admin_approval') {
+          selectEl.classList.add('admin-status-pending-approval');
+        } else {
+          selectEl.classList.remove('admin-status-pending-approval');
+        }
+      }
+
+      async function onAdminMasterSelectChange(ev) {
+        var sel = ev.target;
+        if (!sel || sel.tagName !== 'SELECT' || !sel.classList.contains('admin-master-select')) return;
+        var field = sel.getAttribute('data-master-field');
+        var userNo = sel.getAttribute('data-user-no');
+        var prev = sel.getAttribute('data-prev-value') || '';
+        var v = sel.value;
+        if (!userNo || !field || v === prev) return;
+        var body = { user_no: userNo };
+        body[field] = v;
+        try {
+          var res = await fetch(window.location.origin + '/api/user/admin/master_users', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            cache: 'no-store'
+          });
+          var data = await res.json().catch(function () { return null; });
+          if (!res.ok) {
+            sel.value = prev;
+            var msg = (data && data.error) ? data.error : 'Update failed';
+            window.alert(msg);
+            return;
+          }
+          sel.setAttribute('data-prev-value', v);
+          applyPendingApprovalStyle(sel);
+        } catch (e) {
+          sel.value = prev;
+          window.alert('Network error');
+        }
+      }
+
+      function render(rows) {
+        var host = document.getElementById('tableHost');
+        var status = document.getElementById('status');
+        if (!rows || !rows.length) {
+          status.innerHTML = '<div class="empty">No rows returned.</div>';
+          host.innerHTML = '';
+          return;
+        }
+        var keySet = {};
+        rows.forEach(function (r) {
+          Object.keys(r).forEach(function (k) { keySet[k] = true; });
+        });
+        var keys = COLUMN_ORDER.filter(function (k) { return keySet[k] && !HIDDEN_COLUMNS[k]; });
+        Object.keys(keySet).sort().forEach(function (k) {
+          if (HIDDEN_COLUMNS[k]) return;
+          if (keys.indexOf(k) === -1) keys.push(k);
+        });
+
+        var body = rows.map(function (row) {
+          var hay = escAttr(rowFilterHaystack(row, keys));
+          var tds = keys.map(function (k) {
+            if (k === 'account_type') return '<td>' + buildAccountTypeSelect(row) + '</td>';
+            if (k === 'status') return '<td>' + buildStatusSelect(row) + '</td>';
+            var raw = row[k];
+            return '<td>' + formatCell(k, raw) + '</td>';
+          }).join('');
+          return '<tr data-admin-row-filter="' + hay + '">' + tds + '</tr>';
+        }).join('');
+
+        status.innerHTML = '';
+        host.innerHTML =
+          '<div class="table-wrap"><table class="master-users-table">' +
+          theadHtml(keys) + '<tbody>' + body + '</tbody></table></div>';
+        var tbl = host.querySelector('.master-users-table');
+        if (tbl) tbl.addEventListener('change', onAdminMasterSelectChange);
+        applyMasterUserFilter();
+      }
+
+      var _adminToolsPaused = false;
+      var _adminDbChangesWs = null;
+      var _adminDbRefreshTimer = null;
+      var _ADMIN_WS_DEBOUNCE_MS = 600;
+
+      function scheduleAdminToolsRefetchFromDbChange() {
+        if (_adminToolsPaused) return;
+        if (_adminDbRefreshTimer) clearTimeout(_adminDbRefreshTimer);
+        _adminDbRefreshTimer = setTimeout(function () {
+          _adminDbRefreshTimer = null;
+          load({ quiet: true });
+        }, _ADMIN_WS_DEBOUNCE_MS);
+      }
+
+      function setupAdminToolsDbChangesWs() {
+        if (_adminToolsPaused) return;
+        if (_adminDbChangesWs) {
+          try { _adminDbChangesWs.close(); } catch (e) {}
+          _adminDbChangesWs = null;
+        }
+        var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        var ws = new WebSocket(protocol + '//' + window.location.host + '/ws/db_changes');
+        _adminDbChangesWs = ws;
+        ws.onmessage = function (event) {
+          try {
+            var raw = event.data;
+            if (typeof recDbChangeRawMentionsAny === 'function') {
+              if (!recDbChangeRawMentionsAny(raw, ['master_users', 'monitor_list'])) return;
+            } else if (typeof recDbChangeRawMentionsStream === 'function') {
+              if (!recDbChangeRawMentionsStream(raw, 'master_users') &&
+                  !recDbChangeRawMentionsStream(raw, 'monitor_list')) {
+                return;
+              }
+            }
+            var data = JSON.parse(raw);
+            if (data.type === 'db_change' &&
+                (data.database === 'master_users' || data.database === 'monitor_list')) {
+              scheduleAdminToolsRefetchFromDbChange();
+            }
+          } catch (e) { /* ignore malformed frames */ }
+        };
+        ws.onerror = function () {};
+        ws.onclose = function () {
+          _adminDbChangesWs = null;
+          if (!_adminToolsPaused) {
+            setTimeout(setupAdminToolsDbChangesWs, 5000);
+          }
+        };
+      }
+
+      window.addEventListener('message', function (event) {
+        if (event.origin !== window.location.origin) return;
+        if (!event.data || event.data.type !== 'tab-visibility') return;
+        var visible = event.data.visible === true;
+        _adminToolsPaused = !visible;
+        if (visible) {
+          if (_adminDbRefreshTimer) {
+            clearTimeout(_adminDbRefreshTimer);
+            _adminDbRefreshTimer = null;
+          }
+          setupAdminToolsDbChangesWs();
+          load({ quiet: true });
+        } else {
+          if (_adminDbChangesWs) {
+            try { _adminDbChangesWs.close(); } catch (e) {}
+            _adminDbChangesWs = null;
+          }
+          if (_adminDbRefreshTimer) {
+            clearTimeout(_adminDbRefreshTimer);
+            _adminDbRefreshTimer = null;
+          }
+        }
+      });
+
+      async function load(opts) {
+        opts = opts || {};
+        var quiet = opts.quiet === true;
+        var status = document.getElementById('status');
+        var host = document.getElementById('tableHost');
+        if (!quiet) {
+          status.innerHTML = '<div class="loading">Loading…</div>';
+          host.innerHTML = '';
+        }
+        try {
+          var res = await fetch(window.location.origin + '/api/user/admin/master_users', { cache: 'no-store' });
+          var data = await res.json().catch(function () { return null; });
+          if (res.status === 403) {
+            status.innerHTML = '<div class="error">You do not have access to this page.</div>';
+            return;
+          }
+          if (!res.ok || !data || data.error) {
+            if (!quiet) {
+              status.innerHTML = '<div class="error">' + esc((data && data.error) || 'Request failed') + '</div>';
+            }
+            return;
+          }
+          render(data.rows || []);
+        } catch (e) {
+          if (!quiet) {
+            status.innerHTML = '<div class="error">Could not load data.</div>';
+          }
+        }
+      }
+
+      var masterUserSearch = document.getElementById('masterUserSearch');
+      if (masterUserSearch) {
+        masterUserSearch.addEventListener('input', applyMasterUserFilter);
+        masterUserSearch.addEventListener('search', applyMasterUserFilter);
+      }
+      load({ quiet: false });
+      setupAdminToolsDbChangesWs();
+    })();
+  </script>
+</body>
+</html>

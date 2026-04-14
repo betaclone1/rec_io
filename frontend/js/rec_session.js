@@ -185,4 +185,38 @@
     window.WebSocket.CLOSING = OrigWS.CLOSING;
     window.WebSocket.CLOSED = OrigWS.CLOSED;
   }
+
+  /** Throttled server update of system.master_users.last_login (matches backend interval). */
+  var REC_UI_ACTIVITY_INTERVAL_MS = 5 * 60 * 1000;
+
+  function recPingUiActivity() {
+    try {
+      var token = window.localStorage.getItem('rec_auth_token');
+      if (!token || !String(token).trim()) return;
+      var u = new URL('/api/user/activity', window.location.origin);
+      var userNo = recSessionUserSlot();
+      if (userNo) u.searchParams.set('user_id', 'user_' + userNo);
+      var headers = new Headers();
+      headers.set('Authorization', 'Bearer ' + String(token).trim());
+      origFetch(u.toString(), { method: 'POST', headers: headers }).catch(function () {});
+    } catch (e) {}
+  }
+
+  function recStartUiActivityHeartbeat() {
+    if (window.__recUiActivityHeartbeat) return;
+    window.__recUiActivityHeartbeat = true;
+    recPingUiActivity();
+    setInterval(recPingUiActivity, REC_UI_ACTIVITY_INTERVAL_MS);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') recPingUiActivity();
+      });
+    }
+  }
+
+  window.recStartUiActivityHeartbeat = recStartUiActivityHeartbeat;
+
+  if (window.localStorage.getItem('rec_auth_token')) {
+    recStartUiActivityHeartbeat();
+  }
 })();

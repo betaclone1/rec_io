@@ -876,12 +876,16 @@ def init_database():
             END $$;
         """))
         # Kalshi v1 account UUID for sync (system.master_users; migration 20260421_1400).
-        # exchange_credentials: migration 20260410_2100 only (column is on CREATE TABLE below for fresh installs).
+        # exchange_credentials: same as migration 20260410_2100 — existing DBs created before this
+        # column was added get it here (CREATE TABLE IF NOT EXISTS does not alter old tables).
         cursor.execute(_us("""
             DO $$
             BEGIN
                 IF to_regclass('system.master_users') IS NOT NULL THEN
                     ALTER TABLE system.master_users ADD COLUMN IF NOT EXISTS kalshi_user_id VARCHAR(64);
+                    ALTER TABLE system.master_users ADD COLUMN IF NOT EXISTS exchange_credentials JSONB
+                        NOT NULL DEFAULT '{"kalshi": false, "polymarket": false}'::jsonb;
+                    ALTER TABLE system.master_users ADD COLUMN IF NOT EXISTS last_login TIMESTAMP WITHOUT TIME ZONE;
                 END IF;
             END $$;
         """))
@@ -2156,10 +2160,9 @@ def init_database():
                 name VARCHAR(255) NOT NULL,
                 email VARCHAR(255) NOT NULL,
                 phone VARCHAR(50),
-                server_ip VARCHAR(45),
-                server_hostname VARCHAR(255),
                 registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_login TIMESTAMP,
                 system_version VARCHAR(50),
                 status VARCHAR(20) DEFAULT 'active',
                 notes TEXT,
@@ -2170,13 +2173,13 @@ def init_database():
         """))
         cursor.execute(_us("""
             CREATE OR REPLACE VIEW system.active_master_users AS
-            SELECT user_id, name, email, server_ip, last_updated
+            SELECT user_id, name, email, last_updated
             FROM system.master_users
             WHERE status = 'active';
         """))
         cursor.execute(_us("""
             CREATE OR REPLACE VIEW system.recent_master_registrations AS
-            SELECT user_id, name, email, server_ip, registration_date
+            SELECT user_id, name, email, registration_date
             FROM system.master_users
             WHERE registration_date > NOW() - INTERVAL '30 days';
         """))

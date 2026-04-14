@@ -9210,10 +9210,9 @@ Canonical registration / ops table for collaborator installs. **Not** in `users`
 | `last_name` | `character varying(100)` | YES | - | Same as `first_name`. |
 | `email` | `character varying(255)` | NO | - | |
 | `phone` | `character varying(50)` | YES | - | |
-| `server_ip` | `character varying(45)` | YES | - | |
-| `server_hostname` | `character varying(255)` | YES | - | |
 | `registration_date` | `timestamp without time zone` | YES | CURRENT_TIMESTAMP | |
 | `last_updated` | `timestamp without time zone` | YES | CURRENT_TIMESTAMP | |
+| `last_login` | `timestamp without time zone` | YES | - | Last successful sign-in or UI activity (throttled, e.g. ``POST /api/user/activity`` every 5 minutes). Migration `20260414_2200_system_master_users_last_login`. |
 | `system_version` | `character varying(50)` | YES | - | |
 | `status` | `character varying(64)` | YES | active | Workflow: `pending_email_verification` (self-reg, code not yet confirmed) → `pending_admin_approval` (email verified, awaiting ops) → `active`. Migration `20260420_1000_system_master_users_registration_user_no` widens from 20. |
 | `notes` | `text` | YES | - | |
@@ -9224,13 +9223,17 @@ Canonical registration / ops table for collaborator installs. **Not** in `users`
 | `kalshi_user_id` | `character varying(64)` | YES | - | Kalshi API user UUID (v1 account endpoints, sync). Backfilled from legacy `users*.user_info_NNNN` and those tables dropped by migration `20260421_1400_master_users_kalshi_drop_user_info_tables`. |
 | `exchange_credentials` | `jsonb` | NO | `{"kalshi": false, "polymarket": false}` | Which exchanges may use authenticated API (keys on disk are not enough). Migration `20260410_2100_system_master_users_exchange_credentials`; `init_database` adds the column if missing. |
 
-Legacy rows merged from `users.master_users` may have extra columns (`is_active`, `created_at`, etc.). Migration `20260410_1020_system_master_users_registration_columns` adds registration-shaped columns and backfills where needed; `database.py` defines the same helper views on init.
+Legacy-only columns **`is_active`**, **`server_ip`**, **`server_hostname`**, and **`created_at`** were removed from this table by migration `20260414_2100_system_master_users_drop_legacy_columns` (use **`status`** and **`registration_date`** instead).
 
 #### Views (helper queries for scripts)
 
-- **`system.active_master_users`** — `user_id`, `name`, `email`, `server_ip`, `last_updated` where `status = 'active'`.
+- **`system.active_master_users`** — `user_id`, `name`, `email`, `last_updated` where `status = 'active'`.
 - **`system.recent_master_registrations`** — registrations in the last 30 days (`registration_date`).
 - **`system.master_users_summary`** — aggregate counts: `total_users`, `active_users`, `recent_registrations`.
+
+#### Triggers (real-time)
+
+- **`system_master_users_rec_io_db_notify`** — `AFTER INSERT OR UPDATE OR DELETE` → `public.rec_io_db_notify()` on channel `rec_io_db_changes`. Switchboard maps `(system, master_users)` to stream **`master_users`** (`backend/core/stream_registry.py`). Admin Tools (`frontend/tabs/admin_tools.html`) subscribes to same-origin `/ws/db_changes` and refetches `GET /api/user/admin/master_users` when `database === "master_users"`. Migration `20260414_2000_system_master_users_rec_io_db_notify`.
 
 ---
 
@@ -10198,6 +10201,10 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 #### Constraints
 
 - **Primary Key:** `monitor_list_0001_pkey` on `id`
+
+#### Triggers (real-time backbone)
+
+- **`monitor_list_<slot>_rec_io_db_notify`** on each **`users_<slot>.monitor_list_<slot>`** — `AFTER INSERT OR UPDATE OR DELETE` → `public.rec_io_db_notify()`. Switchboard maps to stream **`monitor_list`** (`backend/core/stream_registry.py`). Admin Tools refetches `GET /api/user/admin/master_users` on `/ws/db_changes` when `database === "monitor_list"` (per-tenant counts). Migration **`20260423_1100_tenant_monitor_list_rec_io_db_notify`**. New tenant schemas created after this migration may need the same triggers re-applied (same pattern as **`20260412_2000`** trades NOTIFY) if tables were cloned without triggers.
 
 #### Indexes
 

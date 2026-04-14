@@ -84,11 +84,14 @@ class SupervisorConfigGenerator:
         parsing ``user_id`` only when it looks like ``0002`` or ``user_0002`` (legacy).
         """
         nos = []
+        master_rows_exist = False
         try:
             import psycopg2
 
             conn = psycopg2.connect(**get_database_config())
             with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM system.master_users")
+                master_rows_exist = (cur.fetchone() or (0,))[0] > 0
                 cur.execute(
                     """
                     SELECT user_no, user_id FROM system.master_users
@@ -117,11 +120,17 @@ class SupervisorConfigGenerator:
             conn.close()
         except Exception as e:
             logger.warning("Could not read system.master_users (%s)", e)
-        if not nos:
-            p = (os.environ.get("REC_POOL_USER_NUMBER") or os.environ.get("REC_USER_NO") or "").strip()
-            if p.isdigit():
-                nos = [p.zfill(4) if len(p) <= 4 else p[:4]]
-        return sorted(set(nos))
+            master_rows_exist = False
+
+        if nos:
+            return sorted(set(nos))
+        # Table exists and has rows but none are trading-active: do not resurrect a slot from env.
+        if master_rows_exist:
+            return []
+        p = (os.environ.get("REC_POOL_USER_NUMBER") or os.environ.get("REC_USER_NO") or "").strip()
+        if p.isdigit():
+            return sorted(set([p.zfill(4) if len(p) <= 4 else p[:4]]))
+        return []
 
     @staticmethod
     def _scoped_port(
@@ -144,7 +153,9 @@ class SupervisorConfigGenerator:
             delta = 0
         return base + delta * 10
 
-    def _get_active_monitors_for_user(self, user_no: str) -> list:
+    def _get_active_monitors_for_user(
+        self, user_no: str, *, log_monitor_counts: bool = True
+    ) -> list:
         """Monitors for AES/ATS and logging; one tenant schema ``users_<user_no>``."""
         monitors = []
         try:
@@ -191,10 +202,20 @@ class SupervisorConfigGenerator:
                         }
                     )
             conn.close()
-            logger.info("Found %s active monitors for user %s", len(monitors), user_no)
+            if log_monitor_counts:
+                logger.info("Found %s active monitors for user %s", len(monitors), user_no)
         except Exception as e:
             logger.error("Error getting monitors for %s: %s", user_no, e)
         return monitors
+
+    def _get_active_monitors(self) -> list:
+        """All active monitors across trading-user slots (e.g. system_monitor service discovery)."""
+        combined: list = []
+        for slot in self._discover_trading_user_nos():
+            combined.extend(
+                self._get_active_monitors_for_user(slot, log_monitor_counts=False)
+            )
+        return combined
 
     def _get_port_assignments(self) -> dict:
         """Get port assignments from MASTER_PORT_MANIFEST"""
@@ -264,12 +285,15 @@ class SupervisorConfigGenerator:
         db_config = get_database_config()
         log_dir = self.path_manager.get_log_directory()
         trading_users = self._discover_trading_user_nos()
-        if not trading_users:
-            raise RuntimeError(
-                "No active trading users in system.master_users (and no REC_POOL_USER_NUMBER / "
-                "REC_USER_NO fallback). Add master_users rows or set env before generating supervisord."
-            )
-        pool_for_global = sorted(trading_users)[0]
+        if trading_users:
+            pool_for_global = sorted(trading_users)[0]
+        else:
+            p = (
+                os.environ.get("REC_POOL_USER_NUMBER")
+                or os.environ.get("REC_USER_NO")
+                or "0001"
+            ).strip()
+            pool_for_global = p.zfill(4) if p.isdigit() and len(p) <= 4 else "0001"
         default_schema = (os.environ.get("REC_DEFAULT_USER_SCHEMA") or "").strip() or f"users_{pool_for_global}"
         if not (os.environ.get("REC_DEFAULT_USER_SCHEMA") or "").strip():
             os.environ["REC_DEFAULT_USER_SCHEMA"] = default_schema
@@ -428,7 +452,9 @@ class SupervisorConfigGenerator:
                     "script": "kalshi_account_sync_ws.py",
                     "port": self._scoped_port(ports, "kalshi_account_sync", user_no, 8004, ref_slot=pool_for_global),
                     "environment": env_u,
-                    "autostart": kalshi_auth_ok,
+                    # Always start: without live Kalshi, ``REC_PAPER_ONLY_USER`` / DB flag triggers
+                    # ``block_forever_if_kalshi_authenticated_api_disallowed`` (dormant, low CPU).
+                    "autostart": True,
                 }
             )
             services.append(

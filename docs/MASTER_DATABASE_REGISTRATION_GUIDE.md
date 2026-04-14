@@ -97,10 +97,10 @@ export MASTER_DB_PASSWORD=your_secure_password
 PGPASSWORD=your_secure_password psql -h your_master_server_ip -U rec_io_master_user -d rec_io_master
 
 # View all users
-SELECT user_id, name, email, server_ip, registration_date, status FROM system.master_users ORDER BY registration_date DESC;
+SELECT user_id, name, email, registration_date, status FROM system.master_users ORDER BY registration_date DESC;
 
 # View active users
-SELECT user_id, name, email, server_ip FROM system.master_users WHERE status = 'active';
+SELECT user_id, name, email FROM system.master_users WHERE status = 'active';
 
 # View recent registrations
 SELECT user_id, name, email, registration_date FROM system.master_users WHERE registration_date > NOW() - INTERVAL '7 days';
@@ -125,8 +125,6 @@ CREATE TABLE system.master_users (
     name VARCHAR(255) NOT NULL,
     email VARCHAR(255) NOT NULL,
     phone VARCHAR(50),
-    server_ip VARCHAR(45),
-    server_hostname VARCHAR(255),
     registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     system_version VARCHAR(50),
@@ -154,9 +152,9 @@ ORDER BY registration_date DESC;
 
 #### **System Health**
 ```sql
--- Users with server information
-SELECT user_id, name, server_ip, server_hostname, last_updated
-FROM system.master_users 
+-- Active users (contact / audit)
+SELECT user_id, name, email, last_updated
+FROM system.master_users
 WHERE status = 'active'
 ORDER BY last_updated DESC;
 

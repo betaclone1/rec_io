@@ -124,6 +124,8 @@ The **stream registry** maps `(schema, table)` → stream name. It lives in code
 - **Convention:** One logical stream per "thing" the UI or backend cares about (e.g. one stream `trades` for `users.trades_0001`). High-volume tables (e.g. orderbook rows) map to one stream (e.g. `orderbook`) and use statement-level or batched NOTIFY so we don’t emit one message per row.
 - **Documentation:** This doc and the registry file list all streams. When adding a stream, add a short comment in the registry and, if useful, a line in this doc’s stream list.
 - **Registered example — `trades`:** Table `users.trades_0001` maps to stream name **`trades`** (`stream_registry.py`). Row-level trigger **`trades_0001_rec_io_db_notify`** → `public.rec_io_db_notify()` (migration `20260401_1600_trades_0001_rec_io_db_notify`). Consumers include trade history UIs (`GET /trades` refetch on `database === "trades"`).
+- **Registered example — `master_users`:** Table `system.master_users` maps to stream name **`master_users`**. Row-level trigger **`system_master_users_rec_io_db_notify`** → `public.rec_io_db_notify()` (migration `20260414_2000_system_master_users_rec_io_db_notify`). Consumers include Admin Tools (`GET /api/user/admin/master_users` refetch on `database === "master_users"`).
+- **Registered example — `monitor_list`:** Table `users.monitor_list_0001` maps to stream name **`monitor_list`**. Per-tenant **`monitor_list_<slot>_rec_io_db_notify`** on **`users_<slot>.monitor_list_<slot>`** → `public.rec_io_db_notify()` (migration `20260423_1100_tenant_monitor_list_rec_io_db_notify`). Consumers include Admin Tools (same refetch as `master_users` when `database === "monitor_list"` so per-user **Monitors** counts stay current).
 
 ---
 

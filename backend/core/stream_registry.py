@@ -18,6 +18,7 @@ _TENANT_SCHEMA_RE = re.compile(r"^users_(\d{4})$", re.IGNORECASE)
 
 # (schema, table) -> stream name. Stream name is the value of "database" in db_change payloads.
 TABLE_TO_STREAM: Dict[Tuple[str, str], str] = {
+    ("system", "master_users"): "master_users",
     ("testing", "redis_basic_test"): "redis_basic_test",
     # Account / bankroll / portfolio top-level values (dashboard, account_manager, etc.)
     ("users", "account_balance_0001"): "account_balance",
@@ -25,6 +26,8 @@ TABLE_TO_STREAM: Dict[Tuple[str, str], str] = {
     ("users", "transfers_paper_0001"): "transfers_paper",
     # Trade log (GET /trades, trade_history UIs); NOTIFY → switchboard stream name "trades"
     ("users", "trades_0001"): "trades",
+    # Per-tenant monitor rows (lifecycle, counts); NOTIFY → stream "monitor_list" (Admin Tools refetch, etc.)
+    ("users", "monitor_list_0001"): "monitor_list",
     # Live price feed snapshot table (used by the standalone live UI)
     ("live_data", "live_symbol_status"): "live_symbol_status",
     # 15m market ladder/quotes consumed by strike_table_generator_ws

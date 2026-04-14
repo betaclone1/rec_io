@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import secrets
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from psycopg2 import sql
 
 from backend.core.config.database import get_system_postgresql_connection
 from backend.core.tenant_context import resolved_tenant_user_no_for_app
@@ -19,6 +21,12 @@ from backend.web.auth_principals import (
     fetch_master_user_by_slot,
     password_matches_principal,
     try_legacy_json_login,
+)
+from backend.core.exchange_credentials import ensure_system_master_users_exchange_credentials
+from backend.util.registration_email import send_account_activated_email
+from backend.core.master_user_supervisor_resync import (
+    master_user_trading_active,
+    resync_supervisor_after_master_users_db_change,
 )
 from backend.web.session_store import (
     delete_device_token,
@@ -31,8 +39,69 @@ from backend.web.session_store import (
 
 logger = logging.getLogger(__name__)
 
+# Throttle for POST /api/user/activity (server-side; client also pings at this interval).
+_UI_LAST_LOGIN_THROTTLE_MINUTES = 5
+
 auth_router = APIRouter()
 user_router = APIRouter()
+
+
+def _normalize_master_user_no_slot(user_no: str) -> Optional[str]:
+    slot = str(user_no or "").strip()
+    if slot.isdigit() and len(slot) < 4:
+        slot = slot.zfill(4)
+    if len(slot) != 4 or not slot.isdigit():
+        return None
+    return slot
+
+
+def _touch_master_users_last_login(user_no: str, *, throttle_minutes: Optional[int] = None) -> None:
+    """
+    Update ``system.master_users.last_login`` for the given four-digit slot.
+    When ``throttle_minutes`` is set, skip the write if ``last_login`` is newer than that window.
+    """
+    slot = _normalize_master_user_no_slot(user_no)
+    if not slot:
+        return
+    conn = get_system_postgresql_connection()
+    if not conn:
+        return
+    try:
+        with conn.cursor() as c:
+            if throttle_minutes is None:
+                c.execute(
+                    """
+                    UPDATE system.master_users
+                    SET last_login = CURRENT_TIMESTAMP
+                    WHERE LPAD(TRIM(user_no::text), 4, '0') = %s
+                    """,
+                    (slot,),
+                )
+            else:
+                c.execute(
+                    """
+                    UPDATE system.master_users
+                    SET last_login = CURRENT_TIMESTAMP
+                    WHERE LPAD(TRIM(user_no::text), 4, '0') = %s
+                      AND (
+                        last_login IS NULL
+                        OR last_login < NOW() - (%s * INTERVAL '1 minute')
+                      )
+                    """,
+                    (slot, int(throttle_minutes)),
+                )
+        conn.commit()
+    except Exception as e:
+        logger.debug("[AUTH] last_login touch skipped: %s", e)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _legal_display_name(first: Any, last: Any) -> str:
@@ -132,6 +201,8 @@ async def login(request: Request):
         }
         save_device_tokens(user_no, dt)
 
+    _touch_master_users_last_login(user_no, throttle_minutes=None)
+
     logger.debug("[AUTH] User %s logged in as tenant %s", username, user_no)
     return {
         "success": True,
@@ -202,6 +273,20 @@ async def logout(request: Request):
     return {"success": True}
 
 
+@user_router.post("/activity")
+async def record_ui_activity():
+    """
+    Record that the session user had the UI open. Updates ``last_login`` at most once per
+    :data:`_UI_LAST_LOGIN_THROTTLE_MINUTES` (server-enforced); client should ping at the same cadence.
+    """
+    u = resolved_tenant_user_no_for_app()
+    slot = _normalize_master_user_no_slot(u)
+    if not slot:
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    _touch_master_users_last_login(slot, throttle_minutes=_UI_LAST_LOGIN_THROTTLE_MINUTES)
+    return {"ok": True}
+
+
 @user_router.get("/info")
 async def user_info():
     u = resolved_tenant_user_no_for_app()
@@ -223,6 +308,253 @@ async def user_info():
         "phone": profile["phone"],
         "account_type": profile["account_type"],
     }
+
+
+def _session_is_master_admin(user_no: str) -> bool:
+    pst, profile = public_profile_for_slot(user_no)
+    if pst != "ok" or not profile:
+        return False
+    acct = (profile.get("account_type") or "").strip().lower()
+    return acct == "master_admin"
+
+
+def _json_safe_cell(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return value
+
+
+_ADMIN_MASTER_USERS_SECRET_COLUMNS = frozenset(
+    {"password_hash", "email_verification_code_hash"}
+)
+
+_ADMIN_MASTER_ACCOUNT_TYPES = frozenset(
+    {"master_admin", "admin", "user_basic", "user_premium"}
+)
+_ADMIN_MASTER_STATUSES = frozenset(
+    {
+        "pending_email_verification",
+        "pending_admin_approval",
+        "active",
+        "inactive",
+    }
+)
+
+
+def _count_active_monitors_for_slot(cur: Any, user_no: Any) -> int:
+    """Rows in ``users_<slot>.monitor_list_<slot>`` with ``status = 'active'``."""
+    slot = _normalize_master_user_no_slot(str(user_no) if user_no is not None else "")
+    if not slot:
+        return 0
+    schema = f"users_{slot}"
+    table = f"monitor_list_{slot}"
+    try:
+        cur.execute(
+            sql.SQL("SELECT COUNT(*) FROM {}.{} WHERE status = {}").format(
+                sql.Identifier(schema),
+                sql.Identifier(table),
+                sql.Literal("active"),
+            )
+        )
+        row = cur.fetchone()
+        if not row or row[0] is None:
+            return 0
+        return int(row[0])
+    except Exception:
+        return 0
+
+
+@user_router.get("/admin/master_users")
+async def admin_master_users_rows():
+    """All ``system.master_users`` rows (no password hashes). ``master_admin`` only."""
+    u = resolved_tenant_user_no_for_app()
+    if not _session_is_master_admin(u):
+        return JSONResponse(status_code=403, content={"error": "Forbidden"})
+
+    ensure_system_master_users_exchange_credentials()
+
+    conn = get_system_postgresql_connection()
+    if not conn:
+        return JSONResponse(status_code=503, content={"error": "Database unavailable"})
+    try:
+        with conn.cursor() as cur:
+            # SELECT * returns all current columns (legacy-only columns removed per migration 20260414_2100).
+            cur.execute(
+                """
+                SELECT * FROM system.master_users
+                ORDER BY
+                    LPAD(TRIM(COALESCE(user_no::text, '')), 4, '0') NULLS LAST,
+                    user_id
+                """
+            )
+            colnames = [d[0] for d in (cur.description or [])]
+            raw_rows = cur.fetchall()
+        out = []
+        for row in raw_rows:
+            item: Dict[str, Any] = {}
+            for i, key in enumerate(colnames):
+                if key in _ADMIN_MASTER_USERS_SECRET_COLUMNS:
+                    continue
+                val = row[i]
+                if key == "exchange_credentials":
+                    item[key] = val
+                else:
+                    item[key] = _json_safe_cell(val)
+            out.append(item)
+        with conn.cursor() as cur2:
+            for item in out:
+                item["monitors"] = _count_active_monitors_for_slot(cur2, item.get("user_no"))
+        return {"rows": out}
+    except Exception as e:
+        logger.warning("[AUTH] admin/master_users: %s", e)
+        return JSONResponse(status_code=500, content={"error": "Query failed"})
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@user_router.patch("/admin/master_users")
+async def admin_patch_master_user(request: Request):
+    """Update ``account_type`` and/or ``status`` for one row. ``master_admin`` only."""
+    u = resolved_tenant_user_no_for_app()
+    if not _session_is_master_admin(u):
+        return JSONResponse(status_code=403, content={"error": "Forbidden"})
+
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+
+    target_raw = str(data.get("user_no") or "").strip()
+    slot = _normalize_master_user_no_slot(target_raw)
+    if not slot:
+        return JSONResponse(status_code=400, content={"error": "user_no required"})
+
+    acct_raw = data.get("account_type")
+    st_raw = data.get("status")
+    acct: Optional[str] = None
+    st: Optional[str] = None
+    if acct_raw is not None:
+        acct = str(acct_raw).strip()
+        if acct not in _ADMIN_MASTER_ACCOUNT_TYPES:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Invalid account_type: {acct!r}"},
+            )
+    if st_raw is not None:
+        st = str(st_raw).strip()
+        if st not in _ADMIN_MASTER_STATUSES:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Invalid status: {st!r}"},
+            )
+    if acct is None and st is None:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Provide account_type and/or status"},
+        )
+
+    conn = get_system_postgresql_connection()
+    if not conn:
+        return JSONResponse(status_code=503, content={"error": "Database unavailable"})
+    try:
+        old_status: Optional[Any] = None
+        activation_recipient: Optional[str] = None
+        activation_first_name: str = ""
+        if st is not None:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT status,
+                           NULLIF(TRIM(COALESCE(email, '')), ''),
+                           TRIM(COALESCE(first_name, ''))
+                    FROM system.master_users
+                    WHERE LPAD(TRIM(user_no::text), 4, '0') = %s
+                    LIMIT 1
+                    """,
+                    (slot,),
+                )
+                row = cur.fetchone()
+            if not row:
+                return JSONResponse(status_code=404, content={"error": "User not found"})
+            old_status = row[0]
+            activation_recipient = row[1] if len(row) > 1 else None
+            activation_first_name = (row[2] or "") if len(row) > 2 else ""
+
+        sets: List[str] = []
+        params: List[Any] = []
+        if acct is not None:
+            sets.append("account_type = %s")
+            params.append(acct)
+        if st is not None:
+            sets.append("status = %s")
+            params.append(st)
+        sets.append("last_updated = CURRENT_TIMESTAMP")
+        params.append(slot)
+        sql = (
+            "UPDATE system.master_users SET "
+            + ", ".join(sets)
+            + " WHERE LPAD(TRIM(user_no::text), 4, '0') = %s"
+        )
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            n = cur.rowcount
+        conn.commit()
+        if not n:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+
+        resync_note: Optional[str] = None
+        if st is not None:
+            before = master_user_trading_active(old_status)
+            after = master_user_trading_active(st)
+            if before != after:
+                ok, msg = await asyncio.to_thread(
+                    resync_supervisor_after_master_users_db_change,
+                    logger=logger,
+                )
+                resync_note = "ok" if ok else f"failed: {msg}"
+
+        activation_email_note: Optional[str] = None
+        if (
+            st == "active"
+            and str(old_status or "").strip().lower() == "pending_admin_approval"
+            and activation_recipient
+        ):
+            try:
+                await asyncio.to_thread(
+                    send_account_activated_email,
+                    activation_recipient,
+                    first_name=activation_first_name,
+                )
+                activation_email_note = "sent"
+            except Exception as exc:
+                logger.warning("[AUTH] admin activation email to %s: %s", activation_recipient, exc)
+                activation_email_note = f"failed: {exc}"
+
+        out: Dict[str, Any] = {"ok": True, "user_no": slot}
+        if resync_note is not None:
+            out["supervisor_resync"] = resync_note
+        if activation_email_note is not None:
+            out["activation_email"] = activation_email_note
+        return out
+    except Exception as e:
+        logger.warning("[AUTH] admin/master_users PATCH: %s", e)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return JSONResponse(status_code=500, content={"error": "Update failed"})
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 @user_router.post("/change-password")

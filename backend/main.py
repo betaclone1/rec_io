@@ -587,6 +587,8 @@ async def _proxy_read_api_raw(
             return requests.get(url, headers=hdrs, timeout=60)
         if method.upper() == "POST":
             return requests.post(url, data=body if body is not None else b"", headers=hdrs, timeout=60)
+        if method.upper() == "PATCH":
+            return requests.patch(url, data=body if body is not None else b"", headers=hdrs, timeout=60)
         raise ValueError(method)
 
     return await asyncio.to_thread(_do)
@@ -2839,24 +2841,39 @@ def get_system_health_from_db():
             result = cursor.fetchone()
             
             if result:
+                cols = [d[0] for d in cursor.description]
+                row = dict(zip(cols, result))
+                service_summary = {}
+                hd = row.get("health_details")
+                if hd:
+                    try:
+                        if isinstance(hd, str):
+                            import json
+
+                            hd = json.loads(hd)
+                        if isinstance(hd, dict):
+                            service_summary = hd.get("service_summary") or {}
+                    except Exception:
+                        service_summary = {}
                 return {
-                    "overall_status": result[1],
-                    "cpu_percent": float(result[2]) if result[2] else None,
-                    "memory_percent": float(result[3]) if result[3] else None,
-                    "disk_percent": float(result[4]) if result[4] else None,
-                    "database_status": result[5],
-                    "supervisor_status": result[6],
-                    "services_healthy": result[7],
-                    "services_total": result[8],
-                    "failed_services": result[9] or [],
-                    "timestamp": result[11].isoformat() if result[11] else None,
+                    "overall_status": row.get("overall_status"),
+                    "cpu_percent": float(row["cpu_percent"]) if row.get("cpu_percent") else None,
+                    "memory_percent": float(row["memory_percent"]) if row.get("memory_percent") else None,
+                    "disk_percent": float(row["disk_percent"]) if row.get("disk_percent") else None,
+                    "database_status": row.get("database_status"),
+                    "supervisor_status": row.get("supervisor_status"),
+                    "services_healthy": row.get("services_healthy"),
+                    "services_total": row.get("services_total"),
+                    "failed_services": row.get("failed_services") or [],
+                    "service_summary": service_summary,
+                    "timestamp": row["timestamp"].isoformat() if row.get("timestamp") else None,
                     # Add real-time capacity data
                     "memory_total_gb": round(memory_total_gb, 1),
                     "memory_used_gb": round(memory_used_gb, 1),
                     "memory_available_gb": round(memory_available_gb, 1),
                     "disk_total_gb": round(disk_total_gb, 1),
                     "disk_used_gb": round(disk_used_gb, 1),
-                    "disk_free_gb": round(disk_free_gb, 1)
+                    "disk_free_gb": round(disk_free_gb, 1),
                 }
             else:
                 return {"error": "No health data available"}
@@ -4608,10 +4625,30 @@ async def get_user_info(request: Request):
     return await _as_starlette_response(r)
 
 
+@app.get("/api/user/admin/master_users")
+async def get_admin_master_users(request: Request):
+    r = await _proxy_read_api_raw(request, "GET", "/api/user/admin/master_users")
+    return await _as_starlette_response(r)
+
+
+@app.patch("/api/user/admin/master_users")
+async def patch_admin_master_users(request: Request):
+    body = await request.body()
+    r = await _proxy_read_api_raw(request, "PATCH", "/api/user/admin/master_users", body)
+    return await _as_starlette_response(r)
+
+
 @app.post("/api/user/change-password")
 async def change_password(request: Request):
     body = await request.body()
     r = await _proxy_read_api_raw(request, "POST", "/api/user/change-password", body)
+    return await _as_starlette_response(r)
+
+
+@app.post("/api/user/activity")
+async def post_user_activity(request: Request):
+    body = await request.body()
+    r = await _proxy_read_api_raw(request, "POST", "/api/user/activity", body)
     return await _as_starlette_response(r)
 
 

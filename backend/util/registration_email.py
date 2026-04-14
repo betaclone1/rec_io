@@ -22,6 +22,7 @@ Legacy: system_monitor / cascading_failure_detector used scripts/user_notificati
 
 from __future__ import annotations
 
+import html
 import os
 import smtplib
 import ssl
@@ -138,6 +139,59 @@ def send_plaintext_alerts_email(to_email: str, subject: str, body: str) -> None:
     msg["From"] = from_addr
     msg["To"] = to_email
     msg.set_content(body)
+    context = ssl.create_default_context()
+    with smtplib.SMTP(host, port, timeout=30) as server:
+        server.starttls(context=context)
+        server.login(user, password)
+        server.send_message(msg)
+
+
+def _activation_login_href_and_label() -> tuple[str, str]:
+    """Public login URL for activation email; REC_PUBLIC_BASE_URL for local testing."""
+    base = (os.getenv("REC_PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if base:
+        return base, base
+    return "https://www.rec-io.com", "www.rec-io.com"
+
+
+def send_account_activated_email(
+    to_email: str, *, first_name: str = ""
+) -> None:
+    """
+    Notify a user that an admin approved their account (``pending_admin_approval`` → ``active``).
+
+    Uses the same REC_ALERTS SMTP stack as registration verification.
+    """
+    href, link_label = _activation_login_href_and_label()
+    subject = "Your Rec-io.com Account Has Been Approved"
+    fn = (first_name or "").strip()
+    greeting_plain = f"{fn},\n\n" if fn else ""
+    greeting_html = (
+        f"<p>{html.escape(fn)},</p>\n"
+        if fn
+        else ""
+    )
+    plain = (
+        f"{greeting_plain}"
+        "Your rec-io.com has been activated. "
+        f"Please visit {href} to log in.\n"
+    )
+    html_body = (
+        "<!DOCTYPE html><html><body>"
+        f"{greeting_html}"
+        "<p>Your rec-io.com has been activated.</p>"
+        "<p>Please visit "
+        f'<a href="{html.escape(href, quote=True)}">{html.escape(link_label)}</a> '
+        "to log in.</p>"
+        "</body></html>"
+    )
+    host, port, user, password, from_addr = _smtp_password_or_raise()
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    msg["To"] = to_email
+    msg.set_content(plain)
+    msg.add_alternative(html_body, subtype="html")
     context = ssl.create_default_context()
     with smtplib.SMTP(host, port, timeout=30) as server:
         server.starttls(context=context)

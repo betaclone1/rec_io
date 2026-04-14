@@ -1,10 +1,11 @@
 """
 read_api: dedicated read/aggregate service for frontend data.
 
-Role: host all read-only/aggregate endpoints (dashboard, history, stats).
-No WebSocket, no Redis subscription, no writes, except a single Redis **GET** of the
-cached release string (`redis_key_system_release_version`) for the System UI.
-See docs/REDIS_ARCHITECTURE.md.
+Role: host read/aggregate endpoints (dashboard, history, stats) and the auth/user plane
+(login, session, profile, throttled ``POST /api/user/activity`` for ``last_login``).
+No WebSocket, no Redis pub/sub. Aside from auth/session and that activity touch, avoids writes.
+Also performs a single Redis **GET** of the cached release string
+(`redis_key_system_release_version`) for the System UI. See docs/REDIS_ARCHITECTURE.md.
 """
 
 import os

@@ -55,6 +55,61 @@ def tenant_user_no_from_worker_env() -> Optional[str]:
     return m.group(1) if m else None
 
 
+def _ensure_exchange_credentials_column(conn: Any) -> None:
+    """Idempotent DDL for older DBs or drift vs ``schema_migrations`` (matches migration 20260410_2100)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            ALTER TABLE system.master_users ADD COLUMN IF NOT EXISTS exchange_credentials JSONB
+                NOT NULL DEFAULT '{"kalshi": false, "polymarket": false}'::jsonb
+            """
+        )
+    conn.commit()
+
+
+def ensure_system_master_users_exchange_credentials() -> bool:
+    """
+    Apply ``ADD COLUMN IF NOT EXISTS exchange_credentials`` on ``system.master_users``.
+
+    Safe no-op when the column already exists. Use before any query that selects this column
+    (e.g. admin listing) so schema matches migration ``20260410_2100`` even when ``schema_migrations``
+    and reality diverged.
+    """
+    try:
+        from backend.core.config.database import get_system_postgresql_connection
+
+        conn = get_system_postgresql_connection()
+        if not conn:
+            return False
+        try:
+            _ensure_exchange_credentials_column(conn)
+            return True
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception:
+        return False
+
+
+def _fetch_kalshi_flag_cursor(cur: Any, user_no: str) -> Optional[bool]:
+    cur.execute(
+        """
+        SELECT exchange_credentials
+        FROM system."master_users"
+        WHERE LPAD(TRIM(user_no::text), 4, '0') = %s
+        LIMIT 1
+        """,
+        (user_no,),
+    )
+    row = cur.fetchone()
+    if not row or row[0] is None:
+        return None
+    norm = normalize_exchange_credentials(row[0])
+    return bool(norm["kalshi"])
+
+
 def fetch_kalshi_enabled_for_user_no(user_no: str) -> Optional[bool]:
     """
     Read ``exchange_credentials->kalshi`` for ``user_no``.
@@ -70,38 +125,47 @@ def fetch_kalshi_enabled_for_user_no(user_no: str) -> Optional[bool]:
         if not conn:
             return None
         try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT exchange_credentials
-                    FROM system."master_users"
-                    WHERE LPAD(TRIM(user_no::text), 4, '0') = %s
-                    LIMIT 1
-                    """,
-                    (user_no,),
-                )
-                row = cur.fetchone()
-            try:
-                conn.commit()
-            except Exception:
-                pass
+            for attempt in (0, 1):
+                try:
+                    with conn.cursor() as cur:
+                        return _fetch_kalshi_flag_cursor(cur, user_no)
+                except Exception as exc:
+                    err = str(exc).lower()
+                    if (
+                        attempt == 0
+                        and "exchange_credentials" in err
+                        and "does not exist" in err
+                    ):
+                        _LOG.warning(
+                            "system.master_users.exchange_credentials missing; applying "
+                            "ADD COLUMN IF NOT EXISTS (self-heal) on DB=%s",
+                            _session_db_label(),
+                        )
+                        _ensure_exchange_credentials_column(conn)
+                        continue
+                    raise
         finally:
             try:
                 conn.close()
             except Exception:
                 pass
-        if not row or row[0] is None:
-            return None
-        norm = normalize_exchange_credentials(row[0])
-        return bool(norm["kalshi"])
     except Exception as exc:
-        _LOG.warning(
-            "Could not read system.master_users.exchange_credentials for user_no=%s "
-            "(DB session=%s): %s",
-            user_no,
-            _session_db_label(),
-            exc,
-        )
+        err = str(exc).lower()
+        if "exchange_credentials" in err and "does not exist" in err:
+            _LOG.warning(
+                "system.master_users.exchange_credentials still missing after self-heal for "
+                "user_no=%s DB=%s",
+                user_no,
+                _session_db_label(),
+            )
+        else:
+            _LOG.warning(
+                "Could not read system.master_users.exchange_credentials for user_no=%s "
+                "(DB session=%s): %s",
+                user_no,
+                _session_db_label(),
+                exc,
+            )
         return None
 
 

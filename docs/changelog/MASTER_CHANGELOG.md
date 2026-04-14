@@ -6,6 +6,34 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-14 — Release v3.1.2: admin tools, monitor_list realtime, ops and registration polish
+
+**Summary**
+- **Release: v3.1.2**
+- **Database:** `20260414_2000_system_master_users_rec_io_db_notify`, `20260414_2100_system_master_users_drop_legacy_columns`, `20260414_2200_system_master_users_last_login`, and **`20260423_1100_tenant_monitor_list_rec_io_db_notify`** (per-tenant `monitor_list_*` → `rec_io_db_notify`, stream **`monitor_list`**). Runner applies any pending id in order.
+- **Backend:** `master_users` admin API — active **Monitors** count per tenant, supervisor resync hooks, registration/activation email, `read_api` / `main_app` / `system_monitor` / Kalshi sync and trading alignment, `stream_registry` **`monitor_list`** mapping.
+- **Frontend:** **Admin Tools** tab (search, layout, date display, WebSocket refetch on **`master_users`** + **`monitor_list`**), **index.html** admin icon attention state via **`/ws/db_changes`**, system UI and **`rec_session`** updates, admin icon assets.
+- **Docs:** `MASTER_DB_SCHEMA_REFERENCE`, `REALTIME_BACKBONE`, registration guide; supervisor/config and manage scripts as needed.
+- **Plans:** (session work; admin UX + realtime backbone alignment.)
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations (from project root; applies every pending id):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Regenerate supervisor config:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/config/generate_unified_supervisor_config.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; spot-check Admin Tools and login.
+- [ ] Record release in DB on **production** (must match git/changelog):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.2`
+- [ ] Record release in DB on **local** (same version string as production):  
+  From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.2`
+
+---
+
 ## 2026-04-14 — Release v3.1.0: tenant schemas, web auth, system version, trading/supervisor alignment
 
 **Summary**

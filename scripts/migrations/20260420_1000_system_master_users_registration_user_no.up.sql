@@ -48,12 +48,12 @@ END
 $$;
 
 CREATE OR REPLACE VIEW system.active_master_users AS
-SELECT user_id, name, email, server_ip, last_updated
+SELECT user_id, name, email, last_updated
 FROM system.master_users
 WHERE status = 'active';
 
 CREATE OR REPLACE VIEW system.recent_master_registrations AS
-SELECT user_id, name, email, server_ip, registration_date
+SELECT user_id, name, email, registration_date
 FROM system.master_users
 WHERE registration_date > NOW() - INTERVAL '30 days';
 
