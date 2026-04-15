@@ -6,6 +6,31 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-15 — Release v3.1.5: archive tick backtest build, HTC setting grid sweep, synthetic grid_sweep_trades
+
+**Summary**
+- **Release: v3.1.5**
+- **Database:** Migration **`20260416_1015_backtest_grid_sweep_trades`** — `backtest.grid_sweep_trades` (LIKE `users_0001.trades_0001` + `sweep_batch_id`, `synthetic_monitor_id`, `source_monitor_id`) for persisted sweep replays.
+- **Backtest / research:** `tick_backtest_build.build_tick_backtest_from_strike_archive` (windowed slices from `historical_data.strike_table_master`); **`core_backtester.py`** flag **`--build-tick-backtest-from-archive`**. **`htc_backtest_replay`**: `fetch_monitor_trade_meta`, tick row payloads on replay, `ret_pct_reference_balance` surfaced on output.
+- **Grid sweep:** `htc_setting_grid_sweep.py`, CLI **`htc_archive_setting_sweep.py`** — Cartesian monitor overrides over archive markets; **compounding** bankroll across markets (default); **`--persist-trades`** → `backtest.grid_sweep_trades`; **`grid_sweep_trades.py`** inserts trade-shaped rows.
+- **Docs:** `BACKTESTING.md` §5.5–5.6, `scripts/backtest/README.md`, `MASTER_DB_SCHEMA_REFERENCE` (`backtest.grid_sweep_trades`).
+- **Plans:** (session work; archive-backed tick replay + optimization sweep persistence.)
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration (from project root on the server):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260416_1015_backtest_grid_sweep_trades`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` (no application restart required for this release unless you choose to align with a full deploy).
+- [ ] Record release in DB on **production** (must match git/changelog):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.5`
+- [ ] Record release in DB on **local** (same version string as production):  
+  From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.5`
+
+---
+
 ## 2026-04-15 — Release v3.1.4: historical strike archive, lifecycle settlement backfill, WS pipeline health defaults
 
 **Summary**

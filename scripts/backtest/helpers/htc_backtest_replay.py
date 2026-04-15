@@ -26,8 +26,9 @@ Single-market **HTC-style** replay against ``backtest.backtest_1m_*`` rows (1-mi
 
 - **Trade report** (JSON): ``trade`` object and top-level mirrors include entry/exit bar timestamps
   (Eastern-naive bar end per ``backtest`` contract), side, contracts, premium, fees, total cost at
-  open, proceeds at close, close method, PnL / return. ``ret_pct`` = ``100 * pnl / bankroll_start``
-  (same idea as stored trade ``ret_pct``); ``return_on_notional_pct`` = ``100 * pnl / notional_entry``.
+  open, proceeds at close, close method, PnL / return. ``ret_pct`` = ``100 * pnl / ret_pct_reference_balance``
+  when that argument is set, else ``100 * pnl / bankroll_start`` (stored trade ``ret_pct`` semantics);
+  ``return_on_notional_pct`` = ``100 * pnl / notional_entry``.
   ``win_loss`` = economic (PnL sign); ``win_loss_from_settlement`` = W/L if only ``market_result`` vs side mattered at expiry; ``win_loss_confirmed`` = those agree when result is known.
 
 This is a v1 harness; expand stop/settlement parity with ``active_trade_supervisor`` gradually.
@@ -36,6 +37,7 @@ This is a v1 harness; expand stop/settlement parity with ``active_trade_supervis
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 from typing import Any, Mapping, Optional
 
 from scripts.backtest.helpers.hypothetical_trades import estimate_kalshi_taker_fee
@@ -57,6 +59,22 @@ from scripts.backtest.helpers.tick_backtest_build import tick_backtest_relname
 
 _EASTERN = ZoneInfo("America/New_York")
 # US Eastern legal time (EST/EDT via DST). All replay clock strings use this IANA zone.
+
+
+def serialize_tick_row_for_payload(row: Mapping[str, Any]) -> dict[str, Any]:
+    """JSON-friendly dict from a tick / strike-shaped DB row (for sweep inserts and debugging)."""
+    out: dict[str, Any] = {}
+    for k, v in row.items():
+        if isinstance(v, datetime):
+            if v.tzinfo is None:
+                out[k] = v.isoformat()
+            else:
+                out[k] = v.astimezone(_EASTERN).isoformat()
+        elif isinstance(v, Decimal):
+            out[k] = float(v)
+        else:
+            out[k] = v
+    return out
 
 
 def _eastern_naive_iso(ts: Any) -> Optional[str]:
@@ -144,6 +162,31 @@ def fetch_monitor_auto_entry_settings(conn: Any, *, monitor_table: str, monitor_
         "current_probability": strategy_result[20],
         "stop_loss_price": float(strategy_result[21]) if strategy_result[21] is not None else 0.0,
         "min_ttc_seconds": strategy_result[22],
+    }
+
+
+def fetch_monitor_trade_meta(conn: Any, *, monitor_table: str, monitor_id: int) -> dict[str, Any]:
+    """Strategy / symbol / market / display name / multiplier for labeling synthetic sweep trades."""
+    if not re.fullmatch(r"monitor_list_[0-9]+", monitor_table):
+        raise ValueError(f"invalid monitor table: {monitor_table!r}")
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT strategy, market, symbol, name, multiplier
+            FROM users.{monitor_table}
+            WHERE id = %s
+            """,
+            (monitor_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"no monitor row id={monitor_id} in users.{monitor_table}")
+    return {
+        "trade_strategy": row[0] or "15m HTC",
+        "market": row[1] or "15m",
+        "symbol": row[2] or "",
+        "monitor_name": row[3] or "",
+        "multiplier": float(row[4]) if row[4] is not None else 1.0,
     }
 
 
@@ -788,6 +831,9 @@ def run_htc_single_market_replay(
         "market_result": market_result,
     }
 
+    entry_tick_payload = serialize_tick_row_for_payload(entry_row) if from_tick_table else None
+    exit_tick_payload = serialize_tick_row_for_payload(exit_row) if from_tick_table else None
+
     out = {
         "ok": True,
         "no_trade": False,
@@ -819,6 +865,7 @@ def run_htc_single_market_replay(
         "pnl": pnl_r,
         "pnl_dollars": pnl_r,
         "ret_pct": ret_r,
+        "ret_pct_reference_balance": ref_bal,
         "return_on_notional_pct": ret_notional_r,
         "win_loss": econ_wl,
         "win_loss_from_settlement": settlement_wl,
@@ -828,6 +875,8 @@ def run_htc_single_market_replay(
         "win_loss_confirmed": win_loss_confirmed,
         "trade": trade_block,
         "replay_summary": summary,
+        "entry_tick_row": entry_tick_payload,
+        "exit_tick_row": exit_tick_payload,
     }
     out.update({k: v for k, v in _provenance.items() if v is not None})
     return out

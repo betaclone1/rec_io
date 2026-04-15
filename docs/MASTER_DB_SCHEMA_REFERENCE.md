@@ -8100,6 +8100,24 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 **Migration:** `20260420_1430_backtest_kalshi_historical_trades_api`.
 
+### Table: `backtest.grid_sweep_trades`
+
+**Purpose:** Synthetic closed trades from **archive setting grid sweeps** (`scripts/backtest/htc_archive_setting_sweep.py` with **`--persist-trades`**). Column set matches **`users_0001.trades_0001`** (via `CREATE TABLE … LIKE …`), with a dedicated **`id`** sequence and three extra columns for grouping and lineage.
+
+**Extra columns (not on tenant trades):**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `sweep_batch_id` | `text` | One run of the CLI (UUID or user-supplied **`--sweep-batch-id`**). |
+| `synthetic_monitor_id` | `integer` | Stable id per grid combo: **`--synthetic-monitor-id-base` + combo_index**. |
+| `source_monitor_id` | `integer` | Real **`users.monitor_list_*`.`id`** used as the template row. |
+
+**Row labeling:** **`monitor`** is set to **`mon_<user>_<synthetic_monitor_id>`** (e.g. `mon_0001_9000042`) so filters resemble live **`trade_history`** monitor strings. **`ticket_id`** is a deterministic synthetic key (`GS-…`).
+
+**Population:** `insert_grid_sweep_trade` in `scripts/backtest/helpers/grid_sweep_trades.py` (replay output + entry/exit tick snapshots). **`paper_trade`** is always true.
+
+**Migration:** `20260416_1015_backtest_grid_sweep_trades` (template table **`users_0001.trades_0001`** must exist).
+
 ### Pattern: `backtest.backtest_1m_<slug>`
 
 **Naming:** `<slug>` = lowercased Kalshi market ticker with `-` and `.` replaced by `_` (see `scripts/backtest/helpers/kalshi_candles_1m.ticker_slug`). Example: `KXBTC15M-26MAR051345-45` → `backtest.backtest_1m_kxbtc15m_26mar051345_45`.

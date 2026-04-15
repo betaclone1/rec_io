@@ -72,8 +72,10 @@ DB: ``scripts/backtest/helpers/db.py`` (SSH prod default, etc.).
 columns aligned to ``live_data.strike_table_15m`` (trade prices as YES/NO asks; bids/spreads NULL).
 Optional ``volume_fp`` / ``open_interest_fp`` from ``backtest.backtest_1m_<slug>`` when that table exists
 (same minute repeated per tick). Sources: ``live_data.live_price_log_1s_*``, trades, candles. See
-``scripts/backtest/helpers/tick_backtest_build.py``. **HTC replay on ticks:** ``--replay-htc-market TICKER
---replay-from-tick-backtest`` runs AES/ATS over ``tick_backtest_<slug>`` (see ``htc_backtest_replay``).
+``scripts/backtest/helpers/tick_backtest_build.py``. **From durable archive:** ``--build-tick-backtest-from-archive TICKER``
+loads the same shape from ``historical_data.strike_table_master`` (no 1s log / trades required).
+**HTC replay on ticks:** ``--replay-htc-market TICKER --replay-from-tick-backtest`` runs AES/ATS over
+``tick_backtest_<slug>`` (see ``htc_backtest_replay``).
 
 **Kalshi → backtest schema (any tickers):** ``--ingest-kalshi-tickers T1 T2 ...`` fetches 1m
 candlesticks plus ``floor_strike`` / ``market_result`` (historical markets API, then live market
@@ -2403,7 +2405,18 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "If set: build backtest.tick_backtest_<slug> for one ticker (strike_table_15m-shaped columns; "
             "trade-based asks). Uses live 1s price log + kalshi_historical_trades_api; optional "
-            "backtest_1m_<slug> for volume_fp/open_interest_fp. Then exit. Mutually exclusive with Kalshi ingest."
+            "backtest_1m_<slug> for volume_fp/open_interest_fp. Then exit. Mutually exclusive with Kalshi ingest "
+            "and with --build-tick-backtest-from-archive."
+        ),
+    )
+    p.add_argument(
+        "--build-tick-backtest-from-archive",
+        default=None,
+        metavar="TICKER",
+        help=(
+            "If set: fill backtest.tick_backtest_<slug> from historical_data.strike_table_master for "
+            "this market_ticker (Eastern-naive timestamps; duplicate ET seconds → latest row). Then exit. "
+            "Mutually exclusive with Kalshi ingest and --build-tick-backtest."
         ),
     )
     p.add_argument(
@@ -2517,7 +2530,7 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "With --replay-htc-market only: scan ``backtest.tick_backtest_<slug>`` chronologically "
             "(1s strike-shaped rows) for AES entry + ATS exits instead of 1m candle bars. "
-            "Build the table first with --build-tick-backtest."
+            "Build the table first with --build-tick-backtest or --build-tick-backtest-from-archive."
         ),
     )
     p.add_argument(
@@ -2971,17 +2984,28 @@ def main(argv: list[str] | None = None) -> int:
             verbose=args.ingest_kalshi_verbose,
         )
 
-    if args.build_tick_backtest:
+    if args.build_tick_backtest or args.build_tick_backtest_from_archive:
         if ingest_mode_count:
-            p.error("--build-tick-backtest cannot combine with Kalshi ingest modes")
-        tkr = (args.build_tick_backtest or "").strip()
-        if not tkr:
-            p.error("--build-tick-backtest requires a non-empty ticker")
-        from scripts.backtest.helpers.tick_backtest_build import build_tick_backtest_table
+            p.error("tick backtest build flags cannot combine with Kalshi ingest modes")
+        if args.build_tick_backtest and args.build_tick_backtest_from_archive:
+            p.error("use at most one of --build-tick-backtest or --build-tick-backtest-from-archive")
+        from scripts.backtest.helpers.tick_backtest_build import (
+            build_tick_backtest_from_strike_archive,
+            build_tick_backtest_table,
+        )
 
         conn = get_connection()
         try:
-            out = build_tick_backtest_table(conn, tkr)
+            if args.build_tick_backtest_from_archive:
+                tkr = (args.build_tick_backtest_from_archive or "").strip()
+                if not tkr:
+                    p.error("--build-tick-backtest-from-archive requires a non-empty ticker")
+                out = build_tick_backtest_from_strike_archive(conn, tkr)
+            else:
+                tkr = (args.build_tick_backtest or "").strip()
+                if not tkr:
+                    p.error("--build-tick-backtest requires a non-empty ticker")
+                out = build_tick_backtest_table(conn, tkr)
         finally:
             conn.close()
         print(json.dumps(out, indent=2, default=str))

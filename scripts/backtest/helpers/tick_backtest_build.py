@@ -15,6 +15,10 @@ forward (bids unknown → NULL; spreads NULL). ``volume_fp`` / ``open_interest_f
 - ``backtest.kalshi_historical_trades_api`` — trade YES/NO dollar fields as ask proxies.
 - ``backtest.backtest_1m_<slug>`` — optional; ingest via ``core_backtester --ingest-kalshi-tickers``
   for volume / open interest.
+- **Archive path:** ``historical_data.strike_table_master`` (``build_tick_backtest_from_strike_archive`` /
+  ``core_backtester --build-tick-backtest-from-archive``) copies live-archived strike rows into the
+  same ``tick_backtest_*`` shape (Eastern-naive ``timestamp`` / ``created_at``; one row per archive
+  instant; collapses duplicate Eastern seconds to the latest ``timestamptz``).
 
 Probability and buffer math follow ``backend/strike_table_generator.generate_strike_table``;
 ``yes_prob_15m`` / ``no_prob_15m`` (and hourly legs when applicable) use the same **active-side
@@ -618,4 +622,94 @@ def build_tick_backtest_table(
         "window_et_naive": [t_start.isoformat(), t_end.isoformat()],
         "time_zone": "America/New_York",
     }
+
+
+def build_tick_backtest_from_strike_archive(
+    conn: Any,
+    market_ticker: str,
+    *,
+    truncate: bool = True,
+    timestamp_start: Any = None,
+    timestamp_end_exclusive: Any = None,
+) -> dict[str, Any]:
+    """
+    Fill ``backtest.tick_backtest_<slug>`` from ``historical_data.strike_table_master`` for one
+    ``market_ticker``. Rows use the same column layout as the synthetic tick builder; timestamps are
+    US Eastern **naive** (``timestamp AT TIME ZONE 'America/New_York'``). When several archive rows
+    share the same Eastern second, keep the row with the greatest source ``timestamptz``.
+
+    Optional ``timestamp_start`` / ``timestamp_end_exclusive`` filter archive rows on
+    ``s.\"timestamp\"`` (``TIMESTAMPTZ``). Pass **timezone-aware** datetimes (any zone) or naive UTC.
+    """
+    t = validate_kalshi_market_ticker(market_ticker)
+    rel = tick_backtest_relname(t)
+    ensure_tick_backtest_table(conn, rel)
+    if truncate:
+        with conn.cursor() as cur:
+            cur.execute(f"TRUNCATE TABLE backtest.{rel};")
+
+    extra_where = ""
+    params: list[Any] = [t]
+    if timestamp_start is not None:
+        extra_where += ' AND s."timestamp" >= %s'
+        params.append(timestamp_start)
+    if timestamp_end_exclusive is not None:
+        extra_where += ' AND s."timestamp" < %s'
+        params.append(timestamp_end_exclusive)
+
+    ins_sql = f"""
+        INSERT INTO backtest.{rel} (
+            "timestamp", symbol, exchange, market, current_price, ttc_hourly, ttc_15m,
+            event_ticker, market_title, strike_tier, market_status, strike, buffer, buffer_pct,
+            probability_hourly, probability_15m, yes_prob_hourly, no_prob_hourly,
+            yes_prob_15m, no_prob_15m,
+            yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
+            yes_price_spread, no_price_spread, yes_diff, no_diff,
+            volume_fp, open_interest_fp, ticker, active_side,
+            momentum_weighted_score, momentum_percentile, volatility, volatility_percentile,
+            movement, movement_percentile,
+            yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
+            yes_ask_range_15m, no_ask_range_15m,
+            created_at
+        )
+        SELECT DISTINCT ON ((s."timestamp" AT TIME ZONE 'America/New_York'))
+            (s."timestamp" AT TIME ZONE 'America/New_York') AS ts_naive,
+            s.symbol, s.exchange, s.market, s.current_price, s.ttc_hourly, s.ttc_15m,
+            s.event_ticker, s.market_title, s.strike_tier, s.market_status, s.strike, s.buffer, s.buffer_pct,
+            s.probability_hourly, s.probability_15m, s.yes_prob_hourly, s.no_prob_hourly,
+            s.yes_prob_15m, s.no_prob_15m,
+            s.yes_ask_dollars, s.no_ask_dollars, s.yes_bid_dollars, s.no_bid_dollars,
+            s.yes_price_spread, s.no_price_spread, s.yes_diff, s.no_diff,
+            s.volume_fp, s.open_interest_fp,
+            COALESCE(NULLIF(BTRIM(s.ticker::text), ''), s.market_ticker),
+            s.active_side,
+            s.momentum_weighted_score, s.momentum_percentile, s.volatility, s.volatility_percentile,
+            s.movement, s.movement_percentile,
+            s.yes_ask_min_15m, s.yes_ask_max_15m, s.no_ask_min_15m, s.no_ask_max_15m,
+            s.yes_ask_range_15m, s.no_ask_range_15m,
+            (COALESCE(s.created_at, s."timestamp") AT TIME ZONE 'America/New_York') AS created_naive
+        FROM historical_data.strike_table_master s
+        WHERE s.market_ticker = %s
+        {extra_where}
+        ORDER BY (s."timestamp" AT TIME ZONE 'America/New_York'), s."timestamp" DESC
+    """
+    with conn.cursor() as cur:
+        cur.execute(ins_sql, tuple(params))
+        n = cur.rowcount
+    conn.commit()
+
+    out = {
+        "ok": True,
+        "source": "historical_data.strike_table_master",
+        "table": f"backtest.{rel}",
+        "market_ticker": t,
+        "rows_inserted": int(n) if n is not None else 0,
+        "time_zone": "America/New_York",
+    }
+    if timestamp_start is not None or timestamp_end_exclusive is not None:
+        out["archive_timestamp_filter"] = {
+            "start": str(timestamp_start) if timestamp_start is not None else None,
+            "end_exclusive": str(timestamp_end_exclusive) if timestamp_end_exclusive is not None else None,
+        }
+    return out
 
