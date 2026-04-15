@@ -2325,6 +2325,52 @@ def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Option
 _kalshi_snapshot_cache: Dict[str, Dict[str, Any]] = {}
 KALSHI_SNAPSHOT_STALE_MAX_SEC = 120.0
 
+# Stop-loss floor: consecutive ticks where opp ask is past threshold (anti single-tick glitch).
+_stop_loss_floor_confirm_ticks: Dict[int, int] = {}
+
+
+def _stop_loss_floor_guard_enabled() -> bool:
+    return os.getenv("ATS_STOP_LOSS_FLOOR_GUARD", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _stop_loss_floor_max_quote_disagree() -> float:
+    try:
+        return max(0.01, float(os.getenv("ATS_STOP_LOSS_FLOOR_MAX_QUOTE_DISAGREE", "0.18")))
+    except ValueError:
+        return 0.18
+
+
+def _stop_loss_floor_confirm_ticks_required() -> int:
+    try:
+        v = int(os.getenv("ATS_STOP_LOSS_FLOOR_CONFIRM_TICKS", "2"))
+        return max(1, min(v, 10))
+    except ValueError:
+        return 2
+
+
+def _stop_loss_floor_prob_mark_divergence_max_points() -> float:
+    """
+    If > 0: do not fire stop-loss floor when model probability (0–100) exceeds
+    implied exit mark in \"points\" by more than this amount.
+
+    Implied exit mark uses complementary of opposite-side ask in contract space:
+    ``(1 - opp_ask) * 100`` (same scale as ``sell_price * 100`` for the NO leg when
+    ``opp_ask`` is YES ask). Catches bogus high YES-ask ticks while probability
+    still shows a strong winning position.
+
+    Set env ``ATS_STOP_LOSS_FLOOR_PROB_MARK_DIVERGENCE_POINTS`` to 0 to disable.
+    """
+    try:
+        v = float(os.getenv("ATS_STOP_LOSS_FLOOR_PROB_MARK_DIVERGENCE_POINTS", "50"))
+        return max(0.0, v)
+    except ValueError:
+        return 50.0
+
 
 def _kalshi_snapshot_cache_key(symbol: str, market: str) -> str:
     s = (symbol or "BTC").strip().lower()
@@ -5032,7 +5078,17 @@ def _try_stop_loss_ask_floor(
     ttc_seconds,
 ) -> bool:
     """
-    Instant rip-cord: if opposite-side ask (current_close_price) > (1 - stop_loss_price), close now.
+    Rip-cord when opposite-side ask (current_close_price) > (1 - stop_loss_price).
+
+    With ATS_STOP_LOSS_FLOOR_GUARD (default on): requires point DB quote agreement within
+    ATS_STOP_LOSS_FLOOR_MAX_QUOTE_DISAGREE, direct ask past the same threshold, and
+    ATS_STOP_LOSS_FLOOR_CONFIRM_TICKS consecutive evaluations (default 2, ~1s apart) so a
+    single bad snapshot row cannot close the trade.
+
+    With ATS_STOP_LOSS_FLOOR_PROB_MARK_DIVERGENCE_POINTS (default 50): skips the close when
+    current_probability (0–100) minus ``(1 - opp_ask) * 100`` exceeds that margin (API/quote
+    glitch vs model path disagree).
+
     Ignores probability verification. Respects min_ttc_seconds like probability auto-stop.
     Returns True if this trade was handled (caller should continue to next trade).
     """
@@ -5062,21 +5118,103 @@ def _try_stop_loss_ask_floor(
     try:
         opp_ask = float(ccp)
         threshold_ask = 1.0 - sf
-        if opp_ask > threshold_ask:
-            if trade_id in verification_pending_trades:
-                del verification_pending_trades[trade_id]
-            detail = (
-                f"opposite_ask={opp_ask:.4f} threshold_ask={threshold_ask:.4f} stop_loss_price={sf:.4f}"
+        try:
+            tid_key = int(trade_id) if trade_id is not None else None
+        except (TypeError, ValueError):
+            tid_key = None
+
+        if opp_ask <= threshold_ask:
+            if tid_key is not None:
+                _stop_loss_floor_confirm_ticks.pop(tid_key, None)
+            return False
+
+        if trade_id in verification_pending_trades:
+            del verification_pending_trades[trade_id]
+
+        direct: Optional[float] = None
+        if _stop_loss_floor_guard_enabled() and tid_key is not None:
+            sym_m, mkt_m = get_current_monitor_symbol_and_market()
+            t_sym = trade.get("symbol") or sym_m
+            direct = _kalshi_direct_closing_price_for_ticker(
+                trade.get("ticker"),
+                trade.get("side"),
+                str(t_sym).strip() if t_sym else None,
+                (mkt_m or "hourly"),
             )
-            if trigger_auto_stop_close(
-                trade,
-                trigger_reason="stop_loss_floor",
-                trigger_detail=detail,
-            ):
-                auto_stop_triggered_trades.add(trade_id)
-            else:
-                log(f"[AUTO STOP FLOOR] close failed for trade {trade_id}, will retry")
-            return True
+            if direct is None:
+                log_debug(
+                    f"[AUTO STOP FLOOR] guard: no direct Kalshi quote trade_id={trade_id} "
+                    f"ticker={trade.get('ticker')}"
+                )
+                _stop_loss_floor_confirm_ticks.pop(tid_key, None)
+                return False
+            max_d = _stop_loss_floor_max_quote_disagree()
+            if abs(opp_ask - direct) > max_d:
+                log(
+                    f"[AUTO STOP FLOOR] blocked: stored vs direct disagree beyond {max_d:.2f} "
+                    f"stored_opp={opp_ask:.4f} direct_opp={direct:.4f} "
+                    f"threshold_ask={threshold_ask:.4f} trade_id={trade_id}"
+                )
+                _stop_loss_floor_confirm_ticks.pop(tid_key, None)
+                return False
+            if direct <= threshold_ask:
+                log(
+                    f"[AUTO STOP FLOOR] suppressed: direct quote not past floor "
+                    f"direct_opp={direct:.4f} stored_opp={opp_ask:.4f} "
+                    f"threshold_ask={threshold_ask:.4f} trade_id={trade_id}"
+                )
+                _stop_loss_floor_confirm_ticks.pop(tid_key, None)
+                return False
+
+            need = _stop_loss_floor_confirm_ticks_required()
+            cnt = _stop_loss_floor_confirm_ticks.get(tid_key, 0) + 1
+            if cnt < need:
+                _stop_loss_floor_confirm_ticks[tid_key] = cnt
+                log(
+                    f"[AUTO STOP FLOOR] confirm pending {cnt}/{need} "
+                    f"opp_ask={opp_ask:.4f} direct_opp={direct if direct is not None else 'n/a'} "
+                    f"threshold_ask={threshold_ask:.4f} trade_id={trade_id}"
+                )
+                return False
+            _stop_loss_floor_confirm_ticks.pop(tid_key, None)
+        elif tid_key is not None:
+            _stop_loss_floor_confirm_ticks.pop(tid_key, None)
+
+        div_max = _stop_loss_floor_prob_mark_divergence_max_points()
+        if div_max > 0:
+            prob_raw = trade.get("current_probability")
+            if prob_raw is not None:
+                try:
+                    prob_f = float(prob_raw)
+                    mark_pts = (1.0 - opp_ask) * 100.0
+                    diff = prob_f - mark_pts
+                    if diff > div_max:
+                        log(
+                            f"[AUTO STOP FLOOR] blocked: probability vs implied exit mark divergence "
+                            f"prob={prob_f:.2f} implied_exit_mark_pts={mark_pts:.2f} "
+                            f"diff={diff:.2f} max_diff={div_max:.2f} opp_ask={opp_ask:.4f} "
+                            f"trade_id={trade_id}"
+                        )
+                        if tid_key is not None:
+                            _stop_loss_floor_confirm_ticks.pop(tid_key, None)
+                        return False
+                except (TypeError, ValueError):
+                    pass
+
+        detail = (
+            f"opposite_ask={opp_ask:.4f} threshold_ask={threshold_ask:.4f} stop_loss_price={sf:.4f}"
+        )
+        if direct is not None:
+            detail += f" direct_opp={direct:.4f}"
+        if trigger_auto_stop_close(
+            trade,
+            trigger_reason="stop_loss_floor",
+            trigger_detail=detail,
+        ):
+            auto_stop_triggered_trades.add(trade_id)
+        else:
+            log(f"[AUTO STOP FLOOR] close failed for trade {trade_id}, will retry")
+        return True
     except (TypeError, ValueError) as ex:
         log_debug(f"[AUTO STOP FLOOR] skip trade {trade_id}: {ex}")
     return False
