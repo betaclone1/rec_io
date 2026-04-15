@@ -227,6 +227,19 @@ class SupervisorConfigGenerator:
                 import json
                 with open(manifest_path, 'r') as f:
                     manifest = json.load(f)
+
+                # Normalize legacy unsuffixed user-scoped service keys so every user-level/live-data
+                # process has an explicit slot suffix in the manifest (e.g. trade_executor_0001).
+                manifest_changed = self._normalize_user_scoped_manifest_keys(manifest)
+                if manifest_changed:
+                    temp_path = manifest_path + ".tmp"
+                    with open(temp_path, "w") as f:
+                        json.dump(manifest, f, indent=2)
+                    os.replace(temp_path, manifest_path)
+                    logger.info(
+                        "Normalized MASTER_PORT_MANIFEST user-scoped keys to suffixed names: %s",
+                        manifest_path,
+                    )
                 
                 ports = {}
                 
@@ -277,6 +290,57 @@ class SupervisorConfigGenerator:
         except Exception as e:
             logger.error(f"Error getting port assignments: {e}")
             return {}
+
+    def _normalize_user_scoped_manifest_keys(self, manifest: dict) -> bool:
+        """
+        Ensure services that require tenant suffixes are stored as ``<service>_<user_no>``.
+
+        Legacy manifests may contain unsuffixed keys (e.g. ``trade_executor``). Those keys
+        are migrated to the current pool user slot and removed.
+        """
+        if not isinstance(manifest, dict):
+            return False
+
+        scoped_bases = (
+            "trade_manager",
+            "trade_executor",
+            "kalshi_account_sync",
+            "monitor_manager",
+            "auto_entry_supervisor",
+            "active_trade_supervisor",
+            "kalshi_lifecycle_consumer",
+        )
+        trading_users = self._discover_trading_user_nos()
+        if trading_users:
+            pool_user_no = sorted(trading_users)[0]
+        else:
+            p = (
+                os.environ.get("REC_POOL_USER_NUMBER")
+                or os.environ.get("REC_USER_NO")
+                or "0001"
+            ).strip()
+            pool_user_no = p.zfill(4) if p.isdigit() and len(p) <= 4 else "0001"
+
+        changed = False
+        for section in ("core_services", "watchdog_services"):
+            services = manifest.get(section)
+            if not isinstance(services, dict):
+                continue
+            for base in scoped_bases:
+                if base not in services:
+                    continue
+                suffixed = f"{base}_{pool_user_no}"
+                if suffixed not in services:
+                    services[suffixed] = services[base]
+                del services[base]
+                changed = True
+                logger.warning(
+                    "MASTER_PORT_MANIFEST: migrated legacy key '%s' -> '%s' in %s",
+                    base,
+                    suffixed,
+                    section,
+                )
+        return changed
     
     def _generate_supervisor_content(self, project_root: str, python_executable: str, 
                                    system_host: str, ports: dict) -> str:
