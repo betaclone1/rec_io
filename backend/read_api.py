@@ -122,8 +122,11 @@ def _monitor_auto_stop_accuracy_bucket(
     cursor: Any, union_sql: str, monitor_key: str, close_method: str, days: int
 ) -> Dict[str, Any]:
     """
-    Losing closed trades for this monitor and close_method, closed in the last ``days`` days.
-    Accuracy = share where win_loss_confirmed IS TRUE.
+    Losing closed trades for this monitor and ``close_method``, closed in the last ``days`` days
+    (rolling window from ``closed_at`` / ``created_at`` fallback).
+
+    Percentage = among those losses, share with ``win_loss_confirmed`` IS TRUE (e.g. 3/4 → 75%).
+
     Uses the same closed_at-as-text fallback as /api/pnl/history and /api/performance/realized.
     """
     cursor.execute(
@@ -159,8 +162,9 @@ def _monitor_auto_stop_accuracy_bucket(
 @app.get("/api/monitor_auto_stop_accuracy")
 async def get_monitor_auto_stop_accuracy(monitor_id: str | None = None) -> Dict[str, Any]:
     """
-    Auto-stop accuracy from trade log: losing closes via auto_probability or
-    auto_stop_loss_floor; percentage with win_loss_confirmed = TRUE (7d and 30d).
+    Per monitor, per auto-stop ``close_method`` (``auto_probability`` vs ``auto_stop_loss_floor``):
+    among **losing** closed trades in rolling 7d / 30d, percentage with ``win_loss_confirmed`` TRUE.
+
     Includes tenant trades table and archive tables.
     """
     if not monitor_id:

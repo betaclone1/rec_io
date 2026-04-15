@@ -6,6 +6,31 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-15 — Release v3.1.3: auto-stop monitor UI, credential log noise, read_api docs
+
+**Summary**
+- **Release: v3.1.3**
+- **Frontend:** Unified auto-trade modal — keep **Flip Sell** (checkbox and multipliers) **right-aligned** when 7d/30d accuracy lines are short; auto-stop accuracy lines show **`pct · confirmed/total losses confirmed`**, with **`-`** when there is no losing-trade data in the window; **dashboard** `normalizeMonitorIdForApi` accepts **`mon_*`** tile ids **case-insensitively**. **Dashboard**, **trade monitor**, and **mobile dashboard** updated consistently.
+- **Backend:** `exchange_credentials` — demote common paper/missing-column paths from **warning/info** to **debug** so supervisors are not noisy on restart.
+- **API docs:** `read_api` docstrings for **monitor auto-stop accuracy** clarified (behavior unchanged).
+- **Plans:** (session work; monitor settings UX and ops logging.)
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Regenerate supervisor config:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/config/generate_unified_supervisor_config.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; spot-check monitor auto-trade modal (Flip Sell alignment, accuracy lines).
+- [ ] Record release in DB on **production** (must match git/changelog):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.3`
+- [ ] Record release in DB on **local** (same version string as production):  
+  From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.3`
+
+---
+
 ## 2026-04-14 — Release v3.1.2: admin tools, monitor_list realtime, ops and registration polish
 
 **Summary**

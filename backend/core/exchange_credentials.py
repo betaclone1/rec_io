@@ -136,7 +136,7 @@ def fetch_kalshi_enabled_for_user_no(user_no: str) -> Optional[bool]:
                         and "exchange_credentials" in err
                         and "does not exist" in err
                     ):
-                        _LOG.warning(
+                        _LOG.debug(
                             "system.master_users.exchange_credentials missing; applying "
                             "ADD COLUMN IF NOT EXISTS (self-heal) on DB=%s",
                             _session_db_label(),
@@ -150,22 +150,15 @@ def fetch_kalshi_enabled_for_user_no(user_no: str) -> Optional[bool]:
             except Exception:
                 pass
     except Exception as exc:
+        # Paper-only tenants, missing column on old DBs, or transient DB errors: treat as
+        # "Kalshi exchange flag unknown" (None). Not worth warning on every supervisor restart.
         err = str(exc).lower()
-        if "exchange_credentials" in err and "does not exist" in err:
-            _LOG.warning(
-                "system.master_users.exchange_credentials still missing after self-heal for "
-                "user_no=%s DB=%s",
-                user_no,
-                _session_db_label(),
-            )
-        else:
-            _LOG.warning(
-                "Could not read system.master_users.exchange_credentials for user_no=%s "
-                "(DB session=%s): %s",
-                user_no,
-                _session_db_label(),
-                exc,
-            )
+        _LOG.debug(
+            "exchange_credentials read skipped for user_no=%s DB=%s (%s)",
+            user_no,
+            _session_db_label(),
+            err.split("\n")[0][:200] if err else str(exc)[:200],
+        )
         return None
 
 
@@ -221,14 +214,14 @@ def block_forever_if_kalshi_authenticated_api_disallowed(
     Checks ``REC_PAPER_ONLY_USER`` (supervisor) then ``exchange_credentials.kalshi`` (DB).
     """
     if os.environ.get("REC_PAPER_ONLY_USER", "").strip().lower() in ("1", "true", "yes", "on"):
-        logger.info(
+        logger.debug(
             "%s: REC_PAPER_ONLY_USER set; authenticated Kalshi API disabled for this tenant",
             service_name,
         )
         while True:
             time.sleep(3600)
     if kalshi_disabled_by_master_users_for_process():
-        logger.info(
+        logger.debug(
             "%s: system.master_users.exchange_credentials.kalshi is false; "
             "authenticated Kalshi API disabled for this tenant",
             service_name,

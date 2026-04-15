@@ -7544,6 +7544,7 @@
       }
       #unifiedAutoTradeModal .uat-flip-sell-side {
         flex: 0 0 auto;
+        margin-left: auto;
         display: flex;
         flex-direction: row;
         align-items: center;
@@ -8050,11 +8051,10 @@
   <script>
     // Normalize monitor id from tile to DB id the API expects
     function normalizeMonitorIdForApi(monitorId){
-      // formats like mon_0001_10002 -> 10002
-      if (typeof monitorId === 'string' && monitorId.startsWith('mon_')){
-        const parts = monitorId.split('_');
-        return parts[2];
-      }
+      if (monitorId == null || monitorId === '') return monitorId;
+      const s = String(monitorId).trim();
+      const m = /^mon_(\d+)_(\d+)$/i.exec(s);
+      if (m) return m[2];
       return monitorId;
     }
 
@@ -8153,10 +8153,12 @@
 
     function _dashboardFormatAutoStopAccuracyLine(bucket) {
       if (!bucket || bucket.total === 0) {
-        return '— (no losing trades in window)';
+        return '-';
       }
       var p = bucket.accuracy_pct;
-      return (p != null ? p + '%' : '—') + ' · Stops: ' + bucket.total;
+      var c = bucket.confirmed != null ? bucket.confirmed : 0;
+      var t = bucket.total;
+      return (p != null ? p + '%' : '—') + ' · ' + c + '/' + t + ' losses confirmed';
     }
 
     function _dashboardSetAutoStopAccuracyRow(row, bucket) {

@@ -7342,6 +7342,7 @@
       }
       #mobileUnifiedAutoTradeModal .uat-flip-sell-side {
         flex: 0 0 auto;
+        margin-left: auto;
         display: flex;
         flex-direction: row;
         align-items: center;
@@ -7940,10 +7941,12 @@
 
       function mobileDashUatFormatAutoStopAccuracyLine(bucket) {
         if (!bucket || bucket.total === 0) {
-          return '— (no losing trades in window)';
+          return '-';
         }
         const p = bucket.accuracy_pct;
-        return (p != null ? p + '%' : '—') + ' · Stops: ' + bucket.total;
+        const c = bucket.confirmed != null ? bucket.confirmed : 0;
+        const t = bucket.total;
+        return (p != null ? p + '%' : '—') + ' · ' + c + '/' + t + ' losses confirmed';
       }
 
       function mobileDashUatSetAutoStopAccuracyRow(row, bucket) {

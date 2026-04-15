@@ -779,10 +779,12 @@ async function loadAutoEntrySettings(retryCount = 0) {
 
 function _tmFormatAutoStopAccuracyLine(bucket) {
   if (!bucket || bucket.total === 0) {
-    return '— (no losing trades in window)';
+    return '-';
   }
   var p = bucket.accuracy_pct;
-  return (p != null ? p + '%' : '—') + ' · Stops: ' + bucket.total;
+  var c = bucket.confirmed != null ? bucket.confirmed : 0;
+  var t = bucket.total;
+  return (p != null ? p + '%' : '—') + ' · ' + c + '/' + t + ' losses confirmed';
 }
 
 function _tmSetAutoStopAccuracyRow(row, bucket) {
@@ -2718,6 +2720,7 @@ document.addEventListener('DOMContentLoaded', () => {
           }
           #unifiedAutoTradeModal .uat-flip-sell-side {
             flex: 0 0 auto;
+            margin-left: auto;
             display: flex;
             flex-direction: row;
             align-items: center;
