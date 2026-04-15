@@ -6,6 +6,36 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-15 — Release v3.1.4: historical strike archive, lifecycle settlement backfill, WS pipeline health defaults
+
+**Summary**
+- **Release: v3.1.4**
+- **Database:** Migration **`20260415_1730_historical_strike_table_master_partitioned`** — `historical_data.strike_table_master` (monthly partitions on `timestamp`), indexes, bootstrap partitions for current month + next two. **`init_database()`** parity in `backend/core/config/database.py`.
+- **Archive:** `backend/historical_strike_table_archive.py` — append live strike rows (unified 15m/hourly shape + `market_ticker`, `market_result`) after each live insert; partition ensure-on-write; **`REC_STRIKE_TABLE_ARCHIVE`** toggle (`0` disables). Ops helper **`scripts/db/maintain_strike_archive_partitions.py`** for future months (optional cron).
+- **Writers:** `strike_table_generator.py` / **`strike_table_generator_ws.py`** — archive hook; WS **`evaluate_pipeline_health`** ties freshness strictness to **`STRIKE_PIPELINE_HEALTH_STRICT_MODE`** (fail-closed path) and **`STRIKE_PIPELINE_FRESHNESS_STRICT`**; clearer degraded/masked logging on startup prime and refresh.
+- **Lifecycle:** `kalshi_lifecycle_trade_outcome.py` — after successful market result commit, **`backfill_strike_archive_market_result`** updates archive rows by `market_ticker`.
+- **Supervisor:** `generate_unified_supervisor_config.py` — default env for strike pipeline programs: **`STRIKE_PIPELINE_HEALTH_STRICT_MODE=1`**, **`STRIKE_PIPELINE_FRESHNESS_STRICT=1`**, **`PIPELINE_HEALTH_WRITER_DEAD_SEC=900`**, **`PIPELINE_CATASTROPHIC_TRANSPORT_SEC=600`** when not already set (regenerate config on prod before restart).
+- **Docs:** `MASTER_DB_SCHEMA_REFERENCE` — `strike_table_master` section.
+- **Plans:** (session work; durable strike snapshots + pipeline health alignment.)
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations (from project root; includes **`20260415_1730_historical_strike_table_master_partitioned`** if not yet applied):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Regenerate supervisor config:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/config/generate_unified_supervisor_config.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; spot-check strike generators and pipeline health if needed.
+- [ ] Record release in DB on **production** (must match git/changelog):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.4`
+- [ ] Record release in DB on **local** (same version string as production):  
+  From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.4`
+
+---
+
 ## 2026-04-15 — Release v3.1.3: auto-stop monitor UI, credential log noise, read_api docs
 
 **Summary**

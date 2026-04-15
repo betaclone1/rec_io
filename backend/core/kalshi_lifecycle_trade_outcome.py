@@ -257,6 +257,17 @@ def apply_lifecycle_market_result_for_ticker(market_ticker: str, result_raw: Any
     if not committed:
         return 0
 
+    try:
+        from backend.historical_strike_table_archive import (
+            backfill_strike_archive_market_result,
+        )
+
+        backfill_strike_archive_market_result(mt, bin_out)
+    except Exception as arch_exc:
+        logger.warning(
+            "strike archive market_result backfill skipped ticker=%s: %s", mt, arch_exc
+        )
+
     for eid in expired_to_finalize:
         try:
             import backend.trade_manager as tm

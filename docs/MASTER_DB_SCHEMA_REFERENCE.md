@@ -8200,6 +8200,24 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 ---
 
+### Durable (runtime): `historical_data.strike_table_master` (monthly-partitioned)
+
+Created by migration **`20260415_1730_historical_strike_table_master_partitioned`** and also ensured by runtime init paths.
+
+**Purpose:** append-only copy of exactly what **`StrikeTableGenerator`** inserted into **`live_data.strike_table_15m`** / **`live_data.strike_table_hourly`** (unified row shape with **`exchange`**, probabilities, asks, min/max/range columns, etc.), one row per live insert (per strike row per refresh).
+
+**Layout:** one logical master table, partitioned by month on **`timestamp`** (`TIMESTAMPTZ`), with partitions named **`historical_data.strike_table_master_YYYYMM`**. Migration/init pre-create current + next 2 months; writer also creates a missing month on demand.
+
+**Ops helper:** `python3 scripts/db/maintain_strike_archive_partitions.py --months-ahead 2` (run daily/weekly via cron/supervisor to keep future partitions ready).
+
+**Backtest/UI filters:** use **`symbol`**, **`market`** (`15m`/`hourly`), **`market_ticker`**, and **`timestamp`** range. Indexes are maintained on `(market_ticker, timestamp DESC)` and `(symbol, market, timestamp DESC)`.
+
+**Settlement:** `market_result` is NULL until Kalshi lifecycle applies venue outcome; then **`backend/core/kalshi_lifecycle_trade_outcome.backfill_strike_archive_market_result`** updates rows where `market_ticker` matches.
+
+**Toggle:** set **`REC_STRIKE_TABLE_ARCHIVE=0`** to disable archive writes and lifecycle backfill.
+
+---
+
 ### Table: `historical_data.btc_price_history`
 
 #### Columns

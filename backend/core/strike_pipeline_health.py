@@ -17,6 +17,8 @@ def strike_pipeline_health_strict_mode_enabled() -> bool:
       - Dashboard monitor tiles and /api/monitors/health use strike_pipeline_health
         to show degraded state.
       - Auto-entry, trade_executor, and auto-stop may block on missing/stale/unhealthy rows.
+      - WS strike-table generator treats stale Kalshi market / spot ticks as unhealthy
+        (same freshness checks as ``STRIKE_PIPELINE_FRESHNESS_STRICT``).
 
     Default False: monitors show healthy; trade initiation is not gated on this table.
     WS writers can keep populating rows for debugging without affecting operations.

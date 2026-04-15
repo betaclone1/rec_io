@@ -1540,6 +1540,55 @@ class StrikeTableGenerator:
                     ):
                         ymn = ymx = nmn = nmx = yrg = nrg = None
 
+                    strike_row_ts = now_est()
+                    strike_archive_values = (
+                        self.symbol.upper(),
+                        self.data_exchange,
+                        market_val,
+                        current_price,
+                        ttc_hourly_val,
+                        ttc_15m_seconds,
+                        market_data.get("event_ticker"),
+                        market_title,
+                        strike_tier_val,
+                        market_data.get("market_status"),
+                        strike,
+                        buffer,
+                        buffer_pct,
+                        prob_hourly_val,
+                        probability_15m,
+                        yes_prob_hourly_store,
+                        no_prob_hourly_store,
+                        yes_prob_15m_store,
+                        no_prob_15m_store,
+                        yes_ask_dollars,
+                        no_ask_dollars,
+                        yes_bid_dollars,
+                        no_bid_dollars,
+                        yes_price_spread,
+                        no_price_spread,
+                        yes_diff,
+                        no_diff,
+                        volume_fp,
+                        open_interest_fp,
+                        ticker,
+                        active_side,
+                        momentum_score,
+                        momentum_percentile,
+                        volatility,
+                        volatility_percentile,
+                        movement,
+                        movement_percentile,
+                        ymn,
+                        ymx,
+                        nmn,
+                        nmx,
+                        yrg,
+                        nrg,
+                        strike_row_ts,
+                        strike_row_ts,
+                    )
+
                     # Unified 15m and hourly strike tables use exchange (same shape as strike_table_15m).
                     if self.unified_15m or self.interval == "hourly":
                         cursor.execute(
@@ -1555,53 +1604,7 @@ class StrikeTableGenerator:
                              timestamp, created_at)
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
-                            (
-                                self.symbol.upper(),
-                                self.data_exchange,
-                                market_val,
-                                current_price,
-                                ttc_hourly_val,
-                                ttc_15m_seconds,
-                                market_data.get("event_ticker"),
-                                market_title,
-                                strike_tier_val,
-                                market_data.get("market_status"),
-                                strike,
-                                buffer,
-                                buffer_pct,
-                                prob_hourly_val,
-                                probability_15m,
-                                yes_prob_hourly_store,
-                                no_prob_hourly_store,
-                                yes_prob_15m_store,
-                                no_prob_15m_store,
-                                yes_ask_dollars,
-                                no_ask_dollars,
-                                yes_bid_dollars,
-                                no_bid_dollars,
-                                yes_price_spread,
-                                no_price_spread,
-                                yes_diff,
-                                no_diff,
-                                volume_fp,
-                                open_interest_fp,
-                                ticker,
-                                active_side,
-                                momentum_score,
-                                momentum_percentile,
-                                volatility,
-                                volatility_percentile,
-                                movement,
-                                movement_percentile,
-                                ymn,
-                                ymx,
-                                nmn,
-                                nmx,
-                                yrg,
-                                nrg,
-                                now_est(),
-                                now_est(),
-                            ),
+                            strike_archive_values,
                         )
                     else:
                         cursor.execute(
@@ -1661,11 +1664,27 @@ class StrikeTableGenerator:
                                 nmx,
                                 yrg,
                                 nrg,
-                                now_est(),
-                                now_est(),
+                                strike_row_ts,
+                                strike_row_ts,
                             ),
                         )
-                    
+
+                    if ticker:
+                        try:
+                            from backend.historical_strike_table_archive import (
+                                append_strike_archive_row_from_live_tuple,
+                            )
+
+                            append_strike_archive_row_from_live_tuple(
+                                cursor, str(ticker).strip(), strike_archive_values
+                            )
+                        except Exception as arch_exc:
+                            logger.warning(
+                                "Historical strike archive insert failed ticker=%s: %s",
+                                ticker,
+                                arch_exc,
+                            )
+
                     strike_data.append({
                         "strike": strike,
                         "buffer": buffer,

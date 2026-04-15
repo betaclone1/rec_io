@@ -30,6 +30,7 @@ from backend.core.strike_pipeline_health import (
     MARKET_15M,
     MARKET_HOURLY,
     pipeline_health_writer_dead_sec,
+    strike_pipeline_health_strict_mode_enabled,
     upsert_strike_pipeline_health,
 )
 
@@ -266,20 +267,25 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
 
     def evaluate_pipeline_health(self, ok: bool, row_count: int) -> tuple[bool, str]:
         """
-        Integrity: refresh succeeded and produced rows. Optional strict freshness:
-        when STRIKE_PIPELINE_FRESHNESS_STRICT is set, also require recent market + price ticks.
-        Trade gates use ws_transport + writer-dead thresholds on strike_pipeline_health, not this.
+        Integrity: refresh succeeded and produced rows.
+
+        Freshness: when ``STRIKE_PIPELINE_HEALTH_STRICT_MODE`` is on (fail-closed trading),
+        require recent WS market rows and a recent ``live_symbol_status`` tick so we never
+        mark the pipeline healthy on stale Kalshi ladder data. Optionally the same checks apply
+        when ``STRIKE_PIPELINE_FRESHNESS_STRICT`` is set without strict mode (dashboard-only).
         """
         if not ok:
             return False, "strike_refresh_failed"
         if row_count <= 0:
             return False, "strike_row_count_zero"
-        strict = os.getenv("STRIKE_PIPELINE_FRESHNESS_STRICT", "").strip().lower() in (
+        freshness_strict = strike_pipeline_health_strict_mode_enabled() or os.getenv(
+            "STRIKE_PIPELINE_FRESHNESS_STRICT", ""
+        ).strip().lower() in (
             "1",
             "true",
             "yes",
         )
-        if strict:
+        if freshness_strict:
             market_age_sec = self.market_stream_age_sec()
             if market_age_sec > float(self.pipeline_max_age_sec):
                 return False, f"market_stream_stale:{market_age_sec:.1f}s>{self.pipeline_max_age_sec}s"
@@ -524,7 +530,20 @@ def run_redis_triggered(
                 healthy = False
                 reason = reason_raw
         generators[s].set_pipeline_health(healthy=healthy, reason=reason)
-        logger.info("[%s] startup prime ok=%s event=%s rows=%s", s, ok, ev, n)
+        if not healthy:
+            logger.warning("[%s] startup prime degraded ok=%s event=%s rows=%s reason=%s", s, ok, ev, n, reason)
+        elif not healthy_raw:
+            logger.warning(
+                "[%s] startup prime unhealthy masked %ss ok=%s event=%s rows=%s reason=%s",
+                s,
+                degrade_confirm_sec,
+                ok,
+                ev,
+                n,
+                reason,
+            )
+        else:
+            logger.info("[%s] startup prime ok=%s event=%s rows=%s", s, ok, ev, n)
 
     logger.info(
         "Redis-triggered WS strike generator start market=%s exchange=%s symbols=%s channel=%s debounce_ms=%s",
@@ -574,6 +593,15 @@ def run_redis_triggered(
                 generators[s].set_pipeline_health(healthy=healthy, reason=reason)
                 if not healthy:
                     logger.warning("[%s] strike refresh degraded reason=%s event=%s rows=%s", s, reason, ev, n)
+                elif not healthy_raw:
+                    logger.warning(
+                        "[%s] strike refresh unhealthy but masked %ss (degrade_confirm) reason=%s event=%s rows=%s",
+                        s,
+                        degrade_confirm_sec,
+                        reason,
+                        ev,
+                        n,
+                    )
                 else:
                     logger.info("[%s] strike refresh ok event=%s rows=%s", s, ev, n)
         except KeyboardInterrupt:

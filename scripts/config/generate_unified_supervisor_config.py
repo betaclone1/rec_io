@@ -763,6 +763,17 @@ environment={env_vars}
             if not any(x.startswith("ATS_HTTP_FALLBACK_ENABLED=") for x in env_vars):
                 env_vars.append('ATS_HTTP_FALLBACK_ENABLED="0"')
 
+            # Pipeline-health trade gate defaults:
+            # keep fail-closed behavior enabled in supervised environments unless explicitly overridden.
+            if not any(x.startswith("STRIKE_PIPELINE_HEALTH_STRICT_MODE=") for x in env_vars):
+                env_vars.append('STRIKE_PIPELINE_HEALTH_STRICT_MODE="1"')
+            if not any(x.startswith("STRIKE_PIPELINE_FRESHNESS_STRICT=") for x in env_vars):
+                env_vars.append('STRIKE_PIPELINE_FRESHNESS_STRICT="1"')
+            if not any(x.startswith("PIPELINE_HEALTH_WRITER_DEAD_SEC=") for x in env_vars):
+                env_vars.append('PIPELINE_HEALTH_WRITER_DEAD_SEC="900"')
+            if not any(x.startswith("PIPELINE_CATASTROPHIC_TRANSPORT_SEC=") for x in env_vars):
+                env_vars.append('PIPELINE_CATASTROPHIC_TRANSPORT_SEC="600"')
+
             if rec_user_schema:
                 esc_s = str(rec_user_schema).replace("\\", "\\\\").replace('"', '\\"')
                 env_vars.append(f'REC_USER_SCHEMA="{esc_s}"')
