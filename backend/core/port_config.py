@@ -66,7 +66,14 @@ def unified_active_trade_supervisor_service_name() -> str:
 
 # Supervisord program names use REC_POOL_USER_NUMBER; get_port("trade_manager") still works via resolution.
 _USER_SCOPED_PORT_BASES = frozenset(
-    {"trade_manager", "trade_executor", "kalshi_account_sync", "monitor_manager"}
+    {
+        "trade_manager",
+        "trade_executor",
+        "kalshi_account_sync",
+        "monitor_manager",
+        "auto_entry_supervisor",
+        "active_trade_supervisor",
+    }
 )
 
 
@@ -310,6 +317,82 @@ def ensure_port_config_exists():
             json.dump(master_manifest, f, indent=2)
         os.replace(temp_path, PORT_CONFIG_FILE)
         print(f"[PORT_CONFIG] Created master port manifest: {PORT_CONFIG_FILE}")
+    _normalize_manifest_user_scoped_keys()
+
+
+def _normalize_manifest_user_scoped_keys() -> None:
+    """
+    Runtime guardrail: enforce suffixed keys for user-scoped services.
+
+    This prevents regressions when a stale/legacy manifest (with unsuffixed keys like
+    ``trade_executor``) lands on a host. The function is idempotent and safe to call
+    on every startup.
+    """
+    try:
+        with open(PORT_CONFIG_FILE, "r") as f:
+            manifest = json.load(f)
+    except Exception:
+        return
+
+    try:
+        slot = default_pool_user_number()
+    except Exception:
+        # No pool context in this process; skip normalization rather than crashing callers.
+        return
+    changed = False
+
+    core = manifest.get("core_services")
+    if isinstance(core, dict):
+        for base in ("trade_manager", "trade_executor", "active_trade_supervisor"):
+            if base in core:
+                suffixed = f"{base}_{slot}"
+                if suffixed not in core:
+                    core[suffixed] = core[base]
+                del core[base]
+                changed = True
+
+    watch = manifest.get("watchdog_services")
+    if isinstance(watch, dict):
+        for base in ("kalshi_account_sync", "monitor_manager", "kalshi_lifecycle_consumer"):
+            if base in watch:
+                suffixed = f"{base}_{slot}"
+                if suffixed not in watch:
+                    watch[suffixed] = watch[base]
+                del watch[base]
+                changed = True
+        # Canonical runtime aliases used by process code.
+        if "market_watchdog_ws_kalshi_hourly" not in watch:
+            src = watch.get("kalshi_market_watchdog_hourly_btc")
+            if isinstance(src, dict):
+                watch["market_watchdog_ws_kalshi_hourly"] = {
+                    "port": src.get("port", 8005),
+                    "description": "Kalshi hourly market WebSocket watchdog",
+                    "status": src.get("status", "RUNNING"),
+                }
+                changed = True
+        if "market_watchdog_ws_kalshi_15m" not in watch:
+            src = watch.get("kalshi_market_watchdog_15m_btc")
+            if isinstance(src, dict):
+                watch["market_watchdog_ws_kalshi_15m"] = {
+                    "port": src.get("port", 8035),
+                    "description": "Kalshi 15m market ticker WebSocket watchdog",
+                    "status": src.get("status", "RUNNING"),
+                }
+                changed = True
+
+    if not changed:
+        return
+    try:
+        temp_path = PORT_CONFIG_FILE + ".tmp"
+        with open(temp_path, "w") as f:
+            json.dump(manifest, f, indent=2)
+        os.replace(temp_path, PORT_CONFIG_FILE)
+        print(
+            "[PORT_CONFIG] Normalized legacy manifest keys to suffixed user-scoped keys "
+            f"(slot {slot})"
+        )
+    except Exception as e:
+        print(f"[PORT_CONFIG] Could not persist manifest normalization: {e}")
 
 def get_port(service_name: str) -> int:
     """Get the port for a specific service from master manifest."""
