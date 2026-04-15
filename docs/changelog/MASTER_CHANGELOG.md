@@ -17,16 +17,17 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Plans:** (session work; archive-backed tick replay + optimization sweep persistence.)
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
-  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration (from project root on the server):  
+- [x] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`  
+  (Note: unstaged edits on prod were stashed as `autostash before v3.1.5 pull`; review with `git stash list` / `git stash show` on the server if needed.)
+- [x] Apply migration (from project root on the server):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260416_1015_backtest_grid_sweep_trades`
-- [ ] Schema drift check (recommended):  
+- [x] Schema drift check (recommended):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status` (no application restart required for this release unless you choose to align with a full deploy).
-- [ ] Record release in DB on **production** (must match git/changelog):  
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf status` (no application restart required for this release unless you choose to align with a full deploy).
+- [x] Record release in DB on **production** (must match git/changelog):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.5`
-- [ ] Record release in DB on **local** (same version string as production):  
+- [x] Record release in DB on **local** (same version string as production):  
   From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.5`
 
 ---
