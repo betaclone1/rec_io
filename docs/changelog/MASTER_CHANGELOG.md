@@ -16,17 +16,17 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Plans:** (session work; monitor settings UX and ops logging.)
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Schema drift check (recommended):  
+- [x] Schema drift check (recommended):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Regenerate supervisor config:  
+- [x] Regenerate supervisor config:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/config/generate_unified_supervisor_config.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; spot-check monitor auto-trade modal (Flip Sell alignment, accuracy lines).
-- [ ] Record release in DB on **production** (must match git/changelog):  
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; spot-check monitor auto-trade modal (Flip Sell alignment, accuracy lines).
+- [x] Record release in DB on **production** (must match git/changelog):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.3`
-- [ ] Record release in DB on **local** (same version string as production):  
+- [x] Record release in DB on **local** (same version string as production):  
   From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.3`
 
 ---
