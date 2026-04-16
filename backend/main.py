@@ -1092,6 +1092,61 @@ async def serve_login():
     except FileNotFoundError:
         return HTMLResponse(content="<h1>Login</h1><p>Login page not found.</p>", status_code=404)
 
+
+def _html_no_cache_headers() -> dict:
+    return {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
+
+
+@app.get("/register", response_class=HTMLResponse)
+async def serve_register():
+    """Serve master-user self-registration form (frontend/register.html)."""
+    try:
+        with open(os.path.join(frontend_dir, "register.html"), "r", encoding="utf-8") as f:
+            content = f.read()
+        return HTMLResponse(content=content, headers=_html_no_cache_headers())
+    except FileNotFoundError:
+        return HTMLResponse(
+            content="<h1>Register</h1><p>register.html not found.</p>",
+            status_code=404,
+        )
+
+
+@app.get("/register/verify", response_class=HTMLResponse)
+async def serve_register_verify():
+    """Email verification code entry (frontend/register-verify.html)."""
+    try:
+        with open(os.path.join(frontend_dir, "register-verify.html"), "r", encoding="utf-8") as f:
+            content = f.read()
+        return HTMLResponse(content=content, headers=_html_no_cache_headers())
+    except FileNotFoundError:
+        return HTMLResponse(
+            content="<h1>Verify</h1><p>register-verify.html not found.</p>",
+            status_code=404,
+        )
+
+
+@app.get("/register/application-submitted", response_class=HTMLResponse)
+async def serve_register_application_submitted():
+    """Post-verification holding page (frontend/register-application-submitted.html)."""
+    try:
+        with open(
+            os.path.join(frontend_dir, "register-application-submitted.html"),
+            "r",
+            encoding="utf-8",
+        ) as f:
+            content = f.read()
+        return HTMLResponse(content=content, headers=_html_no_cache_headers())
+    except FileNotFoundError:
+        return HTMLResponse(
+            content="<h1>Application submitted</h1><p>register-application-submitted.html not found.</p>",
+            status_code=404,
+        )
+
+
 # Serve favicon
 @app.get("/favicon.ico")
 async def serve_favicon():
