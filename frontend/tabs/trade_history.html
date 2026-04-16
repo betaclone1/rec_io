@@ -9,6 +9,7 @@
   <title>Trade History</title>
   <link rel="stylesheet" href="/styles/global.css" />
   <script src="/js/globals.js"></script>
+  <script src="/js/rec_trades_fetch.js"></script>
   <script src="/js/db_changes_prefilter.js"></script>
   <script src="https://d3js.org/d3.v7.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -261,6 +262,19 @@
     #th-monitor-summary-table {
       width: 100%;
       color: #e2e8f0;
+      table-layout: fixed;
+    }
+    /* Persistent column ratios (matches typical desktop layout); long text ellipsizes */
+    #th-monitor-summary-table th,
+    #th-monitor-summary-table td {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      vertical-align: middle;
+    }
+    #th-monitor-summary-table th:first-child,
+    #th-monitor-summary-table td:first-child {
+      text-align: left;
     }
     #th-monitor-summary-table tbody tr:nth-child(odd) {
       background-color: #2f3545;
@@ -498,9 +512,6 @@
       border-color: #718096;
     }
 
-    .th-monitors-ret-panel .panel-header {
-      flex-shrink: 0;
-    }
     .th-monitors-ret-panel .th-monitors-ret-chart-wrap {
       flex: 1 1 auto;
       min-height: 0;
@@ -809,17 +820,11 @@
   <div class="th-search-summary-stack">
     <div class="th-summary-monitors-row">
     <div class="panel-container th-monitors-ret-panel">
-      <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
-        <span>Monitors</span>
-      </div>
       <div class="th-monitors-ret-chart-wrap">
         <div id="th-monitors-ret-chart" aria-label="Selected monitors total return percent"></div>
       </div>
     </div>
     <div class="panel-container th-summary-side-panel">
-      <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;">
-        <span>Summary</span>
-      </div>
       <div class="th-summary-panel-inner">
       <div class="panel-content" id="summary-content" style="display: flex; justify-content: space-around; padding: 10px;">
         <div style="text-align: center;">
@@ -853,6 +858,16 @@
       </div>
       <div id="th-monitor-summary-scroll">
         <table id="th-monitor-summary-table" aria-label="Per-monitor stats for loaded trades">
+          <colgroup>
+            <col style="width:24%" />
+            <col style="width:10%" />
+            <col style="width:10%" />
+            <col style="width:10%" />
+            <col style="width:10%" />
+            <col style="width:10%" />
+            <col style="width:11%" />
+            <col style="width:15%" />
+          </colgroup>
           <thead>
             <tr>
               <th scope="col">Monitor</th>
@@ -978,8 +993,8 @@
         </thead>
         <tbody></tbody>
       </table>
-      <div id="trade-history-pagination" style="padding:10px 12px; display:flex; align-items:center; gap:14px; flex-wrap:wrap; border-top:1px solid #4a5568; background:#1a1f28;">
-        <span id="trade-history-pagination-meta" style="font-size:12px; color:#a0aec0;"></span>
+      <div id="trade-history-results-footer" style="padding:10px 12px; display:flex; align-items:center; gap:14px; flex-wrap:wrap; border-top:1px solid #4a5568; background:#1a1f28;">
+        <span id="trade-history-loaded-meta" style="font-size:12px; color:#a0aec0;"></span>
       </div>
     </div>
   </div>
@@ -988,11 +1003,6 @@
     let currentSort = { key: 'id', asc: false };
     let trades = [];
     let filteredTrades = [];
-    const TRADE_HISTORY_PAGE_SIZE = 200;
-    /** Must match ``TRADES_PAGE_SIZE_MAX`` in ``backend/core/trades_list_query.py`` */
-    const TRADES_PAGE_SIZE_MAX = 500;
-    let _thTradesHasMore = false;
-    let _thTradesNextBeforeId = null;
     let _tradeHistoryInsights = null;
     let _thInsightsReqId = 0;
     let _thInsightsDebounce = null;
@@ -1406,7 +1416,7 @@
       return out;
     }
 
-    function tradeHistoryClearMonitorPreview(skipRender) {
+    function tradeHistoryClearMonitorPreview() {
       if (_thMonitorPreviewClearTimer) {
         clearTimeout(_thMonitorPreviewClearTimer);
         _thMonitorPreviewClearTimer = null;
@@ -1415,10 +1425,6 @@
         tradeHistoryMonitorPreviewId != null && tradeHistoryMonitorPreviewId !== '';
       tradeHistoryMonitorPreviewId = null;
       tradeHistoryStripMonitorTilePreviewClass();
-      if (!skipRender) {
-        renderTradeHistoryMonitorsRetChart();
-        renderTradeHistoryMonitorSummaryTable();
-      }
       if (hadPreview) {
         refreshTradeHistoryInsights();
       }
@@ -1432,8 +1438,6 @@
       tradeHistoryMonitorPreviewId = mid;
       tradeHistoryStripMonitorTilePreviewClass();
       tile.classList.add('th-monitor-tile-preview');
-      renderTradeHistoryMonitorsRetChart();
-      renderTradeHistoryMonitorSummaryTable();
       refreshTradeHistoryInsights();
     }
 
@@ -1443,7 +1447,7 @@
       _thMonitorPreviewClearTimer = setTimeout(() => {
         _thMonitorPreviewClearTimer = null;
         if (tradeHistoryMonitorIdEquals(tradeHistoryMonitorPreviewId, mid)) {
-          tradeHistoryClearMonitorPreview(false);
+          tradeHistoryClearMonitorPreview();
         }
       }, 55);
     }
@@ -1685,12 +1689,13 @@
       return changed;
     }
 
-    /** Per selected (checked) monitor: sum of trade ret_pct (same aggregate style as summary sum_ret_pct), sorted high → low. */
+    /** Per selected monitor: Ret % total and counts from insights ``by_monitor`` (full timeframe), else paginated trades fallback. */
     function tradeHistoryBuildMonitorRetDataset() {
       const base = tradeHistoryApplyFiltersWithoutMonitor(trades);
       const selectedIds = tradeHistoryGetEffectiveSelectedMonitorIdsForDisplay();
       if (selectedIds.length === 0) return [];
 
+      const useInsights = tradeHistoryInsightsByMonitorMap() !== null;
       const byMonitor = {};
       for (const mid of selectedIds) {
         byMonitor[mid] = {
@@ -1704,27 +1709,37 @@
         };
       }
 
-      for (const t of base) {
-        const raw = t.monitor;
-        if (raw == null || raw === '') continue;
-        const rawL = String(raw).toLowerCase();
-        for (let i = 0; i < selectedIds.length; i++) {
-          const mid = selectedIds[i];
-          if (String(mid).toLowerCase() === rawL) {
-            const row = byMonitor[mid];
-            if (row) {
-              const rp = t.ret_pct;
-              if (rp !== null && rp !== undefined && rp !== '' && !isNaN(Number(rp))) {
-                row.sumRet += Number(rp);
+      if (useInsights) {
+        for (const mid of selectedIds) {
+          const agg = tradeHistoryMonitorAggForSummary(mid);
+          const row = byMonitor[mid];
+          if (row && agg) {
+            row.sumRet = agg.sumRet;
+            row.count = agg.n;
+          }
+        }
+      } else {
+        for (const t of base) {
+          const raw = t.monitor;
+          if (raw == null || raw === '') continue;
+          const rawL = String(raw).toLowerCase();
+          for (let i = 0; i < selectedIds.length; i++) {
+            const mid = selectedIds[i];
+            if (String(mid).toLowerCase() === rawL) {
+              const row = byMonitor[mid];
+              if (row) {
+                const rp = t.ret_pct;
+                if (rp !== null && rp !== undefined && rp !== '' && !isNaN(Number(rp))) {
+                  row.sumRet += Number(rp);
+                }
+                row.count += 1;
               }
-              row.count += 1;
+              break;
             }
-            break;
           }
         }
       }
 
-      /* Include every effective monitor so preview / zero-trade rows match the summary table (chart used to drop count===0). */
       const chartRows = selectedIds.map((mid) => byMonitor[mid]).filter(Boolean);
 
       for (const row of chartRows) {
@@ -2031,7 +2046,7 @@
         if (sel) sel.value = 'CUSTOM';
         $inp.val(start.format('MMM D, YYYY') + ' – ' + end.format('MMM D, YYYY'));
         savePreferences();
-        fetchAllTrades('custom-date-change', { append: false });
+        fetchAllTrades('custom-date-change');
       }
       $inp.daterangepicker(
         {
@@ -2223,6 +2238,42 @@
       return { n, avgProb, winPct, avgBuy, avgDiff, sumRet, sumPnl };
     }
 
+    /** Map lower(monitor id) → row from last insights response (full timeframe, not paginated trades). */
+    function tradeHistoryInsightsByMonitorMap() {
+      const raw = _tradeHistoryInsights && _tradeHistoryInsights.by_monitor;
+      if (!Array.isArray(raw)) return null;
+      const m = new Map();
+      for (let i = 0; i < raw.length; i++) {
+        const r = raw[i];
+        const key = String(r.monitor || '').toLowerCase();
+        if (key) m.set(key, r);
+      }
+      return m;
+    }
+
+    function tradeHistoryMonitorAggForSummary(mid) {
+      const map = tradeHistoryInsightsByMonitorMap();
+      if (!map) return null;
+      const r = map.get(String(mid || '').toLowerCase());
+      if (!r) {
+        return { n: 0, avgProb: 0, winPct: 0, avgBuy: 0, avgDiff: 0, sumRet: 0, sumPnl: 0 };
+      }
+      return {
+        n: Number(r.trade_count) || 0,
+        avgProb: Number(r.avg_prob) || 0,
+        winPct: Number(r.win_percentage) || 0,
+        avgBuy: Number(r.avg_buy) || 0,
+        avgDiff: Number(r.avg_diff) || 0,
+        sumRet: Number(r.sum_ret_pct) || 0,
+        sumPnl: Number(r.total_pnl) || 0,
+      };
+    }
+
+    function tradeHistoryRefreshMonitorStripCharts() {
+      renderTradeHistoryMonitorsRetChart();
+      renderTradeHistoryMonitorSummaryTable();
+    }
+
     function tradeHistoryMonitorSummaryRowLabel(mid) {
       const meta = tradeHistoryMonitorIdToFilterMeta[mid];
       if (meta && (meta.symbol || meta.strategy)) {
@@ -2260,20 +2311,25 @@
         td.style.textAlign = 'left';
         td.style.color = '#a0aec0';
         td.style.fontSize = '12px';
-        td.textContent = 'Select monitors in the strip above to see per-monitor stats (loaded trades only).';
+        td.textContent =
+          'Select monitors in the strip above to see per-monitor stats (full selected date range; not limited to rows loaded in the table).';
         tr.appendChild(td);
         tbody.appendChild(tr);
         tradeHistoryReapplyMonitorCrossHoverAfterDomRebuild();
         return;
       }
       const base = tradeHistoryApplyFiltersWithoutMonitor(Array.isArray(trades) ? trades : []);
+      const useInsights = tradeHistoryInsightsByMonitorMap() !== null;
       for (const mid of selectedIds) {
-        const list = base.filter((t) => {
-          const raw = t.monitor;
-          if (raw == null || raw === '') return false;
-          return String(raw).toLowerCase() === String(mid).toLowerCase();
-        });
-        const agg = tradeHistoryAggregateTradesForSummaryRow(list);
+        const agg = useInsights
+          ? tradeHistoryMonitorAggForSummary(mid)
+          : tradeHistoryAggregateTradesForSummaryRow(
+              base.filter((t) => {
+                const raw = t.monitor;
+                if (raw == null || raw === '') return false;
+                return String(raw).toLowerCase() === String(mid).toLowerCase();
+              })
+            );
         const tr = document.createElement('tr');
         tr.setAttribute('data-monitor-id', mid);
         tr.addEventListener('mouseenter', () => tradeHistorySetMonitorCrossHover(mid, true));
@@ -2383,17 +2439,45 @@
       return body;
     }
 
+    /**
+     * Monitor UI is present but nothing is selected (no tile on, no off-tile preview).
+     * In that case the insights API must not run with an empty monitors list — the server treats
+     * that as “no monitor filter” (all trades). We show empty summary + analysis instead.
+     */
+    function tradeHistoryInsightsRequiresMonitorSelection() {
+      const monCbs = document.querySelectorAll('#th-monitor-checkboxes-host input[type="checkbox"]');
+      if (monCbs.length === 0) return false;
+      const stripSelected = tradeHistorySelectedMonitorIdsFromStrip();
+      const previewOn =
+        tradeHistoryMonitorPreviewId != null && tradeHistoryMonitorPreviewId !== '';
+      return stripSelected.length === 0 && !previewOn;
+    }
+
     function refreshTradeHistoryInsights() {
       if (_thInsightsDebounce) clearTimeout(_thInsightsDebounce);
       _thInsightsDebounce = setTimeout(function () {
         _thInsightsDebounce = null;
         _doRefreshTradeHistoryInsights();
-      }, 200);
+      }, 0);
     }
 
     async function _doRefreshTradeHistoryInsights() {
       const reqId = ++_thInsightsReqId;
       const body = collectTradeHistoryInsightsBody();
+      const iv = body.analysis_interval || 'daily';
+      if (tradeHistoryInsightsRequiresMonitorSelection()) {
+        if (reqId !== _thInsightsReqId) return;
+        _tradeHistoryInsights = {
+          summary: null,
+          analysis_interval: iv,
+          period_data: [],
+          by_monitor: [],
+        };
+        applyInsightsSummary(null);
+        updateAnalysisDisplay(iv);
+        tradeHistoryRefreshMonitorStripCharts();
+        return;
+      }
       try {
         const res = await fetch(window.location.origin + '/api/trades/history/insights', {
           method: 'POST',
@@ -2415,6 +2499,7 @@
         _tradeHistoryInsights = data;
         applyInsightsSummary(data.summary);
         updateAnalysisDisplay(data.analysis_interval);
+        tradeHistoryRefreshMonitorStripCharts();
       } catch (e) {
         if (reqId !== _thInsightsReqId) return;
         console.warn('[trade_history] insights failed:', e.message || e);
@@ -2422,9 +2507,11 @@
           summary: null,
           analysis_interval: body.analysis_interval,
           period_data: [],
+          by_monitor: [],
         };
         applyInsightsSummary(null);
         updateAnalysisDisplay(body.analysis_interval);
+        tradeHistoryRefreshMonitorStripCharts();
       }
     }
 
@@ -2550,7 +2637,7 @@
 
     function applyFilters(options = {}) {
       if (options.preserveMonitorPreview !== true) {
-        tradeHistoryClearMonitorPreview(true);
+        tradeHistoryClearMonitorPreview();
       }
       const skipMonitorPrune = options.skipMonitorPrune === true;
       const prunedMonitors = skipMonitorPrune ? false : tradeHistoryPruneMonitorsDisallowedByFilters();
@@ -2577,9 +2664,9 @@
       filteredTrades = [...filtered];
       applyCurrentSort();
       renderTrades(filteredTrades);
-      refreshTradeHistoryInsights();
-      renderTradeHistoryMonitorsRetChart();
-      renderTradeHistoryMonitorSummaryTable();
+      if (options.skipInsightsRefresh !== true) {
+        refreshTradeHistoryInsights();
+      }
       if (prunedMonitors) savePreferences();
     }
 
@@ -2656,34 +2743,18 @@
       return { min_date: startDate, max_date: endDate };
     }
 
-    /**
-     * @param {boolean} append - load-more: use stored ``_thTradesNextBeforeId`` when extra.beforeId omitted
-     * @param {{ pageSize?: number, beforeId?: number|null }} [extra] - optional keyset/page overrides (WS depth refresh)
-     */
-    function buildTradesFetchUrl(append, extra) {
-      extra = extra || {};
+    function buildTradesFetchUrl() {
       const url = new URL(window.location.origin + '/trades');
       const b = computeTradesFetchDateBounds();
       if (b) {
         url.searchParams.set('min_date', b.min_date);
         url.searchParams.set('max_date', b.max_date);
       }
-      const pageSize = extra.pageSize != null ? extra.pageSize : TRADE_HISTORY_PAGE_SIZE;
-      url.searchParams.set('page_size', String(pageSize));
-      let beforeId = null;
-      if (extra.beforeId !== undefined && extra.beforeId !== null) {
-        beforeId = extra.beforeId;
-      } else if (append && _thTradesNextBeforeId != null) {
-        beforeId = _thTradesNextBeforeId;
-      }
-      if (beforeId != null) {
-        url.searchParams.set('before_id', String(beforeId));
-      }
       return url.toString();
     }
 
     let _thTradesFetchInFlight = false;
-    let _thTradesFetchQueuedOpts = null;
+    let _thTradesFetchQueuedReason = null;
     let _thLastTradesFetchErrorLogMs = 0;
 
     function _thSetFetchBanner(text, show) {
@@ -2698,176 +2769,46 @@
       }
     }
 
-    function updateTradeHistoryPaginationUi() {
-      const meta = document.getElementById('trade-history-pagination-meta');
+    function updateTradeHistoryLoadedMeta() {
+      const meta = document.getElementById('trade-history-loaded-meta');
       if (meta) {
         const n = Array.isArray(trades) ? trades.length : 0;
-        let t = 'Loaded ' + n + ' trade row(s)';
-        if (_thTradesHasMore) {
-          t += ' · scroll for more (summary and analysis use the full filtered set)';
-        }
-        meta.textContent = t;
+        meta.textContent = 'Loaded ' + n + ' trade row(s)';
       }
     }
 
-    let _thScrollLoadThrottleId = null;
-    function _thTradeHistoryScrollNearBottom(el) {
-      if (!el || el.clientHeight < 8) return false;
-      const sh = el.scrollHeight;
-      const ch = el.clientHeight;
-      if (sh < 8) return false;
-      if (sh <= ch + 2) {
-        return true;
-      }
-      const remain = sh - el.scrollTop - ch;
-      return remain <= 160;
-    }
-    function _thMaybeLoadMoreTradesFromScroll() {
-      if (!_thTradesHasMore || _thTradesFetchInFlight) return;
-      const el = document.getElementById('trade-history-results-scroll');
-      if (!el || el.clientHeight <= 0) return;
-      if (!_thTradeHistoryScrollNearBottom(el)) return;
-      fetchAllTrades('infinite-scroll', { append: true });
-    }
-    function _thOnTradeHistoryResultsScroll() {
-      if (_thScrollLoadThrottleId != null) return;
-      _thScrollLoadThrottleId = window.setTimeout(function () {
-        _thScrollLoadThrottleId = null;
-        _thMaybeLoadMoreTradesFromScroll();
-      }, 120);
-    }
-    function bindTradeHistoryScrollLoader() {
-      const el = document.getElementById('trade-history-results-scroll');
-      if (!el || el.dataset.thScrollLoaderBound === '1') return;
-      el.dataset.thScrollLoaderBound = '1';
-      el.addEventListener('scroll', _thOnTradeHistoryResultsScroll, { passive: true });
-    }
-
-    function _thParseTradesFetchPayload(raw, res) {
-      if (!res.ok) {
-        let msg = res.status === 503 ? 'Service unavailable' : ('HTTP ' + res.status);
-        try {
-          const err = JSON.parse(raw);
-          if (err && typeof err.detail === 'string') msg = err.detail;
-        } catch (_) { /* ignore */ }
-        throw new Error(msg);
-      }
-      const data = JSON.parse(raw);
-      if (data && Array.isArray(data.trades)) {
-        return {
-          list: data.trades,
-          has_more: !!data.has_more,
-          next_before_id: data.next_before_id != null ? Number(data.next_before_id) : null,
-        };
-      }
-      if (Array.isArray(data)) {
-        return { list: data, has_more: false, next_before_id: null };
-      }
-      throw new Error('Invalid trades response');
-    }
-
-    /**
-     * Replace fetch that re-loads at least ``targetRowCount`` rows (keyset pages), so /ws/db_change
-     * or tab-focus refresh does not collapse an expanded "Load more" list back to page 1 only.
-     */
-    async function _thFetchTradesReplacePreservingRowCount(reason, targetRowCount) {
-      const collected = [];
-      let beforeCursor = null;
-      let lastHasMore = false;
-      let lastNextBefore = null;
-      while (collected.length < targetRowCount) {
-        const remaining = targetRowCount - collected.length;
-        const pageSize =
-          collected.length === 0
-            ? Math.min(TRADES_PAGE_SIZE_MAX, Math.max(TRADE_HISTORY_PAGE_SIZE, remaining))
-            : Math.min(TRADES_PAGE_SIZE_MAX, Math.max(TRADE_HISTORY_PAGE_SIZE, remaining));
-        const url = buildTradesFetchUrl(false, { pageSize: pageSize, beforeId: beforeCursor });
-        if (localStorage.getItem('trade_history_debug') === '1') {
-          console.log(
-            '[trade_history] GET /trades — reason:',
-            reason,
-            'replace-preserve',
-            collected.length,
-            '->',
-            targetRowCount,
-            'page_size',
-            pageSize
-          );
-        }
-        const res = await fetch(url, { cache: 'no-store' });
-        const raw = await res.text();
-        const parsed = _thParseTradesFetchPayload(raw, res);
-        const list = parsed.list;
-        lastHasMore = parsed.has_more;
-        lastNextBefore = parsed.next_before_id;
-        collected.push.apply(collected, list);
-        if (!lastHasMore || list.length === 0) {
-          break;
-        }
-        beforeCursor = lastNextBefore;
-        if (beforeCursor == null) {
-          break;
-        }
-      }
-      trades = collected;
-      _thTradesHasMore = lastHasMore;
-      _thTradesNextBeforeId = lastNextBefore;
-    }
-
-    async function fetchAllTrades(reason, options) {
-      const append = options && options.append === true;
-      const preserveLoadedRowCount = !!(options && options.preserveLoadedRowCount);
+    async function fetchAllTrades(reason) {
       const r = reason || 'unspecified';
       if (_thTradesFetchInFlight) {
-        _thTradesFetchQueuedOpts = {
-          reason: r,
-          append: append,
-          preserveLoadedRowCount: preserveLoadedRowCount,
-        };
+        _thTradesFetchQueuedReason = r;
         return;
       }
       _thTradesFetchInFlight = true;
-      // Do not clear _thTradesHasMore / _thTradesNextBeforeId before the replace fetch completes.
-      // Clearing them here hid "Load More" on every in-flight refresh (e.g. debounced /ws/db_change),
-      // which caused visible flashing. Response handlers set both from the API.
-      updateTradeHistoryPaginationUi();
-      const targetPreserveRows =
-        !append && preserveLoadedRowCount && Array.isArray(trades) ? trades.length : 0;
+      updateTradeHistoryLoadedMeta();
       if (localStorage.getItem('trade_history_debug') === '1') {
-        console.log('[trade_history] GET /trades — reason:', r, append ? 'append' : 'replace');
+        console.log('[trade_history] GET /trades — reason:', r);
       }
       try {
-        if (!append && targetPreserveRows > 0) {
-          await _thFetchTradesReplacePreservingRowCount(r, targetPreserveRows);
-        } else {
-          const res = await fetch(buildTradesFetchUrl(append), { cache: 'no-store' });
-          const raw = await res.text();
-          const parsed = _thParseTradesFetchPayload(raw, res);
-          const list = parsed.list;
-          let hasMore = parsed.has_more;
-          let nextBefore = parsed.next_before_id;
-          if (append && list.length === 0 && hasMore) {
-            hasMore = false;
-            nextBefore = null;
+        refreshTradeHistoryInsights();
+        const meta = document.getElementById('trade-history-loaded-meta');
+        trades = await recFetchTradesMerged(
+          buildTradesFetchUrl(),
+          { cache: 'no-store' },
+          function (loaded, hasMore) {
+            if (meta) {
+              meta.textContent = hasMore
+                ? 'Loading ' + loaded + ' trade row(s)…'
+                : 'Loaded ' + loaded + ' trade row(s)';
+            }
           }
-          _thTradesHasMore = hasMore;
-          _thTradesNextBeforeId = nextBefore;
-          if (append) {
-            trades = trades.concat(list);
-          } else {
-            trades = list;
-          }
-        }
+        );
         _thSetFetchBanner('', false);
-        updateTradeHistoryPaginationUi();
-        applyFilters({ skipMonitorPrune: true, preserveMonitorPreview: true });
-        if (_thTradesHasMore) {
-          requestAnimationFrame(function () {
-            requestAnimationFrame(function () {
-              _thMaybeLoadMoreTradesFromScroll();
-            });
-          });
-        }
+        updateTradeHistoryLoadedMeta();
+        applyFilters({
+          skipMonitorPrune: true,
+          preserveMonitorPreview: true,
+          skipInsightsRefresh: true,
+        });
       } catch (error) {
         const hadRows = Array.isArray(trades) && trades.length > 0;
         const now = Date.now();
@@ -2887,18 +2828,15 @@
             tbody.innerHTML = `<tr><td colspan="22" style="color:red;">Failed to load trades: ${error.message}</td></tr>`;
           }
         }
-        updateTradeHistoryPaginationUi();
+        updateTradeHistoryLoadedMeta();
       } finally {
         _thTradesFetchInFlight = false;
-        updateTradeHistoryPaginationUi();
-        if (_thTradesFetchQueuedOpts) {
-          const o = _thTradesFetchQueuedOpts;
-          _thTradesFetchQueuedOpts = null;
+        updateTradeHistoryLoadedMeta();
+        if (_thTradesFetchQueuedReason != null) {
+          const qr = _thTradesFetchQueuedReason;
+          _thTradesFetchQueuedReason = null;
           setTimeout(() => {
-            fetchAllTrades(o.reason, {
-              append: o.append,
-              preserveLoadedRowCount: !!o.preserveLoadedRowCount,
-            });
+            fetchAllTrades(qr);
           }, 0);
         }
       }
@@ -3016,10 +2954,7 @@
       if (_tradeHistoryDbRefreshTimer) clearTimeout(_tradeHistoryDbRefreshTimer);
       _tradeHistoryDbRefreshTimer = setTimeout(() => {
         _tradeHistoryDbRefreshTimer = null;
-        fetchAllTrades('ws-db_change-trades', {
-          append: false,
-          preserveLoadedRowCount: true,
-        });
+        fetchAllTrades('ws-db_change-trades');
       }, _TH_WS_TRADES_DEBOUNCE_MS);
     }
 
@@ -3072,7 +3007,7 @@
           _tradeHistoryDbRefreshTimer = null;
         }
         setupDatabaseChangeListener();
-        fetchAllTrades('tab-visible', { append: false, preserveLoadedRowCount: true });
+        fetchAllTrades('tab-visible');
       } else {
         if (window._thDbChangesWs) {
           try { window._thDbChangesWs.close(); } catch (e) {}
@@ -3298,11 +3233,9 @@
             tradeHistoryDateRangeSyncFromInputs();
           }
           savePreferences();
-          fetchAllTrades('date-filter-change', { append: false });
+          fetchAllTrades('date-filter-change');
         });
       }
-
-      bindTradeHistoryScrollLoader();
 
       const headers = document.querySelectorAll('#trade-log-table thead th');
       headers.forEach(th => {
@@ -3493,7 +3426,7 @@
             ? selectionMap
             : window.tradeHistoryMonitorSelection;
         try {
-          tradeHistoryClearMonitorPreview(true);
+          tradeHistoryClearMonitorPreview();
           const response = await fetch('/api/monitors?t=' + Date.now());
           const data = await response.json();
           const monitors = normalizeActiveMonitorsForTradeHistory(data);
@@ -3568,7 +3501,7 @@
                 tile.appendChild(rowTop);
                 tile.appendChild(rowBot);
                 tile.addEventListener('click', (ev) => {
-                  tradeHistoryClearMonitorPreview(true);
+                  tradeHistoryClearMonitorPreview();
                   const solo = ev.metaKey || ev.ctrlKey;
                   if (solo) {
                     ev.preventDefault();
@@ -3586,7 +3519,7 @@
                   if (tile.classList.contains('th-monitor-filter-tile--off')) {
                     tradeHistoryApplyMonitorPreviewFromOffTile(tile, midAttr);
                   } else {
-                    tradeHistoryClearMonitorPreview(true);
+                    tradeHistoryClearMonitorPreview();
                   }
                   tradeHistorySetMonitorCrossHover(midAttr, true);
                 });
@@ -3601,7 +3534,7 @@
             });
 
             tradeHistorySyncAllMonitorTiles();
-            renderTradeHistoryMonitorSummaryTable();
+            refreshTradeHistoryInsights();
         } catch (error) {
           console.error('Error loading monitor options:', error);
         }
@@ -3653,7 +3586,7 @@
 
       // Load monitors before first trade fetch so filters match saved prefs
       await loadMonitorOptions(window.tradeHistoryMonitorSelection);
-      fetchAllTrades('initial-load', { append: false });
+      fetchAllTrades('initial-load');
 
       // When monitor_manager updates monitor_list (Redis → main /ws/preferences), reload tiles + dropdown
       (function connectTradeHistoryMonitorListWs() {
@@ -4045,7 +3978,6 @@
         chart_view: currentChartView,
         sort_key: currentSort.key,
         sort_asc: currentSort.asc,
-        page_size: 50,
         last_search_timestamp: Date.now()
       };
       if (monitorCbs.length > 0) {
@@ -4303,9 +4235,6 @@
         const h = thComputeResultsPanelHeightPx();
         if (h != null) content.style.height = h + 'px';
         icon.style.transform = 'rotate(180deg)';
-        setTimeout(function () {
-          bindTradeHistoryScrollLoader();
-        }, 120);
       } else {
         // Collapse the panel
         content.style.height = '0px';
@@ -4323,9 +4252,6 @@
         const h = thComputeResultsPanelHeightPx();
         if (h != null) resultsContent.style.height = h + 'px';
       }
-      setTimeout(function () {
-        bindTradeHistoryScrollLoader();
-      }, 0);
     });
 
     window.addEventListener('resize', function () {

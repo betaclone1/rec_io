@@ -18,7 +18,7 @@
 
         <script src="/js/ny-timezone.js"></script>
         <script src="/js/globals.js"></script>
-        
+        <script src="/js/rec_trades_fetch.js"></script>
         <script src="/js/active-trade-supervisor_panel.js"></script>
         <script src="/js/trade-execution-controller.js"></script>
       
@@ -3795,9 +3795,10 @@ async function showPopup(strike, side, price) {
 // === Active Trades Panel ===
 async function fetchAndRenderTrades() {
   try {
-    const res = await fetch(window.location.origin + '/trades?status=open', { cache: 'no-store' });
-    if (!res.ok) throw new Error("Failed to fetch open trades");
-    const trades = await res.json();
+    const trades = await recFetchTradesMerged(
+      window.location.origin + '/trades?status=open',
+      { cache: 'no-store' }
+    );
     
     const tradesTbody = document.querySelector('#test-trades-table tbody');
     if (!tradesTbody) return;
@@ -3936,10 +3937,10 @@ async function fetchAndRenderRecentTrades() {
 // === Trade History Data Fetching and Rendering ===
 async function fetchAndRenderTradeHistory() {
   try {
-    // Use PostgreSQL endpoint instead of legacy SQLite
-    const res = await fetch(window.location.origin + '/trades', { cache: 'no-store' });
-    if (!res.ok) throw new Error("Failed to fetch trade history from PostgreSQL");
-    const trades = await res.json();
+    const trades = await recFetchTradesMerged(
+      window.location.origin + '/trades',
+      { cache: 'no-store' }
+    );
     
     // Filter trades by current monitor if one is selected
     let filteredTrades = trades;
@@ -4131,9 +4132,10 @@ async function fetchAndRenderRecentTrades() {
 async function closeExpiredTrades() {
   try {
     // Fetch all open trades
-    const res = await fetch(window.location.origin + '/trades?status=open', { cache: 'no-store' });
-    if (!res.ok) throw new Error("Failed to fetch open trades");
-    const openTrades = await res.json();
+    const openTrades = await recFetchTradesMerged(
+      window.location.origin + '/trades?status=open',
+      { cache: 'no-store' }
+    );
 
     // Get current symbol ticker price from DOM element
     const currentPriceEl = document.getElementById('symbol-price-value');

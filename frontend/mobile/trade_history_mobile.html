@@ -9,6 +9,7 @@
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="../styles/global.css">
     <script src="../js/globals.js"></script>
+    <script src="../js/rec_trades_fetch.js"></script>
     <script src="/js/db_changes_prefilter.js"></script>
     <script>
         // Mobile-specific port configuration
@@ -715,8 +716,8 @@
                     <tr><td colspan="23">Loading...</td></tr>
                 </tbody>
             </table>
-            <div id="trade-history-pagination" style="padding:10px 0; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-                <span id="trade-history-pagination-meta" style="font-size:12px; color:#a0aec0;"></span>
+            <div id="trade-history-results-footer" style="padding:10px 0; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                <span id="trade-history-loaded-meta" style="font-size:12px; color:#a0aec0;"></span>
             </div>
         </div>
     </div>
@@ -725,11 +726,6 @@
         let currentSort = { key: 'id', asc: false };
         let trades = [];
         let filteredTrades = [];
-        const TRADE_HISTORY_PAGE_SIZE = 200;
-        /** Must match ``TRADES_PAGE_SIZE_MAX`` in ``backend/core/trades_list_query.py`` */
-        const TRADES_PAGE_SIZE_MAX = 500;
-        let _thmTradesHasMore = false;
-        let _thmTradesNextBeforeId = null;
         let _thInsightsReqId = 0;
         let _thInsightsDebounce = null;
         const tradeHistoryMonitorIdToFilterMeta = {};
@@ -977,7 +973,7 @@
                 const m = parseInt(a.split('-')[1], 10) - 1;
                 if (!isNaN(y) && !isNaN(m)) calView = new Date(y, m, 1);
                 savePaperTradePreferences();
-                fetchAllTrades('custom-date-change', { append: false });
+                fetchAllTrades('custom-date-change');
                 render();
             }
 
@@ -1240,6 +1236,14 @@
             return body;
         }
 
+        /** Mobile: monitor dropdown has options but none checked — do not fetch “all trades” insights. */
+        function tradeHistoryMobileInsightsRequiresMonitorSelection() {
+            const monCbs = Array.from(document.querySelectorAll('#monitor-dropdown-content input[type="checkbox"]'));
+            if (monCbs.length === 0) return false;
+            const n = monCbs.filter((cb) => cb.checked).length;
+            return n === 0;
+        }
+
         function refreshTradeHistoryInsights() {
             if (_thInsightsDebounce) clearTimeout(_thInsightsDebounce);
             _thInsightsDebounce = setTimeout(function () {
@@ -1251,6 +1255,11 @@
         async function _doRefreshTradeHistoryInsights() {
             const reqId = ++_thInsightsReqId;
             const body = collectTradeHistoryInsightsBody();
+            if (tradeHistoryMobileInsightsRequiresMonitorSelection()) {
+                if (reqId !== _thInsightsReqId) return;
+                applyInsightsSummary(null);
+                return;
+            }
             try {
                 const url = new URL('/api/trades/history/insights', getMainAppUrl());
                 const res = await fetch(url.toString(), {
@@ -1860,7 +1869,9 @@
             filteredTrades = [...filtered];
             applyCurrentSort();
             renderTrades(filteredTrades);
-            refreshTradeHistoryInsights();
+            if (options.skipInsightsRefresh !== true) {
+                refreshTradeHistoryInsights();
+            }
         }
 
         // Reset All Filters Function
@@ -1915,7 +1926,7 @@
         }
 
         let _thmTradesFetchInFlight = false;
-        let _thmTradesFetchQueuedOpts = null;
+        let _thmTradesFetchQueuedReason = null;
         let _thmLastTradesFetchErrorLogMs = 0;
 
         function _thmSetFetchBanner(text, show) {
@@ -2038,8 +2049,7 @@
             return { min_date: startDate, max_date: endDate };
         }
 
-        function buildTradesFetchUrl(append, extra) {
-            extra = extra || {};
+        function buildTradesFetchUrl() {
             const apiBaseUrl = getMainAppUrl();
             const url = new URL('/trades', apiBaseUrl);
             const b = computeTradesFetchDateBounds();
@@ -2047,86 +2057,15 @@
                 url.searchParams.set('min_date', b.min_date);
                 url.searchParams.set('max_date', b.max_date);
             }
-            const pageSize = extra.pageSize != null ? extra.pageSize : TRADE_HISTORY_PAGE_SIZE;
-            url.searchParams.set('page_size', String(pageSize));
-            let beforeId = null;
-            if (extra.beforeId !== undefined && extra.beforeId !== null) {
-                beforeId = extra.beforeId;
-            } else if (append && _thmTradesNextBeforeId != null) {
-                beforeId = _thmTradesNextBeforeId;
-            }
-            if (beforeId != null) {
-                url.searchParams.set('before_id', String(beforeId));
-            }
             return url.toString();
         }
 
-        function updateTradeHistoryPaginationUi() {
-            const meta = document.getElementById('trade-history-pagination-meta');
+        function updateTradeHistoryLoadedMeta() {
+            const meta = document.getElementById('trade-history-loaded-meta');
             if (meta) {
                 const n = Array.isArray(trades) ? trades.length : 0;
-                let t = 'Loaded ' + n + ' trade row(s)';
-                if (_thmTradesHasMore) {
-                    t += ' · scroll for more (summary uses the full filtered set)';
-                }
-                meta.textContent = t;
+                meta.textContent = 'Loaded ' + n + ' trade row(s)';
             }
-        }
-
-        let _thmScrollLoadThrottleId = null;
-        function _thmTradeHistoryScrollNearBottom(el) {
-            if (!el || el.clientHeight < 8) return false;
-            const sh = el.scrollHeight;
-            const ch = el.clientHeight;
-            if (sh < 8) return false;
-            if (sh <= ch + 2) {
-                return true;
-            }
-            const remain = sh - el.scrollTop - ch;
-            return remain <= 180;
-        }
-        function _thmMaybeLoadMoreTradesFromScroll() {
-            if (!_thmTradesHasMore || _thmTradesFetchInFlight) return;
-            const el = document.getElementById('trade-history-results-scroll');
-            if (!el || el.clientHeight <= 0) return;
-            if (!_thmTradeHistoryScrollNearBottom(el)) return;
-            fetchAllTrades('infinite-scroll', { append: true });
-        }
-        function _thmOnTradeHistoryResultsScroll() {
-            if (_thmScrollLoadThrottleId != null) return;
-            _thmScrollLoadThrottleId = window.setTimeout(function () {
-                _thmScrollLoadThrottleId = null;
-                _thmMaybeLoadMoreTradesFromScroll();
-            }, 120);
-        }
-        function bindTradeHistoryMobileScrollLoader() {
-            const el = document.getElementById('trade-history-results-scroll');
-            if (!el || el.dataset.thmScrollLoaderBound === '1') return;
-            el.dataset.thmScrollLoaderBound = '1';
-            el.addEventListener('scroll', _thmOnTradeHistoryResultsScroll, { passive: true });
-        }
-
-        function _thmParseTradesFetchPayload(raw, res) {
-            if (!res.ok) {
-                let msg = res.status === 503 ? 'Service unavailable' : ('HTTP ' + res.status);
-                try {
-                    const err = JSON.parse(raw);
-                    if (err && typeof err.detail === 'string') msg = err.detail;
-                } catch (_) { /* ignore */ }
-                throw new Error(msg);
-            }
-            const data = JSON.parse(raw);
-            if (data && Array.isArray(data.trades)) {
-                return {
-                    list: data.trades,
-                    has_more: !!data.has_more,
-                    next_before_id: data.next_before_id != null ? Number(data.next_before_id) : null,
-                };
-            }
-            if (Array.isArray(data)) {
-                return { list: data, has_more: false, next_before_id: null };
-            }
-            throw new Error('Invalid trades response');
         }
 
         async function _thmFetchWithPortRetry(url) {
@@ -2151,101 +2090,40 @@
             throw new Error('Port configuration failed to load after multiple attempts');
         }
 
-        async function _thmFetchTradesReplacePreservingRowCount(reason, targetRowCount) {
-            const collected = [];
-            let beforeCursor = null;
-            let lastHasMore = false;
-            let lastNextBefore = null;
-            while (collected.length < targetRowCount) {
-                const remaining = targetRowCount - collected.length;
-                const pageSize =
-                    collected.length === 0
-                        ? Math.min(TRADES_PAGE_SIZE_MAX, Math.max(TRADE_HISTORY_PAGE_SIZE, remaining))
-                        : Math.min(TRADES_PAGE_SIZE_MAX, Math.max(TRADE_HISTORY_PAGE_SIZE, remaining));
-                const url = buildTradesFetchUrl(false, { pageSize: pageSize, beforeId: beforeCursor });
-                if (localStorage.getItem('trade_history_debug') === '1') {
-                    console.log(
-                        '[trade_history_mobile] GET /trades — reason:',
-                        reason,
-                        'replace-preserve',
-                        collected.length,
-                        '->',
-                        targetRowCount,
-                        'page_size',
-                        pageSize
-                    );
-                }
-                const { res, raw } = await _thmFetchWithPortRetry(url);
-                const parsed = _thmParseTradesFetchPayload(raw, res);
-                const list = parsed.list;
-                lastHasMore = parsed.has_more;
-                lastNextBefore = parsed.next_before_id;
-                collected.push.apply(collected, list);
-                if (!lastHasMore || list.length === 0) {
-                    break;
-                }
-                beforeCursor = lastNextBefore;
-                if (beforeCursor == null) {
-                    break;
-                }
-            }
-            trades = collected;
-            _thmTradesHasMore = lastHasMore;
-            _thmTradesNextBeforeId = lastNextBefore;
-        }
-
-        async function fetchAllTrades(reason, options) {
-            const append = options && options.append === true;
-            const preserveLoadedRowCount = !!(options && options.preserveLoadedRowCount);
+        async function fetchAllTrades(reason) {
             const r = reason || 'unspecified';
             if (_thmTradesFetchInFlight) {
-                _thmTradesFetchQueuedOpts = {
-                    reason: r,
-                    append: append,
-                    preserveLoadedRowCount: preserveLoadedRowCount,
-                };
+                _thmTradesFetchQueuedReason = r;
                 return;
             }
             _thmTradesFetchInFlight = true;
-            // Do not clear _thmTradesHasMore / _thmTradesNextBeforeId before the replace fetch completes.
-            // Same as desktop: avoids "Load More" flashing on each debounced /ws/db_change refresh.
-            updateTradeHistoryPaginationUi();
-            const targetPreserveRows =
-                !append && preserveLoadedRowCount && Array.isArray(trades) ? trades.length : 0;
+            updateTradeHistoryLoadedMeta();
             if (localStorage.getItem('trade_history_debug') === '1') {
-                console.log('[trade_history_mobile] GET /trades — reason:', r, append ? 'append' : 'replace');
+                console.log('[trade_history_mobile] GET /trades — reason:', r);
             }
             try {
-                if (!append && targetPreserveRows > 0) {
-                    await _thmFetchTradesReplacePreservingRowCount(r, targetPreserveRows);
-                } else {
-                    const { res, raw } = await _thmFetchWithPortRetry(buildTradesFetchUrl(append));
-                    const parsed = _thmParseTradesFetchPayload(raw, res);
-                    const list = parsed.list;
-                    let hasMore = parsed.has_more;
-                    let nextBefore = parsed.next_before_id;
-                    if (append && list.length === 0 && hasMore) {
-                        hasMore = false;
-                        nextBefore = null;
+                refreshTradeHistoryInsights();
+                const meta = document.getElementById('trade-history-loaded-meta');
+                trades = await recFetchTradesMerged(
+                    buildTradesFetchUrl(),
+                    {
+                        cache: 'no-store',
+                        customFetch: async function (urlStr) {
+                            const { res, raw } = await _thmFetchWithPortRetry(urlStr);
+                            return { ok: res.ok, status: res.status, text: async function () { return raw; } };
+                        },
+                    },
+                    function (loaded, hasMore) {
+                        if (meta) {
+                            meta.textContent = hasMore
+                                ? 'Loading ' + loaded + ' trade row(s)…'
+                                : 'Loaded ' + loaded + ' trade row(s)';
+                        }
                     }
-                    _thmTradesHasMore = hasMore;
-                    _thmTradesNextBeforeId = nextBefore;
-                    if (append) {
-                        trades = trades.concat(list);
-                    } else {
-                        trades = list;
-                    }
-                }
+                );
                 _thmSetFetchBanner('', false);
-                updateTradeHistoryPaginationUi();
-                applyFilters({ skipMonitorPrune: true });
-                if (_thmTradesHasMore) {
-                    requestAnimationFrame(function () {
-                        requestAnimationFrame(function () {
-                            _thmMaybeLoadMoreTradesFromScroll();
-                        });
-                    });
-                }
+                updateTradeHistoryLoadedMeta();
+                applyFilters({ skipMonitorPrune: true, skipInsightsRefresh: true });
             } catch (error) {
                 const hadRows = Array.isArray(trades) && trades.length > 0;
                 const now = Date.now();
@@ -2267,18 +2145,15 @@
                         tbody.innerHTML = `<tr><td colspan="${colSpan}" style="color:red;">Failed to load trades: ${error.message}</td></tr>`;
                     }
                 }
-                updateTradeHistoryPaginationUi();
+                updateTradeHistoryLoadedMeta();
             } finally {
                 _thmTradesFetchInFlight = false;
-                updateTradeHistoryPaginationUi();
-                if (_thmTradesFetchQueuedOpts) {
-                    const o = _thmTradesFetchQueuedOpts;
-                    _thmTradesFetchQueuedOpts = null;
+                updateTradeHistoryLoadedMeta();
+                if (_thmTradesFetchQueuedReason != null) {
+                    const qr = _thmTradesFetchQueuedReason;
+                    _thmTradesFetchQueuedReason = null;
                     setTimeout(() => {
-                        fetchAllTrades(o.reason, {
-                            append: o.append,
-                            preserveLoadedRowCount: !!o.preserveLoadedRowCount,
-                        });
+                        fetchAllTrades(qr);
                     }, 0);
                 }
             }
@@ -2428,7 +2303,7 @@
                     tradeHistoryRangeCalendarClearPendingAndRender();
                 }
                 savePaperTradePreferences();
-                fetchAllTrades('custom-date-change', { append: false });
+                fetchAllTrades('custom-date-change');
             });
         }
         if (endDateInput) {
@@ -2442,7 +2317,7 @@
                     tradeHistoryRangeCalendarClearPendingAndRender();
                 }
                 savePaperTradePreferences();
-                fetchAllTrades('custom-date-change', { append: false });
+                fetchAllTrades('custom-date-change');
             });
         }
         
@@ -2944,11 +2819,9 @@
                         tradeHistoryRangeCalendarSyncFromInputs();
                     }
                     savePaperTradePreferences();
-                    fetchAllTrades('date-filter-change', { append: false });
+                    fetchAllTrades('date-filter-change');
                 });
             }
-
-            bindTradeHistoryMobileScrollLoader();
 
             const filterWin = document.getElementById('filter-win');
             const filterLoss = document.getElementById('filter-loss');
@@ -3011,7 +2884,7 @@
             }
             loadPercentModePreference(); // Load % Mode preference
             applyFilters();
-            fetchAllTrades('initial-load', { append: false });
+            fetchAllTrades('initial-load');
         });
         
         let _thmTradeDbRefreshTimer = null;
@@ -3020,10 +2893,7 @@
             if (_thmTradeDbRefreshTimer) clearTimeout(_thmTradeDbRefreshTimer);
             _thmTradeDbRefreshTimer = setTimeout(() => {
                 _thmTradeDbRefreshTimer = null;
-                fetchAllTrades('ws-db_change-trades', {
-                    append: false,
-                    preserveLoadedRowCount: true,
-                });
+                fetchAllTrades('ws-db_change-trades');
             }, 800);
         }
 
@@ -3076,7 +2946,7 @@
                         _thmTradeDbRefreshTimer = null;
                     }
                     setupTradeHistoryWebSocket();
-                    fetchAllTrades('tab-visible', { append: false, preserveLoadedRowCount: true });
+                    fetchAllTrades('tab-visible');
                 } else {
                     if (_thmTradeDbRefreshTimer) {
                         clearTimeout(_thmTradeDbRefreshTimer);
@@ -3091,7 +2961,7 @@
         window.addEventListener('message', function(event) {
             if (event.data && event.data.type === 'refresh_data') {
                 // Trigger immediate data refresh
-                fetchAllTrades('parent-refresh_data', { append: false, preserveLoadedRowCount: true });
+                fetchAllTrades('parent-refresh_data');
                 // Notify parent of data update
                 window.parent.postMessage({
                     type: 'data_updated',

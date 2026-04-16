@@ -43,11 +43,10 @@ window.closeTrade = async function(tradeId, sellPrice, event) {
 
   try {
     // Fetch trade details to construct the close ticket
-    const tradeRes = await fetch(window.location.origin + '/trades');
-    if (!tradeRes.ok) {
-      throw new Error('Failed to fetch trades for closing');
-    }
-    const trades = await tradeRes.json();
+    const trades = await recFetchTradesMerged(
+      window.location.origin + '/trades',
+      { cache: 'no-store' }
+    );
     
     // Find the specific trade by ID
     const trade = trades.find(t => t.id == tradeId);

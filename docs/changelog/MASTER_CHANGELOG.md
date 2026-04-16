@@ -6,6 +6,32 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-16 — Release v3.1.7: trades list index, shared trade fetch JS, history insights and UI
+
+**Summary**
+- **Release: v3.1.7**
+- **Database:** Migration **`20260416_1730_trades_date_id_list_index`** — composite **`(date, id DESC)`** index on every matching **`users_<slot>.trades_<slot>`** and **`archive.trades_archive_{live|paper}_<slot>`** for **`GET /trades`** date filters with keyset / `ORDER BY id DESC` (avoids large sorts on wide windows).
+- **Backend:** **`trades_list_query`** refinements; **`trades_history_insights`** expanded behavior; **`trade_log_archivist`** updates aligned with trade history flows.
+- **Frontend:** New shared **`frontend/js/rec_trades_fetch.js`** (wired from trade history, trade monitor, dashboard desktop/mobile, test harness); **trade history** desktop and **mobile** refactors; small **dashboard** / **trade monitor** / **`monitor_history_display`** / **`trade-execution-controller`** adjustments.
+- **Scripts / research (optional on prod):** **`scripts/db/explain_trades_list.py`**; **`scripts/backtest/aes_hourly_contract_replay.py`** and **`scripts/backtest/helpers/aes_hourly_tick_replay.py`** — AES hourly replay helpers.
+- **Docs / planning:** **`MASTER_DB_SCHEMA_REFERENCE`** index note for the migration; **`.cursor/plans/trading_pipeline_coherence_future_plan.md`** (internal future plan, no runtime effect).
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration (from project root on the server):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260416_1730_trades_date_id_list_index`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; spot-check trade history and monitor pages load **`rec_trades_fetch.js`** without console errors.
+- [ ] Record release in DB on **production** (must match git/changelog):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.7`
+- [ ] Record release in DB on **local** (same version string as production):  
+  From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.7`
+
+---
+
 ## 2026-04-16 — Release v3.1.6: trade history read_api split, monitor tiles, insights, preferences column
 
 **Summary**

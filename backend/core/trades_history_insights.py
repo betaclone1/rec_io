@@ -157,6 +157,7 @@ def run_trade_history_insights(
             },
             "analysis_interval": interval,
             "period_data": [],
+            "by_monitor": [],
         }
 
     union_sql, _ = union_trades_with_archives_select(cursor, user_slot)
@@ -216,6 +217,69 @@ def run_trade_history_insights(
         "total_pnl": total_pnl,
     }
 
+    # --- Per-monitor aggregates (full filtered set; same formulas as summary row) ---
+    by_monitor: List[Dict[str, Any]] = []
+    if n > 0:
+        if filt_sql:
+            mg_where = (
+                f" WHERE {filt_sql} AND LOWER(TRIM(COALESCE(t.monitor, ''))) <> ''"
+            )
+            mg_params: Tuple[Any, ...] = tuple(filt_params)
+        else:
+            mg_where = " WHERE LOWER(TRIM(COALESCE(t.monitor, ''))) <> ''"
+            mg_params = tuple()
+        cursor.execute(
+            f"""
+            SELECT
+              LOWER(TRIM(COALESCE(t.monitor, ''))) AS mnorm,
+              MAX(t.monitor) AS monitor_label,
+              COUNT(*)::bigint AS n_m,
+              AVG(t.prob) FILTER (WHERE t.prob IS NOT NULL) AS avg_prob_m,
+              SUM(
+                CASE
+                  WHEN UPPER(TRIM(COALESCE(t.win_loss, ''))) IN ('W', 'WIN') THEN 1
+                  ELSE 0
+                END
+              ) AS wins_m,
+              SUM(
+                CASE
+                  WHEN UPPER(TRIM(COALESCE(t.win_loss, ''))) IN ('W', 'WIN', 'L', 'LOSS')
+                  THEN 1 ELSE 0
+                END
+              ) AS wl_n_m,
+              AVG(
+                CASE
+                  WHEN t.diff ~ '^[+-]?[0-9]+(\\.?[0-9]*)?$' THEN t.diff::double precision
+                  ELSE NULL
+                END
+              ) AS avg_diff_m,
+              AVG(t.buy_price) FILTER (WHERE t.buy_price IS NOT NULL) AS avg_buy_m,
+              COALESCE(SUM(t.ret_pct), 0)::double precision AS sum_ret_pct_m,
+              COALESCE(SUM(t.pnl), 0)::double precision AS total_pnl_m
+            FROM ({union_sql}) AS t
+            {mg_where}
+            GROUP BY 1
+            ORDER BY sum_ret_pct_m DESC NULLS LAST
+            """,
+            mg_params,
+        )
+        for prow in cursor.fetchall():
+            _mnorm, label, n_m, ap_m, wins_m, wl_n_m, ad_m, ab_m, sr_m, tp_m = prow
+            wl_d = int(wl_n_m or 0)
+            w_pct_m = (100.0 * int(wins_m or 0) / wl_d) if wl_d > 0 else 0.0
+            by_monitor.append(
+                {
+                    "monitor": str(label or _mnorm or "").strip(),
+                    "trade_count": int(n_m or 0),
+                    "avg_prob": float(ap_m or 0.0),
+                    "win_percentage": float(w_pct_m),
+                    "avg_buy": float(ab_m or 0.0),
+                    "avg_diff": float(ad_m or 0.0),
+                    "sum_ret_pct": float(sr_m or 0.0),
+                    "total_pnl": float(tp_m or 0.0),
+                }
+            )
+
     # --- Period breakdown ---
     period_data: List[Dict[str, Any]] = []
     if n == 0:
@@ -223,6 +287,7 @@ def run_trade_history_insights(
             "summary": summary,
             "analysis_interval": interval,
             "period_data": period_data,
+            "by_monitor": by_monitor,
         }
 
     if interval == "hourly":
@@ -282,4 +347,5 @@ def run_trade_history_insights(
         "summary": summary,
         "analysis_interval": interval,
         "period_data": period_data,
+        "by_monitor": by_monitor,
     }

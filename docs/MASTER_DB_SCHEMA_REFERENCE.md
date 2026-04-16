@@ -10747,6 +10747,11 @@ WHERE t.monitor = cs.monitor
   ```sql
   CREATE INDEX trades_0001_weekly_cycle_idx ON users.trades_0001 USING btree (weekly_cycle)
   ```
+- `trades_0001_date_id_desc_idx` (and same pattern on every `users_<slot>.trades_<slot>` plus `archive.trades_archive_{live|paper}_<slot>`)
+  ```sql
+  CREATE INDEX trades_0001_date_id_desc_idx ON users.trades_0001 USING btree (date, id DESC)
+  ```
+  **Migration:** `20260416_1730_trades_date_id_list_index` — supports `GET /trades` filters on `date` with `ORDER BY id DESC` / keyset paging without wide sorts.
 
 #### Triggers
 

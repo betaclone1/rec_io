@@ -57,19 +57,9 @@ class MonitorHistoryDisplay {
      */
     async fetchTradesData() {
         try {
-            const response = await fetch('/trades', {
-                method: 'GET',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Cache-Control': 'no-cache'
-                }
+            this.tradesData = await recFetchTradesMerged('/trades', {
+                cache: 'no-store',
             });
-            
-            if (!response.ok) {
-                throw new Error(`Failed to fetch trades: ${response.status}`);
-            }
-            
-            this.tradesData = await response.json();
             console.log(`[MONITOR_HISTORY] Fetched ${this.tradesData.length} trades`);
             
         } catch (error) {

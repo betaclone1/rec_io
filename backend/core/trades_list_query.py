@@ -13,11 +13,41 @@ from fastapi import HTTPException
 
 from backend.util.trade_log_archivist import (
     fetch_master_trades_column_names,
-    union_trades_with_archives_select,
+    union_trades_with_archives_select_columns,
 )
 
 _ISO_DATE_PARAM_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 TRADES_PAGE_SIZE_MAX = 500
+
+# Columns returned by GET /trades (trade history table + client filters). Omit heavy / unused fields.
+TRADES_LIST_HTTP_COLUMNS: Tuple[str, ...] = (
+    "id",
+    "status",
+    "date",
+    "time",
+    "symbol",
+    "trade_strategy",
+    "contract",
+    "strike",
+    "side",
+    "prob",
+    "diff",
+    "buy_price",
+    "sell_price",
+    "position",
+    "fees",
+    "pnl",
+    "ret_pct",
+    "closed_at",
+    "symbol_open",
+    "symbol_close",
+    "momentum_percentile",
+    "win_loss",
+    "paper_trade",
+    "test_filter",
+    "monitor",
+    "ticker",
+)
 
 
 def normalize_trades_date_query_param(
@@ -81,7 +111,9 @@ def execute_trades_list_query(
             else {"trades": [], "has_more": False, "next_before_id": None}
         )
 
-    union_sql, _ = union_trades_with_archives_select(cursor, slot)
+    union_sql, _ = union_trades_with_archives_select_columns(
+        cursor, slot, TRADES_LIST_HTTP_COLUMNS
+    )
     where_parts: List[str] = []
     params: List[Any] = []
     if status:

@@ -357,6 +357,45 @@ def union_trades_with_archives_select(
     return q, ()
 
 
+def union_trades_with_archives_select_columns(
+    cursor,
+    user_number: str,
+    columns: Sequence[str],
+) -> Tuple[str, Tuple]:
+    """
+    Same as ``union_trades_with_archives_select`` but each branch selects only ``columns``
+    (must be a subset of master column names). Used by HTTP trade list to avoid ``SELECT *``.
+    """
+    _validate_user_number(user_number)
+    ts = tenant_trades_schema(user_number)
+    mt = master_trades_table(user_number)
+
+    master_cols = fetch_master_trades_column_names(cursor, user_number)
+    if not master_cols:
+        raise RuntimeError(f"{ts}.{mt} column list empty")
+    allowed = set(master_cols)
+    ordered: List[str] = []
+    for c in columns:
+        if c in allowed and c not in ordered:
+            ordered.append(c)
+    if not ordered:
+        raise RuntimeError("union_trades_with_archives_select_columns: no valid columns")
+
+    quoted = ", ".join(f'"{c.replace(chr(34), "")}"' for c in ordered)
+    live_arch = archive_table_live(user_number)
+    paper_arch = archive_table_paper(user_number)
+
+    parts = [
+        f"SELECT {quoted}, NULL::timestamptz AS archived_at\nFROM {ts}.{mt}"
+    ]
+    if _information_schema_table_exists(cursor, "archive", live_arch):
+        parts.append(f"SELECT {quoted}, archived_at\nFROM archive.{live_arch}")
+    if _information_schema_table_exists(cursor, "archive", paper_arch):
+        parts.append(f"SELECT {quoted}, archived_at\nFROM archive.{paper_arch}")
+    q = "\nUNION ALL\n".join(parts)
+    return q, ()
+
+
 def union_trades_subquery_alias(cursor, user_number: str = "0001", alias: str = "u") -> Tuple[str, Tuple]:
     """Wrap union_trades_with_archives_select as subquery: ( {union} ) AS alias """
     inner, params = union_trades_with_archives_select(cursor, user_number=user_number)
