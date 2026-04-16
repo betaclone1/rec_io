@@ -23,9 +23,6 @@ active prob and **high YES offer**. Same geometry as ``auto_entry_htc_gates``; s
 **Momentum:** one bucket from ``momentum_percentile`` for the minute.
 """
 
-# Before push: run `bash scripts/dev/check_no_legacy_kalshi_quotes.sh` from repo root (CI scans
-# scripts/backtest/*.py for bare Kalshi cent-field tokens; see scripts/backtest/README.md).
-
 from __future__ import annotations
 
 from datetime import datetime, timedelta
