@@ -17,17 +17,17 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Docs / planning:** **`MASTER_DB_SCHEMA_REFERENCE`** index note for the migration; **`.cursor/plans/trading_pipeline_coherence_future_plan.md`** (internal future plan, no runtime effect).
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration (from project root on the server):  
+- [x] Apply migration (from project root on the server):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260416_1730_trades_date_id_list_index`
-- [ ] Schema drift check (recommended):  
+- [x] Schema drift check (recommended):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; spot-check trade history and monitor pages load **`rec_trades_fetch.js`** without console errors.
-- [ ] Record release in DB on **production** (must match git/changelog):  
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; spot-check trade history and monitor pages load **`rec_trades_fetch.js`** without console errors.
+- [x] Record release in DB on **production** (must match git/changelog):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.7`
-- [ ] Record release in DB on **local** (same version string as production):  
+- [x] Record release in DB on **local** (same version string as production):  
   From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.7`
 
 ---
