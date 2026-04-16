@@ -400,7 +400,10 @@ def notify_frontend_db_change(db_name: str, change_data: dict = None):
             logger.debug("Frontend notified of %s change (Redis)", db_name)
             return
 
-        logger.warning("Frontend notify skipped for %s: Redis unavailable and HTTP fallback removed", db_name)
+        logger.debug(
+            "Frontend notify skipped for %s: Redis unavailable and HTTP fallback removed",
+            db_name,
+        )
 
     except Exception as e:
         logger.error("Error notifying frontend: %s", e)
@@ -1091,7 +1094,11 @@ def sync_balance():
 def _notify_trade_manager_positions_updated(payload):
     """Notify trade_manager: Redis when USE_TRADING_REDIS_COMMS, else POST /api/positions_updated with retries."""
     try:
-        from backend.core.trading_redis_comms import publish_positions_updated_notification, use_trading_redis_comms
+        from backend.core.trading_redis_comms import (
+            is_probably_startup_connect_refused,
+            publish_positions_updated_notification,
+            use_trading_redis_comms,
+        )
 
         if use_trading_redis_comms() and publish_positions_updated_notification(payload):
             logger.debug("Notified trade_manager (Redis) about %s", payload.get("database", "update"))
@@ -1114,7 +1121,18 @@ def _notify_trade_manager_positions_updated(payload):
                 logger.debug("trade_manager unreachable (attempt %s/%s): %s; retry in %ss", attempt + 1, max_attempts, e, delay)
                 time.sleep(delay)
             else:
-                logger.warning("Failed to notify trade_manager after %s attempts: %s", max_attempts, e)
+                if is_probably_startup_connect_refused(e):
+                    logger.debug(
+                        "Failed to notify trade_manager after %s attempts: %s",
+                        max_attempts,
+                        e,
+                    )
+                else:
+                    logger.warning(
+                        "Failed to notify trade_manager after %s attempts: %s",
+                        max_attempts,
+                        e,
+                    )
 
 
 def sync_positions():

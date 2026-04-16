@@ -24,7 +24,7 @@ import requests
 import sqlite3
 import psycopg2
 from psycopg2 import sql
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 import fcntl
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
@@ -57,6 +57,7 @@ from backend.core.config.database import (
 )
 from backend.core.exchange_ids import normalize_exchange
 from backend.core.time_eastern import EST, now_est
+from backend.core.trading_redis_comms import is_probably_startup_connect_refused
 from backend.util.trade_log_archivist import (
     archive_trades_for_monitor,
     fetch_master_trades_column_names,
@@ -236,257 +237,6 @@ CACHE_TTL = 1.0  # 1 second cache TTL
 
 # LEGACY REMOVED: get_all_preferences_postgresql function - now using strategy-specific endpoints
 
-def get_trade_history_preferences_postgresql():
-    """Get trade history preferences from PostgreSQL"""
-    try:
-        from backend.core.config.database import get_postgresql_connection
-        from backend.core.tenant_context import resolved_tenant_user_no_for_app
-
-        conn = get_postgresql_connection()
-        un = resolved_tenant_user_no_for_app()
-        pref_table = f"users.trade_history_preferences_{un}"
-        with conn.cursor() as cursor:
-            select_full = f"""
-                SELECT date_filter, start_date, end_date, win_filter, loss_filter,
-                       contract_9am, contract_10am, contract_11am, contract_12am,
-                       contract_1pm, contract_2pm, contract_3pm, contract_4pm,
-                       contract_5pm, contract_6pm, contract_7pm, contract_8pm,
-                       contract_9pm, contract_10pm, contract_11pm,
-                       symbol_btc, symbol_eth, symbol_spy, symbol_ndx, symbol_usd_eur,
-                       strategy_hourly_htc, strategy_momentum_scalp, strategy_test,
-                       day_sunday, day_monday, day_tuesday, day_wednesday, day_thursday, day_friday, day_saturday,
-                       analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp, chart_view, pct_mode,
-                       live_filter, paper_filter, include_test_trades,
-                       COALESCE(strategy_selection, '{{}}'::jsonb),
-                       COALESCE(symbol_selection, '{{}}'::jsonb)
-                FROM {pref_table} WHERE id = 1
-            """
-            select_with_strategy = f"""
-                SELECT date_filter, start_date, end_date, win_filter, loss_filter,
-                       contract_9am, contract_10am, contract_11am, contract_12am,
-                       contract_1pm, contract_2pm, contract_3pm, contract_4pm,
-                       contract_5pm, contract_6pm, contract_7pm, contract_8pm,
-                       contract_9pm, contract_10pm, contract_11pm,
-                       symbol_btc, symbol_eth, symbol_spy, symbol_ndx, symbol_usd_eur,
-                       strategy_hourly_htc, strategy_momentum_scalp, strategy_test,
-                       day_sunday, day_monday, day_tuesday, day_wednesday, day_thursday, day_friday, day_saturday,
-                       analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp, chart_view, pct_mode,
-                       live_filter, paper_filter, include_test_trades,
-                       COALESCE(strategy_selection, '{{}}'::jsonb)
-                FROM {pref_table} WHERE id = 1
-            """
-            select_without_strategy = f"""
-                SELECT date_filter, start_date, end_date, win_filter, loss_filter,
-                       contract_9am, contract_10am, contract_11am, contract_12am,
-                       contract_1pm, contract_2pm, contract_3pm, contract_4pm,
-                       contract_5pm, contract_6pm, contract_7pm, contract_8pm,
-                       contract_9pm, contract_10pm, contract_11pm,
-                       symbol_btc, symbol_eth, symbol_spy, symbol_ndx, symbol_usd_eur,
-                       strategy_hourly_htc, strategy_momentum_scalp, strategy_test,
-                       day_sunday, day_monday, day_tuesday, day_wednesday, day_thursday, day_friday, day_saturday,
-                       analysis_interval, sort_key, sort_asc, page_size, last_search_timestamp, chart_view, pct_mode,
-                       live_filter, paper_filter, include_test_trades
-                FROM {pref_table} WHERE id = 1
-            """
-            result = None
-            has_strategy_col = False
-            has_symbol_col = False
-            try:
-                cursor.execute(select_full)
-                result = cursor.fetchone()
-                has_strategy_col = result is not None and len(result) > 45
-                has_symbol_col = result is not None and len(result) > 46
-            except psycopg2.ProgrammingError:
-                try:
-                    cursor.execute(select_with_strategy)
-                    result = cursor.fetchone()
-                    has_strategy_col = result is not None and len(result) > 45
-                except psycopg2.ProgrammingError:
-                    cursor.execute(select_without_strategy)
-                    result = cursor.fetchone()
-            conn.close()
-            
-            if result:
-                return {
-                    "date_filter": result[0],
-                    "start_date": result[1],
-                    "end_date": result[2],
-                    "win_filter": result[3],
-                    "loss_filter": result[4],
-                    "contract_9am": result[5],
-                    "contract_10am": result[6],
-                    "contract_11am": result[7],
-                    "contract_12am": result[8],
-                    "contract_1pm": result[9],
-                    "contract_2pm": result[10],
-                    "contract_3pm": result[11],
-                    "contract_4pm": result[12],
-                    "contract_5pm": result[13],
-                    "contract_6pm": result[14],
-                    "contract_7pm": result[15],
-                    "contract_8pm": result[16],
-                    "contract_9pm": result[17],
-                    "contract_10pm": result[18],
-                    "contract_11pm": result[19],
-                    "symbol_btc": result[20],
-                    "symbol_eth": result[21],
-                    "symbol_spy": result[22],
-                    "symbol_ndx": result[23],
-                    "symbol_usd_eur": result[24],
-                    "strategy_hourly_htc": result[25],
-                    "strategy_momentum_scalp": result[26],
-                    "strategy_test": result[27],
-                    "day_sunday": result[28],
-                    "day_monday": result[29],
-                    "day_tuesday": result[30],
-                    "day_wednesday": result[31],
-                    "day_thursday": result[32],
-                    "day_friday": result[33],
-                    "day_saturday": result[34],
-                    "analysis_interval": result[35],
-                    "sort_key": result[36],
-                    "sort_asc": result[37],
-                    "page_size": result[38],
-                    "last_search_timestamp": result[39],
-                    "chart_view": result[40],
-                    "pct_mode": result[41],
-                    "live_filter": result[42] if len(result) > 42 else True,
-                    "paper_filter": result[43] if len(result) > 43 else False,
-                    "include_test_trades": result[44] if len(result) > 44 else False,
-                    "strategy_selection": result[45] if has_strategy_col else {},
-                    "symbol_selection": result[46] if has_symbol_col else {}
-                }
-            else:
-                return {
-                    "date_filter": "TODAY",
-                    "start_date": None,
-                    "end_date": None,
-                    "win_filter": True,
-                    "loss_filter": True,
-                    "contract_9am": True,
-                    "contract_10am": True,
-                    "contract_11am": True,
-                    "contract_12am": True,
-                    "contract_1pm": True,
-                    "contract_2pm": True,
-                    "contract_3pm": True,
-                    "contract_4pm": True,
-                    "contract_5pm": True,
-                    "contract_6pm": True,
-                    "contract_7pm": True,
-                    "contract_8pm": True,
-                    "contract_9pm": True,
-                    "contract_10pm": True,
-                    "contract_11pm": True,
-                    "symbol_btc": True,
-                    "symbol_eth": True,
-                    "symbol_spy": True,
-                    "symbol_ndx": True,
-                    "symbol_usd_eur": True,
-                    "strategy_hourly_htc": True,
-                    "strategy_momentum_scalp": True,
-                    "strategy_test": True,
-                    "day_sunday": True,
-                    "day_monday": True,
-                    "day_tuesday": True,
-                    "day_wednesday": True,
-                    "day_thursday": True,
-                    "day_friday": True,
-                    "day_saturday": True,
-                    "analysis_interval": "daily",
-                    "sort_key": None,
-                    "sort_asc": True,
-                    "page_size": 50,
-                    "last_search_timestamp": int(time.time()),
-                    "chart_view": "pnl",
-                    "live_filter": True,
-                    "paper_filter": False,
-                    "include_test_trades": False,
-                    "strategy_selection": {},
-                    "symbol_selection": {}
-                }
-    except Exception as e:
-        _main_logger.warning(f"[PostgreSQL Error] Failed to get trade history preferences: {e}")
-        return {
-            "date_filter": "TODAY",
-            "start_date": None,
-            "end_date": None,
-            "win_filter": True,
-            "loss_filter": True,
-            "contract_9am": True,
-            "contract_10am": True,
-            "contract_11am": True,
-            "contract_12am": True,
-            "contract_1pm": True,
-            "contract_2pm": True,
-            "contract_3pm": True,
-            "contract_4pm": True,
-            "contract_5pm": True,
-            "contract_6pm": True,
-            "contract_7pm": True,
-            "contract_8pm": True,
-            "contract_9pm": True,
-            "contract_10pm": True,
-            "contract_11pm": True,
-            "symbol_btc": True,
-            "symbol_eth": True,
-            "symbol_spy": True,
-            "symbol_ndx": True,
-            "symbol_usd_eur": True,
-            "strategy_hourly_htc": True,
-            "strategy_momentum_scalp": True,
-            "strategy_test": True,
-            "analysis_interval": "daily",
-            "sort_key": None,
-            "sort_asc": True,
-            "page_size": 50,
-            "last_search_timestamp": int(time.time()),
-            "chart_view": "pnl",
-            "live_filter": True,
-            "paper_filter": False,
-            "include_test_trades": False,
-            "strategy_selection": {},
-            "symbol_selection": {}
-        }
-
-def update_trade_history_preferences_postgresql(**kwargs):
-    """Update trade history preferences in PostgreSQL using UPSERT"""
-    try:
-        from backend.core.tenant_context import resolved_tenant_user_no_for_app
-
-        conn = get_postgresql_connection()
-        if not conn:
-            return
-        un = resolved_tenant_user_no_for_app()
-        pref_table = f"users.trade_history_preferences_{un}"
-        with conn.cursor() as cursor:
-            # First, ensure we only have one row
-            cursor.execute(f"DELETE FROM {pref_table} WHERE id > 1")
-            
-            # Build dynamic UPSERT query
-            columns = list(kwargs.keys())
-            values = list(kwargs.values())
-            placeholders = ['%s'] * len(values)
-            
-            # Add updated_at to the columns
-            columns.append('updated_at')
-            placeholders.append('CURRENT_TIMESTAMP')
-            
-            query = f"""
-                INSERT INTO {pref_table} (id, {', '.join(columns)})
-                VALUES (1, {', '.join(placeholders)})
-                ON CONFLICT (id) DO UPDATE SET
-                {', '.join([f"{col} = EXCLUDED.{col}" for col in columns])}
-            """
-            
-            cursor.execute(query, values)
-            conn.commit()
-            _main_logger.debug(f"[PostgreSQL] Updated trade history preferences: {kwargs}")
-        
-        conn.close()
-    except Exception as e:
-        _main_logger.warning(f"[PostgreSQL Error] Failed to update trade history preferences: {e}")
-
 # Authentication: sessions and password checks live on read_api; main proxies /api/auth and /api/user.
 from backend.core.tenant_context import resolved_tenant_user_no_for_app
 from backend.web.session_store import find_valid_token
@@ -574,6 +324,16 @@ def _read_api_query_with_session(request: Request, base: Dict[str, Any]) -> Dict
     return out
 
 
+def _synthetic_read_api_503() -> requests.Response:
+    """Return a JSON 503 without raising (read_api still starting after supervisor restart)."""
+    r = requests.Response()
+    r.status_code = 503
+    r.headers["Content-Type"] = "application/json"
+    r._content = json.dumps({"detail": "read_api_temporarily_unavailable"}).encode("utf-8")
+    r.encoding = "utf-8"
+    return r
+
+
 async def _proxy_read_api_raw(
     request: Request, method: str, path: str, body: Optional[bytes] = None
 ):
@@ -591,7 +351,16 @@ async def _proxy_read_api_raw(
             return requests.patch(url, data=body if body is not None else b"", headers=hdrs, timeout=60)
         raise ValueError(method)
 
-    return await asyncio.to_thread(_do)
+    try:
+        return await asyncio.to_thread(_do)
+    except requests.RequestException as exc:
+        _main_logger.debug(
+            "read_api proxy transport error %s %s: %s",
+            method,
+            path,
+            exc,
+        )
+        return _synthetic_read_api_503()
 
 
 async def _as_starlette_response(r: requests.Response) -> Response:
@@ -808,7 +577,12 @@ def _redis_db_changes_subscriber_thread(queue: asyncio.Queue, loop: asyncio.Abst
                     try:
                         r.ping()
                     except (redis_exc.ConnectionError, redis_exc.TimeoutError, OSError) as ping_e:
-                        _main_logger.warning(
+                        _log = (
+                            _main_logger.debug
+                            if is_probably_startup_connect_refused(ping_e)
+                            else _main_logger.warning
+                        )
+                        _log(
                             "Redis db_changes forwarder: ping failed (%s); reconnecting pubsub",
                             ping_e,
                         )
@@ -823,7 +597,12 @@ def _redis_db_changes_subscriber_thread(queue: asyncio.Queue, loop: asyncio.Abst
                     data = data.decode("utf-8")
                 asyncio.run_coroutine_threadsafe(queue.put(data), loop)
         except (redis_exc.ConnectionError, redis_exc.TimeoutError, OSError) as e:
-            _main_logger.warning(
+            _log = (
+                _main_logger.debug
+                if is_probably_startup_connect_refused(e)
+                else _main_logger.warning
+            )
+            _log(
                 "Redis db_changes forwarder: connection issue (%s); retry in %ss",
                 e,
                 backoff,
@@ -831,7 +610,12 @@ def _redis_db_changes_subscriber_thread(queue: asyncio.Queue, loop: asyncio.Abst
             time.sleep(backoff)
             backoff = min(backoff * 1.5, 60.0)
         except Exception as e:
-            _main_logger.warning(
+            _log = (
+                _main_logger.debug
+                if is_probably_startup_connect_refused(e)
+                else _main_logger.warning
+            )
+            _log(
                 "Redis db_changes forwarder: %s; retry in %ss",
                 e,
                 backoff,
@@ -889,7 +673,12 @@ def _redis_trading_preferences_subscriber_thread(queue: asyncio.Queue, loop: asy
                     try:
                         r.ping()
                     except (redis_exc.ConnectionError, redis_exc.TimeoutError, OSError) as ping_e:
-                        _main_logger.warning(
+                        _log = (
+                            _main_logger.debug
+                            if is_probably_startup_connect_refused(ping_e)
+                            else _main_logger.warning
+                        )
+                        _log(
                             "Redis preferences forwarder: ping failed (%s); reconnecting",
                             ping_e,
                         )
@@ -904,7 +693,12 @@ def _redis_trading_preferences_subscriber_thread(queue: asyncio.Queue, loop: asy
                     data = data.decode("utf-8")
                 asyncio.run_coroutine_threadsafe(queue.put(data), loop)
         except (redis_exc.ConnectionError, redis_exc.TimeoutError, OSError) as e:
-            _main_logger.warning(
+            _log = (
+                _main_logger.debug
+                if is_probably_startup_connect_refused(e)
+                else _main_logger.warning
+            )
+            _log(
                 "Redis preferences forwarder: connection issue (%s); retry in %ss",
                 e,
                 backoff,
@@ -912,7 +706,12 @@ def _redis_trading_preferences_subscriber_thread(queue: asyncio.Queue, loop: asy
             time.sleep(backoff)
             backoff = min(backoff * 1.5, 60.0)
         except Exception as e:
-            _main_logger.warning(
+            _log = (
+                _main_logger.debug
+                if is_probably_startup_connect_refused(e)
+                else _main_logger.warning
+            )
+            _log(
                 "Redis preferences forwarder: %s; retry in %ss",
                 e,
                 backoff,
@@ -1921,70 +1720,41 @@ async def set_account_mode(mode_data: dict):
         return {"status": "success", "mode": "prod"}
     return {"status": "error", "message": "Invalid mode"}
 
-# Trade data endpoints
+# Trade data endpoints — GET /trades is implemented on read_api; main proxies for same-origin cookies.
 @app.get("/trades")
-async def get_trades(status: Optional[str] = None):
-    """Get trade data from PostgreSQL database."""
-    try:
-        import psycopg2
+async def get_trades_proxy(request: Request):
+    """Proxy to read_api: tenant trade list (paginated or full)."""
+    q = request.url.query
+    path = f"/trades?{q}" if q else "/trades"
+    r = await _proxy_read_api_raw(request, "GET", path)
+    return await _as_starlette_response(r)
 
-        # Connect to PostgreSQL
-        conn = get_postgresql_connection()
-        slot = resolved_tenant_user_no_for_app()
 
-        # Plain cursor required: union_trades_with_archives_select uses
-        # information_schema column names, which expects tuple rows from fetchall().
-        with conn.cursor() as cursor:
-            if not fetch_master_trades_column_names(cursor, slot):
-                conn.close()
-                return []
-            union_sql, _ = union_trades_with_archives_select(cursor, slot)
-            # Build query based on status filter (master + archive live + archive paper)
-            if status:
-                cursor.execute(
-                    f"""
-                    SELECT * FROM ({union_sql}) AS all_trades
-                    WHERE status = %s
-                    ORDER BY id DESC
-                    """,
-                    (status,),
-                )
-            else:
-                cursor.execute(
-                    f"""
-                    SELECT * FROM ({union_sql}) AS all_trades
-                    ORDER BY id DESC
-                    """
-                )
+@app.post("/api/trades/history/insights")
+async def trade_history_insights_proxy(request: Request):
+    """Proxy to read_api: summary + analysis over full filtered trade set."""
+    body = await request.body()
+    r = await _proxy_read_api_raw(
+        request, "POST", "/api/trades/history/insights", body
+    )
+    return await _as_starlette_response(r)
 
-            trades = cursor.fetchall()
-            columns = [desc[0] for desc in cursor.description]
 
-            result = []
-            for row in trades:
-                trade_dict = dict(zip(columns, row))
+@app.get("/api/get_trade_history_preferences")
+async def get_trade_history_preferences_route():
+    """Trade history UI prefs: same process/session as the tab (no read_api hop)."""
+    from backend.core.trade_history_preferences_handlers import trade_history_preferences_get
 
-                # Create a combined timestamp field for frontend compatibility
-                if "date" in trade_dict and "time" in trade_dict:
-                    trade_dict["timestamp"] = f"{trade_dict['date']} {trade_dict['time']}"
+    return trade_history_preferences_get()
 
-                # Create a combined price field for frontend compatibility
-                if "buy_price" in trade_dict:
-                    trade_dict["price"] = trade_dict["buy_price"]
 
-                result.append(trade_dict)
+@app.post("/api/set_trade_history_preferences")
+async def set_trade_history_preferences_route(request: Request):
+    """Persist trade history UI prefs; Redis fanout for /ws/preferences."""
+    from backend.core.trade_history_preferences_handlers import trade_history_preferences_post
 
-            conn.close()
-            return result
+    return await trade_history_preferences_post(request)
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        _main_logger.warning(f"Error getting trades from PostgreSQL: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail="Trade list temporarily unavailable (database busy or error)",
-        )
 
 @app.get("/trades/{trade_id}")
 async def get_trade(trade_id: int):
@@ -3281,164 +3051,7 @@ async def proxy_active_trades():
     except requests.exceptions.RequestException as e:
         return {"error": f"Failed to connect to active trade supervisor: {str(e)}"}, 503
 
-# Legacy trade history preferences path removed - all data now in PostgreSQL
-
-def load_trade_history_preferences():
-    """Load trade history preferences from PostgreSQL"""
-    try:
-        return get_trade_history_preferences_postgresql()
-    except Exception as e:
-        _main_logger.debug(f"[Trade History Preferences Load Error] {e}")
-        return {
-            "date_filter": "TODAY",
-            "start_date": None,
-            "end_date": None,
-            "win_filter": True,
-            "loss_filter": True,
-            "contract_9am": True,
-            "contract_10am": True,
-            "contract_11am": True,
-            "contract_12am": True,
-            "contract_1pm": True,
-            "contract_2pm": True,
-            "contract_3pm": True,
-            "contract_4pm": True,
-            "contract_5pm": True,
-            "contract_6pm": True,
-            "contract_7pm": True,
-            "contract_8pm": True,
-            "contract_9pm": True,
-            "contract_10pm": True,
-            "contract_11pm": True,
-            "symbol_btc": True,
-            "symbol_eth": True,
-            "symbol_spy": True,
-            "symbol_ndx": True,
-            "symbol_usd_eur": True,
-            "strategy_hourly_htc": True,
-            "strategy_momentum_scalp": True,
-            "strategy_test": True,
-            "analysis_interval": "daily",
-            "sort_key": None,
-            "sort_asc": True,
-            "page_size": 50,
-            "last_search_timestamp": time.time(),
-            "pct_mode": False,
-            "live_filter": True,
-            "paper_filter": False,
-            "include_test_trades": False,
-            "strategy_selection": {},
-            "symbol_selection": {},
-        }
-
-def save_trade_history_preferences(preferences):
-    """Save trade history preferences to PostgreSQL"""
-    try:
-        # Prepare data for PostgreSQL
-        update_data = {}
-        if "date_filter" in preferences:
-            update_data["date_filter"] = str(preferences["date_filter"])
-        if "start_date" in preferences:
-            update_data["start_date"] = preferences["start_date"]
-        if "end_date" in preferences:
-            update_data["end_date"] = preferences["end_date"]
-        if "win_filter" in preferences:
-            update_data["win_filter"] = bool(preferences["win_filter"])
-        if "loss_filter" in preferences:
-            update_data["loss_filter"] = bool(preferences["loss_filter"])
-        if "live_filter" in preferences:
-            update_data["live_filter"] = bool(preferences["live_filter"])
-        if "paper_filter" in preferences:
-            update_data["paper_filter"] = bool(preferences["paper_filter"])
-        if "include_test_trades" in preferences:
-            update_data["include_test_trades"] = bool(preferences["include_test_trades"])
-        
-        # Contract filters
-        contract_fields = [
-            "contract_9am", "contract_10am", "contract_11am", "contract_12am",
-            "contract_1pm", "contract_2pm", "contract_3pm", "contract_4pm",
-            "contract_5pm", "contract_6pm", "contract_7pm", "contract_8pm",
-            "contract_9pm", "contract_10pm", "contract_11pm"
-        ]
-        for field in contract_fields:
-            if field in preferences:
-                update_data[field] = bool(preferences[field])
-        
-        # Symbol filters
-        symbol_fields = ["symbol_btc", "symbol_eth", "symbol_spy", "symbol_ndx", "symbol_usd_eur"]
-        for field in symbol_fields:
-            if field in preferences:
-                update_data[field] = bool(preferences[field])
-        
-        # Strategy filters (legacy fixed keys; dynamic strategy_selection from strategy_list)
-        strategy_fields = ["strategy_hourly_htc", "strategy_momentum_scalp", "strategy_test"]
-        for field in strategy_fields:
-            if field in preferences:
-                update_data[field] = bool(preferences[field])
-        if "strategy_selection" in preferences and isinstance(preferences["strategy_selection"], dict):
-            update_data["strategy_selection"] = json.dumps(preferences["strategy_selection"])
-        if "symbol_selection" in preferences and isinstance(preferences["symbol_selection"], dict):
-            update_data["symbol_selection"] = json.dumps(preferences["symbol_selection"])
-
-        # Day filters
-        day_fields = ["day_sunday", "day_monday", "day_tuesday", "day_wednesday", "day_thursday", "day_friday", "day_saturday"]
-        for field in day_fields:
-            if field in preferences:
-                update_data[field] = bool(preferences[field])
-        
-        # Analysis interval
-        if "analysis_interval" in preferences:
-            update_data["analysis_interval"] = str(preferences["analysis_interval"])
-        
-        # Chart view
-        if "chart_view" in preferences:
-            update_data["chart_view"] = str(preferences["chart_view"])
-        
-        # Percent mode
-        if "pct_mode" in preferences:
-            update_data["pct_mode"] = bool(preferences["pct_mode"])
-        
-        if "sort_key" in preferences:
-            update_data["sort_key"] = preferences["sort_key"]
-        if "sort_asc" in preferences:
-            update_data["sort_asc"] = bool(preferences["sort_asc"])
-        if "page_size" in preferences:
-            update_data["page_size"] = int(preferences["page_size"])
-        if "last_search_timestamp" in preferences:
-            update_data["last_search_timestamp"] = int(preferences["last_search_timestamp"])
-        
-        if update_data:
-            update_trade_history_preferences_postgresql(**update_data)
-            _main_logger.debug(f"[Trade History Preferences] ✅ Updated PostgreSQL: {list(update_data.keys())}")
-    except Exception as e:
-        _main_logger.debug(f"[Trade History Preferences Save Error] {e}")
-
-@app.get("/api/get_trade_history_preferences")
-async def get_trade_history_preferences():
-    """Get trade history preferences"""
-    return load_trade_history_preferences()
-
-@app.post("/api/set_trade_history_preferences")
-async def set_trade_history_preferences(request: Request):
-    """Set trade history preferences"""
-    try:
-        data = await request.json()
-        preferences = load_trade_history_preferences()
-        
-        # Update preferences with new data
-        for key, value in data.items():
-            preferences[key] = value
-        
-        # Update timestamp
-        preferences["last_search_timestamp"] = time.time()
-        
-        # Save preferences
-        save_trade_history_preferences(preferences)
-        
-        return {"status": "ok", "preferences": preferences}
-    except Exception as e:
-        _main_logger.debug(f"[Trade History Preferences Set Error] {e}")
-        return {"status": "error", "message": str(e)}
+# Trade history preferences: GET/POST on main_app (same session as UI); read_api mirrors for direct tooling.
 
 # LEGACY REMOVED: /api/get_auto_stop endpoint - no longer used, auto stop now controlled by auto_trade in monitor_list
 
@@ -5908,73 +5521,6 @@ async def get_monitor_names(user_id: Optional[str] = None):
                 "name": name,
                 "symbol": symbol,
                 "market": mkt
-            })
-        
-        return {
-            "status": "ok",
-            "user_id": f"user_{user_number}",
-            "count": len(monitors),
-            "monitors": monitors
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }
-
-@app.get("/api/trades/monitors")
-async def get_trade_monitors(user_id: Optional[str] = None):
-    """Get monitor names from the trades table for trade history filtering (session tenant)."""
-    try:
-        from backend.core.config.database import get_postgresql_connection
-
-        slot = resolved_tenant_user_no_for_app()
-        if user_id:
-            req = (user_id.replace("user_", "").strip() or "").zfill(4)
-            if len(req) == 4 and req.isdigit() and req != slot:
-                raise HTTPException(
-                    status_code=403,
-                    detail="user_id does not match authenticated tenant",
-                )
-        user_number = slot
-        
-        conn = get_postgresql_connection()
-        if not conn:
-            return {
-                "status": "error",
-                "message": "Database connection failed"
-            }
-        
-        cursor = conn.cursor()
-        cursor.execute(f"""
-            SELECT DISTINCT t.monitor AS monitor_key,
-                   m.id,
-                   m.symbol,
-                   m.strategy,
-                   m.market
-            FROM users.trades_{user_number} t
-            LEFT JOIN users.monitor_list_{user_number} m
-              ON split_part(t.monitor, '_', 2) = BTRIM(m.user_id_strategy)
-             AND split_part(t.monitor, '_', 3) ~ '^[0-9]+$'
-             AND m.id = CAST(split_part(t.monitor, '_', 3) AS INTEGER)
-            WHERE t.monitor IS NOT NULL AND BTRIM(t.monitor) <> ''
-            ORDER BY t.monitor
-        """)
-        
-        results = cursor.fetchall()
-        conn.close()
-        
-        monitors = []
-        for row in results:
-            monitor_key, mid, symbol, strategy, market = row[0], row[1], row[2], row[3], row[4]
-            monitors.append({
-                "name": monitor_key,
-                "id": mid,
-                "symbol": symbol,
-                "strategy": strategy,
-                "market": market,
             })
         
         return {

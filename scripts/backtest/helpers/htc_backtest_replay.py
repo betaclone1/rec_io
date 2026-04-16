@@ -644,7 +644,18 @@ def run_htc_single_market_replay(
     stop_floor = max(0.0, min(stop_floor, 0.99))
 
     if from_tick_table:
-        _, mr_resolve, _src = resolve_floor_strike_and_market_result(market_ticker)
+        mr_resolve: Optional[str] = None
+        # Prefer archive-backed tick rows first: no external API dependency.
+        for rr in reversed(rows):
+            mr_candidate = rr.get("market_result")
+            if mr_candidate is None:
+                continue
+            mc = str(mr_candidate).strip()
+            if mc:
+                mr_resolve = mc
+                break
+        if mr_resolve is None:
+            _, mr_resolve, _src = resolve_floor_strike_and_market_result(market_ticker)
         market_result = mr_resolve
     else:
         market_result = rows[-1].get("market_result")

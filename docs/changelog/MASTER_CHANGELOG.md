@@ -6,6 +6,35 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-16 — Release v3.1.6: trade history read_api split, monitor tiles, insights, preferences column
+
+**Summary**
+- **Release: v3.1.6**
+- **Database:** Migration **`20260416_1500_trade_history_preferences_monitor_selection`** — per-tenant `trade_history_preferences_*`.`monitor_selection` JSONB (`mon_<slot>_<id>` → checked) for persisted monitor strip state.
+- **Backend:** **`read_api`** — tenant **`GET /trades`** (keyset paging, shared query **`trades_list_query`**), **`POST /api/trades/history/insights`** (**`trades_history_insights`**); trade history **GET/POST `/api/get_trade_history_preferences`** and **`/api/set_trade_history_preferences`** via **`trade_history_preferences_store`** / **`trade_history_preferences_handlers`**. **`main_app`** trimmed (trade list + insights + preferences proxied or removed in favor of read_api patterns per `AGENTS.md`).
+- **Frontend — trade history (desktop):** Monitor **tile strip** with off-tile **preview** (chart + per-monitor table + top summary via insights body), **cross-highlight** that survives live `/trades` refresh, **analysis** bar chart styling aligned with monitors Ret % chart (colors, grid opacity, always-on “highlighted” bar fill), slightly **redder** negative bars.
+- **Frontend — trade history (mobile) + dashboard:** Parity and wiring updates; monitor list / preferences refresh behavior aligned with **`/api/monitors`** and realtime preferences channel where applicable.
+- **Ops / plumbing:** **`trading_redis_comms`**, **`stream_registry`**, **`kalshi_account_sync_ws`**, **`monitor_manager`**, **`exchange_credentials`**, **`auth_routes`** — adjustments supporting the above (no intentional behavior regressions).
+- **Backtest scripts:** **`htc_backtest_replay`**, **`htc_setting_grid_sweep`**, **`htc_archive_setting_sweep`** — incremental fixes/features as in diff.
+- **Docs:** **`AGENTS.md`**, **`MASTER_DB_SCHEMA_REFERENCE`** (`monitor_selection`).
+- **Plans:** (session work; trade history UX + read service extraction + preferences persistence.)
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration (from project root on the server):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260416_1500_trade_history_preferences_monitor_selection`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; spot-check trade history (tiles, preview, summary, analysis chart).
+- [ ] Record release in DB on **production** (must match git/changelog):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.6`
+- [ ] Record release in DB on **local** (same version string as production):  
+  From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.6`
+
+---
+
 ## 2026-04-15 — Release v3.1.5: archive tick backtest build, HTC setting grid sweep, synthetic grid_sweep_trades
 
 **Summary**
@@ -281,7 +310,7 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Monitor list / auto-entry:** `flip_sell_prob`, `flip_sell_floor`, `flip_sell_prob_mult`, `flip_sell_floor_mult` on `users.monitor_list_0001` (migration `20260406_1400_monitor_flip_sell`); shared **`backend/core/auto_entry_settings_store.py`**; API and **`auto_entry_supervisor`** / **`monitor_manager`** wiring; docs **`TRADING_REDIS_COMMS`** / schema reference updates.
 - **Redis / read API:** `trading_redis_comms` extensions and **`read_api`** adjustments as in repo (preferences / strike-driven paths).
 - **Unified auto-trade modals:** **`frontend/js/uat_unified_modal_position_size.js`** — deferred position persistence until Save; dashboard, trade monitor, and mobile surfaces wired; cancel restores snapshot.
-- **Trade history:** Monitor dropdown labels **`{id} - {symbol} {strategy}, {market}`** via **`GET /api/trades/monitors`** join to `monitor_list`; desktop + mobile; **`SELECT_MONITOR`** postMessage matches `data-monitor-id`.
+- **Trade history:** Monitor dropdown labels **`{id} - {symbol} {strategy}, {market}`** from **`GET /api/monitors`** (active rows, same ordering as dashboard); desktop + mobile refresh on **`monitor_list_updated`** over **`/ws/preferences`**; **`SELECT_MONITOR`** postMessage matches `data-monitor-id`.
 - **Trade history analysis:** Bar chart redraw gated by rounded period fingerprint + **`animation: false`**; resize uses **`chart.resize()`**; fewer duplicate listeners.
 - **Trades log backfill:** Migration **`20260411_1200_trades_close_method_auto_to_auto_probability`** sets `close_method` from `auto` → `auto_probability` on live, simulated, and archive trade tables (legacy archive table if present).
 

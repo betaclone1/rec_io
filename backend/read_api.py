@@ -3,27 +3,41 @@ read_api: dedicated read/aggregate service for frontend data.
 
 Role: host read/aggregate endpoints (dashboard, history, stats) and the auth/user plane
 (login, session, profile, throttled ``POST /api/user/activity`` for ``last_login``).
-No WebSocket, no Redis pub/sub. Aside from auth/session and that activity touch, avoids writes.
+Also **GET /trades** (tenant trade log: master + archive union, optional date filter and keyset
+pagination). main_app keeps a thin same-origin proxy to this route for cookies/session.
+**Trade history UI preferences** (``GET/POST /api/get|set_trade_history_preferences``): same handlers as
+main_app (PostgreSQL + Redis ``trade_history_preferences_updated``). Browsers should call **main** same-origin;
+this copy exists for direct :3050 access. No WebSocket on this process.
+Aside from auth/session, that activity touch, and trade-history prefs, avoids writes.
 Also performs a single Redis **GET** of the cached release string
 (`redis_key_system_release_version`) for the System UI. See docs/REDIS_ARCHITECTURE.md.
 """
 
 import os
+import time
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from pydantic import BaseModel, Field
+
+from backend.core.trades_history_insights import run_trade_history_insights
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.core.config.database import get_postgresql_connection
 from backend.core.tenant_context import resolved_tenant_user_no_for_app
+from backend.core.trade_history_preferences_handlers import (
+    trade_history_preferences_get,
+    trade_history_preferences_post,
+)
 from backend.core.dashboard_portfolio_queries import (
     bankroll_history_payload,
     performance_realized_payload,
     pnl_history_payload,
     portfolio_history_payload,
 )
+from backend.core.trades_list_query import TRADES_PAGE_SIZE_MAX, execute_trades_list_query
 from backend.util.trade_log_archivist import (
     canonical_monitor_key,
     fetch_master_trades_column_names,
@@ -44,6 +58,113 @@ app.add_middleware(
 )
 app.include_router(auth_router, prefix="/api/auth")
 app.include_router(user_router, prefix="/api/user")
+
+
+class TradeHistoryInsightsBody(BaseModel):
+    min_date: Optional[str] = None
+    max_date: Optional[str] = None
+    include_test_trades: bool = False
+    show_win: bool = True
+    show_loss: bool = True
+    show_live: bool = True
+    show_paper: bool = False
+    symbols: List[str] = Field(default_factory=list)
+    strategies: List[str] = Field(default_factory=list)
+    monitors: List[str] = Field(default_factory=list)
+    days_of_week: Optional[List[int]] = None
+    analysis_interval: str = "daily"
+
+
+@app.get("/api/get_trade_history_preferences")
+async def get_trade_history_preferences() -> Dict[str, Any]:
+    """Trade history filter UI state (per-tenant PostgreSQL). Prefer main_app same-origin route in browsers."""
+    return trade_history_preferences_get()
+
+
+@app.post("/api/set_trade_history_preferences")
+async def set_trade_history_preferences(request: Request) -> Dict[str, Any]:
+    """Merge JSON body into saved trade history preferences; notify Redis preferences channel."""
+    return await trade_history_preferences_post(request)
+
+
+@app.post("/api/trades/history/insights")
+async def post_trade_history_insights(body: TradeHistoryInsightsBody) -> Dict[str, Any]:
+    """Summary + period analysis over the full filtered trade set (not paginated)."""
+    slot = resolved_tenant_user_no_for_app()
+    conn = get_postgresql_connection()
+    if not conn:
+        raise HTTPException(
+            status_code=503,
+            detail="Trade history insights temporarily unavailable (database busy or error)",
+        )
+    try:
+        with conn.cursor() as cursor:
+            return run_trade_history_insights(
+                cursor, user_slot=slot, body=body.model_dump()
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Trade history insights temporarily unavailable (database busy or error)",
+        )
+    finally:
+        conn.close()
+
+
+@app.get("/trades")
+async def get_trades(
+    status: Optional[str] = None,
+    min_date: Optional[str] = Query(
+        None,
+        description="Inclusive lower bound on trades.date (YYYY-MM-DD text in DB).",
+    ),
+    max_date: Optional[str] = Query(
+        None,
+        description="Inclusive upper bound on trades.date (YYYY-MM-DD text in DB).",
+    ),
+    page_size: Optional[int] = Query(
+        None,
+        ge=1,
+        le=TRADES_PAGE_SIZE_MAX,
+        description=f"When set, response is trades/has_more/next_before_id (keyset page). Max {TRADES_PAGE_SIZE_MAX}.",
+    ),
+    before_id: Optional[int] = Query(
+        None,
+        ge=1,
+        description="Keyset cursor for ORDER BY id DESC: rows with id < before_id. Requires page_size.",
+    ),
+):
+    """Tenant trade log from PostgreSQL (same contract as main_app proxy)."""
+    try:
+        slot = resolved_tenant_user_no_for_app()
+        conn = get_postgresql_connection()
+        if not conn:
+            raise HTTPException(
+                status_code=503,
+                detail="Trade list temporarily unavailable (database busy or error)",
+            )
+        try:
+            with conn.cursor() as cursor:
+                return execute_trades_list_query(
+                    cursor,
+                    slot=slot,
+                    status=status,
+                    min_date=min_date,
+                    max_date=max_date,
+                    page_size=page_size,
+                    before_id=before_id,
+                )
+        finally:
+            conn.close()
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Trade list temporarily unavailable (database busy or error)",
+        )
 
 
 @app.get("/health")

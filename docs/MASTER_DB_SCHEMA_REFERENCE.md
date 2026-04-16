@@ -10544,6 +10544,7 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `include_test_trades` | `boolean` | YES | false | Trade history UI: when true, rows with `test_filter = TRUE` are shown. Migration `20260412_1000_monitor_test_filter_trade_history_include_test`. |
 | `strategy_selection` | `jsonb` | YES | '{}' | Strategy filter state (name -> checked) for trade history UI. |
 | `symbol_selection` | `jsonb` | YES | '{}' | Symbol filter state (symbol -> checked) for trade history UI (from symbols_list). |
+| `monitor_selection` | `jsonb` | YES | '{}' | Trade history monitor tiles: `mon_<slot>_<id>` → checked. Migration `20260416_1500_trade_history_preferences_monitor_selection`. |
 
 #### Constraints
 

@@ -24,7 +24,7 @@ TABLE_TO_STREAM: Dict[Tuple[str, str], str] = {
     ("users", "account_balance_0001"): "account_balance",
     ("users", "account_balance_paper_0001"): "account_balance_paper",
     ("users", "transfers_paper_0001"): "transfers_paper",
-    # Trade log (GET /trades, trade_history UIs); NOTIFY → switchboard stream name "trades"
+    # Trade log (GET /trades via read_api / main proxy, trade_history UIs); NOTIFY → stream "trades"
     ("users", "trades_0001"): "trades",
     # Per-tenant monitor rows (lifecycle, counts); NOTIFY → stream "monitor_list" (Admin Tools refetch, etc.)
     ("users", "monitor_list_0001"): "monitor_list",

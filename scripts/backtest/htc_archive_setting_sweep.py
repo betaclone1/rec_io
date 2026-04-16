@@ -38,7 +38,8 @@ import json
 import os
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _PROJECT_ROOT not in sys.path:
@@ -46,6 +47,7 @@ if _PROJECT_ROOT not in sys.path:
 
 from scripts.backtest.helpers.db import get_connection  # noqa: E402
 from scripts.backtest.helpers.htc_setting_grid_sweep import (  # noqa: E402
+    discover_markets_for_contract_cycle,
     discover_markets_in_archive_window,
     parse_float_range_lo_hi_step,
     parse_int_range_hi_lo_step,
@@ -59,6 +61,16 @@ def _parse_iso(s: str) -> datetime:
     if t.endswith("Z"):
         t = t[:-1] + "+00:00"
     return datetime.fromisoformat(t)
+
+
+def _hourly_cycle_window_et(*, contract_date_et: str, contract_hour_et: int) -> tuple[datetime, datetime]:
+    d = datetime.strptime(str(contract_date_et), "%Y-%m-%d")
+    h = int(contract_hour_et)
+    if h < 0 or h > 23:
+        raise ValueError("--contract-hour-et must be in 0..23")
+    end_et = d.replace(hour=h, minute=0, second=0, microsecond=0, tzinfo=ZoneInfo("America/New_York"))
+    start_et = end_et - timedelta(hours=1)
+    return start_et, end_et
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -99,7 +111,32 @@ def main(argv: list[str] | None = None) -> int:
         "--series-prefix",
         type=str,
         default=None,
-        help="Optional filter: ``market_ticker LIKE '<prefix>%'`` (e.g. KXETH15M).",
+        help="Optional filter: ``market_ticker LIKE '<prefix>%%'`` (e.g. KXETH15M).",
+    )
+    p.add_argument(
+        "--contract-symbol",
+        type=str,
+        default=None,
+        help="Exact contract-cycle mode: symbol (e.g. BTC).",
+    )
+    p.add_argument(
+        "--contract-cadence",
+        choices=("hourly",),
+        default="hourly",
+        help="Exact contract-cycle mode cadence (currently hourly only).",
+    )
+    p.add_argument(
+        "--contract-date-et",
+        type=str,
+        default=None,
+        help="Exact contract-cycle mode date in ET (YYYY-MM-DD).",
+    )
+    p.add_argument(
+        "--contract-hour-et",
+        type=int,
+        default=None,
+        metavar="H",
+        help="Exact contract-cycle mode close hour in ET (0-23, e.g. 1 for 1am).",
     )
     p.add_argument(
         "--min-archive-rows",
@@ -178,15 +215,41 @@ def main(argv: list[str] | None = None) -> int:
 
     n_combo = len(max_times) * len(min_probs) * len(stop_losses)
 
+    contract_mode = args.contract_symbol is not None or args.contract_date_et is not None or args.contract_hour_et is not None
+    if contract_mode and not (args.contract_symbol and args.contract_date_et and args.contract_hour_et is not None):
+        print(
+            "error: contract-cycle mode requires --contract-symbol, --contract-date-et, and --contract-hour-et together",
+            file=sys.stderr,
+        )
+        return 2
+    if contract_mode and str(args.contract_cadence) == "hourly":
+        try:
+            t0, t1 = _hourly_cycle_window_et(
+                contract_date_et=str(args.contract_date_et),
+                contract_hour_et=int(args.contract_hour_et),
+            )
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+
     conn = get_connection()
     try:
-        tickers = discover_markets_in_archive_window(
-            conn,
-            timestamp_start=t0,
-            timestamp_end_exclusive=t1,
-            series_prefix=args.series_prefix,
-            min_archive_rows=int(args.min_archive_rows),
-        )
+        if contract_mode:
+            tickers = discover_markets_for_contract_cycle(
+                conn,
+                contract_symbol=str(args.contract_symbol),
+                contract_cadence=str(args.contract_cadence),
+                contract_date_et=str(args.contract_date_et),
+                contract_hour_et=int(args.contract_hour_et),
+            )
+        else:
+            tickers = discover_markets_in_archive_window(
+                conn,
+                timestamp_start=t0,
+                timestamp_end_exclusive=t1,
+                series_prefix=args.series_prefix,
+                min_archive_rows=int(args.min_archive_rows),
+            )
     finally:
         conn.close()
 
@@ -245,6 +308,16 @@ def main(argv: list[str] | None = None) -> int:
                     "synthetic_monitor_id_base": int(args.synthetic_monitor_id_base),
                     "compound": not bool(args.no_compound),
                     "window": {"start": args.start, "end": args.end},
+                    "contract_cycle": (
+                        {
+                            "symbol": args.contract_symbol,
+                            "cadence": args.contract_cadence,
+                            "date_et": args.contract_date_et,
+                            "hour_et": args.contract_hour_et,
+                        }
+                        if contract_mode
+                        else None
+                    ),
                     "tickers": tickers,
                     "ranked": [r.as_dict() | {"objective": r.objective(args.objective)} for r in ranked],
                 },

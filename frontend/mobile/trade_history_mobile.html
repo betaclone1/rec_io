@@ -237,10 +237,130 @@
                 padding: 4px 6px;
             }
         }
+
+        .th-range-calendar-bar {
+            display: flex;
+            justify-content: flex-start;
+            margin-bottom: 12px;
+        }
+        .th-range-calendar-panel {
+            background: #1f2530;
+            border: 1px solid #4a5568;
+            border-radius: 6px;
+            padding: 10px 12px 12px;
+            width: 100%;
+            max-width: 320px;
+            box-sizing: border-box;
+        }
+        .th-range-calendar-title {
+            font-size: 11px;
+            font-weight: 600;
+            color: #a0aec0;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            margin-bottom: 8px;
+        }
+        .th-range-calendar-nav {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        .th-range-calendar-nav button {
+            width: 36px;
+            height: 32px;
+            padding: 0;
+            border-radius: 4px;
+            border: 1px solid #4a5568;
+            background: #2a3441;
+            color: #e2e8f0;
+            font-size: 20px;
+            line-height: 1;
+            cursor: pointer;
+        }
+        .th-range-calendar-nav button:hover {
+            background: #3d4a5c;
+        }
+        #th-range-cal-month-label {
+            font-size: 14px;
+            font-weight: 600;
+            color: #e2e8f0;
+            flex: 1;
+            text-align: center;
+        }
+        .th-cal-dow-row,
+        .th-cal-week {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 3px;
+        }
+        .th-cal-dow-row {
+            margin-bottom: 4px;
+        }
+        .th-cal-dow {
+            font-size: 10px;
+            color: #718096;
+            text-align: center;
+            padding: 2px 0;
+        }
+        .th-cal-day {
+            aspect-ratio: 1;
+            min-height: 36px;
+            border: none;
+            border-radius: 4px;
+            background: #2a3441;
+            color: #e2e8f0;
+            font-size: 12px;
+            cursor: pointer;
+            padding: 0;
+            font-family: inherit;
+        }
+        .th-cal-day:hover:not(:disabled) {
+            background: #4d586f;
+        }
+        .th-cal-day-out {
+            color: #4a5568;
+            background: #252d3a;
+        }
+        .th-cal-day-in-range {
+            background: #2c5282;
+            color: #ebf8ff;
+        }
+        .th-cal-day-range-end {
+            background: #3182ce;
+            font-weight: 700;
+        }
+        .th-cal-day-pending {
+            outline: 2px solid #f6ad55;
+            outline-offset: -1px;
+        }
+        #th-range-cal-hint {
+            font-size: 11px;
+            color: #718096;
+            margin-top: 8px;
+            line-height: 1.35;
+        }
     </style>
 </head>
 <body>
     <div class="mobile-container">
+        <div class="th-range-calendar-bar">
+            <div class="th-range-calendar-panel">
+                <div class="th-range-calendar-title">Time window</div>
+                <div class="th-range-calendar-nav">
+                    <button type="button" id="th-range-cal-prev" aria-label="Previous month">‹</button>
+                    <span id="th-range-cal-month-label" aria-live="polite"></span>
+                    <button type="button" id="th-range-cal-next" aria-label="Next month">›</button>
+                </div>
+                <div class="th-cal-dow-row" aria-hidden="true">
+                    <span class="th-cal-dow">Su</span><span class="th-cal-dow">Mo</span><span class="th-cal-dow">Tu</span><span class="th-cal-dow">We</span>
+                    <span class="th-cal-dow">Th</span><span class="th-cal-dow">Fr</span><span class="th-cal-dow">Sa</span>
+                </div>
+                <div class="th-cal-grid" id="th-range-cal-grid"></div>
+                <div id="th-range-cal-hint">Click a start date, then an end date.</div>
+            </div>
+        </div>
         <!-- Search Section -->
         <div class="search-section">
             <!-- Date and Win/Loss Filters -->
@@ -562,7 +682,7 @@
         </div>
 
         <!-- Results Section -->
-        <div class="results-section">
+        <div class="results-section" id="trade-history-results-scroll">
             <div id="trade-history-fetch-banner" style="display:none; padding:8px 10px; background:#4a3728; color:#f6e05e; font-size:12px; margin-bottom:6px; border-radius:4px;" role="status" aria-live="polite"></div>
             <table id="trade-log-table" class="results-table">
                 <thead>
@@ -595,6 +715,9 @@
                     <tr><td colspan="23">Loading...</td></tr>
                 </tbody>
             </table>
+            <div id="trade-history-pagination" style="padding:10px 0; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                <span id="trade-history-pagination-meta" style="font-size:12px; color:#a0aec0;"></span>
+            </div>
         </div>
     </div>
 
@@ -602,6 +725,14 @@
         let currentSort = { key: 'id', asc: false };
         let trades = [];
         let filteredTrades = [];
+        const TRADE_HISTORY_PAGE_SIZE = 200;
+        /** Must match ``TRADES_PAGE_SIZE_MAX`` in ``backend/core/trades_list_query.py`` */
+        const TRADES_PAGE_SIZE_MAX = 500;
+        let _thmTradesHasMore = false;
+        let _thmTradesNextBeforeId = null;
+        let _thInsightsReqId = 0;
+        let _thInsightsDebounce = null;
+        const tradeHistoryMonitorIdToFilterMeta = {};
 
         function displayPnL(trade) {
             if (trade.pnl !== null && trade.pnl !== undefined) {
@@ -784,6 +915,198 @@
             return `${year}-${month}-${day}`;
         }
 
+        (function tradeHistoryRangeCalendarMobile() {
+            const MONTH_NAMES = [
+                'January', 'February', 'March', 'April', 'May', 'June',
+                'July', 'August', 'September', 'October', 'November', 'December',
+            ];
+            let calView = new Date();
+            calView.setDate(1);
+            let pendingStart = null;
+
+            function parseIso(s) {
+                return s && /^\d{4}-\d{2}-\d{2}$/.test(String(s).trim()) ? String(s).trim() : null;
+            }
+
+            function syncCalViewToStartInput() {
+                const sEl = document.getElementById('start-date');
+                const p = parseIso(sEl && sEl.value);
+                if (p) {
+                    const parts = p.split('-');
+                    const y = parseInt(parts[0], 10);
+                    const m = parseInt(parts[1], 10) - 1;
+                    if (!isNaN(y) && !isNaN(m)) calView = new Date(y, m, 1);
+                }
+            }
+
+            function getCommittedRange() {
+                const picker = document.getElementById('date-filter-picker');
+                if (!picker || picker.value !== 'CUSTOM') return { start: null, end: null };
+                let s = parseIso(document.getElementById('start-date') && document.getElementById('start-date').value);
+                let e = parseIso(document.getElementById('end-date') && document.getElementById('end-date').value);
+                if (!s || !e) return { start: null, end: null };
+                if (s > e) {
+                    const t = s;
+                    s = e;
+                    e = t;
+                }
+                return { start: s, end: e };
+            }
+
+            function inRange(iso, start, end) {
+                if (!start || !end || !iso) return false;
+                return iso >= start && iso <= end;
+            }
+
+            function commitRange(isoA, isoB) {
+                let a = isoA;
+                let b = isoB;
+                if (a > b) {
+                    const t = a;
+                    a = b;
+                    b = t;
+                }
+                const sEl = document.getElementById('start-date');
+                const eEl = document.getElementById('end-date');
+                const picker = document.getElementById('date-filter-picker');
+                if (sEl) sEl.value = a;
+                if (eEl) eEl.value = b;
+                if (picker) picker.value = 'CUSTOM';
+                pendingStart = null;
+                const y = parseInt(a.split('-')[0], 10);
+                const m = parseInt(a.split('-')[1], 10) - 1;
+                if (!isNaN(y) && !isNaN(m)) calView = new Date(y, m, 1);
+                savePaperTradePreferences();
+                fetchAllTrades('custom-date-change', { append: false });
+                render();
+            }
+
+            function onDayClick(iso) {
+                if (!parseIso(iso)) return;
+                if (pendingStart === null) {
+                    pendingStart = iso;
+                    render();
+                    return;
+                }
+                commitRange(pendingStart, iso);
+            }
+
+            function appendDayCell(row, year, month, day, isOut, committed, pend) {
+                const iso = formatDate(new Date(year, month, day));
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'th-cal-day' + (isOut ? ' th-cal-day-out' : '');
+                btn.textContent = String(day);
+                if (pend && iso === pend) btn.classList.add('th-cal-day-pending');
+                if (committed.start && committed.end) {
+                    if (inRange(iso, committed.start, committed.end)) {
+                        btn.classList.add('th-cal-day-in-range');
+                    }
+                    if (iso === committed.start || iso === committed.end) {
+                        btn.classList.add('th-cal-day-range-end');
+                    }
+                }
+                btn.addEventListener('click', function () {
+                    onDayClick(iso);
+                });
+                row.appendChild(btn);
+            }
+
+            function render() {
+                const grid = document.getElementById('th-range-cal-grid');
+                const label = document.getElementById('th-range-cal-month-label');
+                const hint = document.getElementById('th-range-cal-hint');
+                if (!grid || !label) return;
+
+                const y = calView.getFullYear();
+                const m = calView.getMonth();
+                label.textContent = MONTH_NAMES[m] + ' ' + y;
+
+                const committed = getCommittedRange();
+                if (hint) {
+                    if (pendingStart) {
+                        hint.textContent = 'Start: ' + pendingStart + '. Tap end date (or same day for one day).';
+                    } else {
+                        hint.textContent = 'Tap a start date, then an end date.';
+                    }
+                }
+
+                grid.innerHTML = '';
+                const firstDow = new Date(y, m, 1).getDay();
+                const daysInMonth = new Date(y, m + 1, 0).getDate();
+                const prevMonthLast = new Date(y, m, 0).getDate();
+                const pm = m === 0 ? 11 : m - 1;
+                const py = m === 0 ? y - 1 : y;
+                const nm = m === 11 ? 0 : m + 1;
+                const ny = m === 11 ? y + 1 : y;
+
+                const cells = [];
+                for (let i = 0; i < firstDow; i++) {
+                    const d = prevMonthLast - firstDow + i + 1;
+                    cells.push({ y: py, mo: pm, d: d, out: true });
+                }
+                for (let d = 1; d <= daysInMonth; d++) {
+                    cells.push({ y: y, mo: m, d: d, out: false });
+                }
+                let tail = 1;
+                while (cells.length % 7 !== 0) {
+                    cells.push({ y: ny, mo: nm, d: tail, out: true });
+                    tail++;
+                }
+
+                let row = null;
+                for (let i = 0; i < cells.length; i++) {
+                    if (i % 7 === 0) {
+                        row = document.createElement('div');
+                        row.className = 'th-cal-week';
+                        grid.appendChild(row);
+                    }
+                    const c = cells[i];
+                    appendDayCell(row, c.y, c.mo, c.d, c.out, committed, pendingStart);
+                }
+            }
+
+            window.tradeHistoryRangeCalendarRender = function () {
+                render();
+            };
+            window.tradeHistoryRangeCalendarSyncFromInputs = function () {
+                pendingStart = null;
+                syncCalViewToStartInput();
+                render();
+            };
+            window.tradeHistoryRangeCalendarClearPendingAndRender = function () {
+                pendingStart = null;
+                render();
+            };
+
+            function bindNav() {
+                const prev = document.getElementById('th-range-cal-prev');
+                const next = document.getElementById('th-range-cal-next');
+                if (prev && !prev.dataset.bound) {
+                    prev.dataset.bound = '1';
+                    prev.addEventListener('click', function () {
+                        calView.setMonth(calView.getMonth() - 1);
+                        pendingStart = null;
+                        render();
+                    });
+                }
+                if (next && !next.dataset.bound) {
+                    next.dataset.bound = '1';
+                    next.addEventListener('click', function () {
+                        calView.setMonth(calView.getMonth() + 1);
+                        pendingStart = null;
+                        render();
+                    });
+                }
+            }
+
+            window.tradeHistoryRangeCalendarInit = function () {
+                bindNav();
+                syncCalViewToStartInput();
+                render();
+            };
+        })();
+
         function applyCurrentSort() {
             if (currentSort.key === null) return;
 
@@ -861,7 +1184,101 @@
             return (neg ? '-$' : '$') + body;
         }
 
-        function updateSummary(trades) {
+        function collectTradeHistoryInsightsBody() {
+            const body = {
+                include_test_trades: !!document.getElementById('include-test-trades')?.checked,
+                show_win: document.getElementById('filter-win')?.checked !== false,
+                show_loss: document.getElementById('filter-loss')?.checked !== false,
+                show_live: document.getElementById('filter-live')?.checked !== false,
+                show_paper: document.getElementById('filter-paper')?.checked === true,
+                symbols: [],
+                strategies: [],
+                monitors: [],
+                analysis_interval: 'daily',
+            };
+            const b = computeTradesFetchDateBounds();
+            if (b) {
+                body.min_date = b.min_date;
+                body.max_date = b.max_date;
+            }
+            const symCbs = document.querySelectorAll('#symbol-checkboxes-container input[type="checkbox"][data-symbol]');
+            const symChecked = Array.from(symCbs).filter(cb => cb.checked).map(cb => cb.getAttribute('data-symbol'));
+            if (symCbs.length > 0 && symChecked.length > 0 && symChecked.length < symCbs.length) {
+                body.symbols = symChecked;
+            }
+            const stratCbs = document.querySelectorAll('#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]');
+            const stratChecked = Array.from(stratCbs).filter(cb => cb.checked).map(cb => cb.getAttribute('data-strategy-name'));
+            if (stratCbs.length > 0 && stratChecked.length > 0 && stratChecked.length < stratCbs.length) {
+                body.strategies = stratChecked;
+            }
+            const monCbs = Array.from(document.querySelectorAll('#monitor-dropdown-content input[type="checkbox"]'));
+            const monChecked = monCbs.filter(cb => cb.checked).map(cb => cb.getAttribute('data-monitor-id')).filter(Boolean);
+            if (monCbs.length > 0 && monChecked.length > 0 && monChecked.length < monCbs.length) {
+                body.monitors = monChecked;
+            }
+            const sc = document.getElementById('day-sunday')?.checked;
+            const mc = document.getElementById('day-monday')?.checked;
+            const tc = document.getElementById('day-tuesday')?.checked;
+            const wc = document.getElementById('day-wednesday')?.checked;
+            const thc = document.getElementById('day-thursday')?.checked;
+            const fc = document.getElementById('day-friday')?.checked;
+            const sac = document.getElementById('day-saturday')?.checked;
+            const allDays = sc && mc && tc && wc && thc && fc && sac;
+            const noDays = !sc && !mc && !tc && !wc && !thc && !fc && !sac;
+            if (noDays) {
+                body.days_of_week = [];
+            } else if (!allDays) {
+                body.days_of_week = [];
+                if (sc) body.days_of_week.push(0);
+                if (mc) body.days_of_week.push(1);
+                if (tc) body.days_of_week.push(2);
+                if (wc) body.days_of_week.push(3);
+                if (thc) body.days_of_week.push(4);
+                if (fc) body.days_of_week.push(5);
+                if (sac) body.days_of_week.push(6);
+            }
+            return body;
+        }
+
+        function refreshTradeHistoryInsights() {
+            if (_thInsightsDebounce) clearTimeout(_thInsightsDebounce);
+            _thInsightsDebounce = setTimeout(function () {
+                _thInsightsDebounce = null;
+                _doRefreshTradeHistoryInsights();
+            }, 200);
+        }
+
+        async function _doRefreshTradeHistoryInsights() {
+            const reqId = ++_thInsightsReqId;
+            const body = collectTradeHistoryInsightsBody();
+            try {
+                const url = new URL('/api/trades/history/insights', getMainAppUrl());
+                const res = await fetch(url.toString(), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                    cache: 'no-store',
+                });
+                const raw = await res.text();
+                if (!res.ok) {
+                    let msg = res.status === 503 ? 'Service unavailable' : ('HTTP ' + res.status);
+                    try {
+                        const err = JSON.parse(raw);
+                        if (err && typeof err.detail === 'string') msg = err.detail;
+                    } catch (_) { /* ignore */ }
+                    throw new Error(msg);
+                }
+                const data = JSON.parse(raw);
+                if (reqId !== _thInsightsReqId) return;
+                applyInsightsSummary(data.summary);
+            } catch (e) {
+                if (reqId !== _thInsightsReqId) return;
+                console.warn('[trade_history_mobile] insights failed:', e.message || e);
+                applyInsightsSummary(null);
+            }
+        }
+
+        function applyInsightsSummary(s) {
             const tradeCountEl = document.getElementById('trade-count');
             const avgProbEl = document.getElementById('avg-prob');
             const winLossEl = document.getElementById('win-loss-percentage');
@@ -869,8 +1286,9 @@
             const retPercentageEl = document.getElementById('ret-percentage');
             const avgBuyEl = document.getElementById('avg-buy');
             const avgPercentEl = document.getElementById('avg-percent');
-            
-            if (!Array.isArray(trades) || trades.length === 0) {
+            if (!tradeCountEl || !avgProbEl || !winLossEl || !totalPnlEl || !retPercentageEl || !avgBuyEl || !avgPercentEl) return;
+
+            if (!s || !(Number(s.trade_count) > 0)) {
                 tradeCountEl.textContent = '0';
                 avgProbEl.textContent = '0.00';
                 winLossEl.textContent = '0%';
@@ -878,119 +1296,48 @@
                 retPercentageEl.textContent = '0.00%';
                 avgBuyEl.textContent = '0.00';
                 avgPercentEl.textContent = '0.00%';
+                retPercentageEl.style.color = 'white';
+                avgPercentEl.style.color = 'white';
+                totalPnlEl.style.color = 'white';
                 return;
             }
-            
-            // Count total trades
-            const tradeCount = trades.length;
-            
-            // Calculate average probability
-            let totalProb = 0;
-            let probCount = 0;
-            trades.forEach(trade => {
-                if (trade.prob !== null && trade.prob !== undefined && trade.prob !== '') {
-                    const prob = Number(trade.prob);
-                    if (!isNaN(prob)) {
-                        totalProb += prob;
-                        probCount++;
-                    }
-                }
-            });
-            const avgProb = probCount > 0 ? (totalProb / probCount) : 0; // Keep as percentage
-            
-            // Calculate win/loss percentage
-            let winCount = 0;
-            let totalTrades = 0;
-            
-            trades.forEach(trade => {
-                if (trade.win_loss !== null && trade.win_loss !== undefined && trade.win_loss !== '') {
-                    // win_loss is stored as 'W' for win, 'L' for loss
-                    if (trade.win_loss === 'W' || trade.win_loss === 'L') {
-                        totalTrades++;
-                        if (trade.win_loss === 'W') winCount++;
-                    }
-                }
-            });
-            
-            const winPercentage = totalTrades > 0 ? ((winCount / totalTrades) * 100) : 0;
-            
-            // Calculate average buy price
-            let totalBuy = 0;
-            let buyCount = 0;
-            trades.forEach(trade => {
-                if (trade.buy_price !== null && trade.buy_price !== undefined && trade.buy_price !== '') {
-                    const buyPrice = Number(trade.buy_price);
-                    if (!isNaN(buyPrice)) {
-                        totalBuy += buyPrice;
-                        buyCount++;
-                    }
-                }
-            });
-            const avgBuy = buyCount > 0 ? (totalBuy / buyCount) : 0;
-            
-            // Calculate Ret %: sum of all ret_pct values from filtered results
-            let totalRetPct = 0;
-            let retPctCount = 0;
-            trades.forEach(trade => {
-                if (trade.ret_pct !== null && trade.ret_pct !== undefined && trade.ret_pct !== '') {
-                    const retPct = Number(trade.ret_pct);
-                    if (!isNaN(retPct)) {
-                        totalRetPct += retPct;
-                        retPctCount++;
-                    }
-                }
-            });
-            const retValue = retPctCount > 0 ? totalRetPct : 0;
-            const retPercentage = `${formatSummaryNumber(retValue, 2)}%`;
-            
-            // Calculate average of all Ret % values
-            const avgRetPercent = retPctCount > 0 ? (totalRetPct / retPctCount) : 0;
-            
-            // Calculate total PnL
-            let totalPnlDisplay = 0;
-            trades.forEach(trade => {
-                if (trade.pnl !== null && trade.pnl !== undefined && trade.pnl !== '') {
-                    const pnl = Number(trade.pnl);
-                    if (!isNaN(pnl)) {
-                        totalPnlDisplay += pnl;
-                    }
-                }
-            });
-            
-            // Update the display
+
+            const tradeCount = Number(s.trade_count) || 0;
+            const avgProb = Number(s.avg_prob) || 0;
+            const winPercentage = Number(s.win_percentage) || 0;
+            const avgBuy = Number(s.avg_buy) || 0;
+            const retValue = Number(s.sum_ret_pct) || 0;
+            const totalPnlDisplay = Number(s.total_pnl) || 0;
+            const avgRetApprox = tradeCount > 0 ? retValue / tradeCount : 0;
+
             tradeCountEl.textContent = formatSummaryTradeCount(tradeCount);
             avgProbEl.textContent = `${formatSummaryNumber(avgProb, 1)}%`;
             winLossEl.textContent = `${formatSummaryNumber(winPercentage, 1)}%`;
             avgBuyEl.textContent = formatSummaryNumber(avgBuy, 2);
-            retPercentageEl.textContent = retPercentage;
-            avgPercentEl.textContent = `${formatSummaryNumber(avgRetPercent, 2)}%`;
+            retPercentageEl.textContent = `${formatSummaryNumber(retValue, 2)}%`;
+            avgPercentEl.textContent = `${formatSummaryNumber(avgRetApprox, 2)}%`;
             totalPnlEl.textContent = formatSummaryPnL(totalPnlDisplay);
-            
-            // Color coding for Ret %
+
             if (retValue > 0) {
-                retPercentageEl.style.color = '#28a745'; // Green for positive
+                retPercentageEl.style.color = '#28a745';
             } else if (retValue < 0) {
-                retPercentageEl.style.color = '#dc3545'; // Red for negative
+                retPercentageEl.style.color = '#dc3545';
             } else {
-                retPercentageEl.style.color = 'white'; // White for zero
+                retPercentageEl.style.color = 'white';
             }
-            
-            // Color coding for Avg %
-            if (avgRetPercent > 0) {
-                avgPercentEl.style.color = '#28a745'; // Green for positive
-            } else if (avgRetPercent < 0) {
-                avgPercentEl.style.color = '#dc3545'; // Red for negative
+            if (avgRetApprox > 0) {
+                avgPercentEl.style.color = '#28a745';
+            } else if (avgRetApprox < 0) {
+                avgPercentEl.style.color = '#dc3545';
             } else {
-                avgPercentEl.style.color = 'white'; // White for zero
+                avgPercentEl.style.color = 'white';
             }
-            
-            // Color coding for PnL
             if (totalPnlDisplay > 0) {
-                totalPnlEl.style.color = '#28a745'; // Green for positive
+                totalPnlEl.style.color = '#28a745';
             } else if (totalPnlDisplay < 0) {
-                totalPnlEl.style.color = '#dc3545'; // Red for negative
+                totalPnlEl.style.color = '#dc3545';
             } else {
-                totalPnlEl.style.color = 'white'; // White for zero
+                totalPnlEl.style.color = 'white';
             }
         }
 
@@ -1001,7 +1348,6 @@
                 const isPercentMode = document.body.classList.contains('percent-mode');
                 const colSpan = isPercentMode ? 20 : 23; // 3 fewer columns when % Mode is ON
                 tbody.innerHTML = `<tr><td colspan="${colSpan}">No trades found.</td></tr>`;
-                updateSummary(tradesToRender); // Update summary even when no trades
                 return;
             }
 
@@ -1059,9 +1405,6 @@
                 `;
                 tbody.appendChild(tr);
             }
-            
-            // Update summary statistics
-            updateSummary(tradesToRender);
         }
 
         // === CONTRACT FILTER LOGIC ===
@@ -1379,13 +1722,122 @@
             
             return trades.filter(trade => {
                 const monitor = trade.monitor;
-                if (!monitor) return true; // Show trades without monitor
-                
-                return selectedMonitors.some(selectedMonitor => monitor.includes(selectedMonitor));
+                if (!monitor) return true;
+                return selectedMonitors.some(selectedMonitor =>
+                    monitor.toLowerCase() === String(selectedMonitor).toLowerCase()
+                );
             });
         }
 
-        function applyFilters() {
+        /** Same pipeline as applyFilters but skips monitor filter (order matches applyFilters below). */
+        function tradeHistoryMobileApplyFiltersWithoutMonitor(tradeList) {
+            const dateFilterPicker = document.getElementById('date-filter-picker');
+            const includeTestEl = document.getElementById('include-test-trades');
+            const includeTestTrades = includeTestEl && includeTestEl.checked;
+            let filtered = tradeList;
+            if (!includeTestTrades) {
+                filtered = filtered.filter(trade => !trade.test_filter);
+            }
+            filtered = filterTradesByDate(filtered, dateFilterPicker ? dateFilterPicker.value : 'TODAY');
+            filtered = filterTradesByWinLoss(filtered);
+            filtered = filterTradesByStrategy(filtered);
+            filtered = filterTradesBySymbol(filtered);
+            filtered = filterTradesByDay(filtered);
+            filtered = filterTradesByPaperTrade(filtered);
+            return filtered;
+        }
+
+        /** Uncheck monitors that have no trades under current non-monitor filters. */
+        function tradeHistoryMobilePruneMonitorsDisallowedByFilters() {
+            if (!Array.isArray(trades) || trades.length === 0) return false;
+            const content = document.getElementById('monitor-dropdown-content');
+            if (!content) return false;
+            const base = tradeHistoryMobileApplyFiltersWithoutMonitor(trades);
+            const seen = new Set();
+            for (const t of base) {
+                if (t.monitor != null && String(t.monitor).trim() !== '') {
+                    seen.add(String(t.monitor).toLowerCase());
+                }
+            }
+            if (seen.size === 0) return false;
+            let changed = false;
+            content.querySelectorAll('input[type="checkbox"][data-monitor-id]').forEach((cb) => {
+                if (!cb.checked) return;
+                const mid = cb.getAttribute('data-monitor-id');
+                if (!mid) return;
+                if (!seen.has(mid.toLowerCase())) {
+                    cb.checked = false;
+                    changed = true;
+                }
+            });
+            if (changed && typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
+            return changed;
+        }
+
+        function tradeHistoryFindDataSymbolCheckbox(symbolRaw) {
+            const sym = String(symbolRaw || '').trim();
+            if (!sym) return null;
+            const cbs = document.querySelectorAll('#symbol-checkboxes-container input[type="checkbox"][data-symbol]');
+            const upper = sym.toUpperCase();
+            for (let i = 0; i < cbs.length; i++) {
+                const cb = cbs[i];
+                const ds = (cb.getAttribute('data-symbol') || '').trim();
+                if (!ds) continue;
+                if (ds === sym || ds.toUpperCase() === upper) return cb;
+            }
+            return null;
+        }
+
+        function tradeHistoryFindDataStrategyCheckbox(strategyRaw) {
+            const st = String(strategyRaw || '').trim();
+            if (!st) return null;
+            const cbs = document.querySelectorAll('#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]');
+            for (let i = 0; i < cbs.length; i++) {
+                const cb = cbs[i];
+                const dn = (cb.getAttribute('data-strategy-name') || '').trim();
+                if (dn === st) return cb;
+            }
+            return null;
+        }
+
+        function tradeHistoryMobileReactivateFiltersForCheckedMonitors() {
+            const content = document.getElementById('monitor-dropdown-content');
+            if (!content) return false;
+            let changed = false;
+            content.querySelectorAll('input[type="checkbox"][data-monitor-id]').forEach((cb) => {
+                if (!cb.checked) return;
+                const mid = cb.getAttribute('data-monitor-id');
+                if (!mid) return;
+                const meta = tradeHistoryMonitorIdToFilterMeta[mid];
+                if (!meta) return;
+                if (meta.symbol) {
+                    const scb = tradeHistoryFindDataSymbolCheckbox(meta.symbol);
+                    if (scb && !scb.checked) {
+                        scb.checked = true;
+                        changed = true;
+                    }
+                }
+                if (meta.strategy) {
+                    const tcb = tradeHistoryFindDataStrategyCheckbox(meta.strategy);
+                    if (tcb && !tcb.checked) {
+                        tcb.checked = true;
+                        changed = true;
+                    }
+                }
+            });
+            if (changed) {
+                if (typeof updateSymbolButtonText === 'function') updateSymbolButtonText();
+                if (typeof updateStrategyButtonText === 'function') updateStrategyButtonText();
+            }
+            return changed;
+        }
+
+        function applyFilters(options = {}) {
+            const skipMonitorPrune = options.skipMonitorPrune === true;
+            if (!skipMonitorPrune) {
+                tradeHistoryMobilePruneMonitorsDisallowedByFilters();
+            }
+
             const dateFilterPicker = document.getElementById('date-filter-picker');
             
             const includeTestEl = document.getElementById('include-test-trades');
@@ -1408,6 +1860,7 @@
             filteredTrades = [...filtered];
             applyCurrentSort();
             renderTrades(filteredTrades);
+            refreshTradeHistoryInsights();
         }
 
         // Reset All Filters Function
@@ -1462,8 +1915,7 @@
         }
 
         let _thmTradesFetchInFlight = false;
-        let _thmTradesFetchQueued = false;
-        let _thmTradesFetchQueuedReason = null;
+        let _thmTradesFetchQueuedOpts = null;
         let _thmLastTradesFetchErrorLogMs = 0;
 
         function _thmSetFetchBanner(text, show) {
@@ -1478,50 +1930,322 @@
             }
         }
 
-        async function fetchAllTrades(reason) {
+        function computeTradesFetchDateBounds() {
+            const filterPicker = document.getElementById('date-filter-picker');
+            if (!filterPicker) return null;
+            const selectedValue = filterPicker.value;
+            if (selectedValue === 'ALL') return null;
+
+            if (selectedValue === 'CUSTOM') {
+                const sEl = document.getElementById('start-date');
+                const eEl = document.getElementById('end-date');
+                const s = sEl && sEl.value;
+                const e = eEl && eEl.value;
+                if (s && e) return { min_date: s, max_date: e };
+                return null;
+            }
+
+            const now = new Date();
+            const today = formatDate(now);
+            let startDate = '';
+            let endDate = '';
+
+            function getDateOfThisWeek(dayOfWeek) {
+                const curr = new Date(now);
+                const currDay = curr.getDay();
+                const diff = dayOfWeek - currDay;
+                curr.setDate(curr.getDate() + diff);
+                return formatDate(curr);
+            }
+            function getLatestSunday() {
+                const curr = new Date(now);
+                curr.setDate(curr.getDate() - curr.getDay());
+                return formatDate(curr);
+            }
+            function getPrevSunday() {
+                const curr = new Date(now);
+                curr.setDate(curr.getDate() - curr.getDay() - 7);
+                return formatDate(curr);
+            }
+            function getNextSaturdayOfPrevWeek() {
+                const curr = new Date(now);
+                curr.setDate(curr.getDate() - curr.getDay() - 1);
+                return formatDate(curr);
+            }
+
+            switch (selectedValue) {
+                case 'TODAY':
+                    startDate = today;
+                    endDate = today;
+                    break;
+                case 'THIS_WEEK':
+                    startDate = getLatestSunday();
+                    endDate = today;
+                    break;
+                case 'SUNDAY':
+                    startDate = endDate = getDateOfThisWeek(0);
+                    break;
+                case 'MONDAY':
+                    startDate = endDate = getDateOfThisWeek(1);
+                    break;
+                case 'TUESDAY':
+                    startDate = endDate = getDateOfThisWeek(2);
+                    break;
+                case 'WEDNESDAY':
+                    startDate = endDate = getDateOfThisWeek(3);
+                    break;
+                case 'THURSDAY':
+                    startDate = endDate = getDateOfThisWeek(4);
+                    break;
+                case 'FRIDAY':
+                    startDate = endDate = getDateOfThisWeek(5);
+                    break;
+                case 'SATURDAY':
+                    startDate = endDate = getDateOfThisWeek(6);
+                    break;
+                case 'LAST_WEEK':
+                    startDate = getPrevSunday();
+                    endDate = getNextSaturdayOfPrevWeek();
+                    break;
+                case 'MONTH': {
+                    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+                    startDate = formatDate(monthStart);
+                    endDate = today;
+                    break;
+                }
+                case 'PREV_30': {
+                    const prev30 = new Date(now);
+                    prev30.setDate(now.getDate() - 30);
+                    startDate = formatDate(prev30);
+                    endDate = today;
+                    break;
+                }
+                case 'YTD':
+                    startDate = `${now.getFullYear()}-01-01`;
+                    endDate = today;
+                    break;
+                case 'PREV_YEAR': {
+                    const prevYear = new Date(now);
+                    prevYear.setFullYear(now.getFullYear() - 1);
+                    startDate = formatDate(prevYear);
+                    endDate = today;
+                    break;
+                }
+                default:
+                    return null;
+            }
+            if (!startDate || !endDate) return null;
+            return { min_date: startDate, max_date: endDate };
+        }
+
+        function buildTradesFetchUrl(append, extra) {
+            extra = extra || {};
+            const apiBaseUrl = getMainAppUrl();
+            const url = new URL('/trades', apiBaseUrl);
+            const b = computeTradesFetchDateBounds();
+            if (b) {
+                url.searchParams.set('min_date', b.min_date);
+                url.searchParams.set('max_date', b.max_date);
+            }
+            const pageSize = extra.pageSize != null ? extra.pageSize : TRADE_HISTORY_PAGE_SIZE;
+            url.searchParams.set('page_size', String(pageSize));
+            let beforeId = null;
+            if (extra.beforeId !== undefined && extra.beforeId !== null) {
+                beforeId = extra.beforeId;
+            } else if (append && _thmTradesNextBeforeId != null) {
+                beforeId = _thmTradesNextBeforeId;
+            }
+            if (beforeId != null) {
+                url.searchParams.set('before_id', String(beforeId));
+            }
+            return url.toString();
+        }
+
+        function updateTradeHistoryPaginationUi() {
+            const meta = document.getElementById('trade-history-pagination-meta');
+            if (meta) {
+                const n = Array.isArray(trades) ? trades.length : 0;
+                let t = 'Loaded ' + n + ' trade row(s)';
+                if (_thmTradesHasMore) {
+                    t += ' · scroll for more (summary uses the full filtered set)';
+                }
+                meta.textContent = t;
+            }
+        }
+
+        let _thmScrollLoadThrottleId = null;
+        function _thmTradeHistoryScrollNearBottom(el) {
+            if (!el || el.clientHeight < 8) return false;
+            const sh = el.scrollHeight;
+            const ch = el.clientHeight;
+            if (sh < 8) return false;
+            if (sh <= ch + 2) {
+                return true;
+            }
+            const remain = sh - el.scrollTop - ch;
+            return remain <= 180;
+        }
+        function _thmMaybeLoadMoreTradesFromScroll() {
+            if (!_thmTradesHasMore || _thmTradesFetchInFlight) return;
+            const el = document.getElementById('trade-history-results-scroll');
+            if (!el || el.clientHeight <= 0) return;
+            if (!_thmTradeHistoryScrollNearBottom(el)) return;
+            fetchAllTrades('infinite-scroll', { append: true });
+        }
+        function _thmOnTradeHistoryResultsScroll() {
+            if (_thmScrollLoadThrottleId != null) return;
+            _thmScrollLoadThrottleId = window.setTimeout(function () {
+                _thmScrollLoadThrottleId = null;
+                _thmMaybeLoadMoreTradesFromScroll();
+            }, 120);
+        }
+        function bindTradeHistoryMobileScrollLoader() {
+            const el = document.getElementById('trade-history-results-scroll');
+            if (!el || el.dataset.thmScrollLoaderBound === '1') return;
+            el.dataset.thmScrollLoaderBound = '1';
+            el.addEventListener('scroll', _thmOnTradeHistoryResultsScroll, { passive: true });
+        }
+
+        function _thmParseTradesFetchPayload(raw, res) {
+            if (!res.ok) {
+                let msg = res.status === 503 ? 'Service unavailable' : ('HTTP ' + res.status);
+                try {
+                    const err = JSON.parse(raw);
+                    if (err && typeof err.detail === 'string') msg = err.detail;
+                } catch (_) { /* ignore */ }
+                throw new Error(msg);
+            }
+            const data = JSON.parse(raw);
+            if (data && Array.isArray(data.trades)) {
+                return {
+                    list: data.trades,
+                    has_more: !!data.has_more,
+                    next_before_id: data.next_before_id != null ? Number(data.next_before_id) : null,
+                };
+            }
+            if (Array.isArray(data)) {
+                return { list: data, has_more: false, next_before_id: null };
+            }
+            throw new Error('Invalid trades response');
+        }
+
+        async function _thmFetchWithPortRetry(url) {
+            let retries = 0;
+            const maxRetries = 10;
+            while (retries < maxRetries) {
+                try {
+                    const res = await fetch(url, { cache: 'no-store' });
+                    const raw = await res.text();
+                    return { res: res, raw: raw };
+                } catch (portError) {
+                    if (portError.message.includes('Port configuration not loaded')) {
+                        retries++;
+                        if (retries < maxRetries) {
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                            continue;
+                        }
+                    }
+                    throw portError;
+                }
+            }
+            throw new Error('Port configuration failed to load after multiple attempts');
+        }
+
+        async function _thmFetchTradesReplacePreservingRowCount(reason, targetRowCount) {
+            const collected = [];
+            let beforeCursor = null;
+            let lastHasMore = false;
+            let lastNextBefore = null;
+            while (collected.length < targetRowCount) {
+                const remaining = targetRowCount - collected.length;
+                const pageSize =
+                    collected.length === 0
+                        ? Math.min(TRADES_PAGE_SIZE_MAX, Math.max(TRADE_HISTORY_PAGE_SIZE, remaining))
+                        : Math.min(TRADES_PAGE_SIZE_MAX, Math.max(TRADE_HISTORY_PAGE_SIZE, remaining));
+                const url = buildTradesFetchUrl(false, { pageSize: pageSize, beforeId: beforeCursor });
+                if (localStorage.getItem('trade_history_debug') === '1') {
+                    console.log(
+                        '[trade_history_mobile] GET /trades — reason:',
+                        reason,
+                        'replace-preserve',
+                        collected.length,
+                        '->',
+                        targetRowCount,
+                        'page_size',
+                        pageSize
+                    );
+                }
+                const { res, raw } = await _thmFetchWithPortRetry(url);
+                const parsed = _thmParseTradesFetchPayload(raw, res);
+                const list = parsed.list;
+                lastHasMore = parsed.has_more;
+                lastNextBefore = parsed.next_before_id;
+                collected.push.apply(collected, list);
+                if (!lastHasMore || list.length === 0) {
+                    break;
+                }
+                beforeCursor = lastNextBefore;
+                if (beforeCursor == null) {
+                    break;
+                }
+            }
+            trades = collected;
+            _thmTradesHasMore = lastHasMore;
+            _thmTradesNextBeforeId = lastNextBefore;
+        }
+
+        async function fetchAllTrades(reason, options) {
+            const append = options && options.append === true;
+            const preserveLoadedRowCount = !!(options && options.preserveLoadedRowCount);
             const r = reason || 'unspecified';
             if (_thmTradesFetchInFlight) {
-                _thmTradesFetchQueued = true;
-                _thmTradesFetchQueuedReason = r;
+                _thmTradesFetchQueuedOpts = {
+                    reason: r,
+                    append: append,
+                    preserveLoadedRowCount: preserveLoadedRowCount,
+                };
                 return;
             }
             _thmTradesFetchInFlight = true;
+            // Do not clear _thmTradesHasMore / _thmTradesNextBeforeId before the replace fetch completes.
+            // Same as desktop: avoids "Load More" flashing on each debounced /ws/db_change refresh.
+            updateTradeHistoryPaginationUi();
+            const targetPreserveRows =
+                !append && preserveLoadedRowCount && Array.isArray(trades) ? trades.length : 0;
             if (localStorage.getItem('trade_history_debug') === '1') {
-                console.log('[trade_history_mobile] GET /trades — reason:', r);
+                console.log('[trade_history_mobile] GET /trades — reason:', r, append ? 'append' : 'replace');
             }
             try {
-                let retries = 0;
-                const maxRetries = 10;
-                while (retries < maxRetries) {
-                    try {
-                        const apiBaseUrl = getMainAppUrl();
-                        const res = await fetch(`${apiBaseUrl}/trades`, { cache: 'no-store' });
-                        const raw = await res.text();
-                        if (!res.ok) {
-                            let msg = res.status === 503 ? 'Service unavailable' : ('HTTP ' + res.status);
-                            try {
-                                const err = JSON.parse(raw);
-                                if (err && typeof err.detail === 'string') msg = err.detail;
-                            } catch (_) { /* ignore */ }
-                            throw new Error(msg);
-                        }
-                        trades = JSON.parse(raw);
-                        if (!Array.isArray(trades)) throw new Error('Invalid trades response');
-                        _thmSetFetchBanner('', false);
-                        applyFilters();
-                        return;
-                    } catch (portError) {
-                        if (portError.message.includes('Port configuration not loaded')) {
-                            retries++;
-                            if (retries < maxRetries) {
-                                await new Promise(resolve => setTimeout(resolve, 500));
-                                continue;
-                            }
-                        }
-                        throw portError;
+                if (!append && targetPreserveRows > 0) {
+                    await _thmFetchTradesReplacePreservingRowCount(r, targetPreserveRows);
+                } else {
+                    const { res, raw } = await _thmFetchWithPortRetry(buildTradesFetchUrl(append));
+                    const parsed = _thmParseTradesFetchPayload(raw, res);
+                    const list = parsed.list;
+                    let hasMore = parsed.has_more;
+                    let nextBefore = parsed.next_before_id;
+                    if (append && list.length === 0 && hasMore) {
+                        hasMore = false;
+                        nextBefore = null;
+                    }
+                    _thmTradesHasMore = hasMore;
+                    _thmTradesNextBeforeId = nextBefore;
+                    if (append) {
+                        trades = trades.concat(list);
+                    } else {
+                        trades = list;
                     }
                 }
-                throw new Error('Port configuration failed to load after multiple attempts');
+                _thmSetFetchBanner('', false);
+                updateTradeHistoryPaginationUi();
+                applyFilters({ skipMonitorPrune: true });
+                if (_thmTradesHasMore) {
+                    requestAnimationFrame(function () {
+                        requestAnimationFrame(function () {
+                            _thmMaybeLoadMoreTradesFromScroll();
+                        });
+                    });
+                }
             } catch (error) {
                 const hadRows = Array.isArray(trades) && trades.length > 0;
                 const now = Date.now();
@@ -1543,13 +2267,19 @@
                         tbody.innerHTML = `<tr><td colspan="${colSpan}" style="color:red;">Failed to load trades: ${error.message}</td></tr>`;
                     }
                 }
+                updateTradeHistoryPaginationUi();
             } finally {
                 _thmTradesFetchInFlight = false;
-                if (_thmTradesFetchQueued) {
-                    _thmTradesFetchQueued = false;
-                    const nextReason = _thmTradesFetchQueuedReason || 'queued-follow-up';
-                    _thmTradesFetchQueuedReason = null;
-                    setTimeout(() => fetchAllTrades(nextReason), 0);
+                updateTradeHistoryPaginationUi();
+                if (_thmTradesFetchQueuedOpts) {
+                    const o = _thmTradesFetchQueuedOpts;
+                    _thmTradesFetchQueuedOpts = null;
+                    setTimeout(() => {
+                        fetchAllTrades(o.reason, {
+                            append: o.append,
+                            preserveLoadedRowCount: !!o.preserveLoadedRowCount,
+                        });
+                    }, 0);
                 }
             }
         }
@@ -1694,7 +2424,11 @@
                 if (dateFilterPicker && dateFilterPicker.value !== 'CUSTOM') {
                     dateFilterPicker.value = 'CUSTOM';
                 }
-                applyFilters();
+                if (typeof tradeHistoryRangeCalendarClearPendingAndRender === 'function') {
+                    tradeHistoryRangeCalendarClearPendingAndRender();
+                }
+                savePaperTradePreferences();
+                fetchAllTrades('custom-date-change', { append: false });
             });
         }
         if (endDateInput) {
@@ -1704,7 +2438,11 @@
                 if (dateFilterPicker && dateFilterPicker.value !== 'CUSTOM') {
                     dateFilterPicker.value = 'CUSTOM';
                 }
-                applyFilters();
+                if (typeof tradeHistoryRangeCalendarClearPendingAndRender === 'function') {
+                    tradeHistoryRangeCalendarClearPendingAndRender();
+                }
+                savePaperTradePreferences();
+                fetchAllTrades('custom-date-change', { append: false });
             });
         }
         
@@ -1837,19 +2575,21 @@
             document.getElementById('monitor-select-all')?.addEventListener('click', () => {
                 monitorContent.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = true; });
                 if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
-                applyFilters();
+                tradeHistoryMobileReactivateFiltersForCheckedMonitors();
+                applyFilters({ skipMonitorPrune: true });
                 savePaperTradePreferences();
             });
             document.getElementById('monitor-select-none')?.addEventListener('click', () => {
                 monitorContent.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
                 if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
-                applyFilters();
+                applyFilters({ skipMonitorPrune: true });
                 savePaperTradePreferences();
             });
             monitorContent.addEventListener('change', (e) => {
                 if (e.target.matches('input[type="checkbox"]')) {
                     if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
-                    applyFilters();
+                    tradeHistoryMobileReactivateFiltersForCheckedMonitors();
+                    applyFilters({ skipMonitorPrune: true });
                     savePaperTradePreferences();
                 }
             });
@@ -1885,18 +2625,50 @@
             return key || idPart;
         }
 
-        // Load monitor options from API
+        function normalizeActiveMonitorsForTradeHistory(data) {
+            if (!data || data.status !== 'ok' || !Array.isArray(data.monitors)) return [];
+            return data.monitors
+                .filter(m => m && m.id && m.id !== 'NEW_MONITOR' && m.status === 'active')
+                .sort((a, b) => {
+                    const oa = (a.dashboard_order != null ? Number(a.dashboard_order) : 999999);
+                    const ob = (b.dashboard_order != null ? Number(b.dashboard_order) : 999999);
+                    if (oa !== ob) return oa - ob;
+                    return String(a.id).localeCompare(String(b.id));
+                })
+                .map(m => {
+                    const idStr = String(m.id);
+                    const mNum = idStr.match(/^mon_[0-9]+_([0-9]+)$/i);
+                    return {
+                        name: idStr,
+                        id: mNum ? parseInt(mNum[1], 10) : null,
+                        symbol: m.symbol,
+                        strategy: m.strategy,
+                        market: m.market,
+                    };
+                });
+        }
+
+        // Load monitor options from API (same list as dashboard; monitor_manager → Redis → /ws/preferences)
         async function loadMonitorOptions() {
             try {
-                const response = await fetch('/api/trades/monitors');
+                const response = await fetch('/api/monitors?t=' + Date.now());
                 const data = await response.json();
-                
-                if (data.status === 'ok' && data.monitors) {
-                    const monitorDropdownContent = document.getElementById('monitor-dropdown-content');
-                    const existingOptions = monitorDropdownContent.querySelectorAll('label');
-                    existingOptions.forEach(option => option.remove());
-                    
-                    data.monitors.forEach(monitor => {
+                const monitors = normalizeActiveMonitorsForTradeHistory(data);
+                const monitorDropdownContent = document.getElementById('monitor-dropdown-content');
+                if (!monitorDropdownContent) return;
+
+                const existingOptions = monitorDropdownContent.querySelectorAll('label');
+                existingOptions.forEach(option => option.remove());
+
+                Object.keys(tradeHistoryMonitorIdToFilterMeta).forEach((k) => delete tradeHistoryMonitorIdToFilterMeta[k]);
+                monitors.forEach((monitor) => {
+                    tradeHistoryMonitorIdToFilterMeta[monitor.name] = {
+                        symbol: (monitor.symbol || '').trim(),
+                        strategy: (monitor.strategy || '').trim(),
+                    };
+                });
+
+                monitors.forEach(monitor => {
                         const label = document.createElement('label');
                         label.style.cssText = 'display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;';
                         
@@ -1915,8 +2687,7 @@
                         label.appendChild(text);
                         monitorDropdownContent.appendChild(label);
                     });
-                    if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
-                }
+                if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
             } catch (error) {
                 console.error('Error loading monitor options:', error);
             }
@@ -1925,6 +2696,39 @@
         // Load monitor options on page load
         loadMonitorOptions();
 
+        (function connectTradeHistoryMonitorListWs() {
+            function recTenantMatchesMessageTenant(msgTenant) {
+                if (msgTenant == null || msgTenant === '') return true;
+                if (typeof recSessionUserSlot !== 'function') return true;
+                var slot = recSessionUserSlot();
+                if (!slot) return true;
+                var mt = String(msgTenant).trim();
+                if (!/^\d+$/.test(mt)) return true;
+                while (mt.length < 4) mt = '0' + mt;
+                if (mt.length > 4) mt = mt.slice(-4);
+                return mt === slot;
+            }
+            let thMonWs = null;
+            function connect() {
+                if (thMonWs) {
+                    try { thMonWs.close(); } catch (e) {}
+                }
+                const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                thMonWs = new WebSocket(proto + '//' + window.location.host + '/ws/preferences');
+                thMonWs.onmessage = function (ev) {
+                    try {
+                        const data = JSON.parse(ev.data);
+                        if (data.type === 'monitor_list_updated' && recTenantMatchesMessageTenant(data.tenant_user_no)) {
+                            loadMonitorOptions();
+                        }
+                    } catch (err) { /* ignore */ }
+                };
+                thMonWs.onclose = function () {
+                    setTimeout(connect, 5000);
+                };
+            }
+            connect();
+        })();
 
         // % Mode toggle functionality
         function togglePercentMode() {
@@ -1952,6 +2756,7 @@
                     headers: {
                         'Content-Type': 'application/json',
                     },
+                    credentials: 'same-origin',
                     body: JSON.stringify({
                         pct_mode: pctMode
                     })
@@ -1971,7 +2776,9 @@
         async function loadPercentModePreference() {
             try {
                 console.log('🔄 Loading % Mode preference...');
-                const response = await fetch('/api/get_trade_history_preferences');
+                const response = await fetch('/api/get_trade_history_preferences', {
+                    credentials: 'same-origin',
+                });
                 console.log('📡 API response status:', response.status);
                 
                 if (response.ok) {
@@ -2027,12 +2834,19 @@
                     symbolSelection[cb.getAttribute('data-symbol')] = cb.checked;
                 });
                 const includeTestTrades = document.getElementById('include-test-trades');
+                const dateFilterPicker = document.getElementById('date-filter-picker');
+                const startDateInput = document.getElementById('start-date');
+                const endDateInput = document.getElementById('end-date');
                 const response = await fetch('/api/set_trade_history_preferences', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
+                    credentials: 'same-origin',
                     body: JSON.stringify({
+                        date_filter: dateFilterPicker ? dateFilterPicker.value : 'ALL',
+                        start_date: startDateInput ? startDateInput.value : '',
+                        end_date: endDateInput ? endDateInput.value : '',
                         live_filter: filterLive.checked,
                         paper_filter: filterPaper.checked,
                         include_test_trades: includeTestTrades ? includeTestTrades.checked : false,
@@ -2054,8 +2868,10 @@
         // Load paper trade preferences from database
         async function loadPaperTradePreferences() {
             try {
-                const response = await fetch('/api/get_trade_history_preferences');
-                
+                const response = await fetch('/api/get_trade_history_preferences', {
+                    credentials: 'same-origin',
+                });
+
                 if (response.ok) {
                     const preferences = await response.json();
                     const filterLive = document.getElementById('filter-live');
@@ -2085,6 +2901,19 @@
                         });
                         if (typeof updateSymbolButtonText === 'function') updateSymbolButtonText();
                     }
+
+                    const dateFilterPickerPref = document.getElementById('date-filter-picker');
+                    if (dateFilterPickerPref && preferences.date_filter) {
+                        dateFilterPickerPref.value = preferences.date_filter;
+                    }
+                    const startDatePref = document.getElementById('start-date');
+                    const endDatePref = document.getElementById('end-date');
+                    if (startDatePref && preferences.start_date) {
+                        startDatePref.value = preferences.start_date;
+                    }
+                    if (endDatePref && preferences.end_date) {
+                        endDatePref.value = preferences.end_date;
+                    }
                     
                     // Return promise for chaining
                     return Promise.resolve();
@@ -2111,10 +2940,16 @@
             if (dateFilterPicker) {
                 dateFilterPicker.addEventListener('change', () => {
                     updateDateRangeDisplay();
-                    applyFilters();
+                    if (typeof tradeHistoryRangeCalendarSyncFromInputs === 'function') {
+                        tradeHistoryRangeCalendarSyncFromInputs();
+                    }
+                    savePaperTradePreferences();
+                    fetchAllTrades('date-filter-change', { append: false });
                 });
             }
-            
+
+            bindTradeHistoryMobileScrollLoader();
+
             const filterWin = document.getElementById('filter-win');
             const filterLoss = document.getElementById('filter-loss');
             if (filterWin) {
@@ -2165,14 +3000,18 @@
                 th.addEventListener('click', () => sortTrades(th.dataset.key));
             });
             
-            // Initial load
-            updateDateRangeDisplay(); // Populate date inputs
+            // Initial load: restore saved date range before first fetch (parity with desktop)
+            await loadPaperTradePreferences();
+            updateDateRangeDisplay();
+            if (typeof tradeHistoryRangeCalendarInit === 'function') {
+                tradeHistoryRangeCalendarInit();
+            }
+            if (typeof tradeHistoryRangeCalendarSyncFromInputs === 'function') {
+                tradeHistoryRangeCalendarSyncFromInputs();
+            }
             loadPercentModePreference(); // Load % Mode preference
-            loadPaperTradePreferences().then(() => {
-                // Apply filters after preferences are loaded
-                applyFilters();
-            }); // Load paper trade preferences
-            fetchAllTrades('initial-load');
+            applyFilters();
+            fetchAllTrades('initial-load', { append: false });
         });
         
         let _thmTradeDbRefreshTimer = null;
@@ -2181,7 +3020,10 @@
             if (_thmTradeDbRefreshTimer) clearTimeout(_thmTradeDbRefreshTimer);
             _thmTradeDbRefreshTimer = setTimeout(() => {
                 _thmTradeDbRefreshTimer = null;
-                fetchAllTrades('ws-db_change-trades');
+                fetchAllTrades('ws-db_change-trades', {
+                    append: false,
+                    preserveLoadedRowCount: true,
+                });
             }, 800);
         }
 
@@ -2234,7 +3076,7 @@
                         _thmTradeDbRefreshTimer = null;
                     }
                     setupTradeHistoryWebSocket();
-                    fetchAllTrades('tab-visible');
+                    fetchAllTrades('tab-visible', { append: false, preserveLoadedRowCount: true });
                 } else {
                     if (_thmTradeDbRefreshTimer) {
                         clearTimeout(_thmTradeDbRefreshTimer);
@@ -2249,7 +3091,7 @@
         window.addEventListener('message', function(event) {
             if (event.data && event.data.type === 'refresh_data') {
                 // Trigger immediate data refresh
-                fetchAllTrades('parent-refresh_data');
+                fetchAllTrades('parent-refresh_data', { append: false, preserveLoadedRowCount: true });
                 // Notify parent of data update
                 window.parent.postMessage({
                     type: 'data_updated',

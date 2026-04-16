@@ -501,7 +501,7 @@ environment={env_vars}
             if use_trading_redis_comms():
                 if publish_preferences_ws_message(redis_message):
                     return
-                _logger.warning(
+                _logger.debug(
                     "Trading Redis preferences publish failed (%s); skipping main_app HTTP fallback",
                     context,
                 )

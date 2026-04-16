@@ -10,7 +10,12 @@
   <link rel="stylesheet" href="/styles/global.css" />
   <script src="/js/globals.js"></script>
   <script src="/js/db_changes_prefilter.js"></script>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/moment@2.30.1/moment.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-daterangepicker@3.1.0/daterangepicker.css" />
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap-daterangepicker@3.1.0/daterangepicker.min.js"></script>
   <style>
 
     body {
@@ -23,32 +28,43 @@
       font-size: 0.7rem;
     }
     
-    #trade-log-table {
+    #trade-log-table,
+    #th-monitor-summary-table {
       border-collapse: separate;
       border-spacing: 0;
     }
-    
-    #trade-log-table thead {
+
+    #trade-log-table thead,
+    #th-monitor-summary-table thead {
       position: sticky;
       top: 0;
       z-index: 10;
       background-color: #1f2530;
     }
-    
-    #trade-log-table thead th {
+
+    #trade-log-table thead th,
+    #th-monitor-summary-table thead th {
       background-color: #1f2530;
       border-bottom: 2px solid #787878;
     }
-    th, td {
+    #trade-log-table th, #trade-log-table td,
+    #th-monitor-summary-table th, #th-monitor-summary-table td {
       border: .5px solid #626262;
       padding: 6px 10px;
       text-align: center;
     }
-    th {
+    #trade-log-table th {
       background-color: #1f2530;
       font-weight: bold;
       font-size: 0.7rem;
       cursor: pointer;
+      position: relative;
+    }
+    #th-monitor-summary-table th {
+      background-color: #1f2530;
+      font-weight: bold;
+      font-size: 0.7rem;
+      cursor: default;
       position: relative;
     }
     th .sort-indicator {
@@ -57,7 +73,7 @@
       top: 50%;
       transform: translateY(-50%);
     }
-    tbody tr:nth-child(even) {
+    #trade-log-table tbody tr:nth-child(even) {
       /* background-color: #323c4e; */
     }
     caption {
@@ -92,11 +108,15 @@
     #trade-log-table tbody tr.test-filter-trade-row:hover td {
       background-color: #4f1a20 !important;
     }
-    tbody tr:hover:not(.test-filter-trade-row) {
+    #trade-log-table tbody tr:hover:not(.test-filter-trade-row) {
       background-color: #4d586f !important;
       cursor: pointer;
     }
-    tbody tr.test-filter-trade-row:hover {
+    #th-monitor-summary-table tbody tr:hover:not(.th-ms-summary-placeholder) {
+      background-color: #3f4a5e !important;
+      cursor: pointer;
+    }
+    #trade-log-table tbody tr.test-filter-trade-row:hover {
       cursor: pointer;
     }
 
@@ -117,39 +137,472 @@
     th.sortable:hover::after {
       opacity: 1;
     }
+
+    .th-top-bar {
+      margin-bottom: 12px;
+      position: relative;
+      z-index: 10;
+    }
+    .th-daterange-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .th-daterange-row > .th-date-filter-dropdown,
+    .th-daterange-row > .th-range-trigger {
+      flex: 0 0 auto;
+    }
+    .th-search-header-slot {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .th-search-overlay {
+      display: none;
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 100%;
+      margin-top: 6px;
+      max-height: min(85vh, 560px);
+      overflow: visible;
+      padding: 12px 14px;
+      background: #1f2530;
+      border: 1px solid #4a5568;
+      border-radius: 6px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+      z-index: 11000;
+      box-sizing: border-box;
+    }
+    .th-search-overlay .multi-select-dropdown > div[id$="-dropdown-content"] {
+      z-index: 12050;
+    }
+    .th-filter-overlay-row {
+      display: flex;
+      flex-direction: row;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      gap: 20px;
+    }
+    .th-filter-overlay-col {
+      flex: 0 1 auto;
+      min-width: 100px;
+    }
+    .th-top-bar.th-search-open .th-search-overlay {
+      display: block;
+    }
+
+    /* Column-major pairs: dashboard order — tiles full width; chart + summary share next row */
+    .th-monitor-tiles-strip {
+      display: grid;
+      grid-template-rows: repeat(2, auto);
+      grid-auto-flow: column;
+      grid-auto-columns: 158px;
+      gap: 8px;
+      align-items: stretch;
+      align-content: start;
+      justify-content: start;
+      width: 100%;
+      margin-bottom: 10px;
+      overflow-x: auto;
+    }
+    .th-search-summary-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      width: 100%;
+      margin-bottom: 10px;
+    }
+    .th-summary-monitors-row {
+      display: flex;
+      flex-direction: row;
+      gap: 10px;
+      align-items: stretch;
+      width: 100%;
+      height: 328px;
+      min-height: 328px;
+      max-height: 328px;
+    }
+    .th-monitors-ret-panel,
+    .th-summary-side-panel {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      height: 100%;
+      overflow: hidden;
+    }
+    .th-summary-side-panel {
+      flex: 1 1 auto;
+    }
+    .th-summary-panel-inner {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      flex: 1 1 auto;
+      overflow: hidden;
+    }
+    .th-summary-panel-inner #summary-content {
+      flex-shrink: 0;
+    }
+    /* Same scroll + background model as #trade-history-results-scroll */
+    #th-monitor-summary-scroll {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-x: auto;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      background-color: #1f2530;
+      border-top: 1px solid #4a5568;
+    }
+    #th-monitor-summary-table {
+      width: 100%;
+      color: #e2e8f0;
+    }
+    #th-monitor-summary-table tbody tr:nth-child(odd) {
+      background-color: #2f3545;
+    }
+    #th-monitor-summary-table tbody tr:nth-child(even) {
+      background-color: #1f2633;
+    }
+    #th-monitor-summary-table tbody tr.th-ms-summary-placeholder,
+    #th-monitor-summary-table tbody tr.th-ms-summary-placeholder:hover {
+      cursor: default;
+      background-color: #1f2633 !important;
+    }
+    .th-monitors-ret-panel {
+      flex: 0 0 30%;
+      width: 30%;
+    }
+    .th-monitor-filter-tile {
+      width: 100%;
+      min-width: 0;
+      min-height: 0;
+      margin: 0;
+      padding: 10px 10px 8px;
+      border-radius: 8px;
+      border: 1px solid #34495e;
+      background-color: #1f2530;
+      cursor: pointer;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      text-align: left;
+      font-family: inherit;
+      transition: opacity 0.15s ease, background-color 0.15s ease, border-color 0.15s ease,
+        box-shadow 0.15s ease, filter 0.15s ease;
+    }
+    .th-monitor-filter-tile .th-m-tile-row {
+      display: flex;
+      flex-direction: row;
+      align-items: baseline;
+      gap: 6px;
+      min-width: 0;
+    }
+    .th-monitor-filter-tile .th-m-tile-row--top {
+      justify-content: flex-start;
+    }
+    .th-monitor-filter-tile .th-m-tile-row--bottom {
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .th-monitor-filter-tile:hover {
+      background: #2d3748;
+    }
+    /* Portfolio chart line accent #4a9eff + soft outer glow (same family as dashboard glowPlugin) */
+    .th-monitor-filter-tile.th-monitor-filter-tile--on {
+      opacity: 1;
+      border-color: rgba(74, 158, 255, 0.65);
+      box-shadow:
+        0 0 6px rgba(74, 158, 255, 0.22),
+        0 0 14px rgba(74, 158, 255, 0.14),
+        0 0 24px rgba(74, 158, 255, 0.06);
+    }
+    .th-monitor-filter-tile.th-monitor-filter-tile--off {
+      opacity: 0.45;
+      filter: grayscale(0.35);
+      background-color: #171c24;
+      border-color: #2d3748;
+      box-shadow: none;
+    }
+    .th-monitor-filter-tile.th-monitor-filter-tile--off:hover {
+      background-color: #252e3d;
+    }
+    .th-monitor-filter-tile.th-monitor-filter-tile--off.th-monitor-tile-preview {
+      opacity: 1 !important;
+      filter: none !important;
+    }
+    .th-monitor-filter-tile.th-monitor-cross-hover {
+      opacity: 1;
+      filter: none;
+      background-color: #3a4a5c !important;
+      border-color: rgba(74, 158, 255, 0.85) !important;
+      box-shadow:
+        0 0 8px rgba(74, 158, 255, 0.35),
+        0 0 16px rgba(74, 158, 255, 0.15) !important;
+    }
+    #th-monitor-summary-table tbody tr.th-monitor-cross-hover td {
+      background-color: #3f4a5e !important;
+    }
+    .th-monitor-filter-tile .th-m-tile-symbol {
+      font-size: 15px;
+      font-weight: 600;
+      color: #ffffff;
+      line-height: 1.2;
+      flex-shrink: 0;
+    }
+    .th-monitor-filter-tile .th-m-tile-strategy {
+      font-size: 11px;
+      color: #e2e8f0;
+      line-height: 1.25;
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      text-align: right;
+    }
+    .th-monitor-filter-tile .th-m-tile-market {
+      font-size: 10px;
+      color: #a0aec0;
+      flex-shrink: 0;
+      min-width: 0;
+    }
+    .th-monitor-filter-tile .th-m-tile-num {
+      font-size: 10px;
+      color: #718096;
+      flex-shrink: 0;
+      text-align: right;
+    }
+    .th-date-filter-dropdown {
+      width: max-content;
+      max-width: 100%;
+    }
+    .daterangepicker {
+      z-index: 12000;
+      background: #1f2530;
+      border: 1px solid #4a5568;
+      color: #e2e8f0;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+    }
+    .daterangepicker:before,
+    .daterangepicker:after {
+      border-bottom-color: #4a5568;
+    }
+    .daterangepicker .drp-calendar {
+      border-color: #4a5568;
+    }
+    .daterangepicker .calendar-table {
+      border-color: #4a5568;
+      background: #1f2530;
+    }
+    .daterangepicker .calendar-table tbody tr,
+    .daterangepicker .calendar-table tbody tr:hover {
+      background: transparent !important;
+      cursor: default;
+    }
+    .daterangepicker .calendar-table th,
+    .daterangepicker .calendar-table td {
+      color: #e2e8f0;
+      border: none;
+      padding: 0;
+      min-width: 32px;
+      width: 32px;
+      height: 32px;
+      line-height: 32px;
+      text-align: center;
+      vertical-align: middle;
+    }
+    .daterangepicker .calendar-table th.month {
+      color: #e2e8f0;
+    }
+    .daterangepicker td.off,
+    .daterangepicker td.off.in-range,
+    .daterangepicker td.off.start-date,
+    .daterangepicker td.off.end-date {
+      background: #252d3a;
+      color: #4a5568;
+    }
+    .daterangepicker .calendar-table thead th:hover,
+    .daterangepicker .calendar-table thead th.available:hover {
+      background: transparent !important;
+      color: #e2e8f0 !important;
+    }
+    .daterangepicker td.in-range {
+      background: #2c5282;
+      color: #ebf8ff;
+    }
+    .daterangepicker td.in-range:hover {
+      background: #2c5282;
+      color: #ebf8ff;
+    }
+    .daterangepicker td.active,
+    .daterangepicker td.active:hover {
+      background: #3182ce;
+      color: #fff;
+    }
+    .daterangepicker td.start-date,
+    .daterangepicker td.end-date,
+    .daterangepicker td.start-date:hover,
+    .daterangepicker td.end-date:hover {
+      background: #3182ce;
+      color: #fff;
+    }
+    .daterangepicker .calendar-table td.available:not(.in-range):not(.active):not(.start-date):not(.end-date):hover {
+      background: #3d4a5c !important;
+      border-color: transparent !important;
+      color: #fff !important;
+    }
+    .daterangepicker td.off:hover {
+      background: #252d3a;
+      color: #4a5568;
+    }
+    .daterangepicker select.monthselect,
+    .daterangepicker select.yearselect {
+      background: #2a3441;
+      color: #e2e8f0;
+      border: 1px solid #4a5568;
+      border-radius: 3px;
+    }
+    .daterangepicker .drp-buttons {
+      display: none !important;
+    }
+    .daterangepicker .drp-selected {
+      color: #a0aec0;
+    }
+    /* Fixed width: full custom range label "MMM D, YYYY – MMM D, YYYY" so the box does not resize with shorter/empty text. */
+    input.th-range-trigger,
+    input.th-range-trigger.form-control {
+      width: 180px;
+      min-width: 180px;
+      max-width: 100%;
+      padding: 6px 10px;
+      font-size: 12px;
+      background: #2a3441;
+      border: 1px solid #4a5568;
+      color: #e2e8f0;
+      border-radius: 4px;
+      font-family: inherit;
+      cursor: pointer;
+      box-sizing: border-box;
+    }
+    input.th-range-trigger::placeholder {
+      color: #718096;
+    }
+    input.th-range-trigger:hover {
+      border-color: #718096;
+    }
+
+    .th-monitors-ret-panel .panel-header {
+      flex-shrink: 0;
+    }
+    .th-monitors-ret-panel .th-monitors-ret-chart-wrap {
+      flex: 1 1 auto;
+      min-height: 0;
+      margin-top: 6px;
+      position: relative;
+      background-color: #1f2530;
+      border-radius: 5px;
+      overflow: auto;
+      padding: 8px 8px 6px;
+      -webkit-overflow-scrolling: touch;
+    }
+    #th-monitors-ret-chart {
+      width: 100%;
+      min-height: 200px;
+    }
+    #th-monitors-ret-chart svg {
+      display: block;
+      max-width: 100%;
+    }
+    .th-monitors-ret-tooltip {
+      position: fixed;
+      z-index: 13000;
+      pointer-events: none;
+      display: none;
+      padding: 8px 10px;
+      font-size: 11px;
+      line-height: 1.35;
+      color: #e2e8f0;
+      background: #111923;
+      border: 1px solid #4a5568;
+      border-radius: 5px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+      max-width: 260px;
+    }
+    .th-monitors-ret-tooltip .th-mrt-title {
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 4px;
+    }
+    .th-monitors-ret-empty {
+      color: #a0aec0;
+      font-size: 12px;
+      text-align: center;
+      padding: 24px 8px;
+    }
   </style>
 </head>
 <body>
 
-  <div style="display: flex; gap: 10px;">
-    <div class="panel-container" style="width: 50%; height: 160px;">
-        <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
-          <span>Search</span>
-          <a href="#" onclick="resetAllFilters(); return false;" style="color: #ccc; text-decoration: none; font-size: 12px; opacity: 0.6; transition: opacity 0.2s ease;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">Reset</a>
+  <div class="th-top-bar">
+    <div class="th-daterange-row">
+    <input type="hidden" id="start-date" />
+    <input type="hidden" id="end-date" />
+    <select id="date-filter-picker" class="dropdown-picker th-date-filter-dropdown" aria-label="Date range preset">
+      <option value="TODAY">Today</option>
+      <option value="YESTERDAY">Yesterday</option>
+      <option value="THIS_WEEK">This Week</option>
+      <option value="MONTH">This Month</option>
+      <option value="PREV_7">Prev 7</option>
+      <option value="PREV_30">Prev 30</option>
+      <option value="YTD">YTD</option>
+      <option value="ALL">All</option>
+      <option value="CUSTOM" hidden>Custom range</option>
+    </select>
+    <input type="text" id="th-date-range-picker" class="th-range-trigger" placeholder="Choose custom range…" autocomplete="off" readonly aria-label="Custom date range" />
+    <div class="th-search-header-slot">
+      <div class="panel-header" style="cursor: pointer; display: flex; align-items: center; margin: 0; padding-bottom: 0;" onclick="toggleSearchPanel(event)">
+        <div style="display: flex; align-items: center;">
+          <span>Filter</span>
+          <span id="search-expand-icon" style="font-size: 8px; transition: transform 0.3s ease; margin-left: 8px; transform: rotate(0deg);">▼</span>
         </div>
-      <div style="margin-top: 10px; display: flex; gap: 20px; align-items: flex-start;">
-        <div>
-          <div style="display: flex; gap: 15px; align-items: center;">
-            <select id="date-filter-picker" class="dropdown-picker" style="width: 110px;">
-            <option value="ALL">All</option>
-            <option value="TODAY">Today</option>
-            <option value="THIS_WEEK">This Week</option>
-            <option value="SUNDAY">- Sunday</option>
-            <option value="MONDAY">- Monday</option>
-            <option value="TUESDAY">- Tuesday</option>
-            <option value="WEDNESDAY">- Wednesday</option>
-            <option value="THURSDAY">- Thursday</option>
-            <option value="FRIDAY">- Friday</option>
-            <option value="SATURDAY">- Saturday</option>
-            <option value="LAST_WEEK">Last Week</option>
-            <option value="MONTH">This Month</option>
-            <option value="PREV_30">Prev 30</option>
-            <option value="YTD">YTD</option>
-            <option value="PREV_YEAR">Prev Year</option>
-            <option value="CUSTOM">Custom</option>
-          </select>
-          <div style="display: flex; gap: 15px;">
-              <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
+      </div>
+      <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;" onclick="event.stopPropagation();">
+        <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
+          <input type="checkbox" id="filter-live" checked style="width: 14px; height: 14px;">
+          LIVE
+        </label>
+        <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
+          <input type="checkbox" id="filter-paper" style="width: 14px; height: 14px;">
+          PAPER
+        </label>
+        <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
+          <input type="checkbox" id="include-test-trades" style="width: 14px; height: 14px;">
+          TEST
+        </label>
+        <span class="th-monitor-all-none" style="display: inline-flex; align-items: center; gap: 6px; font-size: 12px; user-select: none;" role="group" aria-label="Monitor tiles: select all or none">
+          <span id="th-monitor-select-all" tabindex="0" style="cursor: pointer; color: #7dd3fc;">All</span>
+          <span style="color: #626262;">|</span>
+          <span id="th-monitor-select-none" tabindex="0" style="cursor: pointer; color: #7dd3fc;">None</span>
+        </span>
+      </div>
+    </div>
+    </div>
+    <div id="th-search-overlay" class="th-search-overlay" aria-hidden="true" role="region" aria-label="Filters">
+      <div style="display: flex; justify-content: flex-end; align-items: center; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #4a5568;">
+        <a href="#" onclick="event.stopPropagation(); resetAllFilters(); return false;" style="color: #ccc; text-decoration: none; font-size: 12px; opacity: 0.6; transition: opacity 0.2s ease;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">Reset</a>
+      </div>
+      <div id="search-collapsible-inner" class="th-filter-overlay-row">
+        <div class="th-filter-overlay-col">
+          <div style="margin-bottom: 5px; font-size: 12px; color: #ccc;">Win / Loss</div>
+          <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+            <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
               <input type="checkbox" id="filter-win" checked style="width: 14px; height: 14px;">
               Win
             </label>
@@ -157,26 +610,90 @@
               <input type="checkbox" id="filter-loss" checked style="width: 14px; height: 14px;">
               Loss
             </label>
-            </div>
           </div>
-          <div style="margin-top: 10px; display: flex; gap: 10px; align-items: center;">
-            <div style="display: flex; align-items: center; gap: 5px;">
-              <input type="date" id="start-date" style="width: 100px; padding: 4px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; font-family: inherit;">
-            </div>
-            <div style="display: flex; align-items: center; gap: 5px;">
-              <label style="font-size: 12px; color: #ccc; align: center;"> to </label>
-              <input type="date" id="end-date" style="width: 100px; padding: 4px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; font-family: inherit;">
+        </div>
+        <div class="th-filter-overlay-col">
+          <div style="margin-bottom: 5px; font-size: 12px; color: #ccc;">Symbol</div>
+          <div class="multi-select-dropdown" style="position: relative; width: 120px;">
+            <button id="symbol-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
+              Select Symbols
+            </button>
+            <div id="symbol-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 150px; overflow-y: auto;">
+              <div id="symbol-select-all-none-row" style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; border-bottom: 1px solid #4a5568;">
+                <span id="symbol-select-all" style="cursor: pointer; color: #7dd3fc;">All</span>
+                <span style="color: #626262;">|</span>
+                <span id="symbol-select-none" style="cursor: pointer; color: #7dd3fc;">None</span>
+              </div>
+              <div id="symbol-checkboxes-container"></div>
             </div>
           </div>
         </div>
-        <div style="display: flex; flex-direction: column; gap: 10px;">
-          <div>
-            <div style="margin-bottom: 5px; font-size: 12px; color: #ccc;">Contract</div>
-            <div class="multi-select-dropdown" style="position: relative; width: 100px;">
-              <button id="contract-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
-                Select Contracts
+        <div class="th-filter-overlay-col">
+          <div style="margin-bottom: 5px; font-size: 12px; color: #ccc;">Strategy</div>
+          <div class="multi-select-dropdown" style="position: relative; width: 150px;">
+            <button id="strategy-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
+              Select Strategies
+            </button>
+            <div id="strategy-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 150px; overflow-y: auto;">
+              <div id="strategy-select-all-none-row" style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; border-bottom: 1px solid #4a5568;">
+                <span id="strategy-select-all" style="cursor: pointer; color: #7dd3fc;">All</span>
+                <span style="color: #626262;">|</span>
+                <span id="strategy-select-none" style="cursor: pointer; color: #7dd3fc;">None</span>
+              </div>
+              <div id="strategy-checkboxes-container"></div>
+            </div>
+          </div>
+        </div>
+        <div class="th-filter-overlay-col">
+          <div style="margin-bottom: 5px; font-size: 12px; color: #ccc;">Day</div>
+          <div class="multi-select-dropdown" style="position: relative; width: 100px;">
+              <button id="day-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
+                Select Days
               </button>
-              <div id="contract-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 320px; overflow-y: auto;">
+              <div id="day-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 150px; overflow-y: auto;">
+                <div style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; border-bottom: 1px solid #4a5568;">
+                  <span id="day-select-all" style="cursor: pointer; color: #7dd3fc;">All</span>
+                  <span style="color: #626262;">|</span>
+                  <span id="day-select-none" style="cursor: pointer; color: #7dd3fc;">None</span>
+                </div>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="day-sunday" checked style="width: 14px; height: 14px;">
+                  Sunday
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="day-monday" checked style="width: 14px; height: 14px;">
+                  Monday
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="day-tuesday" checked style="width: 14px; height: 14px;">
+                  Tuesday
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="day-wednesday" checked style="width: 14px; height: 14px;">
+                  Wednesday
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="day-thursday" checked style="width: 14px; height: 14px;">
+                  Thursday
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
+                  <input type="checkbox" id="day-friday" checked style="width: 14px; height: 14px;">
+                  Friday
+                </label>
+                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer;">
+                  <input type="checkbox" id="day-saturday" checked style="width: 14px; height: 14px;">
+                  Saturday
+                </label>
+              </div>
+            </div>
+        </div>
+        <div class="th-filter-overlay-col">
+          <div style="margin-bottom: 5px; font-size: 12px; color: #ccc;">Contract</div>
+          <div class="multi-select-dropdown" style="position: relative; width: 110px;">
+            <button id="contract-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
+              Select Contracts
+            </button>
+            <div id="contract-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; max-height: 320px; overflow-y: auto;">
                 <div style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; border-bottom: 1px solid #4a5568;">
                   <span id="contract-select-all" style="cursor: pointer; color: #7dd3fc;">All</span>
                   <span style="color: #626262;">|</span>
@@ -281,122 +798,29 @@
               </div>
             </div>
           </div>
-          <div>
-            <div style="margin-bottom: 5px; font-size: 12px; color: #ccc;">Monitor</div>
-            <div class="multi-select-dropdown" style="position: relative; width: 150px;">
-              <button id="monitor-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
-                Select Monitors
-              </button>
-              <div id="monitor-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 150px; overflow-y: auto;">
-                <div style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; border-bottom: 1px solid #4a5568;">
-                  <span id="monitor-select-all" style="cursor: pointer; color: #7dd3fc;">All</span>
-                  <span style="color: #626262;">|</span>
-                  <span id="monitor-select-none" style="cursor: pointer; color: #7dd3fc;">None</span>
-                </div>
-                <!-- Monitor options will be populated dynamically -->
-              </div>
-            </div>
-          </div>
         </div>
-        <div>
-          <div style="margin-bottom: 5px; font-size: 12px; color: #ccc;">Symbol</div>
-          <div class="multi-select-dropdown" style="position: relative; width: 100px;">
-            <button id="symbol-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
-              Select Symbols
-            </button>
-            <div id="symbol-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 150px; overflow-y: auto;">
-              <div id="symbol-select-all-none-row" style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; border-bottom: 1px solid #4a5568;">
-                <span id="symbol-select-all" style="cursor: pointer; color: #7dd3fc;">All</span>
-                <span style="color: #626262;">|</span>
-                <span id="symbol-select-none" style="cursor: pointer; color: #7dd3fc;">None</span>
-              </div>
-              <div id="symbol-checkboxes-container"></div>
-            </div>
-          </div>
-          <div style="margin-top: 10px;">
-            <div style="margin-bottom: 5px; font-size: 12px; color: #ccc;">Day</div>
-            <div class="multi-select-dropdown" style="position: relative; width: 100px;">
-              <button id="day-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
-                Select Days
-              </button>
-              <div id="day-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 150px; overflow-y: auto;">
-                <div style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; border-bottom: 1px solid #4a5568;">
-                  <span id="day-select-all" style="cursor: pointer; color: #7dd3fc;">All</span>
-                  <span style="color: #626262;">|</span>
-                  <span id="day-select-none" style="cursor: pointer; color: #7dd3fc;">None</span>
-                </div>
-                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                  <input type="checkbox" id="day-sunday" checked style="width: 14px; height: 14px;">
-                  Sunday
-                </label>
-                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                  <input type="checkbox" id="day-monday" checked style="width: 14px; height: 14px;">
-                  Monday
-                </label>
-                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                  <input type="checkbox" id="day-tuesday" checked style="width: 14px; height: 14px;">
-                  Tuesday
-                </label>
-                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                  <input type="checkbox" id="day-wednesday" checked style="width: 14px; height: 14px;">
-                  Wednesday
-                </label>
-                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                  <input type="checkbox" id="day-thursday" checked style="width: 14px; height: 14px;">
-                  Thursday
-                </label>
-                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;">
-                  <input type="checkbox" id="day-friday" checked style="width: 14px; height: 14px;">
-                  Friday
-                </label>
-                <label style="display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer;">
-                  <input type="checkbox" id="day-saturday" checked style="width: 14px; height: 14px;">
-                  Saturday
-                </label>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div>
-          <div style="margin-bottom: 5px; font-size: 12px; color: #ccc;">Strategy</div>
-          <div class="multi-select-dropdown" style="position: relative; width: 150px;">
-            <button id="strategy-dropdown-btn" style="width: 100%; padding: 4px 8px; font-size: 12px; background: #2a3441; border: 1px solid #4a5568; color: white; border-radius: 3px; text-align: left; cursor: pointer;">
-              Select Strategies
-            </button>
-            <div id="strategy-dropdown-content" style="display: none; position: absolute; top: 100%; left: 0; width: 100%; background: #2a3441; border: 1px solid #4a5568; border-radius: 3px; z-index: 1000; max-height: 150px; overflow-y: auto;">
-              <div id="strategy-select-all-none-row" style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; border-bottom: 1px solid #4a5568;">
-                <span id="strategy-select-all" style="cursor: pointer; color: #7dd3fc;">All</span>
-                <span style="color: #626262;">|</span>
-                <span id="strategy-select-none" style="cursor: pointer; color: #7dd3fc;">None</span>
-              </div>
-              <div id="strategy-checkboxes-container"></div>
-        </div>
-          </div>
-          <div style="margin-top: 10px;">
-            <div style="display: flex; gap: 15px;">
-              <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
-                <input type="checkbox" id="filter-live" checked style="width: 14px; height: 14px;">
-                LIVE
-              </label>
-              <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
-                <input type="checkbox" id="filter-paper" style="width: 14px; height: 14px;">
-                PAPER
-              </label>
-            </div>
-            <div style="display: flex; gap: 15px; margin-top: 8px;">
-              <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
-                <input type="checkbox" id="include-test-trades" style="width: 14px; height: 14px;">
-                TEST
-              </label>
-            </div>
-          </div>
-        </div>
-
       </div>
     </div>
+    <div id="th-monitor-checkboxes-host" style="display:none" aria-hidden="true"></div>
+  </div>
 
-    <div class="panel-container" style="width: 50%; height: 160px;">
-      <div class="panel-header">Summary</div>
+  <div id="th-monitor-tiles" class="th-monitor-tiles-strip" role="list" aria-label="Monitors — selected tiles are included in results"></div>
+
+  <div class="th-search-summary-stack">
+    <div class="th-summary-monitors-row">
+    <div class="panel-container th-monitors-ret-panel">
+      <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
+        <span>Monitors</span>
+      </div>
+      <div class="th-monitors-ret-chart-wrap">
+        <div id="th-monitors-ret-chart" aria-label="Selected monitors total return percent"></div>
+      </div>
+    </div>
+    <div class="panel-container th-summary-side-panel">
+      <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;">
+        <span>Summary</span>
+      </div>
+      <div class="th-summary-panel-inner">
       <div class="panel-content" id="summary-content" style="display: flex; justify-content: space-around; padding: 10px;">
         <div style="text-align: center;">
           <div style="font-size: 12px; color: #ccc; margin-bottom: 5px;">Trades</div>
@@ -427,8 +851,28 @@
           <div id="total-pnl" style="font-size: 18px; font-weight: bold; color: white;">$0.00</div>
         </div>
       </div>
+      <div id="th-monitor-summary-scroll">
+        <table id="th-monitor-summary-table" aria-label="Per-monitor stats for loaded trades">
+          <thead>
+            <tr>
+              <th scope="col">Monitor</th>
+              <th scope="col">Trades</th>
+              <th scope="col">W/L %</th>
+              <th scope="col">Avg Prob</th>
+              <th scope="col">Avg Buy</th>
+              <th scope="col">Avg Diff</th>
+              <th scope="col">Ret %</th>
+              <th scope="col">PnL</th>
+            </tr>
+          </thead>
+          <tbody id="th-monitor-summary-table-body"></tbody>
+        </table>
+      </div>
+      </div>
+    </div>
     </div>
   </div>
+  <div id="th-monitors-ret-tooltip" class="th-monitors-ret-tooltip" role="tooltip" aria-hidden="true"></div>
 
   <!-- Analysis Panel -->
   <div class="panel-container" style="width: 100%; margin-bottom: 10px;">
@@ -502,7 +946,7 @@
     </div>
     <div id="results-content" style="height: 0; overflow: hidden; transition: height 0.1s ease;">
       <div style="height: 10px; background-color: #323c4e;"></div>
-      <div style="background-color: #1f2530; height: calc(100% - 10px); overflow-y: auto;">
+      <div id="trade-history-results-scroll" style="background-color: #1f2530; height: calc(100% - 10px); overflow-y: auto;">
       <div id="trade-history-fetch-banner" style="display:none; padding:8px 10px; background:#4a3728; color:#f6e05e; font-size:12px; border-bottom:1px solid #744210;" role="status" aria-live="polite"></div>
       <table id="trade-log-table" aria-label="Trade Log Table">
         <thead>
@@ -534,6 +978,9 @@
         </thead>
         <tbody></tbody>
       </table>
+      <div id="trade-history-pagination" style="padding:10px 12px; display:flex; align-items:center; gap:14px; flex-wrap:wrap; border-top:1px solid #4a5568; background:#1a1f28;">
+        <span id="trade-history-pagination-meta" style="font-size:12px; color:#a0aec0;"></span>
+      </div>
     </div>
   </div>
 
@@ -541,6 +988,17 @@
     let currentSort = { key: 'id', asc: false };
     let trades = [];
     let filteredTrades = [];
+    const TRADE_HISTORY_PAGE_SIZE = 200;
+    /** Must match ``TRADES_PAGE_SIZE_MAX`` in ``backend/core/trades_list_query.py`` */
+    const TRADES_PAGE_SIZE_MAX = 500;
+    let _thTradesHasMore = false;
+    let _thTradesNextBeforeId = null;
+    let _tradeHistoryInsights = null;
+    let _thInsightsReqId = 0;
+    let _thInsightsDebounce = null;
+    /** Populated in loadMonitorOptions: monitor id (``mon_*``) → symbol/strategy from /api/monitors */
+    const tradeHistoryMonitorIdToFilterMeta = {};
+    let _tradeHistoryRefreshSymbolStrategyUi = function () {};
 
 
 
@@ -575,74 +1033,38 @@
         });
       }
       
-      // Helper to get the date string for a given day of week in this week
-      function getDateOfThisWeek(dayOfWeek) {
-        const curr = new Date(now);
-        const currDay = curr.getDay();
-        const diff = dayOfWeek - currDay;
-        curr.setDate(curr.getDate() + diff);
-        return formatDate(curr);
-      }
-      // Helper to get the date string for a given day of week in last week
-      function getDateOfLastWeek(dayOfWeek) {
-        const curr = new Date(now);
-        const currDay = curr.getDay();
-        // Go to previous Sunday, then add dayOfWeek
-        curr.setDate(curr.getDate() - currDay - 7 + dayOfWeek);
-        return formatDate(curr);
-      }
-      // Helper to get the latest Sunday (start of this week)
       function getLatestSunday() {
         const curr = new Date(now);
         curr.setDate(curr.getDate() - curr.getDay());
-        return formatDate(curr);
-      }
-      // Helper to get previous Sunday (start of last week)
-      function getPrevSunday() {
-        const curr = new Date(now);
-        curr.setDate(curr.getDate() - curr.getDay() - 7);
-        return formatDate(curr);
-      }
-      // Helper to get following Saturday (end of last week)
-      function getNextSaturdayOfPrevWeek() {
-        const curr = new Date(now);
-        curr.setDate(curr.getDate() - curr.getDay() - 1); // previous Saturday
         return formatDate(curr);
       }
       return trades.filter(trade => {
         if (!trade.date) return false;
         switch (filter) {
           case 'ALL':
-            return true; // Show all trades regardless of date
+            return true;
           case 'TODAY':
             return trade.date === today;
+          case 'YESTERDAY': {
+            const y = new Date(now);
+            y.setDate(now.getDate() - 1);
+            const yStr = formatDate(y);
+            return trade.date >= yStr && trade.date <= yStr;
+          }
           case 'THIS_WEEK': {
             const sunday = getLatestSunday();
             return trade.date >= sunday && trade.date <= today;
-          }
-          case 'SUNDAY':
-            return trade.date === getDateOfThisWeek(0);
-          case 'MONDAY':
-            return trade.date === getDateOfThisWeek(1);
-          case 'TUESDAY':
-            return trade.date === getDateOfThisWeek(2);
-          case 'WEDNESDAY':
-            return trade.date === getDateOfThisWeek(3);
-          case 'THURSDAY':
-            return trade.date === getDateOfThisWeek(4);
-          case 'FRIDAY':
-            return trade.date === getDateOfThisWeek(5);
-          case 'SATURDAY':
-            return trade.date === getDateOfThisWeek(6);
-          case 'LAST_WEEK': {
-            const prevSunday = getPrevSunday();
-            const nextSaturday = getNextSaturdayOfPrevWeek();
-            return trade.date >= prevSunday && trade.date <= nextSaturday;
           }
           case 'MONTH': {
             const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
             const monthStartStr = formatDate(monthStart);
             return trade.date >= monthStartStr && trade.date <= today;
+          }
+          case 'PREV_7': {
+            const p7 = new Date(now);
+            p7.setDate(now.getDate() - 6);
+            const p7Str = formatDate(p7);
+            return trade.date >= p7Str && trade.date <= today;
           }
           case 'PREV_30': {
             const prev30 = new Date(now);
@@ -653,12 +1075,6 @@
           case 'YTD': {
             const ytdStr = `${year}-01-01`;
             return trade.date >= ytdStr && trade.date <= today;
-          }
-          case 'PREV_YEAR': {
-            const prevYear = new Date(now);
-            prevYear.setFullYear(now.getFullYear() - 1);
-            const prevYearStr = formatDate(prevYear);
-            return trade.date >= prevYearStr && trade.date <= today;
           }
           case 'CUSTOM':
             return true;
@@ -927,14 +1343,116 @@
       });
     }
 
+    /**
+     * Monitors currently included in the strip (tiles “on”). Matches what the user sees as selected.
+     * Falls back to checkboxes when tiles are not built yet.
+     */
+    function tradeHistorySelectedMonitorIdsFromStrip() {
+      const tiles = Array.from(document.querySelectorAll('#th-monitor-tiles .th-monitor-filter-tile[data-monitor-id]'));
+      if (tiles.length > 0) {
+        return tiles
+          .filter((t) => t.classList.contains('th-monitor-filter-tile--on'))
+          .map((t) => t.getAttribute('data-monitor-id'))
+          .filter(Boolean);
+      }
+      return Array.from(document.querySelectorAll('#th-monitor-checkboxes-host input[type="checkbox"]'))
+        .filter((cb) => cb.checked)
+        .map((cb) => cb.getAttribute('data-monitor-id'))
+        .filter(Boolean);
+    }
+
+    let tradeHistoryMonitorPreviewId = null;
+    let _thMonitorPreviewClearTimer = null;
+
+    function tradeHistoryMonitorIdEquals(a, b) {
+      if (a == null || b == null) return false;
+      return String(a).toLowerCase() === String(b).toLowerCase();
+    }
+
+    function tradeHistoryStripMonitorTilePreviewClass() {
+      document.querySelectorAll('.th-monitor-tile-preview').forEach((el) => el.classList.remove('th-monitor-tile-preview'));
+    }
+
+    /**
+     * Strip order: tiles that are on, plus at most one off tile matching hover preview.
+     * Does not change checkbox selection; used only for chart + summary table display.
+     */
+    function tradeHistoryGetEffectiveSelectedMonitorIdsForDisplay() {
+      const preview = tradeHistoryMonitorPreviewId;
+      const tiles = Array.from(document.querySelectorAll('#th-monitor-tiles .th-monitor-filter-tile[data-monitor-id]'));
+      if (tiles.length > 0) {
+        const out = [];
+        for (let i = 0; i < tiles.length; i++) {
+          const t = tiles[i];
+          const mid = t.getAttribute('data-monitor-id');
+          if (!mid) continue;
+          if (t.classList.contains('th-monitor-filter-tile--on')) {
+            out.push(mid);
+            continue;
+          }
+          if (preview && tradeHistoryMonitorIdEquals(mid, preview)) {
+            out.push(mid);
+          }
+        }
+        return out;
+      }
+      const out = Array.from(document.querySelectorAll('#th-monitor-checkboxes-host input[type="checkbox"]'))
+        .filter((cb) => cb.checked)
+        .map((cb) => cb.getAttribute('data-monitor-id'))
+        .filter(Boolean);
+      if (preview && !out.some((id) => tradeHistoryMonitorIdEquals(id, preview))) {
+        out.push(preview);
+      }
+      return out;
+    }
+
+    function tradeHistoryClearMonitorPreview(skipRender) {
+      if (_thMonitorPreviewClearTimer) {
+        clearTimeout(_thMonitorPreviewClearTimer);
+        _thMonitorPreviewClearTimer = null;
+      }
+      const hadPreview =
+        tradeHistoryMonitorPreviewId != null && tradeHistoryMonitorPreviewId !== '';
+      tradeHistoryMonitorPreviewId = null;
+      tradeHistoryStripMonitorTilePreviewClass();
+      if (!skipRender) {
+        renderTradeHistoryMonitorsRetChart();
+        renderTradeHistoryMonitorSummaryTable();
+      }
+      if (hadPreview) {
+        refreshTradeHistoryInsights();
+      }
+    }
+
+    function tradeHistoryApplyMonitorPreviewFromOffTile(tile, mid) {
+      if (_thMonitorPreviewClearTimer) {
+        clearTimeout(_thMonitorPreviewClearTimer);
+        _thMonitorPreviewClearTimer = null;
+      }
+      tradeHistoryMonitorPreviewId = mid;
+      tradeHistoryStripMonitorTilePreviewClass();
+      tile.classList.add('th-monitor-tile-preview');
+      renderTradeHistoryMonitorsRetChart();
+      renderTradeHistoryMonitorSummaryTable();
+      refreshTradeHistoryInsights();
+    }
+
+    function tradeHistoryScheduleClearMonitorPreview(mid) {
+      if (!tradeHistoryMonitorIdEquals(tradeHistoryMonitorPreviewId, mid)) return;
+      if (_thMonitorPreviewClearTimer) clearTimeout(_thMonitorPreviewClearTimer);
+      _thMonitorPreviewClearTimer = setTimeout(() => {
+        _thMonitorPreviewClearTimer = null;
+        if (tradeHistoryMonitorIdEquals(tradeHistoryMonitorPreviewId, mid)) {
+          tradeHistoryClearMonitorPreview(false);
+        }
+      }, 55);
+    }
+
     // === MONITOR FILTER LOGIC ===
     function filterTradesByMonitor(trades) {
-      const monitorCheckboxes = Array.from(document.querySelectorAll('#monitor-dropdown-content input[type="checkbox"]'));
+      const monitorCheckboxes = Array.from(document.querySelectorAll('#th-monitor-checkboxes-host input[type="checkbox"]'));
       if (monitorCheckboxes.length === 0) return trades;
-      const selectedMonitors = monitorCheckboxes
-        .filter(checkbox => checkbox.checked)
-        .map(checkbox => checkbox.getAttribute('data-monitor-id'));
-      
+      const selectedMonitors = tradeHistorySelectedMonitorIdsFromStrip();
       // If no specific monitors are selected, show all trades
       if (selectedMonitors.length === 0) {
         return trades;
@@ -950,15 +1468,608 @@
         );
       });
     }
-    
 
-    
+    function tradeHistorySyncMonitorTileForCheckbox(checkbox) {
+      const _mHost = document.getElementById('th-monitor-checkboxes-host');
+      if (!checkbox || !_mHost || !_mHost.contains(checkbox)) return;
+      const mid = checkbox.getAttribute('data-monitor-id');
+      if (!mid) return;
+      let tile = null;
+      document.querySelectorAll('#th-monitor-tiles .th-monitor-filter-tile').forEach(t => {
+        if (t.getAttribute('data-monitor-id') === mid) tile = t;
+      });
+      if (!tile) return;
+      const on = checkbox.checked;
+      tile.classList.toggle('th-monitor-filter-tile--on', on);
+      tile.classList.toggle('th-monitor-filter-tile--off', !on);
+      tile.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+
+    function tradeHistorySyncAllMonitorTiles() {
+      document.querySelectorAll('#th-monitor-checkboxes-host input[type="checkbox"]').forEach(cb => {
+        tradeHistorySyncMonitorTileForCheckbox(cb);
+      });
+    }
+
+    function tradeHistoryEscapeMonitorIdForSelector(mid) {
+      if (mid == null) return '';
+      if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(String(mid));
+      return String(mid).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    }
+
+    let _thMonitorCrossHoverLeaveTimer = null;
+    /** Monitor id for which bar+tile+row cross-highlight is active (survives chart/table re-renders). */
+    let _thMonitorCrossHoverActiveId = null;
+
+    function tradeHistoryResetAllMonitorRetBars() {
+      document.querySelectorAll('#th-monitors-ret-chart rect.th-mrt-bar').forEach((bar) => {
+        bar.setAttribute('stroke-width', '3');
+        bar.setAttribute('fill-opacity', '0.1');
+      });
+    }
+
+    /** Highlight bar + strip tile + summary table row for one monitor (or clear all if monitorId falsy). */
+    function tradeHistoryApplyMonitorCrossHover(monitorId) {
+      tradeHistoryResetAllMonitorRetBars();
+      document.querySelectorAll('.th-monitor-filter-tile.th-monitor-cross-hover').forEach((el) => {
+        el.classList.remove('th-monitor-cross-hover');
+      });
+      document.querySelectorAll('#th-monitor-summary-table tbody tr.th-monitor-cross-hover').forEach((el) => {
+        el.classList.remove('th-monitor-cross-hover');
+      });
+      if (monitorId == null || monitorId === '') return;
+      const esc = tradeHistoryEscapeMonitorIdForSelector(monitorId);
+      const bar = document.querySelector(
+        '#th-monitors-ret-chart rect.th-mrt-bar[data-monitor-id="' + esc + '"]'
+      );
+      if (bar) {
+        bar.setAttribute('stroke-width', '4');
+        bar.setAttribute('fill-opacity', '0.55');
+      }
+      const tile = document.querySelector(
+        '#th-monitor-tiles .th-monitor-filter-tile[data-monitor-id="' + esc + '"]'
+      );
+      if (tile) tile.classList.add('th-monitor-cross-hover');
+      const row = document.querySelector(
+        '#th-monitor-summary-table tbody tr[data-monitor-id="' + esc + '"]'
+      );
+      if (row) row.classList.add('th-monitor-cross-hover');
+    }
+
+    /** After chart/table DOM rebuild (e.g. live /trades refresh), restore highlight if hover never cleared. */
+    function tradeHistoryReapplyMonitorCrossHoverAfterDomRebuild() {
+      if (_thMonitorCrossHoverActiveId == null || _thMonitorCrossHoverActiveId === '') return;
+      tradeHistoryApplyMonitorCrossHover(_thMonitorCrossHoverActiveId);
+    }
+
+    /**
+     * Cross-highlight the same monitor on strip tile, Ret % bar, and summary table row.
+     * Short delayed clear on leave so moving between the three does not flicker.
+     */
+    function tradeHistorySetMonitorCrossHover(monitorId, active) {
+      if (_thMonitorCrossHoverLeaveTimer) {
+        clearTimeout(_thMonitorCrossHoverLeaveTimer);
+        _thMonitorCrossHoverLeaveTimer = null;
+      }
+      if (active) {
+        _thMonitorCrossHoverActiveId = monitorId;
+        tradeHistoryApplyMonitorCrossHover(monitorId);
+        return;
+      }
+      _thMonitorCrossHoverLeaveTimer = setTimeout(() => {
+        _thMonitorCrossHoverLeaveTimer = null;
+        _thMonitorCrossHoverActiveId = null;
+        tradeHistoryApplyMonitorCrossHover(null);
+      }, 45);
+    }
+
+    function tradeHistorySoloMonitorById(monitorId) {
+      if (!monitorId) return;
+      document.querySelectorAll('#th-monitor-checkboxes-host input[type="checkbox"][data-monitor-id]').forEach((cb) => {
+        cb.checked = cb.getAttribute('data-monitor-id') === monitorId;
+      });
+      tradeHistorySyncAllMonitorTiles();
+      tradeHistoryReactivateFiltersForCheckedMonitors();
+      applyFilters({ skipMonitorPrune: true });
+      savePreferences();
+    }
+
+    /** Same filters as the table, but omit monitor filter so each selected tile can be compared. */
+    function tradeHistoryApplyFiltersWithoutMonitor(tradeList) {
+      const dateFilterPicker = document.getElementById('date-filter-picker');
+      const includeTestEl = document.getElementById('include-test-trades');
+      const includeTestTrades = includeTestEl && includeTestEl.checked;
+      let filtered = tradeList;
+      if (!includeTestTrades) {
+        filtered = filtered.filter((trade) => !trade.test_filter);
+      }
+      filtered = filterTradesByDate(filtered, dateFilterPicker ? dateFilterPicker.value : 'TODAY');
+      filtered = filterTradesByWinLoss(filtered);
+      filtered = filterTradesBySymbol(filtered);
+      filtered = filterTradesByStrategy(filtered);
+      filtered = filterTradesByDay(filtered);
+      filtered = filterTradesByPaperTrade(filtered);
+      return filtered;
+    }
+
+    /**
+     * Uncheck monitor tiles that have no trades left under current filters (symbol, strategy, day, etc.).
+     * Uses the same pipeline as the table minus the monitor filter. No-op if `trades` is empty.
+     * @returns {boolean} true if any monitor checkbox was turned off
+     */
+    function tradeHistoryPruneMonitorsDisallowedByFilters() {
+      if (!Array.isArray(trades) || trades.length === 0) return false;
+      const host = document.getElementById('th-monitor-checkboxes-host');
+      if (!host) return false;
+      const base = tradeHistoryApplyFiltersWithoutMonitor(trades);
+      const seen = new Set();
+      for (const t of base) {
+        if (t.monitor != null && String(t.monitor).trim() !== '') {
+          seen.add(String(t.monitor).toLowerCase());
+        }
+      }
+      // No trade in the current (non-monitor) view carries a monitor id — do not mass-uncheck (empty
+      // payload, /trades omitting monitor, or filters excluding all rows would wipe selections).
+      if (seen.size === 0) return false;
+      let changed = false;
+      host.querySelectorAll('input[type="checkbox"][data-monitor-id]').forEach((cb) => {
+        if (!cb.checked) return;
+        const mid = cb.getAttribute('data-monitor-id');
+        if (!mid) return;
+        if (!seen.has(mid.toLowerCase())) {
+          cb.checked = false;
+          changed = true;
+        }
+      });
+      if (changed) tradeHistorySyncAllMonitorTiles();
+      return changed;
+    }
+
+    function tradeHistoryFindDataSymbolCheckbox(symbolRaw) {
+      const sym = String(symbolRaw || '').trim();
+      if (!sym) return null;
+      const cbs = document.querySelectorAll('#symbol-checkboxes-container input[type="checkbox"][data-symbol]');
+      const upper = sym.toUpperCase();
+      for (let i = 0; i < cbs.length; i++) {
+        const cb = cbs[i];
+        const ds = (cb.getAttribute('data-symbol') || '').trim();
+        if (!ds) continue;
+        if (ds === sym || ds.toUpperCase() === upper) return cb;
+      }
+      return null;
+    }
+
+    function tradeHistoryFindDataStrategyCheckbox(strategyRaw) {
+      const st = String(strategyRaw || '').trim();
+      if (!st) return null;
+      const cbs = document.querySelectorAll('#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]');
+      for (let i = 0; i < cbs.length; i++) {
+        const cb = cbs[i];
+        const dn = (cb.getAttribute('data-strategy-name') || '').trim();
+        if (dn === st) return cb;
+      }
+      return null;
+    }
+
+    /** Turn symbol/strategy filter checkboxes back on for each checked monitor (e.g. SOL off + SOL monitor on → recheck SOL). */
+    function tradeHistoryReactivateFiltersForCheckedMonitors() {
+      const host = document.getElementById('th-monitor-checkboxes-host');
+      if (!host) return false;
+      let changed = false;
+      const inputs = host.querySelectorAll('input[type="checkbox"][data-monitor-id]');
+      for (let i = 0; i < inputs.length; i++) {
+        const cb = inputs[i];
+        if (!cb.checked) continue;
+        const mid = cb.getAttribute('data-monitor-id');
+        if (!mid) continue;
+        const meta = tradeHistoryMonitorIdToFilterMeta[mid];
+        if (!meta) continue;
+        if (meta.symbol) {
+          const scb = tradeHistoryFindDataSymbolCheckbox(meta.symbol);
+          if (scb && !scb.checked) {
+            scb.checked = true;
+            changed = true;
+          }
+        }
+        if (meta.strategy) {
+          const tcb = tradeHistoryFindDataStrategyCheckbox(meta.strategy);
+          if (tcb && !tcb.checked) {
+            tcb.checked = true;
+            changed = true;
+          }
+        }
+      }
+      if (changed) {
+        _tradeHistoryRefreshSymbolStrategyUi();
+      }
+      return changed;
+    }
+
+    /** Per selected (checked) monitor: sum of trade ret_pct (same aggregate style as summary sum_ret_pct), sorted high → low. */
+    function tradeHistoryBuildMonitorRetDataset() {
+      const base = tradeHistoryApplyFiltersWithoutMonitor(trades);
+      const selectedIds = tradeHistoryGetEffectiveSelectedMonitorIdsForDisplay();
+      if (selectedIds.length === 0) return [];
+
+      const byMonitor = {};
+      for (const mid of selectedIds) {
+        byMonitor[mid] = {
+          monitorId: mid,
+          sumRet: 0,
+          count: 0,
+          sym: '—',
+          strat: '—',
+          mkt: '—',
+          num: '—',
+        };
+      }
+
+      for (const t of base) {
+        const raw = t.monitor;
+        if (raw == null || raw === '') continue;
+        const rawL = String(raw).toLowerCase();
+        for (let i = 0; i < selectedIds.length; i++) {
+          const mid = selectedIds[i];
+          if (String(mid).toLowerCase() === rawL) {
+            const row = byMonitor[mid];
+            if (row) {
+              const rp = t.ret_pct;
+              if (rp !== null && rp !== undefined && rp !== '' && !isNaN(Number(rp))) {
+                row.sumRet += Number(rp);
+              }
+              row.count += 1;
+            }
+            break;
+          }
+        }
+      }
+
+      /* Include every effective monitor so preview / zero-trade rows match the summary table (chart used to drop count===0). */
+      const chartRows = selectedIds.map((mid) => byMonitor[mid]).filter(Boolean);
+
+      for (const row of chartRows) {
+        const mid = row.monitorId;
+        const esc = tradeHistoryEscapeMonitorIdForSelector(mid);
+        const tile = document.querySelector(
+          '#th-monitor-tiles .th-monitor-filter-tile[data-monitor-id="' + esc + '"]'
+        );
+        if (tile) {
+          const sym = tile.querySelector('.th-m-tile-symbol');
+          const strat = tile.querySelector('.th-m-tile-strategy');
+          const mkt = tile.querySelector('.th-m-tile-market');
+          const num = tile.querySelector('.th-m-tile-num');
+          if (sym) row.sym = sym.textContent.trim();
+          if (strat) row.strat = strat.textContent.trim();
+          if (mkt) row.mkt = mkt.textContent.trim();
+          if (num) row.num = num.textContent.trim();
+        }
+      }
+
+      return chartRows.sort((a, b) => b.sumRet - a.sumRet);
+    }
+
+    let _thMonChartResizeObserver = null;
+    let _thMonChartResizeTimer = null;
+
+    function tradeHistoryPositionMonitorRetTooltip(ev) {
+      const tip = document.getElementById('th-monitors-ret-tooltip');
+      if (!tip) return;
+      const pad = 12;
+      let x = ev.clientX + pad;
+      let y = ev.clientY + pad;
+      tip.style.display = 'block';
+      const r = tip.getBoundingClientRect();
+      if (x + r.width > window.innerWidth - 8) x = ev.clientX - r.width - pad;
+      if (y + r.height > window.innerHeight - 8) y = ev.clientY - r.height - pad;
+      tip.style.left = x + 'px';
+      tip.style.top = y + 'px';
+    }
+
+    function renderTradeHistoryMonitorsRetChart() {
+      const container = document.getElementById('th-monitors-ret-chart');
+      if (!container) return;
+
+      const wrap = document.querySelector('.th-monitors-ret-chart-wrap');
+      if (wrap && !_thMonChartResizeObserver) {
+        _thMonChartResizeObserver = new ResizeObserver(() => {
+          if (_thMonChartResizeTimer) clearTimeout(_thMonChartResizeTimer);
+          _thMonChartResizeTimer = setTimeout(() => {
+            _thMonChartResizeTimer = null;
+            renderTradeHistoryMonitorsRetChart();
+          }, 100);
+        });
+        _thMonChartResizeObserver.observe(wrap);
+      }
+
+      if (typeof d3 === 'undefined') {
+        container.innerHTML = '<div class="th-monitors-ret-empty">D3.js not loaded</div>';
+        tradeHistoryReapplyMonitorCrossHoverAfterDomRebuild();
+        return;
+      }
+
+      const data = tradeHistoryBuildMonitorRetDataset();
+      container.innerHTML = '';
+
+      if (data.length === 0) {
+        const eff = tradeHistoryGetEffectiveSelectedMonitorIdsForDisplay();
+        const anyMon = eff.length > 0;
+        container.innerHTML =
+          '<div class="th-monitors-ret-empty">' +
+          (anyMon
+            ? 'No trades for the selected monitors with current filters.'
+            : 'Select monitors in the strip above to compare total Ret&nbsp;%.') +
+          '</div>';
+        tradeHistoryReapplyMonitorCrossHoverAfterDomRebuild();
+        return;
+      }
+
+      const green = '#48bb78';
+      const red = '#e54848';
+      /** Fixed bar plot height; x-axis sits at bottom of this frame. */
+      const plotH = 240;
+      const margin = { top: 6, right: 30, bottom: 22, left: 14 };
+      const width = Math.max(200, container.clientWidth || 300);
+      const height = margin.top + plotH + margin.bottom;
+      const innerW = width - margin.left - margin.right;
+      const barAreaW = Math.max(40, innerW);
+      const barX0 = 0;
+
+      let vMin = d3.min(data, (d) => d.sumRet);
+      let vMax = d3.max(data, (d) => d.sumRet);
+      if (vMin > 0) vMin = 0;
+      if (vMax < 0) vMax = 0;
+      const span = vMax - vMin || 1;
+      const pad = span * 0.06 || 0.1;
+      const x = d3.scaleLinear().domain([vMin - pad, vMax + pad]).range([0, barAreaW]);
+      const zeroX = x(0);
+
+      function thMrtBarXWidth(d) {
+        const lo = Math.min(zeroX, x(d.sumRet));
+        const hi = Math.max(zeroX, x(d.sumRet));
+        let bw = hi - lo;
+        let bx = barX0 + lo;
+        if (bw < 1.5) {
+          bw = 4;
+          bx = barX0 + zeroX - bw / 2;
+        }
+        return { bx, bw };
+      }
+
+      const n = data.length;
+      const barGapPx = 6;
+      const maxStack = plotH * 0.92;
+      let barH = 24;
+      if (n > 0) {
+        const inner = maxStack - Math.max(0, n - 1) * barGapPx;
+        barH = Math.max(10, Math.min(26, Math.floor(inner / n)));
+      }
+      const gap = barGapPx;
+      const stackH = n * barH + Math.max(0, n - 1) * gap;
+      const yStart = (plotH - stackH) / 2;
+
+      const svg = d3
+        .select(container)
+        .append('svg')
+        .attr('width', width)
+        .attr('height', height)
+        .style('display', 'block');
+
+      const defs = svg.append('defs');
+      const glowFilter = defs
+        .append('filter')
+        .attr('id', 'thMonitorRetBarGlow')
+        .attr('x', '-50%')
+        .attr('y', '-50%')
+        .attr('width', '200%')
+        .attr('height', '200%');
+      glowFilter.append('feGaussianBlur').attr('stdDeviation', '2').attr('result', 'coloredBlur');
+      const feMerge = glowFilter.append('feMerge');
+      feMerge.append('feMergeNode').attr('in', 'coloredBlur');
+      feMerge.append('feMergeNode').attr('in', 'SourceGraphic');
+
+      const g = svg.append('g').attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
+
+      const tip = document.getElementById('th-monitors-ret-tooltip');
+
+      g.selectAll('rect.th-mrt-bar')
+        .data(data)
+        .join('rect')
+        .attr('class', 'th-mrt-bar')
+        .attr('data-monitor-id', (d) => d.monitorId)
+        .attr('x', (d) => thMrtBarXWidth(d).bx)
+        .attr('width', (d) => thMrtBarXWidth(d).bw)
+        .attr('y', (d, i) => yStart + i * (barH + gap))
+        .attr('height', barH)
+        .attr('fill', (d) => (d.sumRet >= 0 ? green : red))
+        .attr('fill-opacity', 0.1)
+        .attr('stroke', (d) => (d.sumRet >= 0 ? green : red))
+        .attr('stroke-width', 3)
+        .attr('filter', 'url(#thMonitorRetBarGlow)')
+        .style('cursor', 'pointer')
+        .on('mousemove', function (event, d) {
+          if (!tip) return;
+          tip.innerHTML =
+            '<div class="th-mrt-title">' +
+            d.sym +
+            ' · ' +
+            d.strat +
+            '</div>' +
+            '<div>' +
+            d.mkt +
+            ', monitor ' +
+            d.num +
+            '</div>' +
+            '<div>Trades: ' +
+            d.count +
+            '</div>' +
+            '<div>Total Ret %: <strong>' +
+            (d.sumRet >= 0 ? '+' : '') +
+            d.sumRet.toFixed(2) +
+            '%</strong></div>';
+          tip.style.display = 'block';
+          tip.setAttribute('aria-hidden', 'false');
+          tradeHistoryPositionMonitorRetTooltip(event);
+        })
+        .on('mouseenter', function (event, d) {
+          tradeHistorySetMonitorCrossHover(d.monitorId, true);
+        })
+        .on('mouseleave', function (event, d) {
+          tradeHistorySetMonitorCrossHover(d.monitorId, false);
+          if (tip) {
+            tip.style.display = 'none';
+            tip.setAttribute('aria-hidden', 'true');
+          }
+        })
+        .on('click', function (event, d) {
+          event.stopPropagation();
+          tradeHistorySoloMonitorById(d.monitorId);
+        });
+
+      const tickFmt = (v) => (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1));
+      const domLo = x.domain()[0];
+      const domHi = x.domain()[1];
+      const rawTicks = Array.from(new Set([domLo, ...d3.ticks(domLo, domHi, 5), domHi])).sort(
+        (a, b) => a - b
+      );
+      const minTickPx = 42;
+      let xAxisTickValues;
+      if (rawTicks.length <= 2) {
+        xAxisTickValues = rawTicks;
+      } else {
+        const out = [rawTicks[0]];
+        for (let i = 1; i < rawTicks.length - 1; i++) {
+          const t = rawTicks[i];
+          if (Math.abs(x(t) - x(out[out.length - 1])) >= minTickPx) out.push(t);
+        }
+        const hi = rawTicks[rawTicks.length - 1];
+        const last = out[out.length - 1];
+        if (out.length === 1 || Math.abs(x(hi) - x(last)) >= minTickPx) out.push(hi);
+        else out[out.length - 1] = hi;
+        xAxisTickValues = out;
+      }
+      const xAxis = d3.axisBottom(x).tickValues(xAxisTickValues).tickFormat(tickFmt);
+      const xAxisG = g
+        .append('g')
+        .attr('transform', 'translate(' + barX0 + ',' + plotH + ')')
+        .call(xAxis);
+      xAxisG
+        .selectAll('text')
+        .attr('fill', '#a0aec0')
+        .attr('font-size', '9px')
+        .attr('text-anchor', (d, i) =>
+          i === 0 ? 'start' : i === xAxisTickValues.length - 1 ? 'end' : 'middle'
+        );
+      xAxisG.select('.domain').remove();
+      xAxisG.selectAll('.tick line').attr('stroke', '#4a5568');
+      tradeHistoryReapplyMonitorCrossHoverAfterDomRebuild();
+    }
+
     // Helper function to format date as YYYY-MM-DD
     function formatDate(date) {
       const year = date.getFullYear();
       const month = String(date.getMonth() + 1).padStart(2, '0');
       const day = String(date.getDate()).padStart(2, '0');
       return `${year}-${month}-${day}`;
+    }
+
+    const TRADE_HISTORY_DATE_FILTER_OPTIONS = [
+      'TODAY',
+      'YESTERDAY',
+      'THIS_WEEK',
+      'MONTH',
+      'PREV_7',
+      'PREV_30',
+      'YTD',
+      'ALL',
+      'CUSTOM',
+    ];
+    function normalizeTradeHistoryDateFilter(val) {
+      if (val && TRADE_HISTORY_DATE_FILTER_OPTIONS.indexOf(val) !== -1) return val;
+      return 'TODAY';
+    }
+
+    function tradeHistoryDateRangeSyncFromInputs() {
+      if (typeof jQuery === 'undefined' || typeof moment === 'undefined') return;
+      const $inp = jQuery('#th-date-range-picker');
+      if (!$inp.length) return;
+      const drp = $inp.data('daterangepicker');
+      if (!drp) return;
+      const filter = document.getElementById('date-filter-picker');
+      const sEl = document.getElementById('start-date');
+      const eEl = document.getElementById('end-date');
+      const sv = sEl && sEl.value && /^\d{4}-\d{2}-\d{2}$/.test(sEl.value.trim()) ? sEl.value.trim() : '';
+      const ev = eEl && eEl.value && /^\d{4}-\d{2}-\d{2}$/.test(eEl.value.trim()) ? eEl.value.trim() : '';
+      if (sv && ev) {
+        drp.setStartDate(moment(sv, 'YYYY-MM-DD'));
+        drp.setEndDate(moment(ev, 'YYYY-MM-DD'));
+      }
+      if (filter && filter.value === 'CUSTOM' && sv && ev) {
+        $inp.val(
+          moment(sv, 'YYYY-MM-DD').format('MMM D, YYYY') + ' – ' + moment(ev, 'YYYY-MM-DD').format('MMM D, YYYY')
+        );
+      } else {
+        $inp.val('');
+      }
+    }
+
+    function tradeHistoryDateRangeInit() {
+      if (typeof jQuery === 'undefined' || typeof moment === 'undefined' || !jQuery.fn.daterangepicker) return;
+      const $inp = jQuery('#th-date-range-picker');
+      if (!$inp.length) return;
+      if ($inp.data('daterangepicker')) {
+        tradeHistoryDateRangeSyncFromInputs();
+        return;
+      }
+      function tradeHistoryCommitDateRangeFromPicker(start, end) {
+        const s = start.format('YYYY-MM-DD');
+        const e = end.format('YYYY-MM-DD');
+        const sEl = document.getElementById('start-date');
+        const eEl = document.getElementById('end-date');
+        const sel = document.getElementById('date-filter-picker');
+        if (sEl) sEl.value = s;
+        if (eEl) eEl.value = e;
+        if (sel) sel.value = 'CUSTOM';
+        $inp.val(start.format('MMM D, YYYY') + ' – ' + end.format('MMM D, YYYY'));
+        savePreferences();
+        fetchAllTrades('custom-date-change', { append: false });
+      }
+      $inp.daterangepicker(
+        {
+          autoUpdateInput: false,
+          autoApply: false,
+          showDropdowns: true,
+          linkedCalendars: true,
+          opens: 'left',
+          drops: 'down',
+          parentEl: 'body',
+          alwaysShowCalendars: true,
+          locale: {
+            format: 'YYYY-MM-DD',
+            separator: ' – ',
+            firstDay: 0,
+          },
+        },
+        function () {}
+      );
+      const drp = $inp.data('daterangepicker');
+      if (drp) {
+        const origClickDate = drp.clickDate;
+        drp.clickDate = function (e) {
+          origClickDate.call(this, e);
+          if (!this.autoApply && this.startDate && this.endDate) {
+            tradeHistoryCommitDateRangeFromPicker(this.startDate, this.endDate);
+            this.oldStartDate = this.startDate.clone();
+            this.oldEndDate = this.endDate.clone();
+          }
+        };
+        // Plugin binds mousedown with $.proxy(this.clickDate, this) at construct time; replacing
+        // clickDate alone does not update that handler. Re-delegate so the wrapper runs.
+        drp.container.find('.drp-calendar').off('mousedown.daterangepicker', 'td.available');
+        drp.container
+          .find('.drp-calendar')
+          .on('mousedown.daterangepicker', 'td.available', jQuery.proxy(drp.clickDate, drp));
+      }
+      tradeHistoryDateRangeSyncFromInputs();
     }
 
     function applyCurrentSort() {
@@ -1039,7 +2150,286 @@
       return (neg ? '-$' : '$') + body;
     }
 
-    function updateSummary(trades) {
+    /** Match ``trades_history_insights`` AVG(diff) FILTER: numeric string only. */
+    const _TH_DIFF_NUM_RE = /^[+-]?[0-9]+(\.?[0-9]*)?$/;
+    function tradeHistoryParseDiffForAvg(trade) {
+      const d = trade.diff;
+      if (d === null || d === undefined || d === '') return null;
+      const s = String(d).trim();
+      if (!_TH_DIFF_NUM_RE.test(s)) return null;
+      const v = Number(s);
+      return isNaN(v) ? null : v;
+    }
+
+    /** Win / loss / undecided for W/L % denominator (same labels as server summary). */
+    function tradeHistoryWinLossBucket(trade) {
+      const w = trade.win_loss;
+      if (w === null || w === undefined || w === '') return null;
+      if (typeof w === 'number') {
+        if (w === 1) return 'w';
+        if (w === 0) return 'l';
+      }
+      const u = String(w).trim().toUpperCase();
+      if (u === 'W' || u === 'WIN') return 'w';
+      if (u === 'L' || u === 'LOSS') return 'l';
+      return null;
+    }
+
+    function tradeHistoryAggregateTradesForSummaryRow(list) {
+      let n = 0;
+      let wins = 0;
+      let wlN = 0;
+      let probSum = 0;
+      let probN = 0;
+      let buySum = 0;
+      let buyN = 0;
+      let diffSum = 0;
+      let diffN = 0;
+      let sumRet = 0;
+      let sumPnl = 0;
+      for (const t of list) {
+        n += 1;
+        const wl = tradeHistoryWinLossBucket(t);
+        if (wl === 'w') {
+          wins += 1;
+          wlN += 1;
+        } else if (wl === 'l') {
+          wlN += 1;
+        }
+        if (t.prob !== null && t.prob !== undefined && t.prob !== '' && !isNaN(Number(t.prob))) {
+          probSum += Number(t.prob);
+          probN += 1;
+        }
+        if (t.buy_price !== null && t.buy_price !== undefined && t.buy_price !== '' && !isNaN(Number(t.buy_price))) {
+          buySum += Number(t.buy_price);
+          buyN += 1;
+        }
+        const pd = tradeHistoryParseDiffForAvg(t);
+        if (pd !== null) {
+          diffSum += pd;
+          diffN += 1;
+        }
+        if (t.ret_pct !== null && t.ret_pct !== undefined && t.ret_pct !== '' && !isNaN(Number(t.ret_pct))) {
+          sumRet += Number(t.ret_pct);
+        }
+        if (t.pnl !== null && t.pnl !== undefined && t.pnl !== '' && !isNaN(Number(t.pnl))) {
+          sumPnl += Number(t.pnl);
+        }
+      }
+      const avgProb = probN > 0 ? probSum / probN : 0;
+      const winPct = wlN > 0 ? (100 * wins) / wlN : 0;
+      const avgBuy = buyN > 0 ? buySum / buyN : 0;
+      const avgDiff = diffN > 0 ? diffSum / diffN : 0;
+      return { n, avgProb, winPct, avgBuy, avgDiff, sumRet, sumPnl };
+    }
+
+    function tradeHistoryMonitorSummaryRowLabel(mid) {
+      const meta = tradeHistoryMonitorIdToFilterMeta[mid];
+      if (meta && (meta.symbol || meta.strategy)) {
+        const parts = [];
+        if (meta.symbol) parts.push(String(meta.symbol).trim());
+        if (meta.strategy) parts.push(String(meta.strategy).trim());
+        if (parts.length) return parts.join(' · ');
+      }
+      const esc = tradeHistoryEscapeMonitorIdForSelector(mid);
+      const tile = document.querySelector(
+        '#th-monitor-tiles .th-monitor-filter-tile[data-monitor-id="' + esc + '"]'
+      );
+      if (tile) {
+        const sym = tile.querySelector('.th-m-tile-symbol');
+        const strat = tile.querySelector('.th-m-tile-strategy');
+        const a = sym ? sym.textContent.trim() : '';
+        const b = strat ? strat.textContent.trim() : '';
+        if (a && b) return a + ' · ' + b;
+        if (a) return a;
+        if (b) return b;
+      }
+      return String(mid);
+    }
+
+    function renderTradeHistoryMonitorSummaryTable() {
+      const tbody = document.getElementById('th-monitor-summary-table-body');
+      if (!tbody) return;
+      tbody.textContent = '';
+      const selectedIds = tradeHistoryGetEffectiveSelectedMonitorIdsForDisplay();
+      if (selectedIds.length === 0) {
+        const tr = document.createElement('tr');
+        tr.classList.add('th-ms-summary-placeholder');
+        const td = document.createElement('td');
+        td.colSpan = 8;
+        td.style.textAlign = 'left';
+        td.style.color = '#a0aec0';
+        td.style.fontSize = '12px';
+        td.textContent = 'Select monitors in the strip above to see per-monitor stats (loaded trades only).';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+        tradeHistoryReapplyMonitorCrossHoverAfterDomRebuild();
+        return;
+      }
+      const base = tradeHistoryApplyFiltersWithoutMonitor(Array.isArray(trades) ? trades : []);
+      for (const mid of selectedIds) {
+        const list = base.filter((t) => {
+          const raw = t.monitor;
+          if (raw == null || raw === '') return false;
+          return String(raw).toLowerCase() === String(mid).toLowerCase();
+        });
+        const agg = tradeHistoryAggregateTradesForSummaryRow(list);
+        const tr = document.createElement('tr');
+        tr.setAttribute('data-monitor-id', mid);
+        tr.addEventListener('mouseenter', () => tradeHistorySetMonitorCrossHover(mid, true));
+        tr.addEventListener('mouseleave', () => tradeHistorySetMonitorCrossHover(mid, false));
+        const label = tradeHistoryMonitorSummaryRowLabel(mid);
+        const tdMon = document.createElement('td');
+        tdMon.textContent = label;
+        tdMon.title = label;
+        tr.appendChild(tdMon);
+        const tdN = document.createElement('td');
+        tdN.textContent = formatSummaryTradeCount(agg.n);
+        tr.appendChild(tdN);
+        const tdWl = document.createElement('td');
+        tdWl.textContent = `${formatSummaryNumber(agg.winPct, 1)}%`;
+        tr.appendChild(tdWl);
+        const tdProb = document.createElement('td');
+        tdProb.textContent = `${formatSummaryNumber(agg.avgProb, 1)}%`;
+        tr.appendChild(tdProb);
+        const tdBuy = document.createElement('td');
+        tdBuy.textContent = formatSummaryNumber(agg.avgBuy, 2);
+        tr.appendChild(tdBuy);
+        const tdDiff = document.createElement('td');
+        tdDiff.textContent = `${agg.avgDiff > 0 ? '+' : ''}${formatSummaryNumber(agg.avgDiff, 1)}`;
+        tr.appendChild(tdDiff);
+        const tdRet = document.createElement('td');
+        tdRet.textContent = `${formatSummaryNumber(agg.sumRet, 2)}%`;
+        if (agg.sumRet > 0) tdRet.style.color = '#28a745';
+        else if (agg.sumRet < 0) tdRet.style.color = '#dc3545';
+        else tdRet.style.color = 'white';
+        tr.appendChild(tdRet);
+        const tdPnl = document.createElement('td');
+        tdPnl.textContent = formatSummaryPnL(agg.sumPnl);
+        if (agg.sumPnl > 0) tdPnl.style.color = '#28a745';
+        else if (agg.sumPnl < 0) tdPnl.style.color = '#dc3545';
+        else tdPnl.style.color = 'white';
+        tr.appendChild(tdPnl);
+        tbody.appendChild(tr);
+      }
+      tradeHistoryReapplyMonitorCrossHoverAfterDomRebuild();
+    }
+
+    /** Request body for POST /api/trades/history/insights (matches applyFilters + date bounds). */
+    function collectTradeHistoryInsightsBody() {
+      const body = {
+        include_test_trades: !!document.getElementById('include-test-trades')?.checked,
+        show_win: document.getElementById('filter-win')?.checked !== false,
+        show_loss: document.getElementById('filter-loss')?.checked !== false,
+        show_live: document.getElementById('filter-live')?.checked !== false,
+        show_paper: document.getElementById('filter-paper')?.checked === true,
+        symbols: [],
+        strategies: [],
+        monitors: [],
+        analysis_interval: document.getElementById('analysis-time-interval')?.value || 'daily',
+      };
+      const b = computeTradesFetchDateBounds();
+      if (b) {
+        body.min_date = b.min_date;
+        body.max_date = b.max_date;
+      }
+      const symCbs = document.querySelectorAll('#symbol-checkboxes-container input[type="checkbox"][data-symbol]');
+      const symChecked = Array.from(symCbs).filter(cb => cb.checked).map(cb => cb.getAttribute('data-symbol'));
+      if (symCbs.length > 0 && symChecked.length > 0 && symChecked.length < symCbs.length) {
+        body.symbols = symChecked;
+      }
+      const stratCbs = document.querySelectorAll('#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]');
+      const stratChecked = Array.from(stratCbs).filter(cb => cb.checked).map(cb => cb.getAttribute('data-strategy-name'));
+      if (stratCbs.length > 0 && stratChecked.length > 0 && stratChecked.length < stratCbs.length) {
+        body.strategies = stratChecked;
+      }
+      const monCbs = Array.from(document.querySelectorAll('#th-monitor-checkboxes-host input[type="checkbox"]'));
+      const stripSelected = tradeHistorySelectedMonitorIdsFromStrip();
+      const effectiveMons = tradeHistoryGetEffectiveSelectedMonitorIdsForDisplay();
+      const previewOn =
+        tradeHistoryMonitorPreviewId != null && tradeHistoryMonitorPreviewId !== '';
+      if (monCbs.length > 0) {
+        if (stripSelected.length === 0 && !previewOn) {
+          body.monitors = [];
+        } else if (stripSelected.length === monCbs.length) {
+          body.monitors = [];
+        } else if (effectiveMons.length > 0) {
+          body.monitors = effectiveMons;
+        } else {
+          body.monitors = [];
+        }
+      }
+      const sc = document.getElementById('day-sunday')?.checked;
+      const mc = document.getElementById('day-monday')?.checked;
+      const tc = document.getElementById('day-tuesday')?.checked;
+      const wc = document.getElementById('day-wednesday')?.checked;
+      const thc = document.getElementById('day-thursday')?.checked;
+      const fc = document.getElementById('day-friday')?.checked;
+      const sac = document.getElementById('day-saturday')?.checked;
+      const allDays = sc && mc && tc && wc && thc && fc && sac;
+      const noDays = !sc && !mc && !tc && !wc && !thc && !fc && !sac;
+      if (noDays) {
+        body.days_of_week = [];
+      } else if (!allDays) {
+        body.days_of_week = [];
+        if (sc) body.days_of_week.push(0);
+        if (mc) body.days_of_week.push(1);
+        if (tc) body.days_of_week.push(2);
+        if (wc) body.days_of_week.push(3);
+        if (thc) body.days_of_week.push(4);
+        if (fc) body.days_of_week.push(5);
+        if (sac) body.days_of_week.push(6);
+      }
+      return body;
+    }
+
+    function refreshTradeHistoryInsights() {
+      if (_thInsightsDebounce) clearTimeout(_thInsightsDebounce);
+      _thInsightsDebounce = setTimeout(function () {
+        _thInsightsDebounce = null;
+        _doRefreshTradeHistoryInsights();
+      }, 200);
+    }
+
+    async function _doRefreshTradeHistoryInsights() {
+      const reqId = ++_thInsightsReqId;
+      const body = collectTradeHistoryInsightsBody();
+      try {
+        const res = await fetch(window.location.origin + '/api/trades/history/insights', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          cache: 'no-store',
+        });
+        const raw = await res.text();
+        if (!res.ok) {
+          let msg = res.status === 503 ? 'Service unavailable' : ('HTTP ' + res.status);
+          try {
+            const err = JSON.parse(raw);
+            if (err && typeof err.detail === 'string') msg = err.detail;
+          } catch (_) { /* ignore */ }
+          throw new Error(msg);
+        }
+        const data = JSON.parse(raw);
+        if (reqId !== _thInsightsReqId) return;
+        _tradeHistoryInsights = data;
+        applyInsightsSummary(data.summary);
+        updateAnalysisDisplay(data.analysis_interval);
+      } catch (e) {
+        if (reqId !== _thInsightsReqId) return;
+        console.warn('[trade_history] insights failed:', e.message || e);
+        _tradeHistoryInsights = {
+          summary: null,
+          analysis_interval: body.analysis_interval,
+          period_data: [],
+        };
+        applyInsightsSummary(null);
+        updateAnalysisDisplay(body.analysis_interval);
+      }
+    }
+
+    /** Summary from server aggregates (full filtered set, not the paginated table). */
+    function applyInsightsSummary(s) {
       const tradeCountEl = document.getElementById('trade-count');
       const avgProbEl = document.getElementById('avg-prob');
       const winLossEl = document.getElementById('win-loss-percentage');
@@ -1047,8 +2437,9 @@
       const avgDiffEl = document.getElementById('avg-diff');
       const retPercentageEl = document.getElementById('ret-percentage');
       const totalPnlEl = document.getElementById('total-pnl');
-      
-      if (!Array.isArray(trades) || trades.length === 0) {
+      if (!tradeCountEl || !avgProbEl || !winLossEl || !avgBuyEl || !avgDiffEl || !retPercentageEl || !totalPnlEl) return;
+
+      if (!s || !(Number(s.trade_count) > 0)) {
         tradeCountEl.textContent = '0';
         avgProbEl.textContent = '0.00';
         winLossEl.textContent = '0%';
@@ -1056,120 +2447,40 @@
         avgDiffEl.textContent = '0.00';
         retPercentageEl.textContent = '0.00%';
         totalPnlEl.textContent = '$0.00';
+        retPercentageEl.style.color = 'white';
+        totalPnlEl.style.color = 'white';
         return;
       }
-      
-      // Count total trades
-      const tradeCount = trades.length;
-      
-      // Calculate average probability
-      let totalProb = 0;
-      let probCount = 0;
-      trades.forEach(trade => {
-        if (trade.prob !== null && trade.prob !== undefined && trade.prob !== '') {
-          const prob = Number(trade.prob);
-          if (!isNaN(prob)) {
-            totalProb += prob;
-            probCount++;
-          }
-        }
-      });
-      const avgProb = probCount > 0 ? (totalProb / probCount) : 0; // Keep as percentage
-      
-      // Calculate win/loss percentage
-      let winCount = 0;
-      let totalTrades = 0;
-      
-      trades.forEach(trade => {
-        if (trade.win_loss !== null && trade.win_loss !== undefined && trade.win_loss !== '') {
-          // win_loss is stored as 'W' for win, 'L' for loss
-          if (trade.win_loss === 'W' || trade.win_loss === 'L') {
-            totalTrades++;
-            if (trade.win_loss === 'W') winCount++;
-          }
-        }
-      });
-      
-      const winPercentage = totalTrades > 0 ? ((winCount / totalTrades) * 100) : 0;
-      
-      // Calculate average diff
-      let totalDiff = 0;
-      let diffCount = 0;
-      trades.forEach(trade => {
-        if (trade.diff !== null && trade.diff !== undefined && trade.diff !== '') {
-          const diff = Number(trade.diff);
-          if (!isNaN(diff)) {
-            totalDiff += diff;
-            diffCount++;
-          }
-        }
-      });
-      const avgDiff = diffCount > 0 ? (totalDiff / diffCount) : 0;
-      
-      // Calculate average buy price
-      let totalBuy = 0;
-      let buyCount = 0;
-      trades.forEach(trade => {
-        if (trade.buy_price !== null && trade.buy_price !== undefined && trade.buy_price !== '') {
-          const buyPrice = Number(trade.buy_price);
-          if (!isNaN(buyPrice)) {
-            totalBuy += buyPrice;
-            buyCount++;
-          }
-        }
-      });
-      const avgBuy = buyCount > 0 ? (totalBuy / buyCount) : 0;
-      
-      // Calculate Ret %: sum of all ret_pct values from filtered results
-      let totalRetPct = 0;
-      let retPctCount = 0;
-      trades.forEach(trade => {
-        if (trade.ret_pct !== null && trade.ret_pct !== undefined && trade.ret_pct !== '') {
-          const retPct = Number(trade.ret_pct);
-          if (!isNaN(retPct)) {
-            totalRetPct += retPct;
-            retPctCount++;
-          }
-        }
-      });
-      const retValue = retPctCount > 0 ? totalRetPct : 0;
-      const retPercentage = `${formatSummaryNumber(retValue, 2)}%`;
-      
-      // Calculate total PnL and total investment (for display only)
-      let totalPnlDisplay = 0;
-      trades.forEach(trade => {
-        if (trade.pnl !== null && trade.pnl !== undefined && trade.pnl !== '') {
-          const pnl = Number(trade.pnl);
-          if (!isNaN(pnl)) {
-            totalPnlDisplay += pnl;
-          }
-        }
-      });
-      
-      // Update the display
+
+      const tradeCount = Number(s.trade_count) || 0;
+      const avgProb = Number(s.avg_prob) || 0;
+      const winPercentage = Number(s.win_percentage) || 0;
+      const avgBuy = Number(s.avg_buy) || 0;
+      const avgDiff = Number(s.avg_diff) || 0;
+      const retValue = Number(s.sum_ret_pct) || 0;
+      const totalPnlDisplay = Number(s.total_pnl) || 0;
+
       tradeCountEl.textContent = formatSummaryTradeCount(tradeCount);
       avgProbEl.textContent = `${formatSummaryNumber(avgProb, 1)}%`;
       winLossEl.textContent = `${formatSummaryNumber(winPercentage, 1)}%`;
       avgBuyEl.textContent = formatSummaryNumber(avgBuy, 2);
       avgDiffEl.textContent = `${avgDiff > 0 ? '+' : ''}${formatSummaryNumber(avgDiff, 1)}`;
-      retPercentageEl.textContent = retPercentage;
+      retPercentageEl.textContent = `${formatSummaryNumber(retValue, 2)}%`;
       totalPnlEl.textContent = formatSummaryPnL(totalPnlDisplay);
-      
-      // Color coding for Ret %
+
       if (retValue > 0) {
-        retPercentageEl.style.color = '#28a745'; // Green for positive
+        retPercentageEl.style.color = '#28a745';
       } else if (retValue < 0) {
-        retPercentageEl.style.color = '#dc3545'; // Red for negative
+        retPercentageEl.style.color = '#dc3545';
       } else {
-        retPercentageEl.style.color = 'white'; // White for zero
+        retPercentageEl.style.color = 'white';
       }
-      // Color coding for PnL
       if (totalPnlDisplay > 0) {
-        totalPnlEl.style.color = '#28a745'; // Green for positive
+        totalPnlEl.style.color = '#28a745';
       } else if (totalPnlDisplay < 0) {
-        totalPnlEl.style.color = '#dc3545'; // Red for negative
+        totalPnlEl.style.color = '#dc3545';
       } else {
-        totalPnlEl.style.color = 'white'; // White for zero
+        totalPnlEl.style.color = 'white';
       }
     }
 
@@ -1178,7 +2489,6 @@
       tbody.innerHTML = '';
       if (!Array.isArray(tradesToRender) || tradesToRender.length === 0) {
         tbody.innerHTML = '<tr><td colspan="22">No trades found.</td></tr>';
-        updateSummary(tradesToRender); // Update summary even when no trades
         return;
       }
 
@@ -1236,12 +2546,15 @@
         `;
         tbody.appendChild(tr);
       }
-      
-      // Update summary statistics
-      updateSummary(tradesToRender);
     }
 
-    function applyFilters() {
+    function applyFilters(options = {}) {
+      if (options.preserveMonitorPreview !== true) {
+        tradeHistoryClearMonitorPreview(true);
+      }
+      const skipMonitorPrune = options.skipMonitorPrune === true;
+      const prunedMonitors = skipMonitorPrune ? false : tradeHistoryPruneMonitorsDisallowedByFilters();
+
       const dateFilterPicker = document.getElementById('date-filter-picker');
       
       const includeTestEl = document.getElementById('include-test-trades');
@@ -1264,14 +2577,113 @@
       filteredTrades = [...filtered];
       applyCurrentSort();
       renderTrades(filteredTrades);
-      
-      // Update analysis when filters change
-      updateAnalysis();
+      refreshTradeHistoryInsights();
+      renderTradeHistoryMonitorsRetChart();
+      renderTradeHistoryMonitorSummaryTable();
+      if (prunedMonitors) savePreferences();
+    }
+
+    /** Bounds for GET /trades (server filters `date` text); null = full history (ALL / no range). */
+    function computeTradesFetchDateBounds() {
+      const filterPicker = document.getElementById('date-filter-picker');
+      if (!filterPicker) return null;
+      const selectedValue = filterPicker.value;
+      if (selectedValue === 'ALL') return null;
+
+      if (selectedValue === 'CUSTOM') {
+        const sEl = document.getElementById('start-date');
+        const eEl = document.getElementById('end-date');
+        const s = sEl && sEl.value;
+        const e = eEl && eEl.value;
+        if (s && e) return { min_date: s, max_date: e };
+        return null;
+      }
+
+      const now = new Date();
+      const today = formatDate(now);
+      let startDate = '';
+      let endDate = '';
+
+      function getLatestSunday() {
+        const curr = new Date(now);
+        curr.setDate(curr.getDate() - curr.getDay());
+        return formatDate(curr);
+      }
+
+      switch (selectedValue) {
+        case 'TODAY':
+          startDate = today;
+          endDate = today;
+          break;
+        case 'YESTERDAY': {
+          const y = new Date(now);
+          y.setDate(now.getDate() - 1);
+          startDate = endDate = formatDate(y);
+          break;
+        }
+        case 'THIS_WEEK':
+          startDate = getLatestSunday();
+          endDate = today;
+          break;
+        case 'MONTH': {
+          const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+          startDate = formatDate(monthStart);
+          endDate = today;
+          break;
+        }
+        case 'PREV_7': {
+          const p7 = new Date(now);
+          p7.setDate(now.getDate() - 6);
+          startDate = formatDate(p7);
+          endDate = today;
+          break;
+        }
+        case 'PREV_30': {
+          const prev30 = new Date(now);
+          prev30.setDate(now.getDate() - 30);
+          startDate = formatDate(prev30);
+          endDate = today;
+          break;
+        }
+        case 'YTD':
+          startDate = `${now.getFullYear()}-01-01`;
+          endDate = today;
+          break;
+        default:
+          return null;
+      }
+      if (!startDate || !endDate) return null;
+      return { min_date: startDate, max_date: endDate };
+    }
+
+    /**
+     * @param {boolean} append - load-more: use stored ``_thTradesNextBeforeId`` when extra.beforeId omitted
+     * @param {{ pageSize?: number, beforeId?: number|null }} [extra] - optional keyset/page overrides (WS depth refresh)
+     */
+    function buildTradesFetchUrl(append, extra) {
+      extra = extra || {};
+      const url = new URL(window.location.origin + '/trades');
+      const b = computeTradesFetchDateBounds();
+      if (b) {
+        url.searchParams.set('min_date', b.min_date);
+        url.searchParams.set('max_date', b.max_date);
+      }
+      const pageSize = extra.pageSize != null ? extra.pageSize : TRADE_HISTORY_PAGE_SIZE;
+      url.searchParams.set('page_size', String(pageSize));
+      let beforeId = null;
+      if (extra.beforeId !== undefined && extra.beforeId !== null) {
+        beforeId = extra.beforeId;
+      } else if (append && _thTradesNextBeforeId != null) {
+        beforeId = _thTradesNextBeforeId;
+      }
+      if (beforeId != null) {
+        url.searchParams.set('before_id', String(beforeId));
+      }
+      return url.toString();
     }
 
     let _thTradesFetchInFlight = false;
-    let _thTradesFetchQueued = false;
-    let _thTradesFetchQueuedReason = null;
+    let _thTradesFetchQueuedOpts = null;
     let _thLastTradesFetchErrorLogMs = 0;
 
     function _thSetFetchBanner(text, show) {
@@ -1286,34 +2698,176 @@
       }
     }
 
-    async function fetchAllTrades(reason) {
+    function updateTradeHistoryPaginationUi() {
+      const meta = document.getElementById('trade-history-pagination-meta');
+      if (meta) {
+        const n = Array.isArray(trades) ? trades.length : 0;
+        let t = 'Loaded ' + n + ' trade row(s)';
+        if (_thTradesHasMore) {
+          t += ' · scroll for more (summary and analysis use the full filtered set)';
+        }
+        meta.textContent = t;
+      }
+    }
+
+    let _thScrollLoadThrottleId = null;
+    function _thTradeHistoryScrollNearBottom(el) {
+      if (!el || el.clientHeight < 8) return false;
+      const sh = el.scrollHeight;
+      const ch = el.clientHeight;
+      if (sh < 8) return false;
+      if (sh <= ch + 2) {
+        return true;
+      }
+      const remain = sh - el.scrollTop - ch;
+      return remain <= 160;
+    }
+    function _thMaybeLoadMoreTradesFromScroll() {
+      if (!_thTradesHasMore || _thTradesFetchInFlight) return;
+      const el = document.getElementById('trade-history-results-scroll');
+      if (!el || el.clientHeight <= 0) return;
+      if (!_thTradeHistoryScrollNearBottom(el)) return;
+      fetchAllTrades('infinite-scroll', { append: true });
+    }
+    function _thOnTradeHistoryResultsScroll() {
+      if (_thScrollLoadThrottleId != null) return;
+      _thScrollLoadThrottleId = window.setTimeout(function () {
+        _thScrollLoadThrottleId = null;
+        _thMaybeLoadMoreTradesFromScroll();
+      }, 120);
+    }
+    function bindTradeHistoryScrollLoader() {
+      const el = document.getElementById('trade-history-results-scroll');
+      if (!el || el.dataset.thScrollLoaderBound === '1') return;
+      el.dataset.thScrollLoaderBound = '1';
+      el.addEventListener('scroll', _thOnTradeHistoryResultsScroll, { passive: true });
+    }
+
+    function _thParseTradesFetchPayload(raw, res) {
+      if (!res.ok) {
+        let msg = res.status === 503 ? 'Service unavailable' : ('HTTP ' + res.status);
+        try {
+          const err = JSON.parse(raw);
+          if (err && typeof err.detail === 'string') msg = err.detail;
+        } catch (_) { /* ignore */ }
+        throw new Error(msg);
+      }
+      const data = JSON.parse(raw);
+      if (data && Array.isArray(data.trades)) {
+        return {
+          list: data.trades,
+          has_more: !!data.has_more,
+          next_before_id: data.next_before_id != null ? Number(data.next_before_id) : null,
+        };
+      }
+      if (Array.isArray(data)) {
+        return { list: data, has_more: false, next_before_id: null };
+      }
+      throw new Error('Invalid trades response');
+    }
+
+    /**
+     * Replace fetch that re-loads at least ``targetRowCount`` rows (keyset pages), so /ws/db_change
+     * or tab-focus refresh does not collapse an expanded "Load more" list back to page 1 only.
+     */
+    async function _thFetchTradesReplacePreservingRowCount(reason, targetRowCount) {
+      const collected = [];
+      let beforeCursor = null;
+      let lastHasMore = false;
+      let lastNextBefore = null;
+      while (collected.length < targetRowCount) {
+        const remaining = targetRowCount - collected.length;
+        const pageSize =
+          collected.length === 0
+            ? Math.min(TRADES_PAGE_SIZE_MAX, Math.max(TRADE_HISTORY_PAGE_SIZE, remaining))
+            : Math.min(TRADES_PAGE_SIZE_MAX, Math.max(TRADE_HISTORY_PAGE_SIZE, remaining));
+        const url = buildTradesFetchUrl(false, { pageSize: pageSize, beforeId: beforeCursor });
+        if (localStorage.getItem('trade_history_debug') === '1') {
+          console.log(
+            '[trade_history] GET /trades — reason:',
+            reason,
+            'replace-preserve',
+            collected.length,
+            '->',
+            targetRowCount,
+            'page_size',
+            pageSize
+          );
+        }
+        const res = await fetch(url, { cache: 'no-store' });
+        const raw = await res.text();
+        const parsed = _thParseTradesFetchPayload(raw, res);
+        const list = parsed.list;
+        lastHasMore = parsed.has_more;
+        lastNextBefore = parsed.next_before_id;
+        collected.push.apply(collected, list);
+        if (!lastHasMore || list.length === 0) {
+          break;
+        }
+        beforeCursor = lastNextBefore;
+        if (beforeCursor == null) {
+          break;
+        }
+      }
+      trades = collected;
+      _thTradesHasMore = lastHasMore;
+      _thTradesNextBeforeId = lastNextBefore;
+    }
+
+    async function fetchAllTrades(reason, options) {
+      const append = options && options.append === true;
+      const preserveLoadedRowCount = !!(options && options.preserveLoadedRowCount);
       const r = reason || 'unspecified';
       if (_thTradesFetchInFlight) {
-        _thTradesFetchQueued = true;
-        _thTradesFetchQueuedReason = r;
+        _thTradesFetchQueuedOpts = {
+          reason: r,
+          append: append,
+          preserveLoadedRowCount: preserveLoadedRowCount,
+        };
         return;
       }
       _thTradesFetchInFlight = true;
+      // Do not clear _thTradesHasMore / _thTradesNextBeforeId before the replace fetch completes.
+      // Clearing them here hid "Load More" on every in-flight refresh (e.g. debounced /ws/db_change),
+      // which caused visible flashing. Response handlers set both from the API.
+      updateTradeHistoryPaginationUi();
+      const targetPreserveRows =
+        !append && preserveLoadedRowCount && Array.isArray(trades) ? trades.length : 0;
       if (localStorage.getItem('trade_history_debug') === '1') {
-        console.log('[trade_history] GET /trades — reason:', r);
+        console.log('[trade_history] GET /trades — reason:', r, append ? 'append' : 'replace');
       }
       try {
-        const res = await fetch(window.location.origin + '/trades', { cache: 'no-store' });
-        const raw = await res.text();
-        if (!res.ok) {
-          let msg = res.status === 503 ? 'Service unavailable' : ('HTTP ' + res.status);
-          try {
-            const err = JSON.parse(raw);
-            if (err && typeof err.detail === 'string') msg = err.detail;
-          } catch (_) { /* ignore */ }
-          throw new Error(msg);
+        if (!append && targetPreserveRows > 0) {
+          await _thFetchTradesReplacePreservingRowCount(r, targetPreserveRows);
+        } else {
+          const res = await fetch(buildTradesFetchUrl(append), { cache: 'no-store' });
+          const raw = await res.text();
+          const parsed = _thParseTradesFetchPayload(raw, res);
+          const list = parsed.list;
+          let hasMore = parsed.has_more;
+          let nextBefore = parsed.next_before_id;
+          if (append && list.length === 0 && hasMore) {
+            hasMore = false;
+            nextBefore = null;
+          }
+          _thTradesHasMore = hasMore;
+          _thTradesNextBeforeId = nextBefore;
+          if (append) {
+            trades = trades.concat(list);
+          } else {
+            trades = list;
+          }
         }
-        const data = JSON.parse(raw);
-        if (!Array.isArray(data)) throw new Error('Invalid trades response');
-        trades = data;
         _thSetFetchBanner('', false);
-        applyFilters();
-        updateAnalysis();
+        updateTradeHistoryPaginationUi();
+        applyFilters({ skipMonitorPrune: true, preserveMonitorPreview: true });
+        if (_thTradesHasMore) {
+          requestAnimationFrame(function () {
+            requestAnimationFrame(function () {
+              _thMaybeLoadMoreTradesFromScroll();
+            });
+          });
+        }
       } catch (error) {
         const hadRows = Array.isArray(trades) && trades.length > 0;
         const now = Date.now();
@@ -1333,13 +2887,19 @@
             tbody.innerHTML = `<tr><td colspan="22" style="color:red;">Failed to load trades: ${error.message}</td></tr>`;
           }
         }
+        updateTradeHistoryPaginationUi();
       } finally {
         _thTradesFetchInFlight = false;
-        if (_thTradesFetchQueued) {
-          _thTradesFetchQueued = false;
-          const nextReason = _thTradesFetchQueuedReason || 'queued-follow-up';
-          _thTradesFetchQueuedReason = null;
-          setTimeout(() => fetchAllTrades(nextReason), 0);
+        updateTradeHistoryPaginationUi();
+        if (_thTradesFetchQueuedOpts) {
+          const o = _thTradesFetchQueuedOpts;
+          _thTradesFetchQueuedOpts = null;
+          setTimeout(() => {
+            fetchAllTrades(o.reason, {
+              append: o.append,
+              preserveLoadedRowCount: !!o.preserveLoadedRowCount,
+            });
+          }, 0);
         }
       }
     }
@@ -1356,32 +2916,9 @@
       let startDate = '';
       let endDate = '';
       
-      function getDateOfThisWeek(dayOfWeek) {
-        const curr = new Date(now);
-        const currDay = curr.getDay();
-        const diff = dayOfWeek - currDay;
-        curr.setDate(curr.getDate() + diff);
-        return formatDate(curr);
-      }
-      function getDateOfLastWeek(dayOfWeek) {
-        const curr = new Date(now);
-        const currDay = curr.getDay();
-        curr.setDate(curr.getDate() - currDay - 7 + dayOfWeek);
-        return formatDate(curr);
-      }
       function getLatestSunday() {
         const curr = new Date(now);
         curr.setDate(curr.getDate() - curr.getDay());
-        return formatDate(curr);
-      }
-      function getPrevSunday() {
-        const curr = new Date(now);
-        curr.setDate(curr.getDate() - curr.getDay() - 7);
-        return formatDate(curr);
-      }
-      function getNextSaturdayOfPrevWeek() {
-        const curr = new Date(now);
-        curr.setDate(curr.getDate() - curr.getDay() - 1);
         return formatDate(curr);
       }
       
@@ -1421,47 +2958,29 @@
           startDate = formatDate(now);
           endDate = formatDate(now);
           break;
+        case 'YESTERDAY': {
+          const y = new Date(now);
+          y.setDate(now.getDate() - 1);
+          const yStr = formatDate(y);
+          startDate = yStr;
+          endDate = yStr;
+          break;
+        }
         case 'THIS_WEEK': {
           startDate = getLatestSunday();
           endDate = formatDate(now);
           break;
         }
-        case 'SUNDAY':
-          startDate = getDateOfThisWeek(0);
-          endDate = getDateOfThisWeek(0);
-          break;
-        case 'MONDAY':
-          startDate = getDateOfThisWeek(1);
-          endDate = getDateOfThisWeek(1);
-          break;
-        case 'TUESDAY':
-          startDate = getDateOfThisWeek(2);
-          endDate = getDateOfThisWeek(2);
-          break;
-        case 'WEDNESDAY':
-          startDate = getDateOfThisWeek(3);
-          endDate = getDateOfThisWeek(3);
-          break;
-        case 'THURSDAY':
-          startDate = getDateOfThisWeek(4);
-          endDate = getDateOfThisWeek(4);
-          break;
-        case 'FRIDAY':
-          startDate = getDateOfThisWeek(5);
-          endDate = getDateOfThisWeek(5);
-          break;
-        case 'SATURDAY':
-          startDate = getDateOfThisWeek(6);
-          endDate = getDateOfThisWeek(6);
-          break;
-        case 'LAST_WEEK': {
-          startDate = getPrevSunday();
-          endDate = getNextSaturdayOfPrevWeek();
-          break;
-        }
         case 'MONTH': {
           const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
           startDate = formatDate(monthStart);
+          endDate = formatDate(now);
+          break;
+        }
+        case 'PREV_7': {
+          const p7 = new Date(now);
+          p7.setDate(now.getDate() - 6);
+          startDate = formatDate(p7);
           endDate = formatDate(now);
           break;
         }
@@ -1474,13 +2993,6 @@
         }
         case 'YTD': {
           startDate = `${now.getFullYear()}-01-01`;
-          endDate = formatDate(now);
-          break;
-        }
-        case 'PREV_YEAR': {
-          const prevYear = new Date(now);
-          prevYear.setFullYear(now.getFullYear() - 1);
-          startDate = formatDate(prevYear);
           endDate = formatDate(now);
           break;
         }
@@ -1504,7 +3016,10 @@
       if (_tradeHistoryDbRefreshTimer) clearTimeout(_tradeHistoryDbRefreshTimer);
       _tradeHistoryDbRefreshTimer = setTimeout(() => {
         _tradeHistoryDbRefreshTimer = null;
-        fetchAllTrades('ws-db_change-trades');
+        fetchAllTrades('ws-db_change-trades', {
+          append: false,
+          preserveLoadedRowCount: true,
+        });
       }, _TH_WS_TRADES_DEBOUNCE_MS);
     }
 
@@ -1557,7 +3072,7 @@
           _tradeHistoryDbRefreshTimer = null;
         }
         setupDatabaseChangeListener();
-        fetchAllTrades('tab-visible');
+        fetchAllTrades('tab-visible', { append: false, preserveLoadedRowCount: true });
       } else {
         if (window._thDbChangesWs) {
           try { window._thDbChangesWs.close(); } catch (e) {}
@@ -1572,16 +3087,26 @@
 
     // On initial load, show filtered trades
     window.addEventListener('DOMContentLoaded', async () => {
+      window.tradeHistoryMonitorSelection = {};
       try {
         await loadStrategyOptions();
         await loadSymbolOptions();
-        const res = await fetch(window.location.origin + '/api/get_trade_history_preferences');
-        const data = await res.json();
+        const res = await fetch(window.location.origin + '/api/get_trade_history_preferences', {
+          credentials: 'same-origin',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          console.error('get_trade_history_preferences HTTP', res.status, data);
+        }
+        window.tradeHistoryMonitorSelection =
+          data.monitor_selection && typeof data.monitor_selection === 'object'
+            ? { ...data.monitor_selection }
+            : {};
         
-        // Apply date filter
+        // Apply date filter (migrate removed preset keys to a valid option)
         const dateFilterPicker = document.getElementById('date-filter-picker');
-        if (dateFilterPicker && data.date_filter) {
-          dateFilterPicker.value = data.date_filter;
+        if (dateFilterPicker) {
+          dateFilterPicker.value = normalizeTradeHistoryDateFilter(data.date_filter);
         }
         
         // Apply custom date inputs
@@ -1760,18 +3285,24 @@
         console.error('Error loading preferences:', error);
       }
 
-      // Now fetch trades after preferences are loaded
-      fetchAllTrades('initial-load');
-      
+      if (typeof tradeHistoryDateRangeInit === 'function') {
+        tradeHistoryDateRangeInit();
+      }
+
       // Set up event listeners
       const filterPicker = document.getElementById('date-filter-picker');
       if (filterPicker) {
-        filterPicker.addEventListener('change', () => {
-          updateDateRangeDisplay();
-          applyFilters();
+        filterPicker.addEventListener('change', async () => {
+          await updateDateRangeDisplay();
+          if (typeof tradeHistoryDateRangeSyncFromInputs === 'function') {
+            tradeHistoryDateRangeSyncFromInputs();
+          }
           savePreferences();
+          fetchAllTrades('date-filter-change', { append: false });
         });
       }
+
+      bindTradeHistoryScrollLoader();
 
       const headers = document.querySelectorAll('#trade-log-table thead th');
       headers.forEach(th => {
@@ -1820,32 +3351,6 @@
       const includeTestTradesCb = document.getElementById('include-test-trades');
       if (includeTestTradesCb) {
         includeTestTradesCb.addEventListener('change', () => {
-          applyFilters();
-          savePreferences();
-        });
-      }
-
-      // Hook up date input fields
-      const startDateInput = document.getElementById('start-date');
-      const endDateInput = document.getElementById('end-date');
-      if (startDateInput) {
-        startDateInput.addEventListener('change', () => {
-          // Switch to Custom when user manually enters a date
-          const dateFilterPicker = document.getElementById('date-filter-picker');
-          if (dateFilterPicker && dateFilterPicker.value !== 'CUSTOM') {
-            dateFilterPicker.value = 'CUSTOM';
-          }
-          applyFilters();
-          savePreferences();
-        });
-      }
-      if (endDateInput) {
-        endDateInput.addEventListener('change', () => {
-          // Switch to Custom when user manually enters a date
-          const dateFilterPicker = document.getElementById('date-filter-picker');
-          if (dateFilterPicker && dateFilterPicker.value !== 'CUSTOM') {
-            dateFilterPicker.value = 'CUSTOM';
-          }
           applyFilters();
           savePreferences();
         });
@@ -1918,9 +3423,7 @@
 
       updateStrategyButtonText();
 
-      // Hook up monitor filter dropdown
-      const monitorDropdownBtn = document.getElementById('monitor-dropdown-btn');
-      const monitorDropdownContent = document.getElementById('monitor-dropdown-content');
+      const monitorCheckboxesHost = document.getElementById('th-monitor-checkboxes-host');
 
       function formatTradeHistoryMonitorLabel(monitor) {
         const key = monitor.name || '';
@@ -1941,19 +3444,78 @@
         return key || idPart;
       }
 
-      // Load monitor options from API
-      async function loadMonitorOptions() {
+      function tileMetaForMonitor(monitor) {
+        const key = monitor.name || '';
+        let idPart = monitor.id != null && monitor.id !== '' ? String(monitor.id) : '';
+        if (!idPart && key) {
+          const parts = key.split('_');
+          const last = parts[parts.length - 1];
+          if (/^[0-9]+$/.test(last)) idPart = last;
+        }
+        const mktRaw = (monitor.market || '').toString().trim().toLowerCase();
+        const mkt = mktRaw === '15m' ? '15m' : (mktRaw === 'hourly' ? 'Hourly' : (monitor.market || '').toString().trim());
+        return {
+          sym: (monitor.symbol || '').trim() || '—',
+          strat: (monitor.strategy || '').trim() || '—',
+          mkt: mkt || '—',
+          num: idPart || '?',
+        };
+      }
+
+      /** Same monitor list as dashboard: GET /api/monitors, active rows only (monitor_manager drives refresh via Redis → /ws/preferences). */
+      function normalizeActiveMonitorsForTradeHistory(data) {
+        if (!data || data.status !== 'ok' || !Array.isArray(data.monitors)) return [];
+        return data.monitors
+          .filter(m => m && m.id && m.id !== 'NEW_MONITOR' && m.status === 'active')
+          .sort((a, b) => {
+            const oa = (a.dashboard_order != null ? Number(a.dashboard_order) : 999999);
+            const ob = (b.dashboard_order != null ? Number(b.dashboard_order) : 999999);
+            if (oa !== ob) return oa - ob;
+            return String(a.id).localeCompare(String(b.id));
+          })
+          .map(m => {
+            const idStr = String(m.id);
+            const mNum = idStr.match(/^mon_[0-9]+_([0-9]+)$/i);
+            return {
+              name: idStr,
+              id: mNum ? parseInt(mNum[1], 10) : null,
+              symbol: m.symbol,
+              strategy: m.strategy,
+              market: m.market,
+            };
+          });
+      }
+
+      // Load monitor options from API (selectionMap: mon_<slot>_<id> -> checked; missing keys default on)
+      async function loadMonitorOptions(selectionMap) {
+        const map =
+          selectionMap && typeof selectionMap === 'object'
+            ? selectionMap
+            : window.tradeHistoryMonitorSelection;
         try {
-          const response = await fetch('/api/trades/monitors');
+          tradeHistoryClearMonitorPreview(true);
+          const response = await fetch('/api/monitors?t=' + Date.now());
           const data = await response.json();
-          
-          if (data.status === 'ok' && data.monitors) {
-            // Clear existing options (keep Select All/None row)
-            const existingOptions = monitorDropdownContent.querySelectorAll('label');
-            existingOptions.forEach(option => option.remove());
-            
-                        // Add monitor options
-            data.monitors.forEach(monitor => {
+          const monitors = normalizeActiveMonitorsForTradeHistory(data);
+
+            if (!monitorCheckboxesHost) return;
+            monitorCheckboxesHost.querySelectorAll('label').forEach(option => option.remove());
+            const tilesHost = document.getElementById('th-monitor-tiles');
+            if (tilesHost) tilesHost.innerHTML = '';
+
+            Object.keys(tradeHistoryMonitorIdToFilterMeta).forEach((k) => delete tradeHistoryMonitorIdToFilterMeta[k]);
+            monitors.forEach(monitor => {
+              tradeHistoryMonitorIdToFilterMeta[monitor.name] = {
+                symbol: (monitor.symbol || '').trim(),
+                strategy: (monitor.strategy || '').trim(),
+              };
+            });
+
+            monitors.forEach(monitor => {
+              const mid = monitor.name;
+              const checked =
+                !Object.prototype.hasOwnProperty.call(map, mid) ? true : !!map[mid];
+
               const label = document.createElement('label');
               label.style.cssText = 'display: flex; align-items: center; gap: 5px; padding: 4px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #4a5568;';
               
@@ -1961,7 +3523,7 @@
               checkbox.type = 'checkbox';
               checkbox.id = `monitor-${monitor.name.replace(/[^a-zA-Z0-9]/g, '-')}`;
               checkbox.style.cssText = 'width: 14px; height: 14px;';
-              checkbox.checked = true; // Default to checked
+              checkbox.checked = checked;
               
               // Add data-monitor-id attribute for matching with dashboard monitor IDs
               checkbox.setAttribute('data-monitor-id', monitor.name);
@@ -1970,77 +3532,163 @@
               textSpan.textContent = formatTradeHistoryMonitorLabel(monitor);
               label.appendChild(checkbox);
               label.appendChild(textSpan);
-              monitorDropdownContent.appendChild(label);
-              
+              monitorCheckboxesHost.appendChild(label);
 
+              if (tilesHost) {
+                const meta = tileMetaForMonitor(monitor);
+                const tile = document.createElement('button');
+                tile.type = 'button';
+                tile.className = checked
+                  ? 'th-monitor-filter-tile th-monitor-filter-tile--on'
+                  : 'th-monitor-filter-tile th-monitor-filter-tile--off';
+                tile.setAttribute('data-monitor-id', monitor.name);
+                tile.setAttribute('aria-pressed', checked ? 'true' : 'false');
+                tile.setAttribute('title', 'Cmd-click to solo');
+                const symEl = document.createElement('span');
+                symEl.className = 'th-m-tile-symbol';
+                symEl.textContent = meta.sym;
+                const stratEl = document.createElement('span');
+                stratEl.className = 'th-m-tile-strategy';
+                stratEl.textContent = meta.strat;
+                stratEl.title = meta.strat;
+                const mktEl = document.createElement('span');
+                mktEl.className = 'th-m-tile-market';
+                mktEl.textContent = meta.mkt;
+                const numEl = document.createElement('span');
+                numEl.className = 'th-m-tile-num';
+                numEl.textContent = meta.num;
+                const rowTop = document.createElement('div');
+                rowTop.className = 'th-m-tile-row th-m-tile-row--top';
+                rowTop.appendChild(symEl);
+                rowTop.appendChild(stratEl);
+                const rowBot = document.createElement('div');
+                rowBot.className = 'th-m-tile-row th-m-tile-row--bottom';
+                rowBot.appendChild(mktEl);
+                rowBot.appendChild(numEl);
+                tile.appendChild(rowTop);
+                tile.appendChild(rowBot);
+                tile.addEventListener('click', (ev) => {
+                  tradeHistoryClearMonitorPreview(true);
+                  const solo = ev.metaKey || ev.ctrlKey;
+                  if (solo) {
+                    ev.preventDefault();
+                    tradeHistorySoloMonitorById(checkbox.getAttribute('data-monitor-id'));
+                    return;
+                  }
+                  checkbox.checked = !checkbox.checked;
+                  tradeHistorySyncMonitorTileForCheckbox(checkbox);
+                  tradeHistoryReactivateFiltersForCheckedMonitors();
+                  applyFilters({ skipMonitorPrune: true });
+                  savePreferences();
+                });
+                const midAttr = checkbox.getAttribute('data-monitor-id');
+                tile.addEventListener('mouseenter', () => {
+                  if (tile.classList.contains('th-monitor-filter-tile--off')) {
+                    tradeHistoryApplyMonitorPreviewFromOffTile(tile, midAttr);
+                  } else {
+                    tradeHistoryClearMonitorPreview(true);
+                  }
+                  tradeHistorySetMonitorCrossHover(midAttr, true);
+                });
+                tile.addEventListener('mouseleave', () => {
+                  if (tile.classList.contains('th-monitor-filter-tile--off')) {
+                    tradeHistoryScheduleClearMonitorPreview(midAttr);
+                  }
+                  tradeHistorySetMonitorCrossHover(midAttr, false);
+                });
+                tilesHost.appendChild(tile);
+              }
             });
-            
-            updateMonitorButtonText();
-          }
+
+            tradeHistorySyncAllMonitorTiles();
+            renderTradeHistoryMonitorSummaryTable();
         } catch (error) {
           console.error('Error loading monitor options:', error);
         }
       }
 
-      // Toggle dropdown
-      if (monitorDropdownBtn && monitorDropdownContent) {
-        monitorDropdownBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          monitorDropdownContent.style.display = monitorDropdownContent.style.display === 'none' ? 'block' : 'none';
-        });
-
-        // Close dropdown when clicking outside
-        document.addEventListener('click', () => {
-          monitorDropdownContent.style.display = 'none';
-        });
-
-        // Prevent dropdown from closing when clicking inside
-        monitorDropdownContent.addEventListener('click', (e) => {
-          e.stopPropagation();
-        });
-      }
-
-      document.getElementById('monitor-select-all')?.addEventListener('click', () => {
-        monitorDropdownContent.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = true; });
-        updateMonitorButtonText();
-        applyFilters();
-        savePreferences();
-      });
-      document.getElementById('monitor-select-none')?.addEventListener('click', () => {
-        monitorDropdownContent.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
-        updateMonitorButtonText();
-        applyFilters();
-        savePreferences();
-      });
-      monitorDropdownContent.addEventListener('change', (e) => {
-        if (e.target.matches('input[type="checkbox"]')) {
-          updateMonitorButtonText();
-          applyFilters();
-          savePreferences();
-        }
-      });
-
-      // Function to update monitor button text
-      function updateMonitorButtonText() {
-        if (monitorDropdownBtn && monitorDropdownContent) {
-          const currentCheckboxes = Array.from(monitorDropdownContent.querySelectorAll('input[type="checkbox"]'));
-          const checkedMonitors = currentCheckboxes.filter(checkbox => checkbox && checkbox.checked);
-          if (checkedMonitors.length === 0) {
-            monitorDropdownBtn.textContent = 'Select Monitors';
-          } else if (checkedMonitors.length === currentCheckboxes.length) {
-            monitorDropdownBtn.textContent = 'All Monitors';
-          } else if (checkedMonitors.length === 1) {
-            const labelEl = checkedMonitors[0].parentElement;
-            const span = labelEl && labelEl.querySelector('.trade-history-monitor-label');
-            monitorDropdownBtn.textContent = span ? span.textContent.trim() : (labelEl ? labelEl.textContent.trim() : '');
-          } else {
-            monitorDropdownBtn.textContent = 'Multiple';
+      if (monitorCheckboxesHost) {
+        monitorCheckboxesHost.addEventListener('change', (e) => {
+          if (e.target.matches('input[type="checkbox"][data-monitor-id]')) {
+            tradeHistorySyncMonitorTileForCheckbox(e.target);
+            tradeHistoryReactivateFiltersForCheckedMonitors();
+            applyFilters({ skipMonitorPrune: true });
+            savePreferences();
           }
-        }
+        });
       }
 
-      // Load monitor options on page load
-      loadMonitorOptions();
+      function thMonitorTilesSetAll(checked) {
+        document.querySelectorAll('#th-monitor-checkboxes-host input[type="checkbox"]').forEach((cb) => {
+          cb.checked = checked;
+        });
+        tradeHistorySyncAllMonitorTiles();
+        if (checked) {
+          tradeHistoryReactivateFiltersForCheckedMonitors();
+        }
+        applyFilters({ skipMonitorPrune: true });
+        savePreferences();
+      }
+      function thMonitorAllNoneClick(ev, checked) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        thMonitorTilesSetAll(checked);
+      }
+      const thMonAll = document.getElementById('th-monitor-select-all');
+      const thMonNone = document.getElementById('th-monitor-select-none');
+      thMonAll?.addEventListener('click', (e) => thMonitorAllNoneClick(e, true));
+      thMonNone?.addEventListener('click', (e) => thMonitorAllNoneClick(e, false));
+      thMonAll?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          thMonitorTilesSetAll(true);
+        }
+      });
+      thMonNone?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          thMonitorTilesSetAll(false);
+        }
+      });
+
+      // Load monitors before first trade fetch so filters match saved prefs
+      await loadMonitorOptions(window.tradeHistoryMonitorSelection);
+      fetchAllTrades('initial-load', { append: false });
+
+      // When monitor_manager updates monitor_list (Redis → main /ws/preferences), reload tiles + dropdown
+      (function connectTradeHistoryMonitorListWs() {
+        function recTenantMatchesMessageTenant(msgTenant) {
+          if (msgTenant == null || msgTenant === '') return true;
+          if (typeof recSessionUserSlot !== 'function') return true;
+          var slot = recSessionUserSlot();
+          if (!slot) return true;
+          var mt = String(msgTenant).trim();
+          if (!/^\d+$/.test(mt)) return true;
+          while (mt.length < 4) mt = '0' + mt;
+          if (mt.length > 4) mt = mt.slice(-4);
+          return mt === slot;
+        }
+        let thMonWs = null;
+        function connect() {
+          if (thMonWs) {
+            try { thMonWs.close(); } catch (e) {}
+          }
+          const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+          thMonWs = new WebSocket(proto + '//' + window.location.host + '/ws/preferences');
+          thMonWs.onmessage = function (ev) {
+            try {
+              const data = JSON.parse(ev.data);
+              if (data.type === 'monitor_list_updated' && recTenantMatchesMessageTenant(data.tenant_user_no)) {
+                loadMonitorOptions(window.tradeHistoryMonitorSelection);
+              }
+            } catch (err) { /* ignore */ }
+          };
+          thMonWs.onclose = function () {
+            setTimeout(connect, 5000);
+          };
+        }
+        connect();
+      })();
 
       // Hook up day filter dropdown
       const dayDropdownBtn = document.getElementById('day-dropdown-btn');
@@ -2178,6 +3826,11 @@
       }
 
       updateSymbolButtonText();
+
+      _tradeHistoryRefreshSymbolStrategyUi = function () {
+        updateSymbolButtonText();
+        updateStrategyButtonText();
+      };
 
       // Hook up contract filter dropdown
       const contractDropdownBtn = document.getElementById('contract-dropdown-btn');
@@ -2331,15 +3984,18 @@
       const contract11pm = document.getElementById('contract-11pm');
       const analysisIntervalSelect = document.getElementById('analysis-time-interval');
       
-      const monitorCheckboxesPref = Array.from(document.querySelectorAll('#monitor-dropdown-content input[type="checkbox"]'));
-      const monitorPreferences = {};
-      monitorCheckboxesPref.forEach(checkbox => {
-        const monitorName = checkbox.id.replace('monitor-', '').replace(/-/g, '_');
-        monitorPreferences[`monitor_${monitorName}`] = checkbox.checked;
+      const monitorCbs = document.querySelectorAll(
+        '#th-monitor-checkboxes-host input[type="checkbox"][data-monitor-id]'
+      );
+      const monitor_selection = {};
+      monitorCbs.forEach(cb => {
+        const id = cb.getAttribute('data-monitor-id');
+        if (id) monitor_selection[id] = cb.checked;
       });
-      
+      window.tradeHistoryMonitorSelection = { ...monitor_selection };
+
       const preferences = {
-        date_filter: dateFilterPicker ? dateFilterPicker.value : 'ALL',
+        date_filter: dateFilterPicker ? dateFilterPicker.value : 'TODAY',
         start_date: startDateInput ? startDateInput.value : '',
         end_date: endDateInput ? endDateInput.value : '',
         win_filter: filterWin ? filterWin.checked : true,
@@ -2385,7 +4041,6 @@
           });
           return sel;
         })(),
-        ...monitorPreferences, // Add monitor preferences
         analysis_interval: analysisIntervalSelect ? analysisIntervalSelect.value : 'daily',
         chart_view: currentChartView,
         sort_key: currentSort.key,
@@ -2393,14 +4048,18 @@
         page_size: 50,
         last_search_timestamp: Date.now()
       };
-      
+      if (monitorCbs.length > 0) {
+        preferences.monitor_selection = monitor_selection;
+      }
+
       console.log('Saving preferences:', preferences);
-      
+
       fetch(window.location.origin + '/api/set_trade_history_preferences', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'same-origin',
         body: JSON.stringify(preferences)
       })
       .then(response => {
@@ -2474,32 +4133,105 @@
       }
     }
 
+    /** @returns {boolean} true if a picker was open and is now closed */
+    function thCloseDateRangePickerIfOpen() {
+      if (typeof jQuery === 'undefined') return false;
+      const $inp = jQuery('#th-date-range-picker');
+      if (!$inp.length) return false;
+      const drp = $inp.data('daterangepicker');
+      if (!drp || !drp.isShowing) return false;
+      drp.hide();
+      return true;
+    }
+
+    function thCloseSearchOverlay() {
+      const bar = document.querySelector('.th-top-bar');
+      if (!bar) return;
+      bar.classList.remove('th-search-open');
+      const icon = document.getElementById('search-expand-icon');
+      if (icon) icon.style.transform = 'rotate(0deg)';
+      const overlay = document.getElementById('th-search-overlay');
+      if (overlay) overlay.setAttribute('aria-hidden', 'true');
+      document.removeEventListener('click', thSearchOverlayOutsideClick, true);
+      ['contract', 'symbol', 'strategy', 'day'].forEach((prefix) => {
+        const panel = document.getElementById(prefix + '-dropdown-content');
+        if (panel) panel.style.display = 'none';
+      });
+    }
+
+    function thSearchOverlayOutsideClick(ev) {
+      const overlay = document.getElementById('th-search-overlay');
+      const bar = document.querySelector('.th-top-bar');
+      if (!overlay || !bar || !bar.classList.contains('th-search-open')) return;
+      if (overlay.contains(ev.target)) return;
+      if (ev.target.closest && ev.target.closest('.th-search-header-slot .panel-header')) return;
+      thCloseSearchOverlay();
+    }
+
+    /** Pixel height for expanded Results body (viewport below Results panel header). */
+    function thComputeResultsPanelHeightPx() {
+      const resultsContent = document.getElementById('results-content');
+      if (!resultsContent) return null;
+      const header = resultsContent.previousElementSibling;
+      if (!header) return null;
+      const bottom = header.getBoundingClientRect().bottom;
+      const padding = 12;
+      return Math.max(200, window.innerHeight - bottom - padding);
+    }
+
+    /** Apply computed height when Results is expanded (skip when collapsed). */
+    function thRefreshResultsPanelHeight() {
+      const resultsContent = document.getElementById('results-content');
+      if (!resultsContent || resultsContent.style.height === '0px') return;
+      const h = thComputeResultsPanelHeightPx();
+      if (h != null) resultsContent.style.height = h + 'px';
+    }
+
+    function toggleSearchPanel(ev) {
+      if (ev) ev.stopPropagation();
+      const bar = document.querySelector('.th-top-bar');
+      if (!bar) return;
+      const willOpen = !bar.classList.contains('th-search-open');
+      if (willOpen) {
+        bar.classList.add('th-search-open');
+        const icon = document.getElementById('search-expand-icon');
+        if (icon) icon.style.transform = 'rotate(180deg)';
+        const overlay = document.getElementById('th-search-overlay');
+        if (overlay) overlay.setAttribute('aria-hidden', 'false');
+        document.addEventListener('click', thSearchOverlayOutsideClick, true);
+      } else {
+        thCloseSearchOverlay();
+      }
+    }
+
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Escape') return;
+      if (thCloseDateRangePickerIfOpen()) {
+        ev.preventDefault();
+        return;
+      }
+      const bar = document.querySelector('.th-top-bar');
+      if (bar && bar.classList.contains('th-search-open')) {
+        thCloseSearchOverlay();
+        ev.preventDefault();
+      }
+    });
+
     // Analysis Panel Toggle Function
     function toggleAnalysisPanel() {
       const content = document.getElementById('analysis-content');
       const icon = document.getElementById('analysis-expand-icon');
-      const resultsContent = document.getElementById('results-content');
       
       if (content.style.height === '0px' || content.style.height === '') {
         // Expand the panel
         content.style.height = '250px';
         icon.style.transform = 'rotate(180deg)';
-        // Adjust Results panel height after Analysis panel animation
-        setTimeout(() => {
-          if (resultsContent && resultsContent.style.height !== '0px' && resultsContent.style.height !== '') {
-            resultsContent.style.height = 'calc(100vh - 530px)'; // 160 + 160 + 250 + 20 - 60
-          }
-        }, 150); // Half the Analysis panel transition time
+        setTimeout(thRefreshResultsPanelHeight, 160);
       } else {
         // Collapse the panel
         content.style.height = '0px';
         icon.style.transform = 'rotate(0deg)';
-        // Adjust Results panel height after Analysis panel animation
-        setTimeout(() => {
-          if (resultsContent && resultsContent.style.height !== '0px' && resultsContent.style.height !== '') {
-            resultsContent.style.height = 'calc(100vh - 280px)'; // 160 + 160 + 20 - 60
-          }
-        }, 150); // Half the Analysis panel transition time
+        setTimeout(thRefreshResultsPanelHeight, 160);
       }
     }
 
@@ -2507,10 +4239,10 @@
     function resetAllFilters() {
       console.log('Resetting all filters to default values');
 
-      // Reset date filter to ALL
+      // Reset date filter to default (Today)
       const dateFilterPicker = document.getElementById('date-filter-picker');
       if (dateFilterPicker) {
-        dateFilterPicker.value = 'ALL';
+        dateFilterPicker.value = 'TODAY';
         dateFilterPicker.dispatchEvent(new Event('change', { bubbles: true }));
       }
 
@@ -2531,8 +4263,8 @@
       document.querySelectorAll('#day-dropdown-content input[type="checkbox"]').forEach(cb => { cb.checked = true; });
       if (typeof updateDayButtonText === 'function') updateDayButtonText();
 
-      document.querySelectorAll('#monitor-dropdown-content input[type="checkbox"]').forEach(cb => { cb.checked = true; });
-      if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
+      document.querySelectorAll('#th-monitor-checkboxes-host input[type="checkbox"]').forEach(cb => { cb.checked = true; });
+      tradeHistorySyncAllMonitorTiles();
 
       // Reset analysis time interval to default (daily)
       const analysisTimeInterval = document.getElementById('analysis-time-interval');
@@ -2566,14 +4298,14 @@
     function toggleResultsPanel() {
       const content = document.getElementById('results-content');
       const icon = document.getElementById('results-expand-icon');
-      const analysisContent = document.getElementById('analysis-content');
       
       if (content.style.height === '0px' || content.style.height === '') {
-        // Expand the panel - check if Analysis panel is expanded
-        const analysisExpanded = analysisContent && analysisContent.style.height !== '0px' && analysisContent.style.height !== '';
-        const baseHeight = analysisExpanded ? 'calc(100vh - 530px)' : 'calc(100vh - 280px)';
-        content.style.height = baseHeight;
+        const h = thComputeResultsPanelHeightPx();
+        if (h != null) content.style.height = h + 'px';
         icon.style.transform = 'rotate(180deg)';
+        setTimeout(function () {
+          bindTradeHistoryScrollLoader();
+        }, 120);
       } else {
         // Collapse the panel
         content.style.height = '0px';
@@ -2587,11 +4319,17 @@
       const resultsIcon = document.getElementById('results-expand-icon');
       
       if (resultsContent && resultsIcon) {
-        // Since Analysis panel starts expanded, use the same height as when Analysis panel is expanded
-        // This matches the value used in toggleAnalysisPanel when Analysis panel is expanded
-        resultsContent.style.height = 'calc(100vh - 530px)';
         resultsIcon.style.transform = 'rotate(180deg)';
+        const h = thComputeResultsPanelHeightPx();
+        if (h != null) resultsContent.style.height = h + 'px';
       }
+      setTimeout(function () {
+        bindTradeHistoryScrollLoader();
+      }, 0);
+    });
+
+    window.addEventListener('resize', function () {
+      thRefreshResultsPanelHeight();
     });
 
     // === ANALYSIS PANEL FUNCTIONS ===
@@ -2731,12 +4469,27 @@
 
     // Function to update analysis display
     function updateAnalysisDisplay(interval) {
-      const groups = groupTradesByInterval(filteredTrades, interval);
-      const stats = calculatePeriodStats(groups);
+      const iv = interval || document.getElementById('analysis-time-interval').value;
+      if (!_tradeHistoryInsights || _tradeHistoryInsights.analysis_interval !== iv || !Array.isArray(_tradeHistoryInsights.period_data)) {
+        return;
+      }
+      const list = _tradeHistoryInsights.period_data;
+      const stats = {
+        totalPeriods: list.length,
+        totalTrades: list.reduce((s, p) => s + (p.trades || 0), 0),
+        totalPnL: list.reduce((s, p) => s + (Number(p.pnl) || 0), 0),
+        totalRetPct: list.reduce((s, p) => s + (Number(p.retPct) || 0), 0),
+        periodData: list.map(p => ({
+          period: p.period,
+          trades: p.trades,
+          pnl: p.pnl,
+          retPct: p.retPct,
+        })),
+      };
       
       // Update labels based on interval
       let periodLabel, tradesLabel, retLabel, pnlLabel;
-      switch (interval) {
+      switch (iv) {
         case 'annual':
           periodLabel = 'Total Years';
           tradesLabel = 'Trades/Year';
@@ -2797,11 +4550,11 @@
       
       // Bar chart: redraw only when interval/view changes or rounded period totals change (not every PnL tick).
       const chartFingerprint = fingerprintAnalysisChartData(stats.periodData);
-      if (chartFingerprint !== previousAnalysisData || interval !== previousAnalysisInterval || currentChartView !== previousChartView) {
+      if (chartFingerprint !== previousAnalysisData || iv !== previousAnalysisInterval || currentChartView !== previousChartView) {
         previousAnalysisData = chartFingerprint;
-        previousAnalysisInterval = interval;
+        previousAnalysisInterval = iv;
         previousChartView = currentChartView;
-        renderAnalysisChart(stats.periodData, interval, currentChartView);
+        renderAnalysisChart(stats.periodData, iv, currentChartView);
       }
     }
 
@@ -2810,8 +4563,10 @@
     let currentChartView = 'pnl'; // Track current chart view type
     let previousChartView = 'pnl'; // Track previous chart view type for change detection
     
-    // Function to render the bar chart using Chart.js
+    // Function to render the bar chart using Chart.js (bar colors/fill/stroke match ``renderTradeHistoryMonitorsRetChart`` D3 bars).
     function renderAnalysisChart(periodData, interval, viewType = 'pnl') {
+      const thBarGreen = '#48bb78';
+      const thBarRed = '#e54848';
       const canvas = document.getElementById('pnl-chart');
       
       // Destroy existing chart if it exists
@@ -2908,7 +4663,7 @@
           
           ctx.save();
           ctx.font = '10px Arial';
-          ctx.fillStyle = '#ccc';
+          ctx.fillStyle = '#a0aec0';
           ctx.textAlign = 'left';
           
           visibleTicks.forEach(tick => {
@@ -2933,13 +4688,18 @@
           datasets: [{
             label: viewType === 'ret' ? 'Ret %' : 'PnL',
             data: data,
-            backgroundColor: data.map(value => value >= 0 ? '#28a745' : '#dc3545'),
-            borderColor: data.map(value => value >= 0 ? '#28a745' : '#dc3545'),
-            borderWidth: 1,
-            borderRadius: 2,
-            hoverBackgroundColor: data.map(value => value >= 0 ? '#4CAF50' : '#f44336'),
-            hoverBorderColor: data.map(value => value >= 0 ? '#4CAF50' : '#f44336'),
-            hoverBorderWidth: 2
+            borderSkipped: false,
+            backgroundColor: data.map((value) =>
+              value >= 0 ? 'rgba(72, 187, 120, 0.55)' : 'rgba(229, 72, 72, 0.55)'
+            ),
+            borderColor: data.map((value) => (value >= 0 ? thBarGreen : thBarRed)),
+            borderWidth: 4,
+            borderRadius: 0,
+            hoverBackgroundColor: data.map((value) =>
+              value >= 0 ? 'rgba(72, 187, 120, 0.55)' : 'rgba(229, 72, 72, 0.55)'
+            ),
+            hoverBorderColor: data.map((value) => (value >= 0 ? thBarGreen : thBarRed)),
+            hoverBorderWidth: 4
                     }]
         },
         plugins: [customPlugin, hoverPlugin, yAxisLabelsPlugin],
@@ -3025,7 +4785,7 @@
               display: true,
               grid: {
                 display: true,
-                color: 'rgba(255, 255, 255, 0.10)',
+                color: 'rgba(74, 85, 104, 0.5)',
                 lineWidth: 1
               },
               ticks: {
@@ -3042,7 +4802,7 @@
                 display: false
               },
               ticks: {
-                color: '#ccc',
+                color: '#a0aec0',
                 font: {
                   size: 10
                 },
@@ -3111,15 +4871,13 @@
 
     // Function to handle analysis interval change
     function handleAnalysisIntervalChange() {
-      const interval = document.getElementById('analysis-time-interval').value;
-      updateAnalysisDisplay(interval);
       savePreferences();
+      refreshTradeHistoryInsights();
     }
 
     // Update analysis when filters change
     function updateAnalysis() {
-      const interval = document.getElementById('analysis-time-interval').value;
-      updateAnalysisDisplay(interval);
+      refreshTradeHistoryInsights();
     }
     
     // Store previous data to prevent unnecessary chart updates
@@ -3280,9 +5038,9 @@
         
         // Try to select the monitor immediately, then retry if needed
         const trySelectMonitor = () => {
-          const monitorDropdownContent = document.getElementById('monitor-dropdown-content');
-          if (monitorDropdownContent) {
-            const monitorCheckboxes = Array.from(monitorDropdownContent.querySelectorAll('input[type="checkbox"]'));
+          const monitorHost = document.getElementById('th-monitor-checkboxes-host');
+          if (monitorHost) {
+            const monitorCheckboxes = Array.from(monitorHost.querySelectorAll('input[type="checkbox"]'));
             
             if (monitorCheckboxes.length > 0) {
               const targetCheckbox = monitorCheckboxes.find(cb => {
@@ -3298,6 +5056,7 @@
                 // Check the target monitor and let the existing event listeners handle everything
                 targetCheckbox.checked = true;
                 targetCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+                tradeHistorySyncAllMonitorTiles();
                 
                 console.log('Monitor selected and change event triggered:', monitorName);
                 return true; // Success

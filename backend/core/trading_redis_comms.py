@@ -104,6 +104,27 @@ def _should_emit_trading_redis_warning() -> bool:
     return False
 
 
+def is_probably_startup_connect_refused(exc: Optional[BaseException]) -> bool:
+    """
+    True when failure is typical supervisor ordering (peer not listening yet).
+
+    Log these at DEBUG so restarts do not look like incidents; still WARN on
+    timeouts, auth, etc.
+    """
+    if exc is None:
+        return False
+    msg = str(exc).lower()
+    if "connection refused" in msg:
+        return True
+    if "error 111" in msg or "errno 111" in msg:
+        return True
+    if "errno 61" in msg or "error 61" in msg:
+        return True
+    if "10061" in msg:
+        return True
+    return False
+
+
 def _ping_redis_with_backoff(r: Any, *, max_wait_sec: float) -> Tuple[bool, Optional[BaseException]]:
     """
     Retry PING until success or ``max_wait_sec`` elapses. No logging (callers decide).
@@ -416,13 +437,19 @@ def redis_client_optional():
             pass
         _trading_redis_skip_until_mono = time.monotonic() + _trading_redis_backoff_after_fail_sec()
         if _should_emit_trading_redis_warning():
-            logger.warning(
+            _msg = (
                 "Trading Redis unreachable after %.0fs of startup retries (backing off %.0fs; "
-                "set TRADING_REDIS_STARTUP_WAIT_SEC to tune): %s",
+                "set TRADING_REDIS_STARTUP_WAIT_SEC to tune): %s"
+            )
+            _args = (
                 _trading_redis_startup_wait_sec(),
                 _trading_redis_backoff_after_fail_sec(),
                 last_err,
             )
+            if is_probably_startup_connect_refused(last_err):
+                logger.debug(_msg, *_args)
+            else:
+                logger.warning(_msg, *_args)
         return None
 
 
@@ -444,11 +471,12 @@ def redis_connect_uncached():
     except Exception:
         pass
     if _should_emit_trading_redis_warning():
-        logger.warning(
-            "Trading Redis unreachable (uncached, waited %.0fs): %s",
-            _trading_redis_uncached_wait_sec(),
-            last_err,
-        )
+        _msg = "Trading Redis unreachable (uncached, waited %.0fs): %s"
+        _args = (_trading_redis_uncached_wait_sec(), last_err)
+        if is_probably_startup_connect_refused(last_err):
+            logger.debug(_msg, *_args)
+        else:
+            logger.warning(_msg, *_args)
     return None
 
 
@@ -590,7 +618,10 @@ def publish_preferences_ws_message(message: Dict[str, Any], r=None) -> bool:
         try:
             return _pub(r)
         except Exception as e:
-            logger.warning("publish_preferences_ws_message failed: %s", e)
+            if is_probably_startup_connect_refused(e):
+                logger.debug("publish_preferences_ws_message failed: %s", e)
+            else:
+                logger.warning("publish_preferences_ws_message failed: %s", e)
             return False
 
     for attempt in range(2):
@@ -600,11 +631,18 @@ def publish_preferences_ws_message(message: Dict[str, Any], r=None) -> bool:
         try:
             return _pub(c)
         except Exception as e:
-            logger.warning(
-                "publish_preferences_ws_message failed (attempt %s): %s",
-                attempt + 1,
-                e,
-            )
+            if is_probably_startup_connect_refused(e):
+                logger.debug(
+                    "publish_preferences_ws_message failed (attempt %s): %s",
+                    attempt + 1,
+                    e,
+                )
+            else:
+                logger.warning(
+                    "publish_preferences_ws_message failed (attempt %s): %s",
+                    attempt + 1,
+                    e,
+                )
             _invalidate_trading_redis_cache()
     return False
 
@@ -755,7 +793,10 @@ def publish_db_change_json(db_name: str, change_data: Optional[Dict[str, Any]] =
         r.publish(channel_db_changes(), message)
         return True
     except Exception as e:
-        logger.warning("publish_db_change_json failed: %s", e)
+        if is_probably_startup_connect_refused(e):
+            logger.debug("publish_db_change_json failed: %s", e)
+        else:
+            logger.warning("publish_db_change_json failed: %s", e)
         return False
 
 

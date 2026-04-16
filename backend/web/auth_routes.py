@@ -22,7 +22,6 @@ from backend.web.auth_principals import (
     password_matches_principal,
     try_legacy_json_login,
 )
-from backend.core.exchange_credentials import ensure_system_master_users_exchange_credentials
 from backend.util.registration_email import send_account_activated_email
 from backend.core.master_user_supervisor_resync import (
     master_user_trading_active,
@@ -374,8 +373,6 @@ async def admin_master_users_rows():
     u = resolved_tenant_user_no_for_app()
     if not _session_is_master_admin(u):
         return JSONResponse(status_code=403, content={"error": "Forbidden"})
-
-    ensure_system_master_users_exchange_credentials()
 
     conn = get_system_postgresql_connection()
     if not conn:

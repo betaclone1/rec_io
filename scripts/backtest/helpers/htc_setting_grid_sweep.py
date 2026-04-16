@@ -9,6 +9,7 @@ Used by ``scripts/backtest/htc_archive_setting_sweep.py``. See ``docs/BACKTESTIN
 from __future__ import annotations
 
 import itertools
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -112,6 +113,58 @@ def discover_markets_in_archive_window(
     with conn.cursor() as cur:
         cur.execute(sql, tuple(params))
         return [r[0] for r in cur.fetchall()]
+
+
+def discover_markets_for_contract_cycle(
+    conn: Any,
+    *,
+    contract_symbol: str,
+    contract_cadence: str,
+    contract_date_et: str,
+    contract_hour_et: int,
+) -> list[str]:
+    """
+    Discover all strike markets for one exact ET contract cycle.
+
+    For hourly contracts this means one ET hour close (e.g. BTC 01:00 ET on date D) and
+    returns all strike tickers sharing that cycle stem (e.g. ``KXBTCD-YYMONDDHH-T*``).
+    """
+    symbol = str(contract_symbol or "").strip().upper()
+    if symbol not in ("BTC", "ETH", "SOL", "XRP"):
+        raise ValueError(f"unsupported contract_symbol: {contract_symbol!r}")
+    cadence = str(contract_cadence or "").strip().lower()
+    if cadence != "hourly":
+        raise ValueError("contract cycle discovery currently supports cadence=hourly only")
+    try:
+        d = datetime.strptime(str(contract_date_et), "%Y-%m-%d")
+    except ValueError as e:
+        raise ValueError("--contract-date-et must be YYYY-MM-DD") from e
+    h = int(contract_hour_et)
+    if h < 0 or h > 23:
+        raise ValueError("--contract-hour-et must be in 0..23")
+
+    yy = d.strftime("%y").upper()
+    mon = d.strftime("%b").upper()
+    dd = d.strftime("%d")
+    hh = f"{h:02d}"
+    prefix = f"KX{symbol}D-{yy}{mon}{dd}{hh}-T"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT market_ticker, MIN("timestamp") AS mn
+            FROM historical_data.strike_table_master
+            WHERE market_ticker LIKE %s
+            GROUP BY market_ticker
+            ORDER BY mn ASC, market_ticker ASC
+            """,
+            (f"{prefix}%",),
+        )
+        out = [r[0] for r in cur.fetchall()]
+
+    # Defensive: keep only exact cycle stem match (ignore similarly prefixed noise).
+    stem = re.compile(rf"^KX{symbol}D-{yy}{mon}{dd}{hh}-T")
+    return [t for t in out if stem.match(str(t))]
 
 
 def _materialize_ticks(

@@ -66,14 +66,16 @@
     .portfolio-panel .portfolio-header-trading-wrap .trading-mode-select-wrap {
       position: relative;
       z-index: 1;
-      flex: 0 1 auto;
-      min-width: 0;
-      max-width: min(400px, 100%);
+      flex: 0 0 auto;
+      width: auto;
+      max-width: none;
     }
-    .portfolio-panel .trading-mode-select-wrap .dropdown-picker {
+    .portfolio-panel .trading-mode-select-wrap .dropdown-picker.trading-mode-select-visual {
       font-size: 12px;
       padding: 4px 24px 4px 6px;
-      width: 100%;
+      width: auto;
+      min-width: 8rem;
+      max-width: none;
       box-sizing: border-box;
     }
     .portfolio-panel .trading-mode-select-face {
@@ -1950,6 +1952,66 @@
       return { mode: s, name: '' };
     }
 
+    /** Size native select to the overlay label so PAPER/LIVE + full name is not ellipsized (desktop dashboard). */
+    function syncTradingModeSelectWidth(sel) {
+      if (!sel || sel.classList.contains('mobile-trading-mode-select')) return;
+      const wrap = sel.closest('.trading-mode-select-wrap');
+      if (!wrap || !sel.classList.contains('trading-mode-select-visual')) return;
+      const modeEl = wrap.querySelector('.trading-mode-mode');
+      const sepEl = wrap.querySelector('.trading-mode-sep');
+      const nameEl = wrap.querySelector('.trading-mode-name');
+      if (!modeEl) return;
+      const box = document.createElement('div');
+      const mcs = window.getComputedStyle(modeEl);
+      box.style.cssText =
+        'position:absolute;left:-99999px;top:0;display:flex;align-items:center;' +
+        'white-space:nowrap;line-height:1.25;visibility:hidden;pointer-events:none;' +
+        'font-family:' +
+        mcs.fontFamily +
+        ';font-size:' +
+        mcs.fontSize +
+        ';font-weight:' +
+        mcs.fontWeight +
+        ';letter-spacing:' +
+        mcs.letterSpacing;
+      box.appendChild(modeEl.cloneNode(true));
+      if (sepEl) box.appendChild(sepEl.cloneNode(true));
+      if (nameEl) box.appendChild(nameEl.cloneNode(true));
+      document.body.appendChild(box);
+      const textW = box.getBoundingClientRect().width;
+      box.remove();
+      const cs = window.getComputedStyle(sel);
+      const pl = parseFloat(cs.paddingLeft) || 0;
+      const pr = parseFloat(cs.paddingRight) || 0;
+      const bl = parseFloat(cs.borderLeftWidth) || 0;
+      const br = parseFloat(cs.borderRightWidth) || 0;
+      let w = Math.ceil(textW + pl + pr + bl + br + 2);
+      const tradingWrap = wrap.closest('.portfolio-header-trading-wrap');
+      const headerTop = tradingWrap && tradingWrap.closest('.portfolio-header-top');
+      if (headerTop && tradingWrap) {
+        const htR = headerTop.getBoundingClientRect();
+        const tabs = headerTop.querySelector('.portfolio-tabs-left');
+        const tabsW = tabs ? tabs.getBoundingClientRect().width : 0;
+        const topStyle = window.getComputedStyle(headerTop);
+        const topGap = parseFloat(topStyle.columnGap || topStyle.gap) || 8;
+        const halt = tradingWrap.querySelector('.portfolio-header-halt-and-settings');
+        const hw = halt ? halt.getBoundingClientRect().width : 0;
+        const twStyle = window.getComputedStyle(tradingWrap);
+        const innerGap = parseFloat(twStyle.columnGap || twStyle.gap) || 10;
+        const tabsTop = tabs ? tabs.offsetTop : 0;
+        const sameRow = Math.abs(tradingWrap.offsetTop - tabsTop) < 8;
+        var rowBudget;
+        if (sameRow) {
+          rowBudget = Math.floor(htR.width - tabsW - topGap - hw - innerGap);
+        } else {
+          rowBudget = Math.floor(htR.width - 16);
+        }
+        var maxSel = Math.max(120, rowBudget);
+        w = Math.min(w, maxSel);
+      }
+      sel.style.width = w + 'px';
+    }
+
     function updateTradingModeSelectFace(sel) {
       if (!sel) return;
       const wrap = sel.closest('.trading-mode-select-wrap');
@@ -1963,6 +2025,10 @@
       if (!sepEl || !nameEl) {
         modeEl.textContent = label;
         modeEl.className = 'trading-mode-mode ' + (isLive ? 'trading-mode-mode--live' : 'trading-mode-mode--paper');
+        syncTradingModeSelectWidth(sel);
+        requestAnimationFrame(function () {
+          syncTradingModeSelectWidth(sel);
+        });
         return;
       }
       const parts = splitTradingModeLabel(label);
@@ -1975,6 +2041,10 @@
         nameEl.textContent = '';
       }
       modeEl.className = 'trading-mode-mode ' + (isLive ? 'trading-mode-mode--live' : 'trading-mode-mode--paper');
+      syncTradingModeSelectWidth(sel);
+      requestAnimationFrame(function () {
+        syncTradingModeSelectWidth(sel);
+      });
     }
 
     function updateTradingModeSelectLabels() {
@@ -2286,6 +2356,15 @@
       await loadDashboardPreferences();
 
       await fetchTradingModeFromServer();
+
+      var __recTradingModeSelectResizeT;
+      window.addEventListener('resize', function () {
+        clearTimeout(__recTradingModeSelectResizeT);
+        __recTradingModeSelectResizeT = setTimeout(function () {
+          var s = document.getElementById('trading-mode-select');
+          if (s) syncTradingModeSelectWidth(s);
+        }, 120);
+      });
 
       // STEP 2: Preload charts + latest account_balance row in parallel (top line uses snapshot, not chart series).
       await Promise.all([
