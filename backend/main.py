@@ -4287,6 +4287,27 @@ async def logout(request: Request):
     return await _as_starlette_response(r)
 
 
+@app.post("/api/auth/register")
+async def auth_register(request: Request):
+    body = await request.body()
+    r = await _proxy_read_api_raw(request, "POST", "/api/auth/register", body)
+    return await _as_starlette_response(r)
+
+
+@app.post("/api/auth/register/verify-email")
+async def auth_register_verify_email(request: Request):
+    body = await request.body()
+    r = await _proxy_read_api_raw(request, "POST", "/api/auth/register/verify-email", body)
+    return await _as_starlette_response(r)
+
+
+@app.post("/api/auth/register/resend-verification")
+async def auth_register_resend_verification(request: Request):
+    body = await request.body()
+    r = await _proxy_read_api_raw(request, "POST", "/api/auth/register/resend-verification", body)
+    return await _as_starlette_response(r)
+
+
 @app.get("/api/user/info")
 async def get_user_info(request: Request):
     r = await _proxy_read_api_raw(request, "GET", "/api/user/info")

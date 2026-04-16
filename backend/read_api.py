@@ -44,6 +44,7 @@ from backend.util.trade_log_archivist import (
     union_trades_with_archives_select,
 )
 from backend.web.auth_routes import auth_router, user_router
+from backend.web.auth_self_registration import self_reg_router
 from backend.web.tenant_asgi import WebTenantMiddleware
 
 app = FastAPI(title="read_api")
@@ -57,6 +58,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(auth_router, prefix="/api/auth")
+app.include_router(self_reg_router, prefix="/api/auth")
 app.include_router(user_router, prefix="/api/user")
 
 

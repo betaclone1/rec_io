@@ -7,8 +7,10 @@ Tenant is derived only from a valid session token: ``token`` query param, ``Auth
 same-origin handshakes), or (for WebSocket) ``Sec-WebSocket-Protocol`` when a value validates as a token.
 
 **Tenant API access:** by default every ``/api/*`` path except the auth allowlist requires a valid
-session token (401 if missing). There is no implicit “default user” for HTTP APIs. To temporarily
-restore legacy anonymous ``/api/*`` in local tooling only, set ``REC_ALLOW_ANONYMOUS_API=1``.
+session token (401 if missing). The allowlist includes login/verify/logout and self-service
+registration (``POST /api/auth/register`` and related). There is no implicit “default user” for
+HTTP APIs. To temporarily restore legacy anonymous ``/api/*`` in local tooling only, set
+``REC_ALLOW_ANONYMOUS_API=1``.
 
 Processes that serve user data should also set ``REC_STRICT_SESSION_TENANT_FOR_DB=1`` so
 :func:`backend.core.config.database.get_postgresql_connection` refuses process-default tenant
@@ -177,6 +179,9 @@ def _http_path_allowed_without_tenant(path: str, method: str) -> bool:
     if path.startswith("/api/auth/verify") and m == "POST":
         return True
     if path.startswith("/api/auth/logout") and m == "POST":
+        return True
+    # Self-service master user registration (HTML on main_app; POST proxied to read_api).
+    if path.startswith("/api/auth/register") and m == "POST":
         return True
     # Global deploy label (Redis); not tenant-specific. read_api serves this on :3050 where
     # session cookies from main_app (:3000) are not sent — must stay anonymous-safe.

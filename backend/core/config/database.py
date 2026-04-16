@@ -886,6 +886,17 @@ def init_database():
                     ALTER TABLE system.master_users ADD COLUMN IF NOT EXISTS exchange_credentials JSONB
                         NOT NULL DEFAULT '{"kalshi": false, "polymarket": false}'::jsonb;
                     ALTER TABLE system.master_users ADD COLUMN IF NOT EXISTS last_login TIMESTAMP WITHOUT TIME ZONE;
+                    -- Self-reg uses status pending_email_verification (28 chars); migration 20260420_1000 widens to 64.
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'system' AND table_name = 'master_users'
+                          AND column_name = 'status'
+                          AND data_type = 'character varying'
+                          AND character_maximum_length IS NOT NULL
+                          AND character_maximum_length < 64
+                    ) THEN
+                        ALTER TABLE system.master_users ALTER COLUMN status TYPE VARCHAR(64);
+                    END IF;
                 END IF;
             END $$;
         """))
@@ -2244,7 +2255,7 @@ def init_database():
                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_login TIMESTAMP,
                 system_version VARCHAR(50),
-                status VARCHAR(20) DEFAULT 'active',
+                status VARCHAR(64) DEFAULT 'active',
                 notes TEXT,
                 password_hash VARCHAR(255),
                 kalshi_user_id VARCHAR(64),
