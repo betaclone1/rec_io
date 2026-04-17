@@ -1689,55 +1689,24 @@
       return changed;
     }
 
-    /** Per selected monitor: Ret % total and counts from insights ``by_monitor`` (full timeframe), else paginated trades fallback. */
+    /** Per selected monitor: Ret % total and counts from insights ``by_monitor`` when available per id, else paginated trades. */
     function tradeHistoryBuildMonitorRetDataset() {
       const base = tradeHistoryApplyFiltersWithoutMonitor(trades);
       const selectedIds = tradeHistoryGetEffectiveSelectedMonitorIdsForDisplay();
       if (selectedIds.length === 0) return [];
 
-      const useInsights = tradeHistoryInsightsByMonitorMap() !== null;
       const byMonitor = {};
       for (const mid of selectedIds) {
+        const agg = tradeHistoryAggForMonitorSummaryRow(mid, base);
         byMonitor[mid] = {
           monitorId: mid,
-          sumRet: 0,
-          count: 0,
+          sumRet: agg.sumRet,
+          count: agg.n,
           sym: '—',
           strat: '—',
           mkt: '—',
           num: '—',
         };
-      }
-
-      if (useInsights) {
-        for (const mid of selectedIds) {
-          const agg = tradeHistoryMonitorAggForSummary(mid);
-          const row = byMonitor[mid];
-          if (row && agg) {
-            row.sumRet = agg.sumRet;
-            row.count = agg.n;
-          }
-        }
-      } else {
-        for (const t of base) {
-          const raw = t.monitor;
-          if (raw == null || raw === '') continue;
-          const rawL = String(raw).toLowerCase();
-          for (let i = 0; i < selectedIds.length; i++) {
-            const mid = selectedIds[i];
-            if (String(mid).toLowerCase() === rawL) {
-              const row = byMonitor[mid];
-              if (row) {
-                const rp = t.ret_pct;
-                if (rp !== null && rp !== undefined && rp !== '' && !isNaN(Number(rp))) {
-                  row.sumRet += Number(rp);
-                }
-                row.count += 1;
-              }
-              break;
-            }
-          }
-        }
       }
 
       const chartRows = selectedIds.map((mid) => byMonitor[mid]).filter(Boolean);
@@ -1760,7 +1729,14 @@
         }
       }
 
-      return chartRows.sort((a, b) => b.sumRet - a.sumRet);
+      return chartRows.sort((a, b) => {
+        const ra = Number(a.sumRet);
+        const rb = Number(b.sumRet);
+        const da = Number.isFinite(ra) ? ra : 0;
+        const db = Number.isFinite(rb) ? rb : 0;
+        if (db !== da) return db - da;
+        return String(a.monitorId).localeCompare(String(b.monitorId));
+      });
     }
 
     let _thMonChartResizeObserver = null;
@@ -2251,22 +2227,39 @@
       return m;
     }
 
-    function tradeHistoryMonitorAggForSummary(mid) {
+    /** One monitor row: server by_monitor when present, else trades in ``base`` (filtered, no monitor filter). */
+    function tradeHistoryAggForMonitorSummaryRow(mid, baseTrades) {
       const map = tradeHistoryInsightsByMonitorMap();
-      if (!map) return null;
-      const r = map.get(String(mid || '').toLowerCase());
-      if (!r) {
-        return { n: 0, avgProb: 0, winPct: 0, avgBuy: 0, avgDiff: 0, sumRet: 0, sumPnl: 0 };
+      if (map) {
+        const r = map.get(String(mid || '').toLowerCase());
+        if (r) {
+          return {
+            n: Number(r.trade_count) || 0,
+            avgProb: Number(r.avg_prob) || 0,
+            winPct: Number(r.win_percentage) || 0,
+            avgBuy: Number(r.avg_buy) || 0,
+            avgDiff: Number(r.avg_diff) || 0,
+            sumRet: Number(r.sum_ret_pct) || 0,
+            sumPnl: Number(r.total_pnl) || 0,
+          };
+        }
       }
-      return {
-        n: Number(r.trade_count) || 0,
-        avgProb: Number(r.avg_prob) || 0,
-        winPct: Number(r.win_percentage) || 0,
-        avgBuy: Number(r.avg_buy) || 0,
-        avgDiff: Number(r.avg_diff) || 0,
-        sumRet: Number(r.sum_ret_pct) || 0,
-        sumPnl: Number(r.total_pnl) || 0,
-      };
+      return tradeHistoryAggregateTradesForSummaryRow(
+        (Array.isArray(baseTrades) ? baseTrades : []).filter((t) => {
+          const raw = t.monitor;
+          if (raw == null || raw === '') return false;
+          return String(raw).toLowerCase() === String(mid).toLowerCase();
+        })
+      );
+    }
+
+    function tradeHistoryCompareSummaryRowsByRetDesc(a, b) {
+      const ra = Number(a.agg.sumRet);
+      const rb = Number(b.agg.sumRet);
+      const da = Number.isFinite(ra) ? ra : 0;
+      const db = Number.isFinite(rb) ? rb : 0;
+      if (db !== da) return db - da;
+      return String(a.mid).localeCompare(String(b.mid));
     }
 
     function tradeHistoryRefreshMonitorStripCharts() {
@@ -2319,17 +2312,12 @@
         return;
       }
       const base = tradeHistoryApplyFiltersWithoutMonitor(Array.isArray(trades) ? trades : []);
-      const useInsights = tradeHistoryInsightsByMonitorMap() !== null;
-      for (const mid of selectedIds) {
-        const agg = useInsights
-          ? tradeHistoryMonitorAggForSummary(mid)
-          : tradeHistoryAggregateTradesForSummaryRow(
-              base.filter((t) => {
-                const raw = t.monitor;
-                if (raw == null || raw === '') return false;
-                return String(raw).toLowerCase() === String(mid).toLowerCase();
-              })
-            );
+      const rows = selectedIds.map((mid) => ({
+        mid,
+        agg: tradeHistoryAggForMonitorSummaryRow(mid, base),
+      }));
+      rows.sort(tradeHistoryCompareSummaryRowsByRetDesc);
+      for (const { mid, agg } of rows) {
         const tr = document.createElement('tr');
         tr.setAttribute('data-monitor-id', mid);
         tr.addEventListener('mouseenter', () => tradeHistorySetMonitorCrossHover(mid, true));
@@ -2664,6 +2652,7 @@
       filteredTrades = [...filtered];
       applyCurrentSort();
       renderTrades(filteredTrades);
+      tradeHistoryRefreshMonitorStripCharts();
       if (options.skipInsightsRefresh !== true) {
         refreshTradeHistoryInsights();
       }
