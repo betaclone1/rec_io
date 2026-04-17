@@ -4516,6 +4516,16 @@
     let currentChartView = 'pnl'; // Track current chart view type
     let previousChartView = 'pnl'; // Track previous chart view type for change detection
     
+    /** Hourly bucket key must be ``YYYY-MM-DD`` + wall hour 0–23 (drops bad server rows until deploy). */
+    function thAnalysisHourlyPeriodRowValid(p) {
+      const raw = String(p.period || '').trim();
+      const sp = raw.split(/\s+/).filter(Boolean);
+      if (sp.length < 2) return false;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(sp[0])) return false;
+      const h = parseInt(String(sp[1]).split(':')[0], 10);
+      return Number.isFinite(h) && h >= 0 && h <= 23;
+    }
+
     // Function to render the bar chart using Chart.js (bar colors/fill/stroke match ``renderTradeHistoryMonitorsRetChart`` D3 bars).
     function renderAnalysisChart(periodData, interval, viewType = 'pnl') {
       const thBarGreen = '#48bb78';
@@ -4536,9 +4546,24 @@
         ctx.fillText('No data available', canvas.width / 2, canvas.height / 2);
         return;
       }
+
+      const chartRows =
+        interval === 'hourly' ? periodData.filter(thAnalysisHourlyPeriodRowValid) : periodData;
+      if (chartRows.length === 0) {
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ccc';
+        ctx.font = '14px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('No hourly data with valid time buckets', canvas.width / 2, canvas.height / 2);
+        return;
+      }
       
       // Prepare data for Chart.js
-      const labels = periodData.map(data => {
+      const hourlyDateKeys = new Set(
+        chartRows.map((p) => String(p.period || '').trim().split(/\s+/)[0]).filter(Boolean)
+      );
+      const hourlySingleCalendarDay = hourlyDateKeys.size <= 1;
+      const labels = chartRows.map(data => {
         let label = data.period;
         if (interval === 'annual') {
           label = data.period;
@@ -4555,14 +4580,28 @@
           const [year, month, day] = data.period.split('-');
           label = `${parseInt(month)}/${parseInt(day)}`;
         } else if (interval === 'hourly') {
-          const [date, time] = data.period.split(' ');
-          const hour = time.split(':')[0];
-          label = `${hour}:00`;
+          // Server period is ``YYYY-MM-DD HH:00`` (ET wall hour). Show 00:00–23:00 in range, or M/D HH:00 across days.
+          const raw = String(data.period || '').trim();
+          const sp = raw.split(/\s+/).filter(Boolean);
+          label = raw;
+          if (sp.length >= 2) {
+            const ymd = sp[0];
+            const hm = sp[1] || '';
+            const h = parseInt(String(hm).split(':')[0], 10);
+            const dp = ymd.split('-');
+            if (Number.isFinite(h) && h >= 0 && h <= 23 && dp.length === 3) {
+              const mo = parseInt(dp[1], 10);
+              const d = parseInt(dp[2], 10);
+              label = hourlySingleCalendarDay
+                ? `${String(h).padStart(2, '0')}:00`
+                : `${mo}/${d} ${String(h).padStart(2, '0')}:00`;
+            }
+          }
         }
         return label;
       });
       
-      const data = periodData.map(data => viewType === 'ret' ? data.retPct : data.pnl);
+      const data = chartRows.map(data => viewType === 'ret' ? data.retPct : data.pnl);
       
       // Check if all values are positive or all values are negative
       const allPositive = data.every(value => value >= 0);
@@ -4702,22 +4741,25 @@
                 title: function(context) {
                   const label = context[0].label;
                   if (interval === 'hourly') {
-                    // For hourly, show date and hour in format "8/12 9:00"
-                    // Get the original period data to get the full date and time
                     const dataIndex = context[0].dataIndex;
-                    const originalPeriod = periodData[dataIndex].period;
+                    const originalPeriod = chartRows[dataIndex].period;
                     if (originalPeriod && originalPeriod.includes(' ')) {
-                      const [date, time] = originalPeriod.split(' ');
-                      // Parse date more reliably to avoid timezone issues
-                      const [year, month, day] = date.split('-');
-                      const hour = time.split(':')[0];
-                      return `${parseInt(month)}/${parseInt(day)} ${hour}:00`;
+                      const parts = String(originalPeriod).trim().split(/\s+/).filter(Boolean);
+                      if (parts.length >= 2) {
+                        const date = parts[0];
+                        const time = parts[1];
+                        const [year, month, day] = date.split('-');
+                        const hour = parseInt(String(time).split(':')[0], 10);
+                        if (Number.isFinite(hour) && hour >= 0 && hour <= 23) {
+                          return `${parseInt(month, 10)}/${parseInt(day, 10)} ${String(hour).padStart(2, '0')}:00`;
+                        }
+                      }
                     }
                   } else if (interval === 'daily') {
                     // For daily, show date and day of week in format "8/12 (Mon)"
                     // Get the original period data to get the full date
                     const dataIndex = context[0].dataIndex;
-                    const originalPeriod = periodData[dataIndex].period;
+                    const originalPeriod = chartRows[dataIndex].period;
                     // Parse date more reliably to avoid timezone issues
                     const [year, month, day] = originalPeriod.split('-');
                     const dateObj = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
@@ -4757,10 +4799,12 @@
               ticks: {
                 color: '#a0aec0',
                 font: {
-                  size: 10
+                  size: interval === 'hourly' ? 9 : 10
                 },
-                maxRotation: 45,
-                minRotation: 0
+                maxRotation: interval === 'hourly' ? 0 : 45,
+                minRotation: 0,
+                autoSkip: interval === 'hourly',
+                maxTicksLimit: interval === 'hourly' ? 24 : undefined
               }
             }
           },
@@ -4768,7 +4812,7 @@
             console.log('Chart clicked! Elements:', elements.length);
             if (elements.length > 0) {
               const dataIndex = elements[0].index;
-              const clickedPeriod = periodData[dataIndex].period;
+              const clickedPeriod = chartRows[dataIndex].period;
               console.log('Drill-down triggered for period:', clickedPeriod, 'interval:', interval);
               drillDownToPeriod(clickedPeriod, interval);
             }

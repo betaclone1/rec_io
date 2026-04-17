@@ -100,21 +100,70 @@ def build_trade_history_filter_sql(body: Dict[str, Any]) -> Tuple[str, List[Any]
     return " AND ".join(clauses), params
 
 
+# Clock token only (1–12 + optional :mm + am/pm). Avoid ``(\d+)pm`` which matches strike digits (e.g. 45pm → 57:00).
+_HOURLY_CONTRACT_CLOCK = re.compile(
+    r"(?P<h>1[0-2]|0?[1-9])(?::(?P<m>[0-5][0-9]))?\s*(?P<ap>am|pm)\b",
+    re.IGNORECASE,
+)
+# Kalshi-style suffix …-T1230 (HHMM ET) or …-T19 (hour only)
+_HOURLY_KALSHI_HHMM = re.compile(r"T(?P<hhmm>[01][0-9][0-5][0-9])\b")
+_HOURLY_KALSHI_HH = re.compile(r"T(?P<hh>(?:0[1-9]|1[0-9]|2[0-3]))\b")
+
+
 def _hourly_period_key(date_str: str, contract: str) -> Optional[str]:
+    """Wall-clock ET hour bucket ``YYYY-MM-DD HH:00`` from trade ``date`` + human ``contract`` (or ticker)."""
     if not date_str or not contract:
         return None
-    c = contract.lower()
-    m = re.search(r"(\d+)\s*am", c)
-    if m:
-        h = int(m.group(1))
-        h24 = 0 if h == 12 else h
-        return f"{date_str} {h24:02d}:00"
-    m = re.search(r"(\d+)\s*pm", c)
-    if m:
-        h = int(m.group(1))
-        h24 = 12 if h == 12 else h + 12
-        return f"{date_str} {h24:02d}:00"
-    return None
+    c = str(contract).strip()
+    if not c:
+        return None
+
+    # Raw Kalshi ticker segment (e.g. KXBTCD-…-T1930)
+    km = _HOURLY_KALSHI_HHMM.search(c)
+    if km:
+        hhmm = int(km.group("hhmm"))
+        h24, _minute = hhmm // 100, hhmm % 100
+        if 0 <= h24 <= 23:
+            return f"{date_str} {h24:02d}:00"
+    km2 = _HOURLY_KALSHI_HH.search(c)
+    if km2:
+        h24 = int(km2.group("hh"))
+        if 0 <= h24 <= 23:
+            return f"{date_str} {h24:02d}:00"
+
+    last = None
+    for m in _HOURLY_CONTRACT_CLOCK.finditer(c):
+        last = m
+    if not last:
+        return None
+    h12 = int(last.group("h"))
+    minute = int(last.group("m") or 0)
+    if not (1 <= h12 <= 12 and 0 <= minute <= 59):
+        return None
+    ap = (last.group("ap") or "").lower()
+    if ap == "am":
+        h24 = 0 if h12 == 12 else h12
+    elif ap == "pm":
+        h24 = 12 if h12 == 12 else h12 + 12
+    else:
+        return None
+    if not (0 <= h24 <= 23):
+        return None
+    return f"{date_str} {h24:02d}:00"
+
+
+def _hourly_period_output_ok(key: str) -> bool:
+    """Reject malformed bucket keys (should not happen with ``_hourly_period_key``)."""
+    parts = str(key).strip().split()
+    if len(parts) != 2:
+        return False
+    if not _ISO.match(parts[0]):
+        return False
+    try:
+        hh = int(parts[1].split(":")[0])
+    except ValueError:
+        return False
+    return 0 <= hh <= 23
 
 
 def _period_expr_sql(interval: str) -> str:
@@ -308,6 +357,8 @@ def run_trade_history_insights(
                 (float(pnl or 0), float(ret_pct or 0))
             )
         for period in sorted(groups.keys()):
+            if not _hourly_period_output_ok(period):
+                continue
             rows = groups[period]
             period_data.append(
                 {
