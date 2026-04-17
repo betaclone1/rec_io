@@ -2633,11 +2633,13 @@ def create_monitor():
                 (name, symbol, market, strategy, default_strategy, auto_trade, auto_trade_status, status, bankroll_allotment_pct, bankroll_allotment_total, position_size, position_type, multiplier, total_position, trades, win_loss, ret_pct, pnl, dashboard_order, created,
                  win_streak_threshold, loss_prevention, loss_prevention_toggle, performance_based_allocation, max_price_spread, paper_trade, prob_adj,
                  min_probability, max_probability, min_differential, max_differential, min_time, max_time, allow_re_entry, spike_alert_enabled, spike_alert_momentum_threshold, spike_alert_cooldown_threshold, spike_alert_cooldown_minutes, current_probability, min_ttc_seconds, momentum_spike_enabled, momentum_spike_threshold, verification_period_enabled, verification_period_seconds, min_volume,
-                 momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target, min_ask, max_ask, max_profit, min_ask_range, stop_loss_price)
+                 momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target, min_ask, max_ask, max_profit, min_ask_range, stop_loss_price,
+                 flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(),
                         %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s)
+                        %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s)
                 RETURNING id
             """
                 ).format(ml_ident),
@@ -2699,6 +2701,10 @@ def create_monitor():
                 strategy_defaults.get('max_profit', 0.9900),
                 float(strategy_defaults.get('min_ask_range')) if strategy_defaults.get('min_ask_range') is not None else None,
                 float(strategy_defaults.get('stop_loss_price', 0.0) or 0.0),
+                False,  # flip_sell_prob (NOT NULL; tenant clones may lack column default)
+                False,  # flip_sell_floor
+                None,  # flip_sell_prob_mult
+                None,  # flip_sell_floor_mult
                 ),
             )
 
