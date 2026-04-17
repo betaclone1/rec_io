@@ -4563,7 +4563,7 @@
         chartRows.map((p) => String(p.period || '').trim().split(/\s+/)[0]).filter(Boolean)
       );
       const hourlySingleCalendarDay = hourlyDateKeys.size <= 1;
-      const labels = chartRows.map(data => {
+      const labels = chartRows.map((data, idx) => {
         let label = data.period;
         if (interval === 'annual') {
           label = data.period;
@@ -4580,10 +4580,10 @@
           const [year, month, day] = data.period.split('-');
           label = `${parseInt(month)}/${parseInt(day)}`;
         } else if (interval === 'hourly') {
-          // Server period is ``YYYY-MM-DD HH:00`` (ET wall hour). Show 00:00–23:00 in range, or M/D HH:00 across days.
+          // Server period is ``YYYY-MM-DD HH:00`` (ET). One day: HH:00 each bar. Multiple days: only label at date rollover (new calendar date).
           const raw = String(data.period || '').trim();
           const sp = raw.split(/\s+/).filter(Boolean);
-          label = raw;
+          label = '';
           if (sp.length >= 2) {
             const ymd = sp[0];
             const hm = sp[1] || '';
@@ -4592,9 +4592,20 @@
             if (Number.isFinite(h) && h >= 0 && h <= 23 && dp.length === 3) {
               const mo = parseInt(dp[1], 10);
               const d = parseInt(dp[2], 10);
-              label = hourlySingleCalendarDay
-                ? `${String(h).padStart(2, '0')}:00`
-                : `${mo}/${d} ${String(h).padStart(2, '0')}:00`;
+              if (hourlySingleCalendarDay) {
+                label = `${String(h).padStart(2, '0')}:00`;
+              } else {
+                const prev = idx > 0 ? chartRows[idx - 1] : null;
+                const prevSp = prev
+                  ? String(prev.period || '').trim().split(/\s+/).filter(Boolean)
+                  : [];
+                const prevYmd = prevSp.length >= 1 ? prevSp[0] : null;
+                if (prevYmd == null || ymd !== prevYmd) {
+                  label = `${mo}/${d}`;
+                } else {
+                  label = '';
+                }
+              }
             }
           }
         }
@@ -4803,8 +4814,8 @@
                 },
                 maxRotation: interval === 'hourly' ? 0 : 45,
                 minRotation: 0,
-                autoSkip: interval === 'hourly',
-                maxTicksLimit: interval === 'hourly' ? 24 : undefined
+                autoSkip: interval === 'hourly' ? hourlySingleCalendarDay : false,
+                maxTicksLimit: interval === 'hourly' && hourlySingleCalendarDay ? 24 : undefined
               }
             }
           },
