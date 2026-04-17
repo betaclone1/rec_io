@@ -4100,6 +4100,13 @@
       thCloseSearchOverlay();
     }
 
+    function thViewportHeightPx() {
+      if (window.visualViewport && typeof window.visualViewport.height === 'number') {
+        return window.visualViewport.height;
+      }
+      return window.innerHeight;
+    }
+
     /** Pixel height for expanded Results body (viewport below Results panel header). */
     function thComputeResultsPanelHeightPx() {
       const resultsContent = document.getElementById('results-content');
@@ -4107,8 +4114,12 @@
       const header = resultsContent.previousElementSibling;
       if (!header) return null;
       const bottom = header.getBoundingClientRect().bottom;
-      const padding = 12;
-      return Math.max(200, window.innerHeight - bottom - padding);
+      const vh = thViewportHeightPx();
+      const basePadPx = 12;
+      const extraBottomBufferPx = 5;
+      const viewportPctBufferPx = Math.round(vh * 0.01);
+      const padding = basePadPx + extraBottomBufferPx + viewportPctBufferPx;
+      return Math.max(200, vh - bottom - padding);
     }
 
     /** Apply computed height when Results is expanded (skip when collapsed). */
@@ -4117,6 +4128,19 @@
       if (!resultsContent || resultsContent.style.height === '0px') return;
       const h = thComputeResultsPanelHeightPx();
       if (h != null) resultsContent.style.height = h + 'px';
+    }
+
+    /** Monitors/charts above Results settle after first paint; remeasure so the panel does not spill past the iframe. */
+    function thScheduleResultsPanelHeightRefresh() {
+      const run = () => thRefreshResultsPanelHeight();
+      run();
+      requestAnimationFrame(() => {
+        run();
+        requestAnimationFrame(run);
+      });
+      setTimeout(run, 0);
+      setTimeout(run, 120);
+      setTimeout(run, 400);
     }
 
     function toggleSearchPanel(ev) {
@@ -4251,8 +4275,22 @@
         resultsIcon.style.transform = 'rotate(180deg)';
         const h = thComputeResultsPanelHeightPx();
         if (h != null) resultsContent.style.height = h + 'px';
+        thScheduleResultsPanelHeightRefresh();
       }
     });
+
+    window.addEventListener('load', function () {
+      thScheduleResultsPanelHeightRefresh();
+    });
+
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', thRefreshResultsPanelHeight);
+    }
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const thResultsLayoutRo = new ResizeObserver(() => thRefreshResultsPanelHeight());
+      thResultsLayoutRo.observe(document.documentElement);
+    }
 
     window.addEventListener('resize', function () {
       thRefreshResultsPanelHeight();
