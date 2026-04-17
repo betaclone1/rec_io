@@ -160,13 +160,43 @@ async def login(request: Request):
 
     user_no: str | None = None
     principal = fetch_login_principal(username)
+    matched_principal: Dict[str, Any] | None = None
     if principal and password_matches_principal(password, principal):
         user_no = principal["user_no"]
+        matched_principal = principal
     if not user_no:
         user_no = try_legacy_json_login(username, password)
     if not user_no:
         logger.debug("[AUTH] Failed login for username=%s", username)
         return {"success": False, "error": "Invalid username or password"}
+
+    if matched_principal:
+        st = (matched_principal.get("status") or "").strip().lower()
+        if st == "pending_email_verification":
+            em = (matched_principal.get("email") or "").strip()
+            return {
+                "success": True,
+                "pending_email_verification": True,
+                "user_id": matched_principal.get("user_id"),
+                "email": em or None,
+            }
+        if st == "pending_admin_approval":
+            rd = matched_principal.get("registration_date")
+            submitted_on = ""
+            if rd is not None:
+                if hasattr(rd, "strftime"):
+                    submitted_on = rd.strftime("%Y-%m-%d %H:%M UTC")
+                else:
+                    submitted_on = str(rd).strip()
+            fn = str(matched_principal.get("first_name") or "").strip()
+            em = str(matched_principal.get("email") or "").strip()
+            return {
+                "success": True,
+                "application_pending": True,
+                "first_name": fn[:200],
+                "email": em[:255],
+                "submitted_on": submitted_on or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            }
 
     pst, profile = public_profile_for_slot(user_no)
     display_name = ""

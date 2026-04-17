@@ -28,7 +28,7 @@ def fetch_login_principal(user_id: str) -> Optional[Dict[str, Any]]:
             cur.execute(
                 """
                 SELECT user_no, user_id, password_hash, first_name, last_name, email, phone,
-                       account_type, status
+                       account_type, status, registration_date
                 FROM system.master_users
                 WHERE lower(trim(user_id)) = lower(trim(%s))
                 LIMIT 1
@@ -55,9 +55,15 @@ def fetch_login_principal(user_id: str) -> Optional[Dict[str, Any]]:
         phone,
         account_type,
         status,
+        registration_date,
     ) = row
     st = (status or "").strip().lower()
-    if st and st != "active":
+    # Allow password check for active users and self-reg / approval pipeline states
+    # (login.html redirects on pending_email_verification / application_pending).
+    _LOGIN_STATUSES = frozenset(
+        {"active", "pending_email_verification", "pending_admin_approval"}
+    )
+    if st and st not in _LOGIN_STATUSES:
         return None
     u_no = str(user_no).strip()
     if len(u_no) < 4 and u_no.isdigit():
@@ -72,6 +78,7 @@ def fetch_login_principal(user_id: str) -> Optional[Dict[str, Any]]:
         "phone": phone,
         "account_type": account_type,
         "status": status,
+        "registration_date": registration_date,
     }
 
 

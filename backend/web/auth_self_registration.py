@@ -235,7 +235,7 @@ async def self_register(request: Request):
             full_name=f"{first} {last}".strip(),
         )
     except Exception as exc:
-        logger.warning("[AUTH] register verification email: %s", exc)
+        logger.warning("[AUTH] register verification email: %s", exc, exc_info=True)
         return {
             "success": False,
             "error": "Account was created but verification email could not be sent. Contact support.",
