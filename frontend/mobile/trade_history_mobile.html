@@ -2843,13 +2843,13 @@
             const filterPaper = document.getElementById('filter-paper');
             if (filterLive) {
                 filterLive.addEventListener('change', () => {
-                    applyFilters();
+                    applyFilters({ skipMonitorPrune: true });
                     savePaperTradePreferences();
                 });
             }
             if (filterPaper) {
                 filterPaper.addEventListener('change', () => {
-                    applyFilters();
+                    applyFilters({ skipMonitorPrune: true });
                     savePaperTradePreferences();
                 });
             }
@@ -2857,7 +2857,7 @@
             const includeTestTradesCb = document.getElementById('include-test-trades');
             if (includeTestTradesCb) {
                 includeTestTradesCb.addEventListener('change', () => {
-                    applyFilters();
+                    applyFilters({ skipMonitorPrune: true });
                     savePaperTradePreferences();
                 });
             }

@@ -6,6 +6,8 @@
 
 **Migration hygiene (non-negotiable for agents):** One logical schema change → **one** migration id (pair of files), batched DDL when it belongs together. Search existing migrations before adding a new id. If a draft was never applied, delete superseded pairs in the same change. Do not delete pairs that are already applied on prod without explicit owner decision (breaks `down` / history). See `.cursor/rules/05-db-migration-hygiene.mdc`.
 
+**Tenant schema DDL parity (non-negotiable):** Any structural change to per-tenant tables (patterns under `users` and `users_NNNN`, e.g. `monitor_list_*`, `trades_*`) must be applied to **every** relevant tenant schema in migrations and matching bootstrap code, not a single hardcoded slot. See `.cursor/rules/06-tenant-users-schema-parity.mdc`.
+
 **Git command boundary (non-negotiable):** Agents must **never** run `git push`, `git pull`, or create git commits unless the user gives an explicit instruction for that specific action in the current chat. If not explicit, stop and ask first. Do not infer permission from deployment workflows or prior tasks.
 
 **Production server:** Canonical SSH/DB host and paths are in `docs/PRODUCTION_HOST.md` (agents should use `REC_PROD_SSH_HOST` / `REC_PROD_DB_HOST`, not hardcoded IPs in new code).
