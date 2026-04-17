@@ -113,6 +113,7 @@ from backend.trading_mode import (
     account_balance_table_for_user,
     is_paper_trading,
     migrate_legacy_state_file,
+    monitor_list_fqn,
     sql_ident_qualified_table,
     subaccounts_table_for_user,
     transfers_table_for_user,
@@ -6123,29 +6124,44 @@ async def archive_monitor(request: dict):
         if not conn:
             return {"status": "error", "message": "Database connection failed"}
         
+        slot = _norm_slot(user_number)
+        tenant_schema = f"users_{slot}"
+        ml_ident = sql_ident_qualified_table(monitor_list_fqn(slot))
+
         with conn.cursor() as cursor:
             # First, set auto_trade to FALSE to stop trading
-            cursor.execute(f"""
-                UPDATE users.monitor_list_{user_number}
+            cursor.execute(
+                sql.SQL(
+                    """
+                UPDATE {}
                 SET auto_trade = FALSE
                 WHERE id = %s
-            """, (db_monitor_id,))
-            
+            """
+                ).format(ml_ident),
+                (db_monitor_id,),
+            )
+
             if cursor.rowcount == 0:
                 conn.close()
                 return {"status": "error", "message": "Monitor not found"}
-            
+
             # Then, set status to ARCHIVED to hide from dashboard
-            cursor.execute(f"""
-                UPDATE users.monitor_list_{user_number}
+            cursor.execute(
+                sql.SQL(
+                    """
+                UPDATE {}
                 SET status = 'ARCHIVED'
                 WHERE id = %s
-            """, (db_monitor_id,))
+            """
+                ).format(ml_ident),
+                (db_monitor_id,),
+            )
 
-            performance_table = f"monitor_cycle_performance_{user_number}_{db_monitor_id}"
+            performance_table = f"monitor_cycle_performance_{slot}_{db_monitor_id}"
+            # Bind params must not use legacy users.* (tenant isolation); use real tenant schema.
             cursor.execute(
                 "SELECT to_regclass(%s)",
-                (f"users.{performance_table}",)
+                (f"{tenant_schema}.{performance_table}",),
             )
             table_exists = cursor.fetchone()[0]
 
@@ -6153,7 +6169,7 @@ async def archive_monitor(request: dict):
                 cursor.execute("CREATE SCHEMA IF NOT EXISTS archive")
                 cursor.execute(
                     "SELECT to_regclass(%s)",
-                    (f"archive.{performance_table}",)
+                    (f"archive.{performance_table}",),
                 )
                 archived_exists = cursor.fetchone()[0]
                 if archived_exists:
@@ -6163,8 +6179,9 @@ async def archive_monitor(request: dict):
                     )
 
                 cursor.execute(
-                    sql.SQL("ALTER TABLE {}.{} SET SCHEMA archive")
-                    .format(sql.Identifier("users"), sql.Identifier(performance_table))
+                    sql.SQL("ALTER TABLE {}.{} SET SCHEMA archive").format(
+                        sql.Identifier(tenant_schema), sql.Identifier(performance_table)
+                    )
                 )
 
             try:
@@ -6227,13 +6244,21 @@ async def deactivate_monitor(request: dict):
         if not conn:
             return {"status": "error", "message": "Database connection failed"}
         
+        slot = _norm_slot(user_number)
+        ml_ident = sql_ident_qualified_table(monitor_list_fqn(slot))
+
         with conn.cursor() as cursor:
             # status = 'inactive' → AES/ATS for this monitor are torn down. auto_trade/auto_trade_status are for auto-trading only.
-            cursor.execute(f"""
-                UPDATE users.monitor_list_{user_number}
+            cursor.execute(
+                sql.SQL(
+                    """
+                UPDATE {}
                 SET auto_trade = FALSE, status = 'inactive', auto_trade_status = 'off'
                 WHERE id = %s
-            """, (db_monitor_id,))
+            """
+                ).format(ml_ident),
+                (db_monitor_id,),
+            )
             
             if cursor.rowcount == 0:
                 conn.close()
@@ -6338,13 +6363,21 @@ async def activate_monitor(request: dict):
         if not conn:
             return {"status": "error", "message": "Database connection failed"}
         
+        slot = _norm_slot(user_number)
+        ml_ident = sql_ident_qualified_table(monitor_list_fqn(slot))
+
         with conn.cursor() as cursor:
             # Set status to 'active' to activate the monitor
-            cursor.execute(f"""
-                UPDATE users.monitor_list_{user_number}
+            cursor.execute(
+                sql.SQL(
+                    """
+                UPDATE {}
                 SET status = 'active'
                 WHERE id = %s
-            """, (db_monitor_id,))
+            """
+                ).format(ml_ident),
+                (db_monitor_id,),
+            )
             
             if cursor.rowcount == 0:
                 conn.close()
