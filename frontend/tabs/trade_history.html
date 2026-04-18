@@ -1187,8 +1187,8 @@
       const customStartDate = startDateInput ? startDateInput.value : null;
       const customEndDate = endDateInput ? endDateInput.value : null;
       
-      // If custom dates are set and filter is not 'ALL', use them
-      if (customStartDate && customEndDate && filter !== 'ALL') {
+      // Hidden range applies only for CUSTOM; stale start/end with presets would re-filter bounded rows to zero.
+      if (customStartDate && customEndDate && filter === 'CUSTOM') {
         return trades.filter(trade => {
           if (!trade.date) return false;
           return trade.date >= customStartDate && trade.date <= customEndDate;
@@ -3349,18 +3349,25 @@
         
         // Apply date filter (migrate removed preset keys to a valid option)
         const dateFilterPicker = document.getElementById('date-filter-picker');
-        if (dateFilterPicker) {
-          dateFilterPicker.value = normalizeTradeHistoryDateFilter(data.date_filter);
-        }
-        
-        // Apply custom date inputs
         const startDateInput = document.getElementById('start-date');
         const endDateInput = document.getElementById('end-date');
-        if (startDateInput && data.start_date) {
-          startDateInput.value = data.start_date;
+        const normalizedDateFilter =
+          data.date_filter !== undefined
+            ? normalizeTradeHistoryDateFilter(data.date_filter)
+            : 'TODAY';
+        if (dateFilterPicker) {
+          dateFilterPicker.value = normalizedDateFilter;
         }
-        if (endDateInput && data.end_date) {
-          endDateInput.value = data.end_date;
+        if (normalizedDateFilter === 'CUSTOM') {
+          if (startDateInput && data.start_date) {
+            startDateInput.value = data.start_date;
+          }
+          if (endDateInput && data.end_date) {
+            endDateInput.value = data.end_date;
+          }
+        } else {
+          if (startDateInput) startDateInput.value = '';
+          if (endDateInput) endDateInput.value = '';
         }
         
         // Apply win/loss filters
