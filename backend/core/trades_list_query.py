@@ -43,6 +43,8 @@ TRADES_LIST_HTTP_COLUMNS: Tuple[str, ...] = (
     "symbol_close",
     "momentum_percentile",
     "win_loss",
+    "close_method",
+    "win_loss_confirmed",
     "paper_trade",
     "test_filter",
     "monitor",
@@ -67,8 +69,9 @@ def trades_dicts_from_rows(
     rows: List[tuple], columns: List[str]
 ) -> List[Dict[str, Any]]:
     result: List[Dict[str, Any]] = []
+    norm_cols = [c.lower() if isinstance(c, str) else c for c in columns]
     for row in rows:
-        trade_dict = dict(zip(columns, row))
+        trade_dict = dict(zip(norm_cols, row))
         if "date" in trade_dict and "time" in trade_dict:
             trade_dict["timestamp"] = f"{trade_dict['date']} {trade_dict['time']}"
         if "buy_price" in trade_dict:

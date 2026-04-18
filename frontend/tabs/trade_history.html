@@ -689,6 +689,23 @@
       color: #fff;
       margin-bottom: 4px;
     }
+    /* Losing-trade row: instant custom tooltip (native title has browser delay). */
+    .th-trade-loss-tooltip {
+      position: fixed;
+      z-index: 13000;
+      pointer-events: none;
+      display: none;
+      padding: 8px 10px;
+      font-size: 11px;
+      line-height: 1.35;
+      color: #e2e8f0;
+      background: #111923;
+      border: 1px solid #4a5568;
+      border-radius: 5px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+      max-width: 320px;
+      white-space: normal;
+    }
     .th-monitors-ret-empty {
       color: #a0aec0;
       font-size: 12px;
@@ -1028,6 +1045,7 @@
     </div>
   </div>
   <div id="th-monitors-ret-tooltip" class="th-monitors-ret-tooltip" role="tooltip" aria-hidden="true"></div>
+  <div id="th-trade-loss-tooltip" class="th-trade-loss-tooltip" role="tooltip" aria-hidden="true"></div>
 
   <!-- Analysis: gray panel shows between averages card and chart card (two #1f2530 regions, gap like pre–unified inset). -->
   <div class="panel-container th-panel-with-corner" id="analysis-panel-wrap" style="width: 100%; margin-bottom: 10px;">
@@ -2717,7 +2735,118 @@
       }
     }
 
+    function tradeHistoryFormatCloseMethodForTooltip(raw) {
+      if (raw == null || String(raw).trim() === '') return '—';
+      const key = String(raw).trim().toLowerCase();
+      const map = {
+        auto_stop_loss_floor: 'Stop Loss Floor',
+        auto_probability: 'Probability Auto Stop',
+        auto_momentum_spike: 'Momentum Spike',
+        auto_scalp_max_profit: 'Scalp Max Profit',
+        auto_scalp_trailing_stop: 'Scalp Trailing Stop',
+        auto_scalp_profit_target: 'Scalp Profit Target',
+        auto_reversal_max_profit: 'Reversal Max Profit',
+        auto_reversal_trailing_stop: 'Reversal Trailing Stop',
+        auto_reversal_profit_target: 'Reversal Profit Target',
+        auto_close_retry: 'Close Retry',
+        manual: 'Manual',
+        expired: 'Expired',
+        auto: 'Auto',
+      };
+      if (map[key]) return map[key];
+      return key
+        .split('_')
+        .filter(Boolean)
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+        .join(' ');
+    }
+
+    function tradeHistoryLosingTradeRowTitle(trade) {
+      const wl = trade.win_loss ?? trade.winLoss;
+      if (wl == null || String(wl).trim() === '') return '';
+      if (String(wl).trim().toUpperCase() !== 'L') return '';
+      const cmRaw = trade.close_method ?? trade.closeMethod;
+      const cm = tradeHistoryFormatCloseMethodForTooltip(cmRaw);
+      let conf = '—';
+      const wlc = trade.win_loss_confirmed ?? trade.winLossConfirmed;
+      if (
+        wlc === true ||
+        wlc === 1 ||
+        wlc === 'true' ||
+        wlc === '1' ||
+        wlc === 'True' ||
+        wlc === 't' ||
+        wlc === 'T'
+      ) {
+        conf = 'True';
+      } else if (
+        wlc === false ||
+        wlc === 0 ||
+        wlc === 'false' ||
+        wlc === '0' ||
+        wlc === 'False' ||
+        wlc === 'f' ||
+        wlc === 'F'
+      ) {
+        conf = 'False';
+      }
+      return cm + ' - Confirmed: ' + conf;
+    }
+
+    function tradeHistoryHideLossDetailTooltip() {
+      const tip = document.getElementById('th-trade-loss-tooltip');
+      if (!tip) return;
+      tip.style.display = 'none';
+      tip.setAttribute('aria-hidden', 'true');
+      tip.textContent = '';
+    }
+
+    function tradeHistoryPositionLossDetailTooltip(ev) {
+      const tip = document.getElementById('th-trade-loss-tooltip');
+      if (!tip) return;
+      const pad = 12;
+      let x = ev.clientX + pad;
+      let y = ev.clientY + pad;
+      const r = tip.getBoundingClientRect();
+      if (x + r.width > window.innerWidth - 8) x = ev.clientX - r.width - pad;
+      if (y + r.height > window.innerHeight - 8) y = ev.clientY - r.height - pad;
+      if (x < 8) x = 8;
+      if (y < 8) y = 8;
+      tip.style.left = x + 'px';
+      tip.style.top = y + 'px';
+    }
+
+    function tradeHistoryOnTradeTablePointerMoveLossTip(ev) {
+      const tr = ev.target.closest && ev.target.closest('#trade-log-table tbody tr');
+      const tip = document.getElementById('th-trade-loss-tooltip');
+      if (!tip) return;
+      if (!tr) {
+        tradeHistoryHideLossDetailTooltip();
+        return;
+      }
+      const txt = tr.dataset.thLossDetail;
+      if (!txt) {
+        tradeHistoryHideLossDetailTooltip();
+        return;
+      }
+      tip.textContent = txt;
+      tip.style.display = 'block';
+      tip.setAttribute('aria-hidden', 'false');
+      tradeHistoryPositionLossDetailTooltip(ev);
+    }
+
+    let _thTradeLossTooltipBound = false;
+    function tradeHistoryEnsureTradeLossTooltipListeners() {
+      if (_thTradeLossTooltipBound) return;
+      const tbl = document.getElementById('trade-log-table');
+      if (!tbl) return;
+      _thTradeLossTooltipBound = true;
+      tbl.addEventListener('pointermove', tradeHistoryOnTradeTablePointerMoveLossTip);
+      tbl.addEventListener('pointerleave', tradeHistoryHideLossDetailTooltip);
+    }
+
     function renderTrades(tradesToRender) {
+      tradeHistoryHideLossDetailTooltip();
       const tbody = document.querySelector('#trade-log-table tbody');
       tbody.innerHTML = '';
       if (!Array.isArray(tradesToRender) || tradesToRender.length === 0) {
@@ -2777,6 +2906,10 @@
           
           <td>${plusSign(trade.win_loss)}</td>
         `;
+        const lossTitle = tradeHistoryLosingTradeRowTitle(trade);
+        if (lossTitle) {
+          tr.dataset.thLossDetail = lossTitle;
+        }
         tbody.appendChild(tr);
       }
     }
@@ -3197,6 +3330,7 @@
 
     // On initial load, show filtered trades
     window.addEventListener('DOMContentLoaded', async () => {
+      tradeHistoryEnsureTradeLossTooltipListeners();
       window.tradeHistoryMonitorSelection = {};
       try {
         await loadStrategyOptions();
