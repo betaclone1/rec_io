@@ -272,10 +272,6 @@
       white-space: nowrap;
       vertical-align: middle;
     }
-    #th-monitor-summary-table th:first-child,
-    #th-monitor-summary-table td:first-child {
-      text-align: left;
-    }
     #th-monitor-summary-table tbody tr:nth-child(odd) {
       background-color: #2f3545;
     }
@@ -1001,18 +997,20 @@
       <div id="th-monitor-summary-scroll">
         <table id="th-monitor-summary-table" aria-label="Per-monitor stats for loaded trades">
           <colgroup>
-            <col style="width:24%" />
+            <col style="width:8%" />
+            <col style="width:20%" />
             <col style="width:10%" />
             <col style="width:10%" />
             <col style="width:10%" />
             <col style="width:10%" />
             <col style="width:10%" />
-            <col style="width:11%" />
-            <col style="width:15%" />
+            <col style="width:10%" />
+            <col style="width:12%" />
           </colgroup>
           <thead>
             <tr>
-              <th scope="col">Monitor</th>
+              <th scope="col">Mon</th>
+              <th scope="col">Strategy</th>
               <th scope="col">Trades</th>
               <th scope="col">W/L %</th>
               <th scope="col">Avg Prob</th>
@@ -2413,26 +2411,36 @@
       renderTradeHistoryMonitorSummaryTable();
     }
 
-    function tradeHistoryMonitorSummaryRowLabel(mid) {
+    function tradeHistoryMonitorNumForSummary(mid) {
       const meta = tradeHistoryMonitorIdToFilterMeta[mid];
-      if (meta && (meta.symbol || meta.strategy)) {
-        const parts = [];
-        if (meta.symbol) parts.push(String(meta.symbol).trim());
-        if (meta.strategy) parts.push(String(meta.strategy).trim());
-        if (parts.length) return parts.join(' · ');
+      if (meta && meta.num != null && meta.num !== '') return String(meta.num);
+      const m = String(mid).match(/^mon_[0-9]+_([0-9]+)$/i);
+      if (m) return String(parseInt(m[1], 10));
+      return '—';
+    }
+
+    /** Summary table Strategy column: ``Symbol - market - strategy`` (display market matches tiles). */
+    function tradeHistoryMonitorSummaryStrategyCell(mid) {
+      const meta = tradeHistoryMonitorIdToFilterMeta[mid];
+      let sym = meta && meta.symbol ? String(meta.symbol).trim() : '';
+      let mkt = meta && meta.market != null ? String(meta.market).trim() : '';
+      let strat = meta && meta.strategy ? String(meta.strategy).trim() : '';
+      if (!sym && !mkt && !strat) {
+        const esc = tradeHistoryEscapeMonitorIdForSelector(mid);
+        const tile = document.querySelector(
+          '#th-monitor-tiles .th-monitor-filter-tile[data-monitor-id="' + esc + '"]'
+        );
+        if (tile) {
+          const symEl = tile.querySelector('.th-m-tile-symbol');
+          const mktEl = tile.querySelector('.th-m-tile-market');
+          const stratEl = tile.querySelector('.th-m-tile-strategy');
+          sym = symEl ? symEl.textContent.trim() : '';
+          mkt = mktEl ? mktEl.textContent.trim() : '';
+          strat = stratEl ? stratEl.textContent.trim() : '';
+        }
       }
-      const esc = tradeHistoryEscapeMonitorIdForSelector(mid);
-      const tile = document.querySelector(
-        '#th-monitor-tiles .th-monitor-filter-tile[data-monitor-id="' + esc + '"]'
-      );
-      if (tile) {
-        const sym = tile.querySelector('.th-m-tile-symbol');
-        const strat = tile.querySelector('.th-m-tile-strategy');
-        const a = sym ? sym.textContent.trim() : '';
-        const b = strat ? strat.textContent.trim() : '';
-        if (a && b) return a + ' · ' + b;
-        if (a) return a;
-        if (b) return b;
+      if (sym || mkt || strat) {
+        return (sym || '—') + ' - ' + (mkt || '—') + ' - ' + (strat || '—');
       }
       return String(mid);
     }
@@ -2446,7 +2454,7 @@
         const tr = document.createElement('tr');
         tr.classList.add('th-ms-summary-placeholder');
         const td = document.createElement('td');
-        td.colSpan = 8;
+        td.colSpan = 9;
         td.style.textAlign = 'left';
         td.style.color = '#a0aec0';
         td.style.fontSize = '12px';
@@ -2468,10 +2476,14 @@
         tr.setAttribute('data-monitor-id', mid);
         tr.addEventListener('mouseenter', () => tradeHistorySetMonitorCrossHover(mid, true));
         tr.addEventListener('mouseleave', () => tradeHistorySetMonitorCrossHover(mid, false));
-        const label = tradeHistoryMonitorSummaryRowLabel(mid);
+        const tdNum = document.createElement('td');
+        tdNum.textContent = tradeHistoryMonitorNumForSummary(mid);
+        tdNum.title = 'Mon ' + tdNum.textContent;
+        tr.appendChild(tdNum);
+        const stratCell = tradeHistoryMonitorSummaryStrategyCell(mid);
         const tdMon = document.createElement('td');
-        tdMon.textContent = label;
-        tdMon.title = label;
+        tdMon.textContent = stratCell;
+        tdMon.title = stratCell;
         tr.appendChild(tdMon);
         const tdN = document.createElement('td');
         tdN.textContent = formatSummaryTradeCount(agg.n);
@@ -2891,6 +2903,9 @@
     let _thTradesFetchInFlight = false;
     let _thTradesFetchQueuedReason = null;
     let _thLastTradesFetchErrorLogMs = 0;
+    /** After a ws-driven refetch completes; limits how often prod NOTIFY spam retriggers full /trades pagination. */
+    let _thLastWsTradesFetchCompletedMs = 0;
+    const _TH_WS_TRADES_MIN_INTERVAL_MS = 4000;
 
     function _thSetFetchBanner(text, show) {
       const el = document.getElementById('trade-history-fetch-banner');
@@ -2912,6 +2927,13 @@
       }
     }
 
+    function _thTradeFetchSilentFooterProgress(reason) {
+      const r = reason || 'unspecified';
+      if (r === 'ws-db_change-trades') return true;
+      if (r === 'tab-visible' && Array.isArray(trades) && trades.length > 0) return true;
+      return false;
+    }
+
     async function fetchAllTrades(reason) {
       const r = reason || 'unspecified';
       if (_thTradesFetchInFlight) {
@@ -2926,16 +2948,19 @@
       try {
         refreshTradeHistoryInsights();
         const meta = document.getElementById('trade-history-loaded-meta');
+        const silentFooter = _thTradeFetchSilentFooterProgress(r);
         trades = await recFetchTradesMerged(
           buildTradesFetchUrl(),
           { cache: 'no-store' },
-          function (loaded, hasMore) {
-            if (meta) {
-              meta.textContent = hasMore
-                ? 'Loading ' + loaded + ' trade row(s)…'
-                : 'Loaded ' + loaded + ' trade row(s)';
-            }
-          }
+          silentFooter
+            ? undefined
+            : function (loaded, hasMore) {
+                if (meta) {
+                  meta.textContent = hasMore
+                    ? 'Loading ' + loaded + ' trade row(s)…'
+                    : 'Loaded ' + loaded + ' trade row(s)';
+                }
+              }
         );
         _thSetFetchBanner('', false);
         updateTradeHistoryLoadedMeta();
@@ -2966,6 +2991,9 @@
         updateTradeHistoryLoadedMeta();
       } finally {
         _thTradesFetchInFlight = false;
+        if (r === 'ws-db_change-trades') {
+          _thLastWsTradesFetchCompletedMs = Date.now();
+        }
         updateTradeHistoryLoadedMeta();
         if (_thTradesFetchQueuedReason != null) {
           const qr = _thTradesFetchQueuedReason;
@@ -3089,6 +3117,18 @@
       if (_tradeHistoryDbRefreshTimer) clearTimeout(_tradeHistoryDbRefreshTimer);
       _tradeHistoryDbRefreshTimer = setTimeout(() => {
         _tradeHistoryDbRefreshTimer = null;
+        const now = Date.now();
+        const since = now - _thLastWsTradesFetchCompletedMs;
+        if (
+          _thLastWsTradesFetchCompletedMs > 0 &&
+          since < _TH_WS_TRADES_MIN_INTERVAL_MS
+        ) {
+          _tradeHistoryDbRefreshTimer = setTimeout(() => {
+            _tradeHistoryDbRefreshTimer = null;
+            scheduleTradesRefetchFromDbChange();
+          }, _TH_WS_TRADES_MIN_INTERVAL_MS - since);
+          return;
+        }
         fetchAllTrades('ws-db_change-trades');
       }, _TH_WS_TRADES_DEBOUNCE_MS);
     }
@@ -3573,9 +3613,18 @@
 
             Object.keys(tradeHistoryMonitorIdToFilterMeta).forEach((k) => delete tradeHistoryMonitorIdToFilterMeta[k]);
             monitors.forEach(monitor => {
+              const mktRaw = (monitor.market || '').toString().trim().toLowerCase();
+              const mktDisp =
+                mktRaw === '15m'
+                  ? '15m'
+                  : mktRaw === 'hourly'
+                    ? 'Hourly'
+                    : (monitor.market || '').toString().trim();
               tradeHistoryMonitorIdToFilterMeta[monitor.name] = {
                 symbol: (monitor.symbol || '').trim(),
                 strategy: (monitor.strategy || '').trim(),
+                market: mktDisp,
+                num: monitor.id != null && monitor.id !== '' ? monitor.id : null,
               };
             });
 
