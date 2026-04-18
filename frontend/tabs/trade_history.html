@@ -222,9 +222,9 @@
       gap: 10px;
       align-items: stretch;
       width: 100%;
-      height: 328px;
-      min-height: 328px;
-      max-height: 328px;
+      height: 279px;
+      min-height: 279px;
+      max-height: 279px;
     }
     .th-monitors-ret-panel,
     .th-summary-side-panel {
@@ -512,20 +512,139 @@
       border-color: #718096;
     }
 
-    .th-monitors-ret-panel .th-monitors-ret-chart-wrap {
-      flex: 1 1 auto;
-      min-height: 0;
+    /*
+     * Single dark “inset card” inside the gray `.panel-container` (10px from global.css).
+     * Monitors ret chart and Analysis both use this so padding is not stacked on gray (which
+     * reads as huge top/bottom buffer). Only `.th-monitors-ret-panel` stretch-fills the row.
+     */
+    .th-trade-history-dark-inset {
       margin-top: 6px;
       position: relative;
       background-color: #1f2530;
       border-radius: 5px;
       overflow: auto;
       padding: 8px 8px 6px;
+      box-sizing: border-box;
       -webkit-overflow-scrolling: touch;
+    }
+    .th-monitors-ret-panel .th-monitors-ret-chart-wrap.th-trade-history-dark-inset {
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    /* Results: dark inset = table only; loaded meta + Export sit on gray panel below. */
+    #results-content.th-results-panel-body {
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: hidden;
+    }
+    #trade-history-results-scroll {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-x: auto;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      background-color: #1f2530;
+    }
+    /* Footer on panel gray (not inside dark inset). */
+    #trade-history-results-footer {
+      padding: 8px 2px 4px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      flex-shrink: 0;
+      font-size: 9.6px;
+    }
+    #trade-history-loaded-meta {
+      font-size: 9.6px;
+      color: #b8c0cc;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    #export-csv-btn {
+      flex-shrink: 0;
+      background-color: #2d3748;
+      color: white;
+      border: 1px solid #4a5568;
+      border-radius: 3px;
+      padding: 3px 6px;
+      font-size: 9.6px;
+      cursor: pointer;
+    }
+    #export-csv-btn:hover {
+      background-color: #4a5568;
+    }
+    /* Collapse: “-” / “+” always same corner (0,0); label only when collapsed, absolutely beside icon; tight gray shell. */
+    .panel-container.th-panel-with-corner {
+      position: relative;
+    }
+    .th-panel-with-corner.th-panel-is-collapsed #analysis-content,
+    .th-panel-with-corner.th-panel-is-collapsed #results-expandable {
+      display: none !important;
+    }
+    /* Shorter collapsed bar than default 10px vertical padding (absolute controls do not set panel height). */
+    .panel-container.th-panel-with-corner.th-panel-is-collapsed {
+      padding-top: 4px;
+      padding-bottom: 4px;
+      min-height: 30px;
+    }
+    .th-panel-corner-collapse {
+      position: absolute;
+      left: 0;
+      top: 0;
+      z-index: 6;
+      width: 22px;
+      height: 22px;
+      margin: 0;
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: #b8c0cc;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      transition: color 0.15s ease, background-color 0.15s ease;
+    }
+    .th-panel-corner-collapse:hover {
+      color: #fff;
+      background-color: rgba(255, 255, 255, 0.08);
+    }
+    .th-panel-collapse-label {
+      display: none;
+      position: absolute;
+      left: 24px;
+      top: 0;
+      line-height: 22px;
+      font-size: 12px;
+      font-weight: bold;
+      color: #c4c4c4;
+      user-select: none;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+    .th-panel-with-corner.th-panel-is-collapsed .th-panel-collapse-label {
+      display: block;
+    }
+    #results-expandable.th-panel-expandable {
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
     }
     #th-monitors-ret-chart {
       width: 100%;
-      min-height: 200px;
+      flex: 1 1 auto;
+      min-height: 0;
     }
     #th-monitors-ret-chart svg {
       display: block;
@@ -820,13 +939,13 @@
   <div class="th-search-summary-stack">
     <div class="th-summary-monitors-row">
     <div class="panel-container th-monitors-ret-panel">
-      <div class="th-monitors-ret-chart-wrap">
+      <div class="th-monitors-ret-chart-wrap th-trade-history-dark-inset">
         <div id="th-monitors-ret-chart" aria-label="Selected monitors total return percent"></div>
       </div>
     </div>
     <div class="panel-container th-summary-side-panel">
       <div class="th-summary-panel-inner">
-      <div class="panel-content" id="summary-content" style="display: flex; justify-content: space-around; padding: 10px;">
+      <div class="panel-content" id="summary-content" style="display: flex; justify-content: space-around; padding: 6px 10px;">
         <div style="text-align: center;">
           <div style="font-size: 12px; color: #ccc; margin-bottom: 5px;">Trades</div>
           <div id="trade-count" style="font-size: 18px; font-weight: bold; color: white;">0</div>
@@ -889,30 +1008,26 @@
   </div>
   <div id="th-monitors-ret-tooltip" class="th-monitors-ret-tooltip" role="tooltip" aria-hidden="true"></div>
 
-  <!-- Analysis Panel -->
-  <div class="panel-container" style="width: 100%; margin-bottom: 10px;">
-    <div class="panel-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 0px;" onclick="toggleAnalysisPanel()">
-      <div style="display: flex; align-items: flex-start;">
-        <span>Analysis</span>
-        <span id="analysis-expand-icon" style="font-size: 8px; transition: transform 0.3s ease; margin-left: 8px; transform: rotate(180deg);">▼</span>
-      </div>
-      <select id="chart-view-selector" style="background-color: #2d3748; color: white; border: 1px solid #4a5568; border-radius: 4px; padding: 4px 8px; font-size: 12px;" onclick="event.stopPropagation();">
-        <option value="pnl">PnL</option>
-        <option value="ret">Ret %</option>
-      </select>
-    </div>
-    <div id="analysis-content" style="height: 250px; overflow: hidden; transition: height 0.3s ease;">
-      <div style=" padding: 20px; height: 240px;">
-        <div style="display: flex; gap: 20px; height: 100%;">
+  <!-- Analysis: one dark inset inside gray panel (same shell as monitors ret chart wrap) -->
+  <div class="panel-container th-panel-with-corner" id="analysis-panel-wrap" style="width: 100%; margin-bottom: 10px;">
+    <button type="button" id="analysis-collapse-btn" class="th-panel-corner-collapse" title="Collapse or expand analysis" aria-expanded="true" aria-controls="analysis-expandable" onclick="toggleAnalysisPanel();">-</button>
+    <span class="th-panel-collapse-label">Analysis</span>
+    <div id="analysis-content" class="th-trade-history-dark-inset">
+      <div id="analysis-expandable" class="th-panel-expandable">
+        <div style="display: flex; gap: 10px; align-items: flex-start;">
           <!-- Left side: Time interval dropdown and averages -->
           <div style="width: 15%;">
-            <div style="margin-bottom: 15px;">
-              <select id="analysis-time-interval" class="dropdown-picker" style="width: 100%;">
+            <div style="display: flex; gap: 8px; margin-bottom: 15px; align-items: stretch;">
+              <select id="analysis-time-interval" class="dropdown-picker" style="flex: 1 1 0; min-width: 0; box-sizing: border-box;">
                 <option value="annual">Annual</option>
                 <option value="monthly">Monthly</option>
                 <option value="weekly">Weekly</option>
                 <option value="daily">Daily</option>
                 <option value="hourly">Hourly</option>
+              </select>
+              <select id="chart-view-selector" class="dropdown-picker" style="flex: 1 1 0; min-width: 0; box-sizing: border-box; background-color: #2d3748; color: white; border: 1px solid #4a5568; border-radius: 4px; padding: 4px 8px; font-size: 12px;" onclick="event.stopPropagation();" aria-label="Chart view: PnL or return percent">
+                <option value="pnl">PnL</option>
+                <option value="ret">Ret %</option>
               </select>
             </div>
             
@@ -940,7 +1055,7 @@
           
           <!-- Right side: Bar chart -->
           <div style="flex-grow: 1;">
-            <div id="analysis-chart" style="height: 220px; background-color: #1f2530; border-radius: 5px; position: relative; overflow: hidden;">
+            <div id="analysis-chart" style="height: 220px; background-color: transparent; border-radius: 5px; position: relative; overflow: hidden;">
               <canvas id="pnl-chart"></canvas>
             </div>
           </div>
@@ -949,19 +1064,12 @@
     </div>
   </div>
 
-  <div class="panel-container" style="display: flex; flex-direction: column;">
-    <div class="panel-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; padding-bottom: 0px;" onclick="toggleResultsPanel()">
-      <div style="display: flex; align-items: center;">
-        <span>Results</span>
-        <span id="results-expand-icon" style="font-size: 8px; transition: transform 0.1s ease; margin-left: 8px;">▼</span>
-      </div>
-      <button id="export-csv-btn" style="background-color: #2d3748; color: white; border: 1px solid #4a5568; border-radius: 4px; padding: 4px 8px; font-size: 12px; cursor: pointer;" onclick="event.stopPropagation(); exportToCSV();" onmouseover="this.style.backgroundColor='#4a5568'" onmouseout="this.style.backgroundColor='#2d3748'">
-        Export CSV
-      </button>
-    </div>
-    <div id="results-content" style="height: 0; overflow: hidden; transition: height 0.1s ease;">
-      <div style="height: 10px; background-color: #323c4e;"></div>
-      <div id="trade-history-results-scroll" style="background-color: #1f2530; height: calc(100% - 10px); overflow-y: auto;">
+  <div class="panel-container th-panel-with-corner" id="results-panel-wrap" style="width: 100%; margin-bottom: 10px;">
+    <button type="button" id="results-collapse-btn" class="th-panel-corner-collapse" title="Collapse or expand results" aria-expanded="true" aria-controls="results-expandable" onclick="toggleResultsPanel();">-</button>
+    <span class="th-panel-collapse-label">Results</span>
+    <div id="results-expandable" class="th-panel-expandable">
+      <div id="results-content" class="th-trade-history-dark-inset th-results-panel-body">
+      <div id="trade-history-results-scroll">
       <div id="trade-history-fetch-banner" style="display:none; padding:8px 10px; background:#4a3728; color:#f6e05e; font-size:12px; border-bottom:1px solid #744210;" role="status" aria-live="polite"></div>
       <table id="trade-log-table" aria-label="Trade Log Table">
         <thead>
@@ -993,8 +1101,13 @@
         </thead>
         <tbody></tbody>
       </table>
-      <div id="trade-history-results-footer" style="padding:10px 12px; display:flex; align-items:center; gap:14px; flex-wrap:wrap; border-top:1px solid #4a5568; background:#1a1f28;">
-        <span id="trade-history-loaded-meta" style="font-size:12px; color:#a0aec0;"></span>
+      </div>
+      </div>
+      <div id="trade-history-results-footer">
+        <span id="trade-history-loaded-meta"></span>
+        <button id="export-csv-btn" type="button" onclick="exportToCSV();">
+          Export CSV
+        </button>
       </div>
     </div>
   </div>
@@ -1796,9 +1909,17 @@
 
       const green = '#48bb78';
       const red = '#e54848';
-      /** Fixed bar plot height; x-axis sits at bottom of this frame. */
-      const plotH = 240;
-      const margin = { top: 6, right: 30, bottom: 22, left: 14 };
+      const margin = { top: 4, right: 28, bottom: 18, left: 14 };
+      /** Plot band height: x-axis at y=plotH; derive from flex-filled container so bars use full vertical space. */
+      let plotH = 120;
+      const ch = container.clientHeight;
+      if (ch > 40) {
+        plotH = Math.max(80, Math.floor(ch - margin.top - margin.bottom));
+      } else if (wrap && wrap.clientHeight > 40) {
+        const insetPadY = 8 + 6;
+        const inner = wrap.clientHeight - insetPadY;
+        plotH = Math.max(80, Math.floor(inner - margin.top - margin.bottom));
+      }
       const width = Math.max(200, container.clientWidth || 300);
       const height = margin.top + plotH + margin.bottom;
       const innerW = width - margin.left - margin.right;
@@ -1827,16 +1948,18 @@
       }
 
       const n = data.length;
-      const barGapPx = 6;
-      const maxStack = plotH * 0.92;
-      let barH = 24;
+      const barGapPx = 5;
+      /** Space between bottom of bar stack and x-axis baseline (tick labels sit below y=plotH in margin). */
+      const axisGapPx = 10;
+      const maxStack = plotH - axisGapPx;
+      let barH = 18;
       if (n > 0) {
         const inner = maxStack - Math.max(0, n - 1) * barGapPx;
-        barH = Math.max(10, Math.min(26, Math.floor(inner / n)));
+        barH = Math.max(4, inner / n);
       }
       const gap = barGapPx;
       const stackH = n * barH + Math.max(0, n - 1) * gap;
-      const yStart = (plotH - stackH) / 2;
+      const yStart = Math.max(0, plotH - axisGapPx - stackH);
 
       const svg = d3
         .select(container)
@@ -3864,7 +3987,7 @@
       // Resize chart canvas only; do not rebuild analysis (avoids flicker + duplicate work on every resize tick).
       window.addEventListener('resize', () => {
         const ac = document.getElementById('analysis-content');
-        if (ac && ac.style.height !== '0px' && pnlChart && typeof pnlChart.resize === 'function') {
+        if (ac && pnlChart && typeof pnlChart.resize === 'function') {
           pnlChart.resize();
         }
       });
@@ -4096,27 +4219,30 @@
       return window.innerHeight;
     }
 
-    /** Pixel height for expanded Results body (viewport below Results panel header). */
+    /** Pixel height for Results block (`#results-expandable`: dark table inset + gray footer row). */
     function thComputeResultsPanelHeightPx() {
-      const resultsContent = document.getElementById('results-content');
-      if (!resultsContent) return null;
-      const header = resultsContent.previousElementSibling;
-      if (!header) return null;
-      const bottom = header.getBoundingClientRect().bottom;
+      const expandable = document.getElementById('results-expandable');
+      if (!expandable) return null;
+      const top = expandable.getBoundingClientRect().top;
       const vh = thViewportHeightPx();
       const basePadPx = 12;
       const extraBottomBufferPx = 5;
       const viewportPctBufferPx = Math.round(vh * 0.01);
       const padding = basePadPx + extraBottomBufferPx + viewportPctBufferPx;
-      return Math.max(200, vh - bottom - padding);
+      return Math.max(200, vh - top - padding);
     }
 
-    /** Apply computed height when Results is expanded (skip when collapsed). */
+    /** Apply computed height to `#results-expandable` (skip fixed height when collapsed). */
     function thRefreshResultsPanelHeight() {
-      const resultsContent = document.getElementById('results-content');
-      if (!resultsContent || resultsContent.style.height === '0px') return;
+      const expandable = document.getElementById('results-expandable');
+      const resultsPanel = document.getElementById('results-panel-wrap');
+      if (!expandable) return;
+      if (resultsPanel && resultsPanel.classList.contains('th-panel-is-collapsed')) {
+        expandable.style.height = '';
+        return;
+      }
       const h = thComputeResultsPanelHeightPx();
-      if (h != null) resultsContent.style.height = h + 'px';
+      if (h != null) expandable.style.height = h + 'px';
     }
 
     /** Monitors/charts above Results settle after first paint; remeasure so the panel does not spill past the iframe. */
@@ -4161,24 +4287,6 @@
         ev.preventDefault();
       }
     });
-
-    // Analysis Panel Toggle Function
-    function toggleAnalysisPanel() {
-      const content = document.getElementById('analysis-content');
-      const icon = document.getElementById('analysis-expand-icon');
-      
-      if (content.style.height === '0px' || content.style.height === '') {
-        // Expand the panel
-        content.style.height = '250px';
-        icon.style.transform = 'rotate(180deg)';
-        setTimeout(thRefreshResultsPanelHeight, 160);
-      } else {
-        // Collapse the panel
-        content.style.height = '0px';
-        icon.style.transform = 'rotate(0deg)';
-        setTimeout(thRefreshResultsPanelHeight, 160);
-      }
-    }
 
     // Reset All Filters Function
     function resetAllFilters() {
@@ -4239,31 +4347,35 @@
       console.log('All filters reset completed');
     }
 
-    // Results Panel Toggle Function
-    function toggleResultsPanel() {
-      const content = document.getElementById('results-content');
-      const icon = document.getElementById('results-expand-icon');
-      
-      if (content.style.height === '0px' || content.style.height === '') {
-        const h = thComputeResultsPanelHeightPx();
-        if (h != null) content.style.height = h + 'px';
-        icon.style.transform = 'rotate(180deg)';
-      } else {
-        // Collapse the panel
-        content.style.height = '0px';
-        icon.style.transform = 'rotate(0deg)';
+    function toggleAnalysisPanel() {
+      const panel = document.getElementById('analysis-panel-wrap');
+      const btn = document.getElementById('analysis-collapse-btn');
+      if (!panel || !btn) return;
+      const collapsed = panel.classList.toggle('th-panel-is-collapsed');
+      btn.textContent = collapsed ? '+' : '-';
+      btn.setAttribute('aria-expanded', (!collapsed).toString());
+      thScheduleResultsPanelHeightRefresh();
+      if (!collapsed && typeof pnlChart !== 'undefined' && pnlChart && typeof pnlChart.resize === 'function') {
+        requestAnimationFrame(() => pnlChart.resize());
       }
     }
 
-    // Initialize Results panel as expanded on page load
+    function toggleResultsPanel() {
+      const panel = document.getElementById('results-panel-wrap');
+      const btn = document.getElementById('results-collapse-btn');
+      if (!panel || !btn) return;
+      const collapsed = panel.classList.toggle('th-panel-is-collapsed');
+      btn.textContent = collapsed ? '+' : '-';
+      btn.setAttribute('aria-expanded', (!collapsed).toString());
+      thScheduleResultsPanelHeightRefresh();
+    }
+
+    // Initialize Results panel height on page load (inset always visible; no collapse).
     document.addEventListener('DOMContentLoaded', function() {
-      const resultsContent = document.getElementById('results-content');
-      const resultsIcon = document.getElementById('results-expand-icon');
-      
-      if (resultsContent && resultsIcon) {
-        resultsIcon.style.transform = 'rotate(180deg)';
+      const expandable = document.getElementById('results-expandable');
+      if (expandable) {
         const h = thComputeResultsPanelHeightPx();
-        if (h != null) resultsContent.style.height = h + 'px';
+        if (h != null) expandable.style.height = h + 'px';
         thScheduleResultsPanelHeightRefresh();
       }
     });
@@ -4710,6 +4822,9 @@
           animation: false,
           responsive: true,
           maintainAspectRatio: false,
+          layout: {
+            padding: { top: 0, right: 0, bottom: 0, left: 0 }
+          },
           interaction: {
             mode: 'index',
             intersect: false
@@ -4801,7 +4916,7 @@
                 display: false
               },
               beginAtZero: shouldBeginAtZero,
-              grace: '10%'
+              grace: '0%'
             },
             x: {
               grid: {
