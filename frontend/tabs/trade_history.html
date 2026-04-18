@@ -579,6 +579,10 @@
     #export-csv-btn:hover {
       background-color: #4a5568;
     }
+    /* Tighter gray strip under footer; keep default top padding for corner collapse (matches other panels). */
+    #results-panel-wrap.panel-container.th-panel-with-corner:not(.th-panel-is-collapsed) {
+      padding-bottom: 4px;
+    }
     /* Collapse: “-” / “+” always same corner (0,0); label only when collapsed, absolutely beside icon; tight gray shell. */
     .panel-container.th-panel-with-corner {
       position: relative;
@@ -4814,6 +4818,24 @@
         }
       };
 
+      // Tooltip follows pointer (canvas coordinates); small offset so the box does not sit under the cursor.
+      let analysisTooltipPosition = 'average';
+      if (typeof Chart !== 'undefined' && Chart.Tooltip && Chart.Tooltip.positioners) {
+        if (!Chart.Tooltip.positioners.thTradeHistoryCursor) {
+          Chart.Tooltip.positioners.thTradeHistoryCursor = function (elements, eventPosition) {
+            if (!elements.length) return false;
+            const pad = 12;
+            return {
+              x: eventPosition.x + pad,
+              y: eventPosition.y + pad,
+              xAlign: 'left',
+              yAlign: 'top'
+            };
+          };
+        }
+        analysisTooltipPosition = 'thTradeHistoryCursor';
+      }
+
       // Create Chart.js configuration
       const config = {
         type: 'bar',
@@ -4882,6 +4904,8 @@
               color: 'transparent',
             },
             tooltip: {
+              position: analysisTooltipPosition,
+              caretPadding: 4,
               callbacks: {
                 title: function(context) {
                   const label = context[0].label;
