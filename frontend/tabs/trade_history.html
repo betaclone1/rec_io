@@ -514,8 +514,8 @@
 
     /*
      * Single dark “inset card” inside the gray `.panel-container` (10px from global.css).
-     * Monitors ret chart and Analysis both use this so padding is not stacked on gray (which
-     * reads as huge top/bottom buffer). Only `.th-monitors-ret-panel` stretch-fills the row.
+     * Monitors ret chart and Results table use this. Analysis uses the gray panel as the gutter
+     * between two #1f2530 cards (pickers/averages + chart), matching the older layout.
      */
     .th-trade-history-dark-inset {
       margin-top: 6px;
@@ -640,6 +640,25 @@
       min-height: 0;
       display: flex;
       flex-direction: column;
+    }
+    /*
+     * Analysis: two #1f2530 cards with gray gutter; `#analysis-content` has no extra vertical padding
+     * (same idea as avoiding stacked inset padding). Panel top/bottom use default `.panel-container`
+     * padding like `#results-panel-wrap` so the corner collapse control has the same clearance.
+     */
+    #analysis-content.th-analysis-content {
+      position: relative;
+      margin-top: 6px;
+      padding: 0;
+      box-sizing: border-box;
+      overflow: hidden;
+      background: transparent;
+      border-radius: 0;
+    }
+    #analysis-expandable.th-panel-expandable {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
     }
     #th-monitors-ret-chart {
       width: 100%;
@@ -1008,16 +1027,16 @@
   </div>
   <div id="th-monitors-ret-tooltip" class="th-monitors-ret-tooltip" role="tooltip" aria-hidden="true"></div>
 
-  <!-- Analysis: one dark inset inside gray panel (same shell as monitors ret chart wrap) -->
+  <!-- Analysis: gray panel shows between averages card and chart card (two #1f2530 regions, gap like pre–unified inset). -->
   <div class="panel-container th-panel-with-corner" id="analysis-panel-wrap" style="width: 100%; margin-bottom: 10px;">
     <button type="button" id="analysis-collapse-btn" class="th-panel-corner-collapse" title="Collapse or expand analysis" aria-expanded="true" aria-controls="analysis-expandable" onclick="toggleAnalysisPanel();">-</button>
     <span class="th-panel-collapse-label">Analysis</span>
-    <div id="analysis-content" class="th-trade-history-dark-inset">
+    <div id="analysis-content" class="th-analysis-content">
       <div id="analysis-expandable" class="th-panel-expandable">
-        <div style="display: flex; gap: 10px; align-items: flex-start;">
+        <div style="display: flex; gap: 20px; align-items: flex-start;">
           <!-- Left side: Time interval dropdown and averages -->
           <div style="width: 15%;">
-            <div style="display: flex; gap: 8px; margin-bottom: 15px; align-items: stretch;">
+            <div style="display: flex; gap: 8px; margin-bottom: 10px; align-items: stretch;">
               <select id="analysis-time-interval" class="dropdown-picker" style="flex: 1 1 0; min-width: 0; box-sizing: border-box;">
                 <option value="annual">Annual</option>
                 <option value="monthly">Monthly</option>
@@ -1053,9 +1072,9 @@
             </div>
           </div>
           
-          <!-- Right side: Bar chart -->
+          <!-- Right side: Bar chart (own dark card; gray gutter separates from averages) -->
           <div style="flex-grow: 1;">
-            <div id="analysis-chart" style="height: 220px; background-color: transparent; border-radius: 5px; position: relative; overflow: hidden;">
+            <div id="analysis-chart" style="height: 220px; background-color: #1f2530; border-radius: 5px; position: relative; overflow: hidden;">
               <canvas id="pnl-chart"></canvas>
             </div>
           </div>
