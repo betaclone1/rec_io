@@ -42,37 +42,28 @@
             margin-bottom: 10px;
             position: relative;
             z-index: 10;
+            overflow: visible;
         }
+        /* Row 1: preset + custom range (same widths as desktop trade_history.html) */
         .th-daterange-row {
             display: flex;
-            flex-direction: column;
-            align-items: stretch;
-            gap: 8px;
+            flex-direction: row;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
             margin-bottom: 5px;
-        }
-        @media (min-width: 480px) {
-            .th-daterange-row {
-                flex-direction: row;
-                flex-wrap: wrap;
-                align-items: center;
-            }
         }
         .th-daterange-row > .th-date-filter-dropdown,
         .th-daterange-row > .th-range-trigger {
             flex: 0 0 auto;
         }
+        /* Row 2: Filter + LIVE / PAPER / TEST + monitor All|None */
         .th-search-header-slot {
             display: flex;
-            flex-direction: column;
-            align-items: flex-start;
-            gap: 10px;
-        }
-        @media (min-width: 480px) {
-            .th-search-header-slot {
-                flex-direction: row;
-                flex-wrap: wrap;
-                align-items: center;
-            }
+            flex-direction: row;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
         }
         .panel-header {
             font-size: 12px;
@@ -90,8 +81,8 @@
             right: 0;
             top: 100%;
             margin-top: 6px;
-            max-height: min(78vh, 520px);
-            overflow: auto;
+            max-height: min(85vh, 560px);
+            overflow: visible;
             padding: 12px 14px;
             background: #1f2530;
             border: 1px solid #4a5568;
@@ -100,19 +91,27 @@
             z-index: 11000;
             box-sizing: border-box;
         }
+        .th-search-overlay .multi-select-dropdown {
+            position: relative;
+            overflow: visible;
+        }
         .th-search-overlay .multi-select-dropdown > div[id$="-dropdown-content"] {
-            z-index: 12050;
+            z-index: 12050 !important;
+        }
+        .th-search-overlay .th-filter-overlay-col {
+            overflow: visible;
         }
         .th-filter-overlay-row {
             display: flex;
             flex-direction: row;
             flex-wrap: wrap;
             align-items: flex-start;
-            gap: 16px;
+            gap: 20px;
         }
         .th-filter-overlay-col {
             flex: 0 1 auto;
             min-width: 100px;
+            overflow: visible;
         }
         .th-top-bar.th-search-open .th-search-overlay {
             display: block;
@@ -242,11 +241,12 @@
             width: max-content;
             max-width: 100%;
         }
+        /* Fixed width: full custom range label — match desktop */
         input.th-range-trigger,
         input.th-range-trigger.form-control {
-            width: 100%;
-            max-width: 280px;
-            min-width: 0;
+            width: 180px;
+            min-width: 180px;
+            max-width: 100%;
             padding: 6px 10px;
             font-size: 12px;
             background: #2a3441;
@@ -356,6 +356,7 @@
         /* Search Section */
         .search-section {
             margin-bottom: 10px;
+            overflow: visible;
         }
 
         .filter-row {
@@ -615,6 +616,11 @@
                             <input type="checkbox" id="include-test-trades" style="width: 14px; height: 14px;">
                             TEST
                         </label>
+                        <span class="th-monitor-all-none" style="display: inline-flex; align-items: center; gap: 6px; font-size: 12px; user-select: none;" role="group" aria-label="Monitor tiles: select all or none">
+                            <span id="th-monitor-select-all" tabindex="0" style="cursor: pointer; color: #7dd3fc;">All</span>
+                            <span style="color: #626262;">|</span>
+                            <span id="th-monitor-select-none" tabindex="0" style="cursor: pointer; color: #7dd3fc;">None</span>
+                        </span>
                     </div>
                 </div>
                 <div id="thm-monitor-tiles-scroll" class="thm-monitor-tiles-scroll" aria-label="Monitor filters">
@@ -862,6 +868,14 @@
             return '';
         }
 
+        /** Leading YYYY-MM-DD from row/API ``date`` (plain day or ISO datetime) for string-range compares. */
+        function thTradeDateKey(trade) {
+            const raw = trade && trade.date;
+            if (raw == null || raw === '') return '';
+            const s = String(raw).trim();
+            return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : s;
+        }
+
         // === DATE FILTER LOGIC ===
         function filterTradesByDate(trades, filter) {
             const now = new Date();
@@ -869,102 +883,64 @@
             const month = String(now.getMonth() + 1).padStart(2, '0');
             const day = String(now.getDate()).padStart(2, '0');
             const today = `${year}-${month}-${day}`;
+
             const startDateInput = document.getElementById('start-date');
             const endDateInput = document.getElementById('end-date');
             const customStartDate = startDateInput ? startDateInput.value : null;
             const customEndDate = endDateInput ? endDateInput.value : null;
-            // Only apply hidden inputs for CUSTOM. For presets, stale start/end from prefs would
-            // re-filter server-bounded rows and often yield zero (e.g. TODAY + old custom range).
+
+            // Hidden range applies only for CUSTOM; stale start/end with presets would re-filter bounded rows to zero.
             if (customStartDate && customEndDate && filter === 'CUSTOM') {
-                return trades.filter(trade => {
-                    if (!trade.date) return false;
-                    return trade.date >= customStartDate && trade.date <= customEndDate;
+                return trades.filter((trade) => {
+                    const td = thTradeDateKey(trade);
+                    if (!td) return false;
+                    return td >= customStartDate && td <= customEndDate;
                 });
             }
-            function getDateOfThisWeek(dayOfWeek) {
-                const curr = new Date(now);
-                const currDay = curr.getDay();
-                const diff = dayOfWeek - currDay;
-                curr.setDate(curr.getDate() + diff);
-                return formatDate(curr);
-            }
+
             function getLatestSunday() {
                 const curr = new Date(now);
                 curr.setDate(curr.getDate() - curr.getDay());
                 return formatDate(curr);
             }
-            function getPrevSunday() {
-                const curr = new Date(now);
-                curr.setDate(curr.getDate() - curr.getDay() - 7);
-                return formatDate(curr);
-            }
-            function getNextSaturdayOfPrevWeek() {
-                const curr = new Date(now);
-                curr.setDate(curr.getDate() - curr.getDay() - 1);
-                return formatDate(curr);
-            }
-            return trades.filter(trade => {
-                if (!trade.date) return false;
+            return trades.filter((trade) => {
+                const td = thTradeDateKey(trade);
+                if (!td) return false;
                 switch (filter) {
                     case 'ALL':
                         return true;
                     case 'TODAY':
-                        return trade.date === today;
+                        return td === today;
                     case 'YESTERDAY': {
                         const y = new Date(now);
                         y.setDate(now.getDate() - 1);
                         const yStr = formatDate(y);
-                        return trade.date >= yStr && trade.date <= yStr;
+                        return td >= yStr && td <= yStr;
                     }
                     case 'THIS_WEEK': {
                         const sunday = getLatestSunday();
-                        return trade.date >= sunday && trade.date <= today;
-                    }
-                    case 'SUNDAY':
-                        return trade.date === getDateOfThisWeek(0);
-                    case 'MONDAY':
-                        return trade.date === getDateOfThisWeek(1);
-                    case 'TUESDAY':
-                        return trade.date === getDateOfThisWeek(2);
-                    case 'WEDNESDAY':
-                        return trade.date === getDateOfThisWeek(3);
-                    case 'THURSDAY':
-                        return trade.date === getDateOfThisWeek(4);
-                    case 'FRIDAY':
-                        return trade.date === getDateOfThisWeek(5);
-                    case 'SATURDAY':
-                        return trade.date === getDateOfThisWeek(6);
-                    case 'LAST_WEEK': {
-                        const prevSunday = getPrevSunday();
-                        const nextSaturday = getNextSaturdayOfPrevWeek();
-                        return trade.date >= prevSunday && trade.date <= nextSaturday;
+                        return td >= sunday && td <= today;
                     }
                     case 'MONTH': {
                         const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
                         const monthStartStr = formatDate(monthStart);
-                        return trade.date >= monthStartStr && trade.date <= today;
+                        return td >= monthStartStr && td <= today;
                     }
                     case 'PREV_7': {
                         const p7 = new Date(now);
                         p7.setDate(now.getDate() - 6);
                         const p7Str = formatDate(p7);
-                        return trade.date >= p7Str && trade.date <= today;
+                        return td >= p7Str && td <= today;
                     }
                     case 'PREV_30': {
                         const prev30 = new Date(now);
                         prev30.setDate(now.getDate() - 30);
                         const prev30Str = formatDate(prev30);
-                        return trade.date >= prev30Str && trade.date <= today;
+                        return td >= prev30Str && td <= today;
                     }
                     case 'YTD': {
                         const ytdStr = `${year}-01-01`;
-                        return trade.date >= ytdStr && trade.date <= today;
-                    }
-                    case 'PREV_YEAR': {
-                        const prevYear = new Date(now);
-                        prevYear.setFullYear(now.getFullYear() - 1);
-                        const prevYearStr = formatDate(prevYear);
-                        return trade.date >= prevYearStr && trade.date <= today;
+                        return td >= ytdStr && td <= today;
                     }
                     case 'CUSTOM':
                         return true;
@@ -1024,7 +1000,7 @@
             });
         }
         
-        // Helper function to format date as YYYY-MM-DD
+        // Helper function to format date as YYYY-MM-DD (local calendar; same as desktop trade history)
         function formatDate(date) {
             const year = date.getFullYear();
             const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -1043,13 +1019,8 @@
             'ALL',
             'CUSTOM',
         ];
-        const TRADE_HISTORY_LEGACY_DATE_FILTERS = [
-            'SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY',
-            'LAST_WEEK', 'PREV_YEAR',
-        ];
         function normalizeTradeHistoryDateFilter(val) {
             if (val && TRADE_HISTORY_DATE_FILTER_OPTIONS.indexOf(val) !== -1) return val;
-            if (val && TRADE_HISTORY_LEGACY_DATE_FILTERS.indexOf(val) !== -1) return val;
             return 'TODAY';
         }
 
@@ -1059,6 +1030,7 @@
             if (!filterPicker) return null;
             const selectedValue = filterPicker.value;
             if (selectedValue === 'ALL') return null;
+
             if (selectedValue === 'CUSTOM') {
                 const sEl = document.getElementById('start-date');
                 const eEl = document.getElementById('end-date');
@@ -1067,15 +1039,18 @@
                 if (s && e) return { min_date: s, max_date: e };
                 return null;
             }
+
             const now = new Date();
             const today = formatDate(now);
             let startDate = '';
             let endDate = '';
+
             function getLatestSunday() {
                 const curr = new Date(now);
                 curr.setDate(curr.getDate() - curr.getDay());
                 return formatDate(curr);
             }
+
             switch (selectedValue) {
                 case 'TODAY':
                     startDate = today;
@@ -1643,29 +1618,33 @@
                 return [];
             }
             
-            // Filter trades based on selected days
-            return trades.filter(trade => {
-                // Parse date string to avoid timezone issues
-                // Split date string (e.g., "2025-01-15") and create local date
-                const dateParts = trade.date.split('-');
-                if (dateParts.length !== 3) return false;
-                
-                const year = parseInt(dateParts[0]);
-                const month = parseInt(dateParts[1]) - 1; // JavaScript months are 0-based
-                const day = parseInt(dateParts[2]);
-                
+            return trades.filter((trade) => {
+                const m = trade.date && String(trade.date).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+                if (!m) return false;
+                const year = parseInt(m[1], 10);
+                const month = parseInt(m[2], 10) - 1;
+                const day = parseInt(m[3], 10);
                 const tradeDate = new Date(year, month, day);
-                const dayOfWeek = tradeDate.getDay(); // 0 = Sunday, 1 = Monday, etc.
-                
-                if (dayOfWeek === 0 && sundayChecked) return true;
-                if (dayOfWeek === 1 && mondayChecked) return true;
-                if (dayOfWeek === 2 && tuesdayChecked) return true;
-                if (dayOfWeek === 3 && wednesdayChecked) return true;
-                if (dayOfWeek === 4 && thursdayChecked) return true;
-                if (dayOfWeek === 5 && fridayChecked) return true;
-                if (dayOfWeek === 6 && saturdayChecked) return true;
-                
-                return false;
+                const dayOfWeek = tradeDate.getDay();
+
+                switch (dayOfWeek) {
+                    case 0:
+                        return sundayChecked;
+                    case 1:
+                        return mondayChecked;
+                    case 2:
+                        return tuesdayChecked;
+                    case 3:
+                        return wednesdayChecked;
+                    case 4:
+                        return thursdayChecked;
+                    case 5:
+                        return fridayChecked;
+                    case 6:
+                        return saturdayChecked;
+                    default:
+                        return false;
+                }
             });
         }
         
@@ -2561,23 +2540,24 @@
         }
 
         // === MONITOR FILTER LOGIC ===
+        // Match desktop: use strip tile “on” state (same as thmSelectedMonitorIdsFromStrip), exact id match (case-insensitive).
         function filterTradesByMonitor(trades) {
-            const monitorCheckboxes = Array.from(document.querySelectorAll('#monitor-dropdown-content input[type="checkbox"]'));
+            const monitorCheckboxes = Array.from(
+                document.querySelectorAll('#monitor-dropdown-content input[type="checkbox"][data-monitor-id]')
+            );
             if (monitorCheckboxes.length === 0) return trades;
-            const selectedMonitors = monitorCheckboxes
-                .filter(checkbox => checkbox.checked)
-                .map(checkbox => checkbox.getAttribute('data-monitor-id'));
-            
-            // If no specific monitors are selected, show all trades
+            const selectedMonitors = thmSelectedMonitorIdsFromStrip();
             if (selectedMonitors.length === 0) {
                 return trades;
             }
-            
-            return trades.filter(trade => {
+
+            return trades.filter((trade) => {
                 const monitor = trade.monitor;
-                if (!monitor) return true; // Show trades without monitor
-                
-                return selectedMonitors.some(selectedMonitor => monitor.includes(selectedMonitor));
+                if (!monitor) return true;
+                const m = String(monitor);
+                return selectedMonitors.some(
+                    (sid) => sid && m.toLowerCase() === String(sid).toLowerCase()
+                );
             });
         }
 
@@ -2749,7 +2729,7 @@
             }
         }
 
-        // Update date range display and populate date inputs
+        // Update date range display and populate date inputs (same logic as desktop trade_history.html)
         async function updateDateRangeDisplay() {
             const filterPicker = document.getElementById('date-filter-picker');
             const startDateInput = document.getElementById('start-date');
@@ -2761,29 +2741,9 @@
             let startDate = '';
             let endDate = '';
 
-            function getDateOfThisWeek(dayOfWeek) {
-                const curr = new Date(now);
-                const currDay = curr.getDay();
-                const diff = dayOfWeek - currDay;
-                curr.setDate(curr.getDate() + diff);
-                return formatDate(curr);
-            }
-
             function getLatestSunday() {
                 const curr = new Date(now);
                 curr.setDate(curr.getDate() - curr.getDay());
-                return formatDate(curr);
-            }
-
-            function getPrevSunday() {
-                const curr = new Date(now);
-                curr.setDate(curr.getDate() - curr.getDay() - 7);
-                return formatDate(curr);
-            }
-
-            function getNextSaturdayOfPrevWeek() {
-                const curr = new Date(now);
-                curr.setDate(curr.getDate() - curr.getDay() - 1);
                 return formatDate(curr);
             }
 
@@ -2791,8 +2751,8 @@
                 case 'ALL':
                     if (trades && trades.length > 0) {
                         const dates = trades
-                            .filter(trade => trade.date)
-                            .map(trade => trade.date)
+                            .map((trade) => thTradeDateKey(trade))
+                            .filter(Boolean)
                             .sort();
                         if (dates.length > 0) {
                             startDate = dates[0];
@@ -2816,12 +2776,10 @@
                         }
                     }
                     break;
-                case 'TODAY': {
-                    const today = formatDate(now);
-                    startDate = today;
-                    endDate = today;
+                case 'TODAY':
+                    startDate = formatDate(now);
+                    endDate = formatDate(now);
                     break;
-                }
                 case 'YESTERDAY': {
                     const y = new Date(now);
                     y.setDate(now.getDate() - 1);
@@ -2831,79 +2789,36 @@
                     break;
                 }
                 case 'THIS_WEEK': {
-                    const sunday = getLatestSunday();
-                    const today = formatDate(now);
-                    startDate = sunday;
-                    endDate = today;
-                    break;
-                }
-                case 'SUNDAY':
-                    startDate = endDate = getDateOfThisWeek(0);
-                    break;
-                case 'MONDAY':
-                    startDate = endDate = getDateOfThisWeek(1);
-                    break;
-                case 'TUESDAY':
-                    startDate = endDate = getDateOfThisWeek(2);
-                    break;
-                case 'WEDNESDAY':
-                    startDate = endDate = getDateOfThisWeek(3);
-                    break;
-                case 'THURSDAY':
-                    startDate = endDate = getDateOfThisWeek(4);
-                    break;
-                case 'FRIDAY':
-                    startDate = endDate = getDateOfThisWeek(5);
-                    break;
-                case 'SATURDAY':
-                    startDate = endDate = getDateOfThisWeek(6);
-                    break;
-                case 'LAST_WEEK': {
-                    const prevSunday = getPrevSunday();
-                    const nextSaturday = getNextSaturdayOfPrevWeek();
-                    startDate = prevSunday;
-                    endDate = nextSaturday;
+                    startDate = getLatestSunday();
+                    endDate = formatDate(now);
                     break;
                 }
                 case 'MONTH': {
                     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-                    const today = formatDate(now);
                     startDate = formatDate(monthStart);
-                    endDate = today;
+                    endDate = formatDate(now);
                     break;
                 }
                 case 'PREV_7': {
                     const p7 = new Date(now);
                     p7.setDate(now.getDate() - 6);
-                    const today = formatDate(now);
                     startDate = formatDate(p7);
-                    endDate = today;
+                    endDate = formatDate(now);
                     break;
                 }
                 case 'PREV_30': {
                     const prev30 = new Date(now);
                     prev30.setDate(now.getDate() - 30);
-                    const today = formatDate(now);
                     startDate = formatDate(prev30);
-                    endDate = today;
+                    endDate = formatDate(now);
                     break;
                 }
                 case 'YTD': {
-                    const ytdStart = `${now.getFullYear()}-01-01`;
-                    const today = formatDate(now);
-                    startDate = ytdStart;
-                    endDate = today;
-                    break;
-                }
-                case 'PREV_YEAR': {
-                    const prevYear = new Date(now);
-                    prevYear.setFullYear(now.getFullYear() - 1);
-                    startDate = formatDate(prevYear);
+                    startDate = `${now.getFullYear()}-01-01`;
                     endDate = formatDate(now);
                     break;
                 }
                 case 'CUSTOM':
-                    tradeHistoryDateRangeSyncFromInputs();
                     return;
                 default:
                     break;
@@ -2911,10 +2826,27 @@
 
             if (startDate) startDateInput.value = startDate;
             if (endDate) endDateInput.value = endDate;
-            tradeHistoryDateRangeSyncFromInputs();
         }
 
         // Contract, day, monitor filter checkboxes use delegated change in setupDropdowns
+
+        function thmMonitorTilesSetAll(checked) {
+            const monitorContent = document.getElementById('monitor-dropdown-content');
+            if (!monitorContent) return;
+            monitorContent.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+                cb.checked = checked;
+            });
+            thmSyncAllMonitorTiles();
+            if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
+            applyFilters();
+            savePaperTradePreferences();
+        }
+
+        function thmMonitorAllNoneClick(ev, checked) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            thmMonitorTilesSetAll(checked);
+        }
 
         // Dropdown functionality
         function setupDropdowns() {
@@ -3040,19 +2972,15 @@
                 e.stopPropagation();
                 monitorContent.style.display = monitorContent.style.display === 'none' ? 'block' : 'none';
             });
-            document.getElementById('monitor-select-all')?.addEventListener('click', () => {
-                monitorContent.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = true; });
-                thmSyncAllMonitorTiles();
-                if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
-                applyFilters();
-                savePaperTradePreferences();
+            document.getElementById('monitor-select-all')?.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                thmMonitorTilesSetAll(true);
             });
-            document.getElementById('monitor-select-none')?.addEventListener('click', () => {
-                monitorContent.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
-                thmSyncAllMonitorTiles();
-                if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
-                applyFilters();
-                savePaperTradePreferences();
+            document.getElementById('monitor-select-none')?.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                thmMonitorTilesSetAll(false);
             });
             monitorContent.addEventListener('change', (e) => {
                 if (e.target.matches('input[type="checkbox"]')) {
@@ -3074,6 +3002,23 @@
         
         // Initialize dropdowns
         setupDropdowns();
+
+        const thMonAll = document.getElementById('th-monitor-select-all');
+        const thMonNone = document.getElementById('th-monitor-select-none');
+        thMonAll?.addEventListener('click', (e) => thmMonitorAllNoneClick(e, true));
+        thMonNone?.addEventListener('click', (e) => thmMonitorAllNoneClick(e, false));
+        thMonAll?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                thmMonitorTilesSetAll(true);
+            }
+        });
+        thMonNone?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                thmMonitorTilesSetAll(false);
+            }
+        });
 
         function formatTradeHistoryMonitorLabel(monitor) {
             const key = monitor.name || '';
@@ -3185,28 +3130,27 @@
             }
         }
 
-        // Save paper trade preferences to database
+        // Save trade history preferences (same API + payload shape as desktop trade_history.html savePreferences)
         async function savePaperTradePreferences() {
             try {
-                const filterLive = document.getElementById('filter-live');
-                const filterPaper = document.getElementById('filter-paper');
-                if (!filterLive || !filterPaper) return;
-
                 const dateFilterPicker = document.getElementById('date-filter-picker');
-                const startDateInput = document.getElementById('start-date');
-                const endDateInput = document.getElementById('end-date');
                 const filterWin = document.getElementById('filter-win');
                 const filterLoss = document.getElementById('filter-loss');
-                const includeTestTrades = document.getElementById('include-test-trades');
+                const filterLive = document.getElementById('filter-live');
+                const filterPaper = document.getElementById('filter-paper');
+                const includeTestTradesPref = document.getElementById('include-test-trades');
+                const startDateInput = document.getElementById('start-date');
+                const endDateInput = document.getElementById('end-date');
 
-                const strategySelection = {};
-                document.querySelectorAll('#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]').forEach(cb => {
-                    strategySelection[cb.getAttribute('data-strategy-name')] = cb.checked;
+                const monitorCbs = document.querySelectorAll(
+                    '#monitor-dropdown-content input[type="checkbox"][data-monitor-id]'
+                );
+                const monitor_selection = {};
+                monitorCbs.forEach((cb) => {
+                    const id = cb.getAttribute('data-monitor-id');
+                    if (id) monitor_selection[id] = cb.checked;
                 });
-                const symbolSelection = {};
-                document.querySelectorAll('#symbol-checkboxes-container input[type="checkbox"][data-symbol]').forEach(cb => {
-                    symbolSelection[cb.getAttribute('data-symbol')] = cb.checked;
-                });
+                window.tradeHistoryMonitorSelection = { ...monitor_selection };
 
                 const preferences = {
                     date_filter: dateFilterPicker ? dateFilterPicker.value : 'TODAY',
@@ -3214,22 +3158,106 @@
                     end_date: endDateInput ? endDateInput.value : '',
                     win_filter: filterWin ? filterWin.checked : true,
                     loss_filter: filterLoss ? filterLoss.checked : true,
-                    live_filter: filterLive.checked,
-                    paper_filter: filterPaper.checked,
-                    include_test_trades: includeTestTrades ? includeTestTrades.checked : false,
-                    strategy_selection: strategySelection,
-                    symbol_selection: symbolSelection,
+                    live_filter: filterLive ? filterLive.checked : true,
+                    paper_filter: filterPaper ? filterPaper.checked : false,
+                    include_test_trades: includeTestTradesPref ? includeTestTradesPref.checked : false,
+                    contract_12am: document.getElementById('contract-12am')
+                        ? document.getElementById('contract-12am').checked
+                        : true,
+                    contract_1am: document.getElementById('contract-1am')
+                        ? document.getElementById('contract-1am').checked
+                        : true,
+                    contract_2am: document.getElementById('contract-2am')
+                        ? document.getElementById('contract-2am').checked
+                        : true,
+                    contract_3am: document.getElementById('contract-3am')
+                        ? document.getElementById('contract-3am').checked
+                        : true,
+                    contract_4am: document.getElementById('contract-4am')
+                        ? document.getElementById('contract-4am').checked
+                        : true,
+                    contract_5am: document.getElementById('contract-5am')
+                        ? document.getElementById('contract-5am').checked
+                        : true,
+                    contract_6am: document.getElementById('contract-6am')
+                        ? document.getElementById('contract-6am').checked
+                        : true,
+                    contract_7am: document.getElementById('contract-7am')
+                        ? document.getElementById('contract-7am').checked
+                        : true,
+                    contract_8am: document.getElementById('contract-8am')
+                        ? document.getElementById('contract-8am').checked
+                        : true,
+                    contract_9am: document.getElementById('contract-9am')
+                        ? document.getElementById('contract-9am').checked
+                        : true,
+                    contract_10am: document.getElementById('contract-10am')
+                        ? document.getElementById('contract-10am').checked
+                        : true,
+                    contract_11am: document.getElementById('contract-11am')
+                        ? document.getElementById('contract-11am').checked
+                        : true,
+                    contract_12pm: document.getElementById('contract-12pm')
+                        ? document.getElementById('contract-12pm').checked
+                        : true,
+                    contract_1pm: document.getElementById('contract-1pm')
+                        ? document.getElementById('contract-1pm').checked
+                        : true,
+                    contract_2pm: document.getElementById('contract-2pm')
+                        ? document.getElementById('contract-2pm').checked
+                        : true,
+                    contract_3pm: document.getElementById('contract-3pm')
+                        ? document.getElementById('contract-3pm').checked
+                        : true,
+                    contract_4pm: document.getElementById('contract-4pm')
+                        ? document.getElementById('contract-4pm').checked
+                        : true,
+                    contract_5pm: document.getElementById('contract-5pm')
+                        ? document.getElementById('contract-5pm').checked
+                        : true,
+                    contract_6pm: document.getElementById('contract-6pm')
+                        ? document.getElementById('contract-6pm').checked
+                        : true,
+                    contract_7pm: document.getElementById('contract-7pm')
+                        ? document.getElementById('contract-7pm').checked
+                        : true,
+                    contract_8pm: document.getElementById('contract-8pm')
+                        ? document.getElementById('contract-8pm').checked
+                        : true,
+                    contract_9pm: document.getElementById('contract-9pm')
+                        ? document.getElementById('contract-9pm').checked
+                        : true,
+                    contract_10pm: document.getElementById('contract-10pm')
+                        ? document.getElementById('contract-10pm').checked
+                        : true,
+                    contract_11pm: document.getElementById('contract-11pm')
+                        ? document.getElementById('contract-11pm').checked
+                        : true,
+                    symbol_selection: (() => {
+                        const sel = {};
+                        document
+                            .querySelectorAll('#symbol-checkboxes-container input[type="checkbox"][data-symbol]')
+                            .forEach((cb) => {
+                                sel[cb.getAttribute('data-symbol')] = cb.checked;
+                            });
+                        return sel;
+                    })(),
+                    strategy_selection: (() => {
+                        const sel = {};
+                        document
+                            .querySelectorAll(
+                                '#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]'
+                            )
+                            .forEach((cb) => {
+                                sel[cb.getAttribute('data-strategy-name')] = cb.checked;
+                            });
+                        return sel;
+                    })(),
+                    sort_key: currentSort.key,
+                    sort_asc: currentSort.asc,
+                    pct_mode: document.body.classList.contains('percent-mode'),
                     last_search_timestamp: Date.now(),
                 };
-
-                const contractSuffixes = [
-                    '12am', '1am', '2am', '3am', '4am', '5am', '6am', '7am', '8am', '9am', '10am', '11am',
-                    '12pm', '1pm', '2pm', '3pm', '4pm', '5pm', '6pm', '7pm', '8pm', '9pm', '10pm', '11pm',
-                ];
-                contractSuffixes.forEach(suf => {
-                    const el = document.getElementById('contract-' + suf);
-                    if (el) preferences['contract_' + suf] = el.checked;
-                });
 
                 const dayPairs = [
                     ['day_sunday', 'day-sunday'],
@@ -3245,16 +3273,20 @@
                     if (el) preferences[apiKey] = el.checked;
                 });
 
-                const monitor_selection = {};
-                document.querySelectorAll('#monitor-dropdown-content input[type="checkbox"][data-monitor-id]').forEach(cb => {
-                    const id = cb.getAttribute('data-monitor-id');
-                    if (id) monitor_selection[id] = cb.checked;
-                });
-                if (Object.keys(monitor_selection).length > 0) {
+                const analysisIntervalSelect = document.getElementById('analysis-time-interval');
+                if (analysisIntervalSelect) {
+                    preferences.analysis_interval = analysisIntervalSelect.value;
+                }
+                const chartViewSelector = document.getElementById('chart-view-selector');
+                if (chartViewSelector) {
+                    preferences.chart_view = chartViewSelector.value;
+                }
+
+                if (monitorCbs.length > 0) {
                     preferences.monitor_selection = monitor_selection;
                 }
 
-                const response = await fetch('/api/set_trade_history_preferences', {
+                const response = await fetch(getMainAppUrl() + '/api/set_trade_history_preferences', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -3264,22 +3296,36 @@
                 });
 
                 if (response.ok) {
-                    console.log('✅ Paper trade preferences saved');
+                    console.log('[trade_history_mobile] preferences saved');
                 } else {
-                    console.error('❌ Failed to save paper trade preferences');
+                    console.error('[trade_history_mobile] set_trade_history_preferences HTTP', response.status);
                 }
             } catch (error) {
-                console.error('❌ Error saving paper trade preferences:', error);
+                console.error('[trade_history_mobile] save preferences:', error);
             }
         }
 
-        // Load paper trade preferences from database
+        // Load trade history preferences (same endpoint + session as desktop trade_history tab)
         async function loadPaperTradePreferences() {
             try {
-                const response = await fetch('/api/get_trade_history_preferences');
-                
-                if (response.ok) {
+                const response = await fetch(getMainAppUrl() + '/api/get_trade_history_preferences', {
+                    credentials: 'same-origin',
+                });
+
+                if (!response.ok) {
+                    console.warn(
+                        '[trade_history_mobile] get_trade_history_preferences HTTP',
+                        response.status
+                    );
+                    return Promise.resolve();
+                }
+
+                {
                     const preferences = await response.json();
+                    window.tradeHistoryMonitorSelection =
+                        preferences.monitor_selection && typeof preferences.monitor_selection === 'object'
+                            ? { ...preferences.monitor_selection }
+                            : {};
                     if (preferences.pct_mode) {
                         document.body.classList.add('percent-mode');
                     } else {
@@ -3381,15 +3427,32 @@
                         if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
                     }
 
+                    if (preferences.sort_key) {
+                        currentSort.key = preferences.sort_key;
+                        currentSort.asc =
+                            preferences.sort_asc !== undefined ? !!preferences.sort_asc : true;
+                    }
+
+                    const analysisIntervalSelect = document.getElementById('analysis-time-interval');
+                    if (analysisIntervalSelect && preferences.analysis_interval) {
+                        analysisIntervalSelect.value = preferences.analysis_interval;
+                    }
+
+                    const chartViewSelector = document.getElementById('chart-view-selector');
+                    if (chartViewSelector && preferences.chart_view) {
+                        chartViewSelector.value = preferences.chart_view;
+                        if (typeof currentChartView !== 'undefined') {
+                            currentChartView = preferences.chart_view;
+                        }
+                    }
+
                     refreshThmTradeHistoryInsights();
-                    
-                    // Return promise for chaining
+
                     return Promise.resolve();
                 }
-                return Promise.resolve();
             } catch (error) {
-                console.error('❌ Error loading paper trade preferences:', error);
-                return Promise.resolve(); // Return resolved promise even on error
+                console.error('[trade_history_mobile] load preferences:', error);
+                return Promise.resolve();
             }
         }
 
@@ -3414,6 +3477,7 @@
                     } catch (e) {
                         console.warn('[trade_history_mobile] updateDateRangeDisplay:', e);
                     }
+                    tradeHistoryDateRangeSyncFromInputs();
                     savePaperTradePreferences();
                     fetchAllTrades('date-preset-change');
                 });
@@ -3484,20 +3548,20 @@
                 th.addEventListener('click', () => sortTrades(th.dataset.key));
             });
             
-            // Initial load: prefs → date UI → bounded fetch
+            // Initial load: prefs → populate hidden range for preset (same order as desktop) → daterangepicker sync → fetch
             await loadPaperTradePreferences();
             updateContractButtonText();
             updateDayButtonText();
             if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
             try {
-                tradeHistoryDateRangeInit();
-            } catch (e) {
-                console.warn('[trade_history_mobile] tradeHistoryDateRangeInit:', e);
-            }
-            try {
                 await updateDateRangeDisplay();
             } catch (e) {
                 console.warn('[trade_history_mobile] updateDateRangeDisplay (initial):', e);
+            }
+            try {
+                tradeHistoryDateRangeInit();
+            } catch (e) {
+                console.warn('[trade_history_mobile] tradeHistoryDateRangeInit:', e);
             }
             fetchAllTrades('initial-load');
         });

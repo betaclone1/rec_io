@@ -1173,6 +1173,14 @@
       return '';
     }
 
+    /** Leading YYYY-MM-DD from row/API ``date`` (plain day or ISO datetime) for string-range compares. */
+    function thTradeDateKey(trade) {
+      const raw = trade && trade.date;
+      if (raw == null || raw === '') return '';
+      const s = String(raw).trim();
+      return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : s;
+    }
+
     // === DATE FILTER LOGIC ===
     function filterTradesByDate(trades, filter) {
       const now = new Date();
@@ -1190,8 +1198,9 @@
       // Hidden range applies only for CUSTOM; stale start/end with presets would re-filter bounded rows to zero.
       if (customStartDate && customEndDate && filter === 'CUSTOM') {
         return trades.filter(trade => {
-          if (!trade.date) return false;
-          return trade.date >= customStartDate && trade.date <= customEndDate;
+          const td = thTradeDateKey(trade);
+          if (!td) return false;
+          return td >= customStartDate && td <= customEndDate;
         });
       }
       
@@ -1201,42 +1210,43 @@
         return formatDate(curr);
       }
       return trades.filter(trade => {
-        if (!trade.date) return false;
+        const td = thTradeDateKey(trade);
+        if (!td) return false;
         switch (filter) {
           case 'ALL':
             return true;
           case 'TODAY':
-            return trade.date === today;
+            return td === today;
           case 'YESTERDAY': {
             const y = new Date(now);
             y.setDate(now.getDate() - 1);
             const yStr = formatDate(y);
-            return trade.date >= yStr && trade.date <= yStr;
+            return td >= yStr && td <= yStr;
           }
           case 'THIS_WEEK': {
             const sunday = getLatestSunday();
-            return trade.date >= sunday && trade.date <= today;
+            return td >= sunday && td <= today;
           }
           case 'MONTH': {
             const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
             const monthStartStr = formatDate(monthStart);
-            return trade.date >= monthStartStr && trade.date <= today;
+            return td >= monthStartStr && td <= today;
           }
           case 'PREV_7': {
             const p7 = new Date(now);
             p7.setDate(now.getDate() - 6);
             const p7Str = formatDate(p7);
-            return trade.date >= p7Str && trade.date <= today;
+            return td >= p7Str && td <= today;
           }
           case 'PREV_30': {
             const prev30 = new Date(now);
             prev30.setDate(now.getDate() - 30);
             const prev30Str = formatDate(prev30);
-            return trade.date >= prev30Str && trade.date <= today;
+            return td >= prev30Str && td <= today;
           }
           case 'YTD': {
             const ytdStr = `${year}-01-01`;
-            return trade.date >= ytdStr && trade.date <= today;
+            return td >= ytdStr && td <= today;
           }
           case 'CUSTOM':
             return true;
@@ -1380,12 +1390,12 @@
       
       // Filter trades based on selected days
       return trades.filter(trade => {
-        // Parse date string to avoid timezone issues
-        // Split date string (e.g., "2025-01-15") and create local date
-        const dateParts = trade.date.split('-');
-        const year = parseInt(dateParts[0]);
-        const month = parseInt(dateParts[1]) - 1; // JavaScript months are 0-based
-        const day = parseInt(dateParts[2]);
+        // Parse date string to avoid timezone issues (leading YYYY-MM-DD; tolerate ISO timestamps)
+        const m = trade.date && String(trade.date).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (!m) return false;
+        const year = parseInt(m[1], 10);
+        const month = parseInt(m[2], 10) - 1; // JavaScript months are 0-based
+        const day = parseInt(m[3], 10);
         const tradeDate = new Date(year, month, day);
         const dayOfWeek = tradeDate.getDay(); // 0=Sunday, 1=Monday, etc.
         
@@ -3161,8 +3171,8 @@
           // Calculate date range from actual trade data
           if (trades && trades.length > 0) {
             const dates = trades
-              .filter(trade => trade.date)
-              .map(trade => trade.date)
+              .map(trade => thTradeDateKey(trade))
+              .filter(Boolean)
               .sort();
             
             if (dates.length > 0) {
