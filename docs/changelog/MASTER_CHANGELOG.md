@@ -17,17 +17,17 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Governance:** **`.cursor/rules/06-tenant-users-schema-parity.mdc`** (always-on): tenant DDL must cover all **`users_NNNN`** schemas, not a single slot.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration (skip errors if already applied):  
+- [x] Apply migration (skip errors if already applied):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260416_1810_archive_trades_win_loss_confirmed_match_master`
-- [ ] Schema drift check (recommended):  
+- [x] Schema drift check (recommended):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail `kalshi_account_sync_0001.out.log` for baseline + WS OK.
-- [ ] Record release in DB on **production** (must match git/changelog):  
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail `kalshi_account_sync_0001.out.log` for baseline + WS OK.
+- [x] Record release in DB on **production** (must match git/changelog):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.2.0`
-- [ ] Record release in DB on **local** (same version string as production):  
+- [x] Record release in DB on **local** (same version string as production):  
   From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.2.0`
 
 ---
