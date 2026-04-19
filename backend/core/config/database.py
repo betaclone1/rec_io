@@ -1642,8 +1642,8 @@ def init_database():
                 no_ask_max_15m NUMERIC(18,4),
                 yes_ask_range_15m NUMERIC(18,4),
                 no_ask_range_15m NUMERIC(18,4),
-                "timestamp" TIMESTAMP WITH TIME ZONE NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                "timestamp" TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+                created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT (timezone('America/New_York', now())),
                 market_result TEXT,
                 PRIMARY KEY (id, "timestamp")
             ) PARTITION BY RANGE ("timestamp");
@@ -1659,18 +1659,18 @@ def init_database():
         cursor.execute(_us("""
             DO $$
             DECLARE
-                start_utc TIMESTAMPTZ;
-                end_utc TIMESTAMPTZ;
+                start_naive TIMESTAMP;
+                end_naive TIMESTAMP;
                 part_name TEXT;
                 i INTEGER;
             BEGIN
                 FOR i IN 0..2 LOOP
-                    start_utc := (date_trunc('month', now() AT TIME ZONE 'UTC') + (i || ' months')::interval) AT TIME ZONE 'UTC';
-                    end_utc := (date_trunc('month', now() AT TIME ZONE 'UTC') + ((i + 1) || ' months')::interval) AT TIME ZONE 'UTC';
-                    part_name := format('strike_table_master_%s', to_char(start_utc AT TIME ZONE 'UTC', 'YYYYMM'));
+                    start_naive := (date_trunc('month', timezone('America/New_York', now())) + (i || ' months')::interval)::timestamp;
+                    end_naive := (date_trunc('month', timezone('America/New_York', now())) + ((i + 1) || ' months')::interval)::timestamp;
+                    part_name := format('strike_table_master_%s', to_char(start_naive, 'YYYYMM'));
                     EXECUTE format(
                         'CREATE TABLE IF NOT EXISTS historical_data.%I PARTITION OF historical_data.strike_table_master FOR VALUES FROM (%L) TO (%L)',
-                        part_name, start_utc, end_utc
+                        part_name, start_naive, end_naive
                     );
                 END LOOP;
             END $$;

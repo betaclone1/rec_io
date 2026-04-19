@@ -634,12 +634,13 @@ def build_tick_backtest_from_strike_archive(
 ) -> dict[str, Any]:
     """
     Fill ``backtest.tick_backtest_<slug>`` from ``historical_data.strike_table_master`` for one
-    ``market_ticker``. Rows use the same column layout as the synthetic tick builder; timestamps are
-    US Eastern **naive** (``timestamp AT TIME ZONE 'America/New_York'``). When several archive rows
-    share the same Eastern second, keep the row with the greatest source ``timestamptz``.
+    ``market_ticker``.     Rows use the same column layout as the synthetic tick builder. Archive ``timestamp`` /
+    ``created_at`` are already US Eastern **naive** (``timestamp without time zone``). When several
+    archive rows share the same Eastern second, keep the row with the greatest ``id``.
 
     Optional ``timestamp_start`` / ``timestamp_end_exclusive`` filter archive rows on
-    ``s.\"timestamp\"`` (``TIMESTAMPTZ``). Pass **timezone-aware** datetimes (any zone) or naive UTC.
+    ``s."timestamp"`` (Eastern naive). Pass naive Eastern datetimes or values comparable to the
+    stored wall times.
     """
     t = validate_kalshi_market_ticker(market_ticker)
     rel = tick_backtest_relname(t)
@@ -672,8 +673,8 @@ def build_tick_backtest_from_strike_archive(
             yes_ask_range_15m, no_ask_range_15m,
             created_at
         )
-        SELECT DISTINCT ON ((s."timestamp" AT TIME ZONE 'America/New_York'))
-            (s."timestamp" AT TIME ZONE 'America/New_York') AS ts_naive,
+        SELECT DISTINCT ON (s."timestamp")
+            s."timestamp" AS ts_naive,
             s.symbol, s.exchange, s.market, s.current_price, s.ttc_hourly, s.ttc_15m,
             s.event_ticker, s.market_title, s.strike_tier, s.market_status, s.strike, s.buffer, s.buffer_pct,
             s.probability_hourly, s.probability_15m, s.yes_prob_hourly, s.no_prob_hourly,
@@ -687,11 +688,11 @@ def build_tick_backtest_from_strike_archive(
             s.movement, s.movement_percentile,
             s.yes_ask_min_15m, s.yes_ask_max_15m, s.no_ask_min_15m, s.no_ask_max_15m,
             s.yes_ask_range_15m, s.no_ask_range_15m,
-            (COALESCE(s.created_at, s."timestamp") AT TIME ZONE 'America/New_York') AS created_naive
+            COALESCE(s.created_at, s."timestamp") AS created_naive
         FROM historical_data.strike_table_master s
         WHERE s.market_ticker = %s
         {extra_where}
-        ORDER BY (s."timestamp" AT TIME ZONE 'America/New_York'), s."timestamp" DESC
+        ORDER BY s."timestamp", s.id DESC
     """
     with conn.cursor() as cur:
         cur.execute(ins_sql, tuple(params))

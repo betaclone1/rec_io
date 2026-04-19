@@ -8220,11 +8220,11 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 ### Durable (runtime): `historical_data.strike_table_master` (monthly-partitioned)
 
-Created by migration **`20260415_1730_historical_strike_table_master_partitioned`** and also ensured by runtime init paths.
+Created by migration **`20260415_1730_historical_strike_table_master_partitioned`** (layout superseded by **`20260426_1430_strike_table_master_eastern_naive_timestamp`** for timestamp types) and also ensured by runtime init paths.
 
 **Purpose:** append-only copy of exactly what **`StrikeTableGenerator`** inserted into **`live_data.strike_table_15m`** / **`live_data.strike_table_hourly`** (unified row shape with **`exchange`**, probabilities, asks, min/max/range columns, etc.), one row per live insert (per strike row per refresh).
 
-**Layout:** one logical master table, partitioned by month on **`timestamp`** (`TIMESTAMPTZ`), with partitions named **`historical_data.strike_table_master_YYYYMM`**. Migration/init pre-create current + next 2 months; writer also creates a missing month on demand.
+**Layout:** one logical master table, partitioned by **US Eastern calendar month** on **`timestamp`** (`TIMESTAMP WITHOUT TIME ZONE`, US Eastern wall — same convention as `historical_data.*_price_history`), with partitions named **`historical_data.strike_table_master_YYYYMM`**. Migration **`20260426_1430_strike_table_master_eastern_naive_timestamp`** converted legacy `TIMESTAMPTZ` rows; init pre-creates current + next 2 months; writer also creates a missing month on demand.
 
 **Ops helper:** `python3 scripts/db/maintain_strike_archive_partitions.py --months-ahead 2` (run daily/weekly via cron/supervisor to keep future partitions ready).
 

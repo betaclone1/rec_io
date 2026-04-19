@@ -6,6 +6,32 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-19 — Release v3.1.8: strike_table_master Eastern wall timestamps
+
+**Summary**
+- **Release: v3.1.8**
+- **Database:** Migration **`20260426_1430_strike_table_master_eastern_naive_timestamp`** — `historical_data.strike_table_master` **`timestamp`** / **`created_at`** are **`TIMESTAMP WITHOUT TIME ZONE`** (US Eastern wall), aligned with other `historical_data` time-series; monthly partitions use **Eastern calendar** bounds; existing rows converted from legacy `TIMESTAMPTZ` via `AT TIME ZONE 'America/New_York'`.
+- **Runtime:** **`backend/historical_strike_table_archive.py`** — writes Eastern naive on insert; partition ensure uses Eastern months. **`backend/core/time_eastern.py`** — **`eastern_wall_naive()`**. **`backend/core/config/database.py`** — bootstrap DDL/partition DO block match.
+- **Backtest:** **`tick_backtest_build.build_tick_backtest_from_strike_archive`** — reads archive timestamps as already-Eastern naive (no double `AT TIME ZONE`).
+- **Docs:** **`MASTER_DB_SCHEMA_REFERENCE`**, **`BACKTESTING.md`** — archive timestamp semantics.
+- **Plans:** (session work; archive timestamp convention parity.)
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration (from project root on the server):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260426_1430_strike_table_master_eastern_naive_timestamp`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server; strike generators must load new writer code **after** migration).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; optional spot-check `historical_data.strike_table_master` sample `timestamp` hour matches US Eastern wall.
+- [ ] Record release in DB on **production** (must match git/changelog):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.8`
+- [ ] Record release in DB on **local** (same version string as production):  
+  From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.8`
+
+---
+
 ## 2026-04-16 — Release v3.1.7: trades list index, shared trade fetch JS, history insights and UI
 
 **Summary**

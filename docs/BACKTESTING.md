@@ -165,7 +165,7 @@ Loaded in **`get_auto_entry_settings()`** (representative query on `users.monito
 
 **Purpose:** Reproduce **15m / hourly HTC** entry and ATS-style exit on **the same strike snapshots** the live stack archived, without reconstructing ticks from 1s price logs or trade tape.
 
-**Data:** `historical_data.strike_table_master` (partitioned parent; rows keyed by `market_ticker` + `timestamp`). Populated when **`REC_STRIKE_TABLE_ARCHIVE`** is enabled and strike generators run; see `docs/MASTER_DB_SCHEMA_REFERENCE.md` and `backend/historical_strike_table_archive.py`.
+**Data:** `historical_data.strike_table_master` (partitioned parent; rows keyed by `market_ticker` + `timestamp`, US Eastern naive `TIMESTAMP WITHOUT TIME ZONE`). Populated when **`REC_STRIKE_TABLE_ARCHIVE`** is enabled and strike generators run; see `docs/MASTER_DB_SCHEMA_REFERENCE.md` and `backend/historical_strike_table_archive.py`.
 
 **CLI** (`scripts/backtest/core_backtester.py`):
 

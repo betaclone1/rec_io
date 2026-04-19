@@ -5,7 +5,8 @@ Single logical table:
 
   ``historical_data.strike_table_master``
 
-Partitioned monthly by ``timestamp`` (UTC instant / ``TIMESTAMPTZ``). Writers ensure the
+Partitioned monthly on ``timestamp`` (**US Eastern wall**, ``TIMESTAMP WITHOUT TIME ZONE``),
+same convention as other ``historical_data`` time-series tables. Writers ensure the
 current month partition exists before insert.
 
 Rows mirror unified live strike table inserts (45-value tuple: symbol .. created_at), plus:
@@ -19,8 +20,10 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Sequence
+
+from backend.core.time_eastern import eastern_wall_naive, now_est
 
 logger = logging.getLogger(__name__)
 
@@ -33,20 +36,19 @@ def strike_archive_enabled() -> bool:
     return v not in ("0", "false", "no", "off")
 
 
-def _month_bounds_utc(ts: datetime) -> tuple[datetime, datetime]:
-    t = ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
-    t = t.astimezone(timezone.utc)
-    start = datetime(t.year, t.month, 1, tzinfo=timezone.utc)
+def _month_bounds_eastern_naive(ts: datetime) -> tuple[datetime, datetime]:
+    """First instant of calendar month in US Eastern wall (naive) through first of next month."""
+    t = eastern_wall_naive(ts)
+    start = datetime(t.year, t.month, 1)
     if t.month == 12:
-        end = datetime(t.year + 1, 1, 1, tzinfo=timezone.utc)
+        end = datetime(t.year + 1, 1, 1)
     else:
-        end = datetime(t.year, t.month + 1, 1, tzinfo=timezone.utc)
+        end = datetime(t.year, t.month + 1, 1)
     return start, end
 
 
 def _partition_relname_for_ts(ts: datetime) -> str:
-    t = ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
-    t = t.astimezone(timezone.utc)
+    t = eastern_wall_naive(ts)
     return f"strike_table_master_{t.year:04d}{t.month:02d}"
 
 
@@ -100,8 +102,8 @@ def ensure_master_table(cursor: Any) -> None:
             no_ask_max_15m NUMERIC(18,4),
             yes_ask_range_15m NUMERIC(18,4),
             no_ask_range_15m NUMERIC(18,4),
-            "timestamp" TIMESTAMP WITH TIME ZONE NOT NULL,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            "timestamp" TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+            created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT (timezone('America/New_York', now())),
             market_result TEXT,
             PRIMARY KEY (id, "timestamp")
         ) PARTITION BY RANGE ("timestamp")
@@ -122,7 +124,7 @@ def ensure_master_table(cursor: Any) -> None:
 
 
 def ensure_month_partition(cursor: Any, ts: datetime) -> None:
-    start, end = _month_bounds_utc(ts)
+    start, end = _month_bounds_eastern_naive(ts)
     rel = _partition_relname_for_ts(ts)
     if rel in _ENSURED_PARTITIONS:
         return
@@ -150,15 +152,14 @@ def ensure_month_partition(cursor: Any, ts: datetime) -> None:
 
 
 def ensure_partitions_months_ahead(cursor: Any, months_ahead: int = 2) -> list[str]:
-    """Ensure current month plus N future monthly partitions."""
+    """Ensure current month plus N future monthly partitions (US Eastern calendar months)."""
     ensured: list[str] = []
-    now_utc = datetime.now(timezone.utc)
-    year = now_utc.year
-    month = now_utc.month
+    wall = eastern_wall_naive(now_est())
+    year, month = wall.year, wall.month
     for _ in range(max(0, int(months_ahead)) + 1):
-        ts = datetime(year, month, 1, tzinfo=timezone.utc)
-        rel = _partition_relname_for_ts(ts)
-        ensure_month_partition(cursor, ts)
+        ts_anchor = datetime(year, month, 1)
+        rel = _partition_relname_for_ts(ts_anchor)
+        ensure_month_partition(cursor, ts_anchor)
         ensured.append(rel)
         month += 1
         if month == 13:
@@ -188,9 +189,15 @@ def append_strike_archive_row_from_live_tuple(
     row_ts = row[43]
     if not isinstance(row_ts, datetime):
         raise ValueError(f"row[43] must be datetime, got {type(row_ts)}")
+    row_ca = row[44]
+    if not isinstance(row_ca, datetime):
+        raise ValueError(f"row[44] must be datetime, got {type(row_ca)}")
+
+    ts_wall = eastern_wall_naive(row_ts)
+    ca_wall = eastern_wall_naive(row_ca)
 
     ensure_master_table(cursor)
-    ensure_month_partition(cursor, row_ts)
+    ensure_month_partition(cursor, ts_wall)
 
     cursor.execute(
         """
@@ -208,10 +215,10 @@ def append_strike_archive_row_from_live_tuple(
         )
         """,
         (
-            row[0],   # symbol
-            row[1],   # exchange
-            row[2],   # market
-            mt,       # market_ticker
+            row[0],
+            row[1],
+            row[2],
+            mt,
             row[3],
             row[4],
             row[5],
@@ -252,8 +259,8 @@ def append_strike_archive_row_from_live_tuple(
             row[40],
             row[41],
             row[42],
-            row[43],  # timestamp
-            row[44],  # created_at
+            ts_wall,
+            ca_wall,
         ),
     )
 

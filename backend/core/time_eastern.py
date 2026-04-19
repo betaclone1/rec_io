@@ -26,6 +26,17 @@ def today_est() -> date:
     return now_est().date()
 
 
+def eastern_wall_naive(dt: datetime) -> datetime:
+    """US Eastern wall clock as timezone-naive (``historical_data`` timestamp convention).
+
+    Aware datetimes are converted with :data:`EST`; naive values are returned unchanged
+    (already treated as Eastern wall in the database layer).
+    """
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(EST).replace(tzinfo=None)
+
+
 def merge_psycopg2_connect_kwargs(base: Mapping[str, Any]) -> Dict[str, Any]:
     """Return a copy of base suitable for psycopg2.connect, with Eastern session TZ.
 
