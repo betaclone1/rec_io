@@ -16,18 +16,20 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Docs:** **`MASTER_DB_SCHEMA_REFERENCE`**, **`BACKTESTING.md`** — archive timestamp semantics.
 - **Plans:** (session work; archive timestamp convention parity.)
 
+**Deploy order (prod):** pull → **`MASTER_RESTART.sh`** (strike writers load new Python) → verify → **then** migration (schema matches writers) → drift → `record_system_version`.
+
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration (from project root on the server):  
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server) **before** migration so processes load `eastern_wall_naive` archive writes.
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail `main_app` / `trade_executor_0001` / `kalshi_account_sync_0001` logs.
+- [x] Apply migration (from project root on the server):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260426_1430_strike_table_master_eastern_naive_timestamp`
-- [ ] Schema drift check (recommended):  
+- [x] Schema drift check (recommended):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server; strike generators must load new writer code **after** migration).
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; optional spot-check `historical_data.strike_table_master` sample `timestamp` hour matches US Eastern wall.
-- [ ] Record release in DB on **production** (must match git/changelog):  
+- [x] Record release in DB on **production** (must match git/changelog):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.8`
-- [ ] Record release in DB on **local** (same version string as production):  
+- [x] Record release in DB on **local** (same version string as production):  
   From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.1.8`
 
 ---
