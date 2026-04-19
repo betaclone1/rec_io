@@ -9,7 +9,6 @@
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="../styles/global.css">
     <script src="../js/globals.js"></script>
-    <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/moment@2.30.1/moment.min.js"></script>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-daterangepicker@3.1.0/daterangepicker.css" />
@@ -428,7 +427,7 @@
             color: white;
         }
 
-        /* Monitors Ret % chart (under summary; shorter than desktop) */
+        /* Per-monitor summary table (simplified desktop-style; under summary) */
         .thm-monitors-ret-block {
             margin-bottom: 10px;
         }
@@ -441,41 +440,88 @@
             box-sizing: border-box;
             -webkit-overflow-scrolling: touch;
         }
-        .thm-monitors-ret-chart-wrap {
+        .thm-monitor-summary-wrap {
+            min-height: 0;
+            width: 100%;
+        }
+        /* Shrink to table height; cap then scroll (not a fixed tall box).
+           Scroll chrome matches desktop #th-monitor-summary-scroll. */
+        #thm-monitor-summary-scroll {
             display: flex;
             flex-direction: column;
-            min-height: 0;
-            height: 88px;
-            max-height: 100px;
-        }
-        #thm-monitors-ret-chart {
+            align-items: stretch;
+            flex: 0 1 auto;
             width: 100%;
-            flex: 1 1 auto;
+            max-height: 154px;
             min-height: 0;
+            overflow-x: auto;
+            overflow-y: auto;
+            box-sizing: border-box;
+            -webkit-overflow-scrolling: touch;
+            background-color: #1f2530;
+            border-top: 1px solid #4a5568;
         }
-        #thm-monitors-ret-chart svg {
-            display: block;
-            max-width: 100%;
-        }
-        .thm-monitors-ret-tooltip {
-            position: fixed;
-            z-index: 13000;
-            pointer-events: none;
-            display: none;
-            padding: 7px 9px;
-            font-size: 10px;
-            line-height: 1.35;
+        #thm-monitor-summary-table {
+            flex: 0 0 auto;
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            table-layout: fixed;
+            font-size: 0.7rem;
             color: #e2e8f0;
-            background: #111923;
-            border: 1px solid #4a5568;
-            border-radius: 5px;
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-            max-width: 240px;
         }
-        .thm-monitors-ret-tooltip .th-mrt-title {
-            font-weight: 600;
-            color: #fff;
-            margin-bottom: 3px;
+        #thm-monitor-summary-table thead {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background-color: #1f2530;
+        }
+        #thm-monitor-summary-table th,
+        #thm-monitor-summary-table td {
+            border: 0.5px solid #626262;
+            padding: 6px 10px;
+            text-align: center;
+            vertical-align: middle;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+        #thm-monitor-summary-table thead th {
+            background-color: #1f2530;
+            border-bottom: 2px solid #787878;
+            font-weight: bold;
+            font-size: 0.7rem;
+            cursor: default;
+            position: relative;
+        }
+        #thm-monitor-summary-table tbody tr:nth-child(odd) {
+            background-color: #2f3545;
+        }
+        #thm-monitor-summary-table tbody tr:nth-child(even) {
+            background-color: #1f2633;
+        }
+        #thm-monitor-summary-table tbody tr[data-monitor-id] {
+            cursor: pointer;
+        }
+        #thm-monitor-summary-table tbody tr:hover:not(.th-ms-summary-placeholder) {
+            background-color: #3f4a5e !important;
+            cursor: pointer;
+        }
+        #thm-monitor-summary-table tbody tr.th-ms-summary-placeholder,
+        #thm-monitor-summary-table tbody tr.th-ms-summary-placeholder:hover {
+            cursor: default;
+            background-color: #1f2633 !important;
+        }
+        #thm-monitor-summary-table tbody tr.th-ms-summary-placeholder td {
+            color: #a0aec0;
+            font-size: 11px;
+            text-align: center;
+            padding: 12px 10px;
+        }
+        /* Match desktop trade_history: row + tile cross-hover from table / strip interaction */
+        #thm-monitor-summary-table tbody tr.th-monitor-cross-hover td {
+            background-color: #3f4a5e !important;
         }
         .thm-monitors-ret-empty {
             color: #a0aec0;
@@ -483,9 +529,15 @@
             text-align: center;
             padding: 14px 6px;
         }
-        #thm-monitor-tiles .th-monitor-filter-tile.th-monitor-cross-hover {
-            outline: 2px solid rgba(255, 255, 255, 0.35);
-            outline-offset: 1px;
+        .thm-monitor-tiles-scroll .th-monitor-filter-tile.th-monitor-cross-hover {
+            opacity: 1;
+            filter: none;
+            background-color: #3a4a5c !important;
+            border-color: rgba(74, 158, 255, 0.85) !important;
+            box-shadow:
+                0 0 8px rgba(74, 158, 255, 0.35),
+                0 0 16px rgba(74, 158, 255, 0.15) !important;
+            outline: none;
         }
 
         /* Results Section */
@@ -813,11 +865,22 @@
         </div>
 
         <div class="thm-monitors-ret-block">
-            <div class="thm-monitors-ret-chart-wrap thm-trade-history-dark-inset">
-                <div id="thm-monitors-ret-chart" aria-label="Selected monitors total return percent"></div>
+            <div class="thm-monitor-summary-wrap thm-trade-history-dark-inset">
+                <div id="thm-monitor-summary-scroll">
+                    <table id="thm-monitor-summary-table" aria-label="Per-monitor stats for current filters">
+                        <thead>
+                            <tr>
+                                <th scope="col">Mon</th>
+                                <th scope="col">W/L %</th>
+                                <th scope="col">Ret %</th>
+                                <th scope="col">PnL</th>
+                            </tr>
+                        </thead>
+                        <tbody id="thm-monitor-summary-table-body"></tbody>
+                    </table>
+                </div>
             </div>
         </div>
-        <div id="thm-monitors-ret-tooltip" class="thm-monitors-ret-tooltip" role="tooltip" aria-hidden="true"></div>
 
         <!-- Results Section -->
         <div class="results-section">
@@ -1933,9 +1996,8 @@
         let _thmMonitorCrossHoverActiveId = null;
 
         function thmResetAllMonitorRetBars() {
-            document.querySelectorAll('#thm-monitors-ret-chart rect.th-mrt-bar').forEach((bar) => {
-                bar.setAttribute('stroke-width', '3');
-                bar.setAttribute('fill-opacity', '0.1');
+            document.querySelectorAll('#thm-monitor-summary-table tbody tr[data-monitor-id]').forEach((row) => {
+                row.classList.remove('th-monitor-cross-hover');
             });
         }
 
@@ -1946,13 +2008,10 @@
             });
             if (monitorId == null || monitorId === '') return;
             const esc = thmEscapeMonitorIdForSelector(monitorId);
-            const bar = document.querySelector(
-                '#thm-monitors-ret-chart rect.th-mrt-bar[data-monitor-id="' + esc + '"]'
+            const row = document.querySelector(
+                '#thm-monitor-summary-table tbody tr[data-monitor-id="' + esc + '"]'
             );
-            if (bar) {
-                bar.setAttribute('stroke-width', '4');
-                bar.setAttribute('fill-opacity', '0.55');
-            }
+            if (row) row.classList.add('th-monitor-cross-hover');
             const tile = document.querySelector(
                 '#thm-monitor-tiles .th-monitor-filter-tile[data-monitor-id="' + esc + '"]'
             );
@@ -2117,6 +2176,32 @@
             );
         }
 
+        /** Short monitor label for summary table (tile text or id). */
+        function thmMonitorMonLabel(mid) {
+            const esc = thmEscapeMonitorIdForSelector(mid);
+            const tile = document.querySelector(
+                '#thm-monitor-tiles .th-monitor-filter-tile[data-monitor-id="' + esc + '"]'
+            );
+            let num = '';
+            let sym = '';
+            let strat = '';
+            if (tile) {
+                num = tile.querySelector('.th-m-tile-num')?.textContent.trim() || '';
+                sym = tile.querySelector('.th-m-tile-symbol')?.textContent.trim() || '';
+                strat = tile.querySelector('.th-m-tile-strategy')?.textContent.trim() || '';
+            }
+            if (!num || num === '?') {
+                const m = String(mid).match(/^mon_[0-9]+_([0-9]+)$/i);
+                if (m) num = String(parseInt(m[1], 10));
+            }
+            const parts = [];
+            if (num && num !== '—') parts.push(String(num));
+            if (sym) parts.push(sym);
+            if (strat) parts.push(strat);
+            const s = parts.length ? parts.join(' · ') : String(mid);
+            return s.length > 42 ? s.slice(0, 39) + '…' : s;
+        }
+
         function thmBuildMonitorRetDataset() {
             const base = thmApplyFiltersWithoutMonitor(trades);
             const selectedIds = thmGetEffectiveSelectedMonitorIdsForDisplay();
@@ -2128,6 +2213,8 @@
                 byMonitor[mid] = {
                     monitorId: mid,
                     sumRet: agg.sumRet,
+                    winPct: agg.winPct,
+                    sumPnl: agg.sumPnl,
                     count: agg.n,
                     sym: '—',
                     strat: '—',
@@ -2258,7 +2345,7 @@
                     period_data: [],
                     by_monitor: [],
                 };
-                renderThmMonitorsRetChart();
+                renderThmMonitorSummaryTable();
                 return;
             }
             try {
@@ -2281,7 +2368,7 @@
                 const data = JSON.parse(raw);
                 if (reqId !== _thmInsightsReqId) return;
                 _thmTradeHistoryInsights = data;
-                renderThmMonitorsRetChart();
+                renderThmMonitorSummaryTable();
             } catch (e) {
                 if (reqId !== _thmInsightsReqId) return;
                 console.warn('[trade_history_mobile] insights failed:', e.message || e);
@@ -2291,251 +2378,83 @@
                     period_data: [],
                     by_monitor: [],
                 };
-                renderThmMonitorsRetChart();
+                renderThmMonitorSummaryTable();
             }
         }
 
-        let _thmMonChartResizeObserver = null;
-        let _thmMonChartResizeTimer = null;
+        /** Simplified per-monitor table (desktop summary columns subset: Mon, W/L %, Ret %, PnL). */
+        function renderThmMonitorSummaryTable() {
+            const tbody = document.getElementById('thm-monitor-summary-table-body');
+            if (!tbody) return;
+            tbody.textContent = '';
 
-        function thmPointerClientXY(ev) {
-            if (ev.touches && ev.touches.length) return { x: ev.touches[0].clientX, y: ev.touches[0].clientY };
-            if (ev.changedTouches && ev.changedTouches.length) {
-                return { x: ev.changedTouches[0].clientX, y: ev.changedTouches[0].clientY };
-            }
-            return { x: ev.clientX, y: ev.clientY };
-        }
-
-        function thmPositionMonitorRetTooltip(ev) {
-            const tip = document.getElementById('thm-monitors-ret-tooltip');
-            if (!tip) return;
-            const pad = 12;
-            const { x: cx, y: cy } = thmPointerClientXY(ev);
-            let x = cx + pad;
-            let y = cy + pad;
-            tip.style.display = 'block';
-            const r = tip.getBoundingClientRect();
-            if (x + r.width > window.innerWidth - 8) x = cx - r.width - pad;
-            if (y + r.height > window.innerHeight - 8) y = cy - r.height - pad;
-            tip.style.left = x + 'px';
-            tip.style.top = y + 'px';
-        }
-
-        function renderThmMonitorsRetChart() {
-            const container = document.getElementById('thm-monitors-ret-chart');
-            if (!container) return;
-
-            const wrap = document.querySelector('.thm-monitors-ret-chart-wrap');
-            if (wrap && !_thmMonChartResizeObserver) {
-                _thmMonChartResizeObserver = new ResizeObserver(() => {
-                    if (_thmMonChartResizeTimer) clearTimeout(_thmMonChartResizeTimer);
-                    _thmMonChartResizeTimer = setTimeout(() => {
-                        _thmMonChartResizeTimer = null;
-                        renderThmMonitorsRetChart();
-                    }, 100);
-                });
-                _thmMonChartResizeObserver.observe(wrap);
-            }
-
-            if (typeof d3 === 'undefined') {
-                container.innerHTML = '<div class="thm-monitors-ret-empty">D3.js not loaded</div>';
+            if (thmInsightsRequiresMonitorSelection()) {
+                const tr = document.createElement('tr');
+                tr.className = 'th-ms-summary-placeholder';
+                const td = document.createElement('td');
+                td.colSpan = 4;
+                td.textContent =
+                    'Select monitors in the strip above to see per-monitor stats for the current filters.';
+                tr.appendChild(td);
+                tbody.appendChild(tr);
                 thmReapplyMonitorCrossHoverAfterDomRebuild();
                 return;
             }
 
             const data = thmBuildMonitorRetDataset();
-            container.innerHTML = '';
-
             if (data.length === 0) {
                 const eff = thmGetEffectiveSelectedMonitorIdsForDisplay();
                 const anyMon = eff.length > 0;
-                container.innerHTML =
-                    '<div class="thm-monitors-ret-empty">' +
-                    (anyMon
-                        ? 'No trades for the selected monitors with current filters.'
-                        : 'Select monitors in the strip above to compare total Ret&nbsp;%.') +
-                    '</div>';
+                const tr = document.createElement('tr');
+                tr.className = 'th-ms-summary-placeholder';
+                const td = document.createElement('td');
+                td.colSpan = 4;
+                td.textContent = anyMon
+                    ? 'No trades for the selected monitors with current filters.'
+                    : 'Select monitors in the strip above.';
+                tr.appendChild(td);
+                tbody.appendChild(tr);
                 thmReapplyMonitorCrossHoverAfterDomRebuild();
                 return;
             }
 
-            const green = '#48bb78';
-            const red = '#e54848';
-            const margin = { top: 2, right: 22, bottom: 14, left: 10 };
-            let plotH = 52;
-            const ch = container.clientHeight;
-            if (ch > 28) {
-                plotH = Math.max(44, Math.floor(ch - margin.top - margin.bottom));
-            } else if (wrap && wrap.clientHeight > 28) {
-                const insetPadY = 6 + 4;
-                const inner = wrap.clientHeight - insetPadY;
-                plotH = Math.max(44, Math.floor(inner - margin.top - margin.bottom));
-            }
-            const width = Math.max(200, container.clientWidth || 300);
-            const height = margin.top + plotH + margin.bottom;
-            const innerW = width - margin.left - margin.right;
-            const barAreaW = Math.max(40, innerW);
-            const barX0 = 0;
-
-            let vMin = d3.min(data, (d) => d.sumRet);
-            let vMax = d3.max(data, (d) => d.sumRet);
-            if (vMin > 0) vMin = 0;
-            if (vMax < 0) vMax = 0;
-            const span = vMax - vMin || 1;
-            const pad = span * 0.06 || 0.1;
-            const x = d3.scaleLinear().domain([vMin - pad, vMax + pad]).range([0, barAreaW]);
-            const zeroX = x(0);
-
-            function thMrtBarXWidth(d) {
-                const lo = Math.min(zeroX, x(d.sumRet));
-                const hi = Math.max(zeroX, x(d.sumRet));
-                let bw = hi - lo;
-                let bx = barX0 + lo;
-                if (bw < 1.5) {
-                    bw = 4;
-                    bx = barX0 + zeroX - bw / 2;
-                }
-                return { bx, bw };
-            }
-
-            const n = data.length;
-            const barGapPx = 4;
-            const axisGapPx = 8;
-            const maxStack = plotH - axisGapPx;
-            let barH = 14;
-            if (n > 0) {
-                const innerStack = maxStack - Math.max(0, n - 1) * barGapPx;
-                barH = Math.max(3, innerStack / n);
-            }
-            const gap = barGapPx;
-            const stackH = n * barH + Math.max(0, n - 1) * gap;
-            const yStart = Math.max(0, plotH - axisGapPx - stackH);
-
-            const svg = d3
-                .select(container)
-                .append('svg')
-                .attr('width', width)
-                .attr('height', height)
-                .style('display', 'block');
-
-            const defs = svg.append('defs');
-            const glowFilter = defs
-                .append('filter')
-                .attr('id', 'thmMonitorRetBarGlow')
-                .attr('x', '-50%')
-                .attr('y', '-50%')
-                .attr('width', '200%')
-                .attr('height', '200%');
-            glowFilter.append('feGaussianBlur').attr('stdDeviation', '2').attr('result', 'coloredBlur');
-            const feMerge = glowFilter.append('feMerge');
-            feMerge.append('feMergeNode').attr('in', 'coloredBlur');
-            feMerge.append('feMergeNode').attr('in', 'SourceGraphic');
-
-            const g = svg.append('g').attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
-
-            const tip = document.getElementById('thm-monitors-ret-tooltip');
-            function showTip(ev, d) {
-                if (!tip) return;
-                tip.innerHTML =
-                    '<div class="th-mrt-title">' +
-                    d.sym +
-                    ' · ' +
-                    d.strat +
-                    '</div>' +
-                    '<div>' +
-                    d.mkt +
-                    ', monitor ' +
-                    d.num +
-                    '</div>' +
-                    '<div>Trades: ' +
-                    d.count +
-                    '</div>' +
-                    '<div>Total Ret %: <strong>' +
-                    (d.sumRet >= 0 ? '+' : '') +
-                    d.sumRet.toFixed(2) +
-                    '%</strong></div>';
-                tip.style.display = 'block';
-                tip.setAttribute('aria-hidden', 'false');
-                thmPositionMonitorRetTooltip(ev);
-            }
-            function hideTip() {
-                if (tip) {
-                    tip.style.display = 'none';
-                    tip.setAttribute('aria-hidden', 'true');
-                }
-            }
-
-            g.selectAll('rect.th-mrt-bar')
-                .data(data)
-                .join('rect')
-                .attr('class', 'th-mrt-bar')
-                .attr('data-monitor-id', (d) => d.monitorId)
-                .attr('x', (d) => thMrtBarXWidth(d).bx)
-                .attr('width', (d) => thMrtBarXWidth(d).bw)
-                .attr('y', (d, i) => yStart + i * (barH + gap))
-                .attr('height', barH)
-                .attr('fill', (d) => (d.sumRet >= 0 ? green : red))
-                .attr('fill-opacity', 0.1)
-                .attr('stroke', (d) => (d.sumRet >= 0 ? green : red))
-                .attr('stroke-width', 3)
-                .attr('filter', 'url(#thmMonitorRetBarGlow)')
-                .style('cursor', 'pointer')
-                .on('mousemove', function (event, d) {
-                    showTip(event, d);
-                })
-                .on('mouseenter', function (event, d) {
-                    thmSetMonitorCrossHover(d.monitorId, true);
-                })
-                .on('mouseleave', function (event, d) {
-                    thmSetMonitorCrossHover(d.monitorId, false);
-                    hideTip();
-                })
-                .on('touchstart', function (event, d) {
-                    showTip(event, d);
-                    thmSetMonitorCrossHover(d.monitorId, true);
-                })
-                .on('touchend', function (event, d) {
-                    thmSetMonitorCrossHover(d.monitorId, false);
-                    hideTip();
-                })
-                .on('click', function (event, d) {
-                    event.stopPropagation();
-                    thmSoloMonitorById(d.monitorId);
+            for (let i = 0; i < data.length; i++) {
+                const d = data[i];
+                const mid = d.monitorId;
+                const tr = document.createElement('tr');
+                tr.setAttribute('data-monitor-id', mid);
+                tr.addEventListener('mouseenter', () => thmSetMonitorCrossHover(mid, true));
+                tr.addEventListener('mouseleave', () => thmSetMonitorCrossHover(mid, false));
+                tr.addEventListener('click', (ev) => {
+                    ev.stopPropagation();
+                    thmSoloMonitorById(mid);
                 });
 
-            const tickFmt = (v) => (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1));
-            const domLo = x.domain()[0];
-            const domHi = x.domain()[1];
-            const rawTicks = Array.from(new Set([domLo, ...d3.ticks(domLo, domHi, 5), domHi])).sort(
-                (a, b) => a - b
-            );
-            const minTickPx = 38;
-            let xAxisTickValues;
-            if (rawTicks.length <= 2) {
-                xAxisTickValues = rawTicks;
-            } else {
-                const out = [rawTicks[0]];
-                for (let i = 1; i < rawTicks.length - 1; i++) {
-                    const t = rawTicks[i];
-                    if (Math.abs(x(t) - x(out[out.length - 1])) >= minTickPx) out.push(t);
-                }
-                const hi = rawTicks[rawTicks.length - 1];
-                const last = out[out.length - 1];
-                if (out.length === 1 || Math.abs(x(hi) - x(last)) >= minTickPx) out.push(hi);
-                else out[out.length - 1] = hi;
-                xAxisTickValues = out;
+                const tdMon = document.createElement('td');
+                tdMon.textContent = thmMonitorMonLabel(mid);
+                tdMon.title = String(mid);
+                tr.appendChild(tdMon);
+
+                const tdWl = document.createElement('td');
+                tdWl.textContent = `${formatSummaryNumber(d.winPct, 1)}%`;
+                tr.appendChild(tdWl);
+
+                const tdRet = document.createElement('td');
+                tdRet.textContent = `${formatSummaryNumber(d.sumRet, 2)}%`;
+                if (d.sumRet > 0) tdRet.style.color = '#28a745';
+                else if (d.sumRet < 0) tdRet.style.color = '#dc3545';
+                else tdRet.style.color = '#e2e8f0';
+                tr.appendChild(tdRet);
+
+                const tdPnl = document.createElement('td');
+                tdPnl.textContent = formatSummaryPnL(d.sumPnl);
+                if (d.sumPnl > 0) tdPnl.style.color = '#28a745';
+                else if (d.sumPnl < 0) tdPnl.style.color = '#dc3545';
+                else tdPnl.style.color = '#e2e8f0';
+                tr.appendChild(tdPnl);
+
+                tbody.appendChild(tr);
             }
-            const xAxis = d3.axisBottom(x).tickValues(xAxisTickValues).tickFormat(tickFmt);
-            const xAxisG = g.append('g').attr('transform', 'translate(' + barX0 + ',' + plotH + ')').call(xAxis);
-            xAxisG
-                .selectAll('text')
-                .attr('fill', '#a0aec0')
-                .attr('font-size', '8px')
-                .attr('text-anchor', (d, i) =>
-                    i === 0 ? 'start' : i === xAxisTickValues.length - 1 ? 'end' : 'middle'
-                );
-            xAxisG.select('.domain').remove();
-            xAxisG.selectAll('.tick line').attr('stroke', '#4a5568');
             thmReapplyMonitorCrossHoverAfterDomRebuild();
         }
 

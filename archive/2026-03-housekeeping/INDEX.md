@@ -41,6 +41,9 @@
 ### reports/
 - **reports/** (entire directory) — One-off audit and diagnostic reports (SYSTEM_AUDIT_COMPLETE_*, etc.) and reports/archive/.
 
+### frontend/tabs/
+- **trade_history_OLD.html** (2026-04-19) — Legacy snapshot of trade history tab before refactors; superseded by `frontend/tabs/trade_history.html` and mobile trade history. Not served or linked by the app.
+
 ---
 
 ## Active tree after cleanup
