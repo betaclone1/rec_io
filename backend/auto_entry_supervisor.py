@@ -260,6 +260,25 @@ def ctx_ident() -> str:
     return f"{ctx_user()}_{ctx_mid()}"
 
 
+def _aes_tenant_slot(for_user: Optional[str] = None) -> str:
+    """Four-digit slot for ``users.<table>_<slot>`` names (same convention as main.py /api/monitors)."""
+    from backend.trading_mode import _norm_slot
+
+    return _norm_slot(str(for_user)) if for_user is not None else _norm_slot(ctx_user())
+
+
+def _aes_monitor_list_table(for_user: Optional[str] = None) -> str:
+    return f"users.monitor_list_{_aes_tenant_slot(for_user)}"
+
+
+def _aes_trades_table(for_user: Optional[str] = None) -> str:
+    return f"users.trades_{_aes_tenant_slot(for_user)}"
+
+
+def _aes_trades_simulated_table(for_user: Optional[str] = None) -> str:
+    return f"users.trades_simulated_{_aes_tenant_slot(for_user)}"
+
+
 def scoped_trade_manager_http_port() -> int:
     """HTTP port for ``trade_manager_<this slot>`` (same tenant as ctx_user); never abstract ``trade_manager``."""
     return get_port(f"trade_manager_{ctx_user()}")
@@ -716,6 +735,70 @@ def _fetch_max_pct_exposure(weekly_cycle: int) -> float:
     return 0.25
 
 
+def _aes_latest_bankroll_cents(cursor, slot: str) -> int:
+    """Latest equity cents for the slot (same basis as monitor_manager bankroll allotment)."""
+    from backend.trading_mode import account_balance_table_for_user
+
+    tbl = account_balance_table_for_user(slot)
+    cursor.execute(
+        f"""
+        SELECT bankroll_current, portfolio
+        FROM {tbl}
+        ORDER BY timestamp DESC NULLS LAST, id DESC
+        LIMIT 1
+        """
+    )
+    row = cursor.fetchone()
+    if not row:
+        return 0
+    bc, pf = row[0], row[1]
+    bankroll_value = int(bc) if bc is not None else 0
+    portfolio_value = int(pf) if pf is not None else 0
+    return bankroll_value if bankroll_value > 0 else portfolio_value
+
+
+def _aes_expected_total_position(
+    *,
+    position_size: Optional[int],
+    position_type: Optional[str],
+    multiplier_value: float,
+    bankroll_allotment_total: Optional[Any],
+    bankroll_allotment_pct: Optional[Any],
+    max_pct_cap: Optional[float],
+    cursor,
+    slot: str,
+) -> int:
+    """Mirror monitor_manager.update_monitor_position_variables total_position math (PBA apply path)."""
+    mult = float(multiplier_value or 0)
+    if mult == 0:
+        return 1
+    ptype = (position_type or "contracts").lower()
+    if ptype == "percent":
+        allotment_cents = int(bankroll_allotment_total or 0)
+        if allotment_cents <= 0 and bankroll_allotment_pct is not None:
+            try:
+                pct = float(bankroll_allotment_pct)
+            except (TypeError, ValueError):
+                pct = 0.0
+            if pct > 0:
+                br = _aes_latest_bankroll_cents(cursor, slot)
+                allotment_cents = int(round(pct * br))
+        allotment_dollars = allotment_cents / 100.0
+        base_pct = (int(position_size or 0)) / 100.0
+        effective_pct = base_pct * mult
+        cap = None
+        if max_pct_cap is not None:
+            try:
+                cap = float(max_pct_cap)
+            except (TypeError, ValueError):
+                cap = None
+        if cap is not None and cap > 0:
+            effective_pct = min(effective_pct, cap)
+        new_total = int(round(allotment_dollars * effective_pct))
+        return max(1, new_total)
+    return max(1, int(int(position_size or 0) * mult))
+
+
 def _apply_performance_based_multiplier(multiplier_value: float, position_size: Optional[int], position_type: Optional[str]) -> None:
     """Apply performance-based multiplier by reusing monitor_manager position update endpoint."""
     if multiplier_value is None:
@@ -762,16 +845,22 @@ def update_monitor_current_state(strike_table_data: Dict[str, Any]) -> None:
     position_type = None
     performance_based_allocation = False
     existing_multiplier = None
+    bankroll_allotment_total = None
+    bankroll_allotment_pct = None
+    total_position_row = None
 
     try:
         import psycopg2
 
+        slot_norm = _aes_tenant_slot()
+        ml_table = _aes_monitor_list_table()
         conn = get_db_connection()
         with conn.cursor() as cursor:
             cursor.execute(
                 f"""
-                SELECT performance_based_allocation, position_size, position_type, multiplier
-                FROM users.monitor_list_0001
+                SELECT performance_based_allocation, position_size, position_type, multiplier,
+                       total_position, bankroll_allotment_total, bankroll_allotment_pct
+                FROM {ml_table}
                 WHERE id = %s
                 """,
                 (ctx_mid(),)
@@ -782,6 +871,9 @@ def update_monitor_current_state(strike_table_data: Dict[str, Any]) -> None:
                 position_size = settings_row[1]
                 position_type = settings_row[2]
                 existing_multiplier = settings_row[3]
+                total_position_row = settings_row[4]
+                bankroll_allotment_total = settings_row[5]
+                bankroll_allotment_pct = settings_row[6]
                 if existing_multiplier is not None:
                     try:
                         _LAST_MONITOR_STATE["applied_multiplier"] = float(existing_multiplier)
@@ -790,7 +882,7 @@ def update_monitor_current_state(strike_table_data: Dict[str, Any]) -> None:
 
             cursor.execute(
                 f"""
-                UPDATE users.monitor_list_0001
+                UPDATE {ml_table}
                 SET current_contract = %s,
                     current_weekly_cycle = %s,
                     current_performance_modifier = %s,
@@ -826,6 +918,41 @@ def update_monitor_current_state(strike_table_data: Dict[str, Any]) -> None:
                 needs_update = True
             elif current_applied is None or abs(current_applied - new_multiplier) > 0.0009:
                 needs_update = True
+
+            # multiplier can already match performance_modifier while total_position is stale
+            # (allotment/bankroll/position_size changed, or a failed prior apply). UI reads
+            # current_performance_modifier; trades use total_position — keep them aligned.
+            if not needs_update and settings_row:
+                sync_conn = None
+                try:
+                    sync_conn = get_db_connection()
+                    if sync_conn:
+                        with sync_conn.cursor() as sync_cur:
+                            expected = _aes_expected_total_position(
+                                position_size=position_size,
+                                position_type=position_type,
+                                multiplier_value=new_multiplier,
+                                bankroll_allotment_total=bankroll_allotment_total,
+                                bankroll_allotment_pct=bankroll_allotment_pct,
+                                max_pct_cap=max_pct_exposure,
+                                cursor=sync_cur,
+                                slot=slot_norm,
+                            )
+                        cur_tp = int(total_position_row or 0)
+                        if cur_tp != int(expected):
+                            needs_update = True
+                            log(
+                                f"[AUTO ENTRY] PBA resync: total_position {cur_tp} != expected {expected} "
+                                f"(mult={new_multiplier}); forcing monitor_manager apply"
+                            )
+                except Exception as sync_exc:
+                    log(f"[AUTO ENTRY] ⚠️ PBA total_position stale check failed: {sync_exc}")
+                finally:
+                    if sync_conn:
+                        try:
+                            sync_conn.close()
+                        except Exception:
+                            pass
 
             if needs_update:
                 _apply_performance_based_multiplier(new_multiplier, position_size, position_type)
@@ -876,8 +1003,9 @@ def get_monitor_symbol():
             os._exit(0)
 
         cursor = conn.cursor()
+        _ml = _aes_monitor_list_table(str(uid0))
         cursor.execute(f"""
-            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_0001
+            SELECT symbol, COALESCE(market, 'hourly') FROM {_ml}
             WHERE id = %s
         """, (mid0,))
         result = cursor.fetchone()
@@ -934,7 +1062,7 @@ def get_current_monitor_symbol_and_market():
             return "BTC", "hourly"
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_0001
+            SELECT symbol, COALESCE(market, 'hourly') FROM {_aes_monitor_list_table()}
             WHERE id = %s
         """, (ctx_mid(),))
         result = cursor.fetchone()
@@ -1067,9 +1195,9 @@ def load_auto_entry_state_from_db():
         conn = get_db_connection()
         with conn.cursor() as cursor:
             # Get monitor's strategy and cooldown state
-            cursor.execute("""
-                SELECT strategy, cooldown_start_time, cooldown_timer, updated_at 
-                FROM users.monitor_list_0001 WHERE id = %s
+            cursor.execute(f"""
+                SELECT strategy, cooldown_start_time, cooldown_timer, updated_at
+                FROM {_aes_monitor_list_table()} WHERE id = %s
             """, (ctx_mid(),))
             monitor_result = cursor.fetchone()
             
@@ -1077,9 +1205,9 @@ def load_auto_entry_state_from_db():
                 strategy_name, cooldown_start_time, cooldown_timer, updated_at = monitor_result
                 
                 # Get cooldown settings and time parameters from monitor
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT spike_alert_cooldown_minutes, min_time, max_time
-                    FROM users.monitor_list_0001 WHERE id = %s
+                    FROM {_aes_monitor_list_table()} WHERE id = %s
                 """, (ctx_mid(),))
                 strategy_result = cursor.fetchone()
                 
@@ -1106,7 +1234,7 @@ def load_auto_entry_state_from_db():
                     
                     # Always update cooldown_timer (even when negative) to show time since last spike
                     cursor.execute(
-                        "UPDATE users.monitor_list_0001 SET cooldown_timer = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                        f"UPDATE {_aes_monitor_list_table()} SET cooldown_timer = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
                         (int(remaining_seconds), ctx_mid())
                     )
                     
@@ -1159,7 +1287,7 @@ def log_heartbeat():
             import psycopg2
             conn = get_db_connection()
             with conn.cursor() as cursor:
-                cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
+                cursor.execute(f"SELECT cooldown_timer FROM {_aes_monitor_list_table()} WHERE id = %s", (ctx_mid(),))
                 result = cursor.fetchone()
                 cooldown_timer = result[0] if result and result[0] is not None else 0
             conn.close()
@@ -1421,7 +1549,7 @@ def start_cooldown_period_in_db():
         with conn.cursor() as cursor:
             # Update the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
-                "UPDATE users.monitor_list_0001 SET cooldown_start_time = NOW(), updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                f"UPDATE {_aes_monitor_list_table()} SET cooldown_start_time = NOW(), updated_at = CURRENT_TIMESTAMP WHERE id = %s",
                 (ctx_mid(),)
             )
             
@@ -1439,7 +1567,7 @@ def reset_cooldown_period_in_db():
         with conn.cursor() as cursor:
             # Reset the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
-                "UPDATE users.monitor_list_0001 SET cooldown_start_time = NULL, cooldown_timer = 0, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                f"UPDATE {_aes_monitor_list_table()} SET cooldown_start_time = NULL, cooldown_timer = 0, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
                 (ctx_mid(),)
             )
             
@@ -1458,7 +1586,7 @@ def update_cooldown_timer_in_db(seconds):
         with conn.cursor() as cursor:
             # Update the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
-                "UPDATE users.monitor_list_0001 SET cooldown_timer = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                f"UPDATE {_aes_monitor_list_table()} SET cooldown_timer = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
                 (seconds, ctx_mid())
             )
             
@@ -1499,7 +1627,7 @@ def update_auto_entry_status_in_db(status):
         with conn.cursor() as cursor:
             # Update the monitor's auto_trade_status field (this is what the frontend reads)
             cursor.execute(
-                "UPDATE users.monitor_list_0001 SET auto_trade_status = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                f"UPDATE {_aes_monitor_list_table()} SET auto_trade_status = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
                 (status, ctx_mid())
             )
             conn.commit()
@@ -1844,7 +1972,7 @@ def determine_auto_entry_status_momentum_contain():
             import psycopg2
             conn = get_db_connection()
             with conn.cursor() as cursor:
-                cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
+                cursor.execute(f"SELECT cooldown_timer FROM {_aes_monitor_list_table()} WHERE id = %s", (ctx_mid(),))
                 result = cursor.fetchone()
                 cooldown_timer = result[0] if result and result[0] is not None else None
             conn.close()
@@ -1891,7 +2019,7 @@ def broadcast_auto_entry_indicator_change():
             import psycopg2
             conn = get_db_connection()
             with conn.cursor() as cursor:
-                cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
+                cursor.execute(f"SELECT cooldown_timer FROM {_aes_monitor_list_table()} WHERE id = %s", (ctx_mid(),))
                 result = cursor.fetchone()
                 cooldown_timer = result[0] if result and result[0] is not None else 0
             conn.close()
@@ -1995,11 +2123,14 @@ def is_auto_trade_enabled():
 
         with conn.cursor() as cursor:
             # Check auto_trade boolean from the specific monitor's row in monitor_list
-            cursor.execute("SELECT auto_trade FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
+            cursor.execute(f"SELECT auto_trade FROM {_aes_monitor_list_table()} WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
 
             if not result:
-                log(f"[AUTO ENTRY] ❌ Monitor {ctx_mid()} missing from monitor_list_0001; shutting down supervisor to avoid ghost auto-entry")
+                log(
+                    f"[AUTO ENTRY] ❌ Monitor {ctx_mid()} missing from {_aes_monitor_list_table()}; "
+                    "shutting down supervisor to avoid ghost auto-entry"
+                )
                 os._exit(0)
 
             auto_trade_enabled = bool(result[0])
@@ -2016,8 +2147,8 @@ def get_auto_entry_settings():
         conn = get_db_connection()
         with conn.cursor() as cursor:
             # Get monitor's strategy
-            cursor.execute("""
-                SELECT strategy FROM users.monitor_list_0001 WHERE id = %s
+            cursor.execute(f"""
+                SELECT strategy FROM {_aes_monitor_list_table()} WHERE id = %s
             """, (ctx_mid(),))
             monitor_result = cursor.fetchone()
             
@@ -2040,8 +2171,8 @@ def get_auto_entry_settings():
                            min_cooldown_timer, max_cooldown_timer, min_ask_range
                     """
                     + (sel_flip if has_flip else "")
-                    + """
-                    FROM users.monitor_list_0001 WHERE id = %s
+                    + f"""
+                    FROM {_aes_monitor_list_table()} WHERE id = %s
                     """,
                     (ctx_mid(),),
                 )
@@ -2686,9 +2817,10 @@ def get_position_size():
     conn = None
     try:
         import psycopg2
+
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            cursor.execute("SELECT total_position FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
+            cursor.execute(f"SELECT total_position FROM {_aes_monitor_list_table()} WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             if result:
                 total_position = result[0]
@@ -2709,9 +2841,10 @@ def get_current_multiplier():
     conn = None
     try:
         import psycopg2
+
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            cursor.execute("SELECT multiplier FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
+            cursor.execute(f"SELECT multiplier FROM {_aes_monitor_list_table()} WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             if result and result[0] is not None:
                 multiplier_value = float(result[0])
@@ -2735,7 +2868,7 @@ def get_loss_prevention_state():
         conn = get_db_connection()
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT loss_prevention, loss_prevention_toggle FROM users.monitor_list_0001 WHERE id = %s",
+                f"SELECT loss_prevention, loss_prevention_toggle FROM {_aes_monitor_list_table()} WHERE id = %s",
                 (ctx_mid(),),
             )
             result = cursor.fetchone()
@@ -2769,7 +2902,7 @@ def get_trade_strategy():
         import psycopg2
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            cursor.execute("SELECT strategy FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
+            cursor.execute(f"SELECT strategy FROM {_aes_monitor_list_table()} WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             if result:
                 trade_strategy = result[0]
@@ -2790,7 +2923,7 @@ def get_bankroll_allotment():
         import psycopg2
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            cursor.execute("SELECT bankroll_allotment_total FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
+            cursor.execute(f"SELECT bankroll_allotment_total FROM {_aes_monitor_list_table()} WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             if result:
                 bankroll_allotment = result[0]
@@ -2982,7 +3115,7 @@ def trigger_auto_entry_trade(strike_data):
             import psycopg2
             conn = get_db_connection()
             with conn.cursor() as cursor:
-                cursor.execute("SELECT paper_trade FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
+                cursor.execute(f"SELECT paper_trade FROM {_aes_monitor_list_table()} WHERE id = %s", (ctx_mid(),))
                 result = cursor.fetchone()
                 if result and result[0] is not None:
                     paper_trade = bool(result[0])
@@ -3115,7 +3248,7 @@ def has_bracket_for_cycle(contract: Optional[str] = None, strike_tier: Optional[
     """Check if a bracket exists for the current cycle (contract/date).
     
     A bracket is defined as: one Y trade and one N trade with strikes within 2 strike tiers of each other.
-    This function queries trades_0001 for open/pending trades from this monitor with the same contract.
+    This function queries the tenant ``users.trades_<slot>`` table for open/pending trades from this monitor with the same contract.
     
     Args:
         contract: The contract label (e.g., "BTC 12pm"). If None, uses _LAST_MONITOR_STATE["contract"].
@@ -3159,10 +3292,10 @@ def has_bracket_for_cycle(contract: Optional[str] = None, strike_tier: Optional[
         # Get current monitor identifier
         current_monitor = f"mon_{ctx_user()}_{ctx_mid()}"
         
-        # Query trades_0001 table for open/pending trades from this monitor with the same contract
-        cursor.execute("""
+        # Query tenant trades table for open/pending trades from this monitor with the same contract
+        cursor.execute(f"""
             SELECT id, strike, side, status, contract, date
-            FROM users.trades_0001 
+            FROM {_aes_trades_table()}
             WHERE status IN ('open', 'pending')
               AND monitor = %s
               AND contract = %s
@@ -3240,9 +3373,9 @@ def is_strike_already_traded(strike_data):
             return False
 
         cursor.execute(
-            """
+            f"""
             SELECT id, ticker, side, status
-            FROM users.trades_0001
+            FROM {_aes_trades_table()}
             WHERE status IN ('open', 'pending', 'closing', 'close_failed')
               AND monitor = %s
             """,
@@ -3263,7 +3396,7 @@ def is_strike_already_traded(strike_data):
             return True
         return False
     except Exception as e:
-        log(f"Error checking trades_0001 table: {e}")
+        log(f"Error checking {_aes_trades_table()} for in-flight trades: {e}")
         return False
 
 
@@ -3331,15 +3464,15 @@ def is_strike_already_simulated_traded(strike_data):
             return False
         try:
             with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT 1 FROM users.trades_simulated_0001
+                cursor.execute(f"""
+                    SELECT 1 FROM {_aes_trades_simulated_table()}
                     WHERE monitor = %s AND date = %s AND contract = %s AND strike = %s AND side = %s
                 """, (f"mon_{ctx_user()}_{ctx_mid()}", date_str, contract_str, strike_str, db_side))
                 return cursor.fetchone() is not None
         finally:
             conn.close()
     except Exception as e:
-        log(f"[SIMULATED 15m] Error checking trades_simulated_0001: {e}")
+        log(f"[SIMULATED 15m] Error checking {_aes_trades_simulated_table()}: {e}")
         return False
 
 
@@ -3354,7 +3487,7 @@ def can_trade_strike_simulated(strike_key):
 
 
 def trigger_simulated_trade(strike_data):
-    """POST to trade_manager with simulated_trade=True; writes to trades_simulated_0001, no executor.
+    """POST to trade_manager with simulated_trade=True; writes to tenant ``users.trades_simulated_<slot>``, no executor.
     Contract uses next 15m boundary (e.g. BTC 2:15pm) so weekly_cycle decimal reflects quarter (.0/.1/.2/.3)."""
     import requests
     import uuid
@@ -3409,7 +3542,7 @@ def trigger_simulated_trade(strike_data):
 
 
 def check_simulated_15m_entry_hourly_htc():
-    """Run simulated 15m path: ttc_15m and probability_15m from hourly table; record to trades_simulated_0001. No price/diff/volume checks."""
+    """Run simulated 15m path: ttc_15m and probability_15m from hourly table; record to tenant trades_simulated. No price/diff/volume checks."""
     import time as _t
     _throttle = getattr(check_simulated_15m_entry_hourly_htc, "_log_ts", 0)
     _now = _t.time()
@@ -4902,7 +5035,7 @@ def check_auto_entry_conditions_momentum_contain():
                 import psycopg2
                 conn = get_db_connection()
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
+                    cursor.execute(f"SELECT cooldown_timer FROM {_aes_monitor_list_table()} WHERE id = %s", (ctx_mid(),))
                     result = cursor.fetchone()
                     cooldown_timer = result[0] if result and result[0] is not None else None
                 conn.close()
@@ -5829,10 +5962,15 @@ def health_check():
 # Auto entry indicator endpoint (for frontend display)
 @app.route("/api/auto_entry_indicator")
 def get_auto_entry_indicator():
-    """Get current auto entry indicator state (unified 15m: pass ?monitor_id=10019&user_number=0001)"""
+    """Get current auto entry indicator state (unified pool: pass ``monitor_id``; ``user_number`` or REC_USER_NO)."""
     if AES_UNIFIED_POOL:
         mid = request.args.get("monitor_id")
-        user = request.args.get("user_number", "0001")
+        user = (request.args.get("user_number") or "").strip()
+        if not user:
+            try:
+                user = default_pool_user_number()
+            except RuntimeError:
+                return jsonify({"error": "user_number query parameter required (set REC_USER_NO for default)"}), 400
         if not mid:
             return jsonify({"error": "monitor_id query parameter required for unified pool AES"}), 400
         with aes_monitor_bind(user, str(mid)):
@@ -5877,7 +6015,12 @@ def get_auto_entry_scanning_status():
 
         if AES_UNIFIED_POOL:
             mid = request.args.get("monitor_id")
-            user = request.args.get("user_number", "0001")
+            user = (request.args.get("user_number") or "").strip()
+            if not user:
+                try:
+                    user = default_pool_user_number()
+                except RuntimeError:
+                    return jsonify({"error": "user_number query parameter required (set REC_USER_NO for default)"}), 400
             if not mid:
                 return jsonify({"error": "monitor_id query parameter required for unified pool AES"}), 400
             with aes_monitor_bind(user, str(mid)):
