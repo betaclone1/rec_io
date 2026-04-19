@@ -20,7 +20,7 @@ from backend.core.unified_config import unified_config
 from backend.core.config.database import get_database_config
 from backend.core.path_manager import PathManager
 from backend.core.host_detector import HostDetector
-from backend.core.exchange_credentials import fetch_kalshi_enabled_for_user_no
+from backend.core.exchange_credentials import fetch_kalshi_enabled_map_for_user_nos
 from backend.core.tenant_provision import ensure_tenant_schemas_for_active_users
 import logging
 
@@ -457,6 +457,7 @@ class SupervisorConfigGenerator:
         )
 
         pr = Path(project_root)
+        kalshi_by_user = fetch_kalshi_enabled_map_for_user_nos(list(trading_users))
         for user_no in trading_users:
             umon = monitors_by_user[user_no]
             prod_pem = (
@@ -472,7 +473,7 @@ class SupervisorConfigGenerator:
             )
             prod_env = prod_pem.parent / ".env"
             has_live = prod_pem.is_file() and prod_env.is_file()
-            kalshi_exchange = fetch_kalshi_enabled_for_user_no(user_no)
+            kalshi_exchange = kalshi_by_user.get(user_no)
             # Signed Kalshi API only when key material exists AND master_users does not set kalshi false.
             # None from DB = unknown / legacy row → do not block (same as prior file-only behavior).
             kalshi_auth_ok = has_live and (kalshi_exchange is not False)

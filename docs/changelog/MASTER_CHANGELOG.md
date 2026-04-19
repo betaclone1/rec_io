@@ -6,6 +6,32 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-19 — Release v3.2.0: Postgres connection budget, ATS strike-table probability, supervisor config batching
+
+**Summary**
+- **Release: v3.2.0**
+- **Database:** Migration **`20260416_1810_archive_trades_win_loss_confirmed_match_master`** (if not already applied on production) — nullable **`win_loss_confirmed`** on all **`archive.trades_archive_{live|paper}_*`** for union parity with master trades; schema reference already documents this migration.
+- **Runtime / Postgres:** **`backend/core/config/database.py`** — transient **`OperationalError`** retries on connect; **warning** logs with severity tokens stripped (avoids noisy `FATAL` lines in app logs). **`backend/monitor_manager.py`** — small **per-process `ThreadedConnectionPool`** for tenant DB (env **`REC_MONITOR_MANAGER_PG_POOL_MAX`**, default 4). **`backend/market_watchdog_ws.py`** — lower default DB pool cap (env **`REC_MARKET_WATCHDOG_DB_POOL_MAX`**, default 8). **`scripts/MASTER_RESTART.sh`** — **5s** post-kill wait so Postgres releases sessions before the next spawn burst.
+- **`backend/core/exchange_credentials.py`** — **`fetch_kalshi_enabled_map_for_user_nos`** (single query); **`scripts/config/generate_unified_supervisor_config.py`** uses it so config regen does not open one system connection per tenant.
+- **ATS:** **`backend/active_trade_supervisor.py`** — **`get_current_probability_from_live_strike_table`** reads side-aware model probability from **`live_data.strike_table_*`** by **ticker** (aligned with UI / strike pipeline); existing lookup path is **fallback** only when the row is missing.
+- **Governance:** **`.cursor/rules/06-tenant-users-schema-parity.mdc`** (always-on): tenant DDL must cover all **`users_NNNN`** schemas, not a single slot.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration (skip errors if already applied):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260416_1810_archive_trades_win_loss_confirmed_match_master`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail `kalshi_account_sync_0001.out.log` for baseline + WS OK.
+- [ ] Record release in DB on **production** (must match git/changelog):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.2.0`
+- [ ] Record release in DB on **local** (same version string as production):  
+  From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.2.0`
+
+---
+
 ## 2026-04-19 — Release v3.1.8: strike_table_master Eastern wall timestamps
 
 **Summary**

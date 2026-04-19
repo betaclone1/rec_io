@@ -1,5 +1,6 @@
 """
-``system.master_users.exchange_credentials`` — which exchanges may use authenticated API calls.
+``system.master_users.exchange_credentials`` (required column) — which exchanges may use
+authenticated API calls.
 
 When ``kalshi`` is false, tenant-scoped workers must not perform signed Kalshi requests,
 even if key files exist. Supervisor sets ``REC_PAPER_ONLY_USER`` from the same rule plus on-disk keys.
@@ -8,13 +9,10 @@ even if key files exist. Supervisor sets ``REC_PAPER_ONLY_USER`` from the same r
 from __future__ import annotations
 
 import json
-import logging
 import os
 import time
 import re
-from typing import Any, Dict, Optional
-
-_LOG = logging.getLogger(__name__)
+from typing import Any, Dict, List, Optional, Sequence
 
 DEFAULT_EXCHANGE_CREDENTIALS: Dict[str, bool] = {"kalshi": False, "polymarket": False}
 
@@ -72,55 +70,70 @@ def _fetch_kalshi_flag_cursor(cur: Any, user_no: str) -> Optional[bool]:
     return bool(norm["kalshi"])
 
 
+def fetch_kalshi_enabled_map_for_user_nos(user_nos: Sequence[str]) -> Dict[str, Optional[bool]]:
+    """
+    One system DB round-trip for several slots (e.g. supervisor config generation).
+
+    Keys are four-digit ``user_no`` strings. Value ``None`` means no row or NULL ``exchange_credentials``.
+    """
+    slots: List[str] = []
+    for raw in user_nos:
+        if not raw:
+            continue
+        u = str(raw).strip().zfill(4) if str(raw).strip().isdigit() else raw.strip()
+        if _USER_NO_ENV_RE.match(u):
+            slots.append(u)
+    if not slots:
+        return {}
+    uniq = sorted(set(slots))
+    from backend.core.config.database import get_system_postgresql_connection
+
+    conn = get_system_postgresql_connection()
+    if not conn:
+        return {s: None for s in uniq}
+    out: Dict[str, Optional[bool]] = {s: None for s in uniq}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT LPAD(TRIM(user_no::text), 4, '0') AS slot, exchange_credentials
+                FROM system.master_users
+                WHERE LPAD(TRIM(user_no::text), 4, '0') IN %s
+                """,
+                (tuple(uniq),),
+            )
+            for slot, cred in cur.fetchall() or []:
+                sk = str(slot).zfill(4) if slot is not None else ""
+                if sk in out:
+                    if cred is None:
+                        out[sk] = None
+                    else:
+                        out[sk] = bool(normalize_exchange_credentials(cred)["kalshi"])
+        return out
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def fetch_kalshi_enabled_for_user_no(user_no: str) -> Optional[bool]:
     """
     Read ``exchange_credentials->kalshi`` for ``user_no``.
 
-    Returns ``None`` if the row is missing or the query fails (callers may treat as unknown).
+    Returns ``None`` if there is no ``master_users`` row for the slot or ``exchange_credentials`` is NULL.
+    Connection or schema errors propagate (no swallowing of PostgreSQL errors).
     """
     if not user_no or not _USER_NO_ENV_RE.match(user_no):
         return None
-    try:
-        from backend.core.config.database import get_system_postgresql_connection
-
-        conn = get_system_postgresql_connection()
-        if not conn:
-            return None
-        try:
-            with conn.cursor() as cur:
-                return _fetch_kalshi_flag_cursor(cur, user_no)
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
-    except Exception as exc:
-        err = str(exc).lower()
-        _LOG.debug(
-            "exchange_credentials read skipped for user_no=%s DB=%s (%s)",
-            user_no,
-            _session_db_label(),
-            err.split("\n")[0][:200] if err else str(exc)[:200],
-        )
-        return None
-
-
-def _session_db_label() -> str:
-    """Best-effort label for logs (which database the worker is using)."""
-    try:
-        host = (os.environ.get("DB_HOST") or os.environ.get("REC_DB_HOST") or "").strip()
-        name = (os.environ.get("DB_NAME") or os.environ.get("REC_DB_NAME") or "").strip()
-        if host or name:
-            return f"{host or '?'}/{name or '?'}"
-    except Exception:
-        pass
-    return "?"
+    m = fetch_kalshi_enabled_map_for_user_nos([user_no])
+    return m.get(user_no)
 
 
 def live_kalshi_trading_allowed_for_user_no(user_no: str) -> bool:
     """
-    Live Kalshi is allowed when ``exchange_credentials.kalshi`` is true, or (legacy) when the flag
-    is unknown but prod ``kalshi-auth.txt`` exists for that slot. Explicit ``false`` disables live.
+    Live Kalshi is allowed when ``exchange_credentials.kalshi`` is true, or when the row is missing /
+    NULL and prod ``kalshi-auth.txt`` exists for that slot (legacy file-only). Explicit ``false`` disables live.
     """
     ke = fetch_kalshi_enabled_for_user_no(user_no)
     if ke is False:

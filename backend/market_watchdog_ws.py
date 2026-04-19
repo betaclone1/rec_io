@@ -91,7 +91,8 @@ DEFAULT_HOURLY_WS_VERIFY_SEC = 240.0
 DEFAULT_HOURLY_TICK_VERIFY_FRAC = 0.10
 DEFAULT_HOURLY_TICK_VERIFY_MIN = 20
 DEFAULT_CYCLE_RETRY_SEC = 10.0
-DEFAULT_DB_POOL_MAX_CONN = 16
+# Two watchdog processes (hourly + 15m); keep default modest so local max_connections is not exhausted at startup.
+DEFAULT_DB_POOL_MAX_CONN = int(os.environ.get("REC_MARKET_WATCHDOG_DB_POOL_MAX", "8"))
 DEFAULT_DISCOVERY_SLEEP_SEC = 2.0
 # Upper bound for how long we will keep polling REST during a single 15m rollover discovery
 # (prevents runaway 429s / infinite loops).

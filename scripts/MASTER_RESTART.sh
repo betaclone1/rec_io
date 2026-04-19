@@ -603,8 +603,8 @@ EOF
     print_warning "Killing any remaining supervisor processes..."
     ps aux 2>/dev/null | grep supervisord | grep -v grep | awk '{print $2}' | xargs -r kill 2>/dev/null || true
     
-    # Wait for processes to fully terminate
-    /bin/sleep 3
+    # Wait for processes to fully terminate (Postgres frees sessions from dead backends).
+    /bin/sleep 5
     echo ""
 
     # Step 2.5: Install new dependencies if requirements changed

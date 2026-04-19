@@ -2616,6 +2616,79 @@ def get_current_closing_price_for_trade(
         return None
 
 
+def get_current_probability_from_live_strike_table(
+    trade_ticker: Optional[str],
+    trade_symbol: str,
+    trade_side: Optional[str],
+) -> Optional[float]:
+    """
+    Model probability from the same live strike row the UI / strike_table_generator uses.
+
+    Latest row for this Kalshi ``ticker``; side-aware (YES -> yes_prob_* , NO -> no_prob_*),
+    with ``probability_hourly`` / ``probability_15m`` as fallback when a leg column is NULL.
+
+    Returns None if the ticker is missing or no row exists yet (caller may fall back).
+    """
+    ticker = (trade_ticker or "").strip()
+    if not ticker:
+        return None
+    sym, mkt = _get_symbol_and_market_for_strike(trade_symbol)
+    table_name = get_strike_table_name(sym, mkt)
+    if table_name not in ("strike_table_hourly", "strike_table_15m", "strike_table_ws_15m"):
+        return None
+    conn = get_postgresql_connection()
+    if not conn:
+        return None
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT yes_prob_hourly, no_prob_hourly, probability_hourly,
+                       yes_prob_15m, no_prob_15m, probability_15m
+                FROM live_data.{table_name}
+                WHERE ticker = %s
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                (ticker,),
+            )
+            row = cursor.fetchone()
+    except Exception as e:
+        log_debug(
+            "Strike-table prob by ticker failed ticker=%s table=%s: %s",
+            ticker,
+            table_name,
+            e,
+        )
+        return None
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+
+    yh, nh, ph, y15, n15, p15 = row
+    su = (trade_side or "").strip().upper()
+    if su in ("Y", "YES"):
+        if (mkt or "").strip().lower() == "15m":
+            v = y15 if y15 is not None else p15
+        else:
+            v = yh if yh is not None else ph
+    elif su in ("N", "NO"):
+        if (mkt or "").strip().lower() == "15m":
+            v = n15 if n15 is not None else p15
+        else:
+            v = nh if nh is not None else ph
+    else:
+        return None
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _get_lookup_probability_calculator(symbol_upper: str):
     """Strike-table generator's LookupProbabilityCalculator (analytics.probability_lookup_*_master_*)."""
     key = (symbol_upper or "BTC").strip().lower()
@@ -2638,10 +2711,11 @@ def _get_lookup_probability_calculator(symbol_upper: str):
 
 def get_current_probability(strike: float, current_price: float, ttc_seconds: float, momentum_score: Optional[float] = None, symbol: str = None) -> Optional[float]:
     """
-    Model probability for auto-stop: same path as strike_table_generator — analytics master
-    probability lookup tables (TTC, buffer from live spot vs strike, momentum bucket).
+    Recompute model probability (LookupProbabilityCalculator + strike-table-by-strike fallback).
 
-    Fallback: read probability_* from live_data.strike_table_* if lookup init/query fails.
+    Used only when ``get_current_probability_from_live_strike_table`` has no row for the
+    trade ticker (e.g. empty table between refreshes). Normal monitoring reads the live
+    strike row by ticker first.
     """
     sym, mkt = _get_symbol_and_market_for_strike(symbol)
     sym_u = sym or "BTC"
@@ -2933,14 +3007,19 @@ def update_active_trade_monitoring_data():
                 except (TypeError, ValueError):
                     fees_val = 0.0
 
-                # Model probability: master prob lookup tables (same as strike_table_generator); strike_table_* fallback only
-                current_probability = get_current_probability(
-                    float(strike_price),
-                    float(current_symbol_price),
-                    ttc_seconds,
-                    momentum_score,
-                    symbol,
+                # Model probability: read from live strike row for this ticker (same source as UI / archive).
+                # Fallback only when the row is missing (e.g. transient gap before WS refresh).
+                current_probability = get_current_probability_from_live_strike_table(
+                    ticker, trade_sym_u, side
                 )
+                if current_probability is None:
+                    current_probability = get_current_probability(
+                        float(strike_price),
+                        float(current_symbol_price),
+                        ttc_seconds,
+                        momentum_score,
+                        symbol,
+                    )
                 if current_probability is not None:
                     if buffer_from_strike < 0:
                         current_probability = 100 - current_probability

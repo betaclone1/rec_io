@@ -15,6 +15,7 @@ This is the starting point - will expand to handle:
 """
 
 import psycopg2
+import psycopg2.pool
 from psycopg2 import sql
 import json
 import logging
@@ -88,6 +89,10 @@ from backend.core.config.database import get_system_postgresql_connection
 import threading
 import time
 
+# One bounded pool per monitor_manager process (avoids a fresh TCP connection per API call).
+_mm_pg_pool: Optional[psycopg2.pool.ThreadedConnectionPool] = None
+_mm_pg_pool_lock = threading.Lock()
+
 
 def _est_formatter():
     class ESTFormatter(logging.Formatter):
@@ -150,12 +155,35 @@ class MonitorManager:
         self.cleanup_running = False
         
     def get_database_connection(self):
-        """Get database connection - foundation for all DB operations"""
-        # Convert config to psycopg2 format
+        """Tenant DB connection from a small in-process pool (reduces Postgres session spikes)."""
+        global _mm_pg_pool
         psycopg2_config = self.db_config.copy()
-        if 'name' in psycopg2_config:
-            psycopg2_config['database'] = psycopg2_config.pop('name')
-        return psycopg2.connect(**merge_psycopg2_connect_kwargs(psycopg2_config))
+        if "name" in psycopg2_config:
+            psycopg2_config["database"] = psycopg2_config.pop("name")
+        merged = merge_psycopg2_connect_kwargs(psycopg2_config)
+        with _mm_pg_pool_lock:
+            if _mm_pg_pool is None:
+                max_conn = max(
+                    1,
+                    int(os.environ.get("REC_MONITOR_MANAGER_PG_POOL_MAX", "4")),
+                )
+                try:
+                    _mm_pg_pool = psycopg2.pool.ThreadedConnectionPool(
+                        1, max_conn, **merged
+                    )
+                except Exception as e:
+                    _logger.warning(
+                        "monitor_manager DB pool init failed (%s); using direct connect",
+                        e,
+                    )
+                    return psycopg2.connect(**merged)
+            try:
+                return _mm_pg_pool.getconn()
+            except psycopg2.pool.PoolError as e:
+                _logger.warning(
+                    "monitor_manager DB pool exhausted (%s); using direct connect", e
+                )
+                return psycopg2.connect(**merged)
     
     def log_event(self, event_type: str, message: str, data: Optional[Dict] = None):
         """Centralized logging for monitor manager events. Uses standard logger (EST, flush)."""

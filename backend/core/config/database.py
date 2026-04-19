@@ -7,10 +7,16 @@ falls back to REC_DB_HOST, REC_DB_NAME, REC_DB_USER, REC_DB_PASS, REC_DB_PORT
 so .env or deploy can use either convention. Scripts should use
 get_postgresql_connection() / get_system_postgresql_connection() or get_database_config(); do not use POSTGRES_*
 or hardcoded credentials.
+
+**Capacity:** Many supervisor programs each hold DB sessions. If Postgres returns
+``too many clients``, raise ``max_connections`` (e.g. 200+ for local multi-tenant dev) and tune
+``REC_MONITOR_MANAGER_PG_POOL_MAX`` / ``REC_MARKET_WATCHDOG_DB_POOL_MAX`` rather than relying only on connect retries.
 """
 
 import logging
 import os
+import re
+import time
 from typing import Optional
 
 import psycopg2
@@ -19,6 +25,43 @@ import psycopg2.pool
 from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 
 _logger = logging.getLogger(__name__)
+
+# Burst startup (supervisor) can exceed Postgres max_connections briefly; retry instead of
+# logging full tracebacks that include server severity prefixes.
+_PG_CONNECT_MAX_ATTEMPTS = int(os.environ.get("REC_PG_CONNECT_MAX_ATTEMPTS", "18"))
+_PG_CONNECT_BASE_SLEEP_SEC = float(os.environ.get("REC_PG_CONNECT_BASE_SLEEP_SEC", "0.04"))
+_PG_CONNECT_MAX_SLEEP_SEC = float(os.environ.get("REC_PG_CONNECT_MAX_SLEEP_SEC", "0.75"))
+_PG_LOG_SEVERITY_PREFIX = re.compile(r"(?i)\b(?:FATAL|ERROR):\s*")
+
+
+def _pg_connect_error_for_log(exc: BaseException) -> str:
+    """Single-line message for logs without Postgres severity tokens (avoids noisy FATAL/ERROR lines)."""
+    raw = str(exc).strip()
+    if not raw:
+        return "connection error"
+    msg = _PG_LOG_SEVERITY_PREFIX.sub("", raw)
+    msg = " ".join(msg.split())
+    return msg[:480] if msg else "connection error"
+
+
+def _is_transient_operational_connect_error(exc: BaseException) -> bool:
+    if not isinstance(exc, psycopg2.OperationalError):
+        return False
+    m = str(exc).lower()
+    return (
+        "too many clients" in m
+        or "connection refused" in m
+        or "could not connect to server" in m
+        or "server closed the connection unexpectedly" in m
+    )
+
+
+def _sleep_between_pg_connect_retries(attempt_index: int) -> None:
+    delay = min(
+        _PG_CONNECT_MAX_SLEEP_SEC,
+        _PG_CONNECT_BASE_SLEEP_SEC * (2 ** min(attempt_index, 10)),
+    )
+    time.sleep(delay)
 
 # Shared schemas for global daemons (no users_NNNN). Order: app shared data first, then public, catalog.
 _SYSTEM_SEARCH_PATH = (
@@ -82,14 +125,32 @@ def get_system_postgresql_connection():
 
     Do **not** use this to read or write ``users_NNNN`` tenant tables; use :func:`get_postgresql_connection` with
     request tenant, ``tenant_user_no``, or a worker ``REC_USER_SCHEMA`` instead.
+
+    Retries on transient ``OperationalError`` (e.g. connection limit during supervisor startup).
+    Logs use :func:`_pg_connect_error_for_log` (no server ``FATAL``/``ERROR`` severity tokens).
     """
-    try:
-        conn = psycopg2.connect(**get_database_config())
-        _apply_system_search_path(conn)
-        return conn
-    except Exception:
-        _logger.exception("Failed to connect to PostgreSQL (system)")
-        return None
+    cfg = get_database_config()
+    for attempt in range(_PG_CONNECT_MAX_ATTEMPTS):
+        try:
+            conn = psycopg2.connect(**cfg)
+            _apply_system_search_path(conn)
+            return conn
+        except psycopg2.OperationalError as e:
+            if _is_transient_operational_connect_error(e) and attempt + 1 < _PG_CONNECT_MAX_ATTEMPTS:
+                _sleep_between_pg_connect_retries(attempt)
+                continue
+            _logger.warning(
+                "PostgreSQL (system) connect failed after %s attempt(s): %s",
+                attempt + 1,
+                _pg_connect_error_for_log(e),
+            )
+            return None
+        except Exception as e:
+            _logger.warning(
+                "PostgreSQL (system) connect failed: %s", _pg_connect_error_for_log(e)
+            )
+            return None
+    return None
 
 
 def get_postgresql_connection(tenant_user_no: Optional[str] = None):
@@ -106,6 +167,9 @@ def get_postgresql_connection(tenant_user_no: Optional[str] = None):
 
     For processes that must not bind to any tenant (writes to ``live_data`` / ``system`` only),
     use :func:`get_system_postgresql_connection` instead.
+
+    Retries transient ``OperationalError`` on the initial ``psycopg2.connect`` (same as
+    :func:`get_system_postgresql_connection`). Failure logs avoid Postgres ``FATAL``/``ERROR`` tokens.
     """
     from backend.core.tenant_context import (
         TenantConnection,
@@ -115,41 +179,63 @@ def get_postgresql_connection(tenant_user_no: Optional[str] = None):
     )
     from backend.web.tenant_asgi import get_web_api_user_no
 
+    config = get_database_config()
     conn = None
-    try:
-        config = get_database_config()
-        conn = psycopg2.connect(**config)
-        if tenant_user_no:
-            ctx = get_api_tenant_context(tenant_user_no)
-        else:
-            rt = get_web_api_user_no()
-            if rt:
-                ctx = get_api_tenant_context(rt)
-            elif strict_session_tenant_for_db_enabled():
-                conn.close()
-                conn = None
-                raise RuntimeError(
-                    "tenant PostgreSQL connection refused: no session tenant "
-                    "(REC_STRICT_SESSION_TENANT_FOR_DB is enabled; authenticate or pass tenant_user_no)"
-                )
+
+    for attempt in range(_PG_CONNECT_MAX_ATTEMPTS):
+        try:
+            conn = psycopg2.connect(**config)
+            if tenant_user_no:
+                ctx = get_api_tenant_context(tenant_user_no)
             else:
-                ctx = effective_tenant_context_for_sql_rewrite()
-        return TenantConnection(conn, ctx)
-    except RuntimeError:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-        raise
-    except Exception:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-        _logger.exception("Failed to open tenant PostgreSQL connection")
-        return None
+                rt = get_web_api_user_no()
+                if rt:
+                    ctx = get_api_tenant_context(rt)
+                elif strict_session_tenant_for_db_enabled():
+                    conn.close()
+                    conn = None
+                    raise RuntimeError(
+                        "tenant PostgreSQL connection refused: no session tenant "
+                        "(REC_STRICT_SESSION_TENANT_FOR_DB is enabled; authenticate or pass tenant_user_no)"
+                    )
+                else:
+                    ctx = effective_tenant_context_for_sql_rewrite()
+            return TenantConnection(conn, ctx)
+        except RuntimeError:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            raise
+        except psycopg2.OperationalError as e:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = None
+            if _is_transient_operational_connect_error(e) and attempt + 1 < _PG_CONNECT_MAX_ATTEMPTS:
+                _sleep_between_pg_connect_retries(attempt)
+                continue
+            _logger.warning(
+                "PostgreSQL (tenant) connect failed after %s attempt(s): %s",
+                attempt + 1,
+                _pg_connect_error_for_log(e),
+            )
+            return None
+        except Exception as e:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            _logger.warning(
+                "PostgreSQL (tenant) connect failed: %s", _pg_connect_error_for_log(e)
+            )
+            return None
+
+    return None
 
 
 def get_postgresql_tenant_connection(tenant_user_no: str):

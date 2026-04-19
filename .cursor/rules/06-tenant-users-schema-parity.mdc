@@ -1,0 +1,30 @@
+---
+description: "Per-tenant DDL and bootstrap must cover every users_NNNN schema, not only legacy users."
+alwaysApply: true
+---
+
+# Tenant `users` / `users_NNNN` schema parity (non-negotiable)
+
+Production uses **per-tenant PostgreSQL schemas** `users_NNNN` (four-digit slot) plus the legacy **`users`** schema. Table families such as `monitor_list_NNNN`, `trades_NNNN`, `strategy_list_NNNN`, and other slot-suffixed tables **must stay structurally aligned** across **all** active tenant schemas.
+
+## Hard rules
+
+1. **Migrations:** Any DDL that adds, drops, or alters columns, constraints, indexes, sequences, triggers, or comments on a **per-tenant-shaped** table (name pattern `*_NNNN` tied to a slot, or any table under `users_NNNN`) **must apply the same change to every relevant schema**, not only `users` or a single `users_0001`-style example.
+   - **Preferred pattern:** Dynamic SQL in a `DO $$ ... $$` block: loop schemas `nspname = 'users' OR nspname ~ '^users_[0-9]{4}$'`, then loop matching `information_schema.tables` rows (e.g. `monitor_list_%`, `trades_%` as appropriate), `IF NOT EXISTS` column checks, `EXECUTE format(...)` with `%I` for schema and table names. See migrations such as `scripts/migrations/20260406_1400_monitor_flip_sell.up.sql` as the canonical style.
+   - **Forbidden default:** A migration that only runs `ALTER TABLE users.monitor_list_0001 ...` (or a single hardcoded tenant) **unless** the task is explicitly documented as template-only **and** another owned mechanism guarantees every tenant schema gets the same DDL (rare; prefer one migration that loops all tenants).
+
+2. **`backend/core/config/database.py` / init-time DDL:** Loops that discover `monitor_list_*` (or similar) **must not** restrict `table_schema` to `'users'` only when the product also serves `users_NNNN`. Either loop tenant schemas the same way migrations do, or rely on migrations as the single source of truth and avoid duplicating divergent init DDL.
+
+3. **Application SQL:** `INSERT` / bulk loaders for tenant tables must supply values for **NOT NULL** columns that tenant clones might lack defaults for; do not assume every schema has the same `DEFAULT` catalog metadata as `users.monitor_list_0001`.
+
+4. **Verification:** After schema work, `scripts/db/check_db_schema_drift.py` and tenant-aware checks (or documented manual queries across `users` + `users_NNNN`) should not show stragglers. If drift appears for one slot only, treat it as a bug in the migration or bootstrap path.
+
+## Relationship to other rules
+
+- Migration file hygiene and single-id batching: `.cursor/rules/05-db-migration-hygiene.mdc`.
+- Full DB protocol (apply migration, schema reference, drift): `AGENTS.md`.
+- Runtime access patterns (which connection touches which schema): `AGENTS.md` (tenant vs system PostgreSQL) and `docs/TENANT_TOUCH_REGISTRY.md` where relevant.
+
+## Summary
+
+**One shape change → every tenant schema that carries that table family**, implemented in migrations (and any matching init code) via **loops over `users` and `users_[0-9]{4}`**, not a single-schema shortcut.
