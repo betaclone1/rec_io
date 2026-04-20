@@ -800,14 +800,19 @@ def _aes_expected_total_position(
 
 
 def _apply_performance_based_multiplier(multiplier_value: float, position_size: Optional[int], position_type: Optional[str]) -> None:
-    """Apply performance-based multiplier by reusing monitor_manager position update endpoint."""
+    """Apply performance-based multiplier via monitor_manager (same handler main_app proxies to).
+
+    Do not call main_app here: ``/api/*`` requires a browser session (WebTenantMiddleware); AES has no token → 401.
+    """
     if multiplier_value is None:
         return
 
     try:
         position_size_val = int(position_size) if position_size is not None else 1
         position_type_val = (position_type or "contracts").lower()
-        port = get_port("main_app")
+        slot = _aes_tenant_slot()
+        mm_key = f"monitor_manager_{slot}"
+        port = get_port(mm_key)
         url = f"http://localhost:{port}/api/update_monitor_position"
         monitor_id_value = int(ctx_mid())
         payload = {
@@ -815,6 +820,7 @@ def _apply_performance_based_multiplier(multiplier_value: float, position_size: 
             "position_size": position_size_val,
             "position_type": position_type_val,
             "multiplier": float(multiplier_value),
+            "user_number": slot,
         }
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code != 200:
