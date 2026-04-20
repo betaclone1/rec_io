@@ -1142,6 +1142,28 @@ def _parse_dollars(value):
         return None
 
 
+def _entry_slippage_value(buy_price: object, initial_price: object):
+    """Entry slippage = fill buy_price minus intended initial_price (0 if initial is missing). Matches DB: buy_price - COALESCE(initial_price, buy_price)."""
+    if buy_price is None:
+        return None
+    try:
+        bp = float(buy_price)
+    except (TypeError, ValueError):
+        return None
+    if initial_price is None:
+        return 0.0
+    try:
+        ip = float(initial_price)
+    except (TypeError, ValueError):
+        return 0.0
+    return bp - ip
+
+
+def _sql_slippage_from_buy_price_params():
+    """SQL assignment when writing a new entry buy_price: two %s placeholders (same value twice)."""
+    return "slippage = %s - COALESCE(initial_price, %s)"
+
+
 def estimate_kalshi_taker_fee(position: int, price: float) -> float:
     """Estimate taker fee for one leg: 0.07 * C * P * (1 - P), rounded up to next cent. Taker only."""
     if position is None or position <= 0 or price is None or price <= 0 or price >= 1:
@@ -1603,12 +1625,14 @@ def insert_trade(trade):
                 except (TypeError, ValueError):
                     initial_count_for_db = None
 
+                slippage_for_db = _entry_slippage_value(trade.get("buy_price"), initial_price_for_db)
+
                 cursor.execute(
                     "INSERT INTO "
                     + _trades_tbl
                     + """ (
                         status, date, time, symbol, exchange, trade_strategy, market,
-                        contract, strike, side, prob, diff, buy_price, position, initial_price, initial_count,
+                        contract, strike, side, prob, diff, buy_price, position, initial_price, initial_count, slippage,
                         sell_price, closed_at, fees, pnl, symbol_open, symbol_close,
                         momentum, volatility, volatility_percentile, movement, movement_percentile,
                         win_loss, ticker, ticket_id, market_id,
@@ -1619,14 +1643,14 @@ def insert_trade(trade):
                         yes_ask_range_15m, no_ask_range_15m,
                         paper_trade, cooldown_timer, test_filter,
                         created_at, updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                     RETURNING id
                     """,
                     (
                     trade.get('status', 'pending'), trade['date'], trade['time'],
                     symbol, venue_exchange, trade.get('trade_strategy', 'Hourly HTC'), trade_market_for_db,
                     contract_name, strike_for_db, trade['side'], trade.get('prob'),
-                    diff_formatted, trade['buy_price'], trade['position'], initial_price_for_db, initial_count_for_db,
+                    diff_formatted, trade['buy_price'], trade['position'], initial_price_for_db, initial_count_for_db, slippage_for_db,
                     None, None,
                     None, None, symbol_open, None, momentum_for_db,
                     volatility_for_db, volatility_percentile_for_db, movement_for_db, movement_percentile_for_db,
@@ -2086,15 +2110,12 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                                         UPDATE {_tm_trades_table()}
                                         SET position = %s,
                                             buy_price = %s,
-                                            slippage = CASE
-                                                WHEN initial_price IS NULL THEN NULL
-                                                ELSE %s - initial_price
-                                            END,
+                                            {_sql_slippage_from_buy_price_params()},
                                             fees = %s,
                                             diff = %s,
                                             symbol_open = %s
                                         WHERE id = %s
-                                    """, (position_for_db, buy_price, buy_price, total_fees_dollars, diff_formatted, symbol_open, id))
+                                    """, (position_for_db, buy_price, buy_price, buy_price, total_fees_dollars, diff_formatted, symbol_open, id))
                                     
                                     if cursor.rowcount > 0:
                                         log_debug(f"💾 Trade additional fields updated in PostgreSQL tenant trades from ORDERS data")
@@ -3340,7 +3361,8 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                     
                     cursor.execute(f"""
                         UPDATE {_tm_trades_table()} 
-                        SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, roi_pct = %s, ret_pct = %s, ret_pct_base = %s, high_price = %s, low_price = %s, monitor_confirmed = %s
+                        SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, roi_pct = %s, ret_pct = %s, ret_pct_base = %s, high_price = %s, low_price = %s, monitor_confirmed = %s,
+                            slippage = buy_price - COALESCE(initial_price, buy_price)
                         WHERE id = %s
                     """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, roi_value, ret_pct, ret_pct_base, final_high_price, final_low_price, monitor_confirmed, trade_id))
                     if cursor.rowcount > 0:
@@ -3497,7 +3519,8 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
 
                     cursor.execute(f"""
                         UPDATE {_tm_trades_table()} 
-                        SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, ret_pct = %s, ret_pct_base = %s
+                        SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, ret_pct = %s, ret_pct_base = %s,
+                            slippage = buy_price - COALESCE(initial_price, buy_price)
                         WHERE id = %s
                     """, (status, closed_at, sell_price, symbol_close, win_loss, calculated_pnl, close_method, fees, ret_pct, ret_pct_base, trade_id))
                     if cursor.rowcount > 0:
@@ -4348,6 +4371,12 @@ async def add_trade(request: Request):
             buy_price = data.get('buy_price')
             position = data.get('position')
             open_fee = 0.0
+            buy_px_float = None
+            if buy_price is not None:
+                try:
+                    buy_px_float = float(buy_price)
+                except (TypeError, ValueError):
+                    buy_px_float = None
             if buy_price is not None and position is not None:
                 try:
                     open_fee = estimate_kalshi_taker_fee(int(position), float(buy_price))
@@ -4356,13 +4385,30 @@ async def add_trade(request: Request):
             pg_conn = get_postgresql_connection()
             if pg_conn:
                 with pg_conn.cursor() as cursor:
-                    cursor.execute(f"""
-                        UPDATE {_tm_trades_table()} 
-                        SET status = 'open', 
-                            fees = %s, 
-                            order_id_open = NULL
-                        WHERE id = %s
-                    """, (open_fee, trade_id))
+                    # Keep slippage in sync with entry buy_price whenever it is written (paper = instant fill at posted price).
+                    if buy_px_float is not None:
+                        cursor.execute(
+                            f"""
+                            UPDATE {_tm_trades_table()}
+                            SET status = 'open',
+                                fees = %s,
+                                order_id_open = NULL,
+                                {_sql_slippage_from_buy_price_params()}
+                            WHERE id = %s
+                            """,
+                            (open_fee, buy_px_float, buy_px_float, trade_id),
+                        )
+                    else:
+                        cursor.execute(
+                            f"""
+                            UPDATE {_tm_trades_table()}
+                            SET status = 'open',
+                                fees = %s,
+                                order_id_open = NULL
+                            WHERE id = %s
+                            """,
+                            (open_fee, trade_id),
+                        )
                     pg_conn.commit()
                 pg_conn.close()
         except Exception as e:
