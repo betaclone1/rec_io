@@ -6,6 +6,32 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-20 — Release v3.3.1: trades intent columns, trade_manager tenant SQL, paper collateral recovery hook
+
+**Summary**
+- **Release: v3.3.1**
+- **Database:** Migration **`20260420_1230_trades_initial_price_slippage_initial_count`** — **`initial_price`**, **`slippage`**, **`initial_count`** on every per-tenant **`trades_*`** table under **`users`** and **`users_NNNN`**.
+- **`trade_manager`:** Tenant-qualified SQL for live and simulated **`insert_trade`** (resolved table names in idempotency, cooldown, monitor read, and INSERT) so workers always write the correct slot.
+- **`database.py`:** Init-time DDL aligned with the new trade columns.
+- **`MASTER_DB_SCHEMA_REFERENCE`:** Documents the new columns.
+- **`paper_collateral`:** Optional **`REC_SKIP_PAPER_COLLATERAL_CAP`** (dev/recovery only; logs a warning) to bypass the paper open collateral cap when local state is temporarily inconsistent.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration (skip errors if already applied):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260420_1230_trades_initial_price_slippage_initial_count`
+- [ ] Schema drift check (recommended):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail `trade_executor_0001`, `main_app` for current errors.
+- [ ] Record release in DB on **production** (must match git/changelog):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.3.1`
+- [ ] Record release in DB on **local** (same version string as production):  
+  From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.3.1`
+
+---
+
 ## 2026-04-20 — Release v3.3.0: tenant SQL literal cleanup and schema naming clarity
 
 **Summary**
@@ -17,13 +43,13 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Plans:** `db-prod-schema-alignment.md` (follow-up schema/documentation consistency work).
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail `main_app`, `trade_executor_0001`, `kalshi_account_sync_0001`, and one `market_watchdog_ws` log for current errors.
-- [ ] Record release in DB on **production** (must match git/changelog):  
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail `main_app`, `trade_executor_0001`, `kalshi_account_sync_0001`, and one `market_watchdog_ws` log for current errors.
+- [x] Record release in DB on **production** (must match git/changelog):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.3.0`
-- [ ] Record release in DB on **local** (same version string as production):  
+- [x] Record release in DB on **local** (same version string as production):  
   From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.3.0`
 
 ---

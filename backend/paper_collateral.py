@@ -8,8 +8,16 @@ only unpaired YES/NO legs count toward collateral after pairing opposite legs on
 
 from __future__ import annotations
 
+import logging
+import os
 from collections import defaultdict
 from typing import Any, List, Optional, Sequence, Tuple
+
+_LOG = logging.getLogger(__name__)
+
+
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "y")
 
 # (trade_id, ticker, side, buy_price, position)
 PaperCollateralRow = Tuple[Any, Any, Any, Any, Any]
@@ -127,7 +135,15 @@ def paper_open_passes_collateral_cap(
     Uses the same identity as sync_paper_balance_feed_after_open:
     ``positions_new <= portfolio_equity - open_fee`` (all in cents), where ``positions``
     is netted FIFO collateral across open paper rows plus this hypothetical open.
+
+    Set ``REC_SKIP_PAPER_COLLATERAL_CAP=1`` only for local recovery when open-premium vs
+    portfolio snapshot is temporarily inconsistent (every paper open would otherwise 400).
     """
+    if _truthy_env("REC_SKIP_PAPER_COLLATERAL_CAP"):
+        _LOG.warning(
+            "REC_SKIP_PAPER_COLLATERAL_CAP: bypassing paper collateral cap (dev/recovery only)"
+        )
+        return True, ""
     try:
         pos_i = int(position)
         bp = float(buy_price)

@@ -1369,7 +1369,9 @@ def insert_trade(trade):
                 if pg_idem:
                     with pg_idem.cursor() as cur_i:
                         cur_i.execute(
-                            f"SELECT id FROM {_tm_trades_table()} WHERE ticket_id = %s LIMIT 1",
+                            "SELECT id FROM "
+                            + _tm_trades_table()
+                            + " WHERE ticket_id = %s LIMIT 1",
                             (tid,),
                         )
                         existing = cur_i.fetchone()
@@ -1445,6 +1447,8 @@ def insert_trade(trade):
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
+                _trades_tbl = _tm_trades_table()
+                _monitor_list_tbl = _tm_monitor_list_table()
                 monitor_key = trade.get('monitor')
                 
                 # Fetch monitor state once if monitor_key is provided
@@ -1459,11 +1463,9 @@ def insert_trade(trade):
                             _, monitor_id_cd = _monitor_slot_and_id(monitor_key)
                             if monitor_id_cd:
                                 cursor.execute(
-                                    """
-                                    SELECT cooldown_timer
-                                    FROM {_tm_monitor_list_table()}
-                                    WHERE id = %s
-                                    """,
+                                    "SELECT cooldown_timer FROM "
+                                    + _monitor_list_tbl
+                                    + " WHERE id = %s",
                                     (monitor_id_cd,),
                                 )
                                 cooldown_result = cursor.fetchone()
@@ -1553,11 +1555,9 @@ def insert_trade(trade):
 
                     _ab = account_balance_table_for_user(resolved_tenant_user_no_for_app())
                     cursor.execute(
-                        f"""
-                        SELECT master_trading_bankroll, mtb_base_value
-                        FROM {_ab}
-                        ORDER BY id DESC LIMIT 1
-                        """
+                        "SELECT master_trading_bankroll, mtb_base_value FROM "
+                        + _ab
+                        + " ORDER BY id DESC LIMIT 1"
                     )
                     mtb_row = cursor.fetchone()
                     if mtb_row:
@@ -1592,10 +1592,23 @@ def insert_trade(trade):
                 ) = _get_final_quarter_ask_snapshot_from_strike_table(
                     symbol, ticker, trade_market_for_db, venue_exchange
                 )
-                cursor.execute("""
-                    INSERT INTO {_tm_trades_table()} (
+                initial_price_for_db = trade.get('buy_price')
+                initial_count_for_db = trade.get('position')
+                try:
+                    initial_price_for_db = float(initial_price_for_db) if initial_price_for_db is not None else None
+                except (TypeError, ValueError):
+                    initial_price_for_db = None
+                try:
+                    initial_count_for_db = int(initial_count_for_db) if initial_count_for_db is not None else None
+                except (TypeError, ValueError):
+                    initial_count_for_db = None
+
+                cursor.execute(
+                    "INSERT INTO "
+                    + _trades_tbl
+                    + """ (
                         status, date, time, symbol, exchange, trade_strategy, market,
-                        contract, strike, side, prob, diff, buy_price, position,
+                        contract, strike, side, prob, diff, buy_price, position, initial_price, initial_count,
                         sell_price, closed_at, fees, pnl, symbol_open, symbol_close,
                         momentum, volatility, volatility_percentile, movement, movement_percentile,
                         win_loss, ticker, ticket_id, market_id,
@@ -1606,13 +1619,15 @@ def insert_trade(trade):
                         yes_ask_range_15m, no_ask_range_15m,
                         paper_trade, cooldown_timer, test_filter,
                         created_at, updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                     RETURNING id
-                """, (
+                    """,
+                    (
                     trade.get('status', 'pending'), trade['date'], trade['time'],
                     symbol, venue_exchange, trade.get('trade_strategy', 'Hourly HTC'), trade_market_for_db,
                     contract_name, strike_for_db, trade['side'], trade.get('prob'),
-                    diff_formatted, trade['buy_price'], trade['position'], None, None,
+                    diff_formatted, trade['buy_price'], trade['position'], initial_price_for_db, initial_count_for_db,
+                    None, None,
                     None, None, symbol_open, None, momentum_for_db,
                     volatility_for_db, volatility_percentile_for_db, movement_for_db, movement_percentile_for_db,
                     None, trade.get('ticker'), trade.get('ticket_id'), trade.get('market_id', f'{symbol}-USD'),
@@ -1758,6 +1773,8 @@ def insert_simulated_trade(trade):
         if not pg_conn:
             return None
         with pg_conn.cursor() as cursor:
+            # Build qualified table name once (avoid brace placeholders ever reaching Postgres).
+            _sim_trades_tbl = _tm_trades_simulated_table()
             monitor_key = trade.get('monitor')
             cooldown_timer = None
             if monitor_key:
@@ -1766,7 +1783,7 @@ def insert_simulated_trade(trade):
                         _, mid_cd = _monitor_slot_and_id(monitor_key)
                         if mid_cd:
                             cursor.execute(
-                                """
+                                f"""
                                 SELECT cooldown_timer FROM {_tm_monitor_list_table()}
                                 WHERE id = %s
                                 """,
@@ -1808,19 +1825,23 @@ def insert_simulated_trade(trade):
 
             # Server-side duplicate guard: one row per (monitor, date, contract, strike, side)
             if monitor_key and trade.get('date') and contract_name and strike_for_db and side:
-                cursor.execute("""
-                    SELECT id FROM {_tm_trades_simulated_table()}
-                    WHERE monitor = %s AND date = %s AND contract = %s AND strike = %s AND side = %s
-                    LIMIT 1
-                """, (monitor_key, trade['date'], contract_name, strike_for_db, side))
+                cursor.execute(
+                    "SELECT id FROM "
+                    + _sim_trades_tbl
+                    + " WHERE monitor = %s AND date = %s AND contract = %s AND strike = %s AND side = %s "
+                    "LIMIT 1",
+                    (monitor_key, trade['date'], contract_name, strike_for_db, side),
+                )
                 existing = cursor.fetchone()
                 if existing:
                     log(f"[SIMULATED] Duplicate skipped (monitor={monitor_key} date={trade['date']} contract={contract_name} strike={strike_for_db} side={side}); existing id={existing[0]}")
                     pg_conn.close()
                     return existing[0]
 
-            cursor.execute("""
-                INSERT INTO {_tm_trades_simulated_table()} (
+            cursor.execute(
+                "INSERT INTO "
+                + _sim_trades_tbl
+                + """ (
                     status, date, time, symbol, exchange, trade_strategy, market,
                     contract, strike, side, prob, diff, buy_price, position,
                     sell_price, closed_at, fees, pnl, symbol_open, symbol_close,
@@ -1834,7 +1855,8 @@ def insert_simulated_trade(trade):
                     created_at, updated_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                 RETURNING id
-            """, (
+                """,
+                (
                 trade.get('status', 'pending'), trade['date'], trade['time'],
                 symbol, venue_exchange, trade.get('trade_strategy', 'Hourly HTC'), trade_market_for_db,
                 contract_name, strike_for_db, trade['side'], trade.get('prob'),
@@ -1922,7 +1944,7 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                            taker_fill_cost_dollars, maker_fill_cost_dollars
                     FROM users.orders_0001 
                     WHERE order_id = %s
-                f""", (stored_order_id_open,))
+                """, (stored_order_id_open,))
                 order_row = cursor.fetchone()
             
             if order_row:
@@ -2032,7 +2054,7 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                                         cur.execute(f"""
                                             SELECT price FROM live_data.live_price_log_1s_{symbol.lower()}
                                             ORDER BY timestamp DESC LIMIT 1
-                                        f""")
+                                        """)
                                         row = cur.fetchone()
                                         if row and row[0] is not None:
                                             symbol_open = normalize_trade_spot_price(symbol, row[0])
@@ -2060,15 +2082,19 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                             pg_conn_update = get_postgresql_connection()
                             if pg_conn_update:
                                 with pg_conn_update.cursor() as cursor:
-                                    cursor.execute("""
+                                    cursor.execute(f"""
                                         UPDATE {_tm_trades_table()}
                                         SET position = %s,
                                             buy_price = %s,
+                                            slippage = CASE
+                                                WHEN initial_price IS NULL THEN NULL
+                                                ELSE %s - initial_price
+                                            END,
                                             fees = %s,
                                             diff = %s,
                                             symbol_open = %s
                                         WHERE id = %s
-                                    f""", (position_for_db, buy_price, total_fees_dollars, diff_formatted, symbol_open, id))
+                                    """, (position_for_db, buy_price, buy_price, total_fees_dollars, diff_formatted, symbol_open, id))
                                     
                                     if cursor.rowcount > 0:
                                         log_debug(f"💾 Trade additional fields updated in PostgreSQL tenant trades from ORDERS data")
@@ -2166,7 +2192,7 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                            taker_fees_dollars, maker_fees_dollars
                     FROM users.orders_0001 
                     WHERE order_id = %s
-                f""", (stored_order_id_close,))
+                """, (stored_order_id_close,))
                 order_row = cursor.fetchone()
             
             if order_row:
@@ -2211,7 +2237,7 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                                 SELECT side, taker_fill_cost_dollars, fill_count_fp
                                 FROM users.orders_0001 
                                 WHERE order_id = %s
-                            f""", (stored_order_id_close,))
+                            """, (stored_order_id_close,))
                             close_order_data = cursor.fetchone()
                         pg_conn_close_order.close()
                     else:
@@ -3035,7 +3061,7 @@ def init_trades_db():
             cursor.execute("CREATE SCHEMA IF NOT EXISTS users")
             
             # Create trades table
-            cursor.execute("""
+            cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS {_tm_trades_table()} (
                     id INTEGER PRIMARY KEY,
                     status TEXT DEFAULT 'pending',
@@ -3078,7 +3104,7 @@ def init_trades_db():
             """)
             
             # Create sequence for auto-incrementing ID
-            cursor.execute("""
+            cursor.execute(f"""
                 CREATE SEQUENCE IF NOT EXISTS {_tm_trades_table()}_id_seq1
                 INCREMENT 1
                 START 1
@@ -3135,7 +3161,7 @@ def init_trades_db():
                     total_traded_fp NUMERIC(12,2),
                     position_fp NUMERIC(12,2)
                 )
-            f""")
+            """)
             
             # Create live_data schema if it doesn't exist
             cursor.execute("CREATE SCHEMA IF NOT EXISTS live_data")
@@ -3312,7 +3338,7 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                         else:
                             log(f"⚠️ Trade {trade_id}: monitor_confirmed = FALSE (high_price == low_price = {final_high_price})")
                     
-                    cursor.execute("""
+                    cursor.execute(f"""
                         UPDATE {_tm_trades_table()} 
                         SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, roi_pct = %s, ret_pct = %s, ret_pct_base = %s, high_price = %s, low_price = %s, monitor_confirmed = %s
                         WHERE id = %s
@@ -3326,7 +3352,7 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                         _finalize_closed_trade_win_loss_confirmed(cursor, trade_id)
                         if existing_status != 'closed' and calculated_pnl is not None:
                             cursor.execute(
-                                """
+                                f"""
                                 SELECT paper_trade, COALESCE(test_filter, FALSE), buy_price, position
                                 FROM {_tm_trades_table()} WHERE id = %s
                                 """,
@@ -3346,7 +3372,7 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                                     float(calculated_pnl),
                                 )
                 else:
-                    cursor.execute("""
+                    cursor.execute(f"""
                         UPDATE {_tm_trades_table()} 
                         SET status = %s 
                         WHERE id = %s
@@ -3469,7 +3495,7 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
                     if meta_row:
                         meta_date, meta_contract, meta_sym = meta_row[0], meta_row[1], meta_row[2]
 
-                    cursor.execute("""
+                    cursor.execute(f"""
                         UPDATE {_tm_trades_table()} 
                         SET status = %s, closed_at = %s, sell_price = %s, symbol_close = %s, win_loss = %s, pnl = %s, close_method = %s, fees = %s, ret_pct = %s, ret_pct_base = %s
                         WHERE id = %s
@@ -3482,7 +3508,7 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
                             )
                         _finalize_closed_trade_win_loss_confirmed(cursor, trade_id)
                 else:
-                    cursor.execute("""
+                    cursor.execute(f"""
                         UPDATE {_tm_trades_table()} 
                         SET status = %s 
                         WHERE id = %s
@@ -3591,7 +3617,7 @@ def update_monitor_win_streak(trade_id: int) -> None:
         
         # Check if we've already processed this cycle for this monitor
         with pg_conn.cursor() as cursor:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT last_processed_cycle FROM {_tm_monitor_list_table()}
                 WHERE id = %s
             """, (monitor_id,))
@@ -3606,7 +3632,7 @@ def update_monitor_win_streak(trade_id: int) -> None:
         
         # Check if there are ANY pending trades in this cycle (expired but not yet settled)
         with pg_conn.cursor() as cursor:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT COUNT(*) 
                 FROM {_tm_trades_table()} 
                 WHERE monitor = %s 
@@ -3627,7 +3653,7 @@ def update_monitor_win_streak(trade_id: int) -> None:
             # Use ticker pattern to find all trades from the same cycle
             # Note: We use ONLY ticker (not contract) because contract is too generic
             # (e.g., "BTC 4pm" matches multiple days, but "KXBTCD-25OCT1316" is unique to one hour)
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT id, win_loss, contract, ticker 
                 FROM {_tm_trades_table()} 
                 WHERE monitor = %s 
@@ -3647,7 +3673,7 @@ def update_monitor_win_streak(trade_id: int) -> None:
         
         # Get the strategy, win_streak_threshold and loss_prevention_toggle from the database for this monitor
         with pg_conn.cursor() as cursor:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT strategy, win_streak_threshold, loss_prevention_toggle FROM {_tm_monitor_list_table()}
                 WHERE id = %s
             """, (monitor_id,))
@@ -3671,7 +3697,7 @@ def update_monitor_win_streak(trade_id: int) -> None:
                 # Any loss in the cycle means win_streak = 0 for this cycle
                 if loss_prevention_toggle:
                     # If toggle is TRUE, update loss_prevention based on win streak
-                    cursor.execute("""
+                    cursor.execute(f"""
                         UPDATE {_tm_monitor_list_table()}
                         SET win_streak = 0,
                             loss_prevention = 'one_contract',
@@ -3680,7 +3706,7 @@ def update_monitor_win_streak(trade_id: int) -> None:
                     """, (cycle_id, monitor_id))
                 else:
                     # If toggle is FALSE, always set loss_prevention to 'off'
-                    cursor.execute("""
+                    cursor.execute(f"""
                         UPDATE {_tm_monitor_list_table()}
                         SET win_streak = 0,
                             loss_prevention = 'off',
@@ -3692,7 +3718,7 @@ def update_monitor_win_streak(trade_id: int) -> None:
                 # All wins in the cycle - increment win_streak
                 if loss_prevention_toggle:
                     # If toggle is TRUE, update loss_prevention based on win streak threshold
-                    cursor.execute("""
+                    cursor.execute(f"""
                         UPDATE {_tm_monitor_list_table()}
                         SET win_streak = win_streak + %s,
                             loss_prevention = CASE 
@@ -3704,7 +3730,7 @@ def update_monitor_win_streak(trade_id: int) -> None:
                     """, (streak_increment, streak_increment, win_streak_threshold, cycle_id, monitor_id))
                 else:
                     # If toggle is FALSE, always set loss_prevention to 'off'
-                    cursor.execute("""
+                    cursor.execute(f"""
                         UPDATE {_tm_monitor_list_table()}
                         SET win_streak = win_streak + %s,
                             loss_prevention = 'off',
@@ -3743,7 +3769,7 @@ def check_and_update_cycle_metrics(trade_id: int) -> None:
         
         # Step 1: Get cycle info for this trade (monitor, contract, date)
         with pg_conn.cursor() as cursor:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT monitor, contract, date 
                 FROM {_tm_trades_table()} 
                 WHERE id = %s
@@ -3764,7 +3790,7 @@ def check_and_update_cycle_metrics(trade_id: int) -> None:
         
         # Step 2: Check if all trades in cycle are closed
         with pg_conn.cursor() as cursor:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT 
                     COUNT(*) as total_trades,
                     COUNT(CASE WHEN status = 'closed' THEN 1 END) as closed_trades
@@ -3793,7 +3819,7 @@ def check_and_update_cycle_metrics(trade_id: int) -> None:
         # Step 3: All trades are closed - calculate and update cycle metrics
         with pg_conn.cursor() as cursor:
             # Calculate cycle totals
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT 
                     SUM(pnl) as total_pnl,
                     SUM(ret_pct) as total_ret_pct
@@ -3822,7 +3848,7 @@ def check_and_update_cycle_metrics(trade_id: int) -> None:
         
         # Step 4: Update all trades in the cycle with cycle metrics
         with pg_conn.cursor() as cursor:
-            cursor.execute("""
+            cursor.execute(f"""
                 UPDATE {_tm_trades_table()}
                 SET 
                     cycle_pnl = %s,
@@ -4205,7 +4231,7 @@ async def add_trade(request: Request):
             pg_conn = get_postgresql_connection()
             if pg_conn:
                 with pg_conn.cursor() as cursor:
-                    cursor.execute("""
+                    cursor.execute(f"""
                         UPDATE {_tm_trades_simulated_table()}
                         SET status = 'open', fees = NULL, order_id_open = NULL
                         WHERE id = %s
@@ -4330,13 +4356,13 @@ async def add_trade(request: Request):
             pg_conn = get_postgresql_connection()
             if pg_conn:
                 with pg_conn.cursor() as cursor:
-                    cursor.execute("""
+                    cursor.execute(f"""
                         UPDATE {_tm_trades_table()} 
                         SET status = 'open', 
                             fees = %s, 
                             order_id_open = NULL
                         WHERE id = %s
-                    f""", (open_fee, trade_id))
+                    """, (open_fee, trade_id))
                     pg_conn.commit()
                 pg_conn.close()
         except Exception as e:
@@ -5139,7 +5165,7 @@ def check_expired_trades():
                             else:
                                 log(f"⚠️ EXPIRATION: Trade {trade_id}: monitor_confirmed = FALSE (high_price == low_price = {high_price})")
                         
-                        cursor.execute("""
+                        cursor.execute(f"""
                             UPDATE {_tm_trades_table()} 
                             SET status = 'expired', 
                                 closed_at = %s, 
@@ -5149,7 +5175,7 @@ def check_expired_trades():
                                 low_price = %s,
                                 monitor_confirmed = %s
                             WHERE id = %s AND status IN ('open', 'closing', 'close_failed')
-                        f""", (closed_at, symbol_close, high_price, low_price, monitor_confirmed, trade_id))
+                        """, (closed_at, symbol_close, high_price, low_price, monitor_confirmed, trade_id))
                     markets_applied = set()
                     for _tid, _ticker, _symbol, _strategy, _contract, _trade_date, _m in trades_to_process:
                         k = (str(_symbol).strip(), str(_contract).strip(), str(_trade_date))

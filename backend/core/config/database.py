@@ -339,6 +339,9 @@ def init_database():
                 diff VARCHAR(50),
                 buy_price DECIMAL(10,4),
                 position INTEGER,
+                initial_price NUMERIC(10,4),
+                slippage NUMERIC(10,4),
+                initial_count INTEGER,
                 sell_price DECIMAL(10,4),
                 closed_at TIMESTAMP,
                 fees DECIMAL(10,4),
@@ -606,6 +609,24 @@ def init_database():
                     WHERE table_schema = 'users' AND table_name = 'trades_simulated_0001' AND column_name = 'ats_updated'
                 ) THEN
                     ALTER TABLE users.trades_simulated_0001 ADD COLUMN ats_updated TIMESTAMPTZ;
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users' AND table_name = 'trades_0001' AND column_name = 'initial_price'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN initial_price NUMERIC(10,4);
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users' AND table_name = 'trades_0001' AND column_name = 'slippage'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN slippage NUMERIC(10,4);
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users' AND table_name = 'trades_0001' AND column_name = 'initial_count'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN initial_count INTEGER;
                 END IF;
 
                 -- Strike-table final-window ask snapshot at trade insert (migration 20260330_2200_trades_strike_final_quarter_asks)

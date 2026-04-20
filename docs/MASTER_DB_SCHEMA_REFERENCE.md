@@ -10626,6 +10626,9 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `diff` | `text` | YES | - | |
 | `buy_price` | `real(24)` | NO | - | |
 | `position` | `integer(32)` | NO | - | |
+| `initial_price` | `numeric(10,4)` | YES | - | Immutable **intended entry price** from the original open-trade ticket (`trade_manager` insert payload `buy_price`). Never updated after insert. |
+| `slippage` | `numeric(10,4)` | YES | - | Execution slippage on open fill: `final buy_price - initial_price` when fill-confirmed average price is written. |
+| `initial_count` | `integer(32)` | YES | - | Immutable **intended size** from the original open-trade ticket (`position` at insert time). |
 | `sell_price` | `real(24)` | YES | - | |
 | `closed_at` | `text` | YES | - | |
 | `fees` | `real(24)` | YES | - | |
