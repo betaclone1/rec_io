@@ -2253,13 +2253,6 @@
             });
         }
 
-        function thmInsightsRequiresMonitorSelection() {
-            const monCbs = document.querySelectorAll('#monitor-dropdown-content input[type="checkbox"][data-monitor-id]');
-            if (monCbs.length === 0) return false;
-            const stripSelected = thmSelectedMonitorIdsFromStrip();
-            return stripSelected.length === 0;
-        }
-
         function thmCollectInsightsBody() {
             const body = {
                 include_test_trades: !!document.getElementById('include-test-trades')?.checked,
@@ -2301,26 +2294,29 @@
                     body.monitors = [];
                 }
             }
-            const sc = document.getElementById('day-sunday')?.checked;
-            const mc = document.getElementById('day-monday')?.checked;
-            const tc = document.getElementById('day-tuesday')?.checked;
-            const wc = document.getElementById('day-wednesday')?.checked;
-            const thc = document.getElementById('day-thursday')?.checked;
-            const fc = document.getElementById('day-friday')?.checked;
-            const sac = document.getElementById('day-saturday')?.checked;
-            const allDays = sc && mc && tc && wc && thc && fc && sac;
-            const noDays = !sc && !mc && !tc && !wc && !thc && !fc && !sac;
-            if (noDays) {
-                body.days_of_week = [];
-            } else if (!allDays) {
-                body.days_of_week = [];
-                if (sc) body.days_of_week.push(0);
-                if (mc) body.days_of_week.push(1);
-                if (tc) body.days_of_week.push(2);
-                if (wc) body.days_of_week.push(3);
-                if (thc) body.days_of_week.push(4);
-                if (fc) body.days_of_week.push(5);
-                if (sac) body.days_of_week.push(6);
+            const sundayEl = document.getElementById('day-sunday');
+            if (sundayEl) {
+                const sc = sundayEl.checked;
+                const mc = document.getElementById('day-monday')?.checked;
+                const tc = document.getElementById('day-tuesday')?.checked;
+                const wc = document.getElementById('day-wednesday')?.checked;
+                const thc = document.getElementById('day-thursday')?.checked;
+                const fc = document.getElementById('day-friday')?.checked;
+                const sac = document.getElementById('day-saturday')?.checked;
+                const allDays = sc && mc && tc && wc && thc && fc && sac;
+                const noDays = !sc && !mc && !tc && !wc && !thc && !fc && !sac;
+                if (noDays) {
+                    body.days_of_week = [];
+                } else if (!allDays) {
+                    body.days_of_week = [];
+                    if (sc) body.days_of_week.push(0);
+                    if (mc) body.days_of_week.push(1);
+                    if (tc) body.days_of_week.push(2);
+                    if (wc) body.days_of_week.push(3);
+                    if (thc) body.days_of_week.push(4);
+                    if (fc) body.days_of_week.push(5);
+                    if (sac) body.days_of_week.push(6);
+                }
             }
             return body;
         }
@@ -2337,17 +2333,6 @@
             const reqId = ++_thmInsightsReqId;
             const body = thmCollectInsightsBody();
             const iv = body.analysis_interval || 'daily';
-            if (thmInsightsRequiresMonitorSelection()) {
-                if (reqId !== _thmInsightsReqId) return;
-                _thmTradeHistoryInsights = {
-                    summary: null,
-                    analysis_interval: iv,
-                    period_data: [],
-                    by_monitor: [],
-                };
-                renderThmMonitorSummaryTable();
-                return;
-            }
             try {
                 const res = await fetch(getMainAppUrl() + '/api/trades/history/insights', {
                     method: 'POST',
@@ -2387,19 +2372,6 @@
             const tbody = document.getElementById('thm-monitor-summary-table-body');
             if (!tbody) return;
             tbody.textContent = '';
-
-            if (thmInsightsRequiresMonitorSelection()) {
-                const tr = document.createElement('tr');
-                tr.className = 'th-ms-summary-placeholder';
-                const td = document.createElement('td');
-                td.colSpan = 4;
-                td.textContent =
-                    'Select monitors in the strip above to see per-monitor stats for the current filters.';
-                tr.appendChild(td);
-                tbody.appendChild(tr);
-                thmReapplyMonitorCrossHoverAfterDomRebuild();
-                return;
-            }
 
             const data = thmBuildMonitorRetDataset();
             if (data.length === 0) {

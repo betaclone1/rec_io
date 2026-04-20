@@ -2589,42 +2589,31 @@
           body.monitors = [];
         }
       }
-      const sc = document.getElementById('day-sunday')?.checked;
-      const mc = document.getElementById('day-monday')?.checked;
-      const tc = document.getElementById('day-tuesday')?.checked;
-      const wc = document.getElementById('day-wednesday')?.checked;
-      const thc = document.getElementById('day-thursday')?.checked;
-      const fc = document.getElementById('day-friday')?.checked;
-      const sac = document.getElementById('day-saturday')?.checked;
-      const allDays = sc && mc && tc && wc && thc && fc && sac;
-      const noDays = !sc && !mc && !tc && !wc && !thc && !fc && !sac;
-      if (noDays) {
-        body.days_of_week = [];
-      } else if (!allDays) {
-        body.days_of_week = [];
-        if (sc) body.days_of_week.push(0);
-        if (mc) body.days_of_week.push(1);
-        if (tc) body.days_of_week.push(2);
-        if (wc) body.days_of_week.push(3);
-        if (thc) body.days_of_week.push(4);
-        if (fc) body.days_of_week.push(5);
-        if (sac) body.days_of_week.push(6);
+      const sundayEl = document.getElementById('day-sunday');
+      if (sundayEl) {
+        const sc = sundayEl.checked;
+        const mc = document.getElementById('day-monday')?.checked;
+        const tc = document.getElementById('day-tuesday')?.checked;
+        const wc = document.getElementById('day-wednesday')?.checked;
+        const thc = document.getElementById('day-thursday')?.checked;
+        const fc = document.getElementById('day-friday')?.checked;
+        const sac = document.getElementById('day-saturday')?.checked;
+        const allDays = sc && mc && tc && wc && thc && fc && sac;
+        const noDays = !sc && !mc && !tc && !wc && !thc && !fc && !sac;
+        if (noDays) {
+          body.days_of_week = [];
+        } else if (!allDays) {
+          body.days_of_week = [];
+          if (sc) body.days_of_week.push(0);
+          if (mc) body.days_of_week.push(1);
+          if (tc) body.days_of_week.push(2);
+          if (wc) body.days_of_week.push(3);
+          if (thc) body.days_of_week.push(4);
+          if (fc) body.days_of_week.push(5);
+          if (sac) body.days_of_week.push(6);
+        }
       }
       return body;
-    }
-
-    /**
-     * Monitor UI is present but nothing is selected (no tile on, no off-tile preview).
-     * In that case the insights API must not run with an empty monitors list — the server treats
-     * that as “no monitor filter” (all trades). We show empty summary + analysis instead.
-     */
-    function tradeHistoryInsightsRequiresMonitorSelection() {
-      const monCbs = document.querySelectorAll('#th-monitor-checkboxes-host input[type="checkbox"]');
-      if (monCbs.length === 0) return false;
-      const stripSelected = tradeHistorySelectedMonitorIdsFromStrip();
-      const previewOn =
-        tradeHistoryMonitorPreviewId != null && tradeHistoryMonitorPreviewId !== '';
-      return stripSelected.length === 0 && !previewOn;
     }
 
     function refreshTradeHistoryInsights() {
@@ -2639,19 +2628,6 @@
       const reqId = ++_thInsightsReqId;
       const body = collectTradeHistoryInsightsBody();
       const iv = body.analysis_interval || 'daily';
-      if (tradeHistoryInsightsRequiresMonitorSelection()) {
-        if (reqId !== _thInsightsReqId) return;
-        _tradeHistoryInsights = {
-          summary: null,
-          analysis_interval: iv,
-          period_data: [],
-          by_monitor: [],
-        };
-        applyInsightsSummary(null);
-        updateAnalysisDisplay(iv);
-        tradeHistoryRefreshMonitorStripCharts();
-        return;
-      }
       try {
         const res = await fetch(window.location.origin + '/api/trades/history/insights', {
           method: 'POST',
@@ -4757,10 +4733,11 @@
 
     // Function to update analysis display
     function updateAnalysisDisplay(interval) {
-      const iv = interval || document.getElementById('analysis-time-interval').value;
-      if (!_tradeHistoryInsights || _tradeHistoryInsights.analysis_interval !== iv || !Array.isArray(_tradeHistoryInsights.period_data)) {
+      if (!_tradeHistoryInsights || !Array.isArray(_tradeHistoryInsights.period_data)) {
         return;
       }
+      const dropdownIv = document.getElementById('analysis-time-interval')?.value || 'daily';
+      const iv = interval || _tradeHistoryInsights.analysis_interval || dropdownIv;
       const list = _tradeHistoryInsights.period_data;
       const stats = {
         totalPeriods: list.length,
