@@ -3,6 +3,9 @@
 WEEKLY DATA UPDATE SCRIPT - POSTGRESQL VERSION
 Runs every Saturday at 11:59:59 PM to update the entire data pipeline.
 
+Admin / global pipeline only: uses system PostgreSQL (historical_data, analytics, shared
+schemas). Does not bind tenant sessions or REC_DEFAULT_USER_SCHEMA.
+
 Pipeline Steps:
 1. Update symbol master 5y datasets using symbol_data_fetch_pg (PostgreSQL)
 2. Run momentum generator on new master datasets using momentum_generator_pg (PostgreSQL)
@@ -32,7 +35,7 @@ _project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from backend.core.time_eastern import merge_psycopg2_connect_kwargs
+from backend.core.config.database import get_system_postgresql_connection
 
 from symbol_data_fetch_pg import update_existing_db
 from momentum_generator_pg import fill_missing_momentum_in_db
@@ -475,6 +478,12 @@ def generate_new_fingerprints(logger, symbols, weekday_filter=False):
     
     if weekday_filter:
         logger.info("📅 Using weekday filter: Only processing data from weekdays 9:00 AM - 12:00 PM East Coast")
+
+    if not symbols:
+        raise Exception(
+            "Fingerprint generation needs at least one symbol; earlier steps reported none "
+            "(check profile/percentile errors above)."
+        )
     
     logger.info(f"Generating percentile-based fingerprints for symbols: {symbols}")
     
@@ -612,16 +621,7 @@ def create_master_lookup_tables(logger, symbols):
     """Step 9: Create and verify master lookup tables for production use."""
     logger.info("🎯 Step 9: Creating master lookup tables for production use")
     
-    import psycopg2
     from datetime import datetime
-    
-    # Database configuration
-    db_config = {
-        'host': 'localhost',
-        'database': 'rec_io_db',
-        'user': 'rec_io_user',
-        'password': 'rec_io_password'
-    }
     
     # Get today's date for the master table naming
     today = datetime.now().strftime("%Y%m%d")
@@ -633,7 +633,10 @@ def create_master_lookup_tables(logger, symbols):
         logger.info(f"🔧 Creating master lookup table for {symbol.upper()}...")
         
         try:
-            conn = psycopg2.connect(**merge_psycopg2_connect_kwargs(db_config))
+            conn = get_system_postgresql_connection()
+            if not conn:
+                logger.error(f"❌ Could not connect to PostgreSQL for {symbol.upper()}")
+                continue
             cursor = conn.cursor()
             
             # Find the most recent timestamped lookup table that was just created
@@ -729,16 +732,7 @@ def cleanup_analytics_tables(logger, symbols):
     """Clean up working tables and old master tables after successful analytics update."""
     logger.info("🧹 Starting analytics table cleanup...")
     
-    import psycopg2
     from datetime import datetime
-    
-    # Database configuration
-    db_config = {
-        'host': 'localhost',
-        'database': 'rec_io_db',
-        'user': 'rec_io_user',
-        'password': 'rec_io_password'
-    }
     
     today = datetime.now().strftime("%Y%m%d")
     
@@ -747,7 +741,10 @@ def cleanup_analytics_tables(logger, symbols):
         logger.info(f"🧹 Cleaning up tables for {symbol.upper()}...")
         
         try:
-            conn = psycopg2.connect(**merge_psycopg2_connect_kwargs(db_config))
+            conn = get_system_postgresql_connection()
+            if not conn:
+                logger.error(f"❌ Could not connect to PostgreSQL for cleanup ({symbol.upper()})")
+                continue
             cursor = conn.cursor()
             
             # 1. Delete working tables from current session (timestamped, non-master)

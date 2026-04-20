@@ -10,22 +10,12 @@ from typing import Optional
 # Add project root to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 
-from backend.core.time_eastern import merge_psycopg2_connect_kwargs
-
-
 def get_postgresql_connection():
-    """Get PostgreSQL connection"""
+    """Global historical_data pipeline: system DB, not tenant-scoped."""
     try:
-        return psycopg2.connect(
-            **merge_psycopg2_connect_kwargs(
-                {
-                    "host": "localhost",
-                    "database": "rec_io_db",
-                    "user": "rec_io_user",
-                    "password": "rec_io_password",
-                }
-            )
-        )
+        from backend.core.config.database import get_system_postgresql_connection
+
+        return get_system_postgresql_connection()
     except Exception as e:
         print(f"Failed to connect to PostgreSQL: {e}")
         return None

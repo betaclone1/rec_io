@@ -94,20 +94,11 @@ def get_yahoo_symbol_format(symbol: str) -> str:
     return symbol_mapping.get(symbol.upper(), symbol)
 
 def get_postgresql_connection():
-    """Get PostgreSQL connection"""
+    """Global historical_data ingest: system DB, not tenant-scoped."""
     try:
-        from backend.core.time_eastern import merge_psycopg2_connect_kwargs
+        from backend.core.config.database import get_system_postgresql_connection
 
-        return psycopg2.connect(
-            **merge_psycopg2_connect_kwargs(
-                {
-                    "host": "localhost",
-                    "database": "rec_io_db",
-                    "user": "rec_io_user",
-                    "password": "rec_io_password",
-                }
-            )
-        )
+        return get_system_postgresql_connection()
     except Exception as e:
         print(f"Failed to connect to PostgreSQL: {e}")
         return None

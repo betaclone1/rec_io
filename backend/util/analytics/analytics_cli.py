@@ -80,43 +80,45 @@ def run_analytics(symbols):
         # Monitor the process
         current_step = 0
         start_time = time.time()
-        
+
+        def handle_line(line):
+            nonlocal current_step
+            if not line:
+                return
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            print(f"[{timestamp}] {line}")
+            if "Step 1" in line or "Data validation" in line:
+                current_step = 1
+            elif "Step 2" in line or "Data fetching" in line:
+                current_step = 2
+            elif "Step 3" in line or "Profile generation" in line:
+                current_step = 3
+            elif "Step 4" in line or "Momentum calculation" in line:
+                current_step = 4
+            elif "Step 5" in line or "Price profile" in line:
+                current_step = 5
+            elif "Step 6" in line or "Symbol profiler" in line:
+                current_step = 6
+            elif "Step 7" in line or "Fingerprint generation" in line:
+                current_step = 7
+            elif "Step 8" in line or "Lookup table generation" in line:
+                current_step = 8
+            if current_step > 0:
+                elapsed = time.time() - start_time
+                elapsed_str = f"{int(elapsed//60)}m {int(elapsed%60)}s"
+                print(f"📈 Progress: Step {current_step}/8 - Running for {elapsed_str}")
+            if "PROGRESS:" in line:
+                print(f"📊 {line.replace('PROGRESS: ', '')}")
+
         while process and process.poll() is None:
             output = process.stdout.readline()
             if output:
-                line = output.strip()
-                timestamp = datetime.now().strftime("%H:%M:%S")
-                print(f"[{timestamp}] {line}")
-                
-                # Update progress based on output
-                if "Step 1" in line or "Data validation" in line:
-                    current_step = 1
-                elif "Step 2" in line or "Data fetching" in line:
-                    current_step = 2
-                elif "Step 3" in line or "Profile generation" in line:
-                    current_step = 3
-                elif "Step 4" in line or "Momentum calculation" in line:
-                    current_step = 4
-                elif "Step 5" in line or "Price profile" in line:
-                    current_step = 5
-                elif "Step 6" in line or "Symbol profiler" in line:
-                    current_step = 6
-                elif "Step 7" in line or "Fingerprint generation" in line:
-                    current_step = 7
-                elif "Step 8" in line or "Lookup table generation" in line:
-                    current_step = 8
-                
-                # Show progress
-                if current_step > 0:
-                    elapsed = time.time() - start_time
-                    elapsed_str = f"{int(elapsed//60)}m {int(elapsed%60)}s"
-                    print(f"📈 Progress: Step {current_step}/8 - Running for {elapsed_str}")
-                
-                # Show detailed progress
-                if "PROGRESS:" in line:
-                    print(f"📊 {line.replace('PROGRESS: ', '')}")
-            
+                handle_line(output.strip())
             time.sleep(0.1)
+
+        if process and process.stdout:
+            for output in process.stdout:
+                handle_line(output.rstrip("\r\n"))
         
         # Process finished
         return_code = process.returncode if process else None

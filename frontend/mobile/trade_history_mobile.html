@@ -639,7 +639,9 @@
                         <option value="TODAY">Today</option>
                         <option value="YESTERDAY">Yesterday</option>
                         <option value="THIS_WEEK">This Week</option>
+                        <option value="LAST_WEEK">Last Week</option>
                         <option value="MONTH">This Month</option>
+                        <option value="LAST_MONTH">Last Month</option>
                         <option value="PREV_7">Prev 7</option>
                         <option value="PREV_30">Prev 30</option>
                         <option value="YTD">YTD</option>
@@ -984,10 +986,28 @@
                         const sunday = getLatestSunday();
                         return td >= sunday && td <= today;
                     }
+                    case 'LAST_WEEK': {
+                        const thisSun = new Date(now);
+                        thisSun.setDate(now.getDate() - now.getDay());
+                        const lastSun = new Date(thisSun);
+                        lastSun.setDate(thisSun.getDate() - 7);
+                        const lastSat = new Date(thisSun);
+                        lastSat.setDate(thisSun.getDate() - 1);
+                        const a = formatDate(lastSun);
+                        const b = formatDate(lastSat);
+                        return td >= a && td <= b;
+                    }
                     case 'MONTH': {
                         const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
                         const monthStartStr = formatDate(monthStart);
                         return td >= monthStartStr && td <= today;
+                    }
+                    case 'LAST_MONTH': {
+                        const firstPrev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+                        const lastPrev = new Date(now.getFullYear(), now.getMonth(), 0);
+                        const a = formatDate(firstPrev);
+                        const b = formatDate(lastPrev);
+                        return td >= a && td <= b;
                     }
                     case 'PREV_7': {
                         const p7 = new Date(now);
@@ -1075,7 +1095,9 @@
             'TODAY',
             'YESTERDAY',
             'THIS_WEEK',
+            'LAST_WEEK',
             'MONTH',
+            'LAST_MONTH',
             'PREV_7',
             'PREV_30',
             'YTD',
@@ -1129,10 +1151,28 @@
                     startDate = getLatestSunday();
                     endDate = today;
                     break;
+                case 'LAST_WEEK': {
+                    const thisSun = new Date(now);
+                    thisSun.setDate(now.getDate() - now.getDay());
+                    const lastSun = new Date(thisSun);
+                    lastSun.setDate(thisSun.getDate() - 7);
+                    const lastSat = new Date(thisSun);
+                    lastSat.setDate(thisSun.getDate() - 1);
+                    startDate = formatDate(lastSun);
+                    endDate = formatDate(lastSat);
+                    break;
+                }
                 case 'MONTH': {
                     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
                     startDate = formatDate(monthStart);
                     endDate = today;
+                    break;
+                }
+                case 'LAST_MONTH': {
+                    const firstPrev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+                    const lastPrev = new Date(now.getFullYear(), now.getMonth(), 0);
+                    startDate = formatDate(firstPrev);
+                    endDate = formatDate(lastPrev);
                     break;
                 }
                 case 'PREV_7': {
@@ -1176,7 +1216,6 @@
             if (!$inp.length) return;
             const drp = $inp.data('daterangepicker');
             if (!drp) return;
-            const filter = document.getElementById('date-filter-picker');
             const sEl = document.getElementById('start-date');
             const eEl = document.getElementById('end-date');
             const sv = sEl && sEl.value && /^\d{4}-\d{2}-\d{2}$/.test(sEl.value.trim()) ? sEl.value.trim() : '';
@@ -1184,8 +1223,6 @@
             if (sv && ev) {
                 drp.setStartDate(moment(sv, 'YYYY-MM-DD'));
                 drp.setEndDate(moment(ev, 'YYYY-MM-DD'));
-            }
-            if (filter && filter.value === 'CUSTOM' && sv && ev) {
                 $inp.val(
                     moment(sv, 'YYYY-MM-DD').format('MMM D, YYYY') + ' – ' + moment(ev, 'YYYY-MM-DD').format('MMM D, YYYY')
                 );
@@ -2684,10 +2721,28 @@
                     endDate = formatDate(now);
                     break;
                 }
+                case 'LAST_WEEK': {
+                    const thisSun = new Date(now);
+                    thisSun.setDate(now.getDate() - now.getDay());
+                    const lastSun = new Date(thisSun);
+                    lastSun.setDate(thisSun.getDate() - 7);
+                    const lastSat = new Date(thisSun);
+                    lastSat.setDate(thisSun.getDate() - 1);
+                    startDate = formatDate(lastSun);
+                    endDate = formatDate(lastSat);
+                    break;
+                }
                 case 'MONTH': {
                     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
                     startDate = formatDate(monthStart);
                     endDate = formatDate(now);
+                    break;
+                }
+                case 'LAST_MONTH': {
+                    const firstPrev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+                    const lastPrev = new Date(now.getFullYear(), now.getMonth(), 0);
+                    startDate = formatDate(firstPrev);
+                    endDate = formatDate(lastPrev);
                     break;
                 }
                 case 'PREV_7': {

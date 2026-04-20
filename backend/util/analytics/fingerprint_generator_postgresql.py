@@ -30,12 +30,12 @@ except ImportError:
     print("Warning: psycopg2 not available. PostgreSQL database operations will be skipped.")
 
 def get_postgresql_connection():
-    """Get a connection to the PostgreSQL database."""
+    """System/global DB for analytics fingerprints (not tenant-scoped)."""
     if not PSYCOPG2_AVAILABLE:
         return None
     
     try:
-        from backend.core.config.database import get_postgresql_connection as get_db_conn
+        from backend.core.config.database import get_system_postgresql_connection as get_db_conn
         return get_db_conn()
     except Exception as e:
         print(f"❌ Failed to connect to PostgreSQL: {e}")

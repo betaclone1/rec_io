@@ -8,11 +8,11 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from backend.core.config.database import get_postgresql_connection
+from backend.core.config.database import get_system_postgresql_connection
 
 
 def main():
-    conn = get_postgresql_connection()
+    conn = get_system_postgresql_connection()
     if not conn:
         print("Cannot connect to PostgreSQL")
         return 1

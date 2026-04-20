@@ -416,45 +416,48 @@ class AnalyticsGUI:
             
             # Monitor the process
             current_step = 0
+
+            def handle_output_line(line):
+                nonlocal current_step
+                if not line:
+                    return
+                self.add_log(line)
+                if "Step 1" in line or "Data validation" in line:
+                    current_step = 1
+                elif "Step 2" in line or "Data fetching" in line:
+                    current_step = 2
+                elif "Step 3" in line or "Profile generation" in line:
+                    current_step = 3
+                elif "Step 4" in line or "Momentum calculation" in line:
+                    current_step = 4
+                elif "Step 5" in line or "Price profile" in line:
+                    current_step = 5
+                elif "Step 6" in line or "Symbol profiler" in line:
+                    current_step = 6
+                elif "Step 7" in line or "Fingerprint generation" in line:
+                    current_step = 7
+                elif "Step 8" in line or "Lookup table generation" in line:
+                    current_step = 8
+                elif "Step 9" in line or "Master lookup table creation" in line:
+                    current_step = 9
+                self.update_progress(current_step)
+                if "PROGRESS:" in line:
+                    self.add_log(f"📊 {line.replace('PROGRESS: ', '')}")
+                if self.is_paused:
+                    self.root.after(0, lambda: self.status_var.set(f"Step {current_step}/8 - PAUSED"))
+                else:
+                    self.root.after(0, lambda: self.status_var.set(f"Step {current_step}/8 - Running..."))
+
             while self.process and self.process.poll() is None:
                 output = self.process.stdout.readline()
                 if output:
-                    line = output.strip()
-                    self.add_log(line)
-                    
-                    # Update progress based on output
-                    if "Step 1" in line or "Data validation" in line:
-                        current_step = 1
-                    elif "Step 2" in line or "Data fetching" in line:
-                        current_step = 2
-                    elif "Step 3" in line or "Profile generation" in line:
-                        current_step = 3
-                    elif "Step 4" in line or "Momentum calculation" in line:
-                        current_step = 4
-                    elif "Step 5" in line or "Price profile" in line:
-                        current_step = 5
-                    elif "Step 6" in line or "Symbol profiler" in line:
-                        current_step = 6
-                    elif "Step 7" in line or "Fingerprint generation" in line:
-                        current_step = 7
-                    elif "Step 8" in line or "Lookup table generation" in line:
-                        current_step = 8
-                    elif "Step 9" in line or "Master lookup table creation" in line:
-                        current_step = 9
-                    
-                    self.update_progress(current_step)
-                    
-                    # Show detailed progress
-                    if "PROGRESS:" in line:
-                        self.add_log(f"📊 {line.replace('PROGRESS: ', '')}")
-                    
-                    # Update UI in main thread
-                    if self.is_paused:
-                        self.root.after(0, lambda: self.status_var.set(f"Step {current_step}/8 - PAUSED"))
-                    else:
-                        self.root.after(0, lambda: self.status_var.set(f"Step {current_step}/8 - Running..."))
-                
+                    handle_output_line(output.strip())
                 time.sleep(0.1)
+
+            # Child may exit while lines are still buffered; read until EOF so errors are visible
+            if self.process and self.process.stdout:
+                for output in self.process.stdout:
+                    handle_output_line(output.rstrip("\r\n"))
             
             # Process finished
             return_code = self.process.returncode if self.process else None

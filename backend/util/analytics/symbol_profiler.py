@@ -51,10 +51,10 @@ class SymbolProfiler:
         logger.info(f"✅ Initialized symbol profiler for {self.symbol.upper()}")
     
     def get_postgresql_connection(self):
-        """Get PostgreSQL connection (DB_* / REC_DB_* env via backend.core.config.database)."""
+        """Admin/global connection: historical_data + analytics only; never tenant-bound."""
         try:
-            from backend.core.config.database import get_postgresql_connection
-            conn = get_postgresql_connection()
+            from backend.core.config.database import get_system_postgresql_connection
+            conn = get_system_postgresql_connection()
             if not conn:
                 return None
             # Debug: Check which database we're actually connected to

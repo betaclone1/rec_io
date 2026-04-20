@@ -29,7 +29,6 @@ CRITICAL FIXES APPLIED:
 
 import os
 import sys
-import psycopg2
 import logging
 import numpy as np
 from scipy.interpolate import griddata
@@ -45,7 +44,6 @@ import argparse
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from backend.util.paths import get_data_dir
-from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 
 # Configure logging
 logging.basicConfig(
@@ -53,6 +51,14 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def _analytics_pg_connection():
+    """System DB for historical_data / analytics; not tenant-scoped."""
+    from backend.core.config.database import get_system_postgresql_connection
+
+    return get_system_postgresql_connection()
+
 
 class ProbabilityLookupGenerator:
     """
@@ -84,14 +90,6 @@ class ProbabilityLookupGenerator:
     
     def __init__(self, symbol: str = "btc"):
         self.symbol = symbol.lower()
-        self.db_config = merge_psycopg2_connect_kwargs(
-            {
-                "host": os.getenv("POSTGRES_HOST", "localhost"),
-                "database": os.getenv("POSTGRES_DB", "rec_io_db"),
-                "user": os.getenv("POSTGRES_USER", "rec_io_user"),
-                "password": os.getenv("POSTGRES_PASSWORD", "rec_io_password"),
-            }
-        )
         
         # Table names
         self.master_table_name = None  # Will be set by main() function
@@ -197,7 +195,7 @@ class ProbabilityLookupGenerator:
     def get_latest_symbol_price(self) -> float:
         """Get the latest price for the symbol (prefer live_data, fallback historical)."""
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = _analytics_pg_connection()
             cursor = conn.cursor()
 
             # Prefer the current live price so buffer sizing reflects recent regime.
@@ -240,7 +238,7 @@ class ProbabilityLookupGenerator:
     def get_dynamic_buffer_config(self) -> Dict[str, float]:
         """Get dynamic buffer configuration based on symbol's price profile."""
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = _analytics_pg_connection()
             cursor = conn.cursor()
 
             price_profile_table = self._resolve_price_profile_table(cursor)
@@ -316,7 +314,7 @@ class ProbabilityLookupGenerator:
     def get_available_momentum_percentiles(self) -> List[int]:
         """Get list of available momentum percentile buckets from PostgreSQL."""
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = _analytics_pg_connection()
             cursor = conn.cursor()
             
             query = """
@@ -358,7 +356,7 @@ class ProbabilityLookupGenerator:
             raise Exception("master_table_name must be set before calling setup_work_progress_schema")
         
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = _analytics_pg_connection()
             cursor = conn.cursor()
             
             # Create work_progress schema
@@ -401,7 +399,7 @@ class ProbabilityLookupGenerator:
     def get_pending_ttc_values(self) -> List[int]:
         """Get list of TTC values that need processing for the current symbol."""
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = _analytics_pg_connection()
             cursor = conn.cursor()
             
             progress_table_name = f"ttc_progress_{self.symbol}"
@@ -427,7 +425,7 @@ class ProbabilityLookupGenerator:
         conn = None
         try:
             # Create a fresh connection for each thread
-            conn = psycopg2.connect(**self.db_config)
+            conn = _analytics_pg_connection()
             cursor = conn.cursor()
             
             progress_table_name = f"ttc_progress_{self.symbol}"
@@ -469,7 +467,7 @@ class ProbabilityLookupGenerator:
     def get_progress_stats(self) -> Dict:
         """Get progress statistics for the current lookup table generation."""
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = _analytics_pg_connection()
             cursor = conn.cursor()
             
             progress_table_name = f"ttc_progress_{self.symbol}"
@@ -517,7 +515,7 @@ class ProbabilityLookupGenerator:
     def reset_progress(self):
         """Reset all progress to pending status (for fresh start)."""
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = _analytics_pg_connection()
             cursor = conn.cursor()
             
             progress_table_name = f"ttc_progress_{self.symbol}"
@@ -539,7 +537,7 @@ class ProbabilityLookupGenerator:
     def load_fingerprint_data(self, momentum_percentile: int) -> Dict:
         """Load fingerprint data for a specific momentum percentile bucket."""
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = _analytics_pg_connection()
             
             # The momentum_percentile parameter is now the actual bucket value (e.g., -90, -80, 10, 20)
             # Format table name correctly for bucketed tables
@@ -724,7 +722,7 @@ class ProbabilityLookupGenerator:
             logger.info(f"📊 Total combinations to generate: {total_combinations:,}")
             
             # Create table
-            conn = psycopg2.connect(**self.db_config)
+            conn = _analytics_pg_connection()
             cursor = conn.cursor()
             
             # NEVER drop existing tables - only create new verification tables
@@ -831,7 +829,7 @@ class ProbabilityLookupGenerator:
             Number of combinations generated for this TTC value
         """
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = _analytics_pg_connection()
             cursor = conn.cursor()
             
             rows_generated = 0
@@ -908,7 +906,7 @@ class ProbabilityLookupGenerator:
             if not pending_ttc_values:
                 logger.info("✅ All TTC values already completed!")
                 # Check if the table actually exists before returning True
-                conn = psycopg2.connect(**self.db_config)
+                conn = _analytics_pg_connection()
                 cursor = conn.cursor()
                 cursor.execute(f"""
                 SELECT EXISTS (
@@ -931,7 +929,7 @@ class ProbabilityLookupGenerator:
             
             # Create the lookup table
             # Create a new timestamped table for verification before replacing master
-            conn = psycopg2.connect(**self.db_config)
+            conn = _analytics_pg_connection()
             cursor = conn.cursor()
             
             # NEVER touch existing tables - only create new verification tables
@@ -1021,7 +1019,7 @@ class ProbabilityLookupGenerator:
                         continue
             
             # Create index for faster lookups
-            conn = psycopg2.connect(**self.db_config)
+            conn = _analytics_pg_connection()
             cursor = conn.cursor()
             
             index_sql = f"""
@@ -1047,7 +1045,7 @@ class ProbabilityLookupGenerator:
     def fix_stuck_processing_values(self):
         """Detect and fix TTC values stuck in 'processing' status."""
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = _analytics_pg_connection()
             cursor = conn.cursor()
             
             progress_table_name = f"ttc_progress_{self.symbol}"
@@ -1087,7 +1085,7 @@ class ProbabilityLookupGenerator:
     def migrate_progress_table_schema(self):
         """Migrate existing progress table to support symbol-specific tracking."""
         try:
-            conn = psycopg2.connect(**self.db_config)
+            conn = _analytics_pg_connection()
             cursor = conn.cursor()
             
             # Check if table_name column exists
@@ -1197,7 +1195,7 @@ class ProbabilityLookupGenerator:
             logger.info("📊 Test 3: Creating small verification table...")
             test_table_name = f"test_verification_{symbol}_{int(time.time())}"
             
-            conn = psycopg2.connect(**self.db_config)
+            conn = _analytics_pg_connection()
             cursor = conn.cursor()
             
             # Create test table

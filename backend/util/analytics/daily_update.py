@@ -11,6 +11,7 @@ Pipeline Steps:
 5. Assign momentum percentiles to historical data
 
 This is a streamlined version of the full analytics pipeline focused on daily data updates.
+Uses system/global PostgreSQL only (not tenant user schemas).
 """
 
 import os
@@ -23,7 +24,6 @@ from pathlib import Path
 import pandas as pd
 import subprocess
 import json
-import psycopg2
 
 # Add the util directory to the path so we can import our modules
 sys.path.append(os.path.dirname(__file__))
@@ -31,7 +31,6 @@ _project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 
 from symbol_data_fetch_pg import update_existing_db
 from momentum_generator_pg import fill_missing_momentum_in_db
@@ -82,23 +81,15 @@ def log_step(logger, step_name, start_time=None):
         handler.flush()
 
 def get_db_connection():
-    """Get PostgreSQL database connection with proper error handling."""
+    """System/global DB for historical ingest (not tenant-scoped)."""
     try:
-        conn = psycopg2.connect(
-            **merge_psycopg2_connect_kwargs(
-                {
-                    "host": "localhost",
-                    "database": "rec_io_db",
-                    "user": "rec_io_user",
-                    "password": "rec_io_password",
-                    "connect_timeout": 10,
-                }
-            )
-        )
-        # Test the connection
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1")
-        cursor.close()
+        from backend.core.config.database import get_system_postgresql_connection
+
+        conn = get_system_postgresql_connection()
+        if conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.close()
         return conn
     except Exception as e:
         print(f"Failed to connect to PostgreSQL: {e}")
